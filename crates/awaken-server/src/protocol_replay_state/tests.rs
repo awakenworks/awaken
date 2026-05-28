@@ -1,16 +1,16 @@
 use super::*;
 use async_trait::async_trait;
-use awaken_contract::contract::durable_event_sink::{
+use awaken_runtime::{AgentRuntime, RuntimeError};
+use awaken_server_contract::contract::durable_event_sink::{
     AgentEventNormalizationContext, AgentEventNormalizer, ScopedAgentEventNormalizer,
 };
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_store::{AppendOptions, EventWriter};
-use awaken_contract::contract::outbox::{OutboxMessageDraft, OutboxStatus, OutboxStore};
-use awaken_contract::contract::protocol_replay_log::{
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::event_store::{AppendOptions, EventWriter};
+use awaken_server_contract::contract::outbox::{OutboxMessageDraft, OutboxStatus, OutboxStore};
+use awaken_server_contract::contract::protocol_replay_log::{
     ProtocolReplayDraft, ProtocolReplayReader, ProtocolReplayWriter, ProtocolStreamKey,
 };
-use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_runtime::{AgentRuntime, RuntimeError};
+use awaken_server_contract::contract::storage::ThreadRunStore;
 use awaken_stores::{
     InMemoryEventStore, InMemoryMailboxStore, InMemoryOutboxStore, InMemoryProtocolReplayLog,
     InMemoryStore,
@@ -295,7 +295,7 @@ async fn a2a_push_webhook_relay_attaches_outbox_and_starts() {
 // completes its delivery before shutdown returns.
 #[tokio::test]
 async fn shutdown_does_not_drop_in_flight_tick() {
-    use awaken_contract::contract::outbox::OutboxStore;
+    use awaken_server_contract::contract::outbox::OutboxStore;
     use tokio::sync::Notify;
 
     struct GatedHandler {
@@ -307,7 +307,7 @@ async fn shutdown_does_not_drop_in_flight_tick() {
     impl crate::outbox_relay::OutboxRelayHandler for GatedHandler {
         async fn deliver(
             &self,
-            _message: &awaken_contract::contract::outbox::OutboxMessage,
+            _message: &awaken_server_contract::contract::outbox::OutboxMessage,
         ) -> Result<(), crate::outbox_relay::OutboxRelayError> {
             self.entered.notify_one();
             self.release.notified().await;
@@ -384,7 +384,7 @@ async fn shutdown_does_not_drop_in_flight_tick() {
 
 #[tokio::test]
 async fn shutdown_timeout_bounds_stuck_in_flight_tick() {
-    use awaken_contract::contract::outbox::OutboxStore;
+    use awaken_server_contract::contract::outbox::OutboxStore;
     use tokio::sync::Notify;
 
     struct StuckHandler {
@@ -395,7 +395,7 @@ async fn shutdown_timeout_bounds_stuck_in_flight_tick() {
     impl crate::outbox_relay::OutboxRelayHandler for StuckHandler {
         async fn deliver(
             &self,
-            _message: &awaken_contract::contract::outbox::OutboxMessage,
+            _message: &awaken_server_contract::contract::outbox::OutboxMessage,
         ) -> Result<(), crate::outbox_relay::OutboxRelayError> {
             self.entered.notify_one();
             std::future::pending::<()>().await;

@@ -40,17 +40,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use awaken_contract::ModelSpec;
-use awaken_contract::agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::message::Message;
-use awaken_contract::registry_spec::AgentSpec;
 use awaken_ext_observability::{
     CompositeSink, ContentCapture, InMemorySink, MetricsSink, ObservabilityPlugin,
 };
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::engine::{LlmRetryPolicy, RetryConfigKey, ScriptedLlmExecutor};
 use awaken_runtime::{AgentRuntime, RunActivation};
+use awaken_runtime_contract::ModelSpec;
+use awaken_runtime_contract::agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
+use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::registry_spec::AgentSpec;
 use awaken_stores::MemoryCommitCoordinator;
 use awaken_stores::memory::InMemoryStore;
 

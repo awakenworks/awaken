@@ -1,14 +1,14 @@
 use super::*;
 use crate::EventBuffer;
 use crate::agent::state::{ToolCallState, ToolCallStatesUpdate};
-use awaken_contract::contract::commit_coordinator::CanonicalEventStager;
-use awaken_contract::contract::event_store::{
+use awaken_runtime_contract::contract::commit_coordinator::CanonicalEventStager;
+use awaken_runtime_contract::contract::event_store::{
     CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope, EventVisibility,
 };
-use awaken_contract::contract::storage::{
+use awaken_runtime_contract::contract::storage::{
     PinnedRegistryEntry, PinnedRegistryManifest, RunStore, ThreadRunStore, ThreadStore,
 };
-use awaken_contract::contract::suspension::ToolCallResumeMode;
+use awaken_runtime_contract::contract::suspension::ToolCallResumeMode;
 use awaken_stores::{
     InMemoryEventStore, InMemoryOutboxStore, InMemoryStore, MemoryCommitCoordinator,
 };
@@ -97,10 +97,12 @@ fn waiting_ticket_falls_back_to_tool_call_id_without_suspension_id() {
 fn materialize_message_log_preserves_output_across_same_run_resume() {
     let mut old_output = Message::assistant("before wait");
     old_output.id = Some("m-old-output".into());
-    old_output.metadata = Some(awaken_contract::contract::message::MessageMetadata {
-        run_id: Some("run-1".into()),
-        step_index: Some(0),
-    });
+    old_output.metadata = Some(
+        awaken_runtime_contract::contract::message::MessageMetadata {
+            run_id: Some("run-1".into()),
+            step_index: Some(0),
+        },
+    );
     let mut new_output = Message::assistant("after resume");
     new_output.id = Some("m-new-output".into());
 
@@ -155,7 +157,7 @@ fn materialize_message_log_preserves_output_across_same_run_resume() {
         "run-1".into(),
         None,
         "agent".into(),
-        awaken_contract::contract::identity::RunOrigin::User,
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
 
     let (msgs, _, output) = materialize_message_log(&messages, Some(&previous), &identity, 2, 0);
@@ -195,7 +197,7 @@ fn materialize_checkpoint_append_preserves_concurrent_committed_messages() {
         "run-1".into(),
         None,
         "agent".into(),
-        awaken_contract::contract::identity::RunOrigin::User,
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
 
     let (delta, output) = materialize_checkpoint_append(
@@ -238,7 +240,7 @@ fn materialize_checkpoint_append_preserves_committed_output_metadata() {
         "run-1".into(),
         None,
         "agent".into(),
-        awaken_contract::contract::identity::RunOrigin::User,
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
 
     let (delta, output) = materialize_checkpoint_append(
@@ -280,7 +282,7 @@ fn materialize_checkpoint_append_backfills_previous_output_metadata() {
         "run-1".into(),
         None,
         "agent".into(),
-        awaken_contract::contract::identity::RunOrigin::User,
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
 
     let (delta, output) = materialize_checkpoint_append(
@@ -309,10 +311,12 @@ fn materialize_checkpoint_append_does_not_duplicate_committed_message_updates() 
     let input = Message::user("first").with_id("m-input".into());
     let committed_assistant = Message::assistant("done").with_id("m-assistant".into());
     let mut runtime_assistant = committed_assistant.clone();
-    runtime_assistant.metadata = Some(awaken_contract::contract::message::MessageMetadata {
-        run_id: Some("run-1".into()),
-        step_index: Some(0),
-    });
+    runtime_assistant.metadata = Some(
+        awaken_runtime_contract::contract::message::MessageMetadata {
+            run_id: Some("run-1".into()),
+            step_index: Some(0),
+        },
+    );
     let previous = RunRecord {
         run_id: "run-1".into(),
         thread_id: "thread-1".into(),
@@ -338,7 +342,7 @@ fn materialize_checkpoint_append_does_not_duplicate_committed_message_updates() 
         "run-1".into(),
         None,
         "agent".into(),
-        awaken_contract::contract::identity::RunOrigin::User,
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
 
     let (delta, output) = materialize_checkpoint_append(
@@ -421,7 +425,7 @@ async fn persist_checkpoint_preserves_existing_registry_manifest() {
         "run-1".into(),
         None,
         "agent".into(),
-        awaken_contract::contract::identity::RunOrigin::User,
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
     let messages = vec![Arc::new(Message::user("hello"))];
 
@@ -516,7 +520,7 @@ async fn persist_checkpoint_appends_delta_after_concurrent_committed_message() {
         "run-1".into(),
         None,
         "agent".into(),
-        awaken_contract::contract::identity::RunOrigin::User,
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
     let messages = vec![Arc::new(input), Arc::new(assistant)];
 
@@ -598,7 +602,7 @@ async fn persist_checkpoint_uses_thread_ctx_seed_when_no_previous_record() {
         "run-seed".into(),
         None,
         "agent-seed".into(),
-        awaken_contract::contract::identity::RunOrigin::User,
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
     let messages = vec![Arc::new(Message::user("hi"))];
 
@@ -665,7 +669,7 @@ async fn persist_checkpoint_routes_through_commit_coordinator() {
         "run-c".into(),
         None,
         "agent".into(),
-        awaken_contract::contract::identity::RunOrigin::User,
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
     let messages = vec![Arc::new(Message::user("hello"))];
 

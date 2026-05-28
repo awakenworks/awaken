@@ -1,7 +1,7 @@
 //! Read-path operations.
 
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::storage::StorageError;
 
 use super::{NatsMailboxStore, codec, keys, kv_helpers, metrics};
 

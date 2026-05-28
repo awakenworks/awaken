@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::lifecycle::StopConditionSpec;
+use awaken_runtime_contract::contract::lifecycle::StopConditionSpec;
 
 /// Decision returned by a stop policy evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]

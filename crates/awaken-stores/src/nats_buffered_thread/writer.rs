@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{
     RunRecord, StorageError, ThreadRunStore, checkpoint_parent_thread_id,
 };
-use awaken_contract::thread::Thread;
+use awaken_server_contract::thread::Thread;
 
 use super::{NatsBufferedThreadStore, entry, hierarchy_claim, hot_meta, keys, reader, wal_state};
 

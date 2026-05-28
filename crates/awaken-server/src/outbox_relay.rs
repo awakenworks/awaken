@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::outbox::{
     OutboxError, OutboxMessage, OutboxNackOutcome, OutboxStore,
 };
-use awaken_contract::now_ms;
+use awaken_server_contract::now_ms;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -169,7 +169,7 @@ fn reject_blank(field: &str, value: &str) -> Result<(), OutboxRelayError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::outbox::{OutboxMessageDraft, OutboxStatus, OutboxStore};
+    use awaken_server_contract::contract::outbox::{OutboxMessageDraft, OutboxStatus, OutboxStore};
     use awaken_stores::InMemoryOutboxStore;
     use parking_lot::Mutex;
     use serde_json::json;

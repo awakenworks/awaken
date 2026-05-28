@@ -1,6 +1,6 @@
-use awaken_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitError};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::RunRecord;
+use awaken_server_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitError};
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::RunRecord;
 
 use super::{Mailbox, MailboxError};
 
@@ -78,14 +78,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use awaken_contract::contract::commit_coordinator::{
-        CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
-    };
-    use awaken_contract::contract::event_sink::EventSink;
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
     use awaken_runtime::RunActivation;
     use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
+    use awaken_server_contract::contract::commit_coordinator::{
+        CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
+    };
+    use awaken_server_contract::contract::event_sink::EventSink;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
     use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
 
     use super::*;
@@ -145,7 +145,7 @@ mod tests {
             &self,
             _id: &str,
             _tool_call_id: String,
-            _resume: awaken_contract::contract::suspension::ToolCallResume,
+            _resume: awaken_server_contract::contract::suspension::ToolCallResume,
         ) -> bool {
             false
         }
@@ -223,7 +223,7 @@ mod tests {
             &self,
             _id: &str,
             _tool_call_id: String,
-            _resume: awaken_contract::contract::suspension::ToolCallResume,
+            _resume: awaken_server_contract::contract::suspension::ToolCallResume,
         ) -> bool {
             false
         }
@@ -240,60 +240,60 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_contract::contract::storage::ThreadStore for FailingThreadRunStore {
+    impl awaken_server_contract::contract::storage::ThreadStore for FailingThreadRunStore {
         async fn save_thread(
             &self,
-            thread: &awaken_contract::thread::Thread,
-        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+            thread: &awaken_server_contract::thread::Thread,
+        ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
             self.inner.save_thread(thread).await
         }
         async fn load_thread(
             &self,
             id: &str,
         ) -> Result<
-            Option<awaken_contract::thread::Thread>,
-            awaken_contract::contract::storage::StorageError,
+            Option<awaken_server_contract::thread::Thread>,
+            awaken_server_contract::contract::storage::StorageError,
         > {
             self.inner.load_thread(id).await
         }
         async fn delete_thread(
             &self,
             id: &str,
-        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+        ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
             self.inner.delete_thread(id).await
         }
         async fn list_threads(
             &self,
             offset: usize,
             limit: usize,
-        ) -> Result<Vec<String>, awaken_contract::contract::storage::StorageError> {
+        ) -> Result<Vec<String>, awaken_server_contract::contract::storage::StorageError> {
             self.inner.list_threads(offset, limit).await
         }
         async fn save_messages(
             &self,
             thread_id: &str,
             messages: &[Message],
-        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+        ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
             self.inner.save_messages(thread_id, messages).await
         }
         async fn load_messages(
             &self,
             thread_id: &str,
-        ) -> Result<Option<Vec<Message>>, awaken_contract::contract::storage::StorageError>
+        ) -> Result<Option<Vec<Message>>, awaken_server_contract::contract::storage::StorageError>
         {
             self.inner.load_messages(thread_id).await
         }
         async fn delete_messages(
             &self,
             thread_id: &str,
-        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+        ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
             self.inner.delete_messages(thread_id).await
         }
         async fn update_thread_metadata(
             &self,
             thread_id: &str,
-            metadata: awaken_contract::thread::ThreadMetadata,
-        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+            metadata: awaken_server_contract::thread::ThreadMetadata,
+        ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
             self.inner.update_thread_metadata(thread_id, metadata).await
         }
     }
@@ -303,27 +303,29 @@ mod tests {
         async fn create_run(
             &self,
             run: &RunRecord,
-        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+        ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
             self.inner.create_run(run).await
         }
         async fn load_run(
             &self,
             id: &str,
-        ) -> Result<Option<RunRecord>, awaken_contract::contract::storage::StorageError> {
+        ) -> Result<Option<RunRecord>, awaken_server_contract::contract::storage::StorageError>
+        {
             self.inner.load_run(id).await
         }
         async fn latest_run(
             &self,
             thread_id: &str,
-        ) -> Result<Option<RunRecord>, awaken_contract::contract::storage::StorageError> {
+        ) -> Result<Option<RunRecord>, awaken_server_contract::contract::storage::StorageError>
+        {
             self.inner.latest_run(thread_id).await
         }
         async fn list_runs(
             &self,
-            query: &awaken_contract::contract::storage::RunQuery,
+            query: &awaken_server_contract::contract::storage::RunQuery,
         ) -> Result<
-            awaken_contract::contract::storage::RunPage,
-            awaken_contract::contract::storage::StorageError,
+            awaken_server_contract::contract::storage::RunPage,
+            awaken_server_contract::contract::storage::StorageError,
         > {
             self.inner.list_runs(query).await
         }
@@ -336,9 +338,9 @@ mod tests {
             _thread_id: &str,
             _messages: &[Message],
             _run: &RunRecord,
-        ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+        ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
             Err(
-                awaken_contract::contract::storage::StorageError::Validation(
+                awaken_server_contract::contract::storage::StorageError::Validation(
                     "simulated FailingThreadRunStore::checkpoint failure".into(),
                 ),
             )

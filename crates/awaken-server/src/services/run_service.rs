@@ -1,7 +1,9 @@
 //! Run management operations.
 
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::storage::{RunPage, RunQuery, RunRecord, RunStore, StorageError};
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::storage::{
+    RunPage, RunQuery, RunRecord, RunStore, StorageError,
+};
 
 /// Counters returned by [`runs_summary`]. The dashboard Workload card
 /// reads all three in one round-trip instead of fanning three parallel
@@ -80,7 +82,7 @@ pub async fn latest_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
 
     /// Simple in-memory run store for testing.
     #[derive(Default)]

@@ -7,9 +7,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::plugins::{Plugin, PluginRegistrar};
-use awaken_contract::StateError;
-use awaken_contract::contract::tool::Tool;
-use awaken_contract::model::Phase;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::tool::Tool;
+use awaken_runtime_contract::model::Phase;
 
 use crate::plugins::{KeyRegistration, ProfileKeyRegistration, RequestTransformArc};
 
@@ -231,13 +231,15 @@ mod tests {
     use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
     use crate::state::StateCommand;
     use async_trait::async_trait;
-    use awaken_contract::StateError;
-    use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::tool::{
+    use awaken_runtime_contract::StateError;
+    use awaken_runtime_contract::contract::message::Message;
+    use awaken_runtime_contract::contract::tool::{
         Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
-    use awaken_contract::contract::transform::{InferenceRequestTransform, TransformOutput};
-    use awaken_contract::model::Phase;
+    use awaken_runtime_contract::contract::transform::{
+        InferenceRequestTransform, TransformOutput,
+    };
+    use awaken_runtime_contract::model::Phase;
     use serde_json::Value;
     use std::collections::HashSet;
     use std::sync::Arc;
@@ -434,7 +436,7 @@ mod tests {
 
     #[test]
     fn from_plugins_collects_profile_keys() {
-        use awaken_contract::contract::profile_store::ProfileKey;
+        use awaken_runtime_contract::contract::profile_store::ProfileKey;
 
         struct ProfileLocale;
         impl ProfileKey for ProfileLocale {

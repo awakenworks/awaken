@@ -1,6 +1,6 @@
 //! Request preparation utilities.
 
-use awaken_contract::contract::message::Message;
+use awaken_server_contract::contract::message::Message;
 use serde_json::Value;
 
 use crate::routes::ApiError;
@@ -44,7 +44,7 @@ pub fn inject_frontend_context(mut messages: Vec<Message>, context: Option<Value
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::message::Message;
+    use awaken_server_contract::contract::message::Message;
 
     #[test]
     fn generates_thread_id_when_none() {
@@ -83,7 +83,7 @@ mod tests {
 
     #[test]
     fn inject_context_inserts_internal_system_message() {
-        use awaken_contract::contract::message::{Role, Visibility};
+        use awaken_server_contract::contract::message::{Role, Visibility};
         let msgs = vec![Message::user("hello")];
         let result =
             inject_frontend_context(msgs, Some(serde_json::json!({"todos": ["buy milk"]})));

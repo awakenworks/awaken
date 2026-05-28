@@ -1,10 +1,10 @@
-use awaken_contract::contract::content::{
+use awaken_protocol_a2a::{Artifact, Message as A2aMessage, MessageRole, Part};
+use awaken_server_contract::contract::content::{
     AudioSource, ContentBlock, DocumentSource, ImageSource, VideoSource,
 };
-use awaken_contract::contract::message::{
+use awaken_server_contract::contract::message::{
     Message as AwakenMessage, Role as AwakenRole, Visibility,
 };
-use awaken_protocol_a2a::{Artifact, Message as A2aMessage, MessageRole, Part};
 use uuid::Uuid;
 
 use crate::message_convert::{

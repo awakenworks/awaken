@@ -18,10 +18,10 @@ use crate::query::{self, MessageQueryParams, ThreadQueryParams};
 use crate::services::run_control_service::{
     InputMode, InterruptMode, RunControlError, RunControlService,
 };
-use awaken_contract::ScopeContext;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError};
 use awaken_runtime::RunActivation;
+use awaken_server_contract::ScopeContext;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError};
 
 pub use crate::error::ApiError;
 
@@ -602,11 +602,13 @@ async fn push_mailbox(
         .unwrap_or_default()
         .to_string();
     let messages = if text.is_empty() {
-        vec![awaken_contract::contract::message::Message::user(
+        vec![awaken_server_contract::contract::message::Message::user(
             body.payload.to_string(),
         )]
     } else {
-        vec![awaken_contract::contract::message::Message::user(text)]
+        vec![awaken_server_contract::contract::message::Message::user(
+            text,
+        )]
     };
 
     let result = st
@@ -698,7 +700,7 @@ async fn start_run(
         .submit(st.run.scope_activation(request))
         .await
         .map_err(map_mailbox_error)?;
-    let encoder = awaken_contract::contract::transport::Identity::default();
+    let encoder = awaken_server_contract::contract::transport::Identity::default();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.sse_buffer_size, None);
 
     Ok(sse_response(sse_body_stream(sse_rx)))
@@ -725,8 +727,8 @@ async fn list_runs(
     Query(params): Query<ListRunsParams>,
 ) -> Result<Json<Value>, ApiError> {
     let st = st.scoped(&scope);
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::RunQuery;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::storage::RunQuery;
 
     let status = params
         .status
@@ -868,7 +870,7 @@ async fn submit_decision(
     Json(payload): Json<DecisionPayload>,
 ) -> Result<Response, ApiError> {
     let st = st.scoped(&scope);
-    use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+    use awaken_server_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 
     let action = match payload.action.as_str() {
         "resume" => ResumeDecisionAction::Resume,
@@ -912,7 +914,7 @@ async fn submit_thread_decision(
     Json(payload): Json<DecisionPayload>,
 ) -> Result<Response, ApiError> {
     let st = st.scoped(&scope);
-    use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+    use awaken_server_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 
     let action = match payload.action.as_str() {
         "resume" => ResumeDecisionAction::Resume,
@@ -971,8 +973,8 @@ async fn list_thread_runs(
     Query(params): Query<ListRunsParams>,
 ) -> Result<Json<Value>, ApiError> {
     let st = st.scoped(&scope);
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::RunQuery;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::storage::RunQuery;
 
     let status = params
         .status

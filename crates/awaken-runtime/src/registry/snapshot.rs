@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
-use awaken_contract::identity::{agent_prompt_id, tool_desc_id};
+use awaken_runtime_contract::identity::{agent_prompt_id, tool_desc_id};
 
 use super::traits::RegistrySet;
 
@@ -121,7 +121,7 @@ mod tests {
         MapAgentSpecRegistry, MapBackendRegistry, MapModelRegistry, MapPluginSource,
         MapProviderRegistry, MapToolRegistry,
     };
-    use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
+    use awaken_runtime_contract::registry_spec::{AgentSpec, ModelSpec};
 
     fn make_registry_set(agent_id: &str) -> RegistrySet {
         let mut agents = MapAgentSpecRegistry::new();
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn snapshot_returns_none_for_unknown_tool() {
         // The positive-path hashing behaviour is tested in
-        // `awaken_contract::identity::tests` against the free function this
+        // `awaken_runtime_contract::identity::tests` against the free function this
         // method delegates to; the registry layer only adds the lookup step,
         // and that step is what this test pins down.
         let handle = RegistryHandle::new(make_registry_set("weather"));

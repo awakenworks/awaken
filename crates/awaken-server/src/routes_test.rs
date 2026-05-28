@@ -535,7 +535,7 @@ mod health_integration {
     #[tokio::test]
     async fn admin_routes_require_bearer_token_when_configured() {
         use crate::app::AdminApiConfig;
-        use awaken_contract::RedactedString;
+        use awaken_server_contract::RedactedString;
         use axum::http::{StatusCode, header};
 
         let token = RedactedString::new("admin-token");
@@ -669,11 +669,11 @@ mod health_integration {
 
     #[tokio::test]
     async fn health_ready_returns_unhealthy_with_failing_store() {
-        use awaken_contract::contract::message::Message;
-        use awaken_contract::contract::storage::{
+        use awaken_server_contract::contract::message::Message;
+        use awaken_server_contract::contract::storage::{
             RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
         };
-        use awaken_contract::thread::{Thread, ThreadMetadata};
+        use awaken_server_contract::thread::{Thread, ThreadMetadata};
 
         /// Store that always returns errors.
         struct FailingStore;

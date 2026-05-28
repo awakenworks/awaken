@@ -6,7 +6,7 @@
 
 #![cfg(feature = "file")]
 
-use awaken_contract::contract::versioned_registry::{
+use awaken_server_contract::contract::versioned_registry::{
     PublishOutcome, VersionedRegistryStore, registry_content_hash,
 };
 use awaken_stores::{FileVersionedRegistryStore, InMemoryVersionedRegistryStore};

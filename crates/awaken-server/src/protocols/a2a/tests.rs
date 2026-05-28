@@ -1,8 +1,10 @@
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::Message as AwakenMessage;
-use awaken_contract::contract::storage::{RunRecord, RunWaitingState, StorageError, WaitingReason};
-use awaken_contract::thread::Thread;
 use awaken_protocol_a2a::{MessageRole, Part, TaskState};
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::message::Message as AwakenMessage;
+use awaken_server_contract::contract::storage::{
+    RunRecord, RunWaitingState, StorageError, WaitingReason,
+};
+use awaken_server_contract::thread::Thread;
 
 use super::a2a_routes;
 use super::common::{

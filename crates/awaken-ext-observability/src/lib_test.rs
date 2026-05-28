@@ -1,9 +1,11 @@
 use super::*;
-use awaken_contract::contract::inference::{InferenceError, LLMResponse, StreamResult, TokenUsage};
-use awaken_contract::contract::tool::ToolResult;
-use awaken_contract::model::Phase;
-use awaken_contract::state::{Snapshot, StateMap};
 use awaken_runtime::{PhaseContext, PhaseHook};
+use awaken_runtime_contract::contract::inference::{
+    InferenceError, LLMResponse, StreamResult, TokenUsage,
+};
+use awaken_runtime_contract::contract::tool::ToolResult;
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::state::{Snapshot, StateMap};
 use futures::future::join_all;
 use std::sync::{Arc, OnceLock};
 
@@ -108,7 +110,7 @@ fn make_tool_span(name: &str, call_id: &str) -> ToolSpan {
 }
 
 fn success_response(u: Option<TokenUsage>) -> LLMResponse {
-    use awaken_contract::contract::content::ContentBlock;
+    use awaken_runtime_contract::contract::content::ContentBlock;
     LLMResponse::success(StreamResult {
         content: vec![ContentBlock::text("hello")],
         tool_calls: vec![],
@@ -1150,7 +1152,7 @@ async fn test_tool_span_has_function_type() {
 
 #[tokio::test]
 async fn span_context_captured_from_run_identity() {
-    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
 
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
@@ -1177,7 +1179,7 @@ async fn span_context_captured_from_run_identity() {
 
 #[tokio::test]
 async fn genai_span_has_run_context() {
-    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
 
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink.clone()).with_model("m");
@@ -1211,7 +1213,7 @@ async fn genai_span_has_run_context() {
 
 #[tokio::test]
 async fn tool_span_has_run_context() {
-    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
 
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink.clone());

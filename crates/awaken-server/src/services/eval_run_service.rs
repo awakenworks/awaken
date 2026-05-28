@@ -3,9 +3,6 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use awaken_contract::agent_spec_patch::AgentSpecPatch;
-use awaken_contract::config_record::validate_config_record;
-use awaken_contract::contract::config_store::extract_meta_revision;
 use awaken_eval::{
     DATASETS_NAMESPACE, DatasetSpec, DiffSummary, EvalRun, EvalRunExecutionMode, EvalRunFilter,
     EvalRunItem, EvalRunStore, EvalRunStoreError, EvalRunSummary, Fixture, LlmExecutorJudge,
@@ -14,6 +11,9 @@ use awaken_eval::{
 };
 use awaken_ext_observability::MetricsSink;
 use awaken_ext_observability::trace_store::{TraceStore, TraceStoreSink};
+use awaken_server_contract::agent_spec_patch::AgentSpecPatch;
+use awaken_server_contract::config_record::validate_config_record;
+use awaken_server_contract::contract::config_store::extract_meta_revision;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -726,7 +726,7 @@ pub(crate) struct MatrixOptions {
     /// judge can't pin the HTTP request slot indefinitely.
     pub max_walltime_secs: u64,
     pub max_total_tokens: u32,
-    pub agent_base: Option<awaken_contract::registry_spec::AgentSpec>,
+    pub agent_base: Option<awaken_server_contract::registry_spec::AgentSpec>,
     pub agent_overrides: Option<AgentSpecPatch>,
     pub judge: Option<JudgeContext>,
 }

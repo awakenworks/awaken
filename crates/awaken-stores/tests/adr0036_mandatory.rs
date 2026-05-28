@@ -8,22 +8,22 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use awaken_contract::contract::commit_coordinator::{
+use awaken_server_contract::contract::commit_coordinator::{
     CanonicalEventStager, CheckpointCommitPlan, CommitCoordinator, CommitError,
     StagedCanonicalEvent,
 };
-use awaken_contract::contract::durable_event_sink::{
+use awaken_server_contract::contract::durable_event_sink::{
     AgentEventNormalizationContext, DurableEventSink, RuntimeEventDurability,
     ScopedAgentEventNormalizer,
 };
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::{EventSink, VecEventSink};
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::event_sink::{EventSink, VecEventSink};
+use awaken_server_contract::contract::event_store::{
     AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope,
     EventVisibility, EventWriter,
 };
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::storage::{RunRecord, ThreadStore};
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::storage::{RunRecord, ThreadStore};
 use awaken_stores::{
     InMemoryEventStore, InMemoryOutboxStore, InMemoryStore, MemoryCommitCoordinator,
 };

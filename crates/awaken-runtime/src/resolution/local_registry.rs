@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::inference::InferenceOverride;
-use awaken_contract::contract::run::RunResolutionScope;
+use awaken_runtime_contract::contract::inference::InferenceOverride;
+use awaken_runtime_contract::contract::run::RunResolutionScope;
 
 use crate::registry::{AgentResolver, ResolvedAgent};
 

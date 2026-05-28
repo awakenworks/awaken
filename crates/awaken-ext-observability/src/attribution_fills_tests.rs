@@ -4,12 +4,6 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::inference::{LLMResponse, StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::tool::{FrontEndTool, ToolDescriptor};
-use awaken_contract::model::Phase;
-use awaken_contract::registry_spec::AgentSpec;
-use awaken_contract::state::{Snapshot, StateMap};
 use awaken_runtime::registry::memory::{
     MapAgentSpecRegistry, MapBackendRegistry, MapModelRegistry, MapPluginSource,
     MapProviderRegistry, MapToolRegistry,
@@ -17,6 +11,14 @@ use awaken_runtime::registry::memory::{
 use awaken_runtime::registry::traits::RegistrySet;
 use awaken_runtime::registry::{RegistryHandle, RegistrySnapshot};
 use awaken_runtime::{PhaseContext, PhaseHook};
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::inference::{
+    LLMResponse, StopReason, StreamResult, TokenUsage,
+};
+use awaken_runtime_contract::contract::tool::{FrontEndTool, ToolDescriptor};
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::registry_spec::AgentSpec;
+use awaken_runtime_contract::state::{Snapshot, StateMap};
 
 use crate::InMemorySink;
 use crate::plugin::{
@@ -66,14 +68,14 @@ fn make_snapshot_with_tools(
     let mut tools = MapToolRegistry::new();
     for &tid in tool_ids {
         let desc = ToolDescriptor::new(tid, tid, format!("Description for {tid}"));
-        let tool: Arc<dyn awaken_contract::contract::tool::Tool> =
+        let tool: Arc<dyn awaken_runtime_contract::contract::tool::Tool> =
             Arc::new(FrontEndTool::new(desc));
         tools.register_tool(tid, tool).expect("register tool");
     }
 
     let mut models = MapModelRegistry::new();
     models
-        .register_model(awaken_contract::ModelSpec::new(
+        .register_model(awaken_runtime_contract::ModelSpec::new(
             "default",
             "provider",
             "test-model",
@@ -301,10 +303,12 @@ async fn drive_run_invoking_tool(agent_id: &str, tool_id: &str) -> Observability
         .run(
             &PhaseContext::new(Phase::AfterToolExecute, empty_snapshot())
                 .with_tool_info(tool_id, "call-1", Some(serde_json::json!({})))
-                .with_tool_result(awaken_contract::contract::tool::ToolResult::success(
-                    tool_id,
-                    serde_json::json!({}),
-                )),
+                .with_tool_result(
+                    awaken_runtime_contract::contract::tool::ToolResult::success(
+                        tool_id,
+                        serde_json::json!({}),
+                    ),
+                ),
         )
         .await
         .unwrap();
@@ -453,8 +457,8 @@ async fn handoff_refreshes_prompt_id_to_new_agent() {
     // on handoff but leave `prompt_id` stale. After handoff to a
     // different agent with a different system prompt, the next
     // inference must carry the NEW prompt_id.
-    use awaken_contract::contract::identity::{RunIdentity, RunRef};
-    use awaken_contract::identity::agent_prompt_id;
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunRef};
+    use awaken_runtime_contract::identity::agent_prompt_id;
 
     fn ident(agent: &str) -> RunIdentity {
         RunIdentity {
@@ -525,8 +529,8 @@ async fn handoff_with_empty_spec_prompt_falls_back_to_registry_snapshot() {
     // without a hydrated prompt. Without the fallback, a handoff into an
     // agent whose spec is still a stub would silently null the prompt_id
     // even when the snapshot carries the canonical text.
-    use awaken_contract::contract::identity::{RunIdentity, RunRef};
-    use awaken_contract::identity::agent_prompt_id;
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunRef};
+    use awaken_runtime_contract::identity::agent_prompt_id;
 
     fn ident(agent: &str) -> RunIdentity {
         RunIdentity {

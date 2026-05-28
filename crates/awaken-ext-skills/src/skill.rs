@@ -188,13 +188,13 @@ pub trait Skill: Send + Sync + std::fmt::Debug {
     async fn run_script(&self, script: &str, args: &[String]) -> Result<ScriptResult, SkillError>;
 
     /// Materialized resources that would be lost when snapshotting this skill
-    /// into a DB-managed [`SkillSpec`](awaken_contract::SkillSpec).
+    /// into a DB-managed [`SkillSpec`](awaken_runtime_contract::SkillSpec).
     fn materialized_resource_paths(&self) -> Vec<(SkillResourceKind, String)> {
         Vec::new()
     }
 
     /// Materialized scripts that would be lost when snapshotting this skill
-    /// into a DB-managed [`SkillSpec`](awaken_contract::SkillSpec).
+    /// into a DB-managed [`SkillSpec`](awaken_runtime_contract::SkillSpec).
     fn materialized_script_paths(&self) -> Vec<String> {
         Vec::new()
     }

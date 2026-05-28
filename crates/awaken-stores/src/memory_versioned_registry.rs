@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use awaken_contract::contract::versioned_registry::{
+use awaken_server_contract::contract::versioned_registry::{
     ConfigRevisionRef, PublishOutcome, RegistryPublication, RegistryResourcePublish,
     RegistryRetentionPolicy, VersionRef, VersionedRecord, VersionedRegistryError,
     VersionedRegistryRetention, VersionedRegistryStore, VersionedResourceState,

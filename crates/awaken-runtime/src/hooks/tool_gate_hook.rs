@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::PhaseContext;
-use awaken_contract::StateError;
-use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload;
 
 #[async_trait]
 pub trait ToolGateHook: Send + Sync + 'static {

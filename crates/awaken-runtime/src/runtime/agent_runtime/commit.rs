@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::commit_coordinator::CommitCoordinator;
+use awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator;
 
 use super::AgentRuntime;
 
@@ -25,7 +25,7 @@ impl AgentRuntime {
     pub fn with_in_memory_thread_run_store(self, store: Arc<awaken_stores::InMemoryStore>) -> Self {
         let coord = awaken_stores::MemoryCommitCoordinator::wrap(Arc::clone(&store));
         self.with_thread_run_store(
-            store as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
+            store as Arc<dyn awaken_runtime_contract::contract::storage::ThreadRunStore>,
         )
         .with_commit_coordinator(coord as Arc<dyn CommitCoordinator>)
     }

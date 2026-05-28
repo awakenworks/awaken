@@ -38,5 +38,5 @@ pub enum ResolveError {
         source_b: String,
     },
     #[error("env build error: {0}")]
-    EnvBuild(#[from] awaken_contract::StateError),
+    EnvBuild(#[from] awaken_runtime_contract::StateError),
 }

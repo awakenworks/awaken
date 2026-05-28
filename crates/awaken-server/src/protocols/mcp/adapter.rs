@@ -13,12 +13,12 @@ use mcp::tool::{BoxFuture, McpTool, ToolCallResult};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::RunRequestOrigin;
-use awaken_contract::contract::tool_intercept::AdapterKind;
 use awaken_runtime::{AgentRuntime, RunActivation};
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::lifecycle::TerminationReason;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::RunRequestOrigin;
+use awaken_server_contract::contract::tool_intercept::AdapterKind;
 
 use super::JSON_RPC_VERSION;
 use crate::mailbox::Mailbox;

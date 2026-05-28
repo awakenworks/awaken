@@ -8,22 +8,22 @@ use crate::backend::{
 };
 use crate::resolution::{BackendProfile, PersistenceCapability};
 use async_trait::async_trait;
-use awaken_contract::contract::content::{
-    AudioSource, ContentBlock, DocumentSource, ImageSource, VideoSource,
-};
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::message::{Message, Role, Visibility};
-use awaken_contract::now_ms;
-use awaken_contract::registry_spec::RemoteEndpoint;
-use awaken_contract::state::PersistedState;
 use awaken_protocol_a2a::{
     Message as A2aMessage, MessageRole, Part, SendMessageConfiguration, SendMessageRequest,
     SendMessageResponse, StreamResponse, Task, TaskArtifactUpdateEvent, TaskState,
     TaskStatusUpdateEvent,
 };
+use awaken_runtime_contract::contract::content::{
+    AudioSource, ContentBlock, DocumentSource, ImageSource, VideoSource,
+};
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::lifecycle::TerminationReason;
+use awaken_runtime_contract::contract::message::{Message, Role, Visibility};
+use awaken_runtime_contract::now_ms;
+use awaken_runtime_contract::registry_spec::RemoteEndpoint;
+use awaken_runtime_contract::state::PersistedState;
 use futures::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -292,7 +292,7 @@ impl<'a> A2aExecutionRequest<'a> {
 
     fn checkpoint_store(
         &self,
-    ) -> Option<&'a dyn awaken_contract::contract::storage::ThreadRunStore> {
+    ) -> Option<&'a dyn awaken_runtime_contract::contract::storage::ThreadRunStore> {
         match self {
             Self::Root(request) => request.checkpoint_store,
             Self::Delegate(_) => None,
@@ -1501,10 +1501,10 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use awaken_contract::contract::event_sink::NullEventSink;
-    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::{RunRecord, ThreadRunStore};
+    use awaken_runtime_contract::contract::event_sink::NullEventSink;
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_runtime_contract::contract::lifecycle::RunStatus;
+    use awaken_runtime_contract::contract::storage::{RunRecord, ThreadRunStore};
     use awaken_stores::memory::InMemoryStore;
     use serde_json::json;
 
@@ -1670,7 +1670,7 @@ mod tests {
         let endpoint = RemoteEndpoint {
             backend: "a2a".into(),
             base_url: "https://api.example.com/v1/a2a".into(),
-            auth: Some(awaken_contract::registry_spec::RemoteAuth::bearer(
+            auth: Some(awaken_runtime_contract::registry_spec::RemoteAuth::bearer(
                 "tok_123",
             )),
             target: Some("worker".into()),
@@ -1693,7 +1693,7 @@ mod tests {
         let endpoint = RemoteEndpoint {
             backend: "a2a".into(),
             base_url: "https://api.example.com/v1/a2a".into(),
-            auth: Some(awaken_contract::registry_spec::RemoteAuth {
+            auth: Some(awaken_runtime_contract::registry_spec::RemoteAuth {
                 auth_type: "basic".into(),
                 params: BTreeMap::new(),
             }),
@@ -1731,7 +1731,7 @@ mod tests {
             .validate(&RemoteEndpoint {
                 backend: "a2a".into(),
                 base_url: "https://api.example.com/v1/a2a".into(),
-                auth: Some(awaken_contract::registry_spec::RemoteAuth {
+                auth: Some(awaken_runtime_contract::registry_spec::RemoteAuth {
                     auth_type: "basic".into(),
                     params: BTreeMap::new(),
                 }),

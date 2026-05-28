@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use awaken_contract::PluginConfigKey;
+use awaken_runtime_contract::PluginConfigKey;
 use awaken_tool_pattern::wildcard_match;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

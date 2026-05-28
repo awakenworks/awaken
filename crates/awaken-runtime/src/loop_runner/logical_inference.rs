@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_contract::contract::executor::InferenceRequest;
+use awaken_runtime_contract::contract::executor::InferenceRequest;
 
 static LOGICAL_INFERENCE_SEQ: AtomicU64 = AtomicU64::new(1);
 

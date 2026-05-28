@@ -1,6 +1,6 @@
 //! Shared NATS connection helper.
 
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 
 pub(crate) async fn connect(
     url: &str,

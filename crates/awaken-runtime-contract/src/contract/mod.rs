@@ -21,7 +21,6 @@ pub mod progress;
 pub mod protocol_replay_log;
 pub mod registry_graph;
 pub mod run;
-pub mod scope;
 pub mod shared_state;
 pub mod storage;
 pub mod stream_checkpoint;

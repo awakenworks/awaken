@@ -6,8 +6,8 @@ use futures::future::join_all;
 use futures::lock::Mutex;
 
 use crate::state::{MergeStrategy, MutationBatch, Snapshot, StateCommand, StateStore};
-use awaken_contract::StateError;
-use awaken_contract::model::{
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::model::{
     FailedScheduledAction, FailedScheduledActionUpdate, FailedScheduledActions,
     PendingScheduledActions, Phase, ScheduledActionEnvelope, ScheduledActionQueueUpdate,
     TypedEffect,

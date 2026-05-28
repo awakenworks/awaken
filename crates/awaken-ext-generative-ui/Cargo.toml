@@ -16,7 +16,7 @@ openui = []
 json-render = []
 
 [dependencies]
-awaken-contract = { workspace = true }
+awaken-runtime-contract = { workspace = true }
 awaken-runtime = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }

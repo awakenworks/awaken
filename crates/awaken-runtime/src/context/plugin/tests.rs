@@ -1,6 +1,6 @@
 use super::*;
 use crate::state::StateStore;
-use awaken_contract::contract::message::Message;
+use awaken_runtime_contract::contract::message::Message;
 
 #[test]
 fn compaction_state_record_boundary() {
@@ -378,7 +378,7 @@ fn compaction_state_pre_post_tokens_preserved() {
 
 #[test]
 fn context_transform_plugin_descriptor_name() {
-    let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+    let policy = awaken_runtime_contract::contract::inference::ContextWindowPolicy::default();
     let plugin = ContextTransformPlugin::new(policy);
     assert_eq!(plugin.descriptor().name, CONTEXT_TRANSFORM_PLUGIN_ID);
 }
@@ -500,7 +500,7 @@ fn compaction_with_tool_messages_records_correctly() {
 #[test]
 fn context_transform_plugin_registers_transform() {
     use crate::plugins::PluginRegistrar;
-    let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+    let policy = awaken_runtime_contract::contract::inference::ContextWindowPolicy::default();
     let plugin = ContextTransformPlugin::new(policy);
     let mut registrar = PluginRegistrar::new();
     plugin.register(&mut registrar).unwrap();
@@ -528,7 +528,7 @@ fn transform_ordering_compaction_then_context() {
         "CompactionPlugin should not register request transforms"
     );
     // ContextTransformPlugin should register exactly one transform
-    let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+    let policy = awaken_runtime_contract::contract::inference::ContextWindowPolicy::default();
     let mut reg_transform = PluginRegistrar::new();
     ContextTransformPlugin::new(policy)
         .register(&mut reg_transform)
@@ -538,7 +538,7 @@ fn transform_ordering_compaction_then_context() {
 
 #[test]
 fn token_count_estimation_for_various_content_types() {
-    use awaken_contract::contract::transform::estimate_message_tokens;
+    use awaken_runtime_contract::contract::transform::estimate_message_tokens;
 
     // Text message
     let text_msg = Message::user("Hello, this is a test message with some content.");
@@ -567,13 +567,13 @@ fn token_count_estimation_for_various_content_types() {
 
 #[test]
 fn enable_prompt_cache_flag_in_policy() {
-    let policy_cached = awaken_contract::contract::inference::ContextWindowPolicy {
+    let policy_cached = awaken_runtime_contract::contract::inference::ContextWindowPolicy {
         enable_prompt_cache: true,
         ..Default::default()
     };
     assert!(policy_cached.enable_prompt_cache);
 
-    let policy_uncached = awaken_contract::contract::inference::ContextWindowPolicy {
+    let policy_uncached = awaken_runtime_contract::contract::inference::ContextWindowPolicy {
         enable_prompt_cache: false,
         ..Default::default()
     };
@@ -586,9 +586,9 @@ fn enable_prompt_cache_flag_in_policy() {
 
 #[test]
 fn autocompact_threshold_check() {
-    use awaken_contract::contract::transform::estimate_tokens;
+    use awaken_runtime_contract::contract::transform::estimate_tokens;
 
-    let policy_with_threshold = awaken_contract::contract::inference::ContextWindowPolicy {
+    let policy_with_threshold = awaken_runtime_contract::contract::inference::ContextWindowPolicy {
         autocompact_threshold: Some(500),
         ..Default::default()
     };

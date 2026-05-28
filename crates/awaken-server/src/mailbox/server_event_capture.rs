@@ -1,11 +1,11 @@
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::event_store::{
     AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventScope, EventVisibility,
 };
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
-use awaken_contract::contract::message::{Message, Role, Visibility};
-use awaken_contract::contract::storage::{RunQuery, RunRecord, StorageError};
-use awaken_contract::contract::suspension::ToolCallResume;
+use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::message::{Message, Role, Visibility};
+use awaken_server_contract::contract::storage::{RunQuery, RunRecord, StorageError};
+use awaken_server_contract::contract::suspension::ToolCallResume;
 use serde_json::json;
 
 use super::{Mailbox, MailboxError, dispatch_status_label};
@@ -61,7 +61,7 @@ impl Mailbox {
             run_id: dispatch.run_id.clone(),
             identity: None,
             result: None,
-            termination: awaken_contract::contract::lifecycle::TerminationReason::Error(
+            termination: awaken_server_contract::contract::lifecycle::TerminationReason::Error(
                 error.to_string(),
             ),
         }) {

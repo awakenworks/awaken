@@ -14,11 +14,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::commit_coordinator::{
+use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     MessageWriteMode, TransactionScopeId,
 };
-use awaken_contract::contract::storage::ThreadRunStore;
+use awaken_server_contract::contract::storage::ThreadRunStore;
 
 use super::RunDispatchExecutor;
 

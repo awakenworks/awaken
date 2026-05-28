@@ -1,5 +1,5 @@
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::storage::RunRecord;
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::storage::RunRecord;
 
 pub fn make_run(run_id: &str, thread_id: &str, updated_at: u64) -> RunRecord {
     RunRecord {

@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use crate::cancellation::CancellationToken;
-use awaken_contract::StateError;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::message::{Message, ToolCall, Visibility};
-use awaken_contract::contract::suspension::{
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::message::{Message, ToolCall, Visibility};
+use awaken_runtime_contract::contract::suspension::{
     ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
 use futures::StreamExt;
@@ -341,7 +341,8 @@ mod tests {
                 "perm_c1".into(),
                 ToolCallResume {
                     decision_id: "d1".into(),
-                    action: awaken_contract::contract::suspension::ResumeDecisionAction::Resume,
+                    action:
+                        awaken_runtime_contract::contract::suspension::ResumeDecisionAction::Resume,
                     result: json!({"approved": true}),
                     reason: None,
                     updated_at: 2,

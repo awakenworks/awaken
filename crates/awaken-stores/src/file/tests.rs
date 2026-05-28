@@ -1,13 +1,13 @@
 use super::*;
 use crate::PendingMessageStore;
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::{
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::message::{
     DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message,
 };
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::storage::{
     ChildThreadDeleteStrategy, RunRecord, RunStore, ThreadRunStore, ThreadStore,
 };
-use awaken_contract::thread::Thread;
+use awaken_server_contract::thread::Thread;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::sync::Barrier;

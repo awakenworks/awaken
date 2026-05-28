@@ -6,8 +6,6 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolStatus};
-use awaken_contract::state::{MergeStrategy, StateKey};
 use awaken_ext_skills::registry::InMemorySkillRegistry;
 use awaken_ext_skills::state::{SkillState, SkillStateUpdate, SkillStateValue};
 use awaken_ext_skills::tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
@@ -15,6 +13,8 @@ use awaken_ext_skills::{
     EmbeddedSkill, EmbeddedSkillData, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
     SKILL_SCRIPT_TOOL_ID,
 };
+use awaken_runtime_contract::contract::tool::{Tool, ToolCallContext, ToolStatus};
+use awaken_runtime_contract::state::{MergeStrategy, StateKey};
 use serde_json::{Value, json};
 
 // ── Test skill definitions ────────────────────────────────────────
@@ -813,10 +813,10 @@ async fn activate_tool_command_no_permission_overrides_when_no_allowed_tools() {
 /// Verify that command applies correctly to a real StateStore.
 #[tokio::test]
 async fn activate_tool_command_applies_to_state_store() {
-    use awaken_contract::state::{Snapshot, StateMap};
     use awaken_ext_permission::evaluate_tool_permission;
     use awaken_ext_permission::rules::ToolPermissionBehavior;
     use awaken_ext_permission::state::{PermissionOverridesKey, permission_rules_from_state};
+    use awaken_runtime_contract::state::{Snapshot, StateMap};
     use std::sync::Arc;
 
     let registry = make_registry_with_skills(&[EmbeddedSkillData {
@@ -870,9 +870,9 @@ async fn activate_tool_command_applies_to_state_store() {
 /// Verify that permission overrides are run-scoped (from PermissionOverridesKey semantics).
 #[tokio::test]
 async fn activate_tool_permission_overrides_use_skill_source() {
-    use awaken_contract::state::{Snapshot, StateMap};
     use awaken_ext_permission::PermissionRuleSource;
     use awaken_ext_permission::state::PermissionOverridesKey;
+    use awaken_runtime_contract::state::{Snapshot, StateMap};
     use std::sync::Arc;
 
     let registry = make_registry_with_skills(&[EmbeddedSkillData {
@@ -958,9 +958,9 @@ async fn activate_tool_command_no_promote_without_deferred_tools_plugin() {
 /// skill activation should promote allowed_tools.
 #[tokio::test]
 async fn activate_tool_command_promotes_deferred_tools_when_plugin_active() {
-    use awaken_contract::state::{Snapshot, StateMap};
     use awaken_ext_deferred_tools::config::ToolLoadMode;
     use awaken_ext_deferred_tools::state::{DeferralState, DeferralStateValue};
+    use awaken_runtime_contract::state::{Snapshot, StateMap};
     use std::sync::Arc;
 
     let registry = make_registry_with_skills(&[EmbeddedSkillData {
@@ -1021,11 +1021,11 @@ async fn activate_tool_command_promotes_deferred_tools_when_plugin_active() {
 /// only grant a permission rule.
 #[tokio::test]
 async fn activate_tool_command_promotes_deferred_tools_matched_by_patterns() {
-    use awaken_contract::state::{Snapshot, StateMap};
     use awaken_ext_deferred_tools::config::ToolLoadMode;
     use awaken_ext_deferred_tools::state::{
         DeferralState, DeferralStateAction, DeferralStateValue,
     };
+    use awaken_runtime_contract::state::{Snapshot, StateMap};
     use std::sync::Arc;
 
     let registry = make_registry_with_skills(&[EmbeddedSkillData {

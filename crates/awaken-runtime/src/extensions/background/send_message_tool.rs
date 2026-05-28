@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
@@ -334,8 +334,8 @@ mod tests {
         BackgroundTaskPlugin, TaskParentContext, TaskResult as BgTaskResult,
     };
     use crate::state::StateStore;
-    use awaken_contract::contract::identity::RunIdentity;
-    use awaken_contract::registry_spec::AgentSpec;
+    use awaken_runtime_contract::contract::identity::RunIdentity;
+    use awaken_runtime_contract::registry_spec::AgentSpec;
     use tokio::sync::Mutex;
 
     #[derive(Default)]
@@ -365,7 +365,7 @@ mod tests {
                 "run-1".to_string(),
                 None,
                 agent_id.to_string(),
-                awaken_contract::contract::identity::RunOrigin::User,
+                awaken_runtime_contract::contract::identity::RunOrigin::User,
             ),
             agent_spec: Arc::new(AgentSpec::default()),
             snapshot: store.snapshot(),
@@ -526,13 +526,13 @@ mod tests {
         let tool = SendMessageTool::new(manager, sink.clone());
 
         let mut ctx = make_ctx("thread-child", "child-agent");
-        ctx.run_identity = awaken_contract::contract::identity::RunIdentity::new(
+        ctx.run_identity = awaken_runtime_contract::contract::identity::RunIdentity::new(
             "thread-child".into(),
             Some("thread-parent".into()),
             "run-child".into(),
             Some("run-parent".into()),
             "child-agent".into(),
-            awaken_contract::contract::identity::RunOrigin::Subagent,
+            awaken_runtime_contract::contract::identity::RunOrigin::Subagent,
         );
 
         let r = tool
@@ -625,13 +625,13 @@ mod tests {
 
         // parent_run_id is set but parent_thread_id is None — routing fails.
         let mut ctx = make_ctx("thread-1", "child");
-        ctx.run_identity = awaken_contract::contract::identity::RunIdentity::new(
+        ctx.run_identity = awaken_runtime_contract::contract::identity::RunIdentity::new(
             "thread-1".into(),
             None,
             "run-child".into(),
             Some("run-parent".into()), // parent_run_id exists
             "child".into(),
-            awaken_contract::contract::identity::RunOrigin::Subagent,
+            awaken_runtime_contract::contract::identity::RunOrigin::Subagent,
         );
 
         let r = tool

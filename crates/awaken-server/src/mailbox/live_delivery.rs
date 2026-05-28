@@ -2,12 +2,12 @@
 
 use tokio::sync::mpsc;
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::{
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::mailbox::{
     LiveDeliveryOutcome, LiveRunCommand, RunDispatch, RunDispatchStatus,
 };
-use awaken_contract::contract::message::{DeliveryGranularity, DeliveryMode, Message};
+use awaken_server_contract::contract::message::{DeliveryGranularity, DeliveryMode, Message};
 
 use super::{
     Mailbox, MailboxDispatchStatus, MailboxError, MailboxSubmitResult, MailboxWorkerStatus,

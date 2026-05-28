@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::state::{Snapshot, StateCommand};
-use awaken_contract::StateError;
-use awaken_contract::model::{EffectSpec, JsonValue, ScheduledActionSpec, decode_json};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::model::{EffectSpec, JsonValue, ScheduledActionSpec, decode_json};
 
 use super::PhaseContext;
 

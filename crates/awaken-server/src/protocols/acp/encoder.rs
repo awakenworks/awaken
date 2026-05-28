@@ -4,11 +4,11 @@
 
 use std::collections::HashMap;
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::suspension::ToolCallOutcome;
-use awaken_contract::contract::tool::ToolStatus;
-use awaken_contract::contract::transport::Transcoder;
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::lifecycle::TerminationReason;
+use awaken_server_contract::contract::suspension::ToolCallOutcome;
+use awaken_server_contract::contract::tool::ToolStatus;
+use awaken_server_contract::contract::transport::Transcoder;
 use serde_json::Value;
 
 use super::types::{
@@ -273,12 +273,12 @@ fn map_termination(reason: &TerminationReason) -> StopReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::event::AgentEvent;
-    use awaken_contract::contract::lifecycle::{StoppedReason, TerminationReason};
-    use awaken_contract::contract::suspension::{
+    use awaken_server_contract::contract::event::AgentEvent;
+    use awaken_server_contract::contract::lifecycle::{StoppedReason, TerminationReason};
+    use awaken_server_contract::contract::suspension::{
         PendingToolCall, SuspendTicket, Suspension, ToolCallOutcome, ToolCallResumeMode,
     };
-    use awaken_contract::contract::tool::ToolResult;
+    use awaken_server_contract::contract::tool::ToolResult;
     use serde_json::json;
 
     use super::super::types::ToolKind;

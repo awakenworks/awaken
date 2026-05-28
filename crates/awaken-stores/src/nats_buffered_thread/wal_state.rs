@@ -4,7 +4,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 
 use super::{hierarchy_claim, keys};
 

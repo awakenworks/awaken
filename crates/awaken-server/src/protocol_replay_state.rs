@@ -4,12 +4,14 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
-use awaken_contract::contract::event_store::EventLookup;
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::event_store::EventLookup;
+use awaken_server_contract::contract::outbox::{
     OUTBOX_LANE_CANONICAL, OUTBOX_LANE_PROTOCOL_REPLAY, OUTBOX_TARGET_A2A_WEBHOOK,
     OUTBOX_TARGET_PROTOCOL_FANOUT, OUTBOX_TARGET_PROTOCOL_PROJECTOR, OutboxStore,
 };
-use awaken_contract::contract::protocol_replay_log::{ProtocolReplayLog, ProtocolReplayLookup};
+use awaken_server_contract::contract::protocol_replay_log::{
+    ProtocolReplayLog, ProtocolReplayLookup,
+};
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -35,7 +37,8 @@ struct ProtocolReplayAttachment {
 struct ProtocolProjectorRelayAttachment {
     outbox: Arc<dyn OutboxStore>,
     event_lookup: Arc<dyn EventLookup>,
-    replay_writer: Arc<dyn awaken_contract::contract::protocol_replay_log::ProtocolReplayWriter>,
+    replay_writer:
+        Arc<dyn awaken_server_contract::contract::protocol_replay_log::ProtocolReplayWriter>,
     config: ProtocolProjectorRelayConfig,
 }
 
@@ -234,7 +237,9 @@ pub fn with_protocol_projector_relay(
     state: ServerState,
     outbox: Arc<dyn OutboxStore>,
     event_lookup: Arc<dyn EventLookup>,
-    replay_writer: Arc<dyn awaken_contract::contract::protocol_replay_log::ProtocolReplayWriter>,
+    replay_writer: Arc<
+        dyn awaken_server_contract::contract::protocol_replay_log::ProtocolReplayWriter,
+    >,
     config: ProtocolProjectorRelayConfig,
 ) -> Result<ServerState, OutboxRelayError> {
     config.relay.validate()?;

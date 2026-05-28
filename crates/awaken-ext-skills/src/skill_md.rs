@@ -1,4 +1,6 @@
-use awaken_contract::{AllowedTool, parse_skill_allowed_tool_token, parse_skill_allowed_tools};
+use awaken_runtime_contract::{
+    AllowedTool, parse_skill_allowed_tool_token, parse_skill_allowed_tools,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use unicode_normalization::UnicodeNormalization;

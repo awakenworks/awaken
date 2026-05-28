@@ -5,8 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::EventSink;
 
 /// How [`StreamingPassthroughSink`] handles child [`AgentEvent::Error`] events.
 ///
@@ -132,7 +132,7 @@ impl EventSink for StreamingPassthroughSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::event_sink::VecEventSink;
+    use awaken_runtime_contract::contract::event_sink::VecEventSink;
 
     #[tokio::test]
     async fn forwards_text_delta_as_tool_stream() {

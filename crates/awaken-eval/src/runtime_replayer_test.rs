@@ -1,8 +1,8 @@
 use super::*;
 use crate::expectation::Expectation;
 use crate::fixture::MockResponse;
-use awaken_contract::contract::inference::{StopReason, TokenUsage};
 use awaken_runtime::engine::ProviderScriptEvent;
+use awaken_runtime_contract::contract::inference::{StopReason, TokenUsage};
 
 fn text_fixture(id: &str, prompt: &str, response: &str) -> Fixture {
     Fixture {
@@ -195,16 +195,18 @@ async fn replay_surfaces_script_exhausted_when_runtime_overcalls() {
         error_type: "rate_limit".into(),
         message: "429".into(),
     }]);
-    let req = awaken_contract::contract::executor::InferenceRequest {
+    let req = awaken_runtime_contract::contract::executor::InferenceRequest {
         upstream_model: "scripted".into(),
         routing_key: None,
-        messages: vec![awaken_contract::contract::message::Message::user("p")],
+        messages: vec![awaken_runtime_contract::contract::message::Message::user(
+            "p",
+        )],
         tools: vec![],
         system: vec![],
         overrides: None,
         enable_prompt_cache: false,
     };
-    use awaken_contract::contract::executor::LlmExecutor;
+    use awaken_runtime_contract::contract::executor::LlmExecutor;
     let _ = executor.execute(req.clone()).await.unwrap_err();
     let _ = executor.execute(req.clone()).await.unwrap_err();
     let _ = executor.execute(req).await.unwrap_err();

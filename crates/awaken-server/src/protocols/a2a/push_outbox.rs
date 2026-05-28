@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use awaken_contract::contract::outbox::{
+use awaken_protocol_a2a::{PushNotificationConfig, StreamResponse};
+use awaken_server_contract::contract::outbox::{
     OUTBOX_LANE_PROTOCOL_REPLAY, OUTBOX_TARGET_A2A_WEBHOOK, OutboxError, OutboxMessage,
     OutboxMessageDraft, OutboxStore,
 };
-use awaken_protocol_a2a::{PushNotificationConfig, StreamResponse};
 use serde::{Deserialize, Serialize};
 
 use crate::outbox_relay::{OutboxRelayError, OutboxRelayHandler};
@@ -99,8 +99,8 @@ async fn post_push_notification(
 mod tests {
     use std::sync::Arc;
 
-    use awaken_contract::contract::outbox::{OutboxMessage, OutboxStatus};
     use awaken_protocol_a2a::{AuthenticationInfo, TaskState, TaskStatus, TaskStatusUpdateEvent};
+    use awaken_server_contract::contract::outbox::{OutboxMessage, OutboxStatus};
     use awaken_stores::InMemoryOutboxStore;
     use axum::Router;
     use axum::extract::State;

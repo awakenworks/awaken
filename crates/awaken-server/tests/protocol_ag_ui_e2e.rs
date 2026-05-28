@@ -4,18 +4,20 @@
 //! from HTTP request through agent runtime execution to SSE event stream output.
 
 use async_trait::async_trait;
-use awaken_contract::ModelSpec;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::message::ToolCall;
-use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
-};
-use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
+use awaken_server_contract::ModelSpec;
+use awaken_server_contract::contract::content::ContentBlock;
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::contract::message::ToolCall;
+use awaken_server_contract::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
+use awaken_server_contract::registry_spec::AgentSpec;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
@@ -1400,7 +1402,7 @@ async fn run_creates_thread_in_store() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Verify the store has thread data
-    use awaken_contract::contract::storage::ThreadStore;
+    use awaken_server_contract::contract::storage::ThreadStore;
     let messages = test
         .store
         .load_messages("persist-thread")

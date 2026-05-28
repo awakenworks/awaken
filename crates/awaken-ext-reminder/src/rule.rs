@@ -1,6 +1,6 @@
 //! Reminder rule definition.
 
-use awaken_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
 use awaken_tool_pattern::ToolCallPattern;
 
 use crate::output_matcher::OutputMatcher;

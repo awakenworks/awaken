@@ -4,9 +4,9 @@ use async_trait::async_trait;
 
 use crate::hooks::{PhaseContext, PhaseHook};
 use crate::state::StateCommand;
-use awaken_contract::StateError;
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::now_ms;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::lifecycle::TerminationReason;
+use awaken_runtime_contract::now_ms;
 
 use super::policy::{StopDecision, StopPolicy, StopPolicyStats};
 use super::state::{StopConditionStatsKey, StopConditionStatsState};

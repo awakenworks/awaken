@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_contract::StateError;
+use awaken_runtime_contract::StateError;
 use parking_lot::RwLock;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -883,4 +883,4 @@ impl Default for BackgroundTaskManager {
     }
 }
 
-use awaken_contract::now_ms;
+use awaken_runtime_contract::now_ms;

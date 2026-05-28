@@ -7,7 +7,7 @@ use async_nats::jetstream::kv::{CreateErrorKind, UpdateErrorKind};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 
 use super::keys;
 

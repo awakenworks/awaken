@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use awaken_contract::StateError;
-use awaken_contract::contract::profile_store::ProfileKey;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::profile::{ProfileAccess, ProfileKeyRegistry};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::profile_store::ProfileKey;
 use awaken_stores::InMemoryStore;
 
 // ── Test types ──────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ fn build_access_from_plugin(plugin: &dyn Plugin) -> ProfileAccess {
     plugin.register(&mut registrar).unwrap();
     let keys = registrar.profile_keys_for_test();
     let registry = ProfileKeyRegistry::new(keys.into_iter().map(|k| k.key));
-    let store: Arc<dyn awaken_contract::contract::profile_store::ProfileStore> =
+    let store: Arc<dyn awaken_runtime_contract::contract::profile_store::ProfileStore> =
         Arc::new(InMemoryStore::new());
     ProfileAccess::new(store, registry)
 }

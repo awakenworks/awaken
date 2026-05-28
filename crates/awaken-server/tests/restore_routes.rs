@@ -3,9 +3,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::app::{ConfigModuleState, ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
@@ -14,6 +11,11 @@ use awaken_server::services::audit_log::AuditLogger;
 use awaken_server::services::config_runtime::{
     ConfigRuntimeError, ConfigRuntimeManager, ProviderExecutorFactory,
 };
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_stores::InMemoryStore;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -332,10 +334,10 @@ async fn restore_deleted_resource_uses_before() {
 async fn restore_restart_event_returns_422() {
     let _app = build_test_app().await;
 
-    use awaken_contract::AuditAction;
-    use awaken_contract::AuditEvent;
-    use awaken_contract::contract::config_store::ConfigStore;
     use awaken_server::services::audit_log::AUDIT_NAMESPACE;
+    use awaken_server_contract::AuditAction;
+    use awaken_server_contract::AuditEvent;
+    use awaken_server_contract::contract::config_store::ConfigStore;
 
     let config_store = Arc::new(InMemoryStore::new());
     let thread_store = Arc::new(InMemoryStore::new());
@@ -638,10 +640,10 @@ async fn restore_audit_event_has_restored_from() {
 /// to produce a known-ULID SeedApply event without requiring audit-on-manager wiring.
 #[tokio::test]
 async fn restore_rejects_seed_apply_event() {
-    use awaken_contract::AuditAction;
-    use awaken_contract::AuditEvent;
-    use awaken_contract::contract::config_store::ConfigStore;
     use awaken_server::services::audit_log::AUDIT_NAMESPACE;
+    use awaken_server_contract::AuditAction;
+    use awaken_server_contract::AuditEvent;
+    use awaken_server_contract::contract::config_store::ConfigStore;
 
     let config_store = Arc::new(InMemoryStore::new());
     let thread_store = Arc::new(InMemoryStore::new());

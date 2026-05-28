@@ -4,9 +4,9 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::progress::{
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::contract::progress::{
     TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
 };
 
@@ -64,7 +64,7 @@ impl EventSink for ProgressForwardingSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::progress::ProgressStatus;
+    use awaken_runtime_contract::contract::progress::ProgressStatus;
     use serde_json::json;
     use std::sync::Mutex as StdMutex;
 

@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::tool::{ToolCallContext, ToolError};
 use awaken_runtime::AgentResolver;
 use awaken_runtime::backend::{BackendParentContext, BackendRunStatus};
 use awaken_runtime::child_agent::{ChildAgentParams, StreamingPassthroughSink, run_child_agent};
+use awaken_runtime_contract::contract::event_sink::{EventSink, NullEventSink};
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::contract::tool::{ToolCallContext, ToolError};
 
 /// Result of a streaming sub-agent run.
 #[derive(Debug)]
@@ -26,7 +26,7 @@ pub struct StreamingSubagentResult {
 /// real time.
 ///
 /// Text deltas from the sub-agent are forwarded as
-/// [`AgentEvent::ToolCallStreamDelta`](awaken_contract::contract::event::AgentEvent::ToolCallStreamDelta)
+/// [`AgentEvent::ToolCallStreamDelta`](awaken_runtime_contract::contract::event::AgentEvent::ToolCallStreamDelta)
 /// events on the parent sink so the caller can stream preliminary tool
 /// output. The full accumulated text is returned in
 /// [`StreamingSubagentResult::content`].
@@ -86,21 +86,21 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use awaken_contract::CancellationToken;
-    use awaken_contract::contract::event_sink::VecEventSink;
-    use awaken_contract::contract::executor::{
-        InferenceExecutionError, InferenceRequest, LlmExecutor,
-    };
-    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-    use awaken_contract::contract::inference::{StopReason, StreamResult};
-    use awaken_contract::contract::message::ToolCall;
-    use awaken_contract::contract::tool::{
-        Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput,
-    };
-    use awaken_contract::registry_spec::AgentSpec;
-    use awaken_contract::state::Snapshot;
     use awaken_runtime::engine::MockLlmExecutor;
     use awaken_runtime::{AgentResolver, ResolvedAgent, RuntimeError};
+    use awaken_runtime_contract::CancellationToken;
+    use awaken_runtime_contract::contract::event_sink::VecEventSink;
+    use awaken_runtime_contract::contract::executor::{
+        InferenceExecutionError, InferenceRequest, LlmExecutor,
+    };
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_runtime_contract::contract::inference::{StopReason, StreamResult};
+    use awaken_runtime_contract::contract::message::ToolCall;
+    use awaken_runtime_contract::contract::tool::{
+        Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput,
+    };
+    use awaken_runtime_contract::registry_spec::AgentSpec;
+    use awaken_runtime_contract::state::Snapshot;
 
     struct SingleAgentResolver {
         agent: ResolvedAgent,
@@ -135,7 +135,10 @@ mod tests {
                 RunOrigin::User,
             ),
             agent_spec: Arc::new(AgentSpec::default()),
-            snapshot: Snapshot::new(0, Arc::new(awaken_contract::state::StateMap::default())),
+            snapshot: Snapshot::new(
+                0,
+                Arc::new(awaken_runtime_contract::state::StateMap::default()),
+            ),
             activity_sink: sink,
             cancellation_token: None,
             resume_input: None,
@@ -199,16 +202,16 @@ mod tests {
     struct AlwaysFailingLlm;
 
     #[async_trait::async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for AlwaysFailingLlm {
+    impl awaken_runtime_contract::contract::executor::LlmExecutor for AlwaysFailingLlm {
         async fn execute(
             &self,
-            _request: awaken_contract::contract::executor::InferenceRequest,
+            _request: awaken_runtime_contract::contract::executor::InferenceRequest,
         ) -> Result<
-            awaken_contract::contract::inference::StreamResult,
-            awaken_contract::contract::executor::InferenceExecutionError,
+            awaken_runtime_contract::contract::inference::StreamResult,
+            awaken_runtime_contract::contract::executor::InferenceExecutionError,
         > {
             Err(
-                awaken_contract::contract::executor::InferenceExecutionError::Provider(
+                awaken_runtime_contract::contract::executor::InferenceExecutionError::Provider(
                     "boom".into(),
                 ),
             )
@@ -268,7 +271,7 @@ mod tests {
             .filter(|e| {
                 matches!(
                     e,
-                    awaken_contract::contract::event::AgentEvent::ToolCallStreamDelta { .. }
+                    awaken_runtime_contract::contract::event::AgentEvent::ToolCallStreamDelta { .. }
                 )
             })
             .collect();

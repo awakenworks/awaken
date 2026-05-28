@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_contract::contract::storage::PinnedRegistryEntry;
-use awaken_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
+use awaken_runtime_contract::contract::storage::PinnedRegistryEntry;
+use awaken_runtime_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 use thiserror::Error;
 
 use super::memory::MapAgentSpecRegistry;

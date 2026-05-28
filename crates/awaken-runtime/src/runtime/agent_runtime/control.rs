@@ -1,7 +1,7 @@
 //! Control methods: cancel, send_decisions — with dual-index lookup (run_id + thread_id).
 
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::suspension::ToolCallResume;
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::contract::suspension::ToolCallResume;
 
 use super::AgentRuntime;
 use super::active_registry::HandleLookup;
@@ -130,7 +130,7 @@ impl AgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+    use awaken_runtime_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
     use serde_json::json;
     use std::sync::Arc;
 

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_runtime_contract::registry_spec::AgentSpec;
 use serde::Serialize;
 
 use super::traits::RegistrySet;
@@ -338,7 +338,7 @@ mod tests {
         MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
         MapToolRegistry,
     };
-    use awaken_contract::registry_spec::{ModelPoolSpec, ModelSpec};
+    use awaken_runtime_contract::registry_spec::{ModelPoolSpec, ModelSpec};
     use std::sync::Arc;
 
     fn empty_registry_set() -> RegistrySet {

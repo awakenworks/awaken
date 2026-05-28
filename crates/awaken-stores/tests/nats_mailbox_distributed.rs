@@ -6,7 +6,7 @@ mod nats_fixture;
 use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_contract::contract::mailbox::{MailboxStore, RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::mailbox::{MailboxStore, RunDispatch, RunDispatchStatus};
 use awaken_stores::{NatsMailboxConfig, NatsMailboxStore};
 use nats_fixture::NatsFixture;
 

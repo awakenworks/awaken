@@ -1,0 +1,36 @@
+[package]
+name = "awaken-runtime-contract"
+version.workspace = true
+readme = "../../README.md"
+edition.workspace = true
+description = "Runtime-facing contract types, traits, and state model for Awaken"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["artificial-intelligence"]
+
+[dependencies]
+awaken-tool-pattern = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"
+sha2 = "0.10"
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+typedmap = { workspace = true }
+uuid = { workspace = true }
+schemars = { workspace = true }
+jsonschema = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+secrecy = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

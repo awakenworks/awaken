@@ -1,6 +1,6 @@
 #![cfg(feature = "postgres")]
 
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::outbox::{
     OutboxMessageDraft, OutboxNackOutcome, OutboxStatus, OutboxStore,
 };
 use awaken_stores::PostgresStore;
@@ -306,6 +306,6 @@ async fn postgres_outbox_dedupe_retry_and_conflict() {
     let err = store.enqueue_outbox(changed).await.unwrap_err();
     assert!(matches!(
         err,
-        awaken_contract::contract::outbox::OutboxError::Conflict(_)
+        awaken_server_contract::contract::outbox::OutboxError::Conflict(_)
     ));
 }

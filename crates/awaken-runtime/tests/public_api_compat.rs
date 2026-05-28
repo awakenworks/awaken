@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::event_sink::NullEventSink;
-use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::RunRequestOrigin;
-use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
 use awaken_runtime::RunActivation;
 use awaken_runtime::RuntimeError;
 use awaken_runtime::backend::{BackendControl, BackendRootRunRequest};
 use awaken_runtime::loop_runner::CommitWiring;
 use awaken_runtime::registry::{AgentResolver, ResolvedAgent};
 use awaken_runtime::resolution::ExecutionPlan;
+use awaken_runtime_contract::contract::event_sink::NullEventSink;
+use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::contract::storage::RunRequestOrigin;
+use awaken_runtime_contract::contract::tool_intercept::{AdapterKind, RunMode};
 
 struct CompatResolver;
 

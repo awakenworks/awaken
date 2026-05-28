@@ -1,5 +1,5 @@
 use crate::state::StateKey;
-use awaken_contract::contract::lifecycle::RunStatus;
+use awaken_runtime_contract::contract::lifecycle::RunStatus;
 use serde::{Deserialize, Serialize};
 
 /// Run lifecycle state stored in the state engine.

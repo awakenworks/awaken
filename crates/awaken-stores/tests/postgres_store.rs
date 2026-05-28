@@ -9,17 +9,17 @@
 
 #![cfg(feature = "postgres")]
 
-use awaken_contract::contract::config_store::{
+use awaken_server_contract::contract::config_store::{
     ConfigChangeKind, ConfigChangeNotifier, ConfigStore,
 };
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::RunRecord;
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::RunRecord;
+use awaken_server_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessageSeqRange, RunMessageInput, RunMessageOutput, RunQuery,
     RunRequestSnapshot, RunStore, StorageError, ThreadParentFilter, ThreadQuery, ThreadRunStore,
     ThreadStore,
 };
-use awaken_contract::thread::Thread;
+use awaken_server_contract::thread::Thread;
 use awaken_stores::PostgresStore;
 use serde_json::json;
 use tokio::time::{Duration, timeout};
@@ -211,7 +211,7 @@ async fn checkpoint_rejects_missing_parent_thread() {
             parent_thread_id: Some("missing-parent".to_string()),
             ..Default::default()
         }),
-        status: awaken_contract::contract::lifecycle::RunStatus::Created,
+        status: awaken_server_contract::contract::lifecycle::RunStatus::Created,
         ..make_run("pg-missing-parent-run", "pg-child-thread", 1)
     };
 

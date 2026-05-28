@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 
-use awaken_contract::StateError;
 use awaken_runtime::agent::state::ExcludeTool;
 use awaken_runtime::state::StateCommand;
 use awaken_runtime::{PhaseContext, PhaseHook};
+use awaken_runtime_contract::StateError;
 
 use crate::state::{PermissionOverridesKey, PermissionPolicyKey, permission_rules_from_state};
 

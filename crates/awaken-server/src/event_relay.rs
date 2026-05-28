@@ -6,8 +6,8 @@
 
 use serde::Serialize;
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::transport::Transcoder;
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::transport::Transcoder;
 
 /// Shared relay logic: prologue -> transcode each event -> epilogue.
 ///
@@ -71,7 +71,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::transport::Identity;
+    use awaken_server_contract::contract::transport::Identity;
     use futures::StreamExt;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -170,7 +170,7 @@ mod tests {
 
     #[tokio::test]
     async fn relay_events_stops_on_terminal_event_without_sender_drop() {
-        use awaken_contract::contract::lifecycle::TerminationReason;
+        use awaken_server_contract::contract::lifecycle::TerminationReason;
 
         let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
         let encoder = Identity::<AgentEvent>::default();

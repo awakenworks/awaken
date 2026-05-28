@@ -3,9 +3,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use awaken_contract::contract::inference::{ContextCompactionMode, ContextWindowPolicy};
-use awaken_contract::contract::message::{Message, Role, Visibility};
-use awaken_contract::contract::transform::estimate_message_tokens;
+use awaken_runtime_contract::contract::inference::{ContextCompactionMode, ContextWindowPolicy};
+use awaken_runtime_contract::contract::message::{Message, Role, Visibility};
+use awaken_runtime_contract::contract::transform::estimate_message_tokens;
 
 use super::plugin::{
     CompactionAction, CompactionBoundary, CompactionFailure, CompactionInFlight, CompactionSkipped,

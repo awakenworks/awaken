@@ -1,10 +1,10 @@
 #![cfg(feature = "postgres")]
 
-use awaken_contract::contract::event_store::{CanonicalEventId, EventCursor, EventScope};
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::event_store::{CanonicalEventId, EventCursor, EventScope};
+use awaken_server_contract::contract::outbox::{
     OUTBOX_LANE_PROTOCOL_REPLAY, OUTBOX_TARGET_PROTOCOL_FANOUT, OutboxStatus, OutboxStore,
 };
-use awaken_contract::contract::protocol_replay_log::{
+use awaken_server_contract::contract::protocol_replay_log::{
     ProtocolReplayCursor, ProtocolReplayDraft, ProtocolReplayError, ProtocolReplayId,
     ProtocolReplayLookup, ProtocolReplayReader, ProtocolReplayRedactionState, ProtocolReplayWriter,
     ProtocolStreamKey, SourceEventCursor,

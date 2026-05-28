@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use awaken_contract::Phase;
+/// use awaken_runtime_contract::Phase;
 ///
 /// assert!(Phase::RunStart.is_run_level());
 /// assert!(!Phase::RunStart.is_step_level());

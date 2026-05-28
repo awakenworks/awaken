@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use awaken_contract::RedactedString;
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::contract::event_store::EventStore;
-use awaken_contract::contract::outbox::OutboxStore;
-use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_runtime::credentials::CredentialBroker;
 use awaken_runtime::{AgentResolver, AgentRuntime};
+use awaken_server_contract::RedactedString;
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::contract::event_store::EventStore;
+use awaken_server_contract::contract::outbox::OutboxStore;
+use awaken_server_contract::contract::storage::ThreadRunStore;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 

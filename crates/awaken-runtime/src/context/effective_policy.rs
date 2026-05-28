@@ -4,8 +4,8 @@
 //! model's published `context_window` / `max_output_tokens` so the
 //! runtime never issues a request the provider rejects.
 
-use awaken_contract::contract::inference::ContextWindowPolicy;
-use awaken_contract::registry_spec::ModelSpec;
+use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
+use awaken_runtime_contract::registry_spec::ModelSpec;
 
 /// Return a [`ContextWindowPolicy`] clamped against the model's published
 /// capabilities.

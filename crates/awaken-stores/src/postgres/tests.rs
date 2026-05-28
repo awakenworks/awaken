@@ -1,12 +1,12 @@
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::contract::storage::{
     PinnedRegistryEntry, PinnedRegistryManifest, RunRecord, RunStore, StorageError, ThreadRunStore,
     ThreadStore,
 };
-use awaken_contract::contract::versioned_registry::{
+use awaken_server_contract::contract::versioned_registry::{
     PublishOutcome, RegistryResourcePublish, VersionRef, VersionedRegistryStore,
 };
-use awaken_contract::thread::Thread;
+use awaken_server_contract::thread::Thread;
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -15,7 +15,7 @@ use super::run::parse_run_status;
 
 #[test]
 fn parse_run_status_known_values() {
-    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
     assert!(matches!(parse_run_status("created"), RunStatus::Created));
     assert!(matches!(parse_run_status("running"), RunStatus::Running));
     assert!(matches!(parse_run_status("waiting"), RunStatus::Waiting));
@@ -24,7 +24,7 @@ fn parse_run_status_known_values() {
 
 #[test]
 fn parse_run_status_unknown_defaults_to_running() {
-    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
     assert!(matches!(parse_run_status("unknown"), RunStatus::Running));
     assert!(matches!(parse_run_status(""), RunStatus::Running));
 }
@@ -119,7 +119,7 @@ async fn thread_crud_operations() {
 #[tokio::test]
 #[ignore]
 async fn run_create_duplicate_returns_already_exists() {
-    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
 
     let pool = PgPool::connect("postgres://localhost/awaken_test")
         .await
@@ -163,8 +163,8 @@ async fn run_create_duplicate_returns_already_exists() {
 #[tokio::test]
 #[ignore]
 async fn checkpoint_atomicity() {
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::message::Message;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::message::Message;
 
     let pool = PgPool::connect("postgres://localhost/awaken_test")
         .await
@@ -340,7 +340,9 @@ async fn versioned_registry_publish_roundtrip() {
         .unwrap_err();
     assert!(matches!(
         duplicate,
-        awaken_contract::contract::versioned_registry::VersionedRegistryError::AlreadyExists(_)
+        awaken_server_contract::contract::versioned_registry::VersionedRegistryError::AlreadyExists(
+            _
+        )
     ));
     assert_eq!(
         store

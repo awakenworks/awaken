@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::message::{Message, Visibility};
+use awaken_runtime_contract::contract::message::{Message, Visibility};
 use futures::channel::mpsc;
 
 /// Callback invoked when [`InboxSender::send`] detects the receiver is gone.
@@ -320,7 +320,10 @@ mod tests {
             "task_id": "bg_1",
             "result": {"ok": true}
         }));
-        assert_eq!(msg.role, awaken_contract::contract::message::Role::User);
+        assert_eq!(
+            msg.role,
+            awaken_runtime_contract::contract::message::Role::User
+        );
         assert_eq!(msg.visibility, Visibility::Internal);
         assert!(msg.text().contains("background-task-event"));
         assert!(msg.text().contains("bg_1"));
@@ -333,7 +336,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(
             messages[0].role,
-            awaken_contract::contract::message::Role::User
+            awaken_runtime_contract::contract::message::Role::User
         );
         assert_eq!(messages[0].visibility, Visibility::All);
         assert_eq!(messages[0].text(), "live steering");

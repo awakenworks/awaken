@@ -2,9 +2,11 @@ use super::*;
 use crate::registry::resolver::ResolvedAgent;
 use crate::state::StateStore;
 use async_trait::async_trait;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::inference::StreamResult;
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::inference::StreamResult;
 
 struct DummyExecutor;
 

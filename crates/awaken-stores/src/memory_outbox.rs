@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::outbox::{
     OutboxEnqueueResult, OutboxError, OutboxMessage, OutboxMessageDraft, OutboxNackOutcome,
     OutboxStatus, OutboxStore,
 };

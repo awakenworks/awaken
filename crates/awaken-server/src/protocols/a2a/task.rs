@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
-use awaken_contract::contract::storage::{RunQuery, RunRecord, WaitingReason};
 use awaken_protocol_a2a::{ListTasksResponse, MessageRole, Task, TaskState, TaskStatus};
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::storage::{RunQuery, RunRecord, WaitingReason};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;

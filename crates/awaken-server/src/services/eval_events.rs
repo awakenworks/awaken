@@ -1,8 +1,8 @@
-use awaken_contract::contract::event_store::{
+use awaken_eval::EvalRun;
+use awaken_server_contract::contract::event_store::{
     AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventScope, EventStoreError,
     EventVisibility, EventWriter,
 };
-use awaken_eval::EvalRun;
 use serde_json::{Value, json};
 
 use crate::app::EvalRoutesState;
@@ -122,8 +122,8 @@ fn completed_payload(run: &EvalRun, mode: &'static str, persisted: bool) -> Valu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::event_store::{EventReader, EventScope};
     use awaken_eval::{EvalRunExecutionMode, EvalRunItem, MatrixCell, ReplayReport};
+    use awaken_server_contract::contract::event_store::{EventReader, EventScope};
     use awaken_stores::InMemoryEventStore;
 
     fn report(passed: bool, cost_usd: Option<f64>) -> ReplayReport {

@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_contract::{AgentSpec, ModelPoolSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapProviderRegistry,
 };
 use awaken_runtime::registry::{
     AgentSpecRegistry, ModelCapabilityPatch, RegistrySet, ToolRegistry,
 };
+use awaken_server_contract::{AgentSpec, ModelPoolSpec, ModelSpec, ProviderSpec};
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -19,7 +19,7 @@ pub(super) struct RegistryCompileInput<'a> {
     pub models: &'a [ModelSpec],
     pub pools: &'a [ModelPoolSpec],
     pub agents: &'a [AgentSpec],
-    pub tool_specs: &'a [awaken_contract::ToolSpec],
+    pub tool_specs: &'a [awaken_server_contract::ToolSpec],
     pub dynamic_tools: Option<Arc<dyn ToolRegistry>>,
     pub provider_capabilities: &'a HashMap<String, HashMap<String, ModelCapabilityPatch>>,
 }
@@ -158,7 +158,7 @@ fn provider_credential_signature(provider: &ProviderSpec) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use awaken_contract::ProviderSpec;
+    use awaken_server_contract::ProviderSpec;
 
     use super::provider_definition_signature;
 

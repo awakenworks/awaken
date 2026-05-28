@@ -59,12 +59,12 @@ async fn nats_load_thread_reflects_checkpoint() {
     let run = thread_store_conformance::make_run(
         "r1",
         thread_id,
-        awaken_contract::contract::lifecycle::RunStatus::Done,
+        awaken_server_contract::contract::lifecycle::RunStatus::Done,
     );
-    use awaken_contract::contract::storage::ThreadRunStore;
+    use awaken_server_contract::contract::storage::ThreadRunStore;
     store.checkpoint(thread_id, &[], &run).await.unwrap();
     store.force_flush(thread_id).await.unwrap();
-    use awaken_contract::contract::storage::ThreadStore;
+    use awaken_server_contract::contract::storage::ThreadStore;
     let thread = store.load_thread(thread_id).await.unwrap();
     assert!(thread.is_some());
     assert_eq!(thread.unwrap().id, thread_id);

@@ -1,7 +1,7 @@
 //! Claim operations: claim (by thread), claim_dispatch (by id).
 
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::storage::StorageError;
 
 use super::{
     NatsMailboxStore, claim_guard, codec, keys, kv_helpers, metrics, ops_query, ops_write,

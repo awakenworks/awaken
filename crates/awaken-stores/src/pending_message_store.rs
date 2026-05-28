@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use awaken_contract::contract::message::{
+use awaken_server_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
 };
-use awaken_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
+use awaken_server_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
 
 /// Store-local extension for delivered-but-unconsumed thread messages.
 #[async_trait]

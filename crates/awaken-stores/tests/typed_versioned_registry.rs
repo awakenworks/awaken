@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use awaken_contract::{
+use awaken_server_contract::{
     PublishOutcome, TypedVersionedRegistry, VersionedRegistryError, VersionedRegistryStore,
 };
 use awaken_stores::InMemoryVersionedRegistryStore;

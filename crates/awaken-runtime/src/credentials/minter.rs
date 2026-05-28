@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use awaken_contract::secret::RedactedString;
+use awaken_runtime_contract::secret::RedactedString;
 
 use super::error::CredentialError;
 use super::token::Token;

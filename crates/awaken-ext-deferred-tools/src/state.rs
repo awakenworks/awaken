@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use awaken_contract::contract::profile_store::ProfileKey;
-use awaken_contract::model::{Phase, ScheduledActionSpec};
 use awaken_runtime::state::{MergeStrategy, StateKey};
+use awaken_runtime_contract::contract::profile_store::ProfileKey;
+use awaken_runtime_contract::model::{Phase, ScheduledActionSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -22,8 +22,8 @@ pub struct StoredToolDescriptor {
     pub category: Option<String>,
 }
 
-impl From<awaken_contract::contract::tool::ToolDescriptor> for StoredToolDescriptor {
-    fn from(desc: awaken_contract::contract::tool::ToolDescriptor) -> Self {
+impl From<awaken_runtime_contract::contract::tool::ToolDescriptor> for StoredToolDescriptor {
+    fn from(desc: awaken_runtime_contract::contract::tool::ToolDescriptor) -> Self {
         Self {
             id: desc.id,
             name: desc.name,

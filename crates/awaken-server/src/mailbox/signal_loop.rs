@@ -9,9 +9,11 @@ use parking_lot::Mutex as SyncMutex;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
 
-use awaken_contract::contract::mailbox::{DispatchSignalEntry, RunDispatch, RunDispatchStatus};
-use awaken_contract::contract::storage::StorageError;
-use awaken_contract::now_ms;
+use awaken_server_contract::contract::mailbox::{
+    DispatchSignalEntry, RunDispatch, RunDispatchStatus,
+};
+use awaken_server_contract::contract::storage::StorageError;
+use awaken_server_contract::now_ms;
 
 use crate::transport::channel_sink::ReconnectableEventSink;
 
@@ -201,7 +203,7 @@ impl Mailbox {
 
     async fn dispatch_signal_still_available(
         &self,
-        entry: &awaken_contract::contract::mailbox::DispatchSignalEntry,
+        entry: &awaken_server_contract::contract::mailbox::DispatchSignalEntry,
     ) -> Result<bool, StorageError> {
         let now = now_ms();
         let Some(dispatch) = self.store.load_dispatch(&entry.dispatch_id).await? else {

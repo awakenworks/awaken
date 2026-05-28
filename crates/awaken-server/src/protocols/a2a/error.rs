@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use awaken_contract::contract::storage::StorageError;
 use awaken_protocol_a2a::TaskState;
+use awaken_server_contract::contract::storage::StorageError;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

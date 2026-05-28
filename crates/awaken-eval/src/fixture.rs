@@ -11,8 +11,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use awaken_contract::contract::inference::TokenUsage;
 use awaken_runtime::engine::ProviderScriptEvent;
+use awaken_runtime_contract::contract::inference::TokenUsage;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -186,7 +186,8 @@ impl Fixture {
                         total_tokens: Some(total_tokens),
                         ..Default::default()
                     },
-                    finish_reason: awaken_contract::contract::inference::StopReason::EndTurn,
+                    finish_reason:
+                        awaken_runtime_contract::contract::inference::StopReason::EndTurn,
                 }]
             }
             MockResponse::Error {

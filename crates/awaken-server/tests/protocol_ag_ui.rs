@@ -3,16 +3,16 @@
 //! Validates event mapping, lifecycle management, state pass-through,
 //! message ID propagation, and terminal guard behavior.
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::inference::TokenUsage;
-use awaken_contract::contract::lifecycle::{StoppedReason, TerminationReason};
-use awaken_contract::contract::suspension::{
-    PendingToolCall, SuspendTicket, Suspension, ToolCallOutcome, ToolCallResumeMode,
-};
-use awaken_contract::contract::tool::ToolResult;
-use awaken_contract::contract::transport::Transcoder;
 use awaken_server::protocols::ag_ui::encoder::AgUiEncoder;
 use awaken_server::protocols::ag_ui::types::{Event, Role};
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::inference::TokenUsage;
+use awaken_server_contract::contract::lifecycle::{StoppedReason, TerminationReason};
+use awaken_server_contract::contract::suspension::{
+    PendingToolCall, SuspendTicket, Suspension, ToolCallOutcome, ToolCallResumeMode,
+};
+use awaken_server_contract::contract::tool::ToolResult;
+use awaken_server_contract::contract::transport::Transcoder;
 use serde_json::json;
 
 // ============================================================================

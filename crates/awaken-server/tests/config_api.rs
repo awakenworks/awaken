@@ -4,21 +4,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use awaken_contract::contract::config_store::{
-    ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
-};
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-#[cfg(feature = "permission")]
-use awaken_contract::contract::inference::ReasoningEffort;
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::storage::StorageError;
-use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
-};
-use awaken_contract::{
-    AgentSpec, BuiltinSeedSet, BuiltinSpec, McpServerSpec, ModelSpec, PreparedSkillSpecs,
-    ProviderSpec, SkillSpec, SkillSpecSink,
-};
 #[cfg(feature = "permission")]
 use awaken_ext_permission::{PermissionConfigKey, PermissionPlugin, ToolPermissionBehavior};
 use awaken_runtime::AgentRuntime;
@@ -38,6 +23,23 @@ use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::{
     ConfigRuntimeError, ConfigRuntimeManager, ManagedMcpRegistry, McpRegistryFactory,
     ProviderExecutorFactory,
+};
+use awaken_server_contract::contract::config_store::{
+    ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
+};
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+#[cfg(feature = "permission")]
+use awaken_server_contract::contract::inference::ReasoningEffort;
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
+use awaken_server_contract::{
+    AgentSpec, BuiltinSeedSet, BuiltinSpec, McpServerSpec, ModelSpec, PreparedSkillSpecs,
+    ProviderSpec, SkillSpec, SkillSpecSink,
 };
 use awaken_stores::InMemoryStore;
 use axum::body::{Body, to_bytes};
@@ -932,7 +934,7 @@ async fn provider_secret_is_redacted_and_preserved_on_update() {
         .await
         .expect("read raw provider")
         .expect("provider should exist");
-    let stored = awaken_contract::ConfigRecord::<serde_json::Value>::from_value(stored)
+    let stored = awaken_server_contract::ConfigRecord::<serde_json::Value>::from_value(stored)
         .expect("decode envelope")
         .spec;
     assert_eq!(stored["api_key"], "top-secret");
@@ -1427,7 +1429,7 @@ async fn mcp_servers_are_redacted_and_publish_live_tools() {
         .await
         .expect("read raw mcp config")
         .expect("mcp config should exist");
-    let stored = awaken_contract::ConfigRecord::<serde_json::Value>::from_value(stored)
+    let stored = awaken_server_contract::ConfigRecord::<serde_json::Value>::from_value(stored)
         .expect("decode envelope")
         .spec;
     assert_eq!(stored["env"]["TOKEN"], "secret-token");
@@ -2791,24 +2793,24 @@ async fn mcp_status_routes_absent_without_config_module() {
     // endpoints are absent instead of carrying handler-local fallbacks.
     let store = Arc::new(InMemoryStore::new());
     let thread_store = store.clone();
-    use awaken_contract::{AgentSpec, ModelSpec};
     use awaken_runtime::builder::AgentRuntimeBuilder;
+    use awaken_server_contract::{AgentSpec, ModelSpec};
 
     struct StubExecutor;
     #[async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for StubExecutor {
+    impl awaken_server_contract::contract::executor::LlmExecutor for StubExecutor {
         async fn execute(
             &self,
-            _request: awaken_contract::contract::executor::InferenceRequest,
+            _request: awaken_server_contract::contract::executor::InferenceRequest,
         ) -> Result<
-            awaken_contract::contract::inference::StreamResult,
-            awaken_contract::contract::executor::InferenceExecutionError,
+            awaken_server_contract::contract::inference::StreamResult,
+            awaken_server_contract::contract::executor::InferenceExecutionError,
         > {
-            Ok(awaken_contract::contract::inference::StreamResult {
+            Ok(awaken_server_contract::contract::inference::StreamResult {
                 content: vec![],
                 tool_calls: vec![],
-                usage: Some(awaken_contract::contract::inference::TokenUsage::default()),
-                stop_reason: Some(awaken_contract::contract::inference::StopReason::EndTurn),
+                usage: Some(awaken_server_contract::contract::inference::TokenUsage::default()),
+                stop_reason: Some(awaken_server_contract::contract::inference::StopReason::EndTurn),
                 has_incomplete_tool_calls: false,
             })
         }
@@ -2844,7 +2846,7 @@ async fn mcp_status_routes_absent_without_config_module() {
     let mut state = awaken_server::app::ServerState::new(
         runtime.clone(),
         mailbox,
-        thread_store as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
+        thread_store as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>,
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
@@ -3112,7 +3114,7 @@ async fn patch_overrides_on_builtin_returns_effective_spec() {
     assert_eq!(body["system_prompt"], "patched");
 
     // Verify the store has user_overrides set.
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
     let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
         .await
         .expect("store read")
@@ -3162,7 +3164,7 @@ async fn patch_overrides_null_clears_field() {
     assert_ne!(body["max_rounds"], 99);
 
     // Store should only have system_prompt in user_overrides.
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
     let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
         .await
         .expect("store read")
@@ -3190,7 +3192,7 @@ async fn patch_overrides_null_clears_field() {
 async fn patch_overrides_null_clears_nullable_base_field() {
     let app = make_app().await;
 
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
 
     let mut raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
         .await
@@ -3227,7 +3229,7 @@ async fn patch_overrides_null_clears_nullable_base_field() {
 async fn patch_overrides_sections_null_value_deletes_base_section_key() {
     let app = make_app().await;
 
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
 
     let mut raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
         .await
@@ -3302,7 +3304,7 @@ async fn patch_overrides_sections_null_value_clears_override_only_section_key() 
         );
     }
 
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
     let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
         .await
         .expect("store read")
@@ -3317,7 +3319,7 @@ async fn patch_overrides_sections_null_value_clears_override_only_section_key() 
 async fn patch_overrides_sections_merges_with_existing_section_overrides() {
     let app = make_app().await;
 
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
 
     let mut raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
         .await
@@ -3378,7 +3380,7 @@ async fn patch_overrides_sections_merges_with_existing_section_overrides() {
 async fn patch_overrides_sections_delete_preserves_existing_sibling_overrides() {
     let app = make_app().await;
 
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
 
     let mut raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
         .await
@@ -3472,7 +3474,7 @@ async fn patch_overrides_clear_directive_removes_overrides() {
     // Effective spec reflects the upsert.
     assert_eq!(body["system_prompt"], "still-kept");
     // Effective spec drops the cleared override.
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
     let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
         .await
         .expect("store read")
@@ -3513,7 +3515,7 @@ async fn patch_overrides_clear_directive_accepts_endpoint() {
         "effective endpoint must fall back to the base value"
     );
 
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
     let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
         .await
         .expect("store read")
@@ -3627,7 +3629,7 @@ async fn delete_all_overrides_resets_to_builtin() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
 
     // Store record should have user_overrides = None.
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
     let raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
         .await
         .expect("store read")
@@ -3783,7 +3785,7 @@ async fn audit_event_emitted_for_patch_and_delete() {
     // Query audit log — expect at least 3 Update events for agents/bootstrap.
     let page = audit_logger
         .query(AuditQuery {
-            action: Some(awaken_contract::AuditAction::Update),
+            action: Some(awaken_server_contract::AuditAction::Update),
             ..Default::default()
         })
         .await

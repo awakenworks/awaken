@@ -9,11 +9,11 @@ use genai::chat::ReasoningEffort as GenaiReasoningEffort;
 use genai::chat::{ChatOptions, ChatStreamEvent};
 use reqwest::StatusCode;
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::executor::{
     InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor, LlmStreamEvent,
 };
-use awaken_contract::contract::inference::{
+use awaken_runtime_contract::contract::inference::{
     ReasoningEffort as ContractReasoningEffort, StopReason, StreamResult,
 };
 
@@ -465,9 +465,9 @@ impl LlmExecutor for GenaiExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::executor::InferenceRequest;
-    use awaken_contract::contract::inference::InferenceOverride;
-    use awaken_contract::contract::message::Message;
+    use awaken_runtime_contract::contract::executor::InferenceRequest;
+    use awaken_runtime_contract::contract::inference::InferenceOverride;
+    use awaken_runtime_contract::contract::message::Message;
 
     /// Helper to build a minimal `InferenceRequest` with the given overrides.
     fn make_request(overrides: Option<InferenceOverride>) -> InferenceRequest {

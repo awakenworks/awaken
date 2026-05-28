@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use awaken_contract::{
+use awaken_runtime_contract::{
     BuiltinSpec, PreparedSkillSpecs, SkillArgumentSpec, SkillSpec, SkillSpecContext, SkillSpecSink,
 };
 use serde_json::Value;
@@ -277,7 +277,7 @@ fn build_skill_map(
 fn validate_spec(spec: &SkillSpec) -> Result<(), SkillError> {
     let value =
         serde_json::to_value(spec).map_err(|e| SkillError::InvalidArguments(e.to_string()))?;
-    awaken_contract::validate_skill_spec(value)
+    awaken_runtime_contract::validate_skill_spec(value)
         .map(|_| ())
         .map_err(|e| SkillError::InvalidArguments(e.to_string()))
 }

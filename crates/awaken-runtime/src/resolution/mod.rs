@@ -1,7 +1,7 @@
 //! Run resolution boundary and typed backend capability profile.
 
 use async_trait::async_trait;
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_runtime_contract::registry_spec::AgentSpec;
 use thiserror::Error;
 
 use crate::RuntimeError;
@@ -65,18 +65,18 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use awaken_contract::contract::identity::RunIdentity;
-    use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::run::RunResolutionScope;
-    use awaken_contract::contract::versioned_registry::PinnedRegistryManifest;
+    use awaken_runtime_contract::contract::identity::RunIdentity;
+    use awaken_runtime_contract::contract::message::Message;
+    use awaken_runtime_contract::contract::run::RunResolutionScope;
+    use awaken_runtime_contract::contract::versioned_registry::PinnedRegistryManifest;
 
     use crate::registry::{AgentResolver, ResolvedAgent};
     use crate::run::RunActivation;
 
-    fn resume_decision() -> awaken_contract::contract::suspension::ToolCallResume {
-        awaken_contract::contract::suspension::ToolCallResume {
+    fn resume_decision() -> awaken_runtime_contract::contract::suspension::ToolCallResume {
+        awaken_runtime_contract::contract::suspension::ToolCallResume {
             decision_id: "d1".into(),
-            action: awaken_contract::contract::suspension::ResumeDecisionAction::Resume,
+            action: awaken_runtime_contract::contract::suspension::ResumeDecisionAction::Resume,
             result: serde_json::Value::Null,
             reason: None,
             updated_at: 0,
@@ -181,15 +181,15 @@ mod tests {
     struct MockResolver;
 
     #[async_trait::async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for MockResolver {
+    impl awaken_runtime_contract::contract::executor::LlmExecutor for MockResolver {
         async fn execute(
             &self,
-            _request: awaken_contract::contract::executor::InferenceRequest,
+            _request: awaken_runtime_contract::contract::executor::InferenceRequest,
         ) -> Result<
-            awaken_contract::contract::inference::StreamResult,
-            awaken_contract::contract::executor::InferenceExecutionError,
+            awaken_runtime_contract::contract::inference::StreamResult,
+            awaken_runtime_contract::contract::executor::InferenceExecutionError,
         > {
-            Ok(awaken_contract::contract::inference::StreamResult {
+            Ok(awaken_runtime_contract::contract::inference::StreamResult {
                 content: vec![],
                 tool_calls: vec![],
                 usage: None,

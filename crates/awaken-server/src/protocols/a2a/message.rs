@@ -1,6 +1,6 @@
-use awaken_contract::contract::message::Message as AwakenMessage;
 use awaken_protocol_a2a::{MessageRole, SendMessageRequest, SendMessageResponse, StreamResponse};
 use awaken_runtime::RunActivation;
+use awaken_server_contract::contract::message::Message as AwakenMessage;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Uri};
@@ -388,8 +388,8 @@ async fn prepare_send_request(
     let message_id = payload.message.message_id.clone();
     let awaken_message = AwakenMessage::user_with_content(content).with_id(message_id.clone());
     let mut request = RunActivation::new(thread_id.clone(), vec![awaken_message])
-        .with_origin(awaken_contract::contract::storage::RunRequestOrigin::A2A)
-        .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::A2a);
+        .with_origin(awaken_server_contract::contract::storage::RunRequestOrigin::A2A)
+        .with_adapter(awaken_server_contract::contract::tool_intercept::AdapterKind::A2a);
     let mut new_task_start_message_id = None;
 
     if let Some(ref tenant) = effective_tenant {
@@ -479,7 +479,7 @@ async fn thread_has_prior_context(
     st: &ProtocolRoutesState,
     thread_id: &str,
 ) -> Result<bool, A2aError> {
-    use awaken_contract::contract::mailbox::RunDispatchStatus;
+    use awaken_server_contract::contract::mailbox::RunDispatchStatus;
 
     let store = st.run.store();
     let Some(thread) = store

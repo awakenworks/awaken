@@ -1,13 +1,13 @@
 #![allow(deprecated)] // ADR-0038 D7: integration tests exercise the legacy checkpoint API directly
 #![allow(dead_code)]
 
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::{Message, MessageMetadata};
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::message::{Message, MessageMetadata};
+use awaken_server_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessageOrder, MessageQuery, MessageVisibilityFilter, RunRecord,
     RunRequestSnapshot, StorageError, ThreadParentFilter, ThreadQuery, ThreadRunStore,
 };
-use awaken_contract::thread::Thread;
+use awaken_server_contract::thread::Thread;
 
 pub fn make_run(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
     RunRecord {

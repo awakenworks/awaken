@@ -4,8 +4,8 @@ use super::*;
 
 #[tokio::test]
 async fn file_store_put_if_revision_basic() {
-    use awaken_contract::contract::config_store::ConfigStore;
-    use awaken_contract::contract::storage::StorageError;
+    use awaken_server_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::storage::StorageError;
 
     let td = TempDir::new().unwrap();
     let store = FileStore::new(td.path());
@@ -44,8 +44,8 @@ async fn file_store_put_if_revision_basic() {
 
 #[tokio::test]
 async fn file_store_put_if_absent_and_delete_if_revision() {
-    use awaken_contract::contract::config_store::ConfigStore;
-    use awaken_contract::contract::storage::StorageError;
+    use awaken_server_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::storage::StorageError;
 
     let td = TempDir::new().unwrap();
     let store = FileStore::new(td.path());
@@ -75,8 +75,8 @@ async fn file_store_put_if_absent_and_delete_if_revision() {
 
 #[tokio::test]
 async fn file_store_put_if_revision_is_atomic_across_store_instances() {
-    use awaken_contract::contract::config_store::ConfigStore;
-    use awaken_contract::contract::storage::StorageError;
+    use awaken_server_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::storage::StorageError;
 
     const WRITERS: usize = 16;
     let td = TempDir::new().unwrap();
@@ -133,7 +133,7 @@ async fn file_store_put_if_revision_is_atomic_across_store_instances() {
 
 #[tokio::test]
 async fn file_store_delete_and_update_same_revision_are_mutually_exclusive() {
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
 
     let td = TempDir::new().unwrap();
     let seed_store = FileStore::new(td.path());

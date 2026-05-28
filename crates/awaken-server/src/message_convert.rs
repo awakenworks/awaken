@@ -1,7 +1,7 @@
 //! Shared message conversion for protocol handlers.
 
-use awaken_contract::contract::content::{ContentBlock, extract_text};
-use awaken_contract::contract::message::Message;
+use awaken_server_contract::contract::content::{ContentBlock, extract_text};
+use awaken_server_contract::contract::message::Message;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKind {

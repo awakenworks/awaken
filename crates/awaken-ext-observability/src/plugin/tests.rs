@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-use awaken_contract::contract::inference::{LLMResponse, StreamResult, TokenUsage};
-use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
-use awaken_contract::contract::tool::ToolResult;
-use awaken_contract::model::Phase;
-use awaken_contract::state::{Snapshot, StateMap};
 use awaken_runtime::extensions::background::{
     BackgroundTaskStateKey, BackgroundTaskStateSnapshot, PersistedTaskMeta, TaskParentContext,
     TaskStatus,
 };
 use awaken_runtime::{PhaseContext, PhaseHook, Plugin};
+use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+use awaken_runtime_contract::contract::inference::{LLMResponse, StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+use awaken_runtime_contract::contract::tool::ToolResult;
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::state::{Snapshot, StateMap};
 
 use crate::metrics::{ContentCapture, TOOL_PAYLOAD_TRUNCATED_MARKER, ToolIoCapture};
 use crate::sink::InMemorySink;
@@ -46,7 +46,7 @@ fn usage(prompt: i32, completion: i32, total: i32) -> TokenUsage {
 }
 
 fn success_response(u: Option<TokenUsage>) -> LLMResponse {
-    use awaken_contract::contract::content::ContentBlock;
+    use awaken_runtime_contract::contract::content::ContentBlock;
     LLMResponse::success(StreamResult {
         content: vec![ContentBlock::text("hello")],
         tool_calls: vec![],
@@ -471,8 +471,8 @@ async fn after_inference_captures_chat_content_when_enabled() {
 
 #[tokio::test]
 async fn after_inference_captures_tool_calls_when_enabled() {
-    use awaken_contract::contract::inference::StopReason;
-    use awaken_contract::contract::message::ToolCall;
+    use awaken_runtime_contract::contract::inference::StopReason;
+    use awaken_runtime_contract::contract::message::ToolCall;
 
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink)
@@ -509,8 +509,8 @@ async fn after_inference_captures_tool_calls_when_enabled() {
 
 #[tokio::test]
 async fn after_inference_captures_request_messages_on_first_inference_only() {
-    use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::message::Message;
+    use awaken_runtime_contract::contract::content::ContentBlock;
+    use awaken_runtime_contract::contract::message::Message;
 
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink)
@@ -547,8 +547,8 @@ async fn after_inference_captures_request_messages_on_first_inference_only() {
 
 #[tokio::test]
 async fn after_inference_omits_request_messages_when_capture_disabled() {
-    use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::message::Message;
+    use awaken_runtime_contract::contract::content::ContentBlock;
+    use awaken_runtime_contract::contract::message::Message;
 
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink).with_model("m");
@@ -566,7 +566,7 @@ async fn after_inference_omits_request_messages_when_capture_disabled() {
 
 #[tokio::test]
 async fn after_inference_capture_skips_error_branch() {
-    use awaken_contract::contract::inference::InferenceError;
+    use awaken_runtime_contract::contract::inference::InferenceError;
 
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink)
@@ -726,7 +726,7 @@ async fn tool_io_capture_records_error_results_through_sanitizer() {
     // Error tool results were previously dropped from `call_result`; debugging
     // tool failures needs them. Verify error data is captured AND still goes
     // through the default redactor.
-    use awaken_contract::contract::tool::{ToolResult, ToolStatus};
+    use awaken_runtime_contract::contract::tool::{ToolResult, ToolStatus};
     let sink = InMemorySink::new();
     let plugin = ObservabilityPlugin::new(sink.clone())
         .with_tool_io_capture(ToolIoCapture::ArgumentsAndResults);

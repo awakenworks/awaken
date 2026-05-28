@@ -7,9 +7,9 @@ mod fixture;
 use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{
     ChildThreadDeleteStrategy, RunRecord, RunRequestSnapshot, RunStore, StorageError,
     ThreadRunStore, ThreadStore,
 };
@@ -258,11 +258,11 @@ async fn hierarchy_changing_checkpoints_are_exclusive_across_instances() {
     let fixture = NatsFixture::start().await;
     let inner = Arc::new(InMemoryStore::new());
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("a"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("a"))
         .await
         .unwrap();
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("b"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("b"))
         .await
         .unwrap();
 
@@ -345,11 +345,11 @@ async fn expired_claim_after_wal_publish_is_aborted_and_does_not_block_conflicti
     let fixture = NatsFixture::start().await;
     let inner = Arc::new(InMemoryStore::new());
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("a"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("a"))
         .await
         .unwrap();
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("b"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("b"))
         .await
         .unwrap();
 
@@ -445,11 +445,11 @@ async fn aborted_wal_state_cannot_be_recommitted_after_claim_expiry() {
     let fixture = NatsFixture::start().await;
     let inner = Arc::new(InMemoryStore::new());
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("a"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("a"))
         .await
         .unwrap();
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("b"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("b"))
         .await
         .unwrap();
 
@@ -569,11 +569,11 @@ async fn expired_claim_before_wal_publish_cannot_recover_late_conflicting_wal() 
     let fixture = NatsFixture::start().await;
     let inner = Arc::new(InMemoryStore::new());
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("a"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("a"))
         .await
         .unwrap();
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("b"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("b"))
         .await
         .unwrap();
 
@@ -671,7 +671,7 @@ async fn delete_clears_hot_state_before_releasing_hierarchy_claim() {
     let fixture = NatsFixture::start().await;
     let inner = Arc::new(InMemoryStore::new());
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("t"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("t"))
         .await
         .unwrap();
 
@@ -762,11 +762,11 @@ async fn expired_hierarchy_claim_before_save_thread_validated_prevents_stale_cyc
     let fixture = NatsFixture::start().await;
     let inner = Arc::new(InMemoryStore::new());
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("a"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("a"))
         .await
         .unwrap();
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("b"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("b"))
         .await
         .unwrap();
 
@@ -802,7 +802,8 @@ async fn expired_hierarchy_claim_before_save_thread_validated_prevents_stale_cyc
         tokio::spawn(async move {
             store_a
                 .save_thread_validated(
-                    &awaken_contract::thread::Thread::with_id("a").with_parent_thread_id("b"),
+                    &awaken_server_contract::thread::Thread::with_id("a")
+                        .with_parent_thread_id("b"),
                 )
                 .await
         })
@@ -813,7 +814,7 @@ async fn expired_hierarchy_claim_before_save_thread_validated_prevents_stale_cyc
 
     store_b
         .save_thread_validated(
-            &awaken_contract::thread::Thread::with_id("b").with_parent_thread_id("a"),
+            &awaken_server_contract::thread::Thread::with_id("b").with_parent_thread_id("a"),
         )
         .await
         .unwrap();
@@ -856,7 +857,7 @@ async fn expired_hierarchy_claim_during_delete_does_not_clear_recreated_hot_stat
     let fixture = NatsFixture::start().await;
     let inner = Arc::new(InMemoryStore::new());
     inner
-        .save_thread(&awaken_contract::thread::Thread::with_id("t"))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id("t"))
         .await
         .unwrap();
 

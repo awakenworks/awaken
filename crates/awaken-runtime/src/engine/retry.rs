@@ -9,10 +9,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use awaken_contract::contract::executor::{
+use awaken_runtime_contract::contract::executor::{
     InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor,
 };
-use awaken_contract::contract::inference::StreamResult;
+use awaken_runtime_contract::contract::inference::StreamResult;
 
 use super::circuit_breaker::CircuitBreaker;
 
@@ -305,7 +305,7 @@ impl LlmExecutor for RetryingExecutor {
 /// Plugin config key for [`LlmRetryPolicy`] in `AgentSpec.sections["retry"]`.
 pub struct RetryConfigKey;
 
-impl awaken_contract::registry_spec::PluginConfigKey for RetryConfigKey {
+impl awaken_runtime_contract::registry_spec::PluginConfigKey for RetryConfigKey {
     const KEY: &'static str = "retry";
     type Config = LlmRetryPolicy;
 }
@@ -313,9 +313,9 @@ impl awaken_contract::registry_spec::PluginConfigKey for RetryConfigKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::inference::{StopReason, TokenUsage};
-    use awaken_contract::contract::message::Message;
+    use awaken_runtime_contract::contract::content::ContentBlock;
+    use awaken_runtime_contract::contract::inference::{StopReason, TokenUsage};
+    use awaken_runtime_contract::contract::message::Message;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// All test policies use zero backoff so tests run instantly.

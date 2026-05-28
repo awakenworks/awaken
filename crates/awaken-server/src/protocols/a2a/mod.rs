@@ -29,7 +29,7 @@ pub use awaken_protocol_a2a::{
 };
 
 use crate::app::ProtocolRoutesState;
-use awaken_contract::ScopeContext;
+use awaken_server_contract::ScopeContext;
 
 use common::{
     decode_json_body, decode_query, ensure_supported_version_from_request, parse_a2a_tail,

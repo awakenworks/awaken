@@ -10,11 +10,11 @@ use crate::{
     SkillRegistryManagerError, SkillResource, SkillResourceKind,
 };
 use async_trait::async_trait;
-use awaken_contract::PeriodicRefresher;
 use awaken_ext_mcp::{
     McpError, McpPromptArgument, McpPromptEntry, McpPromptResult, McpResourceEntry,
     McpToolRegistryManager,
 };
+use awaken_runtime_contract::PeriodicRefresher;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Serialize;
 use serde_json::Value;

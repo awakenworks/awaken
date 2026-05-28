@@ -17,12 +17,12 @@ use bytes::Bytes;
 use futures::StreamExt;
 use serde_json::{Value, json};
 
-use awaken_contract::ScopeContext;
-use awaken_contract::contract::content::{ContentBlock, extract_text};
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::message::{Message, MessageRecord, Role, ToolCall};
-use awaken_contract::contract::storage::{MessageOrder, MessageQuery};
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_server_contract::ScopeContext;
+use awaken_server_contract::contract::content::{ContentBlock, extract_text};
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::message::{Message, MessageRecord, Role, ToolCall};
+use awaken_server_contract::contract::storage::{MessageOrder, MessageQuery};
+use awaken_server_contract::registry_spec::AgentSpec;
 
 use crate::app::ProtocolRoutesState as S;
 use crate::http_run::wire_sse_relay;
@@ -187,7 +187,7 @@ async fn ai_sdk_chat_preview_agent(
         crate::request::inject_frontend_context(processed.messages, processed.state),
     )
     .with_agent_id(agent.id)
-    .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::AiSdk);
+    .with_adapter(awaken_server_contract::contract::tool_intercept::AdapterKind::AiSdk);
     if !processed.decisions.is_empty() {
         request = request.with_decisions(processed.decisions);
     }
@@ -348,7 +348,7 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
     let messages = crate::request::inject_frontend_context(messages, state);
 
     let mut request = RunActivation::new(thread_id.clone(), messages)
-        .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::AiSdk);
+        .with_adapter(awaken_server_contract::contract::tool_intercept::AdapterKind::AiSdk);
     if let Some(id) = agent_id {
         request = request.with_agent_id(id);
     }

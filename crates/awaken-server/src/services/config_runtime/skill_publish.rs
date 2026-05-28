@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 
-use awaken_contract::{
-    AgentSpec, PreparedSkillSpecs, SkillSpec, is_skill_allowed_tool_pattern,
-    parse_skill_allowed_tools, validate_skill_allowed_tool_pattern,
-};
 use awaken_runtime::AgentResolver;
 use awaken_runtime::registry::resolve::RegistrySetResolver;
 use awaken_runtime::registry::{
     RegistryDiagnostic, RegistrySet, RegistryValidationError, diagnose_agent_spec,
+};
+use awaken_server_contract::{
+    AgentSpec, PreparedSkillSpecs, SkillSpec, is_skill_allowed_tool_pattern,
+    parse_skill_allowed_tools, validate_skill_allowed_tool_pattern,
 };
 
 use crate::services::agent_catalog::check_catalog_errors;

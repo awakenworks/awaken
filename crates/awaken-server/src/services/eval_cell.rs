@@ -7,15 +7,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use awaken_contract::agent_spec_patch::AgentSpecPatch;
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 use awaken_eval::{
     EvalRun, EvalRunExecutionMode, EvalRunItem, Expectation, Failure, Fixture, LlmExecutorJudge,
     MatrixCell, ReplayOutcome, ReplayReport, RuntimeReplayer, replay_all, score, score_with_judge,
 };
 use awaken_ext_observability::MetricsSink;
 use awaken_ext_observability::trace_store::TraceStore;
+use awaken_server_contract::agent_spec_patch::AgentSpecPatch;
+use awaken_server_contract::contract::executor::LlmExecutor;
+use awaken_server_contract::registry_spec::{AgentSpec, ModelSpec};
 
 use crate::error::ApiError;
 

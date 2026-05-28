@@ -1,10 +1,10 @@
 //! Shared query-parameter types for paginated endpoints.
 
-use awaken_contract::contract::message::{Message, Visibility};
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::message::{Message, Visibility};
+use awaken_server_contract::contract::storage::{
     MessageOrder, MessageQuery, MessageVisibilityFilter, ThreadParentFilter, ThreadQuery,
 };
-use awaken_contract::thread::normalize_lineage_id;
+use awaken_server_contract::thread::normalize_lineage_id;
 use serde::Deserialize;
 
 /// Default page size for list endpoints.
@@ -413,19 +413,19 @@ mod tests {
             serde_json::from_str(r#"{"runId":"run-1","order":"desc"}"#).unwrap();
         let messages = vec![
             Message::assistant("old").with_metadata(
-                awaken_contract::contract::message::MessageMetadata {
+                awaken_server_contract::contract::message::MessageMetadata {
                     run_id: Some("run-1".to_string()),
                     step_index: Some(0),
                 },
             ),
             Message::assistant("other").with_metadata(
-                awaken_contract::contract::message::MessageMetadata {
+                awaken_server_contract::contract::message::MessageMetadata {
                     run_id: Some("run-2".to_string()),
                     step_index: Some(0),
                 },
             ),
             Message::assistant("new").with_metadata(
-                awaken_contract::contract::message::MessageMetadata {
+                awaken_server_contract::contract::message::MessageMetadata {
                     run_id: Some("run-1".to_string()),
                     step_index: Some(1),
                 },

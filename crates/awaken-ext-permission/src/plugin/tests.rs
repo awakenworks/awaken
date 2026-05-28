@@ -2,14 +2,14 @@ use super::*;
 use crate::config::{PermissionConfigKey, PermissionRuleEntry, PermissionRulesConfig};
 use crate::plugin::checker::PermissionToolGateHook;
 use crate::rules::{PermissionRuleScope, ToolPermissionBehavior};
-use awaken_contract::PluginConfigKey;
-use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
-use awaken_contract::model::Phase;
-use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::ToolGateHook;
 use awaken_runtime::phase::PhaseContext;
 use awaken_runtime::plugins::Plugin;
 use awaken_runtime::state::{MutationBatch, StateStore};
+use awaken_runtime_contract::PluginConfigKey;
+use awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload;
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::registry_spec::AgentSpec;
 use serde_json::json;
 
 #[test]

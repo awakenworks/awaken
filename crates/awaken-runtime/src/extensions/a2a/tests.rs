@@ -3,19 +3,19 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::json;
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::{EventSink, VecEventSink};
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::progress::{
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::{EventSink, VecEventSink};
+use awaken_runtime_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::lifecycle::TerminationReason;
+use awaken_runtime_contract::contract::progress::{
     ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
 };
-use awaken_contract::contract::suspension::ToolCallResumeMode;
-use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolStatus};
-use awaken_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
+use awaken_runtime_contract::contract::suspension::ToolCallResumeMode;
+use awaken_runtime_contract::contract::tool::{Tool, ToolCallContext, ToolStatus};
+use awaken_runtime_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
 
 use crate::loop_runner::build_agent_env;
 use crate::registry::{AgentResolver, ResolvedAgent};
@@ -49,7 +49,7 @@ impl MockResolver {
 struct MockExecutor;
 
 #[async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for MockExecutor {
+impl awaken_runtime_contract::contract::executor::LlmExecutor for MockExecutor {
     async fn execute(
         &self,
         _request: InferenceRequest,
@@ -630,7 +630,7 @@ impl AgentBackend for CapturingBackend {
 
 #[tokio::test]
 async fn agent_tool_propagates_parent_identity_to_backend() {
-    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
 
     let backend = Arc::new(CapturingBackend::new());
     let tool = AgentTool::with_backend("worker", "desc", backend.clone());
@@ -670,13 +670,13 @@ async fn local_backend_sets_sub_agent_identity() {
     let tool = AgentTool::local("sub-worker", "desc", resolver);
 
     let mut ctx = ToolCallContext::test_default();
-    ctx.run_identity = awaken_contract::contract::identity::RunIdentity::new(
+    ctx.run_identity = awaken_runtime_contract::contract::identity::RunIdentity::new(
         "parent-thread".to_string(),
         None,
         "parent-run-id".to_string(),
         None,
         "parent-agent".to_string(),
-        awaken_contract::contract::identity::RunOrigin::User,
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
     ctx.call_id = "tool-call-xyz".to_string();
 
@@ -1048,7 +1048,7 @@ fn agent_tool_descriptor_tool_id_follows_pattern() {
 
 #[tokio::test]
 async fn agent_tool_propagates_run_id_and_call_id() {
-    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
 
     let backend = Arc::new(CapturingBackend::new());
     let tool = AgentTool::with_backend("worker", "desc", backend.clone());

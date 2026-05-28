@@ -9,17 +9,17 @@ use crate::loop_runner::{AgentLoopError, AgentRunResult, CommitWiring};
 use crate::registry::AgentResolver;
 use crate::resolution::{ExecutionPlan, ExecutionRole, ResolvedRunPlan};
 use crate::run::{RunActivation, RunInbox, ThreadContextSnapshot, attach_registry_manifest_seed};
-use awaken_contract::contract::active_agent::ActiveAgentIdKey;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-use awaken_contract::contract::message::{
+use awaken_runtime_contract::contract::active_agent::ActiveAgentIdKey;
+use awaken_runtime_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+use awaken_runtime_contract::contract::message::{
     Message, Role, Visibility, strip_unpaired_tool_calls_from_view,
 };
-use awaken_contract::contract::run::{RunInput, RunKind, RunResolutionScope};
-use awaken_contract::contract::storage::RunRecord;
-use awaken_contract::contract::suspension::ToolCallStatus;
-use awaken_contract::now_ms;
-use awaken_contract::state::PersistedState;
+use awaken_runtime_contract::contract::run::{RunInput, RunKind, RunResolutionScope};
+use awaken_runtime_contract::contract::storage::RunRecord;
+use awaken_runtime_contract::contract::suspension::ToolCallStatus;
+use awaken_runtime_contract::now_ms;
+use awaken_runtime_contract::state::PersistedState;
 use std::sync::Arc;
 const DEFAULT_AGENT_ID: &str = "default";
 /// RAII guard that unregisters the active run on drop, ensuring cleanup
@@ -90,10 +90,10 @@ fn build_compaction_runtime(
         manager.clone(),
     )) {
         Ok(()) => {}
-        Err(awaken_contract::StateError::PluginAlreadyInstalled { .. }) => {
+        Err(awaken_runtime_contract::StateError::PluginAlreadyInstalled { .. }) => {
             // Keys already registered by an upstream wiring; reuse store as-is.
         }
-        Err(awaken_contract::StateError::KeyAlreadyRegistered { .. }) => {
+        Err(awaken_runtime_contract::StateError::KeyAlreadyRegistered { .. }) => {
             // A different plugin owns one of the background-task keys; reuse them.
         }
         Err(error) => return Err(AgentLoopError::PhaseError(error)),
@@ -419,7 +419,7 @@ impl AgentRuntime {
         messages_already_persisted: bool,
         decisions: &[(
             String,
-            awaken_contract::contract::suspension::ToolCallResume,
+            awaken_runtime_contract::contract::suspension::ToolCallResume,
         )],
         run_inbox: Option<RunInbox>,
         thread_ctx: &Option<ThreadContextSnapshot>,
@@ -450,7 +450,7 @@ impl AgentRuntime {
                 store
                     .restore_thread_scoped(
                         persisted.clone(),
-                        awaken_contract::UnknownKeyPolicy::Skip,
+                        awaken_runtime_contract::UnknownKeyPolicy::Skip,
                     )
                     .map_err(AgentLoopError::PhaseError)?;
             }
@@ -463,7 +463,10 @@ impl AgentRuntime {
                 && let Some(persisted) = prev_run.state
             {
                 store
-                    .restore_thread_scoped(persisted, awaken_contract::UnknownKeyPolicy::Skip)
+                    .restore_thread_scoped(
+                        persisted,
+                        awaken_runtime_contract::UnknownKeyPolicy::Skip,
+                    )
                     .map_err(AgentLoopError::PhaseError)?;
             }
             ts.load_messages(thread_id)
@@ -572,7 +575,9 @@ impl AgentRuntime {
                 None
             };
             if let Some(existing) = existing {
-                if existing.status == awaken_contract::contract::lifecycle::RunStatus::Created {
+                if existing.status
+                    == awaken_runtime_contract::contract::lifecycle::RunStatus::Created
+                {
                     return Ok((run_id, false));
                 }
                 return Err(AgentLoopError::InvalidResume(format!(
@@ -772,7 +777,7 @@ fn validate_resolved_root_plan(
 fn active_agent_from_state(state: &PersistedState) -> Option<String> {
     state
         .extensions
-        .get(<ActiveAgentIdKey as awaken_contract::StateKey>::KEY)
+        .get(<ActiveAgentIdKey as awaken_runtime_contract::StateKey>::KEY)
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|v| !v.is_empty())
@@ -805,7 +810,7 @@ fn should_supersede_suspended_calls(
     request_messages: &[Message],
     decisions: &[(
         String,
-        awaken_contract::contract::suspension::ToolCallResume,
+        awaken_runtime_contract::contract::suspension::ToolCallResume,
     )],
 ) -> bool {
     decisions.is_empty()

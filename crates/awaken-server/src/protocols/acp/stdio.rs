@@ -10,10 +10,10 @@ use tokio::io::{AsyncBufRead, AsyncWrite, BufReader};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use awaken_contract::contract::content::ContentBlock as RuntimeContentBlock;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 use awaken_runtime::AgentRuntime;
+use awaken_server_contract::contract::content::ContentBlock as RuntimeContentBlock;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 
 use super::encoder::{AcpEncoder, AcpOutput};
 use super::types::{
@@ -157,7 +157,7 @@ impl acp::Agent for AcpAgent {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         let sink = crate::transport::channel_sink::ChannelEventSink::new(event_tx);
         let mut run_request = awaken_runtime::RunActivation::new(thread_id.clone(), messages)
-            .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::Acp)
+            .with_adapter(awaken_server_contract::contract::tool_intercept::AdapterKind::Acp)
             .with_session_id(session_id.clone());
         if let Some(agent_id) = agent_id {
             run_request = run_request.with_agent_id(agent_id);
@@ -475,14 +475,14 @@ mod tests {
 
     use crate::protocols::acp::types as wire_types;
     use async_trait::async_trait;
-    use awaken_contract::ModelSpec;
-    use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-    use awaken_contract::contract::inference::{
+    use awaken_runtime::builder::AgentRuntimeBuilder;
+    use awaken_server_contract::ModelSpec;
+    use awaken_server_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+    use awaken_server_contract::contract::inference::{
         StopReason as RuntimeStopReason, StreamResult, TokenUsage,
     };
-    use awaken_contract::contract::message::ToolCall as RuntimeToolCall;
-    use awaken_contract::contract::tool::{FrontEndTool, ToolDescriptor};
-    use awaken_runtime::builder::AgentRuntimeBuilder;
+    use awaken_server_contract::contract::message::ToolCall as RuntimeToolCall;
+    use awaken_server_contract::contract::tool::{FrontEndTool, ToolDescriptor};
     use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, split};
     use tokio::time::{Duration, timeout};
 
@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for FrontendToolMockExecutor {
+    impl awaken_server_contract::contract::executor::LlmExecutor for FrontendToolMockExecutor {
         async fn execute(
             &self,
             _request: InferenceRequest,
@@ -554,7 +554,7 @@ mod tests {
                 }),
             )
             .with_tool("ask_user", Arc::new(FrontEndTool::new(frontend_tool)))
-            .with_agent_spec(awaken_contract::registry_spec::AgentSpec {
+            .with_agent_spec(awaken_server_contract::registry_spec::AgentSpec {
                 id: "frontend".into(),
                 model_id: "test-model".into(),
                 system_prompt: "You delegate to a frontend tool".into(),

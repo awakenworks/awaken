@@ -145,7 +145,7 @@ impl ActiveRunRegistry {
 mod tests {
     use super::*;
     use crate::cancellation::CancellationToken;
-    use awaken_contract::contract::suspension::ToolCallResume;
+    use awaken_runtime_contract::contract::suspension::ToolCallResume;
     use futures::channel::mpsc;
 
     fn make_handle(run_id: &str) -> RunHandle {

@@ -1,7 +1,7 @@
 //! Model Context Protocol (MCP) client integration for external tool servers.
 //!
 //! Provides [`McpToolRegistryManager`] for connecting to MCP servers and
-//! exposing their tools as awaken [`Tool`](awaken_contract::contract::tool::Tool) instances.
+//! exposing their tools as awaken [`Tool`](awaken_runtime_contract::contract::tool::Tool) instances.
 
 pub mod config;
 pub mod error;

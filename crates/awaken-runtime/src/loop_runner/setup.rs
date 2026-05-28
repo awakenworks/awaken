@@ -5,8 +5,8 @@ use std::sync::Arc;
 use crate::phase::PhaseRuntime;
 use crate::registry::{AgentResolver, ResolvedAgent};
 use crate::state::MutationBatch;
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::message::Message;
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::message::Message;
 
 use super::AgentLoopError;
 

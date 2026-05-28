@@ -7,11 +7,11 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::storage::StorageError;
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec, ProviderSpec};
 use awaken_ext_observability::trace_store::TraceStoreError;
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::contract::executor::LlmExecutor;
+use awaken_server_contract::contract::storage::StorageError;
+use awaken_server_contract::registry_spec::{AgentSpec, ModelSpec, ProviderSpec};
 
 use crate::app::EvalRoutesState;
 use crate::error::ApiError;
@@ -51,10 +51,10 @@ pub(crate) async fn resolve_live_executor(
             ))
         })?;
     // ConfigStore may store either a bare-spec or the ConfigRecord
-    // envelope; awaken_contract::config_record::ConfigRecord::from_value
+    // envelope; awaken_server_contract::config_record::ConfigRecord::from_value
     // handles both shapes transparently.
     let model_record =
-        awaken_contract::config_record::ConfigRecord::<ModelSpec>::from_value(model_value)
+        awaken_server_contract::config_record::ConfigRecord::<ModelSpec>::from_value(model_value)
             .map_err(|err| ApiError::Internal(format!("decoding model spec: {err}")))?;
     let spec = model_record.spec;
 
@@ -69,8 +69,10 @@ pub(crate) async fn resolve_live_executor(
             ))
         })?;
     let provider_record =
-        awaken_contract::config_record::ConfigRecord::<ProviderSpec>::from_value(provider_value)
-            .map_err(|err| ApiError::Internal(format!("decoding provider: {err}")))?;
+        awaken_server_contract::config_record::ConfigRecord::<ProviderSpec>::from_value(
+            provider_value,
+        )
+        .map_err(|err| ApiError::Internal(format!("decoding provider: {err}")))?;
     let provider = provider_record.spec;
 
     let executor =
@@ -114,7 +116,7 @@ pub(crate) async fn resolve_agent_spec(
                 "agent not found: agents/{agent_id} (register via /v1/config/agents)"
             ))
         })?;
-    let record = awaken_contract::config_record::ConfigRecord::<AgentSpec>::from_value(raw)
+    let record = awaken_server_contract::config_record::ConfigRecord::<AgentSpec>::from_value(raw)
         .map_err(|err| ApiError::Internal(format!("decoding agent: {err}")))?;
     Ok(record.spec)
 }

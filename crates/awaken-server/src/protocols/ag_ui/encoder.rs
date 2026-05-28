@@ -1,9 +1,9 @@
 //! AG-UI encoder: maps AgentEvent to AG-UI Event.
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::tool::ToolStatus;
-use awaken_contract::contract::transport::Transcoder;
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::lifecycle::TerminationReason;
+use awaken_server_contract::contract::tool::ToolStatus;
+use awaken_server_contract::contract::transport::Transcoder;
 use std::collections::HashMap;
 
 use super::types::{BaseEvent, Event, Role};
@@ -351,10 +351,10 @@ impl Transcoder for AgUiEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::event::AgentEvent;
-    use awaken_contract::contract::lifecycle::TerminationReason;
-    use awaken_contract::contract::suspension::ToolCallOutcome;
-    use awaken_contract::contract::tool::ToolResult;
+    use awaken_server_contract::contract::event::AgentEvent;
+    use awaken_server_contract::contract::lifecycle::TerminationReason;
+    use awaken_server_contract::contract::suspension::ToolCallOutcome;
+    use awaken_server_contract::contract::tool::ToolResult;
     use serde_json::json;
 
     #[test]
@@ -1745,7 +1745,7 @@ mod tests {
         let mut enc = AgUiEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::InferenceComplete {
             model: "gpt-5.4".into(),
-            usage: Some(awaken_contract::contract::inference::TokenUsage {
+            usage: Some(awaken_server_contract::contract::inference::TokenUsage {
                 prompt_tokens: Some(100),
                 completion_tokens: Some(50),
                 total_tokens: Some(150),

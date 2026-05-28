@@ -10,8 +10,8 @@ use crate::builder::BuildError;
 #[cfg(feature = "a2a")]
 use crate::extensions::a2a::A2aBackendFactory;
 use crate::plugins::Plugin;
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::tool::Tool;
+use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::contract::tool::Tool;
 
 #[cfg(feature = "a2a")]
 use super::traits::BackendRegistry;
@@ -19,8 +19,8 @@ use super::traits::{
     AgentSpecRegistry, ModelRegistry, PluginSource, ProviderRegistry, ToolRegistry,
 };
 use crate::registry::model_capabilities::{ModelCapabilityPatch, normalize_capability_model_name};
-use awaken_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
-use awaken_contract::{validate_model_pool_spec_struct, validate_model_spec_struct};
+use awaken_runtime_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
+use awaken_runtime_contract::{validate_model_pool_spec_struct, validate_model_spec_struct};
 
 // ---------------------------------------------------------------------------
 // MapRegistry<V> — generic in-memory registry
@@ -444,7 +444,7 @@ impl BackendRegistry for MapBackendRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::registry_spec::{Modalities, Modality};
+    use awaken_runtime_contract::registry_spec::{Modalities, Modality};
 
     /// Helper to create a simple error constructor for tests.
     fn test_err(msg: String) -> BuildError {

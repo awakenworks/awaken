@@ -4,13 +4,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::{
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::mailbox::{
     LiveCommandReceipt, LiveDeliveryOutcome, LiveRunCommand, LiveRunCommandEntry,
     LiveRunCommandStream, LiveRunTarget, MailboxInterrupt, MailboxInterruptDetails, MailboxStore,
     RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use uuid::Uuid;
 

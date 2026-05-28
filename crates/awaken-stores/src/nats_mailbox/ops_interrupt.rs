@@ -1,14 +1,14 @@
 //! Interrupt + dispatch epoch management.
 
-use awaken_contract::contract::mailbox::{MailboxInterruptDetails, RunDispatchStatus};
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::mailbox::{MailboxInterruptDetails, RunDispatchStatus};
+use awaken_server_contract::contract::storage::StorageError;
 
 use super::{NatsMailboxStore, claim_guard, codec, keys, kv_helpers, ops_query, ops_write};
 use crate::mailbox_state;
 
 enum SupersedeOutcome {
-    Superseded(Box<awaken_contract::contract::mailbox::RunDispatch>),
-    Claimed(Box<awaken_contract::contract::mailbox::RunDispatch>),
+    Superseded(Box<awaken_server_contract::contract::mailbox::RunDispatch>),
+    Claimed(Box<awaken_server_contract::contract::mailbox::RunDispatch>),
     NotQueued,
 }
 

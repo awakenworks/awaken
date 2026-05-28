@@ -1,5 +1,5 @@
-use awaken_contract::StateError;
-use awaken_contract::contract::active_agent::ActiveAgentIdKey;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::active_agent::ActiveAgentIdKey;
 
 use crate::hooks::{PhaseContext, PhaseHook};
 

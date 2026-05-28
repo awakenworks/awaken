@@ -2,7 +2,7 @@
 
 mod nats_fixture;
 
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_stores::{NatsMailboxConfig, NatsMailboxStore};
 use nats_fixture::NatsFixture;
 

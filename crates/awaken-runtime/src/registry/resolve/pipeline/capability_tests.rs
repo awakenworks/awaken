@@ -2,11 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::StreamResult;
-use awaken_contract::contract::message::Message;
-use awaken_contract::registry_spec::{AgentSpec, Modalities, Modality, ModelPoolSpec, ModelSpec};
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::inference::StreamResult;
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::registry_spec::{
+    AgentSpec, Modalities, Modality, ModelPoolSpec, ModelSpec,
+};
 
 use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,

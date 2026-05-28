@@ -6,9 +6,11 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 
 use crate::judge::{Judge, JudgeError, JudgeResult};
 use crate::outcome::ReplayOutcome;

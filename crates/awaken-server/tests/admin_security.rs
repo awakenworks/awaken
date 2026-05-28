@@ -3,10 +3,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec, ProviderSpec};
-use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
 use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::app::{AdminApiConfig, ConfigModuleState, ServerConfig, ServerState};
@@ -16,6 +12,12 @@ use awaken_server::services::audit_log::AuditLogger;
 use awaken_server::services::config_runtime::{
     ConfigRuntimeError, ConfigRuntimeManager, ProviderExecutorFactory,
 };
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::registry_spec::{AgentSpec, ModelSpec, ProviderSpec};
+use awaken_server_contract::{BuiltinSeedSet, BuiltinSpec};
 use awaken_stores::InMemoryStore;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode};

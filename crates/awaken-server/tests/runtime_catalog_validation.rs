@@ -8,29 +8,29 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::services::config_runtime::ConfigRuntimeManager;
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_stores::{InMemoryStore, MemoryCommitCoordinator};
 use serde_json::json;
 
 struct StubExec;
 #[async_trait::async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for StubExec {
+impl awaken_server_contract::contract::executor::LlmExecutor for StubExec {
     async fn execute(
         &self,
-        _: awaken_contract::contract::executor::InferenceRequest,
+        _: awaken_server_contract::contract::executor::InferenceRequest,
     ) -> Result<
-        awaken_contract::contract::inference::StreamResult,
-        awaken_contract::contract::executor::InferenceExecutionError,
+        awaken_server_contract::contract::inference::StreamResult,
+        awaken_server_contract::contract::executor::InferenceExecutionError,
     > {
-        Ok(awaken_contract::contract::inference::StreamResult {
+        Ok(awaken_server_contract::contract::inference::StreamResult {
             content: vec![],
             tool_calls: vec![],
-            usage: Some(awaken_contract::contract::inference::TokenUsage::default()),
-            stop_reason: Some(awaken_contract::contract::inference::StopReason::EndTurn),
+            usage: Some(awaken_server_contract::contract::inference::TokenUsage::default()),
+            stop_reason: Some(awaken_server_contract::contract::inference::StopReason::EndTurn),
             has_incomplete_tool_calls: false,
         })
     }

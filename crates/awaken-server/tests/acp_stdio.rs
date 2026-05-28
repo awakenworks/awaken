@@ -6,20 +6,20 @@ use std::sync::{
 
 use agent_client_protocol::{self as acp, Agent as _};
 use async_trait::async_trait;
-use awaken_contract::ModelSpec;
-use awaken_contract::contract::content::ContentBlock as RuntimeContentBlock;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-use awaken_contract::contract::inference::{
-    StopReason as RuntimeStopReason, StreamResult, TokenUsage,
-};
-use awaken_contract::contract::message::ToolCall as RuntimeToolCall;
-use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
-};
-use awaken_contract::registry_spec::AgentSpec;
 use awaken_ext_permission::PermissionPlugin;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::protocols::acp::stdio::serve_stdio_io;
+use awaken_server_contract::ModelSpec;
+use awaken_server_contract::contract::content::ContentBlock as RuntimeContentBlock;
+use awaken_server_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+use awaken_server_contract::contract::inference::{
+    StopReason as RuntimeStopReason, StreamResult, TokenUsage,
+};
+use awaken_server_contract::contract::message::ToolCall as RuntimeToolCall;
+use awaken_server_contract::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
+use awaken_server_contract::registry_spec::AgentSpec;
 use serde_json::{Value, json};
 use tokio::io::{BufReader, split};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -63,7 +63,7 @@ impl acp::Client for TestClient {
 struct EchoExecutor;
 
 #[async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for EchoExecutor {
+impl awaken_server_contract::contract::executor::LlmExecutor for EchoExecutor {
     async fn execute(
         &self,
         request: InferenceRequest,
@@ -73,7 +73,7 @@ impl awaken_contract::contract::executor::LlmExecutor for EchoExecutor {
             .iter()
             .rev()
             .find_map(|message| {
-                if message.role == awaken_contract::contract::message::Role::User {
+                if message.role == awaken_server_contract::contract::message::Role::User {
                     Some(message.text())
                 } else {
                     None
@@ -100,7 +100,7 @@ struct ToolCallMockExecutor {
 }
 
 #[async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for ToolCallMockExecutor {
+impl awaken_server_contract::contract::executor::LlmExecutor for ToolCallMockExecutor {
     async fn execute(
         &self,
         _request: InferenceRequest,

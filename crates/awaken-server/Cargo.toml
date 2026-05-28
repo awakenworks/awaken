@@ -16,7 +16,7 @@ categories = [
 ]
 
 [dependencies]
-awaken-contract = { workspace = true }
+awaken-server-contract = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 awaken-tool-pattern = { workspace = true }
 awaken-runtime = { workspace = true }

@@ -1,4 +1,4 @@
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::outbox::{
     OutboxMessageDraft, OutboxNackOutcome, OutboxStatus, OutboxStore,
 };
 use awaken_stores::InMemoryOutboxStore;
@@ -129,6 +129,6 @@ async fn dedupe_key_retries_return_original_and_conflicts_on_changed_payload() {
     let err = store.enqueue_outbox(changed).await.unwrap_err();
     assert!(matches!(
         err,
-        awaken_contract::contract::outbox::OutboxError::Conflict(_)
+        awaken_server_contract::contract::outbox::OutboxError::Conflict(_)
     ));
 }

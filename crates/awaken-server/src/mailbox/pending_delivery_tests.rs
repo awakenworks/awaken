@@ -2,20 +2,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::mailbox::MailboxStore;
-use awaken_contract::contract::message::{
+use awaken_runtime::RunActivation;
+use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::mailbox::MailboxStore;
+use awaken_server_contract::contract::message::{
     DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message, MessageRecord,
     PendingMessageRecord,
 };
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadStore,
 };
-use awaken_contract::contract::suspension::ToolCallResume;
-use awaken_contract::thread::{Thread, ThreadMetadata};
-use awaken_runtime::RunActivation;
-use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
+use awaken_server_contract::contract::suspension::ToolCallResume;
+use awaken_server_contract::thread::{Thread, ThreadMetadata};
 use awaken_stores::{InMemoryMailboxStore, InMemoryStore, PendingMessageStore};
 
 use super::*;
@@ -106,7 +106,7 @@ impl RunStore for ConflictOnceStore {
 }
 
 #[async_trait]
-impl awaken_contract::contract::storage::ThreadRunStore for ConflictOnceStore {
+impl awaken_server_contract::contract::storage::ThreadRunStore for ConflictOnceStore {
     #[allow(deprecated)]
     async fn checkpoint(
         &self,
@@ -463,7 +463,7 @@ async fn pending_message_edit_after_freeze_returns_consumed_error() {
 
 #[tokio::test]
 async fn live_then_queue_stages_remote_running_input_as_next_step_pending() {
-    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use awaken_server_contract::contract::mailbox::LiveRunCommand;
     use futures::StreamExt;
 
     let mailbox_store = Arc::new(InMemoryMailboxStore::new());
@@ -572,8 +572,8 @@ async fn foreground_prepare_consumes_messages_through_interrupt_boundary() {
     );
 }
 
-fn empty_manifest() -> awaken_contract::contract::storage::PinnedRegistryManifest {
-    awaken_contract::contract::storage::PinnedRegistryManifest {
+fn empty_manifest() -> awaken_server_contract::contract::storage::PinnedRegistryManifest {
+    awaken_server_contract::contract::storage::PinnedRegistryManifest {
         publication_id: None,
         registry_snapshot_version: None,
         entries: Vec::new(),
@@ -582,7 +582,7 @@ fn empty_manifest() -> awaken_contract::contract::storage::PinnedRegistryManifes
 
 #[tokio::test]
 async fn resume_with_user_messages_routes_through_pending() {
-    use awaken_contract::contract::tool_intercept::RunMode;
+    use awaken_server_contract::contract::tool_intercept::RunMode;
     let thread_store = Arc::new(InMemoryStore::new());
     let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
         Arc::new(NoopExecutor),
@@ -619,7 +619,7 @@ async fn resume_with_user_messages_routes_through_pending() {
 
 #[tokio::test]
 async fn internal_wake_skips_pending() {
-    use awaken_contract::contract::tool_intercept::RunMode;
+    use awaken_server_contract::contract::tool_intercept::RunMode;
     let thread_store = Arc::new(InMemoryStore::new());
     let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(
         Arc::new(NoopExecutor),
@@ -776,20 +776,20 @@ async fn freeze_retry_after_conflict_does_not_leave_phantom_trigger_ids() {
 struct FailingEventPublisher;
 
 #[async_trait]
-impl awaken_contract::contract::commit_coordinator::OutboxServerEventPublisher
+impl awaken_server_contract::contract::commit_coordinator::OutboxServerEventPublisher
     for FailingEventPublisher
 {
     async fn publish(
         &self,
-        _draft: awaken_contract::contract::event_store::CanonicalEventDraft,
-        _options: awaken_contract::contract::event_store::AppendOptions,
+        _draft: awaken_server_contract::contract::event_store::CanonicalEventDraft,
+        _options: awaken_server_contract::contract::event_store::AppendOptions,
     ) -> Result<
-        awaken_contract::contract::commit_coordinator::ServerEventPublishOutcome,
-        awaken_contract::contract::commit_coordinator::EventPublishError,
+        awaken_server_contract::contract::commit_coordinator::ServerEventPublishOutcome,
+        awaken_server_contract::contract::commit_coordinator::EventPublishError,
     > {
         Err(
-            awaken_contract::contract::commit_coordinator::EventPublishError::Enqueue(
-                awaken_contract::contract::outbox::OutboxError::Io(
+            awaken_server_contract::contract::commit_coordinator::EventPublishError::Enqueue(
+                awaken_server_contract::contract::outbox::OutboxError::Io(
                     "event publisher unavailable".to_string(),
                 ),
             ),

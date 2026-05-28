@@ -1,4 +1,4 @@
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event_store::{
     AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventCursor, EventLookup, EventReader,
     EventScope, EventStoreError, EventSubscriber, EventWriter, SubscribeStart,
 };

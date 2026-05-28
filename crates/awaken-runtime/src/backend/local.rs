@@ -1,8 +1,8 @@
 //! In-process execution backend backed by the standard loop runner.
 
 use async_trait::async_trait;
-use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-use awaken_contract::contract::lifecycle::TerminationReason;
+use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+use awaken_runtime_contract::contract::lifecycle::TerminationReason;
 
 use crate::loop_runner::{AgentLoopParams, CommitWiring, prepare_resume, run_agent_loop};
 use crate::registry::ResolvedAgent;
@@ -411,12 +411,13 @@ impl LocalBackend {
             return;
         }
 
-        let tool: std::sync::Arc<dyn awaken_contract::contract::tool::Tool> = std::sync::Arc::new(
-            crate::extensions::background::CancelTaskTool::with_current_task(
-                context.manager.clone(),
-                context.task_id.clone(),
-            ),
-        );
+        let tool: std::sync::Arc<dyn awaken_runtime_contract::contract::tool::Tool> =
+            std::sync::Arc::new(
+                crate::extensions::background::CancelTaskTool::with_current_task(
+                    context.manager.clone(),
+                    context.task_id.clone(),
+                ),
+            );
         resolved.tools.insert(
             crate::extensions::background::CANCEL_TASK_TOOL_ID.into(),
             tool.clone(),
@@ -431,7 +432,7 @@ impl LocalBackend {
         store: &StateStore,
         resolved: &ResolvedAgent,
         owner_inbox: Option<&crate::inbox::InboxSender>,
-    ) -> Result<(), awaken_contract::StateError> {
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         if !resolved.env.key_registrations.is_empty() {
             store.register_keys(&resolved.env.key_registrations)?;
         }

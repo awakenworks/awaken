@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use awaken_contract::contract::executor::InferenceExecutionError;
+use awaken_runtime_contract::contract::executor::InferenceExecutionError;
 
 /// Circuit breaker status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2,13 +2,13 @@
 
 use std::sync::Arc;
 
-use awaken_contract::StateError;
-use awaken_contract::contract::tool::ToolDescriptor;
-use awaken_contract::model::Phase;
-use awaken_contract::registry_spec::AgentSpec;
-use awaken_contract::state::StateKeyOptions;
 use awaken_runtime::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::MutationBatch;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::tool::ToolDescriptor;
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::registry_spec::AgentSpec;
+use awaken_runtime_contract::state::StateKeyOptions;
 
 use crate::config::{DeferredToolsConfigKey, ToolLoadMode};
 use crate::state::{

@@ -632,7 +632,7 @@ impl AgentSpec {
     /// # Examples
     ///
     /// ```
-    /// use awaken_contract::registry_spec::AgentSpec;
+    /// use awaken_runtime_contract::registry_spec::AgentSpec;
     ///
     /// let spec = AgentSpec::new("assistant")
     ///     .with_model_id("gpt-4o-mini")

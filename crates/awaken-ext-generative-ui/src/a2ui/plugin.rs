@@ -4,11 +4,11 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use awaken_contract::PluginConfigKey;
-use awaken_contract::StateError;
-use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::model::Phase;
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_runtime_contract::PluginConfigKey;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::registry_spec::AgentSpec;
 
 use awaken_runtime::agent::state::AddContextMessage;
 use awaken_runtime::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};

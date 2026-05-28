@@ -1,7 +1,7 @@
 //! Message truncation: find split points that respect token budgets and tool-call pairing.
 
-use awaken_contract::contract::message::{Message, Role};
-use awaken_contract::contract::transform::estimate_message_tokens;
+use awaken_runtime_contract::contract::message::{Message, Role};
+use awaken_runtime_contract::contract::transform::estimate_message_tokens;
 
 /// Find the split point in history that fits the token budget.
 ///
@@ -67,7 +67,7 @@ pub fn adjust_split_for_tool_pairs(history: &[Message], mut split: usize) -> usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::message::ToolCall;
+    use awaken_runtime_contract::contract::message::ToolCall;
     use serde_json::json;
 
     #[test]

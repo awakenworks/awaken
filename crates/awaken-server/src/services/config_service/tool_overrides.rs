@@ -1,5 +1,5 @@
-use awaken_contract::AuditAction;
-use awaken_contract::{ConfigRecord, RecordSource, ToolSpec, ToolSpecPatch, now_ms};
+use awaken_server_contract::AuditAction;
+use awaken_server_contract::{ConfigRecord, RecordSource, ToolSpec, ToolSpecPatch, now_ms};
 use axum::http::HeaderMap;
 use serde_json::{Map, Value};
 

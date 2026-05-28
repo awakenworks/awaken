@@ -1,10 +1,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::commit_coordinator::CommitCoordinator;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
 use awaken_runtime::{
     AgentRuntime, ReplayableScope, ResolutionPolicy, ResolveError, ResolvedRun, ResolvedRunPlan,
@@ -15,6 +11,10 @@ use awaken_runtime::{
     BackendProfile, BackendRequirements, ExecutionPlan, ExecutionRole, ResolvedAgent,
     ResolvedModelBinding,
 };
+use awaken_server_contract::contract::commit_coordinator::CommitCoordinator;
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::suspension::ToolCallResume;
 
 /// Execution boundary used by mailbox dispatch.
 ///
@@ -121,8 +121,8 @@ pub trait RunDispatchExecutor: Send + Sync {
 
 #[cfg(test)]
 fn test_replayable_plan(activation: &RunActivation) -> ResolvedRunPlan {
-    use awaken_contract::contract::versioned_registry::PinnedRegistryManifest;
     use awaken_runtime::{ReplayableScope, ResolvedRun};
+    use awaken_server_contract::contract::versioned_registry::PinnedRegistryManifest;
 
     let agent_id = activation.agent_id().unwrap_or("default");
     let agent = ResolvedAgent::new(agent_id, "model", "system", Arc::new(TestLlmExecutor));
@@ -157,15 +157,15 @@ struct TestLlmExecutor;
 
 #[cfg(test)]
 #[async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for TestLlmExecutor {
+impl awaken_server_contract::contract::executor::LlmExecutor for TestLlmExecutor {
     async fn execute(
         &self,
-        _request: awaken_contract::contract::executor::InferenceRequest,
+        _request: awaken_server_contract::contract::executor::InferenceRequest,
     ) -> Result<
-        awaken_contract::contract::inference::StreamResult,
-        awaken_contract::contract::executor::InferenceExecutionError,
+        awaken_server_contract::contract::inference::StreamResult,
+        awaken_server_contract::contract::executor::InferenceExecutionError,
     > {
-        Ok(awaken_contract::contract::inference::StreamResult {
+        Ok(awaken_server_contract::contract::inference::StreamResult {
             content: Vec::new(),
             tool_calls: Vec::new(),
             usage: None,

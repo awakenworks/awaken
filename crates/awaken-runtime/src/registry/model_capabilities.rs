@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use awaken_contract::registry_spec::{Modalities, Modality, ModelSpec};
+use awaken_runtime_contract::registry_spec::{Modalities, Modality, ModelSpec};
 
 use self::model_capabilities_numeric as numeric;
 
@@ -507,11 +507,11 @@ fn modality_from_str(value: &str) -> Option<Modality> {
 
 /// Normalize a provider-discovered knowledge cutoff, dropping (and logging)
 /// malformed values. Shares the date validation with `ModelSpec` deserialization
-/// via [`awaken_contract::registry_spec::normalize_knowledge_cutoff`]; the only
+/// via [`awaken_runtime_contract::registry_spec::normalize_knowledge_cutoff`]; the only
 /// difference is policy: discovery is untrusted, so a malformed value is
 /// silently dropped here rather than rejected at the boundary.
 fn normalize_knowledge_cutoff(value: &str) -> Option<String> {
-    let normalized = awaken_contract::registry_spec::normalize_knowledge_cutoff(value);
+    let normalized = awaken_runtime_contract::registry_spec::normalize_knowledge_cutoff(value);
     if normalized.is_none() {
         tracing::warn!("provider discovery ignored malformed knowledge cutoff");
     }

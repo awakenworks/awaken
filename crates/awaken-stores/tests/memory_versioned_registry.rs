@@ -1,4 +1,4 @@
-use awaken_contract::contract::versioned_registry::{
+use awaken_server_contract::contract::versioned_registry::{
     ConfigRevisionRef, PublishOutcome, RegistryResourcePublish, VersionRef, VersionedRegistryError,
     VersionedRegistryStore,
 };
@@ -135,8 +135,8 @@ async fn rollback_copies_historical_value_as_next_version() {
 
 #[tokio::test]
 async fn retention_plan_protects_current_publications_pinned_and_young_versions() {
-    use awaken_contract::VersionRef;
-    use awaken_contract::contract::versioned_registry::{
+    use awaken_server_contract::VersionRef;
+    use awaken_server_contract::contract::versioned_registry::{
         RegistryRetentionPolicy, VersionedRegistryRetention,
     };
 
@@ -278,21 +278,25 @@ async fn create_publication_returns_entries_sorted_by_kind_and_id() {
 }
 
 fn version_ref(
-    outcome: &awaken_contract::contract::versioned_registry::PublishOutcome<serde_json::Value>,
-) -> awaken_contract::VersionRef {
+    outcome: &awaken_server_contract::contract::versioned_registry::PublishOutcome<
+        serde_json::Value,
+    >,
+) -> awaken_server_contract::VersionRef {
     let record = match outcome {
-        awaken_contract::contract::versioned_registry::PublishOutcome::Created(record)
-        | awaken_contract::contract::versioned_registry::PublishOutcome::Noop(record) => record,
+        awaken_server_contract::contract::versioned_registry::PublishOutcome::Created(record)
+        | awaken_server_contract::contract::versioned_registry::PublishOutcome::Noop(record) => {
+            record
+        }
     };
-    awaken_contract::VersionRef {
+    awaken_server_contract::VersionRef {
         kind: record.kind.clone(),
         id: record.id.clone(),
         version: record.version,
     }
 }
 
-fn version_ref_named(kind: &str, id: &str, version: u64) -> awaken_contract::VersionRef {
-    awaken_contract::VersionRef {
+fn version_ref_named(kind: &str, id: &str, version: u64) -> awaken_server_contract::VersionRef {
+    awaken_server_contract::VersionRef {
         kind: kind.to_string(),
         id: id.to_string(),
         version,
@@ -327,7 +331,7 @@ async fn rollback_injects_restored_from_metadata_and_rejects_mismatch() {
         .unwrap_err();
     assert!(matches!(
         err,
-        awaken_contract::contract::versioned_registry::VersionedRegistryError::InvalidRequest(_)
+        awaken_server_contract::contract::versioned_registry::VersionedRegistryError::InvalidRequest(_)
     ));
 }
 

@@ -14,7 +14,7 @@
 
 #![allow(dead_code)]
 
-use awaken_contract::contract::mailbox::{MailboxStore, RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::mailbox::{MailboxStore, RunDispatch, RunDispatchStatus};
 use uuid::Uuid;
 
 /// Construct a `RunDispatch` with sensible defaults for conformance tests.
@@ -890,7 +890,7 @@ pub async fn record_dispatch_start_marks_running<S: MailboxStore>(store: &S) {
     assert_eq!(loaded.dispatch_instance_id.as_deref(), Some("attempt-1"));
     assert_eq!(
         loaded.run_status,
-        Some(awaken_contract::contract::lifecycle::RunStatus::Running)
+        Some(awaken_server_contract::contract::lifecycle::RunStatus::Running)
     );
     assert!(loaded.termination.is_none());
     assert!(loaded.run_response.is_none());
@@ -901,8 +901,8 @@ pub async fn record_dispatch_start_marks_running<S: MailboxStore>(store: &S) {
 /// `record_run_result()` requires the active claim and persists the full runtime
 /// result projection.
 pub async fn record_run_result_sets_terminal_projection<S: MailboxStore>(store: &S) {
-    use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-    use awaken_contract::contract::mailbox::RunDispatchResult;
+    use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+    use awaken_server_contract::contract::mailbox::RunDispatchResult;
 
     let dispatch = make_dispatch("d1", "t-result", "r1", 128, 1000);
     store.enqueue(&dispatch).await.unwrap();
@@ -937,8 +937,8 @@ pub async fn record_run_result_sets_terminal_projection<S: MailboxStore>(store: 
 
 /// Runtime projection writes must require an existing claimed dispatch.
 pub async fn record_projection_rejects_missing_or_unclaimed_dispatch<S: MailboxStore>(store: &S) {
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::mailbox::RunDispatchResult;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::mailbox::RunDispatchResult;
 
     let result = RunDispatchResult {
         run_id: "r-missing".to_string(),

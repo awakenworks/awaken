@@ -1,4 +1,4 @@
-use awaken_contract::StateError;
+use awaken_runtime_contract::StateError;
 use thiserror::Error;
 
 /// Runtime-specific errors that wrap [`StateError`] and add variants

@@ -6,10 +6,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::AgentSpec;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{InferenceRequest, LlmExecutor};
-use awaken_contract::contract::message::Message;
+use awaken_runtime_contract::AgentSpec;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::executor::{InferenceRequest, LlmExecutor};
+use awaken_runtime_contract::contract::message::Message;
 use mcp::transport::McpTransportError;
 use mcp::{CreateMessageParams, CreateMessageResult, SamplingContent};
 
@@ -154,7 +154,7 @@ impl DefaultSamplingHandler {
 
     /// Convert an awaken `StreamResult` to MCP `CreateMessageResult`.
     fn convert_result(
-        result: &awaken_contract::contract::inference::StreamResult,
+        result: &awaken_runtime_contract::contract::inference::StreamResult,
         model: &str,
     ) -> CreateMessageResult {
         let text = result.text();
@@ -165,10 +165,16 @@ impl DefaultSamplingHandler {
         }];
 
         let stop_reason = result.stop_reason.map(|sr| match sr {
-            awaken_contract::contract::inference::StopReason::EndTurn => "endTurn".to_string(),
-            awaken_contract::contract::inference::StopReason::MaxTokens => "maxTokens".to_string(),
-            awaken_contract::contract::inference::StopReason::ToolUse => "toolUse".to_string(),
-            awaken_contract::contract::inference::StopReason::StopSequence => {
+            awaken_runtime_contract::contract::inference::StopReason::EndTurn => {
+                "endTurn".to_string()
+            }
+            awaken_runtime_contract::contract::inference::StopReason::MaxTokens => {
+                "maxTokens".to_string()
+            }
+            awaken_runtime_contract::contract::inference::StopReason::ToolUse => {
+                "toolUse".to_string()
+            }
+            awaken_runtime_contract::contract::inference::StopReason::StopSequence => {
                 "stopSequence".to_string()
             }
         });
@@ -266,7 +272,8 @@ impl SamplingHandler for DefaultSamplingHandler {
         let system = Self::system_blocks(&params);
 
         let overrides = {
-            let mut ovr = awaken_contract::contract::inference::InferenceOverride::default();
+            let mut ovr =
+                awaken_runtime_contract::contract::inference::InferenceOverride::default();
             if let Some(temp) = params.temperature {
                 ovr.temperature = Some(temp);
             }
@@ -300,8 +307,8 @@ impl SamplingHandler for DefaultSamplingHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::contract::message::Role;
+    use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_runtime_contract::contract::message::Role;
     use mcp::SamplingMessage;
 
     struct MockLlm {
@@ -313,8 +320,10 @@ mod tests {
         async fn execute(
             &self,
             _request: InferenceRequest,
-        ) -> Result<StreamResult, awaken_contract::contract::executor::InferenceExecutionError>
-        {
+        ) -> Result<
+            StreamResult,
+            awaken_runtime_contract::contract::executor::InferenceExecutionError,
+        > {
             Ok(StreamResult {
                 content: vec![ContentBlock::text(self.response_text.clone())],
                 tool_calls: vec![],

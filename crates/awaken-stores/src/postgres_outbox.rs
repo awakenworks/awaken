@@ -1,14 +1,14 @@
 //! PostgreSQL outbox-store implementation.
 
 use async_trait::async_trait;
-use awaken_contract::contract::event_store::{CanonicalEvent, EventStoreError};
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::event_store::{CanonicalEvent, EventStoreError};
+use awaken_server_contract::contract::outbox::{
     OUTBOX_LANE_CANONICAL, OUTBOX_LANE_PROTOCOL_REPLAY, OUTBOX_TARGET_PROTOCOL_FANOUT,
     OUTBOX_TARGET_PROTOCOL_PROJECTOR, OutboxEnqueueResult, OutboxError, OutboxMessage,
     OutboxMessageDraft, OutboxNackOutcome, OutboxStatus, OutboxStore,
 };
-use awaken_contract::contract::protocol_replay_log::ProtocolReplayRecord;
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::protocol_replay_log::ProtocolReplayRecord;
+use awaken_server_contract::contract::storage::StorageError;
 use sqlx::{Postgres, Row, Transaction};
 
 use crate::postgres::PostgresStore;

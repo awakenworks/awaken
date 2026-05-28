@@ -23,10 +23,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::contract::config_store::{
+use awaken_server_contract::contract::config_store::{
     ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 use awaken_stores::InMemoryStore;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;

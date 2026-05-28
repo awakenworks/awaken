@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use awaken_contract::StateError;
-use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::model::Phase;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::model::Phase;
 
 use crate::SKILLS_ACTIVE_INSTRUCTIONS_PLUGIN_ID;
 use crate::registry::SkillRegistry;
@@ -219,7 +219,7 @@ mod tests {
     use crate::error::SkillError;
     use crate::registry::{InMemorySkillRegistry, SkillRegistry};
     use crate::skill::{ScriptResult, Skill, SkillMeta, SkillResource, SkillResourceKind};
-    use awaken_contract::state::{Snapshot, StateKey, StateMap};
+    use awaken_runtime_contract::state::{Snapshot, StateKey, StateMap};
 
     #[derive(Debug)]
     struct MockSkill {

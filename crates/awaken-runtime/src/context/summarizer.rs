@@ -5,8 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::message::{Message, Role, Visibility};
+use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::contract::message::{Message, Role, Visibility};
 
 use super::plugin::CompactionConfig;
 
@@ -77,7 +77,7 @@ impl ContextSummarizer for DefaultSummarizer {
         let max_tokens = self.config.summary_max_tokens.unwrap_or(1024);
         let model = self.config.summary_model.clone().unwrap_or_default();
 
-        let request = awaken_contract::contract::executor::InferenceRequest {
+        let request = awaken_runtime_contract::contract::executor::InferenceRequest {
             upstream_model: model,
             routing_key: None,
             messages: vec![
@@ -86,10 +86,12 @@ impl ContextSummarizer for DefaultSummarizer {
             ],
             tools: vec![],
             system: vec![],
-            overrides: Some(awaken_contract::contract::inference::InferenceOverride {
-                max_tokens: Some(max_tokens),
-                ..Default::default()
-            }),
+            overrides: Some(
+                awaken_runtime_contract::contract::inference::InferenceOverride {
+                    max_tokens: Some(max_tokens),
+                    ..Default::default()
+                },
+            ),
             enable_prompt_cache: false,
         };
 
@@ -156,7 +158,7 @@ pub fn extract_previous_summary(messages: &[Arc<Message>]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::message::ToolCall;
+    use awaken_runtime_contract::contract::message::ToolCall;
     use serde_json::json;
 
     #[test]
@@ -354,7 +356,7 @@ mod tests {
     #[test]
     fn compaction_config_key_binding() {
         use crate::context::plugin::CompactionConfigKey;
-        use awaken_contract::registry_spec::PluginConfigKey;
+        use awaken_runtime_contract::registry_spec::PluginConfigKey;
         assert_eq!(CompactionConfigKey::KEY, "compaction");
     }
 
@@ -371,26 +373,31 @@ mod tests {
     }
 
     struct CapturingExecutor {
-        request: std::sync::Mutex<Option<awaken_contract::contract::executor::InferenceRequest>>,
+        request:
+            std::sync::Mutex<Option<awaken_runtime_contract::contract::executor::InferenceRequest>>,
     }
 
     #[async_trait::async_trait]
     impl LlmExecutor for CapturingExecutor {
         async fn execute(
             &self,
-            request: awaken_contract::contract::executor::InferenceRequest,
+            request: awaken_runtime_contract::contract::executor::InferenceRequest,
         ) -> Result<
-            awaken_contract::contract::inference::StreamResult,
-            awaken_contract::contract::executor::InferenceExecutionError,
+            awaken_runtime_contract::contract::inference::StreamResult,
+            awaken_runtime_contract::contract::executor::InferenceExecutionError,
         > {
             *self.request.lock().unwrap() = Some(request);
-            Ok(awaken_contract::contract::inference::StreamResult {
-                content: vec![awaken_contract::contract::content::ContentBlock::Text {
-                    text: "summary".into(),
-                }],
+            Ok(awaken_runtime_contract::contract::inference::StreamResult {
+                content: vec![
+                    awaken_runtime_contract::contract::content::ContentBlock::Text {
+                        text: "summary".into(),
+                    },
+                ],
                 tool_calls: vec![],
                 usage: None,
-                stop_reason: Some(awaken_contract::contract::inference::StopReason::EndTurn),
+                stop_reason: Some(
+                    awaken_runtime_contract::contract::inference::StopReason::EndTurn,
+                ),
                 has_incomplete_tool_calls: false,
             })
         }

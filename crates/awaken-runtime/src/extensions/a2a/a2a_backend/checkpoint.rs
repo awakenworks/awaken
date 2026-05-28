@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use awaken_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitError};
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::storage::RunRecord;
-use awaken_contract::now_ms;
-use awaken_contract::state::PersistedState;
+use awaken_runtime_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitError};
+use awaken_runtime_contract::contract::lifecycle::RunStatus;
+use awaken_runtime_contract::contract::storage::RunRecord;
+use awaken_runtime_contract::now_ms;
+use awaken_runtime_contract::state::PersistedState;
 
 use crate::backend::ExecutionBackendError;
 
@@ -136,10 +136,10 @@ mod tests {
     use super::*;
     use crate::backend::{BackendControl, BackendRootRunRequest};
     use crate::registry::AgentResolver;
-    use awaken_contract::contract::event_sink::NullEventSink;
-    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-    use awaken_contract::contract::message::Message;
-    use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
+    use awaken_runtime_contract::contract::event_sink::NullEventSink;
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_runtime_contract::contract::message::Message;
+    use awaken_runtime_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
     use awaken_stores::{InMemoryStore, MemoryCommitCoordinator};
     use std::collections::HashMap;
     use std::sync::Arc;

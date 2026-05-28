@@ -1,12 +1,12 @@
 use super::*;
 use async_trait::async_trait;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{DeliveryGranularity, Message};
-use awaken_contract::contract::storage::{RunStore, ThreadStore};
-use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_runtime::RunActivation;
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::message::{DeliveryGranularity, Message};
+use awaken_server_contract::contract::storage::{RunStore, ThreadStore};
+use awaken_server_contract::contract::suspension::ToolCallResume;
 use awaken_stores::{InMemoryMailboxStore, InMemoryStore, PendingMessageStore};
 
 use crate::mailbox::{MailboxConfig, RunDispatchExecutor};

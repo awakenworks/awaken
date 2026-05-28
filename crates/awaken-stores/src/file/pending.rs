@@ -1,14 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use awaken_contract::contract::message::{
+use awaken_server_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
     pending_queue_revision, select_pending_for_freeze, select_pending_for_freeze_for_run,
 };
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::storage::{
     RunRecord, StorageError, ThreadStore, checkpoint_parent_thread_id,
 };
-use awaken_contract::thread::Thread;
+use awaken_server_contract::thread::Thread;
 
 use crate::PendingMessageStore;
 
@@ -303,7 +303,7 @@ impl PendingMessageStore for FileStore {
             .into_iter()
             .map(|record| record.message)
             .collect::<Vec<_>>();
-        awaken_contract::contract::storage::message_append::validate_append_only_delta(
+        awaken_server_contract::contract::storage::message_append::validate_append_only_delta(
             &committed
                 .iter()
                 .map(|record| record.message.clone())
@@ -387,7 +387,7 @@ impl PendingMessageStore for FileStore {
             .into_iter()
             .map(|record| record.message)
             .collect::<Vec<_>>();
-        awaken_contract::contract::storage::message_append::validate_append_only_delta(
+        awaken_server_contract::contract::storage::message_append::validate_append_only_delta(
             &committed
                 .iter()
                 .map(|record| record.message.clone())
@@ -522,7 +522,7 @@ impl PendingMessageStore for FileStore {
             .into_iter()
             .map(|record| record.message)
             .collect::<Vec<_>>();
-        awaken_contract::contract::storage::message_append::validate_append_only_delta(
+        awaken_server_contract::contract::storage::message_append::validate_append_only_delta(
             &committed
                 .iter()
                 .map(|record| record.message.clone())

@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use awaken_contract::{ModelPoolSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::registry::model_capabilities::{
     ModelCapabilityPatch, normalize_capability_model_name, parse_provider_model_capabilities,
 };
+use awaken_server_contract::{ModelPoolSpec, ModelSpec, ProviderSpec};
 use futures::future::join_all;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 

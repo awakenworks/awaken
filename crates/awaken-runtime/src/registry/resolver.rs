@@ -1,11 +1,11 @@
 //! Agent resolution: dynamic lookup of agent config + execution environment.
 
 use crate::backend::{ExecutionBackend, ExecutionBackendError, ExecutionBackendFactory};
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::inference::ContextWindowPolicy;
-use awaken_contract::contract::stream_checkpoint::StreamCheckpointStore;
-use awaken_contract::contract::tool::Tool;
-use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
+use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
+use awaken_runtime_contract::contract::stream_checkpoint::StreamCheckpointStore;
+use awaken_runtime_contract::contract::tool::Tool;
+use awaken_runtime_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -192,7 +192,7 @@ impl ResolvedAgent {
         self
     }
 
-    pub fn tool_descriptors(&self) -> Vec<awaken_contract::contract::tool::ToolDescriptor> {
+    pub fn tool_descriptors(&self) -> Vec<awaken_runtime_contract::contract::tool::ToolDescriptor> {
         let mut descs: Vec<_> = self.tools.values().map(|t| t.descriptor()).collect();
         descs.sort_by(|a, b| a.id.cmp(&b.id));
         descs
@@ -303,9 +303,9 @@ pub trait AgentResolver: Send + Sync {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::contract::tool::{
+    use awaken_runtime_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+    use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_runtime_contract::contract::tool::{
         ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
     use serde_json::Value;
@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn with_context_policy() {
-        use awaken_contract::contract::inference::ContextWindowPolicy;
+        use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
 
         let policy = ContextWindowPolicy {
             max_context_tokens: 8000,
@@ -551,7 +551,7 @@ mod tests {
                 &self,
                 _transcript: &str,
                 _previous_summary: Option<&str>,
-                _executor: &dyn awaken_contract::contract::executor::LlmExecutor,
+                _executor: &dyn awaken_runtime_contract::contract::executor::LlmExecutor,
             ) -> Result<String, SummarizationError> {
                 Ok("summary".into())
             }
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn builder_all_options_set() {
-        use awaken_contract::contract::inference::ContextWindowPolicy;
+        use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
 
         let policy = ContextWindowPolicy {
             max_context_tokens: 16000,

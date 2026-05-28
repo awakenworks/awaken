@@ -5,13 +5,13 @@
 
 use std::time::Instant;
 
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::mailbox::{
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::mailbox::{
     LiveDeliveryOutcome, LiveRunCommand, LiveRunTarget, MailboxInterrupt, MailboxInterruptDetails,
     RunDispatch, RunDispatchStatus,
 };
-use awaken_contract::contract::storage::RunRecord;
-use awaken_contract::now_ms;
+use awaken_server_contract::contract::storage::RunRecord;
+use awaken_server_contract::now_ms;
 
 use super::{
     Mailbox, MailboxError, REMOTE_CANCEL_WAIT_MS, TERMINAL_RECONCILE_BATCH,

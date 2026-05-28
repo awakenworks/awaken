@@ -128,7 +128,7 @@ pub(super) async fn mint(
             })?;
 
     Ok(Token {
-        bearer: awaken_contract::secret::RedactedString::new(oauth.access_token),
+        bearer: awaken_runtime_contract::secret::RedactedString::new(oauth.access_token),
         expires_at: SystemTime::now() + Duration::from_secs(oauth.expires_in),
     })
 }
@@ -184,7 +184,7 @@ mod tests {
     use super::*;
     use crate::credentials::material::GOOGLE_OAUTH_TOKEN_URI;
     use crate::credentials::material::GoogleServiceAccountKey;
-    use awaken_contract::secret::RedactedString;
+    use awaken_runtime_contract::secret::RedactedString;
     use std::sync::Arc;
 
     /// Generated locally with `openssl genpkey -algorithm RSA -pkeyopt

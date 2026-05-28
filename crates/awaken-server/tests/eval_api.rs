@@ -16,10 +16,6 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use awaken_contract::config_record::{ConfigRecord, RecordMeta};
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::contract::event_store::{EventReader, EventScope, EventVisibility};
-use awaken_contract::contract::storage::StorageError;
 use awaken_eval::test_support::UnusedExecutor;
 use awaken_eval::{
     DATASETS_NAMESPACE, DatasetSpec, EvalRun, EvalRunExecutionMode, EvalRunItem, EvalRunStore,
@@ -35,6 +31,10 @@ use awaken_server::app::{
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::ConfigRuntimeManager;
+use awaken_server_contract::config_record::{ConfigRecord, RecordMeta};
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::contract::event_store::{EventReader, EventScope, EventVisibility};
+use awaken_server_contract::contract::storage::StorageError;
 use awaken_stores::{InMemoryEventStore, InMemoryStore};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -74,7 +74,7 @@ async fn build_test_app_without_run_store() -> axum::Router {
     // EvalRunStore attached so the online handler must refuse
     // persist=true BEFORE any provider call burns tokens.
     let thread_store = Arc::new(InMemoryStore::new());
-    let config_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+    let config_store: Arc<dyn awaken_server_contract::contract::config_store::ConfigStore> =
         Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()

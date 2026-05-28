@@ -4,8 +4,8 @@
 //! complete tool calls, this module provides helpers to inject a continuation
 //! prompt and re-enter inference.
 
-use awaken_contract::contract::inference::StreamResult;
-use awaken_contract::contract::message::{Message, Visibility};
+use awaken_runtime_contract::contract::inference::StreamResult;
+use awaken_runtime_contract::contract::message::{Message, Visibility};
 
 /// Continuation prompt sent to the model after truncation.
 const CONTINUATION_PROMPT: &str = "Your response was cut off because it exceeded the output token limit. \
@@ -61,9 +61,9 @@ pub fn continuation_message() -> Message {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::inference::{StopReason, TokenUsage};
-    use awaken_contract::contract::message::ToolCall;
+    use awaken_runtime_contract::contract::content::ContentBlock;
+    use awaken_runtime_contract::contract::inference::{StopReason, TokenUsage};
+    use awaken_runtime_contract::contract::message::ToolCall;
     use serde_json::json;
 
     // =====================================================================
@@ -325,7 +325,10 @@ mod tests {
     fn continuation_message_is_internal() {
         let msg = continuation_message();
         assert_eq!(msg.visibility, Visibility::Internal);
-        assert_eq!(msg.role, awaken_contract::contract::message::Role::User);
+        assert_eq!(
+            msg.role,
+            awaken_runtime_contract::contract::message::Role::User
+        );
     }
 
     #[test]

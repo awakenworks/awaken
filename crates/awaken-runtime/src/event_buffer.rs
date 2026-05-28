@@ -1,7 +1,9 @@
 //! Runtime-owned staging buffer for canonical event drafts.
 
-use awaken_contract::contract::commit_coordinator::{CanonicalEventStager, StagedCanonicalEvent};
-use awaken_contract::contract::event_store::CanonicalEventDraft;
+use awaken_runtime_contract::contract::commit_coordinator::{
+    CanonicalEventStager, StagedCanonicalEvent,
+};
+use awaken_runtime_contract::contract::event_store::CanonicalEventDraft;
 use parking_lot::Mutex;
 
 /// In-process staging buffer for canonical event drafts produced during one
@@ -42,7 +44,7 @@ impl CanonicalEventStager for EventBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::event_store::{
+    use awaken_runtime_contract::contract::event_store::{
         CanonicalEventDraft, CanonicalEventKind, EventScope, EventVisibility,
     };
     use serde_json::json;

@@ -4,18 +4,18 @@
 //! protocol encoders.
 
 use async_trait::async_trait;
-use awaken_contract::ModelSpec;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::transport::Transcoder;
-use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::protocols::{
     acp::encoder::AcpEncoder, ag_ui::encoder::AgUiEncoder, ai_sdk_v6::encoder::AiSdkEncoder,
 };
 use awaken_server::routes::build_router;
+use awaken_server_contract::ModelSpec;
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::contract::transport::Transcoder;
+use awaken_server_contract::registry_spec::AgentSpec;
 use awaken_stores::MemoryCommitCoordinator;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
@@ -29,7 +29,7 @@ use tower::ServiceExt;
 struct ImmediateExecutor;
 
 #[async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for ImmediateExecutor {
+impl awaken_server_contract::contract::executor::LlmExecutor for ImmediateExecutor {
     async fn execute(
         &self,
         _request: InferenceRequest,
@@ -61,12 +61,13 @@ fn make_app() -> axum::Router {
         let builder = AgentRuntimeBuilder::new()
             .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(
-                Arc::clone(&store) as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>
-            )
+            .with_thread_run_store(Arc::clone(&store)
+                as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>)
             .with_commit_coordinator(
                 coordinator
-                    as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>,
+                    as Arc<
+                        dyn awaken_server_contract::contract::commit_coordinator::CommitCoordinator,
+                    >,
             )
             .with_agent_spec(AgentSpec {
                 id: "test".into(),
@@ -81,14 +82,14 @@ fn make_app() -> axum::Router {
     let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),
         mailbox_store,
-        Arc::clone(&store) as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
+        Arc::clone(&store) as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>,
         "test".to_string(),
         awaken_server::mailbox::MailboxConfig::default(),
     ));
     let state = ServerState::new(
         runtime.clone(),
         mailbox,
-        Arc::clone(&store) as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
+        Arc::clone(&store) as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>,
         runtime.resolver_arc(),
         ServerConfig::default(),
     );
@@ -153,7 +154,7 @@ fn run_start_has_output_in_agui_and_aisdk() {
 
 #[test]
 fn run_finish_has_output_in_agui_and_aisdk() {
-    use awaken_contract::contract::lifecycle::TerminationReason;
+    use awaken_server_contract::contract::lifecycle::TerminationReason;
 
     let ev = AgentEvent::RunFinish {
         thread_id: "t1".into(),

@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event_store::{
     AppendOptions, AppendResult, CanonicalEvent, CanonicalEventDraft, CanonicalEventId,
     CanonicalEventKind, EventCursor, EventPage, EventReader, EventScope, EventStoreError,
     EventVisibility, EventWriter,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 use sqlx::{Postgres, Row, Transaction};
 
 use crate::postgres::PostgresStore;

@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use awaken_contract::contract::message::{
+use awaken_server_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
     pending_queue_revision, select_pending_for_freeze, select_pending_for_freeze_for_run,
 };
-use awaken_contract::contract::storage::{RunRecord, StorageError, message_append};
+use awaken_server_contract::contract::storage::{RunRecord, StorageError, message_append};
 use sqlx::{Postgres, Row, Transaction};
 use std::collections::HashSet;
 

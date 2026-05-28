@@ -35,39 +35,43 @@ pub use crate::{KeyScope, MergeStrategy, StateKey, StateKeyOptions};
 pub use crate::{Snapshot, StateError, StateMap};
 
 // ── Tools ──
-pub use awaken_contract::contract::tool::{
+pub use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
     ToolValidationError, TypedTool,
 };
-pub use awaken_contract::contract::tool_schema::{
+pub use awaken_runtime_contract::contract::tool_schema::{
     generate_tool_schema, sanitize_for_llm, validate_against_schema,
 };
 
 // ── Tool interception (ToolGate decisions) ──
-pub use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+pub use awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload;
 
 // ── Context messages (system reminders / prompt injection) ──
-pub use awaken_contract::contract::context_message::{ContextMessage, ContextMessageTarget};
+pub use awaken_runtime_contract::contract::context_message::{
+    ContextMessage, ContextMessageTarget,
+};
 
 // ── Messages & content ──
-pub use awaken_contract::contract::content::ContentBlock;
-pub use awaken_contract::contract::message::{Message, Role, Visibility};
+pub use awaken_runtime_contract::contract::content::ContentBlock;
+pub use awaken_runtime_contract::contract::message::{Message, Role, Visibility};
 
 // ── Inference ──
-pub use awaken_contract::contract::executor::{InferenceRequest, LlmExecutor};
-pub use awaken_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
+pub use awaken_runtime_contract::contract::executor::{InferenceRequest, LlmExecutor};
+pub use awaken_runtime_contract::contract::inference::{
+    InferenceOverride, StopReason, StreamResult,
+};
 
 // ── Events ──
-pub use awaken_contract::contract::event::AgentEvent;
-pub use awaken_contract::contract::event_sink::EventSink;
+pub use awaken_runtime_contract::contract::event::AgentEvent;
+pub use awaken_runtime_contract::contract::event_sink::EventSink;
 
 // ── Lifecycle ──
-pub use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
+pub use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
 
 // ── Storage ──
-pub use awaken_contract::MailboxStore;
-pub use awaken_contract::contract::storage::ThreadRunStore;
-pub use awaken_contract::{
+pub use awaken_runtime_contract::contract::storage::ThreadRunStore;
+pub use awaken_server_contract::MailboxStore;
+pub use awaken_server_contract::{
     RequestSurface, ScopeContext, ScopeId, ScopedConfigStore, ScopedMailboxStore,
     ScopedOutboxStore, ScopedProtocolReplayLog, ScopedThreadRunStore, ScopedVersionedRegistry,
 };

@@ -153,7 +153,7 @@ impl AgentEvent {
     /// # Examples
     ///
     /// ```
-    /// use awaken_contract::contract::event::AgentEvent;
+    /// use awaken_runtime_contract::contract::event::AgentEvent;
     /// use serde_json::json;
     ///
     /// let result = Some(json!({"response": "Hello world"}));

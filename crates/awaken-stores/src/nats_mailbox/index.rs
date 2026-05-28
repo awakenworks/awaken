@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::storage::StorageError;
 use tokio::sync::RwLock;
 
 use super::{codec, keys, kv_helpers, metrics, ops_write};

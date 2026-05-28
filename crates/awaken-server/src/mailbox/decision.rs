@@ -4,11 +4,11 @@
 //! the async live-delivery path lives here so cancel.rs is not burdened with
 //! decision-specific routing.
 
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::{
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::mailbox::{
     LiveDeliveryOutcome, LiveRunCommand, LiveRunTarget, RunDispatchStatus,
 };
-use awaken_contract::contract::suspension::ToolCallResume;
+use awaken_server_contract::contract::suspension::ToolCallResume;
 
 use super::{Mailbox, MailboxError, live_target_for_dispatch, live_target_for_run};
 

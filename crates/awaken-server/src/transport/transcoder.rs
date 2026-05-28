@@ -1,7 +1,7 @@
 //! Protocol-specific event encoding utilities.
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::transport::Transcoder;
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::transport::Transcoder;
 use bytes::Bytes;
 use serde::Serialize;
 
@@ -67,7 +67,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::transport::Identity;
+    use awaken_server_contract::contract::transport::Identity;
 
     #[test]
     fn encode_identity_event_to_sse() {
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn encode_run_finish_event_identity() {
-        use awaken_contract::contract::lifecycle::TerminationReason;
+        use awaken_server_contract::contract::lifecycle::TerminationReason;
         let mut encoder = Identity::<AgentEvent>::default();
         let event = AgentEvent::RunFinish {
             thread_id: "t1".into(),

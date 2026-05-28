@@ -1,4 +1,4 @@
-use awaken_contract::contract::tool::{ToolError, ToolResult};
+use awaken_runtime_contract::contract::tool::{ToolError, ToolResult};
 
 pub(crate) fn tool_error_result(tool_name: &str, error: ToolError) -> ToolResult {
     let timed_out = matches!(error, ToolError::Timeout(_));

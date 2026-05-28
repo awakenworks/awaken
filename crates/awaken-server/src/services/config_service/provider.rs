@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use awaken_contract::{AgentSpec, ConfigRecord, ProviderSpec};
 use awaken_runtime::registry::{
     ProviderRemovalPreview, SerializableRegistryDiagnostic, diagnose_registry_set_serializable,
 };
+use awaken_server_contract::{AgentSpec, ConfigRecord, ProviderSpec};
 use serde_json::{Map, Value};
 
 use super::normalization::into_object;

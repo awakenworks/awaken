@@ -1,4 +1,4 @@
-use awaken_contract::{
+use awaken_server_contract::{
     AgentSpec, ConfigRecord, ConfigRevisionRef, McpServerSpec, ModelPoolSpec, ModelSpec,
     ProviderSpec, SkillSpec, ToolSpec, validate_unique_model_ids,
 };
@@ -81,7 +81,9 @@ fn config_revision_refs(
     for (id, value) in entries {
         let record: ConfigRecord<Value> = ConfigRecord::from_value(value.clone())
             .map_err(|error| {
-                awaken_contract::contract::storage::StorageError::Serialization(error.to_string())
+                awaken_server_contract::contract::storage::StorageError::Serialization(
+                    error.to_string(),
+                )
             })
             .map_err(ConfigRuntimeError::Storage)?;
         if record.meta.hidden {
@@ -99,8 +101,8 @@ fn config_revision_refs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::storage::StorageError;
-    use awaken_contract::{AgentSpec, ConfigRecord, RecordMeta};
+    use awaken_server_contract::contract::storage::StorageError;
+    use awaken_server_contract::{AgentSpec, ConfigRecord, RecordMeta};
     use serde_json::json;
 
     use super::super::{ConfigRuntimeError, deserialize_namespace};
@@ -243,7 +245,7 @@ mod tests {
         let (manager, store) = super::super::tests::make_manager_with_store().await;
 
         let make_entry = |store_key: &str, model_id: &str| {
-            let spec = awaken_contract::ModelSpec::new(model_id, "boot", "boot-model");
+            let spec = awaken_server_contract::ModelSpec::new(model_id, "boot", "boot-model");
             let record = ConfigRecord {
                 spec,
                 meta: RecordMeta::new_user(),

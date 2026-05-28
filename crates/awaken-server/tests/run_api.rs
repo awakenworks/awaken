@@ -8,16 +8,6 @@
 //! read-only (list, get).
 
 use async_trait::async_trait;
-use awaken_contract::ModelSpec;
-use awaken_contract::contract::content::extract_text;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
-use awaken_contract::contract::versioned_registry::PinnedRegistryManifest;
-use awaken_contract::registry_spec::AgentSpec;
-use awaken_contract::registry_spec::RemoteEndpoint;
-use awaken_contract::{RequestSurface, ScopeContext, ScopeId, scoped_key};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::extensions::a2a::{
     AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
@@ -26,6 +16,16 @@ use awaken_runtime::extensions::a2a::{
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_server::scope::{HttpScopeProvider, ScopeResolveError};
+use awaken_server_contract::ModelSpec;
+use awaken_server_contract::contract::content::extract_text;
+use awaken_server_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
+use awaken_server_contract::contract::versioned_registry::PinnedRegistryManifest;
+use awaken_server_contract::registry_spec::AgentSpec;
+use awaken_server_contract::registry_spec::RemoteEndpoint;
+use awaken_server_contract::{RequestSurface, ScopeContext, ScopeId, scoped_key};
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::http::request::Parts;
@@ -90,7 +90,7 @@ impl awaken_runtime::Resolver for TestRunResolver {
 struct ImmediateExecutor;
 
 #[async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for ImmediateExecutor {
+impl awaken_server_contract::contract::executor::LlmExecutor for ImmediateExecutor {
     async fn execute(
         &self,
         _request: InferenceRequest,
@@ -112,7 +112,7 @@ impl awaken_contract::contract::executor::LlmExecutor for ImmediateExecutor {
 struct SlowExecutor;
 
 #[async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for SlowExecutor {
+impl awaken_server_contract::contract::executor::LlmExecutor for SlowExecutor {
     async fn execute(
         &self,
         _request: InferenceRequest,
@@ -135,7 +135,7 @@ impl awaken_contract::contract::executor::LlmExecutor for SlowExecutor {
 struct PreviewInspectorExecutor;
 
 #[async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for PreviewInspectorExecutor {
+impl awaken_server_contract::contract::executor::LlmExecutor for PreviewInspectorExecutor {
     async fn execute(
         &self,
         request: InferenceRequest,
@@ -144,7 +144,9 @@ impl awaken_contract::contract::executor::LlmExecutor for PreviewInspectorExecut
             request
                 .messages
                 .iter()
-                .find(|message| message.role == awaken_contract::contract::message::Role::System)
+                .find(|message| {
+                    message.role == awaken_server_contract::contract::message::Role::System
+                })
                 .map(|message| message.text())
                 .unwrap_or_default()
         } else {
@@ -158,9 +160,11 @@ impl awaken_contract::contract::executor::LlmExecutor for PreviewInspectorExecut
             .join(",");
 
         Ok(StreamResult {
-            content: vec![awaken_contract::contract::content::ContentBlock::text(
-                format!("system={system};roles={roles}"),
-            )],
+            content: vec![
+                awaken_server_contract::contract::content::ContentBlock::text(format!(
+                    "system={system};roles={roles}"
+                )),
+            ],
             tool_calls: vec![],
             usage: Some(TokenUsage::default()),
             stop_reason: Some(StopReason::EndTurn),
@@ -349,7 +353,7 @@ fn make_header_scoped_test_app() -> TestApp {
 }
 
 fn make_test_app_with_executor(
-    executor: Arc<dyn awaken_contract::contract::executor::LlmExecutor>,
+    executor: Arc<dyn awaken_server_contract::contract::executor::LlmExecutor>,
 ) -> TestApp {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
@@ -1032,7 +1036,7 @@ async fn ai_sdk_agent_run_supports_remote_root_agents() {
         .expect("messages should be persisted");
     assert!(
         messages.iter().any(|message| {
-            message.role == awaken_contract::contract::message::Role::Assistant
+            message.role == awaken_server_contract::contract::message::Role::Assistant
                 && message.text().contains("hello from remote root")
         }),
         "assistant reply should be persisted for remote root runs"
@@ -1518,7 +1522,7 @@ fn run_record_terminal_status() {
 
 #[test]
 fn run_query_defaults() {
-    use awaken_contract::contract::storage::RunQuery;
+    use awaken_server_contract::contract::storage::RunQuery;
     let q = RunQuery::default();
     assert_eq!(q.offset, 0);
     assert_eq!(q.limit, 50);

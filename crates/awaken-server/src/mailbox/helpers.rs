@@ -5,16 +5,16 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex as SyncMutex;
 use tokio::sync::{Mutex, MutexGuard, RwLock};
 
-use awaken_contract::contract::identity::RunOrigin;
-use awaken_contract::contract::mailbox::{
+use awaken_runtime::RunActivation;
+use awaken_server_contract::contract::identity::RunOrigin;
+use awaken_server_contract::contract::mailbox::{
     LiveRunTarget, RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::run::RunInputSnapshot;
-use awaken_contract::contract::storage::{MessageSeqRange, RunMessageInput, RunRecord};
-use awaken_contract::contract::tool_intercept::RunMode;
-use awaken_contract::now_ms;
-use awaken_runtime::RunActivation;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::run::RunInputSnapshot;
+use awaken_server_contract::contract::storage::{MessageSeqRange, RunMessageInput, RunRecord};
+use awaken_server_contract::contract::tool_intercept::RunMode;
+use awaken_server_contract::now_ms;
 
 use super::{
     DISPATCH_SIGNAL_BATCH_DEFAULT, DISPATCH_SIGNAL_BATCH_ENV,
@@ -134,7 +134,7 @@ pub(super) fn normalize_message_ids(messages: &[Message]) -> Vec<Message> {
         .cloned()
         .map(|mut message| {
             if message.id.as_deref().map(str::is_empty).unwrap_or(true) {
-                message.id = Some(awaken_contract::contract::message::gen_message_id());
+                message.id = Some(awaken_server_contract::contract::message::gen_message_id());
             }
             message
         })
@@ -162,7 +162,7 @@ pub(super) fn mailbox_run_result(
         awaken_runtime::loop_runner::AgentLoopError,
     >,
 ) -> RunDispatchResult {
-    use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
+    use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
 
     match result {
         Ok(run) => {
@@ -194,14 +194,14 @@ pub(super) fn mailbox_run_identity(
     dispatch: &RunDispatch,
     run_id: &str,
     dispatch_instance_id: &str,
-) -> awaken_contract::contract::identity::RunIdentity {
-    awaken_contract::contract::identity::RunIdentity::new(
+) -> awaken_server_contract::contract::identity::RunIdentity {
+    awaken_server_contract::contract::identity::RunIdentity::new(
         dispatch.thread_id.clone(),
         None,
         run_id.to_string(),
         None,
         String::new(),
-        awaken_contract::contract::identity::RunOrigin::Internal,
+        awaken_server_contract::contract::identity::RunOrigin::Internal,
     )
     .with_dispatch_id(dispatch.dispatch_id.clone())
     .with_session_id(dispatch_instance_id.to_string())

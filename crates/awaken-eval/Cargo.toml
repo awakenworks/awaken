@@ -7,7 +7,7 @@ publish = false
 description = "Fixture-driven replay and scoring framework for awaken agent runs"
 
 [dependencies]
-awaken-contract = { workspace = true }
+awaken-runtime-contract = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-ext-observability = { workspace = true }
 awaken-stores = { workspace = true }

@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use awaken_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
 use awaken_protocol_a2a::{AgentCard, AgentInterface};
+use awaken_runtime_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
 
 use super::traits::AgentSpecRegistry;
 

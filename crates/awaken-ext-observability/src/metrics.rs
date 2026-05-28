@@ -199,7 +199,7 @@ pub struct GenAISpan {
     /// Assistant text content blocks returned by the LLM, captured only when
     /// `ObservabilityPlugin::with_content_capture(Enabled)` is set on the
     /// plugin (default: disabled). Stored as opaque JSON so this crate
-    /// stays decoupled from `awaken_contract::contract::content::ContentBlock`
+    /// stays decoupled from `awaken_runtime_contract::contract::content::ContentBlock`
     /// evolution; ADR-0032 D5 (`awaken-eval` trace→fixture converter)
     /// deserialises it back into the concrete contract type.
     ///

@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use awaken_contract::ScopeContext;
-use awaken_contract::contract::protocol_replay_log::{
+use awaken_server_contract::ScopeContext;
+use awaken_server_contract::contract::protocol_replay_log::{
     ProtocolReplayCursor, ProtocolReplayError, ProtocolReplayLog, ProtocolReplayRecord,
     ProtocolStreamKey, ScopedProtocolReplayLog,
 };
@@ -145,18 +145,20 @@ mod tests {
 
     #[test]
     fn record_frame_uses_protocol_cursor_as_sse_id() {
-        let draft = awaken_contract::contract::protocol_replay_log::ProtocolReplayDraft::new(
-            "thread:t1",
-            AG_UI_PROTOCOL,
-            AG_UI_PROTOCOL_VERSION,
-            crate::protocol_projector::AG_UI_PROJECTOR_VERSION,
-            "wire-1",
-            "run_started",
-            br#"{"type":"run_started"}"#.to_vec(),
-        )
-        .unwrap();
+        let draft =
+            awaken_server_contract::contract::protocol_replay_log::ProtocolReplayDraft::new(
+                "thread:t1",
+                AG_UI_PROTOCOL,
+                AG_UI_PROTOCOL_VERSION,
+                crate::protocol_projector::AG_UI_PROJECTOR_VERSION,
+                "wire-1",
+                "run_started",
+                br#"{"type":"run_started"}"#.to_vec(),
+            )
+            .unwrap();
         let record = ProtocolReplayRecord::from_append(
-            awaken_contract::contract::protocol_replay_log::ProtocolReplayId::new("pr_1").unwrap(),
+            awaken_server_contract::contract::protocol_replay_log::ProtocolReplayId::new("pr_1")
+                .unwrap(),
             ProtocolReplayCursor::new("cur_1").unwrap(),
             42,
             draft,

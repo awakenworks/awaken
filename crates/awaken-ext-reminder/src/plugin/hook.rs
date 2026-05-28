@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use awaken_contract::{PluginConfigKey, StateError};
 use awaken_runtime::agent::state::AddContextMessage;
 use awaken_runtime::phase::{PhaseContext, PhaseHook};
 use awaken_runtime::state::StateCommand;
+use awaken_runtime_contract::{PluginConfigKey, StateError};
 use awaken_tool_pattern::pattern_matches;
 
 use crate::config::{ReminderConfigKey, ReminderRulesConfig};

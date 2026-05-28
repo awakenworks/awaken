@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::content::{ContentBlock, DocumentSource};
-use awaken_contract::contract::executor::{
+use awaken_runtime_contract::contract::content::{ContentBlock, DocumentSource};
+use awaken_runtime_contract::contract::executor::{
     InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor,
 };
-use awaken_contract::contract::inference::StreamResult;
-use awaken_contract::registry_spec::{Modality, ModelSpec};
+use awaken_runtime_contract::contract::inference::StreamResult;
+use awaken_runtime_contract::registry_spec::{Modality, ModelSpec};
 
 use crate::registry::model_capabilities::CapabilitySource;
 
@@ -166,9 +166,9 @@ fn validate_modality(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::message::Message;
-    use awaken_contract::registry_spec::Modalities;
+    use awaken_runtime_contract::contract::content::ContentBlock;
+    use awaken_runtime_contract::contract::message::Message;
+    use awaken_runtime_contract::registry_spec::Modalities;
 
     #[derive(Default)]
     struct CountingExecutor {

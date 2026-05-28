@@ -27,14 +27,14 @@ use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::registry::AgentResolver;
 use crate::state::MutationBatch;
 use async_trait::async_trait;
-use awaken_contract::StateError;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::inference::InferenceOverride;
-use awaken_contract::contract::message::{DeliveryBoundary, Message};
-use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_contract::contract::suspension::ToolCallResume;
-use awaken_contract::contract::tool::{ToolResult, ToolStatus};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::inference::InferenceOverride;
+use awaken_runtime_contract::contract::message::{DeliveryBoundary, Message};
+use awaken_runtime_contract::contract::storage::ThreadRunStore;
+use awaken_runtime_contract::contract::suspension::ToolCallResume;
+use awaken_runtime_contract::contract::tool::{ToolResult, ToolStatus};
 use futures::channel::mpsc;
 use serde_json::Value;
 
@@ -60,7 +60,7 @@ impl crate::plugins::Plugin for LoopStatePlugin {
     fn register(
         &self,
         r: &mut crate::plugins::PluginRegistrar,
-    ) -> Result<(), awaken_contract::StateError> {
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         use crate::agent::state::{ContextMessageStore, ContextThrottleState};
         use crate::state::{KeyScope, StateKeyOptions};
 
@@ -84,20 +84,20 @@ pub enum AgentLoopError {
     #[error("inference failed: {0}")]
     InferenceFailed(String),
     /// Structured inference failure that preserves the upstream
-    /// [`InferenceExecutionError`](awaken_contract::contract::executor::InferenceExecutionError)
+    /// [`InferenceExecutionError`](awaken_runtime_contract::contract::executor::InferenceExecutionError)
     /// classification. Every production inference fault flows through here
     /// (see `inference::drive_one_stream`), so downstream dispatch can consult
-    /// [`is_retryable`](awaken_contract::contract::executor::InferenceExecutionError::is_retryable)
-    /// and [`retry_after`](awaken_contract::contract::executor::InferenceExecutionError::retry_after)
+    /// [`is_retryable`](awaken_runtime_contract::contract::executor::InferenceExecutionError::is_retryable)
+    /// and [`retry_after`](awaken_runtime_contract::contract::executor::InferenceExecutionError::retry_after)
     /// to nack-with-backoff vs dead-letter, instead of blindly retrying a
     /// permanent fault (bad credentials, exhausted quota, context overflow)
     /// until `max_attempts` is burned.
     #[error("inference failed: {0}")]
-    Inference(#[from] awaken_contract::contract::executor::InferenceExecutionError),
+    Inference(#[from] awaken_runtime_contract::contract::executor::InferenceExecutionError),
     #[error("storage failed: {0}")]
     StorageError(String),
     #[error("phase error: {0}")]
-    PhaseError(#[from] awaken_contract::StateError),
+    PhaseError(#[from] awaken_runtime_contract::StateError),
     #[error("runtime error: {0}")]
     RuntimeError(#[from] crate::error::RuntimeError),
     #[error("invalid resume: {0}")]
@@ -115,7 +115,7 @@ impl From<crate::execution::executor::ToolExecutorError> for AgentLoopError {
 pub struct AgentRunResult {
     pub run_id: String,
     pub response: String,
-    pub termination: awaken_contract::contract::lifecycle::TerminationReason,
+    pub termination: awaken_runtime_contract::contract::lifecycle::TerminationReason,
     pub steps: usize,
 }
 
@@ -146,12 +146,12 @@ pub trait PendingBoundaryHandler: Send + Sync {
 
 // -- Shared helpers --
 
-pub(crate) use awaken_contract::now_ms;
+pub(crate) use awaken_runtime_contract::now_ms;
 
 fn commit_update<S: crate::state::StateKey>(
     store: &crate::state::StateStore,
     update: S::Update,
-) -> Result<(), awaken_contract::StateError> {
+) -> Result<(), awaken_runtime_contract::StateError> {
     let mut patch = MutationBatch::new();
     patch.update::<S>(update);
     store.commit(patch)?;
@@ -161,7 +161,7 @@ fn commit_update<S: crate::state::StateKey>(
 
 fn clear_pending_scheduled_actions_for_terminal_run<S: crate::state::StateKey>(
     store: &crate::state::StateStore,
-) -> Result<(), awaken_contract::StateError> {
+) -> Result<(), awaken_runtime_contract::StateError> {
     if S::KEY != "__runtime.run_lifecycle" {
         return Ok(());
     }
@@ -171,7 +171,8 @@ fn clear_pending_scheduled_actions_for_terminal_run<S: crate::state::StateKey>(
     if !lifecycle.status.is_terminal() {
         return Ok(());
     }
-    let Some(pending) = store.read::<awaken_contract::model::PendingScheduledActions>() else {
+    let Some(pending) = store.read::<awaken_runtime_contract::model::PendingScheduledActions>()
+    else {
         return Ok(());
     };
     if pending.is_empty() {
@@ -180,8 +181,8 @@ fn clear_pending_scheduled_actions_for_terminal_run<S: crate::state::StateKey>(
 
     let mut cleanup = MutationBatch::new();
     for action in pending {
-        cleanup.update::<awaken_contract::model::PendingScheduledActions>(
-            awaken_contract::model::ScheduledActionQueueUpdate::Remove { id: action.id },
+        cleanup.update::<awaken_runtime_contract::model::PendingScheduledActions>(
+            awaken_runtime_contract::model::ScheduledActionQueueUpdate::Remove { id: action.id },
         );
     }
     store.commit(cleanup)?;
@@ -247,7 +248,7 @@ pub struct AgentLoopParams<'a> {
     /// These are tools defined by the frontend (e.g. CopilotKit `useFrontendTool`)
     /// whose execution happens client-side. They are made visible to the LLM but
     /// have no executor — the runtime intercepts them before execution and suspends.
-    pub frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
+    pub frontend_tools: Vec<awaken_runtime_contract::contract::tool::ToolDescriptor>,
     /// Optional inbox receiver for background-task messages.
     pub inbox: Option<crate::inbox::InboxReceiver>,
     /// When `true`, the run is a continuation of a previous awaiting_tasks run.
@@ -258,7 +259,7 @@ pub struct AgentLoopParams<'a> {
     /// Used by child-run helpers to seed a fresh store with parent-derived
     /// state. Restored with `UnknownKeyPolicy::Error` — every key in the
     /// seed must be registered in the agent's plugin set.
-    pub initial_state_seed: Option<awaken_contract::state::PersistedState>,
+    pub initial_state_seed: Option<awaken_runtime_contract::state::PersistedState>,
 }
 
 /// Build an execution environment for the agent loop.

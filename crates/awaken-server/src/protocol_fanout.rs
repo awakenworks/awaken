@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::outbox::{
     OUTBOX_LANE_PROTOCOL_REPLAY, OUTBOX_TARGET_PROTOCOL_FANOUT, OutboxMessage,
 };
-use awaken_contract::contract::protocol_replay_log::{
+use awaken_server_contract::contract::protocol_replay_log::{
     ProtocolReplayId, ProtocolReplayLookup, ProtocolReplayRecord,
 };
 use serde::Deserialize;
@@ -159,8 +159,8 @@ fn reject_blank(field: &str, value: &str) -> Result<(), OutboxRelayError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::outbox::{OutboxMessageDraft, OutboxStatus, OutboxStore};
-    use awaken_contract::contract::protocol_replay_log::{
+    use awaken_server_contract::contract::outbox::{OutboxMessageDraft, OutboxStatus, OutboxStore};
+    use awaken_server_contract::contract::protocol_replay_log::{
         ProtocolReplayDraft, ProtocolReplayWriter,
     };
     use awaken_stores::{InMemoryOutboxStore, InMemoryProtocolReplayLog};

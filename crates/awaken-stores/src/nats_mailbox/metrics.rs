@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use awaken_contract::contract::mailbox::{LiveDeliveryOutcome, RunDispatch};
+use awaken_server_contract::contract::mailbox::{LiveDeliveryOutcome, RunDispatch};
 
 pub(crate) fn inc_claim_attempt(result: &'static str) {
     ::metrics::counter!(

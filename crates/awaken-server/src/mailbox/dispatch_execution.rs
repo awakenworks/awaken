@@ -8,12 +8,14 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchResult, RunDispatchStatus};
-use awaken_contract::now_ms;
 use awaken_runtime::ThreadContextSnapshot;
 use awaken_runtime::{EventBuffer, ResolutionPolicy, RuntimeError};
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::mailbox::{
+    RunDispatch, RunDispatchResult, RunDispatchStatus,
+};
+use awaken_server_contract::now_ms;
 
 use crate::transport::channel_sink::ReconnectableEventSink;
 
@@ -135,9 +137,11 @@ pub(super) async fn run_claimed_dispatch(
             let run_result = RunDispatchResult {
                 run_id: dispatch.run_id.clone(),
                 dispatch_instance_id: dispatch_instance_id.clone(),
-                status: awaken_contract::contract::lifecycle::RunStatus::Done,
+                status: awaken_server_contract::contract::lifecycle::RunStatus::Done,
                 termination: Some(
-                    awaken_contract::contract::lifecycle::TerminationReason::Error(msg.clone()),
+                    awaken_server_contract::contract::lifecycle::TerminationReason::Error(
+                        msg.clone(),
+                    ),
                 ),
                 response: None,
                 error: Some(msg.clone()),
@@ -335,7 +339,7 @@ pub(super) async fn run_claimed_dispatch(
                     &dispatch_instance_id,
                 )),
                 result: None,
-                termination: awaken_contract::contract::lifecycle::TerminationReason::Error(
+                termination: awaken_server_contract::contract::lifecycle::TerminationReason::Error(
                     msg.clone(),
                 ),
             })
@@ -372,7 +376,7 @@ pub(super) async fn run_claimed_dispatch(
                     &dispatch_instance_id,
                 )),
                 result: None,
-                termination: awaken_contract::contract::lifecycle::TerminationReason::Error(
+                termination: awaken_server_contract::contract::lifecycle::TerminationReason::Error(
                     msg.clone(),
                 ),
             })

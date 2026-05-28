@@ -1,4 +1,4 @@
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
+use awaken_runtime_contract::registry_spec::{AgentSpec, ModelSpec};
 
 use crate::registry::model_capabilities::ModelCapabilitySources;
 
@@ -12,7 +12,7 @@ pub(super) fn knowledge_cutoff_context(
     let config = spec
         .config::<crate::context::KnowledgeCutoffConfigKey>()
         .map_err(|error| match error {
-            awaken_contract::StateError::KeyDecode { key, message } => {
+            awaken_runtime_contract::StateError::KeyDecode { key, message } => {
                 ResolveError::InvalidPluginConfig {
                     plugin: crate::context::KNOWLEDGE_CUTOFF_PLUGIN_ID.into(),
                     key,

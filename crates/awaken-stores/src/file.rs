@@ -4,18 +4,18 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
-use awaken_contract::contract::config_store::{ConfigStore, extract_meta_revision};
-use awaken_contract::contract::message::{
+use awaken_server_contract::contract::config_store::{ConfigStore, extract_meta_revision};
+use awaken_server_contract::contract::message::{
     Message, MessageRecord, PendingMessageRecord, strip_unpaired_tool_calls_from_owned_view,
 };
-use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
+use awaken_server_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore,
     StorageError, ThreadPage, ThreadQuery, ThreadRunStore, ThreadStore,
     checkpoint_parent_thread_id, message_append, paginate_message_records, paginate_threads,
     sort_threads_by_recent_activity,
 };
-use awaken_contract::thread::{Thread, normalize_lineage_id};
+use awaken_server_contract::thread::{Thread, normalize_lineage_id};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -1137,7 +1137,7 @@ impl ThreadStore for FileStore {
 
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         let mut threads: Vec<Thread> = scan_json_dir(&self.threads_dir()).await?;
-        awaken_contract::contract::storage::sort_threads_by_recent_activity(&mut threads);
+        awaken_server_contract::contract::storage::sort_threads_by_recent_activity(&mut threads);
         Ok(threads
             .into_iter()
             .skip(offset)
@@ -1276,7 +1276,7 @@ impl ThreadStore for FileStore {
     async fn update_thread_metadata(
         &self,
         id: &str,
-        metadata: awaken_contract::thread::ThreadMetadata,
+        metadata: awaken_server_contract::thread::ThreadMetadata,
     ) -> Result<(), StorageError> {
         validate_id(id, "thread id")?;
         let path = self.threads_dir().join(format!("{id}.json"));

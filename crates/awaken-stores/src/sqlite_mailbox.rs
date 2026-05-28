@@ -4,12 +4,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::mailbox::{
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::mailbox::{
     MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
     RunDispatchStatus,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 use rusqlite::{Connection, Row, params};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -1792,7 +1792,7 @@ mod tests {
 
     #[tokio::test]
     async fn records_dispatch_start_and_run_result_separately_from_ack() {
-        use awaken_contract::contract::lifecycle::TerminationReason;
+        use awaken_server_contract::contract::lifecycle::TerminationReason;
 
         let store = SqliteMailboxStore::open_memory().unwrap();
         let dispatch = make_dispatch("dispatch-1", "thread-a");

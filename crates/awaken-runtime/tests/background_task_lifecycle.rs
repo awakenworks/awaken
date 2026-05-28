@@ -8,15 +8,17 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{Message, ToolCall};
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::{EventSink, NullEventSink};
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_runtime_contract::contract::message::{Message, ToolCall};
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
@@ -1122,12 +1124,12 @@ async fn run_finish_signals_awaiting_tasks_in_result() {
         plugins: bg_plugins,
     };
 
-    let sink = Arc::new(awaken_contract::contract::event_sink::VecEventSink::new());
+    let sink = Arc::new(awaken_runtime_contract::contract::event_sink::VecEventSink::new());
     let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &runtime,
-        sink: sink.clone() as Arc<dyn awaken_contract::contract::event_sink::EventSink>,
+        sink: sink.clone() as Arc<dyn awaken_runtime_contract::contract::event_sink::EventSink>,
         checkpoint_store: None,
         messages: vec![Message::user("spawn task")],
         run_identity: test_identity(),
@@ -1177,12 +1179,12 @@ async fn run_finish_normal_end_no_awaiting_flag() {
         plugins: bg_plugins,
     };
 
-    let sink = Arc::new(awaken_contract::contract::event_sink::VecEventSink::new());
+    let sink = Arc::new(awaken_runtime_contract::contract::event_sink::VecEventSink::new());
     let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &_runtime,
-        sink: sink.clone() as Arc<dyn awaken_contract::contract::event_sink::EventSink>,
+        sink: sink.clone() as Arc<dyn awaken_runtime_contract::contract::event_sink::EventSink>,
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: test_identity(),
@@ -1321,12 +1323,12 @@ async fn run_finish_cancelled_has_done_status() {
         cancel_token2.cancel();
     });
 
-    let sink = Arc::new(awaken_contract::contract::event_sink::VecEventSink::new());
+    let sink = Arc::new(awaken_runtime_contract::contract::event_sink::VecEventSink::new());
     let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &_runtime,
-        sink: sink.clone() as Arc<dyn awaken_contract::contract::event_sink::EventSink>,
+        sink: sink.clone() as Arc<dyn awaken_runtime_contract::contract::event_sink::EventSink>,
         checkpoint_store: None,
         messages: vec![Message::user("hi")],
         run_identity: test_identity(),
@@ -1364,8 +1366,8 @@ async fn run_finish_cancelled_has_done_status() {
 /// Suspended run: RunFinish has status=waiting, status_reason=suspended.
 #[tokio::test]
 async fn run_finish_suspended_has_waiting_status() {
-    use awaken_contract::contract::message::ToolCall;
-    use awaken_contract::contract::tool::{Tool, ToolDescriptor, ToolResult};
+    use awaken_runtime_contract::contract::message::ToolCall;
+    use awaken_runtime_contract::contract::tool::{Tool, ToolDescriptor, ToolResult};
 
     struct SuspendTool;
 
@@ -1399,12 +1401,12 @@ async fn run_finish_suspended_has_waiting_status() {
         plugins: bg_plugins,
     };
 
-    let sink = Arc::new(awaken_contract::contract::event_sink::VecEventSink::new());
+    let sink = Arc::new(awaken_runtime_contract::contract::event_sink::VecEventSink::new());
     let _result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
         runtime: &_runtime,
-        sink: sink.clone() as Arc<dyn awaken_contract::contract::event_sink::EventSink>,
+        sink: sink.clone() as Arc<dyn awaken_runtime_contract::contract::event_sink::EventSink>,
         checkpoint_store: None,
         messages: vec![Message::user("do dangerous thing")],
         run_identity: test_identity(),

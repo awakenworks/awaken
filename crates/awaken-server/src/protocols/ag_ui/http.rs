@@ -8,9 +8,9 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::Value;
 
-use awaken_contract::ScopeContext;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+use awaken_server_contract::ScopeContext;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 
 use crate::app::ProtocolRoutesState;
 use crate::http_run::wire_sse_relay;
@@ -131,8 +131,8 @@ fn convert_messages(msgs: Vec<AgUiMessage>) -> Vec<Message> {
 
 fn parse_ag_ui_content(
     content: &serde_json::Value,
-) -> Option<Vec<awaken_contract::contract::content::ContentBlock>> {
-    use awaken_contract::contract::content::ContentBlock;
+) -> Option<Vec<awaken_server_contract::contract::content::ContentBlock>> {
+    use awaken_server_contract::contract::content::ContentBlock;
 
     match content {
         serde_json::Value::String(s) => Some(vec![ContentBlock::text(s.as_str())]),
@@ -158,14 +158,14 @@ fn parse_ag_ui_content(
 
 fn input_part_to_block(
     part: super::types::InputContentPart,
-) -> Option<awaken_contract::contract::content::ContentBlock> {
+) -> Option<awaken_server_contract::contract::content::ContentBlock> {
     use super::types::{InputContentPart, InputContentSource};
     use crate::message_convert::{MediaKind, content_block_from_base64, content_block_from_url};
 
     fn source_to_block(
         kind: MediaKind,
         source: InputContentSource,
-    ) -> Option<awaken_contract::contract::content::ContentBlock> {
+    ) -> Option<awaken_server_contract::contract::content::ContentBlock> {
         Some(match source {
             InputContentSource::Data { value, mime_type } => {
                 content_block_from_base64(kind, mime_type, value, None)
@@ -176,7 +176,7 @@ fn input_part_to_block(
 
     match part {
         InputContentPart::Text { text } => {
-            Some(awaken_contract::contract::content::ContentBlock::text(text))
+            Some(awaken_server_contract::contract::content::ContentBlock::text(text))
         }
         InputContentPart::Image { source, .. } => source_to_block(MediaKind::Image, source),
         InputContentPart::Audio { source, .. } => source_to_block(MediaKind::Audio, source),
@@ -261,7 +261,7 @@ fn convert_resume_to_decision(resume: AgUiResumePayload) -> Option<(String, Tool
             action,
             result: payload,
             reason: None,
-            updated_at: awaken_contract::now_ms(),
+            updated_at: awaken_server_contract::now_ms(),
         },
     ))
 }
@@ -283,23 +283,24 @@ async fn ag_ui_run_inner(
         .collect();
 
     // Convert AG-UI frontend tool definitions into ToolDescriptor values
-    let frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor> = frontend_tools
-        .into_iter()
-        .map(|t| {
-            awaken_contract::contract::tool::ToolDescriptor::new(
-                &t.name,
-                &t.name,
-                t.description.as_deref().unwrap_or("Frontend tool"),
-            )
-            .with_parameters(
-                t.parameters
-                    .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}})),
-            )
-        })
-        .collect();
+    let frontend_tools: Vec<awaken_server_contract::contract::tool::ToolDescriptor> =
+        frontend_tools
+            .into_iter()
+            .map(|t| {
+                awaken_server_contract::contract::tool::ToolDescriptor::new(
+                    &t.name,
+                    &t.name,
+                    t.description.as_deref().unwrap_or("Frontend tool"),
+                )
+                .with_parameters(
+                    t.parameters
+                        .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}})),
+                )
+            })
+            .collect();
 
     let mut request = RunActivation::new(thread_id, messages)
-        .with_adapter(awaken_contract::contract::tool_intercept::AdapterKind::AgUi);
+        .with_adapter(awaken_server_contract::contract::tool_intercept::AdapterKind::AgUi);
     if let Some(id) = agent_id {
         request = request.with_agent_id(id);
     }
@@ -342,10 +343,10 @@ async fn thread_messages(
         .map(|record| record.message)
         .map(|m| {
             let role = match m.role {
-                awaken_contract::contract::message::Role::System => Role::System,
-                awaken_contract::contract::message::Role::User => Role::User,
-                awaken_contract::contract::message::Role::Assistant => Role::Assistant,
-                awaken_contract::contract::message::Role::Tool => Role::Tool,
+                awaken_server_contract::contract::message::Role::System => Role::System,
+                awaken_server_contract::contract::message::Role::User => Role::User,
+                awaken_server_contract::contract::message::Role::Assistant => Role::Assistant,
+                awaken_server_contract::contract::message::Role::Tool => Role::Tool,
             };
             serde_json::json!({
                 "id": m.id,
@@ -515,7 +516,7 @@ mod tests {
         let blocks = parse_ag_ui_content(&val).unwrap();
         assert_eq!(blocks.len(), 1);
         assert!(
-            matches!(&blocks[0], awaken_contract::contract::content::ContentBlock::Text { text } if text == "hello world")
+            matches!(&blocks[0], awaken_server_contract::contract::content::ContentBlock::Text { text } if text == "hello world")
         );
     }
 
@@ -556,7 +557,7 @@ mod tests {
             serde_json::from_value(json!({"type": "text", "text": "hello"})).unwrap();
         let block = input_part_to_block(part).unwrap();
         assert!(
-            matches!(block, awaken_contract::contract::content::ContentBlock::Text { text } if text == "hello")
+            matches!(block, awaken_server_contract::contract::content::ContentBlock::Text { text } if text == "hello")
         );
     }
 
@@ -571,7 +572,7 @@ mod tests {
         let block = input_part_to_block(part).unwrap();
         assert!(matches!(
             block,
-            awaken_contract::contract::content::ContentBlock::Image { .. }
+            awaken_server_contract::contract::content::ContentBlock::Image { .. }
         ));
     }
 
@@ -586,7 +587,7 @@ mod tests {
         let block = input_part_to_block(part).unwrap();
         assert!(matches!(
             block,
-            awaken_contract::contract::content::ContentBlock::Image { .. }
+            awaken_server_contract::contract::content::ContentBlock::Image { .. }
         ));
     }
 
@@ -601,7 +602,7 @@ mod tests {
         let block = input_part_to_block(part).unwrap();
         assert!(matches!(
             block,
-            awaken_contract::contract::content::ContentBlock::Audio { .. }
+            awaken_server_contract::contract::content::ContentBlock::Audio { .. }
         ));
     }
 
@@ -616,7 +617,7 @@ mod tests {
         let block = input_part_to_block(part).unwrap();
         assert!(matches!(
             block,
-            awaken_contract::contract::content::ContentBlock::Video { .. }
+            awaken_server_contract::contract::content::ContentBlock::Video { .. }
         ));
     }
 
@@ -631,7 +632,7 @@ mod tests {
         let block = input_part_to_block(part).unwrap();
         assert!(matches!(
             block,
-            awaken_contract::contract::content::ContentBlock::Document { .. }
+            awaken_server_contract::contract::content::ContentBlock::Document { .. }
         ));
     }
 }

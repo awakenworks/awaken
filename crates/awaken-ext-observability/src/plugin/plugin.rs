@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
-use awaken_contract::StateError;
-use awaken_contract::model::Phase;
 use awaken_runtime::{Plugin, PluginDescriptor, PluginRegistrar};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::model::Phase;
 use serde_json::Value;
 use tokio::sync::Mutex;
 

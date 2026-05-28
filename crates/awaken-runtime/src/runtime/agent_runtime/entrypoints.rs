@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
+use awaken_runtime_contract::contract::event_sink::{EventSink, NullEventSink};
 
 use super::AgentRuntime;
 use crate::loop_runner::{AgentLoopError, AgentRunResult};

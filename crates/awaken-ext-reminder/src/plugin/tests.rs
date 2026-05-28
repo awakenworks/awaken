@@ -2,15 +2,15 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::contract::tool::ToolResult;
-use awaken_contract::model::{Phase, ScheduledActionSpec};
-use awaken_contract::registry_spec::AgentSpec;
-use awaken_contract::{Snapshot, StateMap};
 use awaken_runtime::agent::state::AddContextMessage;
 use awaken_runtime::phase::{PhaseContext, PhaseHook};
 use awaken_runtime::plugins::Plugin;
 use awaken_runtime::state::MutationBatch;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::contract::tool::ToolResult;
+use awaken_runtime_contract::model::{Phase, ScheduledActionSpec};
+use awaken_runtime_contract::registry_spec::AgentSpec;
+use awaken_runtime_contract::{Snapshot, StateMap};
 use awaken_tool_pattern::ToolCallPattern;
 
 use super::hook::ReminderHook;

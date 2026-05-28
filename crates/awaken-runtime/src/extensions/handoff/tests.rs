@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_contract::contract::active_agent::ActiveAgentIdKey;
-use awaken_contract::model::Phase;
+use awaken_runtime_contract::contract::active_agent::ActiveAgentIdKey;
+use awaken_runtime_contract::model::Phase;
 
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::plugins::Plugin;
@@ -88,7 +88,7 @@ fn plugin_registers_state_key() {
     let registry = store.registry.lock();
     assert!(registry.keys_by_name.contains_key("agent_handoff"));
     assert!(registry.keys_by_name.contains_key(
-        <awaken_contract::contract::active_agent::ActiveAgentIdKey as crate::state::StateKey>::KEY,
+        <awaken_runtime_contract::contract::active_agent::ActiveAgentIdKey as crate::state::StateKey>::KEY,
     ));
     assert_eq!(
         registry
@@ -100,7 +100,7 @@ fn plugin_registers_state_key() {
     assert_eq!(
         registry
             .keys_by_name
-            .get(<awaken_contract::contract::active_agent::ActiveAgentIdKey as crate::state::StateKey>::KEY)
+            .get(<awaken_runtime_contract::contract::active_agent::ActiveAgentIdKey as crate::state::StateKey>::KEY)
             .map(|reg| reg.scope),
         Some(KeyScope::Thread)
     );
@@ -496,7 +496,7 @@ fn on_deactivate_is_idempotent() {
 fn on_deactivate_then_reactivate_via_on_activate() {
     let (store, plugin) = store_with_handoff_plugin();
 
-    let spec = awaken_contract::registry_spec::AgentSpec::default();
+    let spec = awaken_runtime_contract::registry_spec::AgentSpec::default();
 
     // Activate plugin
     let mut activate_patch = store.begin_mutation();

@@ -18,10 +18,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::message::ToolCall;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::message::ToolCall;
 
 /// One scripted upstream turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -265,7 +267,7 @@ fn inference_error_from(error_type: &str, message: String) -> InferenceExecution
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::message::Message;
+    use awaken_runtime_contract::contract::message::Message;
     use serde_json::json;
 
     fn make_request() -> InferenceRequest {

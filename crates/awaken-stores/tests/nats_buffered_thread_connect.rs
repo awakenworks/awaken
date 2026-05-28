@@ -19,9 +19,9 @@ async fn connect_and_shutdown() {
     store.shutdown().await.expect("shutdown");
 }
 
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunQuery, RunRecord, RunStore, ThreadRunStore};
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{RunQuery, RunRecord, RunStore, ThreadRunStore};
 
 fn mk_run(id: &str, thread: &str) -> RunRecord {
     RunRecord {
@@ -96,7 +96,7 @@ async fn read_your_writes_via_wal_overlay() {
         .unwrap();
 
     // flush_interval is 60s so WAL overlay must serve the read without waiting for DB.
-    use awaken_contract::contract::storage::ThreadStore;
+    use awaken_server_contract::contract::storage::ThreadStore;
     let msgs = store.load_messages("t1").await.unwrap().unwrap();
     assert_eq!(msgs.len(), 1);
 

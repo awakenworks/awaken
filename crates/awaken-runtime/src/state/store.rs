@@ -4,7 +4,7 @@ use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 
 use crate::plugins::{InstalledPlugin, KeyRegistration, Plugin, PluginRegistrar, PluginRegistry};
-use awaken_contract::StateError;
+use awaken_runtime_contract::StateError;
 
 use super::{MutationBatch, Snapshot, StateCommand, StateKey, StateMap};
 

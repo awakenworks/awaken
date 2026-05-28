@@ -1,7 +1,7 @@
 mod tests {
     use super::super::pool_executor_test_support::*;
-    use awaken_contract::contract::executor::{InferenceExecutionError, LlmExecutor};
-    use awaken_contract::registry_spec::{
+    use awaken_runtime_contract::contract::executor::{InferenceExecutionError, LlmExecutor};
+    use awaken_runtime_contract::registry_spec::{
         HomeStrategy, PoolRoutingPolicy, PoolSwitchPolicy, StickyScope,
     };
     use std::sync::Arc;

@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use awaken_contract::StateError;
-use awaken_contract::contract::commit_coordinator::CommitCoordinator;
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_contract::contract::tool::Tool;
-use awaken_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator;
+use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::contract::storage::ThreadRunStore;
+use awaken_runtime_contract::contract::tool::Tool;
+use awaken_runtime_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 
 #[cfg(feature = "a2a")]
 use crate::backend::ExecutionBackendFactory;
@@ -54,7 +54,7 @@ pub enum BuildError {
     )]
     CommitCoordinatorRequired,
     #[error("config validation failed: {0}")]
-    ConfigValidation(#[from] awaken_contract::ConfigValidationError),
+    ConfigValidation(#[from] awaken_runtime_contract::ConfigValidationError),
     #[cfg(feature = "a2a")]
     #[error("discovery failed: {0}")]
     DiscoveryFailed(#[from] crate::registry::composite::DiscoveryError),
@@ -74,7 +74,7 @@ pub struct AgentRuntimeBuilder {
     backends: MapBackendRegistry,
     thread_run_store: Option<Arc<dyn ThreadRunStore>>,
     commit_coordinator: Option<Arc<dyn CommitCoordinator>>,
-    profile_store: Option<Arc<dyn awaken_contract::contract::profile_store::ProfileStore>>,
+    profile_store: Option<Arc<dyn awaken_runtime_contract::contract::profile_store::ProfileStore>>,
     errors: Vec<BuildError>,
     #[cfg(feature = "a2a")]
     remote_sources: Vec<RemoteAgentSource>,
@@ -139,7 +139,7 @@ impl AgentRuntimeBuilder {
         // ConfigValidation::DuplicateModelId, matching the bulk-config path.
         if self.models.contains_key(&spec.id) {
             self.errors.push(BuildError::ConfigValidation(
-                awaken_contract::ConfigValidationError::DuplicateModelId {
+                awaken_runtime_contract::ConfigValidationError::DuplicateModelId {
                     id: spec.id.clone(),
                 },
             ));
@@ -223,7 +223,7 @@ impl AgentRuntimeBuilder {
     /// Set the profile store for cross-run key-value persistence.
     pub fn with_profile_store(
         mut self,
-        store: Arc<dyn awaken_contract::contract::profile_store::ProfileStore>,
+        store: Arc<dyn awaken_runtime_contract::contract::profile_store::ProfileStore>,
     ) -> Self {
         self.profile_store = Some(store);
         self

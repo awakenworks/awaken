@@ -11,17 +11,19 @@ use std::time::Instant;
 
 use tokio::sync::mpsc;
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::run::{RunInput, RunInputSnapshot, RunKind, RunResolutionScope};
-use awaken_contract::contract::storage::{
+use awaken_runtime::{ResolutionPolicy, RunActivation};
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::run::{
+    RunInput, RunInputSnapshot, RunKind, RunResolutionScope,
+};
+use awaken_server_contract::contract::storage::{
     MessageSeqRange, PinnedRegistryManifest, RunRecord, RunRequestSnapshot,
 };
-use awaken_contract::contract::tool_intercept::RunMode;
-use awaken_contract::now_ms;
-use awaken_runtime::{ResolutionPolicy, RunActivation};
+use awaken_server_contract::contract::tool_intercept::RunMode;
+use awaken_server_contract::now_ms;
 
 use crate::transport::channel_sink::ReconnectableEventSink;
 
@@ -674,7 +676,7 @@ impl Mailbox {
             ))
         })?;
         let input = legacy_input_snapshot(&run, &snapshot);
-        let snapshot = awaken_contract::contract::run::RunActivationSnapshot::try_from(
+        let snapshot = awaken_server_contract::contract::run::RunActivationSnapshot::try_from(
             LegacyRunRequestSnapshotAdapter {
                 snapshot,
                 input,

@@ -1,11 +1,11 @@
 //! Phase hooks for deferred tool management.
 
 use async_trait::async_trait;
-use awaken_contract::StateError;
-use awaken_contract::contract::context_message::ContextMessage;
 use awaken_runtime::agent::state::{AddContextMessage, ExcludeTool};
 use awaken_runtime::phase::{PhaseContext, PhaseHook};
 use awaken_runtime::state::StateCommand;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
 
 use awaken_runtime::phase::TypedScheduledActionHandler;
 

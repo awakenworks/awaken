@@ -22,12 +22,14 @@ use crate::resolution::{
     ResolvedModelBinding, ResolvedRun, ResolvedRunPlan, ResolvedTool, Resolver,
 };
 use async_trait::async_trait;
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::run::RunResolutionScope;
-use awaken_contract::contract::tool::Tool;
-use awaken_contract::contract::versioned_registry::{PinnedRegistryEntry, PinnedRegistryManifest};
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
-use awaken_contract::{REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL_POOL};
+use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::contract::run::RunResolutionScope;
+use awaken_runtime_contract::contract::tool::Tool;
+use awaken_runtime_contract::contract::versioned_registry::{
+    PinnedRegistryEntry, PinnedRegistryManifest,
+};
+use awaken_runtime_contract::registry_spec::{AgentSpec, ModelSpec};
+use awaken_runtime_contract::{REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL_POOL};
 
 use crate::registry::model_capabilities::ModelCapabilitySources;
 use crate::registry::snapshot::RegistryHandle;
@@ -175,14 +177,14 @@ fn normalize_compaction_summary_model(
 ) -> Result<(), ResolveError> {
     if !spec
         .sections
-        .contains_key(<crate::context::CompactionConfigKey as awaken_contract::registry_spec::PluginConfigKey>::KEY)
+        .contains_key(<crate::context::CompactionConfigKey as awaken_runtime_contract::registry_spec::PluginConfigKey>::KEY)
     {
         return Ok(());
     }
     let mut config = spec
         .config::<crate::context::CompactionConfigKey>()
         .map_err(|error| match error {
-            awaken_contract::StateError::KeyDecode { key, message } => {
+            awaken_runtime_contract::StateError::KeyDecode { key, message } => {
                 ResolveError::InvalidPluginConfig {
                     plugin: crate::context::CONTEXT_COMPACTION_PLUGIN_ID.into(),
                     key,
@@ -205,7 +207,7 @@ fn normalize_compaction_summary_model(
     if summary_model_spec.provider_id != agent_model.provider_id {
         return Err(ResolveError::InvalidPluginConfig {
             plugin: crate::context::CONTEXT_COMPACTION_PLUGIN_ID.into(),
-            key: <crate::context::CompactionConfigKey as awaken_contract::registry_spec::PluginConfigKey>::KEY
+            key: <crate::context::CompactionConfigKey as awaken_runtime_contract::registry_spec::PluginConfigKey>::KEY
                 .into(),
             message: format!(
                 "summary_model `{summary_model}` resolves to provider `{}`, but compaction uses the agent executor for provider `{}`; use a model on the same provider or an upstream model override",
@@ -264,7 +266,7 @@ fn resolve_model_and_executor(
     let policy = spec
         .config::<crate::engine::RetryConfigKey>()
         .map_err(|error| match error {
-            awaken_contract::StateError::KeyDecode { key, message } => {
+            awaken_runtime_contract::StateError::KeyDecode { key, message } => {
                 ResolveError::InvalidPluginConfig {
                     plugin: "retry".into(),
                     key,
@@ -696,7 +698,7 @@ fn backend_profile_for_execution(
 fn resolved_run(
     execution: ExecutionPlan,
     role: ExecutionRole,
-    overrides: Option<awaken_contract::contract::inference::InferenceOverride>,
+    overrides: Option<awaken_runtime_contract::contract::inference::InferenceOverride>,
     requirements: BackendRequirements,
     backend_profile: BackendProfile,
     resolution_scope: RunResolutionScope,

@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
@@ -247,8 +247,8 @@ mod tests {
     use crate::phase::ExecutionEnv;
     use crate::plugins::Plugin;
     use crate::state::StateStore;
-    use awaken_contract::contract::identity::RunIdentity;
-    use awaken_contract::registry_spec::AgentSpec;
+    use awaken_runtime_contract::contract::identity::RunIdentity;
+    use awaken_runtime_contract::registry_spec::AgentSpec;
 
     fn make_manager_and_store() -> (Arc<BackgroundTaskManager>, StateStore) {
         let store = StateStore::new();
@@ -291,7 +291,7 @@ mod tests {
                 "run-1".to_string(),
                 None,
                 agent_id.to_string(),
-                awaken_contract::contract::identity::RunOrigin::Subagent,
+                awaken_runtime_contract::contract::identity::RunOrigin::Subagent,
             ),
             agent_spec: Arc::new(AgentSpec::default()),
             snapshot: store.snapshot(),

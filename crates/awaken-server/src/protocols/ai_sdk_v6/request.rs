@@ -8,11 +8,11 @@ use std::collections::HashSet;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunRecord, RunWaitingState, ThreadRunStore};
-use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_server_contract::contract::content::ContentBlock;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{RunRecord, RunWaitingState, ThreadRunStore};
+use awaken_server_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+use awaken_server_contract::registry_spec::AgentSpec;
 
 use crate::message_convert::{
     content_block_from_media_base64, content_block_from_media_url, message_from_role_blocks,
@@ -375,7 +375,7 @@ fn extract_tool_call_decisions_for_targets(
                 action,
                 result,
                 reason: None,
-                updated_at: awaken_contract::now_ms(),
+                updated_at: awaken_server_contract::now_ms(),
             };
             if let Some(index) = by_target.get(&target_id).copied() {
                 decisions[index] = (target_id, decision);
@@ -449,12 +449,12 @@ fn insert_waiting_state_targets(waiting: &RunWaitingState, targets: &mut HashSet
 #[allow(deprecated)] // ADR-0038 D7: tests use legacy checkpoint
 mod tests {
     use super::*;
-    use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::{
+    use awaken_server_contract::contract::content::ContentBlock;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::storage::{
         RunRecord, RunWaitingState, RunWaitingTicket, ThreadRunStore, WaitingReason,
     };
-    use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+    use awaken_server_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
     use awaken_stores::InMemoryStore;
     use serde_json::json;
 
@@ -574,7 +574,7 @@ mod tests {
         assert_eq!(converted.len(), 1);
         assert_eq!(
             converted[0].role,
-            awaken_contract::contract::message::Role::User
+            awaken_server_contract::contract::message::Role::User
         );
         assert_eq!(converted[0].id.as_deref(), Some("u1"));
     }
@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(converted[1].text(), "existing");
         assert_eq!(
             converted[1].role,
-            awaken_contract::contract::message::Role::Assistant
+            awaken_server_contract::contract::message::Role::Assistant
         );
         assert_eq!(converted[1].id.as_deref(), Some("a1"));
     }
@@ -981,7 +981,9 @@ mod tests {
     fn is_resume_only_false_when_has_messages() {
         let req = ProcessedRequest {
             thread_id: "t1".into(),
-            messages: vec![awaken_contract::contract::message::Message::user("hello")],
+            messages: vec![awaken_server_contract::contract::message::Message::user(
+                "hello",
+            )],
             decisions: vec![(
                 "tc1".into(),
                 ToolCallResume {

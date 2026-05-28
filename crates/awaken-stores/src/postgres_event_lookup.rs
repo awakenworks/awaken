@@ -1,7 +1,7 @@
 //! PostgreSQL canonical event lookup implementation.
 
 use async_trait::async_trait;
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event_store::{
     CanonicalEvent, CanonicalEventId, EventLookup, EventStoreError,
 };
 

@@ -1,0 +1,24 @@
+[package]
+name = "awaken-server-contract"
+version.workspace = true
+readme = "../../README.md"
+edition.workspace = true
+description = "Server and store boundary contracts for Awaken"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["artificial-intelligence"]
+
+[dependencies]
+awaken-runtime-contract = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

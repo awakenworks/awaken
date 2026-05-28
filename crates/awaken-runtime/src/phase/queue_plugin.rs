@@ -2,8 +2,8 @@
 
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::state::StateKeyOptions;
-use awaken_contract::StateError;
-use awaken_contract::model::{FailedScheduledActions, PendingScheduledActions};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::model::{FailedScheduledActions, PendingScheduledActions};
 
 /// Internal plugin that registers runtime queue state keys.
 pub(crate) struct RuntimeQueuePlugin;

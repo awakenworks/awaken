@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use awaken_contract::contract::config_store::{
+use awaken_server_contract::contract::config_store::{
     ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
     extract_meta_revision,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 use sqlx::postgres::PgListener;
 
 use super::PostgresStore;

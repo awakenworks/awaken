@@ -8,10 +8,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::tool::{
+use awaken_runtime::registry::ToolRegistry;
+use awaken_server_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput,
 };
-use awaken_runtime::registry::ToolRegistry;
 use serde_json::Value;
 
 pub(crate) struct DescriptionOverrideTool {
@@ -68,7 +68,7 @@ impl ToolRegistry for DescriptionOverrideRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::tool::{ToolDescriptor, ToolResult};
+    use awaken_server_contract::contract::tool::{ToolDescriptor, ToolResult};
     use serde_json::json;
 
     struct StaticTool;

@@ -201,7 +201,7 @@ mod check_termination_tests {
     use super::*;
     use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};
     use crate::loop_runner::checkpoint::check_termination;
-    use awaken_contract::contract::lifecycle::TerminationReason;
+    use awaken_runtime_contract::contract::lifecycle::TerminationReason;
 
     fn store_with_lifecycle() -> StateStore {
         let store = StateStore::new();
@@ -351,7 +351,7 @@ mod termination_sequence_tests {
 mod persist_checkpoint_tests {
     use super::*;
     use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};
-    use awaken_contract::model::{
+    use awaken_runtime_contract::model::{
         PendingScheduledActions, Phase, ScheduledAction, ScheduledActionEnvelope,
         ScheduledActionQueueUpdate,
     };
@@ -499,10 +499,13 @@ mod inbox_drain_tests {
         let msgs = rx.drain();
         for msg in &msgs {
             let m = crate::inbox::inbox_event_message(msg);
-            assert_eq!(m.role, awaken_contract::contract::message::Role::User);
+            assert_eq!(
+                m.role,
+                awaken_runtime_contract::contract::message::Role::User
+            );
             assert_eq!(
                 m.visibility,
-                awaken_contract::contract::message::Visibility::Internal
+                awaken_runtime_contract::contract::message::Visibility::Internal
             );
         }
     }

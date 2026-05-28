@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::storage::StorageError;
-use awaken_contract::{ConfigRecord, RecordMeta};
+use awaken_server_contract::contract::storage::StorageError;
+use awaken_server_contract::{ConfigRecord, RecordMeta};
 use axum::http::HeaderMap;
 use serde_json::Value;
 

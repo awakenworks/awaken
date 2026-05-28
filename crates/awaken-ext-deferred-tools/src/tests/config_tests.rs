@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use awaken_contract::PluginConfigKey;
+use awaken_runtime_contract::PluginConfigKey;
 
 use crate::config::*;
 

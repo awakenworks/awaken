@@ -436,14 +436,14 @@ mod tests {
 
     fn future_token(secs: u64) -> Token {
         Token {
-            bearer: awaken_contract::secret::RedactedString::new("tok"),
+            bearer: awaken_runtime_contract::secret::RedactedString::new("tok"),
             expires_at: std::time::SystemTime::now() + Duration::from_secs(secs),
         }
     }
 
     fn future_token_with(bearer: &str, secs: u64) -> Token {
         Token {
-            bearer: awaken_contract::secret::RedactedString::new(bearer),
+            bearer: awaken_runtime_contract::secret::RedactedString::new(bearer),
             expires_at: std::time::SystemTime::now() + Duration::from_secs(secs),
         }
     }
@@ -516,14 +516,14 @@ mod tests {
     fn token_is_near_expiry_when_inside_safety_window() {
         // SAFETY_WINDOW is 60s — a token expiring in 30s must trigger refresh.
         let near = Token {
-            bearer: awaken_contract::secret::RedactedString::new("x"),
+            bearer: awaken_runtime_contract::secret::RedactedString::new("x"),
             expires_at: std::time::SystemTime::now() + Duration::from_secs(30),
         };
         assert!(near.is_near_expiry(SAFETY_WINDOW));
 
         // A token with plenty of headroom must NOT be near expiry.
         let fresh = Token {
-            bearer: awaken_contract::secret::RedactedString::new("x"),
+            bearer: awaken_runtime_contract::secret::RedactedString::new("x"),
             expires_at: std::time::SystemTime::now() + Duration::from_secs(3600),
         };
         assert!(!fresh.is_near_expiry(SAFETY_WINDOW));
@@ -531,7 +531,7 @@ mod tests {
         // Already-expired tokens must report near-expiry (the safety_window
         // check would otherwise fail with a None duration).
         let stale = Token {
-            bearer: awaken_contract::secret::RedactedString::new("x"),
+            bearer: awaken_runtime_contract::secret::RedactedString::new("x"),
             expires_at: std::time::SystemTime::now() - Duration::from_secs(10),
         };
         assert!(stale.is_near_expiry(SAFETY_WINDOW));
@@ -542,7 +542,9 @@ mod tests {
         let broker = AwakenCredentialBroker::new();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k")),
+            CredentialMaterial::static_bearer(
+                awaken_runtime_contract::secret::RedactedString::new("k"),
+            ),
         );
         let a = broker.token_for("p", "any").await.unwrap();
         let b = broker.token_for("p", "any").await.unwrap();
@@ -562,7 +564,9 @@ mod tests {
         let broker = AwakenCredentialBroker::new();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k1")),
+            CredentialMaterial::static_bearer(
+                awaken_runtime_contract::secret::RedactedString::new("k1"),
+            ),
         );
         let _ = broker.token_for("p", "any").await.unwrap();
         broker.deregister("p");
@@ -577,7 +581,9 @@ mod tests {
         let broker = AwakenCredentialBroker::new();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k")),
+            CredentialMaterial::static_bearer(
+                awaken_runtime_contract::secret::RedactedString::new("k"),
+            ),
         );
         // Touch token_for so a flight slot is created for (p, scope).
         let _ = broker.token_for("p", "scope").await.unwrap();
@@ -597,13 +603,17 @@ mod tests {
         let broker = AwakenCredentialBroker::new();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k1")),
+            CredentialMaterial::static_bearer(
+                awaken_runtime_contract::secret::RedactedString::new("k1"),
+            ),
         );
         assert_eq!(broker.token_for("p", "s").await.unwrap().bearer(), "k1");
 
         broker.register(
             "p".to_string(),
-            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k2")),
+            CredentialMaterial::static_bearer(
+                awaken_runtime_contract::secret::RedactedString::new("k2"),
+            ),
         );
         assert_eq!(broker.token_for("p", "s").await.unwrap().bearer(), "k2");
     }
@@ -626,7 +636,9 @@ mod tests {
 
         broker.register(
             "p".to_string(),
-            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("new")),
+            CredentialMaterial::static_bearer(
+                awaken_runtime_contract::secret::RedactedString::new("new"),
+            ),
         );
         release.notify_one();
 
@@ -667,7 +679,9 @@ mod tests {
         let broker = AwakenCredentialBroker::new();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new("k")),
+            CredentialMaterial::static_bearer(
+                awaken_runtime_contract::secret::RedactedString::new("k"),
+            ),
         );
         // Both scopes should resolve to the same static bearer (because
         // for static bearer the scope is irrelevant) but should have
@@ -678,9 +692,9 @@ mod tests {
         let _ = broker.token_for("p", "scope-b").await.unwrap();
         broker.register(
             "p".to_string(),
-            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new(
-                "rotated",
-            )),
+            CredentialMaterial::static_bearer(
+                awaken_runtime_contract::secret::RedactedString::new("rotated"),
+            ),
         );
         assert_eq!(
             broker.token_for("p", "scope-a").await.unwrap().bearer(),
@@ -738,9 +752,9 @@ mod tests {
         );
         broker.register(
             "stable".to_string(),
-            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new(
-                "stable-token",
-            )),
+            CredentialMaterial::static_bearer(
+                awaken_runtime_contract::secret::RedactedString::new("stable-token"),
+            ),
         );
 
         let rotating_task = {
@@ -761,9 +775,9 @@ mod tests {
 
         broker.register(
             "rotating".to_string(),
-            CredentialMaterial::static_bearer(awaken_contract::secret::RedactedString::new(
-                "new-rotating",
-            )),
+            CredentialMaterial::static_bearer(
+                awaken_runtime_contract::secret::RedactedString::new("new-rotating"),
+            ),
         );
         release.notify_one();
 

@@ -323,14 +323,14 @@ fn revise_tuple_for_treats_zero_retries_as_disabled() {
 #[tokio::test]
 async fn zero_retry_judge_timeout_preserves_replay_outcome() {
     use async_trait::async_trait;
-    use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::executor::{
-        InferenceExecutionError, InferenceRequest, LlmExecutor,
-    };
-    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::registry_spec::ModelSpec;
     use awaken_eval::test_support::ScriptedExecutor;
     use awaken_eval::{Fixture, LlmExecutorJudge, MatrixCell, MockResponse, ReplayRuntimeFailure};
+    use awaken_server_contract::contract::content::ContentBlock;
+    use awaken_server_contract::contract::executor::{
+        InferenceExecutionError, InferenceRequest, LlmExecutor,
+    };
+    use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_server_contract::registry_spec::ModelSpec;
 
     struct SlowJudgeExecutor;
 
@@ -426,10 +426,10 @@ async fn zero_retry_judge_timeout_preserves_replay_outcome() {
 
 #[tokio::test]
 async fn run_live_eval_cells_enforces_shared_token_budget() {
-    use awaken_contract::contract::inference::TokenUsage;
-    use awaken_contract::registry_spec::ModelSpec;
     use awaken_eval::test_support::ScriptedExecutor;
     use awaken_eval::{Fixture, MatrixCell, MockResponse, ReplayRuntimeFailure};
+    use awaken_server_contract::contract::inference::TokenUsage;
+    use awaken_server_contract::registry_spec::ModelSpec;
 
     let fixture = Fixture {
         id: "fx".into(),

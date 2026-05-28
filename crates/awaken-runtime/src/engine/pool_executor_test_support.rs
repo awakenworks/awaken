@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::executor::{
     InferenceExecutionError, InferenceRequest, InferenceRoutingKey, InferenceStream, LlmExecutor,
     LlmStreamEvent,
 };
-use awaken_contract::contract::inference::{StopReason, StreamResult};
-use awaken_contract::contract::message::Message;
-use awaken_contract::registry_spec::{PoolMemberRole, PoolRoutingPolicy, PoolSwitchPolicy};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult};
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::registry_spec::{PoolMemberRole, PoolRoutingPolicy, PoolSwitchPolicy};
 
 use super::super::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use super::super::pool_router::{PoolRouter, RouterMember};

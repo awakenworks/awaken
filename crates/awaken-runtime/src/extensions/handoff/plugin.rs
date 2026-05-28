@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use awaken_contract::StateError;
-use awaken_contract::contract::active_agent::ActiveAgentIdKey;
-use awaken_contract::model::Phase;
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::active_agent::ActiveAgentIdKey;
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::registry_spec::AgentSpec;
 
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::state::{KeyScope, MutationBatch, StateKeyOptions};

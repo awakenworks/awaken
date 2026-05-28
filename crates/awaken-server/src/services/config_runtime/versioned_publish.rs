@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use awaken_contract::{
+use awaken_runtime::registry::RegistrySet;
+use awaken_server_contract::{
     ProviderSpec, RegistryResourcePublish, VersionSelector, VersionedRegistryStore,
 };
-use awaken_runtime::registry::RegistrySet;
 use serde::Serialize;
 use serde_json::json;
 
@@ -80,31 +80,31 @@ impl ConfigRuntimeManager {
         let mut resources = Vec::new();
         append_provider_specs(&managed.providers, &mut resources)?;
         append_specs(
-            awaken_contract::REGISTRY_KIND_MODEL,
+            awaken_server_contract::REGISTRY_KIND_MODEL,
             &managed.models,
             |spec| spec.id.as_str(),
             &mut resources,
         )?;
         append_specs(
-            awaken_contract::REGISTRY_KIND_MODEL_POOL,
+            awaken_server_contract::REGISTRY_KIND_MODEL_POOL,
             &managed.pools,
             |spec| spec.id.as_str(),
             &mut resources,
         )?;
         append_specs(
-            awaken_contract::REGISTRY_KIND_AGENT,
+            awaken_server_contract::REGISTRY_KIND_AGENT,
             &managed.agents,
             |spec| spec.id.as_str(),
             &mut resources,
         )?;
         append_specs(
-            awaken_contract::REGISTRY_KIND_TOOL,
+            awaken_server_contract::REGISTRY_KIND_TOOL,
             &managed.tools,
             |spec| spec.id.as_str(),
             &mut resources,
         )?;
         append_specs(
-            awaken_contract::REGISTRY_KIND_SKILL,
+            awaken_server_contract::REGISTRY_KIND_SKILL,
             &managed.skills,
             |spec| spec.id.as_str(),
             &mut resources,
@@ -143,7 +143,7 @@ fn append_provider_specs(
         }
     }
     append_specs(
-        awaken_contract::REGISTRY_KIND_PROVIDER,
+        awaken_server_contract::REGISTRY_KIND_PROVIDER,
         specs,
         |spec| spec.id.as_str(),
         resources,
@@ -177,7 +177,7 @@ where
     Ok(())
 }
 
-fn to_config_error(error: awaken_contract::VersionedRegistryError) -> ConfigRuntimeError {
+fn to_config_error(error: awaken_server_contract::VersionedRegistryError) -> ConfigRuntimeError {
     ConfigRuntimeError::VersionedRegistry(error.to_string())
 }
 
@@ -185,12 +185,12 @@ fn to_config_error(error: awaken_contract::VersionedRegistryError) -> ConfigRunt
 mod tests {
     use std::sync::Arc;
 
-    use awaken_contract::contract::config_store::ConfigStore;
-    use awaken_contract::contract::executor::{
+    use awaken_server_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::executor::{
         InferenceExecutionError, InferenceRequest, LlmExecutor,
     };
-    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::{
+    use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_server_contract::{
         AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelSpec, ProviderSpec, RecordMeta,
         RegistryPublication,
     };
@@ -239,7 +239,7 @@ mod tests {
         let runtime = Arc::new(
             awaken_runtime::builder::AgentRuntimeBuilder::new()
                 .with_provider("boot", Arc::new(StubExecutor))
-                .with_model(awaken_contract::ModelSpec::new(
+                .with_model(awaken_server_contract::ModelSpec::new(
                     "boot",
                     "boot",
                     "boot-model",
@@ -318,13 +318,13 @@ mod tests {
             .expect("read latest publication")
             .expect("publication");
         assert!(publication.entries.iter().any(|entry| {
-            entry.kind == awaken_contract::REGISTRY_KIND_AGENT && entry.id == "agent-1"
+            entry.kind == awaken_server_contract::REGISTRY_KIND_AGENT && entry.id == "agent-1"
         }));
         assert!(publication.entries.iter().any(|entry| {
-            entry.kind == awaken_contract::REGISTRY_KIND_MODEL && entry.id == "model-1"
+            entry.kind == awaken_server_contract::REGISTRY_KIND_MODEL && entry.id == "model-1"
         }));
         assert!(publication.entries.iter().any(|entry| {
-            entry.kind == awaken_contract::REGISTRY_KIND_PROVIDER && entry.id == "provider-1"
+            entry.kind == awaken_server_contract::REGISTRY_KIND_PROVIDER && entry.id == "provider-1"
         }));
         assert!(publication.source_config_revisions.iter().any(|revision| {
             revision.namespace == "agents" && revision.id == "agent-1" && revision.revision > 0
@@ -367,7 +367,7 @@ mod tests {
             versioned
                 .current(
                     "default",
-                    awaken_contract::REGISTRY_KIND_PROVIDER,
+                    awaken_server_contract::REGISTRY_KIND_PROVIDER,
                     "provider-1"
                 )
                 .await
@@ -391,10 +391,16 @@ mod tests {
             .await
             .expect("read first publication")
             .expect("first publication");
-        let first_agent_version =
-            entry_version(&first, awaken_contract::REGISTRY_KIND_AGENT, "agent-1");
-        let first_model_version =
-            entry_version(&first, awaken_contract::REGISTRY_KIND_MODEL, "model-1");
+        let first_agent_version = entry_version(
+            &first,
+            awaken_server_contract::REGISTRY_KIND_AGENT,
+            "agent-1",
+        );
+        let first_model_version = entry_version(
+            &first,
+            awaken_server_contract::REGISTRY_KIND_MODEL,
+            "model-1",
+        );
 
         manager.apply().await.expect("unchanged apply");
         let unchanged = versioned
@@ -403,12 +409,20 @@ mod tests {
             .expect("read unchanged publication")
             .expect("unchanged publication");
         assert_eq!(
-            entry_version(&unchanged, awaken_contract::REGISTRY_KIND_AGENT, "agent-1"),
+            entry_version(
+                &unchanged,
+                awaken_server_contract::REGISTRY_KIND_AGENT,
+                "agent-1"
+            ),
             first_agent_version,
             "unchanged effective config must reuse the existing agent resource version"
         );
         assert_eq!(
-            entry_version(&unchanged, awaken_contract::REGISTRY_KIND_MODEL, "model-1"),
+            entry_version(
+                &unchanged,
+                awaken_server_contract::REGISTRY_KIND_MODEL,
+                "model-1"
+            ),
             first_model_version,
             "unchanged effective config must reuse the existing model resource version"
         );
@@ -442,7 +456,7 @@ mod tests {
         assert!(
             entry_version(
                 &changed_publication,
-                awaken_contract::REGISTRY_KIND_AGENT,
+                awaken_server_contract::REGISTRY_KIND_AGENT,
                 "agent-1"
             ) > first_agent_version,
             "changed effective agent config must publish a new agent resource version"
@@ -450,7 +464,7 @@ mod tests {
         assert_eq!(
             entry_version(
                 &changed_publication,
-                awaken_contract::REGISTRY_KIND_MODEL,
+                awaken_server_contract::REGISTRY_KIND_MODEL,
                 "model-1"
             ),
             first_model_version,

@@ -2,8 +2,8 @@
 //! production file stays under the lefthook code-file-length guard.
 
 use super::*;
-use awaken_contract::config_record::ConfigRecord;
-use awaken_contract::{
+use awaken_server_contract::config_record::ConfigRecord;
+use awaken_server_contract::{
     AgentSpec, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec, SkillSpec,
 };
 use awaken_stores::memory::InMemoryStore;

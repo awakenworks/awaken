@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use awaken_contract::ProviderSpec;
-use awaken_contract::contract::executor::LlmExecutor;
 use awaken_runtime::registry::ModelCapabilityPatch;
+use awaken_server_contract::ProviderSpec;
+use awaken_server_contract::contract::executor::LlmExecutor;
 
 /// Per-provider executor cache entry: the spec used to build the cached
 /// executor and the executor itself.

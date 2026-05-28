@@ -15,12 +15,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::mailbox::{MailboxInterrupt, MailboxStore};
-use awaken_contract::contract::storage::{RunWaitingState, ThreadRunStore};
-use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_runtime::RunActivation;
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
 use awaken_server::app::{MailboxLifecycleMode, ServerConfig, ShutdownConfig};
@@ -33,6 +27,12 @@ use awaken_server::routes::ApiError;
 use awaken_server::services::run_control_service::{
     ActiveRun, InputMode, InterruptMode, RunControlError,
 };
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::mailbox::{MailboxInterrupt, MailboxStore};
+use awaken_server_contract::contract::storage::{RunWaitingState, ThreadRunStore};
+use awaken_server_contract::contract::suspension::ToolCallResume;
 
 // ── Signature lockdown for Mailbox ────────────────────────────────────────
 

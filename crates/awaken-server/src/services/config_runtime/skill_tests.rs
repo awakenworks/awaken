@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use awaken_contract::{BuiltinSeedSet, BuiltinSpec, PreparedSkillSpecs, SkillSpec, SkillSpecSink};
+use awaken_server_contract::{
+    BuiltinSeedSet, BuiltinSpec, PreparedSkillSpecs, SkillSpec, SkillSpecSink,
+};
 use parking_lot::Mutex;
 
 use super::tests::make_manager_with_store;

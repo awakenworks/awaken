@@ -1,5 +1,5 @@
-use awaken_contract::contract::event_store::{CanonicalEventId, EventCursor, EventScope};
-use awaken_contract::contract::protocol_replay_log::{
+use awaken_server_contract::contract::event_store::{CanonicalEventId, EventCursor, EventScope};
+use awaken_server_contract::contract::protocol_replay_log::{
     ProtocolReplayCursor, ProtocolReplayDraft, ProtocolReplayError, ProtocolReplayId,
     ProtocolReplayLookup, ProtocolReplayReader, ProtocolReplayRedactionState, ProtocolReplayWriter,
     ProtocolStreamKey, SourceEventCursor,

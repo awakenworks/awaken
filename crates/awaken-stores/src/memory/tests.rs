@@ -1,13 +1,13 @@
 use super::*;
 use crate::PendingMessageStore;
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::{
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::message::{
     DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message, pending_queue_revision,
 };
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::storage::{
     RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
-use awaken_contract::thread::Thread;
+use awaken_server_contract::thread::Thread;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 
@@ -894,7 +894,7 @@ async fn update_thread_metadata_success() {
     let thread = Thread::new();
     store.save_thread(&thread).await.unwrap();
 
-    let meta = awaken_contract::thread::ThreadMetadata {
+    let meta = awaken_server_contract::thread::ThreadMetadata {
         title: Some("Updated".to_string()),
         ..Default::default()
     };
@@ -1021,7 +1021,7 @@ async fn profile_clear_owner() {
 
 #[tokio::test]
 async fn put_if_revision_succeeds_when_revision_matches() {
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
     let store = InMemoryStore::new();
 
     // First write: no existing record, expected=0 → insert at revision 1.
@@ -1045,7 +1045,7 @@ async fn put_if_revision_succeeds_when_revision_matches() {
 
 #[tokio::test]
 async fn put_if_revision_returns_conflict_on_mismatch() {
-    use awaken_contract::contract::storage::StorageError;
+    use awaken_server_contract::contract::storage::StorageError;
     let store = InMemoryStore::new();
 
     // Insert a record at revision 1.
@@ -1069,8 +1069,8 @@ async fn put_if_revision_returns_conflict_on_mismatch() {
 
 #[tokio::test]
 async fn put_if_absent_inserts_once_and_reports_existing() {
-    use awaken_contract::contract::config_store::ConfigStore;
-    use awaken_contract::contract::storage::StorageError;
+    use awaken_server_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::storage::StorageError;
 
     let store = InMemoryStore::new();
     let value = serde_json::json!({
@@ -1092,8 +1092,8 @@ async fn put_if_absent_inserts_once_and_reports_existing() {
 
 #[tokio::test]
 async fn delete_if_revision_removes_only_matching_revision() {
-    use awaken_contract::contract::config_store::ConfigStore;
-    use awaken_contract::contract::storage::StorageError;
+    use awaken_server_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::storage::StorageError;
 
     let store = InMemoryStore::new();
     let value = serde_json::json!({
@@ -1134,8 +1134,8 @@ async fn delete_if_revision_removes_only_matching_revision() {
 
 #[tokio::test]
 async fn put_if_revision_handles_concurrent_writers() {
-    use awaken_contract::contract::config_store::ConfigStore;
-    use awaken_contract::contract::storage::StorageError;
+    use awaken_server_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::storage::StorageError;
     use std::sync::Arc;
 
     let store = Arc::new(InMemoryStore::new());
@@ -1175,7 +1175,7 @@ async fn put_if_revision_handles_concurrent_writers() {
 
 #[tokio::test]
 async fn delete_and_update_same_revision_are_mutually_exclusive() {
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
     use std::sync::Arc;
 
     let store = Arc::new(InMemoryStore::new());
@@ -1231,7 +1231,7 @@ async fn delete_and_update_same_revision_are_mutually_exclusive() {
 
 #[tokio::test]
 async fn config_change_notifier_emits_on_put_and_delete() {
-    use awaken_contract::contract::config_store::{
+    use awaken_server_contract::contract::config_store::{
         ConfigChangeKind, ConfigChangeNotifier, ConfigStore,
     };
     let store = InMemoryStore::new();
@@ -1255,7 +1255,7 @@ async fn config_change_notifier_emits_on_put_and_delete() {
 
 #[tokio::test]
 async fn config_change_notifier_supports_multiple_subscribers() {
-    use awaken_contract::contract::config_store::ConfigChangeNotifier;
+    use awaken_server_contract::contract::config_store::ConfigChangeNotifier;
     let store = InMemoryStore::new();
     let mut sub_a = store.subscribe().await.unwrap();
     let mut sub_b = store.subscribe().await.unwrap();

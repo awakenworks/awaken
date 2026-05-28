@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use awaken_contract::StateMap;
-use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
-use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
-use awaken_contract::model::Phase;
-use awaken_contract::state::Snapshot;
 use awaken_runtime::{PhaseContext, ToolGateHook};
+use awaken_runtime_contract::StateMap;
+use awaken_runtime_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+use awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload;
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::state::Snapshot;
 use serde_json::json;
 
 use crate::rules::{PermissionRule, ToolPermissionBehavior};

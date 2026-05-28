@@ -17,26 +17,30 @@ use crate::hooks::PhaseContext;
 use crate::phase::PhaseRuntime;
 use crate::registry::ResolvedAgent;
 use crate::state::StateCommand;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::executor::{InferenceRequest, InferenceRoutingKey};
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::inference::{
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::contract::executor::{InferenceRequest, InferenceRoutingKey};
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::inference::{
     InferenceOverride, LLMResponse, StopReason, StreamResult,
 };
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::message::{Message, ToolCall};
-use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_contract::contract::suspension::{SuspendTicket, ToolCallOutcome, ToolCallStatus};
-use awaken_contract::contract::tool::{ToolCallContext, ToolResult};
-use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
-use awaken_contract::model::Phase;
+use awaken_runtime_contract::contract::lifecycle::TerminationReason;
+use awaken_runtime_contract::contract::message::{Message, ToolCall};
+use awaken_runtime_contract::contract::storage::ThreadRunStore;
+use awaken_runtime_contract::contract::suspension::{
+    SuspendTicket, ToolCallOutcome, ToolCallStatus,
+};
+use awaken_runtime_contract::contract::tool::{ToolCallContext, ToolResult};
+use awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload;
+use awaken_runtime_contract::model::Phase;
 use std::sync::Arc;
 const INTERRUPTED_TOOL_MESSAGE: &str = "[Tool execution was interrupted]";
 /// Format a user-visible note that surfaces a cancelled parallel tool
 /// call after mid-stream recovery. Centralized so telemetry and docs can
 /// reason about the exact wording.
-fn format_tool_cancel_hint(hint: &awaken_contract::contract::executor::InFlightTool) -> String {
+fn format_tool_cancel_hint(
+    hint: &awaken_runtime_contract::contract::executor::InFlightTool,
+) -> String {
     format!(
         "Note: your parallel call to tool `{}` was interrupted mid-stream due to a transient \
          upstream error. The other tool calls completed normally. You may re-issue the call if \
@@ -250,7 +254,7 @@ async fn run_phase_and_check(
         .await
     {
         Ok(_) => Ok(check_termination(store).map(StepOutcome::Terminated)),
-        Err(awaken_contract::StateError::Cancelled) => Ok(Some(StepOutcome::Cancelled)),
+        Err(awaken_runtime_contract::StateError::Cancelled) => Ok(Some(StepOutcome::Cancelled)),
         Err(e) => Err(e.into()),
     }
 }
@@ -263,7 +267,7 @@ async fn recover_truncation(
     ctx: &mut StepContext<'_>,
     mut stream_result: StreamResult,
     transform_arcs: &[std::sync::Arc<
-        dyn awaken_contract::contract::transform::InferenceRequestTransform,
+        dyn awaken_runtime_contract::contract::transform::InferenceRequestTransform,
     >],
     overrides: Option<InferenceOverride>,
 ) -> Result<StreamResult, AgentLoopError> {
@@ -283,7 +287,7 @@ async fn recover_truncation(
             cont_messages.push(Message::system(ctx.agent.system_prompt()));
         }
         cont_messages.extend(ctx.messages.iter().map(|m| (**m).clone()));
-        let cont_messages = awaken_contract::contract::transform::apply_transforms(
+        let cont_messages = awaken_runtime_contract::contract::transform::apply_transforms(
             cont_messages,
             &ctx.agent.tool_descriptors(),
             transform_arcs,
@@ -451,7 +455,7 @@ struct InferencePhaseOutput {
     /// tool call (R2 plan). The loop runner appends a user-visible note
     /// to the next `user` message after the completed tools execute,
     /// telling the model which call was lost so it can choose to retry.
-    cancelled_tool_hint: Option<awaken_contract::contract::executor::InFlightTool>,
+    cancelled_tool_hint: Option<awaken_runtime_contract::contract::executor::InFlightTool>,
     /// Content-addressed ids of tools presented to the LLM on this turn.
     effective_tool_ids: Vec<String>,
 }
@@ -472,7 +476,7 @@ async fn run_inference_phase(
     if let Some(policy) = ctx.agent.context_policy().cloned()
         && let Some(threshold) = policy.autocompact_threshold
     {
-        let token_est = awaken_contract::contract::transform::estimate_tokens(ctx.messages);
+        let token_est = awaken_runtime_contract::contract::transform::estimate_tokens(ctx.messages);
         if token_est >= threshold {
             maybe_spawn_compaction(ctx, &policy).await;
         }
@@ -504,11 +508,11 @@ async fn run_inference_phase(
         .iter()
         .map(|td| {
             let schema = serde_json::to_string(&td.parameters).unwrap_or_default();
-            awaken_contract::identity::tool_desc_id(&td.name, &td.description, &schema)
+            awaken_runtime_contract::identity::tool_desc_id(&td.name, &td.description, &schema)
         })
         .collect();
     let transform_arcs = ctx.agent.env.transform_arcs();
-    let request_messages = awaken_contract::contract::transform::apply_transforms(
+    let request_messages = awaken_runtime_contract::contract::transform::apply_transforms(
         request_messages,
         &tools,
         &transform_arcs,
@@ -701,7 +705,7 @@ async fn build_tool_state_command(
     ctx: &mut StepContext<'_>,
     transcript: &ToolBatchTranscript,
     call: &ToolCall,
-    tool_result: &awaken_contract::contract::tool::ToolResult,
+    tool_result: &awaken_runtime_contract::contract::tool::ToolResult,
     tool_command: StateCommand,
     outcome: ToolCallOutcome,
 ) -> Result<StateCommand, AgentLoopError> {
@@ -764,7 +768,7 @@ async fn emit_tool_completion(
     ctx: &mut StepContext<'_>,
     transcript: &mut ToolBatchTranscript,
     call: &ToolCall,
-    tool_result: &awaken_contract::contract::tool::ToolResult,
+    tool_result: &awaken_runtime_contract::contract::tool::ToolResult,
     outcome: ToolCallOutcome,
 ) {
     let resume_state = active_resume_state(ctx.runtime.store(), &call.id);
@@ -802,7 +806,7 @@ async fn complete_tool_call(
     ctx: &mut StepContext<'_>,
     transcript: &mut ToolBatchTranscript,
     call: &ToolCall,
-    tool_result: &awaken_contract::contract::tool::ToolResult,
+    tool_result: &awaken_runtime_contract::contract::tool::ToolResult,
     tool_command: StateCommand,
     outcome: ToolCallOutcome,
 ) -> Result<(), AgentLoopError> {
@@ -851,7 +855,7 @@ async fn emit_suspend_completion(
     // is still emitted for consistency — encoders that don't need it return
     // an empty Vec.
     let _ = ticket; // all modes emit the event now
-    let suspend_result = awaken_contract::contract::tool::ToolResult::suspended_with(
+    let suspend_result = awaken_runtime_contract::contract::tool::ToolResult::suspended_with(
         &call.name,
         format!("Tool '{}' suspended: awaiting approval", call.name),
         ticket.clone(),
@@ -875,8 +879,10 @@ async fn complete_interrupted_tool_call(
     transcript: &mut ToolBatchTranscript,
     call: &ToolCall,
 ) -> Result<(), AgentLoopError> {
-    let result =
-        awaken_contract::contract::tool::ToolResult::error(&call.name, INTERRUPTED_TOOL_MESSAGE);
+    let result = awaken_runtime_contract::contract::tool::ToolResult::error(
+        &call.name,
+        INTERRUPTED_TOOL_MESSAGE,
+    );
     let mut cmd = StateCommand::new();
     cmd.update::<ToolCallStates>(ToolCallStatesUpdate::put(ToolCallState::new(
         call.id.clone(),
@@ -1280,7 +1286,7 @@ pub(super) async fn execute_step(ctx: &mut StepContext<'_>) -> Result<StepOutcom
         .await
     {
         Ok(_) => {}
-        Err(awaken_contract::StateError::Cancelled) => return Ok(StepOutcome::Cancelled),
+        Err(awaken_runtime_contract::StateError::Cancelled) => return Ok(StepOutcome::Cancelled),
         Err(e) => return Err(e.into()),
     }
     if let Some(reason) = check_termination(store) {

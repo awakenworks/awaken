@@ -3,10 +3,10 @@
 use crate::context::{TruncationState, try_consume_compaction_event};
 use crate::inbox::{inbox_payload_messages, is_pending_boundary_wake_payload};
 use crate::state::StateStore;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{DeliveryBoundary, Message, Role, gen_message_id};
-use awaken_contract::model::Phase;
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_runtime_contract::contract::message::{DeliveryBoundary, Message, Role, gen_message_id};
+use awaken_runtime_contract::model::Phase;
 use std::sync::Arc;
 
 use super::checkpoint::{
@@ -143,7 +143,7 @@ pub(super) async fn run_agent_loop_impl(
 
     if let Some(seed) = initial_state_seed {
         store
-            .apply_seed(seed, awaken_contract::UnknownKeyPolicy::Error)
+            .apply_seed(seed, awaken_runtime_contract::UnknownKeyPolicy::Error)
             .map_err(AgentLoopError::PhaseError)?;
     }
 
@@ -154,7 +154,9 @@ pub(super) async fn run_agent_loop_impl(
         let id = desc.id.clone();
         agent.tools.insert(
             id,
-            std::sync::Arc::new(awaken_contract::contract::tool::FrontEndTool::new(desc)),
+            std::sync::Arc::new(awaken_runtime_contract::contract::tool::FrontEndTool::new(
+                desc,
+            )),
         );
     }
 
@@ -203,7 +205,7 @@ pub(super) async fn run_agent_loop_impl(
         .await
     {
         Ok(_) => {}
-        Err(awaken_contract::StateError::Cancelled) => {
+        Err(awaken_runtime_contract::StateError::Cancelled) => {
             return Ok(AgentRunResult {
                 run_id: run_identity.run_id.clone(),
                 response: String::new(),
@@ -222,7 +224,7 @@ pub(super) async fn run_agent_loop_impl(
         // Handoff: check ActiveAgentKey for agent switch
         #[cfg(feature = "handoff")]
         if let Some(Some(active_id)) =
-            store.read::<awaken_contract::contract::active_agent::ActiveAgentIdKey>()
+            store.read::<awaken_runtime_contract::contract::active_agent::ActiveAgentIdKey>()
             && active_id != agent.id()
         {
             match resolver.resolve(&active_id) {
@@ -301,7 +303,7 @@ pub(super) async fn run_agent_loop_impl(
 
         let step_result = match execute_step(&mut step_ctx).await {
             Ok(outcome) => outcome,
-            Err(AgentLoopError::PhaseError(awaken_contract::StateError::Cancelled)) => {
+            Err(AgentLoopError::PhaseError(awaken_runtime_contract::StateError::Cancelled)) => {
                 StepOutcome::Cancelled
             }
             Err(e) => return Err(e),
@@ -363,7 +365,7 @@ pub(super) async fn run_agent_loop_impl(
                 if has_pending_work(store) {
                     // Background tasks still running but no new messages yet.
                     if run_identity.origin()
-                        == awaken_contract::contract::identity::RunOrigin::Subagent
+                        == awaken_runtime_contract::contract::identity::RunOrigin::Subagent
                     {
                         // Sub-agent: wait in-process for task events via inbox.
                         // This keeps the sub-agent alive until all tasks complete,
@@ -643,7 +645,7 @@ pub(super) async fn run_agent_loop_impl(
         )
         .await
     {
-        Ok(_) | Err(awaken_contract::StateError::Cancelled) => {}
+        Ok(_) | Err(awaken_runtime_contract::StateError::Cancelled) => {}
         Err(e) => return Err(AgentLoopError::PhaseError(e)),
     }
 

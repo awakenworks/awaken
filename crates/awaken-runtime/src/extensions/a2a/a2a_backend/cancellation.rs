@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use awaken_contract::CancellationToken;
-use awaken_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::CancellationToken;
+use awaken_runtime_contract::contract::event_sink::EventSink;
 
 use super::{A2aBackend, ExecutionBackendError, PollCompletion, TaskSnapshot};
 use awaken_protocol_a2a::TaskState;

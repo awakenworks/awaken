@@ -1,4 +1,4 @@
-use awaken_contract::{
+use awaken_server_contract::{
     AgentSpec, ModelPoolSpec, ModelSpec, SkillSpec, parse_skill_allowed_tool_token,
 };
 use awaken_tool_pattern::{parse_pattern, pattern_matches};

@@ -6,9 +6,9 @@ use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use awaken_contract::PeriodicRefresher;
-use awaken_contract::contract::progress::ProgressStatus;
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::PeriodicRefresher;
+use awaken_runtime_contract::contract::progress::ProgressStatus;
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
 };
 use futures::future::join_all;
@@ -3885,7 +3885,7 @@ mod tests {
         .await
         .unwrap();
         let tool = mgr.registry().get("mcp__srv__echo").unwrap();
-        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+        let ctx = awaken_runtime_contract::contract::tool::ToolCallContext::test_default();
         transport.fail_next_refreshes(3);
 
         {
@@ -4252,7 +4252,7 @@ mod tests {
         let mgr = make_manager_with(vec![("srv", vec![MockTransport::tool_def("echo")])]).await;
         let registry = mgr.registry();
         let tool = registry.get("mcp__srv__echo").unwrap();
-        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+        let ctx = awaken_runtime_contract::contract::tool::ToolCallContext::test_default();
 
         let output = tool.execute(json!({}), &ctx).await.unwrap();
         assert!(output.result.is_success());
@@ -4284,7 +4284,7 @@ mod tests {
             servers[0].lifecycle = McpServerLifecycle::Connected;
         }
 
-        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+        let ctx = awaken_runtime_contract::contract::tool::ToolCallContext::test_default();
         let output = tool.execute(json!({}), &ctx).await.unwrap();
 
         assert_eq!(output.result.data, Value::String("new".to_string()));
@@ -4306,7 +4306,7 @@ mod tests {
         }
 
         let tool = mgr.registry().get("mcp__srv__echo").unwrap();
-        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+        let ctx = awaken_runtime_contract::contract::tool::ToolCallContext::test_default();
 
         for _ in 0..3 {
             let err = tool.execute(json!({}), &ctx).await.unwrap_err();
@@ -4334,7 +4334,7 @@ mod tests {
             .unwrap();
 
         let tool = mgr.registry().get("mcp__srv__echo").unwrap();
-        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+        let ctx = awaken_runtime_contract::contract::tool::ToolCallContext::test_default();
 
         for _ in 0..3 {
             let err = tool.execute(json!({}), &ctx).await.unwrap_err();
@@ -4603,7 +4603,7 @@ mod tests {
             .find(|id| id.contains("my_tool"))
             .expect("my-tool");
         let tool = registry.get(&tool_id).unwrap();
-        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+        let ctx = awaken_runtime_contract::contract::tool::ToolCallContext::test_default();
 
         let output = tool.execute(json!({}), &ctx).await.unwrap();
         assert_eq!(output.result.metadata["mcp.server"], "my-srv");
@@ -4621,7 +4621,7 @@ mod tests {
             .find(|id| id.contains("__t"))
             .expect("tool t");
         let tool = registry.get(&tool_id).unwrap();
-        let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
+        let ctx = awaken_runtime_contract::contract::tool::ToolCallContext::test_default();
 
         let output = tool.execute(json!({}), &ctx).await.unwrap();
         assert!(output.result.metadata.contains_key(MCP_META_RESULT_CONTENT));

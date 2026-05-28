@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
-use awaken_contract::validate_unique_model_ids;
+use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::registry_spec::{AgentSpec, ModelSpec};
+use awaken_runtime_contract::validate_unique_model_ids;
 
 use crate::builder::BuildError;
 
@@ -159,10 +159,10 @@ mod tests {
     #[test]
     fn build_registries_from_config() {
         use async_trait::async_trait;
-        use awaken_contract::contract::executor::{
+        use awaken_runtime_contract::contract::executor::{
             InferenceExecutionError, InferenceRequest, LlmExecutor,
         };
-        use awaken_contract::contract::inference::StreamResult;
+        use awaken_runtime_contract::contract::inference::StreamResult;
         use std::sync::Arc;
 
         struct StubExecutor;

@@ -16,11 +16,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::commit_coordinator::{
+use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     MessageWriteMode, TransactionScopeId,
 };
-use awaken_contract::contract::storage::ThreadRunStore;
+use awaken_server_contract::contract::storage::ThreadRunStore;
 use tokio::sync::Mutex;
 
 use crate::commit_batch::run_commit_batch;
@@ -172,16 +172,16 @@ mod tests {
         format!("{}-{}", prefix, COUNTER.fetch_add(1, Ordering::SeqCst))
     }
 
-    use awaken_contract::contract::commit_coordinator::{
+    use awaken_server_contract::contract::commit_coordinator::{
         CheckpointCommitPlan, CommitCoordinator, CommitError, StagedCanonicalEvent,
     };
-    use awaken_contract::contract::event_store::{
+    use awaken_server_contract::contract::event_store::{
         AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope,
         EventVisibility, EventWriter,
     };
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::outbox::OutboxMessageDraft;
-    use awaken_contract::contract::storage::{RunRecord, RunStore};
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::outbox::OutboxMessageDraft;
+    use awaken_server_contract::contract::storage::{RunRecord, RunStore};
 
     use super::{FileCommitCoordinator, file_coordinator_allowed};
     use crate::file::FileStore;

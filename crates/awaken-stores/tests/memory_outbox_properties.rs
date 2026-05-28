@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::outbox::{
     OUTBOX_LANE_CANONICAL, OUTBOX_TARGET_PROTOCOL_PROJECTOR, OutboxMessageDraft, OutboxStatus,
     OutboxStore,
 };

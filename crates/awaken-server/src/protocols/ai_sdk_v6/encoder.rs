@@ -2,11 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::suspension::ToolCallResumeMode;
-use awaken_contract::contract::tool::ToolStatus;
-use awaken_contract::contract::transport::Transcoder;
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::lifecycle::TerminationReason;
+use awaken_server_contract::contract::suspension::ToolCallResumeMode;
+use awaken_server_contract::contract::tool::ToolStatus;
+use awaken_server_contract::contract::transport::Transcoder;
 use serde_json::{Value, json};
 
 use super::types::UIStreamEvent;
@@ -430,10 +430,10 @@ fn reasoning_id_for(message_id: &str, suffix: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::event::AgentEvent;
-    use awaken_contract::contract::lifecycle::TerminationReason;
-    use awaken_contract::contract::suspension::ToolCallOutcome;
-    use awaken_contract::contract::tool::ToolResult;
+    use awaken_server_contract::contract::event::AgentEvent;
+    use awaken_server_contract::contract::lifecycle::TerminationReason;
+    use awaken_server_contract::contract::suspension::ToolCallOutcome;
+    use awaken_server_contract::contract::tool::ToolResult;
     use serde_json::json;
 
     #[test]

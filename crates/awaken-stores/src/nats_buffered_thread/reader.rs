@@ -2,12 +2,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use awaken_contract::contract::message::{Message, strip_unpaired_tool_calls_from_view};
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::message::{Message, strip_unpaired_tool_calls_from_view};
+use awaken_server_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, StorageError, ThreadPage, ThreadQuery, ThreadRunStore,
     paginate_threads,
 };
-use awaken_contract::thread::{Thread, normalize_lineage_id};
+use awaken_server_contract::thread::{Thread, normalize_lineage_id};
 
 use super::{NatsBufferedThreadStore, config::ReadConsistency, entry, hot_meta, recovery};
 

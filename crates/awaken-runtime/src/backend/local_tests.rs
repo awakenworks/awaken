@@ -4,12 +4,14 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event_sink::NullEventSink;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::message::{Message, ToolCall};
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::event_sink::NullEventSink;
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::message::{Message, ToolCall};
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use serde_json::{Value, json};

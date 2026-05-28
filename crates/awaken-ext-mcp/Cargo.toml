@@ -11,7 +11,7 @@ keywords.workspace = true
 categories = ["artificial-intelligence", "api-bindings", "network-programming"]
 
 [dependencies]
-awaken-contract = { workspace = true }
+awaken-runtime-contract = { workspace = true }
 awaken-runtime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

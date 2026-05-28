@@ -1,4 +1,4 @@
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 
 pub(crate) const REASON_CLAIMED_SUPERSEDED_BY_EPOCH: &str =
     "claimed dispatch superseded by newer dispatch epoch";

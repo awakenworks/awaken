@@ -79,13 +79,13 @@ pub use awaken_server as server;
 // ── Sub-crate module re-exports ──
 
 /// Core protocol traits: tools, inference, events, lifecycle, storage contracts.
-pub use awaken_contract::contract;
+pub use awaken_runtime_contract::contract;
 
 /// Data-model primitives: phases, effects, scheduled actions.
-pub use awaken_contract::model;
+pub use awaken_runtime_contract::model;
 
 /// Agent-registry specification types.
-pub use awaken_contract::registry_spec;
+pub use awaken_runtime_contract::registry_spec;
 
 /// Fluent builder for constructing an [`AgentRuntime`].
 pub use awaken_runtime::builder;
@@ -125,31 +125,35 @@ pub use awaken_runtime::agent;
 
 /// Combined state types from both the contract and runtime layers.
 pub mod state {
-    pub use awaken_contract::state::*;
     pub use awaken_runtime::state::{
         CommitEvent, CommitHook, MutationBatch, StateCommand, StateStore,
     };
+    pub use awaken_runtime_contract::state::*;
 }
 
 // ── Flat re-exports: most commonly used types at crate root ──
 
 // contract types
-pub use awaken_contract::{
+pub use awaken_runtime_contract::{
     AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY, AGENT_SPEC_UNKNOWN_FIELD_POLICY, AgentSpec,
     AgentSpecPatch, ConfigRecord, ConfigRecordError, ConfigRecordMerge, ConfigValidationError,
     EffectSpec, FailedScheduledActions, JsonValue, KeyScope, MODEL_SPEC_UNKNOWN_FIELD_POLICY,
     MergeStrategy, Modalities, Modality, ModelSpec, NoConfigPatch,
     PROVIDER_SPEC_UNKNOWN_FIELD_POLICY, PendingScheduledActions, PersistedState, Phase,
-    PluginConfigKey, PreparedSkillSpecs, RecordMeta, RecordSource, RedactedString, RequestSurface,
-    SKILL_SPEC_UNKNOWN_FIELD_POLICY, ScheduledActionSpec, ScopeContext, ScopeId, ScopedConfigStore,
-    ScopedMailboxStore, ScopedOutboxStore, ScopedProtocolReplayLog, ScopedThreadRunStore,
-    ScopedVersionedRegistry, SkillArgumentSpec, SkillSpec, SkillSpecContext, SkillSpecPatch,
-    SkillSpecSink, Snapshot, StateError, StateKey, StateKeyOptions, StateMap, TypedEffect,
-    TypedTool, UnknownFieldPolicy, UnknownKeyPolicy, decode_config_record, effective_config_record,
-    effective_visible_config_records, generate_tool_schema, merge_agent_spec, merge_skill_spec,
-    sanitize_for_llm, scoped_key, unscoped_key, validate_against_schema, validate_agent_spec,
-    validate_agent_spec_patch, validate_config_record, validate_config_record_overrides,
-    validate_model_spec, validate_provider_spec, validate_skill_spec, validate_unique_model_ids,
+    PluginConfigKey, PreparedSkillSpecs, RecordMeta, RecordSource, RedactedString,
+    SKILL_SPEC_UNKNOWN_FIELD_POLICY, ScheduledActionSpec, SkillArgumentSpec, SkillSpec,
+    SkillSpecContext, SkillSpecPatch, SkillSpecSink, Snapshot, StateError, StateKey,
+    StateKeyOptions, StateMap, TypedEffect, TypedTool, UnknownFieldPolicy, UnknownKeyPolicy,
+    decode_config_record, effective_config_record, effective_visible_config_records,
+    generate_tool_schema, merge_agent_spec, merge_skill_spec, sanitize_for_llm,
+    validate_against_schema, validate_agent_spec, validate_agent_spec_patch,
+    validate_config_record, validate_config_record_overrides, validate_model_spec,
+    validate_provider_spec, validate_skill_spec, validate_unique_model_ids,
+};
+pub use awaken_server_contract::{
+    DEFAULT_SCOPE_ID, RequestSurface, ScopeContext, ScopeId, ScopedConfigStore, ScopedMailboxStore,
+    ScopedOutboxStore, ScopedProtocolReplayLog, ScopedThreadRunStore, ScopedVersionedRegistry,
+    scoped_key, unscoped_key,
 };
 
 // runtime types

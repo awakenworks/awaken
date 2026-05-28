@@ -4,7 +4,7 @@
 //! path operate on the envelope; centralizing the helpers here prevents
 //! drift across config read/write paths.
 
-use awaken_contract::{
+use awaken_server_contract::{
     ConfigRecord, ConfigRecordError, ConfigRecordMerge, RecordMeta, effective_config_record,
 };
 use serde_json::Value;
@@ -106,7 +106,7 @@ pub(crate) fn spec_field<'a>(value: &'a Value, field: &str) -> Option<&'a Value>
 
 #[cfg(test)]
 mod tests {
-    use awaken_contract::{ConfigRecord, RecordSource};
+    use awaken_server_contract::{ConfigRecord, RecordSource};
     use serde_json::json;
 
     use super::{ensure_envelope, extract_timestamps, spec_field, unwrap_spec, wrap_user};
@@ -193,7 +193,7 @@ mod tests {
     // ── apply_overrides tests ─────────────────────────────────────────────────
 
     use super::apply_overrides;
-    use awaken_contract::{AgentSpec, ProviderSpec};
+    use awaken_server_contract::{AgentSpec, ProviderSpec};
 
     fn minimal_agent_spec(id: &str) -> AgentSpec {
         AgentSpec {
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn apply_overrides_for_tool_spec_replaces_description_when_some() {
-        use awaken_contract::ToolSpec;
+        use awaken_server_contract::ToolSpec;
         let spec = ToolSpec {
             id: "echo".into(),
             name: "Echo".into(),
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn apply_overrides_for_tool_spec_keeps_base_when_none() {
-        use awaken_contract::ToolSpec;
+        use awaken_server_contract::ToolSpec;
         let spec = ToolSpec {
             id: "echo".into(),
             description: "stock".into(),
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn apply_overrides_for_tool_spec_rejects_unknown_field() {
-        use awaken_contract::ToolSpec;
+        use awaken_server_contract::ToolSpec;
         let spec = ToolSpec {
             id: "echo".into(),
             ..Default::default()

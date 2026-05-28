@@ -1,5 +1,5 @@
-use awaken_contract::AuditAction;
-use awaken_contract::{AgentSpec, ConfigRecord, RecordSource, now_ms};
+use awaken_server_contract::AuditAction;
+use awaken_server_contract::{AgentSpec, ConfigRecord, RecordSource, now_ms};
 use axum::http::HeaderMap;
 use serde_json::{Map, Value};
 
@@ -277,7 +277,7 @@ impl ConfigService {
             m.insert(field.to_string(), Value::Null);
             m
         });
-        awaken_contract::validate_agent_spec_patch(probe).map_err(|_| {
+        awaken_server_contract::validate_agent_spec_patch(probe).map_err(|_| {
             ConfigServiceError::InvalidPayload(format!("unknown override field: {field}"))
         })?;
 
@@ -489,7 +489,7 @@ fn build_agent_overrides_patch(
         }
     }
 
-    awaken_contract::validate_agent_spec_patch(Value::Object(upsert_body.clone()))
+    awaken_server_contract::validate_agent_spec_patch(Value::Object(upsert_body.clone()))
         .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
     if !clear_list.is_empty() {
         validate_clear_field_names(&clear_list)?;
@@ -520,7 +520,7 @@ fn build_agent_overrides_patch(
     normalize_section_delete_markers(&mut existing_map, base_spec);
 
     let merged_value = Value::Object(existing_map.clone());
-    awaken_contract::validate_agent_spec_patch(merged_value.clone())
+    awaken_server_contract::validate_agent_spec_patch(merged_value.clone())
         .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
 
     Ok(if existing_map.is_empty() {

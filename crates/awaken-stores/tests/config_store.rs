@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::{AgentSpec, ModelSpec, ProviderSpec};
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::{AgentSpec, ModelSpec, ProviderSpec};
 use awaken_stores::InMemoryStore;
 
 #[cfg(feature = "file")]

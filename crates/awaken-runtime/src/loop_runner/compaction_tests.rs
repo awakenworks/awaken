@@ -2,14 +2,16 @@ use super::*;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::message::{Message, gen_message_id};
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::message::{Message, gen_message_id};
 use tokio::sync::Notify;
 
-use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
-use awaken_contract::contract::identity::RunOrigin;
+use awaken_runtime_contract::contract::event_sink::{EventSink, NullEventSink};
+use awaken_runtime_contract::contract::identity::RunOrigin;
 
 use crate::cancellation::CancellationToken;
 use crate::context::{
@@ -121,8 +123,8 @@ fn make_long_messages() -> Vec<Arc<Message>> {
     messages
 }
 
-fn default_policy() -> awaken_contract::contract::inference::ContextWindowPolicy {
-    awaken_contract::contract::inference::ContextWindowPolicy {
+fn default_policy() -> awaken_runtime_contract::contract::inference::ContextWindowPolicy {
+    awaken_runtime_contract::contract::inference::ContextWindowPolicy {
         compaction_raw_suffix_messages: 1,
         ..Default::default()
     }
@@ -224,7 +226,7 @@ fn reserve_compaction_in_flight_allows_only_one_concurrent_reservation() {
 
 #[tokio::test]
 async fn maybe_spawn_compaction_emits_event_after_summary_completes() {
-    use awaken_contract::contract::inference::ContextWindowPolicy;
+    use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
 
     let manager = Arc::new(BackgroundTaskManager::new());
     let (runtime, store, env) = make_phase_runtime(&manager);

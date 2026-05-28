@@ -579,7 +579,7 @@ async fn post_mcp_server_restart(
         let resource = format!("mcp-servers/{id}");
         audit
             .emit(
-                awaken_contract::AuditAction::Restart,
+                awaken_server_contract::AuditAction::Restart,
                 &resource,
                 None,
                 None,
@@ -619,7 +619,7 @@ pub(crate) fn ensure_admin_auth(
 }
 
 fn ensure_admin_auth_for_token(
-    expected: Option<&awaken_contract::RedactedString>,
+    expected: Option<&awaken_server_contract::RedactedString>,
     headers: &HeaderMap,
 ) -> Result<(), ApiError> {
     let Some(expected) = expected else {
@@ -815,7 +815,7 @@ fn map_service_error(error: ConfigServiceError) -> ApiError {
         ConfigServiceError::UnknownNamespace(_)
         | ConfigServiceError::NotFound(_)
         | ConfigServiceError::Storage(
-            awaken_contract::contract::storage::StorageError::NotFound(_),
+            awaken_server_contract::contract::storage::StorageError::NotFound(_),
         ) => ApiError::NotFound(error.to_string()),
         ConfigServiceError::MissingId => ApiError::BadRequest(error.to_string()),
         ConfigServiceError::Conflict(_) => ApiError::Conflict(error.to_string()),
@@ -828,7 +828,7 @@ fn map_service_error(error: ConfigServiceError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::RedactedString;
+    use awaken_server_contract::RedactedString;
     use axum::http::{HeaderMap, HeaderValue, header};
     #[test]
     fn admin_auth_rejects_when_token_not_configured() {
@@ -925,12 +925,14 @@ mod tests {
         use crate::routes::build_router;
         use crate::services::config_runtime::{ConfigRuntimeManager, ProviderExecutorFactory};
         use async_trait::async_trait;
-        use awaken_contract::contract::executor::{
+        use awaken_runtime::builder::AgentRuntimeBuilder;
+        use awaken_server_contract::contract::executor::{
             InferenceExecutionError, InferenceRequest, LlmExecutor,
         };
-        use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-        use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
-        use awaken_runtime::builder::AgentRuntimeBuilder;
+        use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+        use awaken_server_contract::{
+            AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec,
+        };
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
         use http_body_util::BodyExt;
@@ -1403,7 +1405,7 @@ mod tests {
                 .expect("manager"),
             );
             // Write an openai provider directly into the store (skip apply).
-            awaken_contract::contract::config_store::ConfigStore::put(
+            awaken_server_contract::contract::config_store::ConfigStore::put(
                 config_store.as_ref(),
                 "providers",
                 "prov-openai",
@@ -1453,9 +1455,9 @@ mod tests {
             desc: String,
         }
         #[async_trait]
-        impl awaken_contract::contract::tool::Tool for StubTool {
-            fn descriptor(&self) -> awaken_contract::contract::tool::ToolDescriptor {
-                awaken_contract::contract::tool::ToolDescriptor::new(
+        impl awaken_server_contract::contract::tool::Tool for StubTool {
+            fn descriptor(&self) -> awaken_server_contract::contract::tool::ToolDescriptor {
+                awaken_server_contract::contract::tool::ToolDescriptor::new(
                     self.id.clone(),
                     self.id.clone(),
                     self.desc.clone(),
@@ -1464,12 +1466,12 @@ mod tests {
             async fn execute(
                 &self,
                 _args: serde_json::Value,
-                _ctx: &awaken_contract::contract::tool::ToolCallContext,
+                _ctx: &awaken_server_contract::contract::tool::ToolCallContext,
             ) -> Result<
-                awaken_contract::contract::tool::ToolOutput,
-                awaken_contract::contract::tool::ToolError,
+                awaken_server_contract::contract::tool::ToolOutput,
+                awaken_server_contract::contract::tool::ToolError,
             > {
-                Ok(awaken_contract::contract::tool::ToolResult::success(
+                Ok(awaken_server_contract::contract::tool::ToolResult::success(
                     &self.id,
                     serde_json::json!({}),
                 )
@@ -1478,7 +1480,7 @@ mod tests {
         }
 
         async fn build_test_app_with_tool(id: &str, description: &str) -> axum::Router {
-            use awaken_contract::ToolSpec;
+            use awaken_server_contract::ToolSpec;
 
             let config_store = Arc::new(awaken_stores::InMemoryStore::new());
             let thread_store = Arc::new(awaken_stores::InMemoryStore::new());

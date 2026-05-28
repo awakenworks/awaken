@@ -20,10 +20,10 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use awaken_contract::agent_spec_patch::AgentSpecPatch;
 use awaken_eval::{EvalRun, EvalRunExecutionMode, LlmExecutorJudge, expand_cells, mint_run_id};
 use awaken_eval::{Expectation, Fixture, MockResponse};
 use awaken_ext_observability::trace_store::TraceStoreSink;
+use awaken_server_contract::agent_spec_patch::AgentSpecPatch;
 use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;

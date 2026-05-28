@@ -202,7 +202,7 @@ fn mailbox_push_payload_empty() {
 
 #[test]
 fn run_query_default_pagination() {
-    use awaken_contract::contract::storage::RunQuery;
+    use awaken_server_contract::contract::storage::RunQuery;
     let query = RunQuery::default();
     assert_eq!(query.offset, 0);
     assert_eq!(query.limit, 50);
@@ -212,8 +212,8 @@ fn run_query_default_pagination() {
 
 #[test]
 fn run_record_fields() {
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::RunRecord;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::storage::RunRecord;
     let record = RunRecord {
         run_id: "r1".into(),
         thread_id: "t1".into(),
@@ -249,7 +249,7 @@ fn run_record_fields() {
 
 #[test]
 fn run_status_transitions() {
-    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
     assert!(RunStatus::Running.can_transition_to(RunStatus::Waiting));
     assert!(RunStatus::Running.can_transition_to(RunStatus::Done));
     assert!(RunStatus::Waiting.can_transition_to(RunStatus::Running));
@@ -265,24 +265,24 @@ fn run_status_transitions() {
 
 mod integration {
     use async_trait::async_trait;
-    use awaken_contract::ModelSpec;
-    use awaken_contract::contract::event_store::{EventReader, EventScope};
-    use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::mailbox::MailboxStore;
-    use awaken_contract::contract::message::{Message, ToolCall};
-    use awaken_contract::contract::storage::{
-        RunRecord, RunStore, RunWaitingState, RunWaitingTicket, ThreadRunStore, ThreadStore,
-        WaitingReason,
-    };
-    use awaken_contract::contract::suspension::ToolCallResumeMode;
-    use awaken_contract::contract::versioned_registry::PinnedRegistryManifest;
-    use awaken_contract::registry_spec::AgentSpec;
-    use awaken_contract::thread::Thread;
     use awaken_runtime::builder::AgentRuntimeBuilder;
     use awaken_server::app::{EventModuleState, ServerConfig, ServerState};
     use awaken_server::routes::build_router;
+    use awaken_server_contract::ModelSpec;
+    use awaken_server_contract::contract::event_store::{EventReader, EventScope};
+    use awaken_server_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+    use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::mailbox::MailboxStore;
+    use awaken_server_contract::contract::message::{Message, ToolCall};
+    use awaken_server_contract::contract::storage::{
+        RunRecord, RunStore, RunWaitingState, RunWaitingTicket, ThreadRunStore, ThreadStore,
+        WaitingReason,
+    };
+    use awaken_server_contract::contract::suspension::ToolCallResumeMode;
+    use awaken_server_contract::contract::versioned_registry::PinnedRegistryManifest;
+    use awaken_server_contract::registry_spec::AgentSpec;
+    use awaken_server_contract::thread::Thread;
     use awaken_stores::{InMemoryEventStore, memory::InMemoryStore};
     use axum::body::to_bytes;
     use axum::http::{Request, StatusCode};
@@ -356,7 +356,7 @@ mod integration {
     struct ImmediateExecutor;
 
     #[async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for ImmediateExecutor {
+    impl awaken_server_contract::contract::executor::LlmExecutor for ImmediateExecutor {
         async fn execute(
             &self,
             _request: InferenceRequest,
@@ -938,11 +938,11 @@ mod integration {
     async fn get_thread_messages_supports_run_and_sequence_filters() {
         let test = make_test_app();
         let id = seed_thread(&test.store, None).await;
-        let run1 = awaken_contract::contract::message::MessageMetadata {
+        let run1 = awaken_server_contract::contract::message::MessageMetadata {
             run_id: Some("run-1".to_string()),
             step_index: Some(0),
         };
-        let run2 = awaken_contract::contract::message::MessageMetadata {
+        let run2 = awaken_server_contract::contract::message::MessageMetadata {
             run_id: Some("run-2".to_string()),
             step_index: Some(0),
         };

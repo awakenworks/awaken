@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event_store::{
     AppendOptions, AppendResult, CanonicalEvent, CanonicalEventDraft, CanonicalEventId,
     EventCursor, EventLookup, EventPage, EventReader, EventScope, EventStoreError, EventSubscriber,
     EventWriter, SubscribeHandle, SubscribeStart,

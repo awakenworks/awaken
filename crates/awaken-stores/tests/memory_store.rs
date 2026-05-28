@@ -3,14 +3,14 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{
     MessageOrder, MessageQuery, MessageSeqRange, MessageVisibilityFilter, PinnedRegistryEntry,
     PinnedRegistryManifest, RunMessageInput, RunMessageOutput, RunQuery, RunStore, StorageError,
     ThreadParentFilter, ThreadQuery, ThreadRunStore, ThreadStore,
 };
-use awaken_contract::thread::Thread;
+use awaken_server_contract::thread::Thread;
 use awaken_stores::InMemoryStore;
 
 mod support;
@@ -158,7 +158,7 @@ async fn list_message_records_query_filters_visibility_run_and_order() {
         .save_thread(&Thread::with_id(thread_id))
         .await
         .unwrap();
-    let metadata = awaken_contract::contract::message::MessageMetadata {
+    let metadata = awaken_server_contract::contract::message::MessageMetadata {
         run_id: Some("run-1".to_string()),
         step_index: Some(0),
     };
@@ -695,7 +695,7 @@ async fn thread_store_and_checkpoint_share_messages() {
 async fn tool_call_message_roundtrip_via_save() {
     let store = InMemoryStore::new();
 
-    let tool_call = awaken_contract::contract::message::ToolCall::new(
+    let tool_call = awaken_server_contract::contract::message::ToolCall::new(
         "call_1",
         "search",
         serde_json::json!({"query": "rust"}),
@@ -733,7 +733,7 @@ async fn tool_call_message_roundtrip_via_save() {
 async fn tool_call_message_roundtrip_via_checkpoint() {
     let store = InMemoryStore::new();
 
-    let tool_call = awaken_contract::contract::message::ToolCall::new(
+    let tool_call = awaken_server_contract::contract::message::ToolCall::new(
         "call_42",
         "calculator",
         serde_json::json!({"expr": "6*7"}),
@@ -770,12 +770,12 @@ async fn multi_tool_call_roundtrip() {
     let store = InMemoryStore::new();
 
     let calls = vec![
-        awaken_contract::contract::message::ToolCall::new(
+        awaken_server_contract::contract::message::ToolCall::new(
             "call_a",
             "search",
             serde_json::json!({"q": "hello"}),
         ),
-        awaken_contract::contract::message::ToolCall::new(
+        awaken_server_contract::contract::message::ToolCall::new(
             "call_b",
             "fetch",
             serde_json::json!({"url": "https://example.com"}),
@@ -851,7 +851,7 @@ async fn list_runs_combined_filter_thread_and_status() {
 
 #[tokio::test]
 async fn run_record_with_state() {
-    use awaken_contract::state::PersistedState;
+    use awaken_server_contract::state::PersistedState;
     use std::collections::HashMap;
 
     let store = InMemoryStore::new();
@@ -893,7 +893,7 @@ async fn full_agent_run_via_checkpoint() {
         .unwrap();
 
     // 3. Tool call checkpoint
-    let tool_call = awaken_contract::contract::message::ToolCall::new(
+    let tool_call = awaken_server_contract::contract::message::ToolCall::new(
         "call-1",
         "calculator",
         serde_json::json!({"expr": "2+2"}),
@@ -926,7 +926,7 @@ async fn full_agent_run_via_checkpoint() {
                 Message::user("What is 2+2?"),
                 Message::assistant_with_tool_calls(
                     "Let me calculate.",
-                    vec![awaken_contract::contract::message::ToolCall::new(
+                    vec![awaken_server_contract::contract::message::ToolCall::new(
                         "call-1",
                         "calculator",
                         serde_json::json!({"expr": "2+2"}),
@@ -1051,7 +1051,7 @@ async fn delete_messages_no_messages_is_ok() {
 
 #[tokio::test]
 async fn update_thread_metadata_changes_metadata() {
-    use awaken_contract::thread::ThreadMetadata;
+    use awaken_server_contract::thread::ThreadMetadata;
 
     let store = InMemoryStore::new();
     store
@@ -1073,7 +1073,7 @@ async fn update_thread_metadata_changes_metadata() {
 
 #[tokio::test]
 async fn update_thread_metadata_not_found() {
-    use awaken_contract::thread::ThreadMetadata;
+    use awaken_server_contract::thread::ThreadMetadata;
 
     let store = InMemoryStore::new();
     let err = store

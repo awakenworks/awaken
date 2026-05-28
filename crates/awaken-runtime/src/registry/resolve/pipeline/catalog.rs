@@ -6,7 +6,7 @@
 //! so every consumer that holds an `AgentSpec` gets the same answer
 //! regardless of which crate it lives in.
 
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_runtime_contract::registry_spec::AgentSpec;
 use awaken_tool_pattern::tool_id_match;
 
 /// Decide whether a tool id passes the agent's catalog filter.

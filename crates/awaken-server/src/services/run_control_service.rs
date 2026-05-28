@@ -7,12 +7,14 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::MailboxInterrupt;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunQuery, RunRecord, RunWaitingState, StorageError};
-use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_runtime::RunActivation;
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::mailbox::MailboxInterrupt;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{
+    RunQuery, RunRecord, RunWaitingState, StorageError,
+};
+use awaken_server_contract::contract::suspension::ToolCallResume;
 
 use crate::app::RunModuleState;
 use crate::mailbox::{Mailbox, MailboxError, MailboxSubmitResult};
@@ -48,7 +50,7 @@ pub struct ActiveRun {
     pub agent_id: String,
     pub status: RunStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub termination_reason: Option<awaken_contract::contract::lifecycle::TerminationReason>,
+    pub termination_reason: Option<awaken_server_contract::contract::lifecycle::TerminationReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

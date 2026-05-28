@@ -4,14 +4,14 @@
 //! AgentRuntime → event collection → tool result response.
 
 use async_trait::async_trait;
-use awaken_contract::ModelSpec;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
+use awaken_server_contract::ModelSpec;
+use awaken_server_contract::contract::content::ContentBlock;
+use awaken_server_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::registry_spec::AgentSpec;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::http::{Request, Response, StatusCode};
@@ -24,7 +24,7 @@ use tower::ServiceExt;
 struct EchoExecutor;
 
 #[async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for EchoExecutor {
+impl awaken_server_contract::contract::executor::LlmExecutor for EchoExecutor {
     async fn execute(
         &self,
         request: InferenceRequest,
@@ -35,7 +35,7 @@ impl awaken_contract::contract::executor::LlmExecutor for EchoExecutor {
             .iter()
             .rev()
             .find_map(|m| {
-                if m.role == awaken_contract::contract::message::Role::User {
+                if m.role == awaken_server_contract::contract::message::Role::User {
                     Some(m.text())
                 } else {
                     None

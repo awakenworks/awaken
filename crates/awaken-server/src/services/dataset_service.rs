@@ -10,8 +10,6 @@
 //! a `provider_script` snapshot (ADR-0032 D5), appending the result to
 //! the dataset's fixture list.
 
-use awaken_contract::config_record::{ConfigRecord, RecordMeta, validate_config_record};
-use awaken_contract::contract::config_store::extract_meta_revision;
 use awaken_eval::fixture::DialogueTurn;
 use awaken_eval::{
     CurateError, DATASETS_NAMESPACE, DatasetSpec, Expectation, Fixture, MockResponse,
@@ -19,6 +17,8 @@ use awaken_eval::{
 };
 use awaken_ext_observability::trace_store::{ReferenceKind, TraceStore};
 use awaken_runtime::engine::ProviderScriptEvent;
+use awaken_server_contract::config_record::{ConfigRecord, RecordMeta, validate_config_record};
+use awaken_server_contract::contract::config_store::extract_meta_revision;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -228,7 +228,7 @@ pub async fn put_dataset(
             return Err(ApiError::NotFound(format!("dataset not found: {id}")));
         }
     };
-    let now = awaken_contract::time::now_ms();
+    let now = awaken_server_contract::time::now_ms();
     meta.updated_at = now;
     meta.revision = meta.revision.saturating_add(1);
     let record = ConfigRecord {
@@ -293,7 +293,7 @@ pub async fn append_fixture(
         .spec
         .validate_for_write()
         .map_err(ApiError::Internal)?;
-    let now = awaken_contract::time::now_ms();
+    let now = awaken_server_contract::time::now_ms();
     record.meta.updated_at = now;
     record.meta.revision = record.meta.revision.saturating_add(1);
     let value = record
@@ -412,7 +412,7 @@ pub async fn curate_items(
         .validate_for_write()
         .map_err(ApiError::Internal)?;
 
-    let now = awaken_contract::time::now_ms();
+    let now = awaken_server_contract::time::now_ms();
     record.meta.updated_at = now;
     record.meta.revision = record.meta.revision.saturating_add(1);
     let value = record
@@ -569,7 +569,7 @@ pub async fn import_traces(
         .into_response());
     }
 
-    record.meta.updated_at = awaken_contract::time::now_ms();
+    record.meta.updated_at = awaken_server_contract::time::now_ms();
     record.meta.revision = record.meta.revision.saturating_add(1);
     let value = record
         .to_value()
@@ -739,7 +739,7 @@ pub async fn import_dialogue(
         .validate_for_write()
         .map_err(ApiError::Internal)?;
 
-    record.meta.updated_at = awaken_contract::time::now_ms();
+    record.meta.updated_at = awaken_server_contract::time::now_ms();
     record.meta.revision = record.meta.revision.saturating_add(1);
     let value = record
         .to_value()

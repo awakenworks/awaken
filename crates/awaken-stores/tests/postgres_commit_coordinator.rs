@@ -4,15 +4,15 @@ mod postgres_fixture;
 
 use std::sync::Arc;
 
-use awaken_contract::contract::commit_coordinator::{
+use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitPlan, CommitCoordinator, CommitError, StagedCanonicalEvent,
 };
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event_store::{
     AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope,
     EventVisibility, EventWriter,
 };
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::storage::{RunRecord, ThreadStore};
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::storage::{RunRecord, ThreadStore};
 use awaken_stores::{PgCommitCoordinator, PostgresStore};
 use serde_json::json;
 

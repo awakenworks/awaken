@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
-use awaken_contract::state::{KeyScope, MergeStrategy, StateKey};
+use awaken_runtime_contract::state::{KeyScope, MergeStrategy, StateKey};
 use serde::{Deserialize, Serialize};
 
 /// Persisted skill state tracking which skills are active.
@@ -246,8 +246,8 @@ mod tests {
 
     #[test]
     fn parallel_rendered_activation_batches_conflict_under_exclusive_strategy() {
-        use awaken_contract::StateError;
-        use awaken_contract::state::MutationBatch;
+        use awaken_runtime_contract::StateError;
+        use awaken_runtime_contract::state::MutationBatch;
 
         let mut left = MutationBatch::new();
         left.update::<SkillState>(SkillStateUpdate::ActivateRendered {

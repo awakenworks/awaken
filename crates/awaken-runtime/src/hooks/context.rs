@@ -5,17 +5,17 @@ use serde_json::Value;
 use crate::cancellation::CancellationToken;
 use crate::registry::RegistrySnapshot;
 use crate::state::{Snapshot, StateKey};
-use awaken_contract::StateError;
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::inference::LLMResponse;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::suspension::ToolCallResume;
-use awaken_contract::contract::tool::ToolResult;
-use awaken_contract::contract::tool_intercept::{
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::inference::LLMResponse;
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::contract::suspension::ToolCallResume;
+use awaken_runtime_contract::contract::tool::ToolResult;
+use awaken_runtime_contract::contract::tool_intercept::{
     AdapterKind, RunMode, ToolKind, ToolPolicyContext,
 };
-use awaken_contract::model::Phase;
-use awaken_contract::registry_spec::{AgentSpec, PluginConfigKey};
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::registry_spec::{AgentSpec, PluginConfigKey};
 
 /// Execution context passed to phase hooks and action handlers.
 ///
@@ -258,10 +258,10 @@ impl PhaseContext {
 mod tests {
     use super::*;
     use crate::state::StateMap;
-    use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::identity::RunOrigin;
-    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::contract::tool::ToolResult;
+    use awaken_runtime_contract::contract::content::ContentBlock;
+    use awaken_runtime_contract::contract::identity::RunOrigin;
+    use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_runtime_contract::contract::tool::ToolResult;
 
     fn empty_snapshot() -> Snapshot {
         Snapshot::new(0, std::sync::Arc::new(StateMap::default()))

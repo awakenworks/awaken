@@ -270,7 +270,6 @@ name = "awaken"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
- "awaken-contract",
  "awaken-ext-generative-ui",
  "awaken-ext-mcp",
  "awaken-ext-observability",
@@ -278,7 +277,9 @@ dependencies = [
  "awaken-ext-reminder",
  "awaken-ext-skills",
  "awaken-runtime",
+ "awaken-runtime-contract",
  "awaken-server",
+ "awaken-server-contract",
  "awaken-stores",
  "futures",
  "genai",
@@ -298,23 +299,11 @@ dependencies = [
 name = "awaken-contract"
 version = "0.5.1-dev"
 dependencies = [
- "async-trait",
- "awaken-tool-pattern",
- "base64 0.22.1",
- "futures",
- "jsonschema",
- "parking_lot",
+ "awaken-runtime-contract",
+ "awaken-server-contract",
  "proptest",
- "schemars 1.2.1",
- "secrecy",
- "serde",
  "serde_json",
- "sha2",
- "thiserror 2.0.18",
  "tokio",
- "tracing",
- "typedmap",
- "uuid",
 ]
 
 [[package]]
@@ -338,10 +327,10 @@ name = "awaken-eval"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
- "awaken-contract",
  "awaken-eval",
  "awaken-ext-observability",
  "awaken-runtime",
+ "awaken-runtime-contract",
  "awaken-stores",
  "reqwest 0.13.2",
  "serde",
@@ -387,8 +376,8 @@ name = "awaken-ext-deferred-tools"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
- "awaken-contract",
  "awaken-runtime",
+ "awaken-runtime-contract",
  "awaken-tool-pattern",
  "schemars 1.2.1",
  "serde",
@@ -403,8 +392,8 @@ name = "awaken-ext-generative-ui"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
- "awaken-contract",
  "awaken-runtime",
+ "awaken-runtime-contract",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -418,8 +407,8 @@ name = "awaken-ext-mcp"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
- "awaken-contract",
  "awaken-runtime",
+ "awaken-runtime-contract",
  "futures",
  "model-context-protocol",
  "nix",
@@ -436,8 +425,8 @@ name = "awaken-ext-observability"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
- "awaken-contract",
  "awaken-runtime",
+ "awaken-runtime-contract",
  "futures",
  "futures-util",
  "metrics",
@@ -462,8 +451,8 @@ name = "awaken-ext-permission"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
- "awaken-contract",
  "awaken-runtime",
+ "awaken-runtime-contract",
  "awaken-tool-pattern",
  "glob-match",
  "regex",
@@ -479,8 +468,8 @@ name = "awaken-ext-reminder"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
- "awaken-contract",
  "awaken-runtime",
+ "awaken-runtime-contract",
  "awaken-tool-pattern",
  "schemars 1.2.1",
  "serde",
@@ -495,11 +484,11 @@ name = "awaken-ext-skills"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
- "awaken-contract",
  "awaken-ext-deferred-tools",
  "awaken-ext-mcp",
  "awaken-ext-permission",
  "awaken-runtime",
+ "awaken-runtime-contract",
  "awaken-tool-pattern",
  "base64 0.22.1",
  "model-context-protocol",
@@ -527,9 +516,9 @@ name = "awaken-runtime"
 version = "0.5.1-dev"
 dependencies = [
  "async-trait",
- "awaken-contract",
  "awaken-protocol-a2a",
  "awaken-runtime",
+ "awaken-runtime-contract",
  "awaken-stores",
  "awaken-tool-pattern",
  "futures",
@@ -552,6 +541,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-runtime-contract"
+version = "0.5.1-dev"
+dependencies = [
+ "async-trait",
+ "awaken-tool-pattern",
+ "base64 0.22.1",
+ "futures",
+ "jsonschema",
+ "parking_lot",
+ "proptest",
+ "schemars 1.2.1",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "typedmap",
+ "uuid",
+]
+
+[[package]]
 name = "awaken-server"
 version = "0.5.1-dev"
 dependencies = [
@@ -560,13 +572,13 @@ dependencies = [
  "arc-swap",
  "async-stream",
  "async-trait",
- "awaken-contract",
  "awaken-eval",
  "awaken-ext-mcp",
  "awaken-ext-observability",
  "awaken-ext-permission",
  "awaken-protocol-a2a",
  "awaken-runtime",
+ "awaken-server-contract",
  "awaken-stores",
  "awaken-tool-pattern",
  "axum",
@@ -603,12 +615,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-server-contract"
+version = "0.5.1-dev"
+dependencies = [
+ "async-trait",
+ "awaken-runtime-contract",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-stores"
 version = "0.5.1-dev"
 dependencies = [
  "async-nats",
  "async-trait",
- "awaken-contract",
+ "awaken-server-contract",
  "bytes",
  "futures",
  "metrics",

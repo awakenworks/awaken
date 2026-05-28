@@ -1,7 +1,7 @@
 //! RunDispatch serialization for NATS KV values.
 
-use awaken_contract::contract::mailbox::RunDispatch;
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::mailbox::RunDispatch;
+use awaken_server_contract::contract::storage::StorageError;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -88,7 +88,7 @@ pub fn decode_epoch(bytes: &[u8]) -> Result<u64, StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+    use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 
     fn sample_dispatch() -> RunDispatch {
         RunDispatch {

@@ -68,9 +68,9 @@ fn referenced_models_include_pool_members_once() {
         ModelSpec {
             context_window: Some(10),
             max_output_tokens: Some(10),
-            modalities: awaken_contract::registry_spec::Modalities {
-                input: vec![awaken_contract::registry_spec::Modality::Text],
-                output: vec![awaken_contract::registry_spec::Modality::Text],
+            modalities: awaken_server_contract::registry_spec::Modalities {
+                input: vec![awaken_server_contract::registry_spec::Modality::Text],
+                output: vec![awaken_server_contract::registry_spec::Modality::Text],
             },
             knowledge_cutoff: Some("2025-01".into()),
             ..ModelSpec::new("m1", "p", "complete")
@@ -78,9 +78,9 @@ fn referenced_models_include_pool_members_once() {
     ];
     let pools = vec![ModelPoolSpec {
         id: "pool".into(),
-        members: vec![awaken_contract::registry_spec::PoolMemberSpec {
+        members: vec![awaken_server_contract::registry_spec::PoolMemberSpec {
             model_id: "m0".into(),
-            role: awaken_contract::registry_spec::PoolMemberRole::Member,
+            role: awaken_server_contract::registry_spec::PoolMemberRole::Member,
             weight: None,
         }],
         routing: Default::default(),
@@ -382,9 +382,9 @@ async fn fully_specified_models_are_not_attempted() {
     let models = vec![ModelSpec {
         context_window: Some(128_000),
         max_output_tokens: Some(16_384),
-        modalities: awaken_contract::registry_spec::Modalities {
-            input: vec![awaken_contract::registry_spec::Modality::Text],
-            output: vec![awaken_contract::registry_spec::Modality::Text],
+        modalities: awaken_server_contract::registry_spec::Modalities {
+            input: vec![awaken_server_contract::registry_spec::Modality::Text],
+            output: vec![awaken_server_contract::registry_spec::Modality::Text],
         },
         knowledge_cutoff: Some("2025-01".into()),
         ..ModelSpec::new("m", "p", "gpt-4o")

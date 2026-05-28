@@ -15,17 +15,17 @@ use crate::registry::memory::{
 use crate::registry::traits::ModelRegistry;
 use crate::resolution::{PersistenceRequirement, RunFeatureSet};
 use async_trait::async_trait;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::run::RunResolutionScope;
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::lifecycle::TerminationReason;
+use awaken_runtime_contract::contract::run::RunResolutionScope;
+use awaken_runtime_contract::contract::tool::{
     ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 #[cfg(feature = "a2a")]
-use awaken_contract::registry_spec::RemoteEndpoint;
-use awaken_contract::registry_spec::{ModelPoolSpec, ModelSpec};
-use awaken_contract::{REGISTRY_KIND_MODEL, REGISTRY_KIND_PROVIDER};
+use awaken_runtime_contract::registry_spec::RemoteEndpoint;
+use awaken_runtime_contract::registry_spec::{ModelPoolSpec, ModelSpec};
+use awaken_runtime_contract::{REGISTRY_KIND_MODEL, REGISTRY_KIND_PROVIDER};
 use serde_json::Value;
 #[cfg(feature = "a2a")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -535,10 +535,12 @@ fn resolve_happy_path() {
 #[test]
 fn resolve_normalizes_compaction_summary_model_registry_id_on_same_provider() {
     let mut spec = AgentSpec {
-        context_policy: Some(awaken_contract::contract::inference::ContextWindowPolicy {
-            autocompact_threshold: Some(4096),
-            ..Default::default()
-        }),
+        context_policy: Some(
+            awaken_runtime_contract::contract::inference::ContextWindowPolicy {
+                autocompact_threshold: Some(4096),
+                ..Default::default()
+            },
+        ),
         ..make_spec("agent-1")
     };
     spec.set_config::<crate::context::CompactionConfigKey>(crate::context::CompactionConfig {
@@ -589,10 +591,12 @@ fn resolve_normalizes_compaction_summary_model_registry_id_on_same_provider() {
 #[test]
 fn resolve_rejects_compaction_summary_model_registry_id_on_different_provider() {
     let mut spec = AgentSpec {
-        context_policy: Some(awaken_contract::contract::inference::ContextWindowPolicy {
-            autocompact_threshold: Some(4096),
-            ..Default::default()
-        }),
+        context_policy: Some(
+            awaken_runtime_contract::contract::inference::ContextWindowPolicy {
+                autocompact_threshold: Some(4096),
+                ..Default::default()
+            },
+        ),
         ..make_spec("agent-1")
     };
     spec.set_config::<crate::context::CompactionConfigKey>(crate::context::CompactionConfig {
@@ -659,7 +663,7 @@ fn resolve_agent_not_found() {
 
 #[test]
 fn resolve_remote_agent_returns_error() {
-    use awaken_contract::registry_spec::RemoteEndpoint;
+    use awaken_runtime_contract::registry_spec::RemoteEndpoint;
 
     let spec = AgentSpec {
         endpoint: Some(RemoteEndpoint {
@@ -691,7 +695,7 @@ fn resolve_remote_agent_returns_error() {
 #[cfg(feature = "a2a")]
 #[test]
 fn resolve_delegate_rejects_unknown_remote_backend() {
-    use awaken_contract::registry_spec::RemoteEndpoint;
+    use awaken_runtime_contract::registry_spec::RemoteEndpoint;
 
     let root = AgentSpec {
         delegates: vec!["remote-worker".into()],
@@ -1138,7 +1142,7 @@ struct ValidatedConfig {
 }
 
 struct ValidatedConfigKey;
-impl awaken_contract::PluginConfigKey for ValidatedConfigKey {
+impl awaken_runtime_contract::PluginConfigKey for ValidatedConfigKey {
     const KEY: &'static str = "validated";
     type Config = ValidatedConfig;
 }
@@ -1273,7 +1277,10 @@ impl Plugin for ToolPlugin {
         PluginDescriptor { name: self.name }
     }
 
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+    fn register(
+        &self,
+        registrar: &mut PluginRegistrar,
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         registrar.register_tool(
             self.tool_id,
             Arc::new(MockTool {
@@ -1697,7 +1704,7 @@ struct StatefulPluginConfig {
 }
 
 struct StatefulPluginConfigKey;
-impl awaken_contract::PluginConfigKey for StatefulPluginConfigKey {
+impl awaken_runtime_contract::PluginConfigKey for StatefulPluginConfigKey {
     const KEY: &'static str = "stateful";
     type Config = StatefulPluginConfig;
 }
@@ -1715,7 +1722,7 @@ impl Plugin for StatefulPlugin {
         &self,
         agent_spec: &AgentSpec,
         _patch: &mut crate::state::MutationBatch,
-    ) -> Result<(), awaken_contract::StateError> {
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         // Verify we can read typed config during activation
         let _config = agent_spec.config::<StatefulPluginConfigKey>()?;
         Ok(())
@@ -1908,7 +1915,7 @@ fn config_defaults_when_section_absent_and_plugin_active() {
 
 #[test]
 fn build_plugin_chain_clamps_context_policy_to_model_capabilities() {
-    use awaken_contract::contract::inference::ContextWindowPolicy;
+    use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
 
     let spec = AgentSpec {
         context_policy: Some(ContextWindowPolicy {
@@ -1958,7 +1965,7 @@ fn build_plugin_chain_clamps_context_policy_to_model_capabilities() {
 
 #[test]
 fn resolved_agent_context_policy_clamps_autocompact_to_model_usable_input() {
-    use awaken_contract::contract::inference::ContextWindowPolicy;
+    use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
 
     let spec = AgentSpec {
         context_policy: Some(ContextWindowPolicy {
@@ -1997,7 +2004,7 @@ fn resolved_agent_context_policy_clamps_autocompact_to_model_usable_input() {
 
 #[test]
 fn build_plugin_chain_backfills_common_model_capabilities() {
-    use awaken_contract::contract::inference::ContextWindowPolicy;
+    use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
 
     let spec = AgentSpec {
         context_policy: Some(ContextWindowPolicy {
@@ -2036,7 +2043,7 @@ fn build_plugin_chain_backfills_common_model_capabilities() {
 
 #[test]
 fn build_plugin_chain_uses_provider_capability_source_alias() {
-    use awaken_contract::contract::inference::ContextWindowPolicy;
+    use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
 
     let spec = AgentSpec {
         context_policy: Some(ContextWindowPolicy {
@@ -2071,7 +2078,7 @@ fn build_plugin_chain_uses_provider_capability_source_alias() {
 
 #[test]
 fn pool_reconciliation_uses_backfilled_member_capabilities() {
-    use awaken_contract::contract::inference::ContextWindowPolicy;
+    use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
 
     let spec = AgentSpec {
         model_id: "my-pool".into(),

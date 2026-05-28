@@ -1,5 +1,7 @@
 use crate::state::{MergeStrategy, StateKey};
-use awaken_contract::contract::suspension::{ToolCallResume, ToolCallResumeMode, ToolCallStatus};
+use awaken_runtime_contract::contract::suspension::{
+    ToolCallResume, ToolCallResumeMode, ToolCallStatus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -374,7 +376,8 @@ mod tests {
                 )
                 .with_resume_input(Some(ToolCallResume {
                     decision_id: "d1".into(),
-                    action: awaken_contract::contract::suspension::ResumeDecisionAction::Cancel,
+                    action:
+                        awaken_runtime_contract::contract::suspension::ResumeDecisionAction::Cancel,
                     result: serde_json::json!({"approved": false}),
                     reason: Some("user denied".into()),
                     updated_at: 200,

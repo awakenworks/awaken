@@ -1,4 +1,4 @@
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 
 use super::PostgresStore;
 

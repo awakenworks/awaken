@@ -1,8 +1,8 @@
-use awaken_contract::StateError;
-use awaken_contract::model::Phase;
-use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::{KeyScope, MutationBatch, StateKeyOptions};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::registry_spec::AgentSpec;
 
 use crate::config::{PermissionConfigKey, PermissionRulesConfig};
 use crate::state::{PermissionAction, PermissionOverridesKey, PermissionPolicyKey};

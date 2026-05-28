@@ -2,20 +2,6 @@
 //! A2A HTTP integration tests for the current A2A v1.0 surface.
 
 use async_trait::async_trait;
-use awaken_contract::ModelSpec;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::message::{Message, ToolCall};
-use awaken_contract::contract::storage::{
-    RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
-};
-use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
-};
-use awaken_contract::registry_spec::AgentSpec;
-use awaken_contract::thread::Thread;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::extensions::background::{
     BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext,
@@ -23,6 +9,22 @@ use awaken_runtime::extensions::background::{
 };
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
+use awaken_server_contract::ModelSpec;
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::lifecycle::TerminationReason;
+use awaken_server_contract::contract::message::{Message, ToolCall};
+use awaken_server_contract::contract::storage::{
+    RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
+};
+use awaken_server_contract::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
+use awaken_server_contract::registry_spec::AgentSpec;
+use awaken_server_contract::thread::Thread;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
@@ -34,7 +36,7 @@ use tower::ServiceExt;
 struct ImmediateExecutor;
 
 #[async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for ImmediateExecutor {
+impl awaken_server_contract::contract::executor::LlmExecutor for ImmediateExecutor {
     async fn execute(
         &self,
         _request: InferenceRequest,
@@ -1708,7 +1710,7 @@ impl LlmExecutor for LabelledExecutor {
             .iter()
             .rev()
             .find_map(|m| {
-                if m.role == awaken_contract::contract::message::Role::User {
+                if m.role == awaken_server_contract::contract::message::Role::User {
                     Some(m.text())
                 } else {
                     None
@@ -1716,9 +1718,12 @@ impl LlmExecutor for LabelledExecutor {
             })
             .unwrap_or_default();
         Ok(StreamResult {
-            content: vec![awaken_contract::contract::content::ContentBlock::text(
-                format!("{}: {last_user}", self.label),
-            )],
+            content: vec![
+                awaken_server_contract::contract::content::ContentBlock::text(format!(
+                    "{}: {last_user}",
+                    self.label
+                )),
+            ],
             tool_calls: vec![],
             usage: Some(TokenUsage::default()),
             stop_reason: Some(StopReason::EndTurn),
@@ -1800,7 +1805,7 @@ fn build_multi_agent_app() -> (axum::Router, Arc<InMemoryStore>) {
 ///      agent_id per run).
 #[tokio::test]
 async fn message_send_can_switch_agent_and_model_on_same_thread() {
-    use awaken_contract::contract::storage::{RunQuery, RunStore};
+    use awaken_server_contract::contract::storage::{RunQuery, RunStore};
 
     let (app, store) = build_multi_agent_app();
     let context_id = "thread-multi-agent";
@@ -1883,7 +1888,7 @@ async fn message_send_can_switch_agent_and_model_on_same_thread() {
             .unwrap_or_default();
         assert!(
             messages.iter().any(|m| {
-                m.role == awaken_contract::contract::message::Role::Assistant
+                m.role == awaken_server_contract::contract::message::Role::Assistant
                     && m.text() == expected_reply
             }),
             "missing reply '{expected_reply}' for {task_id}; got history: {:?}",

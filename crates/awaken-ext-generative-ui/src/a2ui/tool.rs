@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::validate_against_schema;
+use awaken_runtime_contract::validate_against_schema;
 
 use super::validation::validate_a2ui_messages;
 use super::{A2UI_TOOL_ID, A2UI_TOOL_NAME, MESSAGE_KEYS};

@@ -93,7 +93,7 @@ impl ConfigRuntimeManager {
 
     fn stage_provider_capability_cache(
         &self,
-        providers: &[awaken_contract::ProviderSpec],
+        providers: &[awaken_server_contract::ProviderSpec],
         discovery: provider_capability_discovery::ProviderCapabilityDiscovery,
     ) -> super::provider_cache::StagedCapabilityCache {
         self.provider_cache.lock().stage_capability_snapshots(

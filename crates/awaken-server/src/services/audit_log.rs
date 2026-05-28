@@ -5,10 +5,10 @@
 
 use std::sync::Arc;
 
-use awaken_contract::AuditAction;
-use awaken_contract::AuditEvent;
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::AuditAction;
+use awaken_server_contract::AuditEvent;
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::contract::storage::StorageError;
 use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -271,7 +271,7 @@ impl AuditLogger {
     /// Skips entirely if the report has no created/updated/deleted entries
     /// (idempotent re-runs produce no audit noise).
     pub async fn emit_seed_report(&self, report: &crate::services::builtin_seed::SeedReport) {
-        use awaken_contract::AuditAction;
+        use awaken_server_contract::AuditAction;
         let buckets: [(&str, &[crate::services::builtin_seed::RecordRef]); 3] = [
             ("created", &report.created),
             ("updated", &report.updated),
@@ -533,9 +533,9 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use awaken_contract::AuditAction;
-    use awaken_contract::contract::config_store::ConfigStore;
-    use awaken_contract::contract::storage::StorageError;
+    use awaken_server_contract::AuditAction;
+    use awaken_server_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::storage::StorageError;
     use axum::http::{HeaderMap, HeaderValue};
     use chrono::Utc;
     use serde_json::{Value, json};

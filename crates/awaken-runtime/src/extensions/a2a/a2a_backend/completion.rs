@@ -1,5 +1,5 @@
-use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_protocol_a2a::TaskState;
+use awaken_runtime_contract::contract::lifecycle::TerminationReason;
 
 use super::{
     BackendRunStatus, TaskSnapshot, WAIT_REASON_AUTH_REQUIRED, WAIT_REASON_INPUT_REQUIRED,

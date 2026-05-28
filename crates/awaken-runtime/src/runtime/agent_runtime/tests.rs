@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::Arc;
 
-use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+use awaken_runtime_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 use serde_json::Value;
 
 struct StubResolver;
@@ -162,7 +162,7 @@ fn run_handle_send_decisions_closed_channel() {
 
 mod live_forwarder {
     use super::*;
-    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use awaken_runtime_contract::contract::mailbox::LiveRunCommand;
     use awaken_stores::InMemoryMailboxStore;
     use std::time::Duration;
 
@@ -369,7 +369,9 @@ mod live_forwarder {
             .await
             .unwrap();
         for _ in 0..50 {
-            if outcome == awaken_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber {
+            if outcome
+                == awaken_runtime_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -380,7 +382,7 @@ mod live_forwarder {
         }
         assert_eq!(
             outcome,
-            awaken_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber,
+            awaken_runtime_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber,
             "unregister must stop the old live forwarder"
         );
     }

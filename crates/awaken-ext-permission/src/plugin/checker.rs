@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
-use awaken_contract::StateError;
-use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
 use awaken_runtime::{PhaseContext, ToolGateHook};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload;
 
 use crate::rules::{ToolPermissionBehavior, evaluate_tool_permission};
 use crate::state::{PermissionOverridesKey, PermissionPolicyKey, permission_rules_from_state};
@@ -26,7 +26,7 @@ impl ToolGateHook for PermissionToolGateHook {
         let tool_args = ctx.tool_args.clone().unwrap_or_default();
 
         let is_resume = ctx.resume_input.as_ref().is_some_and(|r| {
-            r.action == awaken_contract::contract::suspension::ResumeDecisionAction::Resume
+            r.action == awaken_runtime_contract::contract::suspension::ResumeDecisionAction::Resume
         });
 
         let policy = ctx.state::<PermissionPolicyKey>();
@@ -43,7 +43,7 @@ impl ToolGateHook for PermissionToolGateHook {
                 if is_resume {
                     None
                 } else {
-                    use awaken_contract::contract::suspension::{
+                    use awaken_runtime_contract::contract::suspension::{
                         PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode,
                     };
                     let call_id = ctx.tool_call_id.as_deref().unwrap_or("");

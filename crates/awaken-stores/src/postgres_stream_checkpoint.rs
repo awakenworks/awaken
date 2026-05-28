@@ -1,8 +1,8 @@
 //! PostgreSQL implementation of `StreamCheckpointStore`.
 
 use async_trait::async_trait;
-use awaken_contract::contract::storage::StorageError;
-use awaken_contract::contract::stream_checkpoint::{
+use awaken_server_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::stream_checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
 use sqlx::Row;
@@ -139,7 +139,7 @@ fn to_checkpoint_error(error: impl std::fmt::Display) -> StreamCheckpointError {
 
 #[cfg(test)]
 mod tests {
-    use awaken_contract::contract::stream_checkpoint::StreamCheckpointStore;
+    use awaken_server_contract::contract::stream_checkpoint::StreamCheckpointStore;
 
     use crate::postgres::PostgresStore;
 

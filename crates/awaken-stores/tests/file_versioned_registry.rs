@@ -1,6 +1,6 @@
 #![cfg(feature = "file")]
 
-use awaken_contract::contract::versioned_registry::{
+use awaken_server_contract::contract::versioned_registry::{
     ConfigRevisionRef, PublishOutcome, RegistryResourcePublish, VersionRef, VersionedRegistryError,
     VersionedRegistryStore,
 };

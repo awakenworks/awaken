@@ -1,5 +1,5 @@
-use awaken_contract::thread::Thread;
 use awaken_protocol_a2a::TaskState;
+use awaken_server_contract::thread::Thread;
 use axum::extract::Query;
 use axum::http::{HeaderMap, Uri};
 use serde::de::DeserializeOwned;
@@ -184,7 +184,7 @@ pub(super) async fn load_thread_metadata_projection(
     Ok(materialize_thread_metadata_projection(
         thread_id,
         existing,
-        awaken_contract::now_ms(),
+        awaken_server_contract::now_ms(),
     ))
 }
 

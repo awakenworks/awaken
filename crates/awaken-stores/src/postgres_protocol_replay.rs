@@ -1,13 +1,13 @@
 //! PostgreSQL protocol replay-log implementation.
 
 use async_trait::async_trait;
-use awaken_contract::OutboxError;
-use awaken_contract::contract::protocol_replay_log::{
+use awaken_server_contract::OutboxError;
+use awaken_server_contract::contract::protocol_replay_log::{
     ProtocolReplayAppendResult, ProtocolReplayCursor, ProtocolReplayDraft, ProtocolReplayError,
     ProtocolReplayId, ProtocolReplayLookup, ProtocolReplayPage, ProtocolReplayReader,
     ProtocolReplayRecord, ProtocolReplayRedactionState, ProtocolReplayWriter, ProtocolStreamKey,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 use sqlx::{Postgres, Row, Transaction};
 
 use crate::postgres::PostgresStore;

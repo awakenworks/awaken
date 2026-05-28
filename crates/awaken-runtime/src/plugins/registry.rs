@@ -8,10 +8,10 @@ use crate::phase::{
     TypedScheduledActionAdapter, TypedScheduledActionHandler,
 };
 use crate::state::{KeyScope, MergeStrategy, StateKey, StateKeyOptions, StateMap};
-use awaken_contract::StateError;
-use awaken_contract::contract::profile_store::ProfileKey;
-use awaken_contract::contract::tool::Tool;
-use awaken_contract::model::{EffectSpec, JsonValue, Phase, ScheduledActionSpec};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::profile_store::ProfileKey;
+use awaken_runtime_contract::contract::tool::Tool;
+use awaken_runtime_contract::model::{EffectSpec, JsonValue, Phase, ScheduledActionSpec};
 
 #[derive(Clone)]
 pub(crate) struct KeyRegistration {
@@ -77,7 +77,7 @@ pub(crate) struct ToolGateHookRegistration {
 }
 
 pub(crate) type RequestTransformArc =
-    std::sync::Arc<dyn awaken_contract::contract::transform::InferenceRequestTransform>;
+    std::sync::Arc<dyn awaken_runtime_contract::contract::transform::InferenceRequestTransform>;
 
 pub(crate) struct RequestTransformRegistration {
     pub(crate) plugin_id: String,
@@ -281,7 +281,7 @@ impl PluginRegistrar {
     /// Register a request transform applied after message assembly, before LLM call.
     pub fn register_request_transform<T>(&mut self, plugin_id: impl Into<String>, transform: T)
     where
-        T: awaken_contract::contract::transform::InferenceRequestTransform + 'static,
+        T: awaken_runtime_contract::contract::transform::InferenceRequestTransform + 'static,
     {
         self.request_transforms.push(RequestTransformRegistration {
             plugin_id: plugin_id.into(),
@@ -326,7 +326,7 @@ impl PluginRegistrar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::profile_store::ProfileKey;
+    use awaken_runtime_contract::contract::profile_store::ProfileKey;
 
     struct TestLocale;
     impl ProfileKey for TestLocale {

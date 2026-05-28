@@ -1,5 +1,5 @@
 use super::*;
-use awaken_contract::contract::message::ToolCall;
+use awaken_runtime_contract::contract::message::ToolCall;
 use serde_json::json;
 
 fn long_user(text: &str, copies: usize) -> Arc<Message> {
@@ -301,7 +301,7 @@ fn plan_compaction_preserves_latest_user_message_raw() {
         min_recent_messages: 0,
         compaction_raw_suffix_messages: 0,
         compaction_mode:
-            awaken_contract::contract::inference::ContextCompactionMode::CompactToSafeFrontier,
+            awaken_runtime_contract::contract::inference::ContextCompactionMode::CompactToSafeFrontier,
         ..Default::default()
     };
 
@@ -326,7 +326,7 @@ fn keep_recent_raw_suffix_honors_min_recent_messages() {
         min_recent_messages: 3,
         compaction_raw_suffix_messages: 1,
         compaction_mode:
-            awaken_contract::contract::inference::ContextCompactionMode::CompactToSafeFrontier,
+            awaken_runtime_contract::contract::inference::ContextCompactionMode::CompactToSafeFrontier,
         ..Default::default()
     };
 

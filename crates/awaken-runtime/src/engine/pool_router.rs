@@ -18,8 +18,8 @@
 //! The executor (which owns the [`CircuitBreaker`](super::circuit_breaker)) and
 //! the sticky per-session state build on top of these decisions.
 
-use awaken_contract::contract::executor::InferenceExecutionError;
-use awaken_contract::registry_spec::{
+use awaken_runtime_contract::contract::executor::InferenceExecutionError;
+use awaken_runtime_contract::registry_spec::{
     HomeStrategy, PoolMemberRole, PoolRoutingPolicy, PoolSwitchPolicy, StickyScope,
 };
 
@@ -293,13 +293,15 @@ mod tests {
         assert!(!r.should_switch_on_error(&InferenceExecutionError::Timeout("slow".into())));
         assert!(
             !r.should_switch_on_error(&InferenceExecutionError::StreamInterrupted {
-                cause: awaken_contract::contract::executor::InterruptCause::ConnectionReset,
-                snapshot: Box::new(awaken_contract::contract::executor::InterruptSnapshot {
-                    text: None,
-                    completed_tool_calls: vec![],
-                    in_flight_tool: None,
-                    bytes_received: 0,
-                }),
+                cause: awaken_runtime_contract::contract::executor::InterruptCause::ConnectionReset,
+                snapshot: Box::new(
+                    awaken_runtime_contract::contract::executor::InterruptSnapshot {
+                        text: None,
+                        completed_tool_calls: vec![],
+                        in_flight_tool: None,
+                        bytes_received: 0,
+                    }
+                ),
             })
         );
         // Request-level — would fail identically on any member.

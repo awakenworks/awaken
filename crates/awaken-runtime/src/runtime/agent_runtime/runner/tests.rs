@@ -22,30 +22,32 @@ use crate::registry::{AgentResolver, ResolvedAgent};
 use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
 use crate::{PhaseContext, PhaseHook, RunActivation, ToolPolicyHook};
 use async_trait::async_trait;
-use awaken_contract::PersistedState;
-use awaken_contract::contract::active_agent::ActiveAgentIdKey;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::{EventSink, NullEventSink, VecEventSink};
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{
+use awaken_runtime_contract::PersistedState;
+use awaken_runtime_contract::contract::active_agent::ActiveAgentIdKey;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::{EventSink, NullEventSink, VecEventSink};
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
+use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::contract::storage::{
     RunQuery, RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
 };
-use awaken_contract::contract::suspension::ResumeDecisionAction;
-use awaken_contract::contract::suspension::ToolCallResume;
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::contract::suspension::ResumeDecisionAction;
+use awaken_runtime_contract::contract::suspension::ToolCallResume;
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::contract::tool_intercept::{
+use awaken_runtime_contract::contract::tool_intercept::{
     AdapterKind, RunMode, ToolPolicyContext, ToolPolicyDecision,
 };
 #[cfg(feature = "a2a")]
-use awaken_contract::registry_spec::ModelSpec;
+use awaken_runtime_contract::registry_spec::ModelSpec;
 #[cfg(feature = "a2a")]
-use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
+use awaken_runtime_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use awaken_stores::InMemoryStore;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -318,7 +320,7 @@ async fn run_supports_endpoint_root_agents() {
         .expect("message lookup should succeed")
         .expect("messages should be persisted");
     assert!(messages.iter().any(|message| {
-        message.role == awaken_contract::contract::message::Role::Assistant
+        message.role == awaken_runtime_contract::contract::message::Role::Assistant
             && message.text() == "remote root response"
     }));
 }
@@ -690,7 +692,9 @@ async fn run_trace_dispatch_id_does_not_block_local_waiting_reuse() {
     let runtime = AgentRuntime::new(resolver)
         .with_in_memory_thread_run_store(store.clone())
         .with_commit_coordinator(awaken_stores::MemoryCommitCoordinator::wrap(store.clone())
-            as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>);
+            as Arc<
+                dyn awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator,
+            >);
     store
         .checkpoint(
             "thread-default-hint",
@@ -771,7 +775,9 @@ async fn run_reuses_structured_tool_permission_waiting_run() {
     let runtime = AgentRuntime::new(resolver)
         .with_in_memory_thread_run_store(store.clone())
         .with_commit_coordinator(awaken_stores::MemoryCommitCoordinator::wrap(store.clone())
-            as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>);
+            as Arc<
+                dyn awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator,
+            >);
     store
         .checkpoint(
             "thread-tool-permission",
@@ -1099,7 +1105,7 @@ impl ToolPolicyHook for RecordingToolPolicyHook {
     async fn decide(
         &self,
         ctx: &ToolPolicyContext,
-    ) -> Result<ToolPolicyDecision, awaken_contract::StateError> {
+    ) -> Result<ToolPolicyDecision, awaken_runtime_contract::StateError> {
         self.seen.lock().expect("lock poisoned").push(ctx.clone());
         if ctx.run_mode == RunMode::Scheduled
             && ctx.adapter == AdapterKind::Acp
@@ -1124,7 +1130,10 @@ impl Plugin for RecordingToolPolicyPlugin {
         }
     }
 
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+    fn register(
+        &self,
+        registrar: &mut PluginRegistrar,
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         registrar.register_tool_policy_hook(
             "recording-tool-policy",
             RecordingToolPolicyHook {
@@ -1232,7 +1241,10 @@ impl Plugin for ThreadCounterPlugin {
         }
     }
 
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+    fn register(
+        &self,
+        registrar: &mut PluginRegistrar,
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         registrar.register_key::<ThreadCounterKey>(StateKeyOptions {
             persistent: true,
             scope: KeyScope::Thread,
@@ -1240,7 +1252,7 @@ impl Plugin for ThreadCounterPlugin {
         })?;
         registrar.register_phase_hook(
             "test.thread-counter",
-            awaken_contract::model::Phase::RunStart,
+            awaken_runtime_contract::model::Phase::RunStart,
             ThreadCounterHook,
         )
     }
@@ -1250,7 +1262,10 @@ struct ThreadCounterHook;
 
 #[async_trait]
 impl PhaseHook for ThreadCounterHook {
-    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, awaken_contract::StateError> {
+    async fn run(
+        &self,
+        ctx: &PhaseContext,
+    ) -> Result<StateCommand, awaken_runtime_contract::StateError> {
         let next = ctx.state::<ThreadCounterKey>().copied().unwrap_or(0) + 1;
         let mut cmd = StateCommand::new();
         cmd.update::<ThreadCounterKey>(next);
@@ -1279,11 +1294,14 @@ impl Plugin for SequentialVisibilityPlugin {
         }
     }
 
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+    fn register(
+        &self,
+        registrar: &mut PluginRegistrar,
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         registrar.register_key::<SequentialVisibilityKey>(StateKeyOptions::default())?;
         registrar.register_phase_hook(
             "test.sequential-visibility",
-            awaken_contract::model::Phase::AfterToolExecute,
+            awaken_runtime_contract::model::Phase::AfterToolExecute,
             SequentialVisibilityHook,
         )
     }
@@ -1293,7 +1311,10 @@ struct SequentialVisibilityHook;
 
 #[async_trait]
 impl PhaseHook for SequentialVisibilityHook {
-    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, awaken_contract::StateError> {
+    async fn run(
+        &self,
+        ctx: &PhaseContext,
+    ) -> Result<StateCommand, awaken_runtime_contract::StateError> {
         let mut cmd = StateCommand::new();
         if ctx.tool_name.as_deref() == Some("writer") {
             cmd.update::<SequentialVisibilityKey>(true);
@@ -1397,7 +1418,7 @@ async fn run_to_completion_returns_final_result() {
     assert_eq!(result.response, "ok");
     assert_eq!(
         result.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
 }
 
@@ -1406,7 +1427,7 @@ async fn run_request_overrides_are_forwarded_to_inference() {
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
         content: vec![ContentBlock::text("ok")],
         tool_calls: vec![],
-        usage: Some(awaken_contract::contract::inference::TokenUsage {
+        usage: Some(awaken_runtime_contract::contract::inference::TokenUsage {
             prompt_tokens: Some(11),
             completion_tokens: Some(7),
             ..Default::default()
@@ -1439,7 +1460,7 @@ async fn run_request_overrides_are_forwarded_to_inference() {
 
     assert_eq!(
         result.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
     let seen = llm.seen_overrides.lock().expect("lock poisoned");
     assert_eq!(seen.len(), 1);
@@ -1469,7 +1490,7 @@ async fn send_decisions_resumes_waiting_run() {
     let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
             content: vec![ContentBlock::text("calling tool")],
-            tool_calls: vec![awaken_contract::contract::message::ToolCall::new(
+            tool_calls: vec![awaken_runtime_contract::contract::message::ToolCall::new(
                 "c1",
                 "dangerous",
                 json!({"x": 1}),
@@ -1537,7 +1558,7 @@ async fn send_decisions_resumes_waiting_run() {
         .expect("run should succeed");
     assert_eq!(
         result.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
 
     let events = sink.take();
@@ -1557,7 +1578,7 @@ async fn send_decisions_resumes_waiting_run() {
 async fn run_request_policy_context_reaches_tool_gate() {
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
         content: vec![ContentBlock::text("calling echo")],
-        tool_calls: vec![awaken_contract::contract::message::ToolCall::new(
+        tool_calls: vec![awaken_runtime_contract::contract::message::ToolCall::new(
             "c1",
             "echo",
             json!({"message": "hello"}),
@@ -1610,7 +1631,7 @@ async fn run_request_policy_context_reaches_tool_gate() {
 
 #[tokio::test]
 async fn background_events_buffer_while_suspended_until_decision_arrives() {
-    use awaken_contract::contract::message::{Role, Visibility};
+    use awaken_runtime_contract::contract::message::{Role, Visibility};
 
     let requests = Arc::new(Mutex::new(Vec::new()));
     let llm = Arc::new(RecordingLlm::new(
@@ -1618,8 +1639,12 @@ async fn background_events_buffer_while_suspended_until_decision_arrives() {
             StreamResult {
                 content: vec![ContentBlock::text("start tools")],
                 tool_calls: vec![
-                    awaken_contract::contract::message::ToolCall::new("bg1", "spawn_bg", json!({})),
-                    awaken_contract::contract::message::ToolCall::new(
+                    awaken_runtime_contract::contract::message::ToolCall::new(
+                        "bg1",
+                        "spawn_bg",
+                        json!({}),
+                    ),
+                    awaken_runtime_contract::contract::message::ToolCall::new(
                         "c1",
                         "dangerous",
                         json!({"x": 1}),
@@ -1697,7 +1722,7 @@ async fn background_events_buffer_while_suspended_until_decision_arrives() {
         .expect("run should succeed");
     assert_eq!(
         result.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
 
     let recorded = requests.lock().expect("lock poisoned");
@@ -1719,21 +1744,21 @@ async fn background_events_buffer_while_suspended_until_decision_arrives() {
 
 #[tokio::test]
 async fn new_user_message_supersedes_suspended_calls_but_keeps_completed_results() {
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::message::Role;
-    use awaken_contract::contract::storage::ThreadStore;
+    use awaken_runtime_contract::contract::lifecycle::RunStatus;
+    use awaken_runtime_contract::contract::message::Role;
+    use awaken_runtime_contract::contract::storage::ThreadStore;
     use awaken_stores::InMemoryStore;
 
     let llm = Arc::new(ScriptedLlm::new(vec![
         StreamResult {
             content: vec![ContentBlock::text("call tools")],
             tool_calls: vec![
-                awaken_contract::contract::message::ToolCall::new(
+                awaken_runtime_contract::contract::message::ToolCall::new(
                     "c_echo",
                     "echo",
                     json!({"ok": true}),
                 ),
-                awaken_contract::contract::message::ToolCall::new(
+                awaken_runtime_contract::contract::message::ToolCall::new(
                     "c_suspend",
                     "dangerous",
                     json!({"danger": true}),
@@ -1768,7 +1793,9 @@ async fn new_user_message_supersedes_suspended_calls_but_keeps_completed_results
         AgentRuntime::new(resolver)
             .with_in_memory_thread_run_store(store.clone())
             .with_commit_coordinator(awaken_stores::MemoryCommitCoordinator::wrap(store.clone())
-                as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>),
+                as Arc<
+                    dyn awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator,
+                >),
     );
     let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
     let first_run = {
@@ -1820,7 +1847,7 @@ async fn new_user_message_supersedes_suspended_calls_but_keeps_completed_results
         .expect("first run should terminate cleanly");
     assert_eq!(
         first.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::Cancelled
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::Cancelled
     );
 
     let second = runtime
@@ -1833,7 +1860,7 @@ async fn new_user_message_supersedes_suspended_calls_but_keeps_completed_results
         .expect("second run should succeed");
     assert_eq!(
         second.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
     assert_eq!(
         echo.calls.load(Ordering::SeqCst),
@@ -1872,8 +1899,16 @@ async fn sequential_tool_execution_sees_latest_state_between_calls() {
         StreamResult {
             content: vec![ContentBlock::text("tools")],
             tool_calls: vec![
-                awaken_contract::contract::message::ToolCall::new("c1", "writer", json!({})),
-                awaken_contract::contract::message::ToolCall::new("c2", "reader", json!({})),
+                awaken_runtime_contract::contract::message::ToolCall::new(
+                    "c1",
+                    "writer",
+                    json!({}),
+                ),
+                awaken_runtime_contract::contract::message::ToolCall::new(
+                    "c2",
+                    "reader",
+                    json!({}),
+                ),
             ],
             usage: None,
             stop_reason: Some(StopReason::ToolUse),
@@ -1909,7 +1944,7 @@ async fn sequential_tool_execution_sees_latest_state_between_calls() {
 
     assert_eq!(
         result.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
     assert!(
         saw_marker.load(Ordering::SeqCst),
@@ -1922,7 +1957,7 @@ async fn checkpoint_persists_state_and_thread_together() {
     let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
         content: vec![ContentBlock::text("ok")],
         tool_calls: vec![],
-        usage: Some(awaken_contract::contract::inference::TokenUsage {
+        usage: Some(awaken_runtime_contract::contract::inference::TokenUsage {
             prompt_tokens: Some(11),
             completion_tokens: Some(7),
             ..Default::default()
@@ -1938,7 +1973,9 @@ async fn checkpoint_persists_state_and_thread_together() {
     let runtime = AgentRuntime::new(resolver)
         .with_in_memory_thread_run_store(store.clone())
         .with_commit_coordinator(awaken_stores::MemoryCommitCoordinator::wrap(store.clone())
-            as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>);
+            as Arc<
+                dyn awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator,
+            >);
     let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
     let result = runtime
         .run(
@@ -1949,7 +1986,7 @@ async fn checkpoint_persists_state_and_thread_together() {
         .expect("run should succeed");
     assert_eq!(
         result.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
 
     let latest = store
@@ -2005,7 +2042,9 @@ async fn run_request_without_agent_id_prefers_latest_thread_state_agent() {
     let runtime = AgentRuntime::new(resolver)
         .with_in_memory_thread_run_store(store.clone())
         .with_commit_coordinator(awaken_stores::MemoryCommitCoordinator::wrap(store.clone())
-            as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>);
+            as Arc<
+                dyn awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator,
+            >);
     let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
     runtime
         .run(
@@ -2050,7 +2089,9 @@ async fn run_request_without_agent_id_falls_back_to_latest_run_record_agent_id()
     let runtime = AgentRuntime::new(resolver)
         .with_in_memory_thread_run_store(store.clone())
         .with_commit_coordinator(awaken_stores::MemoryCommitCoordinator::wrap(store.clone())
-            as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>);
+            as Arc<
+                dyn awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator,
+            >);
     let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
     runtime
         .run(
@@ -2094,7 +2135,9 @@ async fn thread_scoped_state_restores_before_run_start_hooks() {
     let runtime = AgentRuntime::new(resolver)
         .with_in_memory_thread_run_store(store.clone())
         .with_commit_coordinator(awaken_stores::MemoryCommitCoordinator::wrap(store.clone())
-            as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>);
+            as Arc<
+                dyn awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator,
+            >);
     let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
     runtime
         .run(
@@ -2172,15 +2215,15 @@ impl LlmExecutor for TruncatingLlm {
         Box<
             dyn std::future::Future<
                     Output = Result<
-                        awaken_contract::contract::executor::InferenceStream,
+                        awaken_runtime_contract::contract::executor::InferenceStream,
                         InferenceExecutionError,
                     >,
                 > + Send
                 + '_,
         >,
     > {
-        use awaken_contract::contract::executor::{InferenceStream, LlmStreamEvent};
-        use awaken_contract::contract::inference::TokenUsage;
+        use awaken_runtime_contract::contract::executor::{InferenceStream, LlmStreamEvent};
+        use awaken_runtime_contract::contract::inference::TokenUsage;
 
         Box::pin(async move {
             self.upstream_models_seen
@@ -2224,7 +2267,7 @@ impl LlmExecutor for TruncatingLlm {
                     followups.remove(0)
                 };
                 let events =
-                    awaken_contract::contract::executor::collected_to_stream_events(result);
+                    awaken_runtime_contract::contract::executor::collected_to_stream_events(result);
                 Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
             }
         })
@@ -2263,7 +2306,7 @@ async fn truncation_recovery_continues_on_max_tokens() {
 
     assert_eq!(
         result.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
     // The final response should be from the second (continuation) call
     assert_eq!(result.response, "completed response");
@@ -2308,7 +2351,7 @@ async fn text_truncation_recovery_continues_on_max_tokens() {
 
     assert_eq!(
         result.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
     assert_eq!(result.response, "completed");
     assert_eq!(llm.seen_overrides.lock().expect("lock poisoned").len(), 2);
@@ -2356,7 +2399,7 @@ async fn truncation_recovery_preserves_model_override() {
 
     assert_eq!(
         result.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
     assert_eq!(
         llm.upstream_models_seen
@@ -2392,15 +2435,15 @@ async fn truncation_recovery_gives_up_after_max_retries() {
             Box<
                 dyn std::future::Future<
                         Output = Result<
-                            awaken_contract::contract::executor::InferenceStream,
+                            awaken_runtime_contract::contract::executor::InferenceStream,
                             InferenceExecutionError,
                         >,
                     > + Send
                     + '_,
             >,
         > {
-            use awaken_contract::contract::executor::{InferenceStream, LlmStreamEvent};
-            use awaken_contract::contract::inference::TokenUsage;
+            use awaken_runtime_contract::contract::executor::{InferenceStream, LlmStreamEvent};
+            use awaken_runtime_contract::contract::inference::TokenUsage;
 
             Box::pin(async move {
                 self.call_count.fetch_add(1, Ordering::SeqCst);
@@ -2457,7 +2500,7 @@ async fn truncation_recovery_gives_up_after_max_retries() {
     // with the text from the last truncated response
     assert_eq!(
         result.termination,
-        awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
+        awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
     assert_eq!(result.response, "truncated ");
 }
@@ -2465,10 +2508,12 @@ async fn truncation_recovery_gives_up_after_max_retries() {
 #[test]
 fn build_compaction_runtime_wires_default_manager_and_summarizer_for_background_mode() {
     let mut agent = ResolvedAgent::new("agent", "m", "sys", Arc::new(ScriptedLlm::new(vec![])))
-        .with_context_policy(awaken_contract::contract::inference::ContextWindowPolicy {
-            autocompact_threshold: Some(4096),
-            ..Default::default()
-        });
+        .with_context_policy(
+            awaken_runtime_contract::contract::inference::ContextWindowPolicy {
+                autocompact_threshold: Some(4096),
+                ..Default::default()
+            },
+        );
     let mut spec = (*agent.spec).clone();
     spec.set_config::<crate::context::CompactionConfigKey>(crate::context::CompactionConfig {
         summary_model: Some("summary-upstream".into()),
@@ -2490,10 +2535,12 @@ fn build_compaction_runtime_wires_default_manager_and_summarizer_for_background_
 #[test]
 fn build_compaction_runtime_respects_compaction_mode_off() {
     let mut agent = ResolvedAgent::new("agent", "m", "sys", Arc::new(ScriptedLlm::new(vec![])))
-        .with_context_policy(awaken_contract::contract::inference::ContextWindowPolicy {
-            autocompact_threshold: Some(4096),
-            ..Default::default()
-        });
+        .with_context_policy(
+            awaken_runtime_contract::contract::inference::ContextWindowPolicy {
+                autocompact_threshold: Some(4096),
+                ..Default::default()
+            },
+        );
     let mut spec = (*agent.spec).clone();
     spec.set_config::<crate::context::CompactionConfigKey>(crate::context::CompactionConfig {
         execution_mode: crate::context::CompactionExecutionMode::Off,
@@ -2521,7 +2568,7 @@ fn build_compaction_runtime_respects_compaction_mode_off() {
 
 mod strip_unpaired {
     use super::super::strip_unpaired_tool_calls;
-    use awaken_contract::contract::message::{Message, Role, ToolCall};
+    use awaken_runtime_contract::contract::message::{Message, Role, ToolCall};
 
     fn assistant_with_calls(text: &str, call_ids: &[&str]) -> Message {
         let mut msg = Message::assistant(text);

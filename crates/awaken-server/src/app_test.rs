@@ -123,7 +123,7 @@ fn server_state_compat_builders_update_module_state() {
 
 #[tokio::test]
 async fn server_state_config_compat_builders_mount_config_module() {
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
     use awaken_stores::InMemoryStore;
 
     let store = Arc::new(InMemoryStore::new()) as Arc<dyn ConfigStore>;
@@ -541,7 +541,7 @@ fn sweep_interval_small_nonzero_is_respected() {
 #[tokio::test]
 async fn config_module_state_reuses_preset_logger() {
     use crate::mailbox::{Mailbox, MailboxConfig};
-    use awaken_contract::contract::config_store::ConfigStore;
+    use awaken_server_contract::contract::config_store::ConfigStore;
     use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
 
     struct StubResolver;
@@ -577,7 +577,7 @@ async fn config_module_state_reuses_preset_logger() {
     let mut state = ServerState::new(
         runtime,
         mailbox,
-        store.clone() as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
+        store.clone() as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>,
         Arc::new(StubResolver),
         ServerConfig::default(),
     );

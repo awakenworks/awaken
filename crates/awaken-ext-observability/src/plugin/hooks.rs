@@ -3,20 +3,20 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use awaken_contract::StateError;
-use awaken_contract::contract::tool::ToolStatus;
-use awaken_contract::identity::agent_prompt_id;
-use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::extensions::background::{BackgroundTaskStateKey, PersistedTaskMeta};
 use awaken_runtime::registry::RegistrySnapshot;
 use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::tool::ToolStatus;
+use awaken_runtime_contract::identity::agent_prompt_id;
+use awaken_runtime_contract::registry_spec::AgentSpec;
 
 use crate::metrics::{
     BackgroundTaskSpan, DelegationSpan, GenAISpan, HandoffSpan, MetricsEvent, SpanContext,
     SuspensionSpan, ToolSpan, is_tool_payload_truncated,
 };
 
-use awaken_contract::contract::inference::{StopReason, StreamResult};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult};
 use serde_json::Value;
 
 use crate::metrics::ContentCapture;
@@ -61,7 +61,7 @@ fn capture_response_payload(
 fn capture_request_messages(
     capture: ContentCapture,
     step: u32,
-    messages: &[std::sync::Arc<awaken_contract::contract::message::Message>],
+    messages: &[std::sync::Arc<awaken_runtime_contract::contract::message::Message>],
 ) -> Option<Value> {
     if !capture.is_enabled() || step != 0 || messages.is_empty() {
         return None;
@@ -349,7 +349,7 @@ impl PhaseHook for AfterInferenceHook {
             provider,
             operation: s.operation.clone(),
             // Not surfaced by `StreamResult` (see
-            // `awaken_contract::contract::inference::StreamResult`); the
+            // `awaken_runtime_contract::contract::inference::StreamResult`); the
             // upstream provider's model id and response id are dropped on the
             // floor by `StreamCollector::finish`, so populating these requires
             // a contract extension. Tracked as the next step on ADR-0030 D8.
@@ -495,8 +495,12 @@ impl PhaseHook for BeforeToolExecuteHook {
         if let Some(resume) = &ctx.resume_input {
             let context = s.span_context.lock().await.clone();
             let resume_mode = match resume.action {
-                awaken_contract::contract::suspension::ResumeDecisionAction::Resume => "resume",
-                awaken_contract::contract::suspension::ResumeDecisionAction::Cancel => "cancel",
+                awaken_runtime_contract::contract::suspension::ResumeDecisionAction::Resume => {
+                    "resume"
+                }
+                awaken_runtime_contract::contract::suspension::ResumeDecisionAction::Cancel => {
+                    "cancel"
+                }
             };
             let suspension = SuspensionSpan {
                 context,

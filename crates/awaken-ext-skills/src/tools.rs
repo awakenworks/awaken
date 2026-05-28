@@ -4,14 +4,14 @@ use crate::skill::{Skill, SkillResource, SkillResourceKind};
 use crate::skill_md::parse_allowed_tool_token;
 use crate::tool_match::promoted_deferred_tool_ids;
 use crate::{SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID};
-use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
-};
-use awaken_contract::state::StateCommand;
-use awaken_contract::{is_skill_allowed_tool_pattern, validate_skill_allowed_tool_pattern};
 use awaken_ext_deferred_tools::state::{DeferralState, DeferralStateAction};
 use awaken_ext_permission::actions as permission_actions;
 use awaken_ext_permission::rules::ToolPermissionBehavior;
+use awaken_runtime_contract::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
+};
+use awaken_runtime_contract::state::StateCommand;
+use awaken_runtime_contract::{is_skill_allowed_tool_pattern, validate_skill_allowed_tool_pattern};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::{Component, Path};

@@ -4,8 +4,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use awaken_contract::contract::storage::StorageError;
-use awaken_contract::{
+use awaken_server_contract::contract::storage::StorageError;
+use awaken_server_contract::{
     BuiltinSeedSet, BuiltinSpec, ConfigRecord, ConfigStore, RecordMeta, RecordSource, SkillSpec,
     validate_model_pool_spec_struct,
 };
@@ -174,7 +174,7 @@ pub async fn apply_builtin_seed(
                             // Reintroducing a previously-orphaned spec clears
                             // `hidden`; the user override (if any) flows
                             // through unchanged.
-                            let now = awaken_contract::time::now_ms();
+                            let now = awaken_server_contract::time::now_ms();
                             let expected_revision = existing.meta.revision;
                             let record = ConfigRecord {
                                 spec: new_spec_value,
@@ -259,7 +259,7 @@ pub async fn apply_builtin_seed(
             if record.meta.user_overrides.is_some() {
                 // Soft-delete: preserve the override under hidden=true.
                 record.meta.hidden = true;
-                record.meta.updated_at = awaken_contract::time::now_ms();
+                record.meta.updated_at = awaken_server_contract::time::now_ms();
                 record.meta.revision = expected_revision + 1;
                 store
                     .put_if_revision(namespace, &id, &record.to_value()?, expected_revision)
@@ -299,7 +299,7 @@ fn builtin_spec_to_value(spec: &BuiltinSpec) -> Result<serde_json::Value, serde_
 
 /// Enforce `AgentSpec::validate_catalog` on a builtin agent, surfacing
 /// errors as `InvalidAgentCatalog`. Mirrors the write-path policy.
-fn validate_agent_spec_catalog(spec: &awaken_contract::AgentSpec) -> Result<(), SeedError> {
+fn validate_agent_spec_catalog(spec: &awaken_server_contract::AgentSpec) -> Result<(), SeedError> {
     let errors = crate::services::agent_catalog::collect_catalog_errors(spec);
     if errors.is_empty() {
         Ok(())
@@ -314,9 +314,11 @@ fn validate_agent_spec_catalog(spec: &awaken_contract::AgentSpec) -> Result<(), 
 /// Enforce `SkillSpec` write-path validation on builtin skills.
 fn validate_builtin_skill_spec(spec: &SkillSpec) -> Result<(), SeedError> {
     let value = serde_json::to_value(spec)?;
-    awaken_contract::validate_skill_spec(value).map_err(|error| SeedError::InvalidSkillSpec {
-        id: spec.id.clone(),
-        errors: error.to_string(),
+    awaken_server_contract::validate_skill_spec(value).map_err(|error| {
+        SeedError::InvalidSkillSpec {
+            id: spec.id.clone(),
+            errors: error.to_string(),
+        }
     })?;
     Ok(())
 }

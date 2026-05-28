@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use axum::http::request::Parts;
 use thiserror::Error;
 
-use awaken_contract::{RequestSurface, ScopeContext, ScopeId};
+use awaken_server_contract::{RequestSurface, ScopeContext, ScopeId};
 
 #[derive(Debug, Error)]
 #[non_exhaustive]

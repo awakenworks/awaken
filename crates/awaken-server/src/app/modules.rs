@@ -2,20 +2,20 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::contract::event_store::EventStore;
-use awaken_contract::contract::mailbox::{MailboxInterrupt, RunDispatch};
-use awaken_contract::contract::outbox::OutboxStore;
-use awaken_contract::contract::run::{RunInput, RunKind};
-use awaken_contract::contract::scope::{scoped_key, unscoped_key};
-use awaken_contract::contract::storage::{ScopedThreadRunStore, ThreadRunStore};
-use awaken_contract::{DEFAULT_SCOPE_ID, ScopeContext, ScopeId};
 use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_ext_observability::trace_store::TraceStore;
 use awaken_runtime::credentials::CredentialBroker;
 use awaken_runtime::{AgentResolver, AgentRuntime};
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::contract::event_store::EventStore;
+use awaken_server_contract::contract::mailbox::{MailboxInterrupt, RunDispatch};
+use awaken_server_contract::contract::outbox::OutboxStore;
+use awaken_server_contract::contract::run::{RunInput, RunKind};
+use awaken_server_contract::contract::scope::{scoped_key, unscoped_key};
+use awaken_server_contract::contract::storage::{ScopedThreadRunStore, ThreadRunStore};
+use awaken_server_contract::{DEFAULT_SCOPE_ID, ScopeContext, ScopeId};
 
-use awaken_contract::RedactedString;
+use awaken_server_contract::RedactedString;
 
 use super::{AdminApiConfig, AuditLogConfig, ReplayBufferMap, ServerState, SkillCatalogProvider};
 use crate::eval_limits::EvalLimits;

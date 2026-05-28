@@ -29,13 +29,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_contract::ModelSpec;
-use awaken_contract::registry_spec::{AgentSpec, ProviderSpec};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::credentials::{AwakenCredentialBroker, CredentialBroker};
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::build_genai_provider_executor_with_broker;
+use awaken_server_contract::ModelSpec;
+use awaken_server_contract::registry_spec::{AgentSpec, ProviderSpec};
 use std::sync::Arc as StdArc;
 
 fn tz_test_broker() -> StdArc<dyn CredentialBroker> {

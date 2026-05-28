@@ -1,18 +1,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::commit_coordinator::CommitCoordinator;
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-#[cfg(feature = "nats")]
-use awaken_contract::contract::lifecycle::RunStatus;
-#[cfg(feature = "nats")]
-use awaken_contract::contract::message::{Message, MessageMetadata};
-#[cfg(feature = "nats")]
-use awaken_contract::contract::storage::RunRecord;
-use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
-use awaken_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::app::{ConfigModuleState, ServerConfig, ServerState};
@@ -23,6 +11,20 @@ use awaken_server::routes::build_router;
 use awaken_server::services::config_runtime::{
     ConfigRuntimeError, ConfigRuntimeManager, ProviderExecutorFactory,
 };
+use awaken_server_contract::contract::commit_coordinator::CommitCoordinator;
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+#[cfg(feature = "nats")]
+use awaken_server_contract::contract::lifecycle::RunStatus;
+#[cfg(feature = "nats")]
+use awaken_server_contract::contract::message::{Message, MessageMetadata};
+#[cfg(feature = "nats")]
+use awaken_server_contract::contract::storage::RunRecord;
+use awaken_server_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
+use awaken_server_contract::{AgentSpec, BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_stores::{FileStore, InMemoryMailboxStore, PostgresStore};
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode};
@@ -123,7 +125,7 @@ async fn make_app_with_mailbox<S, M, F>(
 ) -> TestApp<S>
 where
     S: ConfigStore + ThreadRunStore + Send + Sync + 'static,
-    M: awaken_contract::contract::mailbox::MailboxStore + Send + Sync + 'static,
+    M: awaken_server_contract::contract::mailbox::MailboxStore + Send + Sync + 'static,
     F: FnOnce(Arc<S>) -> Arc<dyn CommitCoordinator>,
 {
     // ADR-0038 D7: the runtime's CommitCoordinator must wrap the same
@@ -360,7 +362,7 @@ async fn assert_thread_hierarchy_management_round_trip<S>(
     S: ThreadRunStore + Send + Sync + 'static,
 {
     store
-        .save_thread(&awaken_contract::thread::Thread::with_id(parent_id))
+        .save_thread(&awaken_server_contract::thread::Thread::with_id(parent_id))
         .await
         .expect("save parent thread");
 
@@ -537,7 +539,7 @@ async fn file_store_config_api_persists_and_publishes_runtime() {
         .await
         .expect("read persisted agent config");
     let stored_agent: Value = serde_json::from_str(&stored_agent).expect("agent config json");
-    let stored_agent = awaken_contract::ConfigRecord::<Value>::from_value(stored_agent)
+    let stored_agent = awaken_server_contract::ConfigRecord::<Value>::from_value(stored_agent)
         .expect("decode envelope")
         .spec;
     assert_eq!(stored_agent["id"], "file-agent");
@@ -583,7 +585,7 @@ async fn file_store_thread_lineage_filters_round_trip_via_http() {
 
     app.store
         .save_thread(
-            &awaken_contract::thread::Thread::with_id("file-lineage-match")
+            &awaken_server_contract::thread::Thread::with_id("file-lineage-match")
                 .with_resource_id("resource-a")
                 .with_parent_thread_id("parent-1"),
         )
@@ -591,7 +593,7 @@ async fn file_store_thread_lineage_filters_round_trip_via_http() {
         .expect("save matching thread");
     app.store
         .save_thread(
-            &awaken_contract::thread::Thread::with_id("file-lineage-other-resource")
+            &awaken_server_contract::thread::Thread::with_id("file-lineage-other-resource")
                 .with_resource_id("resource-b")
                 .with_parent_thread_id("parent-1"),
         )
@@ -599,7 +601,7 @@ async fn file_store_thread_lineage_filters_round_trip_via_http() {
         .expect("save other thread");
     app.store
         .save_thread(
-            &awaken_contract::thread::Thread::with_id("file-lineage-other-parent")
+            &awaken_server_contract::thread::Thread::with_id("file-lineage-other-parent")
                 .with_resource_id("resource-a")
                 .with_parent_thread_id("parent-2"),
         )
@@ -725,7 +727,7 @@ async fn postgres_store_thread_lineage_filters_round_trip_via_http() {
 
     store
         .save_thread(
-            &awaken_contract::thread::Thread::with_id("pg-lineage-match")
+            &awaken_server_contract::thread::Thread::with_id("pg-lineage-match")
                 .with_resource_id("resource-a")
                 .with_parent_thread_id("parent-1"),
         )
@@ -733,7 +735,7 @@ async fn postgres_store_thread_lineage_filters_round_trip_via_http() {
         .expect("save matching thread");
     store
         .save_thread(
-            &awaken_contract::thread::Thread::with_id("pg-lineage-other-resource")
+            &awaken_server_contract::thread::Thread::with_id("pg-lineage-other-resource")
                 .with_resource_id("resource-b")
                 .with_parent_thread_id("parent-1"),
         )
@@ -741,7 +743,7 @@ async fn postgres_store_thread_lineage_filters_round_trip_via_http() {
         .expect("save other thread");
     store
         .save_thread(
-            &awaken_contract::thread::Thread::with_id("pg-lineage-other-parent")
+            &awaken_server_contract::thread::Thread::with_id("pg-lineage-other-parent")
                 .with_resource_id("resource-a")
                 .with_parent_thread_id("parent-2"),
         )
@@ -869,7 +871,7 @@ async fn postgres_nats_two_server_instances_share_runtime_mailbox_without_duplic
         .submit_background(
             awaken_runtime::RunActivation::new(
                 "pg-nats-background-thread",
-                vec![awaken_contract::contract::message::Message::user(
+                vec![awaken_server_contract::contract::message::Message::user(
                     "background through shared nats",
                 )],
             )
@@ -895,7 +897,7 @@ async fn postgres_nats_two_server_instances_share_runtime_mailbox_without_duplic
 
     let page = RunStore::list_runs(
         store_b.as_ref(),
-        &awaken_contract::contract::storage::RunQuery {
+        &awaken_server_contract::contract::storage::RunQuery {
             offset: 0,
             limit: 20,
             thread_id: Some("pg-nats-background-thread".to_string()),
@@ -931,13 +933,13 @@ async fn nats_buffered_store_thread_routes_round_trip_via_http() {
         // rely on the runtime/mailbox coordinator path matching that buffer,
         // not the inner store directly.
         awaken_stores::MemoryCommitCoordinator::wrap(Arc::new(awaken_stores::InMemoryStore::new()))
-            as Arc<dyn awaken_contract::contract::commit_coordinator::CommitCoordinator>
+            as Arc<dyn awaken_server_contract::contract::commit_coordinator::CommitCoordinator>
     })
     .await;
 
     store
         .save_thread(
-            &awaken_contract::thread::Thread::with_id("nats-lineage-match")
+            &awaken_server_contract::thread::Thread::with_id("nats-lineage-match")
                 .with_title("NATS Match")
                 .with_resource_id("resource-a")
                 .with_parent_thread_id("parent-1"),
@@ -946,7 +948,7 @@ async fn nats_buffered_store_thread_routes_round_trip_via_http() {
         .expect("save matching thread");
     store
         .save_thread(
-            &awaken_contract::thread::Thread::with_id("nats-lineage-other-resource")
+            &awaken_server_contract::thread::Thread::with_id("nats-lineage-other-resource")
                 .with_title("Other Resource")
                 .with_resource_id("resource-b")
                 .with_parent_thread_id("parent-1"),
@@ -955,7 +957,7 @@ async fn nats_buffered_store_thread_routes_round_trip_via_http() {
         .expect("save other thread");
     store
         .save_thread(
-            &awaken_contract::thread::Thread::with_id("nats-lineage-other-parent")
+            &awaken_server_contract::thread::Thread::with_id("nats-lineage-other-parent")
                 .with_title("Other Parent")
                 .with_resource_id("resource-a")
                 .with_parent_thread_id("parent-2"),

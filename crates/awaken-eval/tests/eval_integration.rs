@@ -308,9 +308,9 @@ async fn trace_curate_round_trips_through_file_store_and_replays() {
 
 mod live_mode {
     use super::*;
-    use awaken_contract::contract::executor::LlmExecutor;
-    use awaken_contract::contract::inference::TokenUsage;
     use awaken_eval::test_support::ScriptedExecutor;
+    use awaken_runtime_contract::contract::executor::LlmExecutor;
+    use awaken_runtime_contract::contract::inference::TokenUsage;
     use std::sync::Arc;
 
     fn canned_executor(response: &str, total_tokens: i32) -> Arc<ScriptedExecutor> {
@@ -451,9 +451,9 @@ async fn dialogue_fixture_replays_two_turns_on_same_thread() {
     // Turn 0 responds "first answer"; turn 1 responds "second answer".
     // Combined script feeds both turns; ScriptedLlmExecutor pointer
     // advances across turns. final_text is the LAST turn's reply.
-    use awaken_contract::contract::inference::{StopReason, TokenUsage};
     use awaken_eval::fixture::DialogueTurn;
     use awaken_runtime::engine::ProviderScriptEvent;
+    use awaken_runtime_contract::contract::inference::{StopReason, TokenUsage};
     fn turn_response(text: &str) -> ProviderScriptEvent {
         ProviderScriptEvent::ChatResponse {
             content: text.into(),
@@ -530,7 +530,7 @@ async fn dialogue_fixture_first_turn_error_short_circuits_second() {
             provider_script: vec![ProviderScriptEvent::ChatResponse {
                 content: "unreachable".into(),
                 tokens: Default::default(),
-                finish_reason: awaken_contract::contract::inference::StopReason::EndTurn,
+                finish_reason: awaken_runtime_contract::contract::inference::StopReason::EndTurn,
             }],
             provider_script_error: None,
         }],
@@ -554,9 +554,9 @@ async fn live_mode_replays_continued_turns_on_same_thread() {
     // otherwise the matrix runner silently scores only the first turn
     // and the operator never knows the rest of the conversation was
     // skipped. Regression guard for the live_mode dialogue truncation.
-    use awaken_contract::contract::executor::LlmExecutor;
     use awaken_eval::fixture::DialogueTurn;
     use awaken_eval::test_support::ScriptedExecutor;
+    use awaken_runtime_contract::contract::executor::LlmExecutor;
     use std::sync::Arc;
     let exec: Arc<dyn LlmExecutor> =
         ScriptedExecutor::new("dialogue-live", vec!["first answer", "second answer"]).arc();
@@ -595,10 +595,10 @@ async fn live_mode_replays_continued_turns_on_same_thread() {
 
 mod revise_mode {
     use super::*;
-    use awaken_contract::contract::executor::LlmExecutor;
     use awaken_eval::judge::Judge;
     use awaken_eval::test_support::{ScriptedExecutor, ScriptedJudge};
     use awaken_eval::{LlmExecutorJudge, RuntimeReplayer};
+    use awaken_runtime_contract::contract::executor::LlmExecutor;
     use std::sync::Arc;
 
     fn ad_hoc_fixture(prompt: &str) -> Fixture {
@@ -762,12 +762,12 @@ mod revise_mode {
 
 #[tokio::test]
 async fn metrics_demo_exercises_all_indicators_together() {
-    use awaken_contract::contract::executor::LlmExecutor;
-    use awaken_contract::contract::inference::TokenUsage;
-    use awaken_contract::registry_spec::ModelSpec;
     use awaken_eval::judge::Judge;
     use awaken_eval::test_support::{ExplodingJudge, ScriptedExecutor, ScriptedJudge};
     use awaken_eval::{EvalRun, EvalRunItem, MatrixCell, ReplayReport, RuntimeReplayer};
+    use awaken_runtime_contract::contract::executor::LlmExecutor;
+    use awaken_runtime_contract::contract::inference::TokenUsage;
+    use awaken_runtime_contract::registry_spec::ModelSpec;
     use std::sync::Arc;
 
     // ── Run 3 samples of the same (fixture, cell). Sample 0 has revise

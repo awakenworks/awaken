@@ -6,9 +6,9 @@ use std::time::Instant;
 use genai::chat::{ChatStreamEvent, StreamEnd};
 use serde_json::Value;
 
-use awaken_contract::contract::executor::InterruptSnapshot;
-use awaken_contract::contract::inference::{StreamResult, TokenUsage};
-use awaken_contract::contract::message::ToolCall;
+use awaken_runtime_contract::contract::executor::InterruptSnapshot;
+use awaken_runtime_contract::contract::inference::{StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::message::ToolCall;
 
 use super::convert::{map_stop_reason, map_usage};
 
@@ -32,7 +32,7 @@ pub struct StreamCollector {
     tool_calls: HashMap<String, PartialToolCall>,
     tool_call_order: Vec<String>,
     usage: Option<TokenUsage>,
-    stop_reason: Option<awaken_contract::contract::inference::StopReason>,
+    stop_reason: Option<awaken_runtime_contract::contract::inference::StopReason>,
     pending_outputs: VecDeque<StreamOutput>,
     /// Set to true after `ChatStreamEvent::End` is processed.
     end_seen: bool,
@@ -262,9 +262,7 @@ impl StreamCollector {
         let content = if self.text.is_empty() {
             vec![]
         } else {
-            vec![awaken_contract::contract::content::ContentBlock::text(
-                self.text,
-            )]
+            vec![awaken_runtime_contract::contract::content::ContentBlock::text(self.text)]
         };
 
         StreamResult {
@@ -505,7 +503,7 @@ mod tests {
         let result = c.finish();
         assert_eq!(
             result.stop_reason,
-            Some(awaken_contract::contract::inference::StopReason::EndTurn)
+            Some(awaken_runtime_contract::contract::inference::StopReason::EndTurn)
         );
     }
 

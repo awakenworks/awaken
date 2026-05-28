@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{MergeStrategy, StateKey};
-use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::contract::inference::InferenceOverride;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::contract::inference::InferenceOverride;
 
 // ---------------------------------------------------------------------------
 // Action specs
@@ -17,9 +17,10 @@ use awaken_contract::contract::inference::InferenceOverride;
 /// and writes accepted messages to [`ContextMessageStore`].
 pub struct AddContextMessage;
 
-impl awaken_contract::model::ScheduledActionSpec for AddContextMessage {
+impl awaken_runtime_contract::model::ScheduledActionSpec for AddContextMessage {
     const KEY: &'static str = "runtime.add_context_message";
-    const PHASE: awaken_contract::model::Phase = awaken_contract::model::Phase::BeforeInference;
+    const PHASE: awaken_runtime_contract::model::Phase =
+        awaken_runtime_contract::model::Phase::BeforeInference;
     type Payload = ContextMessage;
 }
 
@@ -29,9 +30,10 @@ impl awaken_contract::model::ScheduledActionSpec for AddContextMessage {
 /// Handled during EXECUTE by `SetInferenceOverrideHandler` which writes to [`InferenceOverrideState`].
 pub struct SetInferenceOverride;
 
-impl awaken_contract::model::ScheduledActionSpec for SetInferenceOverride {
+impl awaken_runtime_contract::model::ScheduledActionSpec for SetInferenceOverride {
     const KEY: &'static str = "runtime.set_inference_override";
-    const PHASE: awaken_contract::model::Phase = awaken_contract::model::Phase::BeforeInference;
+    const PHASE: awaken_runtime_contract::model::Phase =
+        awaken_runtime_contract::model::Phase::BeforeInference;
     type Payload = InferenceOverride;
 }
 
@@ -41,9 +43,10 @@ impl awaken_contract::model::ScheduledActionSpec for SetInferenceOverride {
 /// Handled during EXECUTE by `ExcludeToolHandler` which writes to [`ToolFilterState`].
 pub struct ExcludeTool;
 
-impl awaken_contract::model::ScheduledActionSpec for ExcludeTool {
+impl awaken_runtime_contract::model::ScheduledActionSpec for ExcludeTool {
     const KEY: &'static str = "runtime.exclude_tool";
-    const PHASE: awaken_contract::model::Phase = awaken_contract::model::Phase::BeforeInference;
+    const PHASE: awaken_runtime_contract::model::Phase =
+        awaken_runtime_contract::model::Phase::BeforeInference;
     type Payload = String;
 }
 
@@ -53,9 +56,10 @@ impl awaken_contract::model::ScheduledActionSpec for ExcludeTool {
 /// Handled during EXECUTE by `IncludeOnlyToolsHandler` which writes to [`ToolFilterState`].
 pub struct IncludeOnlyTools;
 
-impl awaken_contract::model::ScheduledActionSpec for IncludeOnlyTools {
+impl awaken_runtime_contract::model::ScheduledActionSpec for IncludeOnlyTools {
     const KEY: &'static str = "runtime.include_only_tools";
-    const PHASE: awaken_contract::model::Phase = awaken_contract::model::Phase::BeforeInference;
+    const PHASE: awaken_runtime_contract::model::Phase =
+        awaken_runtime_contract::model::Phase::BeforeInference;
     type Payload = Vec<String>;
 }
 
@@ -219,7 +223,7 @@ impl StateKey for InferenceOverrideState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::context_message::ContextMessage as ContractContextMessage;
+    use awaken_runtime_contract::contract::context_message::ContextMessage as ContractContextMessage;
 
     // -----------------------------------------------------------------------
     // ContextMessageStore tests
@@ -250,7 +254,7 @@ mod tests {
         assert_eq!(val.messages.len(), 1);
         assert_eq!(
             val.messages["k1"].content[0],
-            awaken_contract::contract::content::ContentBlock::text("updated")
+            awaken_runtime_contract::contract::content::ContentBlock::text("updated")
         );
     }
 
@@ -335,7 +339,7 @@ mod tests {
             ContextMessageAction::Upsert(ContractContextMessage::emit_once(
                 "once",
                 "once",
-                awaken_contract::contract::context_message::ContextMessageTarget::System,
+                awaken_runtime_contract::contract::context_message::ContextMessageTarget::System,
             )),
         );
         ContextMessageStore::apply(

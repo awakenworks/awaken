@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use awaken_contract::contract::mailbox::{MailboxStore, RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::mailbox::{MailboxStore, RunDispatch, RunDispatchStatus};
 use awaken_stores::{NatsMailboxConfig, NatsMailboxStore};
 use nats_fixture::NatsFixture;
 

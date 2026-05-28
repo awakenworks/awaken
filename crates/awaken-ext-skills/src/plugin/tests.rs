@@ -469,7 +469,7 @@ fn render_catalog_filters_hidden_skills_by_visibility_state() {
     use crate::visibility::{
         SkillVisibilityAction, SkillVisibilityStateKey, SkillVisibilityStateValue,
     };
-    use awaken_contract::state::StateKey;
+    use awaken_runtime_contract::state::StateKey;
 
     let (_td, skills) = make_skills();
     let p = SkillDiscoveryPlugin::new(make_registry(skills));

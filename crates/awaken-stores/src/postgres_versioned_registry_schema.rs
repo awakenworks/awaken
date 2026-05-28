@@ -1,6 +1,6 @@
 //! PostgreSQL schema for the published versioned registry store.
 
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 
 use crate::postgres::PostgresStore;
 use crate::postgres_versioned_registry::RegistryTables;

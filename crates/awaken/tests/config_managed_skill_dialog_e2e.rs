@@ -19,7 +19,7 @@ use awaken::{
     AgentRuntime, AgentRuntimeBuilder, Plugin, RunActivation, SkillArgumentSpec, SkillSpec,
     SkillSpecSink,
 };
-use awaken_contract::{
+use awaken_runtime_contract::{
     AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelSpec, ProviderSpec, RecordMeta,
 };
 

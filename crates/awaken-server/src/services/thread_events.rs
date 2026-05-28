@@ -1,9 +1,9 @@
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event_store::{
     AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventScope, EventStoreError,
     EventWriter,
 };
-use awaken_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError};
-use awaken_contract::thread::Thread;
+use awaken_server_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError};
+use awaken_server_contract::thread::Thread;
 use serde_json::{Value, json};
 
 use crate::app::RunRoutesState;
@@ -194,7 +194,7 @@ fn thread_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::event_store::{EventReader, EventVisibility};
+    use awaken_server_contract::contract::event_store::{EventReader, EventVisibility};
     use awaken_stores::InMemoryEventStore;
 
     fn child_thread() -> Thread {

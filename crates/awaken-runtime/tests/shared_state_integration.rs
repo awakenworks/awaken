@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use awaken_contract::StateError;
-use awaken_contract::contract::profile_store::{ProfileKey, ProfileStore};
-use awaken_contract::contract::shared_state::StateScope;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::profile::ProfileAccess;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::profile_store::{ProfileKey, ProfileStore};
+use awaken_runtime_contract::contract::shared_state::StateScope;
 use awaken_stores::InMemoryStore;
 
 // ── Test types ──

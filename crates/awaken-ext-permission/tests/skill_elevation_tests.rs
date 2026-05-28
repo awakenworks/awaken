@@ -10,7 +10,6 @@
 //!
 //! These tests document the correct behavior and the current broken state.
 
-use awaken_contract::state::StateKey;
 use awaken_ext_permission::actions;
 use awaken_ext_permission::rules::ToolPermissionBehavior;
 use awaken_ext_permission::state::{
@@ -19,6 +18,7 @@ use awaken_ext_permission::state::{
 };
 use awaken_ext_permission::{PermissionRuleSource, evaluate_tool_permission};
 use awaken_runtime::state::MutationBatch;
+use awaken_runtime_contract::state::StateKey;
 
 // ═══════════════════════════════════════════════════════════════════
 // Permission Overrides State Tests

@@ -3,7 +3,7 @@
 // Reader/flusher (Tasks 5/6) consume these helpers; allow the gap until then.
 #![allow(dead_code)]
 
-use awaken_contract::contract::storage::{RunRecord, StorageError};
+use awaken_server_contract::contract::storage::{RunRecord, StorageError};
 use bytes::Bytes;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};

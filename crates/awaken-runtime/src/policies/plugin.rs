@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use awaken_contract::StateError;
-use awaken_contract::model::Phase;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::model::Phase;
 
 use super::hook::StopConditionHook;
 use super::policy::{MaxRoundsPolicy, StopPolicy};

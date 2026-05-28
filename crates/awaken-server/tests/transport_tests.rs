@@ -3,9 +3,6 @@
 //! Validates SSE relay, transcoder integration, channel sink behavior,
 //! and protocol-specific SSE encoding.
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::transport::{Identity, Transcoder};
 use awaken_server::http_run::{format_relay_error, wire_sse_relay};
 use awaken_server::http_sse::{format_sse_data, sse_response};
 use awaken_server::protocols::acp::encoder::AcpEncoder;
@@ -14,6 +11,9 @@ use awaken_server::protocols::ai_sdk_v6::encoder::AiSdkEncoder;
 use awaken_server::transport::transcoder::{
     encode_epilogue_to_sse, encode_event_to_sse, encode_prologue_to_sse,
 };
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::lifecycle::TerminationReason;
+use awaken_server_contract::contract::transport::{Identity, Transcoder};
 use bytes::Bytes;
 use futures::StreamExt;
 use serde_json::json;
@@ -716,8 +716,8 @@ async fn resumable_relay_with_ai_sdk_encoder() {
 
 #[tokio::test]
 async fn channel_sink_forwards_events() {
-    use awaken_contract::contract::event_sink::EventSink;
     use awaken_server::transport::channel_sink::ChannelEventSink;
+    use awaken_server_contract::contract::event_sink::EventSink;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let sink = ChannelEventSink::new(tx);
@@ -736,8 +736,8 @@ async fn channel_sink_forwards_events() {
 
 #[tokio::test]
 async fn channel_sink_drops_silently_on_closed_receiver() {
-    use awaken_contract::contract::event_sink::EventSink;
     use awaken_server::transport::channel_sink::ChannelEventSink;
+    use awaken_server_contract::contract::event_sink::EventSink;
 
     let (tx, rx) = mpsc::unbounded_channel();
     let sink = ChannelEventSink::new(tx);
@@ -752,8 +752,8 @@ async fn channel_sink_drops_silently_on_closed_receiver() {
 
 #[tokio::test]
 async fn channel_sink_close_is_noop() {
-    use awaken_contract::contract::event_sink::EventSink;
     use awaken_server::transport::channel_sink::ChannelEventSink;
+    use awaken_server_contract::contract::event_sink::EventSink;
 
     let (tx, _rx) = mpsc::unbounded_channel();
     let sink = ChannelEventSink::new(tx);

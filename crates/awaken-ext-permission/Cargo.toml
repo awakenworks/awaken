@@ -11,7 +11,7 @@ keywords.workspace = true
 categories = ["artificial-intelligence", "security"]
 
 [dependencies]
-awaken-contract = { workspace = true }
+awaken-runtime-contract = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-tool-pattern = { workspace = true }
 serde = { workspace = true }

@@ -17,9 +17,9 @@ mod nats_fixture;
 
 use std::time::Duration;
 
-use awaken_contract::contract::mailbox::{LiveRunCommand, LiveRunTarget, MailboxStore};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+use awaken_server_contract::contract::mailbox::{LiveRunCommand, LiveRunTarget, MailboxStore};
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 use awaken_stores::{NatsMailboxConfig, NatsMailboxStore};
 use futures::StreamExt;
 use nats_fixture::NatsFixture;
@@ -222,7 +222,7 @@ async fn targeted_live_delivery_does_not_ack_stale_same_thread_subscriber() {
         .expect("targeted deliver");
     assert_eq!(
         delivered,
-        awaken_contract::contract::mailbox::LiveDeliveryOutcome::Delivered
+        awaken_server_contract::contract::mailbox::LiveDeliveryOutcome::Delivered
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -298,7 +298,7 @@ async fn cross_node_publish_without_subscriber_silently_drops() {
         .expect("publish without subscriber must return Ok");
     assert_eq!(
         outcome,
-        awaken_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber,
+        awaken_server_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber,
         "no-subscriber ⇒ NoSubscriber so the caller falls back to durable queue"
     );
 
@@ -330,7 +330,7 @@ async fn targeted_live_channel_drop_removes_subscriber() {
             .deliver_live_to(&target, LiveRunCommand::Cancel)
             .await
             .expect("publish after subscription drop");
-        if outcome == awaken_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber {
+        if outcome == awaken_server_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber {
             break;
         }
         assert!(

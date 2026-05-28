@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::registry_spec::{ModelPoolSpec, ModelSpec};
+use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::registry_spec::{ModelPoolSpec, ModelSpec};
 
 use crate::engine::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::engine::pool_executor::{PoolExecutor, PoolMemberExecutor};

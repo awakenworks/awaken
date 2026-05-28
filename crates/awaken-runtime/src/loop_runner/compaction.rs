@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use awaken_contract::StateError;
-use awaken_contract::contract::inference::ContextWindowPolicy;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
 use serde_json::json;
 
 use super::step::StepContext;

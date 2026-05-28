@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use awaken_contract::StateError;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::inference::{
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::inference::{
     InferenceError, LLMResponse, StopReason, StreamResult, TokenUsage,
 };
-use awaken_contract::contract::lifecycle::{RunStatus, StopConditionSpec};
-use awaken_contract::model::Phase;
+use awaken_runtime_contract::contract::lifecycle::{RunStatus, StopConditionSpec};
+use awaken_runtime_contract::model::Phase;
 
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
@@ -610,7 +610,7 @@ async fn stats_persist_across_store_restore() {
 
     let (store2, runtime2, env2) = make_test_env(vec![Arc::new(TokenBudgetPolicy::new(100))]);
     store2
-        .restore_persisted(persisted, awaken_contract::UnknownKeyPolicy::Error)
+        .restore_persisted(persisted, awaken_runtime_contract::UnknownKeyPolicy::Error)
         .unwrap();
 
     let ctx = PhaseContext::new(Phase::AfterInference, runtime2.store().snapshot())
@@ -1176,7 +1176,7 @@ async fn stop_condition_interleaved_error_success_error() {
 // -----------------------------------------------------------------------
 
 fn make_llm_response_with_tool_calls(tool_names: &[&str]) -> LLMResponse {
-    use awaken_contract::contract::message::ToolCall;
+    use awaken_runtime_contract::contract::message::ToolCall;
     LLMResponse::success(StreamResult {
         content: vec![ContentBlock::text("calling tools")],
         tool_calls: tool_names

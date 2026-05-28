@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_runtime::RunActivation;
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::suspension::ToolCallResume;
 
 use awaken_server::mailbox::{MailboxDispatchStatus, RunDispatchExecutor};
 use awaken_server::services::run_control_service::InputMode;

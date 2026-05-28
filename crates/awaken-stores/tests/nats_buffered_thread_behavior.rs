@@ -9,13 +9,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunRequestSnapshot, RunStore, StorageError, ThreadParentFilter,
     ThreadQuery, ThreadRunStore, ThreadStore,
 };
-use awaken_contract::thread::{Thread, ThreadMetadata};
+use awaken_server_contract::thread::{Thread, ThreadMetadata};
 use awaken_stores::{InMemoryStore, NatsBufferedThreadStore, ReadConsistency};
 use fixture::{NatsFixture, unique_config};
 use tokio::sync::Barrier;

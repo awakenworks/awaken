@@ -13,7 +13,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event_store::{
     CanonicalEvent, EventCursor, EventScope, EventStoreError, EventVisibility, SubscribeStart,
 };
 
@@ -262,10 +262,10 @@ impl From<&CanonicalEvent> for CanonicalEventHttp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::event_store::{
+    use awaken_runtime::AgentRuntime;
+    use awaken_server_contract::contract::event_store::{
         AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventWriter,
     };
-    use awaken_runtime::AgentRuntime;
     use awaken_stores::{InMemoryEventStore, InMemoryMailboxStore, InMemoryStore};
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};

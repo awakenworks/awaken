@@ -2,9 +2,11 @@
 
 use async_nats::HeaderMap;
 use async_nats::jetstream::kv::CreateErrorKind;
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchResult, RunDispatchStatus};
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::mailbox::{
+    RunDispatch, RunDispatchResult, RunDispatchStatus,
+};
+use awaken_server_contract::contract::storage::StorageError;
 
 use super::{NatsMailboxStore, claim_guard, codec, keys, kv_helpers, metrics};
 use crate::mailbox_state;

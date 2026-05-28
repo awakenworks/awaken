@@ -3,16 +3,16 @@
 
 #![cfg(feature = "file")]
 
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::RunRecord;
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::RunRecord;
+use awaken_server_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessageOrder, MessageQuery, MessageSeqRange,
     MessageVisibilityFilter, PinnedRegistryEntry, PinnedRegistryManifest, RunMessageInput,
     RunMessageOutput, RunQuery, RunRequestSnapshot, RunStore, StorageError, ThreadParentFilter,
     ThreadQuery, ThreadRunStore, ThreadStore,
 };
-use awaken_contract::thread::Thread;
+use awaken_server_contract::thread::Thread;
 use awaken_stores::FileStore;
 use tempfile::TempDir;
 
@@ -312,7 +312,7 @@ async fn list_message_records_query_filters_visibility_run_and_order() {
         .save_thread(&Thread::with_id(thread_id))
         .await
         .unwrap();
-    let metadata = awaken_contract::contract::message::MessageMetadata {
+    let metadata = awaken_server_contract::contract::message::MessageMetadata {
         run_id: Some("run-1".to_string()),
         step_index: Some(0),
     };
@@ -872,7 +872,7 @@ async fn tool_call_message_roundtrip_via_save() {
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());
 
-    let tool_call = awaken_contract::contract::message::ToolCall::new(
+    let tool_call = awaken_server_contract::contract::message::ToolCall::new(
         "call_1",
         "search",
         serde_json::json!({"query": "rust"}),
@@ -904,7 +904,7 @@ async fn tool_call_message_roundtrip_via_checkpoint() {
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());
 
-    let tool_call = awaken_contract::contract::message::ToolCall::new(
+    let tool_call = awaken_server_contract::contract::message::ToolCall::new(
         "call_42",
         "calculator",
         serde_json::json!({"expr": "6*7"}),
@@ -1024,7 +1024,7 @@ async fn delete_messages_no_messages_is_ok() {
 
 #[tokio::test]
 async fn update_thread_metadata_changes_metadata() {
-    use awaken_contract::thread::ThreadMetadata;
+    use awaken_server_contract::thread::ThreadMetadata;
 
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());
@@ -1047,7 +1047,7 @@ async fn update_thread_metadata_changes_metadata() {
 
 #[tokio::test]
 async fn update_thread_metadata_not_found() {
-    use awaken_contract::thread::ThreadMetadata;
+    use awaken_server_contract::thread::ThreadMetadata;
 
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());

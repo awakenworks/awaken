@@ -3,13 +3,13 @@
 //! Validates event mapping, text block lifecycle, tool call handling,
 //! finish reason mapping, reasoning blocks, and message ID propagation.
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::lifecycle::{StoppedReason, TerminationReason};
-use awaken_contract::contract::suspension::ToolCallOutcome;
-use awaken_contract::contract::tool::ToolResult;
-use awaken_contract::contract::transport::Transcoder;
 use awaken_server::protocols::ai_sdk_v6::encoder::AiSdkEncoder;
 use awaken_server::protocols::ai_sdk_v6::types::UIStreamEvent;
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::lifecycle::{StoppedReason, TerminationReason};
+use awaken_server_contract::contract::suspension::ToolCallOutcome;
+use awaken_server_contract::contract::tool::ToolResult;
+use awaken_server_contract::contract::transport::Transcoder;
 use serde_json::json;
 
 // ============================================================================

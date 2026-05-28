@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::versioned_registry::PublishOutcome;
-use awaken_contract::{
+use awaken_server_contract::contract::versioned_registry::PublishOutcome;
+use awaken_server_contract::{
     AgentSpec, ModelPoolSpec, ModelSpec, PinnedRegistryEntry, ProviderSpec,
     RegistryGraphValidationError, RegistryGraphValidationRequest, RegistryGraphValidator,
     StandardRegistryGraphValidator, VersionRef, VersionSelector, VersionedRegistryStore,
@@ -115,7 +115,7 @@ async fn manifest_validation_rejects_missing_delegate_entry() {
     let provider = publish_provider(&store, "provider-1").await;
     let model = publish_model(&store, "model-1", "provider-1").await;
     let root = publish_agent(&store, agent("root", "model-1", ["delegate"])).await;
-    let manifest = awaken_contract::PinnedRegistryManifest {
+    let manifest = awaken_server_contract::PinnedRegistryManifest {
         publication_id: None,
         registry_snapshot_version: None,
         entries: vec![root, model, provider],
@@ -147,7 +147,7 @@ async fn manifest_validation_detects_delegate_cycles() {
     let model = publish_model(&store, "model-1", "provider-1").await;
     let root = publish_agent(&store, agent("root", "model-1", ["delegate"])).await;
     let delegate = publish_agent(&store, agent("delegate", "model-1", ["root"])).await;
-    let manifest = awaken_contract::PinnedRegistryManifest {
+    let manifest = awaken_server_contract::PinnedRegistryManifest {
         publication_id: None,
         registry_snapshot_version: None,
         entries: vec![root, delegate, model, provider],
@@ -183,7 +183,7 @@ async fn manifest_validation_does_not_fall_back_to_current_for_missing_model() {
     let root = publish_agent(&store, agent("root", "model-1", [])).await;
 
     // Manifest deliberately omits the model entry.
-    let manifest = awaken_contract::PinnedRegistryManifest {
+    let manifest = awaken_server_contract::PinnedRegistryManifest {
         publication_id: None,
         registry_snapshot_version: None,
         entries: vec![root],
@@ -219,7 +219,7 @@ async fn manifest_validation_rejects_tampered_content_hash() {
 
     let mut tampered_root = root.clone();
     tampered_root.content_hash = "sha256:deadbeef".to_string();
-    let manifest = awaken_contract::PinnedRegistryManifest {
+    let manifest = awaken_server_contract::PinnedRegistryManifest {
         publication_id: None,
         registry_snapshot_version: None,
         entries: vec![tampered_root, model, provider],
@@ -256,7 +256,7 @@ async fn manifest_validation_rejects_model_and_pool_id_collision() {
     let model_x = publish_model(&store, "x", "provider-1").await;
     let pool_x = publish_model_pool(&store, "x", ["m0"]).await;
     let root = publish_agent(&store, agent("root", "x", [])).await;
-    let manifest = awaken_contract::PinnedRegistryManifest {
+    let manifest = awaken_server_contract::PinnedRegistryManifest {
         publication_id: None,
         registry_snapshot_version: None,
         entries: vec![root, model_x, pool_x, member, provider],

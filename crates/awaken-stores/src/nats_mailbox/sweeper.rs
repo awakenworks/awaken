@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use tokio::sync::RwLock;
 
 use super::{index::DispatchIndex, keys, metrics};

@@ -1,4 +1,4 @@
-use awaken_contract::{AgentSpec, ConfigRecord, McpServerSpec, SkillSpec, ToolSpec};
+use awaken_server_contract::{AgentSpec, ConfigRecord, McpServerSpec, SkillSpec, ToolSpec};
 use serde_json::{Map, Value, json};
 
 use crate::services::config_envelope::{apply_overrides, unwrap_spec};
@@ -60,20 +60,20 @@ impl ConfigService {
     ) -> Result<(), ConfigServiceError> {
         match namespace {
             ConfigNamespace::Agents => {
-                let spec = awaken_contract::validate_agent_spec(body.clone())
+                let spec = awaken_server_contract::validate_agent_spec(body.clone())
                     .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
                 enforce_agent_spec_catalog(&spec)?;
             }
             ConfigNamespace::Models => {
-                awaken_contract::validate_model_spec(body.clone())
+                awaken_server_contract::validate_model_spec(body.clone())
                     .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
             }
             ConfigNamespace::ModelPools => {
-                awaken_contract::validate_model_pool_spec(body.clone())
+                awaken_server_contract::validate_model_pool_spec(body.clone())
                     .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
             }
             ConfigNamespace::Providers => {
-                let spec = awaken_contract::validate_provider_spec(body.clone())
+                let spec = awaken_server_contract::validate_provider_spec(body.clone())
                     .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
                 // Eager credential validation: parse `credentials_kind` and the
                 // (kind × adapter × api_key) shape so misconfigured providers
@@ -103,7 +103,7 @@ impl ConfigService {
                 }
 
                 match spec.transport {
-                    awaken_contract::McpTransportKind::Stdio => {
+                    awaken_server_contract::McpTransportKind::Stdio => {
                         if spec
                             .command
                             .as_deref()
@@ -114,7 +114,7 @@ impl ConfigService {
                             ));
                         }
                     }
-                    awaken_contract::McpTransportKind::Http => {
+                    awaken_server_contract::McpTransportKind::Http => {
                         if spec
                             .url
                             .as_deref()
@@ -128,7 +128,7 @@ impl ConfigService {
                 }
             }
             ConfigNamespace::Skills => {
-                awaken_contract::validate_skill_spec(body.clone())
+                awaken_server_contract::validate_skill_spec(body.clone())
                     .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
             }
         }
@@ -167,7 +167,7 @@ pub(super) fn effective_spec(
 
 pub(super) fn effective_visible_record<T>(value: Value) -> Result<Option<T>, ConfigServiceError>
 where
-    T: serde::de::DeserializeOwned + awaken_contract::ConfigRecordMerge,
+    T: serde::de::DeserializeOwned + awaken_server_contract::ConfigRecordMerge,
 {
     let record = ConfigRecord::<T>::from_value(value)
         .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;

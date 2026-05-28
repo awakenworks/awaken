@@ -2,8 +2,10 @@
 
 use std::collections::HashMap;
 
-use awaken_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError, ThreadStore};
-use awaken_contract::thread::Thread;
+use awaken_server_contract::contract::storage::{
+    ChildThreadDeleteStrategy, StorageError, ThreadStore,
+};
+use awaken_server_contract::thread::Thread;
 use serde_json::Value;
 
 /// Parameters for creating a thread.
@@ -138,19 +140,22 @@ pub async fn delete_thread(
         .await
 }
 
-use awaken_contract::now_ms;
+use awaken_server_contract::now_ms;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::storage::ThreadStore;
+    use awaken_server_contract::contract::storage::ThreadStore;
 
     /// Simple in-memory thread store for testing.
     #[derive(Default)]
     struct MockThreadStore {
         threads: std::sync::RwLock<std::collections::HashMap<String, Thread>>,
         messages: std::sync::RwLock<
-            std::collections::HashMap<String, Vec<awaken_contract::contract::message::Message>>,
+            std::collections::HashMap<
+                String,
+                Vec<awaken_server_contract::contract::message::Message>,
+            >,
         >,
     }
 
@@ -188,7 +193,7 @@ mod tests {
         async fn load_messages(
             &self,
             thread_id: &str,
-        ) -> Result<Option<Vec<awaken_contract::contract::message::Message>>, StorageError>
+        ) -> Result<Option<Vec<awaken_server_contract::contract::message::Message>>, StorageError>
         {
             Ok(self.messages.read().unwrap().get(thread_id).cloned())
         }
@@ -196,7 +201,7 @@ mod tests {
         async fn save_messages(
             &self,
             thread_id: &str,
-            messages: &[awaken_contract::contract::message::Message],
+            messages: &[awaken_server_contract::contract::message::Message],
         ) -> Result<(), StorageError> {
             self.messages
                 .write()
@@ -216,7 +221,7 @@ mod tests {
         async fn update_thread_metadata(
             &self,
             id: &str,
-            metadata: awaken_contract::thread::ThreadMetadata,
+            metadata: awaken_server_contract::thread::ThreadMetadata,
         ) -> Result<(), StorageError> {
             let mut guard = self.threads.write().unwrap();
             let thread = guard

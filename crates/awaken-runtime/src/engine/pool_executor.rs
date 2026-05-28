@@ -12,8 +12,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::registry_spec::HomeStrategy;
+use async_trait::async_trait;
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor,
+};
+use awaken_runtime_contract::contract::inference::StreamResult;
+use awaken_runtime_contract::registry_spec::HomeStrategy;
 
 use super::circuit_breaker::CircuitBreaker;
 use super::pool_router::PoolRouter;

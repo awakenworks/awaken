@@ -3,20 +3,20 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_contract::contract::config_store::{
+use awaken_server_contract::contract::config_store::{
     ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
     extract_meta_revision,
 };
-use awaken_contract::contract::message::{
+use awaken_server_contract::contract::message::{
     Message, PendingMessageRecord, strip_unpaired_tool_calls_from_view,
 };
-use awaken_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::profile_store::{ProfileEntry, ProfileOwner, ProfileStore};
+use awaken_server_contract::contract::storage::{
     MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadPage,
     ThreadQuery, ThreadRunStore, ThreadStore, checkpoint_parent_thread_id, message_append,
     paginate_message_records, paginate_threads,
 };
-use awaken_contract::thread::{Thread, normalize_lineage_id};
+use awaken_server_contract::thread::{Thread, normalize_lineage_id};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -171,7 +171,7 @@ impl ThreadStore for InMemoryStore {
     async fn delete_thread_with_strategy(
         &self,
         thread_id: &str,
-        strategy: awaken_contract::contract::storage::ChildThreadDeleteStrategy,
+        strategy: awaken_server_contract::contract::storage::ChildThreadDeleteStrategy,
     ) -> Result<(), StorageError> {
         let mut threads = self.threads.write().await;
         let mut messages = self.messages.write().await;
@@ -181,7 +181,7 @@ impl ThreadStore for InMemoryStore {
         }
 
         match strategy {
-            awaken_contract::contract::storage::ChildThreadDeleteStrategy::Reject => {
+            awaken_server_contract::contract::storage::ChildThreadDeleteStrategy::Reject => {
                 if !collect_child_ids(&threads, thread_id).is_empty() {
                     return Err(StorageError::Validation(format!(
                         "thread '{thread_id}' has child threads; choose 'detach' or 'cascade'"
@@ -191,7 +191,7 @@ impl ThreadStore for InMemoryStore {
                 messages.remove(thread_id);
                 pending_messages.remove(thread_id);
             }
-            awaken_contract::contract::storage::ChildThreadDeleteStrategy::Detach => {
+            awaken_server_contract::contract::storage::ChildThreadDeleteStrategy::Detach => {
                 let updated_at = current_millis();
                 for child_id in collect_child_ids(&threads, thread_id) {
                     if let Some(child) = threads.get_mut(&child_id) {
@@ -204,7 +204,7 @@ impl ThreadStore for InMemoryStore {
                 messages.remove(thread_id);
                 pending_messages.remove(thread_id);
             }
-            awaken_contract::contract::storage::ChildThreadDeleteStrategy::Cascade => {
+            awaken_server_contract::contract::storage::ChildThreadDeleteStrategy::Cascade => {
                 let mut visited = std::collections::HashSet::new();
                 let mut stack = vec![(thread_id.to_owned(), false)];
                 let mut delete_order = Vec::new();
@@ -244,7 +244,7 @@ impl ThreadStore for InMemoryStore {
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         let guard = self.threads.read().await;
         let mut threads: Vec<Thread> = guard.values().cloned().collect();
-        awaken_contract::contract::storage::sort_threads_by_recent_activity(&mut threads);
+        awaken_server_contract::contract::storage::sort_threads_by_recent_activity(&mut threads);
         Ok(threads
             .into_iter()
             .skip(offset)
@@ -291,7 +291,7 @@ impl ThreadStore for InMemoryStore {
             .cloned()
             .enumerate()
             .map(|(index, message)| {
-                awaken_contract::contract::message::MessageRecord::from_message(
+                awaken_server_contract::contract::message::MessageRecord::from_message(
                     thread_id.to_owned(),
                     index as u64 + 1,
                     message,
@@ -319,7 +319,7 @@ impl ThreadStore for InMemoryStore {
         &self,
         thread_id: &str,
         messages: &[Message],
-    ) -> Result<Vec<awaken_contract::contract::message::MessageRecord>, StorageError> {
+    ) -> Result<Vec<awaken_server_contract::contract::message::MessageRecord>, StorageError> {
         let mut guard = self.messages.write().await;
         let existing = guard.entry(thread_id.to_owned()).or_default();
         message_append::validate_append_only_delta(existing, messages)?;
@@ -330,7 +330,7 @@ impl ThreadStore for InMemoryStore {
             .cloned()
             .enumerate()
             .map(|(index, message)| {
-                awaken_contract::contract::message::MessageRecord::from_message(
+                awaken_server_contract::contract::message::MessageRecord::from_message(
                     thread_id.to_owned(),
                     start_seq + index as u64,
                     message,
@@ -353,7 +353,7 @@ impl ThreadStore for InMemoryStore {
     async fn update_thread_metadata(
         &self,
         id: &str,
-        metadata: awaken_contract::thread::ThreadMetadata,
+        metadata: awaken_server_contract::thread::ThreadMetadata,
     ) -> Result<(), StorageError> {
         let mut guard = self.threads.write().await;
         let thread = guard

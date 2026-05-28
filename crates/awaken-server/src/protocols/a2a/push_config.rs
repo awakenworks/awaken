@@ -1,5 +1,5 @@
-use awaken_contract::thread::Thread;
 use awaken_protocol_a2a::{ListPushNotificationConfigsResponse, PushNotificationConfig};
+use awaken_server_contract::thread::Thread;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};

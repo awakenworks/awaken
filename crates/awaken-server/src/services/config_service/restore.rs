@@ -24,7 +24,7 @@ impl ConfigService {
         version: &str,
         headers: &HeaderMap,
     ) -> Result<Value, RestoreError> {
-        use awaken_contract::AuditAction as A;
+        use awaken_server_contract::AuditAction as A;
 
         let audit = self
             .audit

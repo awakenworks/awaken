@@ -10,11 +10,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::commit_coordinator::{
+use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     MessageWriteMode, TransactionScopeId,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 
 use crate::postgres::PostgresStore;
 use crate::postgres_outbox::enqueue_outbox_in_transaction;
@@ -58,8 +58,11 @@ impl CommitCoordinator for PgCommitCoordinator {
         self.scope.clone()
     }
 
-    fn thread_run_store(&self) -> Arc<dyn awaken_contract::contract::storage::ThreadRunStore> {
-        Arc::clone(&self.store) as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>
+    fn thread_run_store(
+        &self,
+    ) -> Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore> {
+        Arc::clone(&self.store)
+            as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>
     }
 
     async fn commit_checkpoint(

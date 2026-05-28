@@ -4,8 +4,8 @@ use async_trait::async_trait;
 
 use crate::PhaseContext;
 use crate::phase::ToolGateHook;
-use awaken_contract::StateError;
-use awaken_contract::contract::tool_intercept::{
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::tool_intercept::{
     ToolInterceptPayload, ToolPolicyContext, ToolPolicyDecision,
 };
 
@@ -41,7 +41,7 @@ impl ToolGateHook for ToolPolicyGateHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::tool_intercept::{RunMode, ToolKind};
+    use awaken_runtime_contract::contract::tool_intercept::{RunMode, ToolKind};
 
     struct DenyScheduledExecute;
 
@@ -61,7 +61,7 @@ mod tests {
     async fn tool_policy_gate_hook_adapts_to_tool_gate_payload() {
         let hook = ToolPolicyGateHook::new(Arc::new(DenyScheduledExecute));
         let ctx = PhaseContext::new(
-            awaken_contract::model::Phase::ToolGate,
+            awaken_runtime_contract::model::Phase::ToolGate,
             crate::state::Snapshot::new(0, Arc::new(crate::state::StateMap::default())),
         )
         .with_run_mode(RunMode::Scheduled)

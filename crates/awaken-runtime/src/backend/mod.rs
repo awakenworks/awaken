@@ -11,17 +11,17 @@ pub use capabilities::{
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{Message, gen_message_id};
-use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_contract::contract::suspension::ToolCallResume;
-use awaken_contract::contract::tool::ToolDescriptor;
-use awaken_contract::now_ms;
-use awaken_contract::registry_spec::RemoteEndpoint;
-use awaken_contract::state::PersistedState;
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_runtime_contract::contract::message::{Message, gen_message_id};
+use awaken_runtime_contract::contract::storage::ThreadRunStore;
+use awaken_runtime_contract::contract::suspension::ToolCallResume;
+use awaken_runtime_contract::contract::tool::ToolDescriptor;
+use awaken_runtime_contract::now_ms;
+use awaken_runtime_contract::registry_spec::RemoteEndpoint;
+use awaken_runtime_contract::state::PersistedState;
 use futures::channel::mpsc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -67,7 +67,7 @@ pub struct BackendRootRunRequest<'a> {
     pub commit: crate::loop_runner::CommitWiring<'a>,
     pub control: BackendControl,
     pub decisions: Vec<(String, ToolCallResume)>,
-    pub overrides: Option<awaken_contract::contract::inference::InferenceOverride>,
+    pub overrides: Option<awaken_runtime_contract::contract::inference::InferenceOverride>,
     pub frontend_tools: Vec<ToolDescriptor>,
     pub local: Option<BackendLocalRootContext<'a>>,
     pub inbox: Option<InboxReceiver>,

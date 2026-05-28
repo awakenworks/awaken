@@ -26,7 +26,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
-use awaken_contract::cancellation::CancellationToken;
+use awaken_runtime_contract::cancellation::CancellationToken;
 
 use crate::progress::McpProgressUpdate;
 use crate::sampling::SamplingHandler;

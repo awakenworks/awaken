@@ -6,17 +6,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use awaken_contract::StateError;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event_sink::NullEventSink;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult};
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::message::{Message, Role, ToolCall};
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::event_sink::NullEventSink;
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult};
+use awaken_runtime_contract::contract::lifecycle::TerminationReason;
+use awaken_runtime_contract::contract::message::{Message, Role, ToolCall};
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::state::{PersistedState, StateKey, StateKeyOptions};
+use awaken_runtime_contract::state::{PersistedState, StateKey, StateKeyOptions};
 
 use awaken_runtime::backend::{
     BackendDelegateRunRequest, BackendParentContext, BackendRunResult, BackendRunStatus,
@@ -549,7 +551,7 @@ impl AgentResolver for CaptureMessagesResolver {
                 message: format!("agent not found: {agent_id}"),
             });
         }
-        let spec = Arc::new(awaken_contract::registry_spec::AgentSpec {
+        let spec = Arc::new(awaken_runtime_contract::registry_spec::AgentSpec {
             id: self.agent_id.clone(),
             ..Default::default()
         });
@@ -642,7 +644,7 @@ impl AgentResolver for FailedStatusResolver {
                 message: format!("agent not found: {agent_id}"),
             });
         }
-        let spec = Arc::new(awaken_contract::registry_spec::AgentSpec {
+        let spec = Arc::new(awaken_runtime_contract::registry_spec::AgentSpec {
             id: self.agent_id.clone(),
             ..Default::default()
         });
@@ -726,7 +728,7 @@ impl AgentResolver for NoSeedResolver {
                 message: format!("agent not found: {agent_id}"),
             });
         }
-        let spec = Arc::new(awaken_contract::registry_spec::AgentSpec {
+        let spec = Arc::new(awaken_runtime_contract::registry_spec::AgentSpec {
             id: self.agent_id.clone(),
             ..Default::default()
         });

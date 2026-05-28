@@ -1,7 +1,7 @@
 use crate::error::{SkillError, SkillRegistryError, SkillRegistryManagerError, SkillWarning};
 use crate::skill::{Skill, SkillMeta};
 use crate::skill_md::{SkillFrontmatter, parse_skill_md};
-use awaken_contract::PeriodicRefresher;
+use awaken_runtime_contract::PeriodicRefresher;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};

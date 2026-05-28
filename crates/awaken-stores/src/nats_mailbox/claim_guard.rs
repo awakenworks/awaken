@@ -1,6 +1,6 @@
 //! Per-thread distributed claim guard.
 
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 
 use super::{NatsMailboxStore, codec, keys, kv_helpers};
 

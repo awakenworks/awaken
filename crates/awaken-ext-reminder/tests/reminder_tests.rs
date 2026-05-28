@@ -1,13 +1,13 @@
 //! Integration tests for the reminder extension.
 
-use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::contract::tool::ToolResult;
 use awaken_ext_reminder::ReminderRulesConfig;
 use awaken_ext_reminder::output_matcher::{
     ContentMatcher, OutputMatcher, ToolStatusMatcher, output_matches,
 };
 use awaken_ext_reminder::plugin::ReminderPlugin;
 use awaken_ext_reminder::rule::ReminderRule;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::contract::tool::ToolResult;
 use awaken_tool_pattern::{
     ArgMatcher, FieldCondition, MatchOp, PathSegment, ToolCallPattern, ToolMatcher, pattern_matches,
 };
@@ -358,7 +358,7 @@ fn reminder_produces_correct_context_message() {
     assert_eq!(rule.message.key, "reminder.deletion-warning");
     assert_eq!(
         rule.message.target,
-        awaken_contract::contract::context_message::ContextMessageTarget::SuffixSystem
+        awaken_runtime_contract::contract::context_message::ContextMessageTarget::SuffixSystem
     );
     assert_eq!(rule.message.cooldown_turns, 2);
 }

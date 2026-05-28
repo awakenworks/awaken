@@ -5,27 +5,27 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::contract::config_store::{ConfigChangeNotifier, ConfigStore};
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::storage::StorageError;
-use awaken_contract::{
-    AgentSpec, ConfigRecord, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelSpec,
-    PeriodicRefresher, ProviderSpec, SkillSpecSink,
-};
 use awaken_ext_mcp::{
     DefaultSamplingHandler, McpServerConnectionConfig, McpServerStatusSnapshot, McpToolRegistry,
     McpToolRegistryManager, SamplingHandler, SamplingHandlerFactory,
 };
 use awaken_runtime::AgentRuntime;
 use awaken_runtime::engine::GenaiExecutor;
-use awaken_runtime::registry::{AgentSpecRegistry, BackendRegistry};
-use awaken_runtime::registry::{PluginSource, ToolRegistry};
+use awaken_runtime::registry::{AgentSpecRegistry, BackendRegistry, PluginSource, ToolRegistry};
+use awaken_server_contract as server_contract;
 use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint};
 use genai::{Client, ModelIden, ServiceTarget, WebConfig};
 use parking_lot::{Mutex, RwLock};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
+use server_contract::contract::config_store::{ConfigChangeNotifier, ConfigStore};
+use server_contract::contract::executor::LlmExecutor;
+use server_contract::contract::storage::StorageError;
+use server_contract::{
+    AgentSpec, ConfigRecord, McpRestartPolicy, McpServerSpec, McpTransportKind, ModelSpec,
+    PeriodicRefresher, ProviderSpec, SkillSpecSink,
+};
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -161,7 +161,7 @@ macro_rules! overlay_registry {
 // preferring base; falls through to discovery only if base does not
 // contain the id.
 overlay_registry!(AgentSpecRegistryWithDiscovery, AgentSpecRegistry, get_agent -> Option<AgentSpec>, agent_ids);
-overlay_registry!(OverlayToolRegistry, ToolRegistry, get_tool -> Option<Arc<dyn awaken_contract::contract::tool::Tool>>, tool_ids);
+overlay_registry!(OverlayToolRegistry, ToolRegistry, get_tool -> Option<Arc<dyn server_contract::contract::tool::Tool>>, tool_ids);
 
 #[derive(Clone)]
 struct DynamicMcpToolRegistry {
@@ -175,7 +175,7 @@ impl DynamicMcpToolRegistry {
 }
 
 impl ToolRegistry for DynamicMcpToolRegistry {
-    fn get_tool(&self, id: &str) -> Option<Arc<dyn awaken_contract::contract::tool::Tool>> {
+    fn get_tool(&self, id: &str) -> Option<Arc<dyn server_contract::contract::tool::Tool>> {
         self.registry.get(id)
     }
 
@@ -662,7 +662,7 @@ impl ConfigRuntimeManager {
     /// 2. `manager.apply().await?` — publish the resulting registry.
     pub async fn apply_seed(
         &self,
-        seed: &awaken_contract::BuiltinSeedSet,
+        seed: &server_contract::BuiltinSeedSet,
     ) -> Result<crate::services::builtin_seed::SeedReport, ConfigRuntimeError> {
         let _guard = self.lock_apply().await;
         let report = crate::services::builtin_seed::apply_builtin_seed(self.store.as_ref(), seed)
@@ -700,28 +700,28 @@ impl ConfigRuntimeManager {
         let specs = providers
             .iter()
             .cloned()
-            .map(awaken_contract::BuiltinSpec::provider)
+            .map(server_contract::BuiltinSpec::provider)
             .chain(
                 models
                     .iter()
                     .cloned()
-                    .map(awaken_contract::BuiltinSpec::model),
+                    .map(server_contract::BuiltinSpec::model),
             )
             .chain(
                 agents
                     .iter()
                     .cloned()
-                    .map(awaken_contract::BuiltinSpec::agent),
+                    .map(server_contract::BuiltinSpec::agent),
             )
             .chain(
                 mcp_servers
                     .iter()
                     .cloned()
-                    .map(awaken_contract::BuiltinSpec::mcp_server),
+                    .map(server_contract::BuiltinSpec::mcp_server),
             )
             .collect();
 
-        let seed = awaken_contract::BuiltinSeedSet {
+        let seed = server_contract::BuiltinSeedSet {
             binary_version: "bootstrap_if_empty".into(),
             specs,
         };
@@ -864,15 +864,15 @@ impl ConfigRuntimeManager {
     /// registered tool a first-class config record (ADR-0029). Dynamic
     /// (MCP-sourced) tools are intentionally excluded — they are governed by
     /// the MCP namespace lifecycle.
-    pub fn snapshot_tool_specs(&self) -> Vec<awaken_contract::BuiltinSpec> {
+    pub fn snapshot_tool_specs(&self) -> Vec<server_contract::BuiltinSpec> {
         let mut out = Vec::new();
         for id in self.tools.tool_ids() {
             let Some(tool) = self.tools.get_tool(&id) else {
                 continue;
             };
             let descriptor = tool.descriptor();
-            out.push(awaken_contract::BuiltinSpec::tool(
-                awaken_contract::ToolSpec {
+            out.push(server_contract::BuiltinSpec::tool(
+                server_contract::ToolSpec {
                     id: descriptor.id,
                     name: descriptor.name,
                     description: descriptor.description,
@@ -1494,7 +1494,7 @@ fn restart_policy_to_connection_policy(policy: &McpRestartPolicy) -> mcp::transp
 
 fn deserialize_namespace<T>(entries: &[(String, Value)]) -> Result<Vec<T>, ConfigRuntimeError>
 where
-    T: serde::de::DeserializeOwned + awaken_contract::ConfigRecordMerge,
+    T: serde::de::DeserializeOwned + server_contract::ConfigRecordMerge,
 {
     let mut out = Vec::with_capacity(entries.len());
     for (_, value) in entries {
@@ -1505,7 +1505,7 @@ where
             continue;
         }
 
-        let record: ConfigRecord<T> = awaken_contract::validate_config_record(value.clone())
+        let record: ConfigRecord<T> = server_contract::validate_config_record(value.clone())
             .map_err(|error| StorageError::Serialization(error.to_string()))
             .map_err(ConfigRuntimeError::Storage)?;
         let effective = crate::services::config_envelope::apply_overrides(
@@ -1632,13 +1632,13 @@ mod tests {
     /// next lookup walks the live registry.
     #[tokio::test]
     async fn registry_factory_cache_invalidates_on_registry_replace() {
-        use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-        use awaken_contract::contract::inference::{StreamResult, TokenUsage};
         use awaken_runtime::registry::RegistrySet;
         use awaken_runtime::registry::memory::{
             MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
             MapToolRegistry,
         };
+        use server_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+        use server_contract::contract::inference::{StreamResult, TokenUsage};
 
         // Two distinct executors so we can tell which one the cache
         // hands back. Mock returns its label in the response text so a
@@ -1654,7 +1654,7 @@ mod tests {
                 _request: InferenceRequest,
             ) -> Result<StreamResult, InferenceExecutionError> {
                 Ok(StreamResult {
-                    content: vec![awaken_contract::contract::content::ContentBlock::text(
+                    content: vec![server_contract::contract::content::ContentBlock::text(
                         self.label.to_string(),
                     )],
                     tool_calls: vec![],
@@ -2294,7 +2294,7 @@ mod tests {
     /// `meta.source` is `RecordSource::Builtin { binary_version }`.
     #[tokio::test]
     async fn apply_seed_writes_builtin_envelope() {
-        use awaken_contract::{
+        use server_contract::{
             BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelSpec, ProviderSpec, RecordSource,
         };
 
@@ -2324,7 +2324,7 @@ mod tests {
         assert_eq!(report.created.len(), 3, "all three specs must be created");
 
         // Verify provider envelope and Builtin source.
-        let raw_p = awaken_contract::contract::config_store::ConfigStore::get(
+        let raw_p = server_contract::contract::config_store::ConfigStore::get(
             store.as_ref(),
             "providers",
             "p1",
@@ -2346,7 +2346,7 @@ mod tests {
         );
 
         // Verify agent envelope.
-        let raw_a = awaken_contract::contract::config_store::ConfigStore::get(
+        let raw_a = server_contract::contract::config_store::ConfigStore::get(
             store.as_ref(),
             "agents",
             "a1",
@@ -2364,7 +2364,7 @@ mod tests {
         );
 
         // Verify model envelope.
-        let raw_m = awaken_contract::contract::config_store::ConfigStore::get(
+        let raw_m = server_contract::contract::config_store::ConfigStore::get(
             store.as_ref(),
             "models",
             "m1",
@@ -2388,13 +2388,13 @@ mod tests {
     /// Mirrors the pattern used by `bootstrap_writes_builtin_envelope`.
     pub(super) async fn make_manager_with_store() -> (
         ConfigRuntimeManager,
-        Arc<dyn awaken_contract::contract::config_store::ConfigStore>,
+        Arc<dyn server_contract::contract::config_store::ConfigStore>,
     ) {
-        use awaken_contract::contract::executor::{
+        use awaken_stores::InMemoryStore;
+        use server_contract::contract::executor::{
             InferenceExecutionError, InferenceRequest, LlmExecutor,
         };
-        use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-        use awaken_stores::InMemoryStore;
+        use server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 
         struct Stub;
         #[async_trait::async_trait]
@@ -2417,7 +2417,7 @@ mod tests {
         }
 
         let store = Arc::new(InMemoryStore::new())
-            as Arc<dyn awaken_contract::contract::config_store::ConfigStore>;
+            as Arc<dyn server_contract::contract::config_store::ConfigStore>;
         let thread_store = Arc::new(InMemoryStore::new());
         let runtime = Arc::new(
             awaken_runtime::builder::AgentRuntimeBuilder::new()
@@ -2536,7 +2536,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_seed_writes_builtin_records_to_store() {
-        use awaken_contract::{
+        use server_contract::{
             BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelSpec, ProviderSpec, RecordSource,
         };
 
@@ -2567,7 +2567,7 @@ mod tests {
         assert!(report.unchanged.is_empty());
 
         // Verify agent record stored with Builtin source and correct version.
-        let raw = awaken_contract::contract::config_store::ConfigStore::get(
+        let raw = server_contract::contract::config_store::ConfigStore::get(
             store.as_ref(),
             "agents",
             "seed-agent",
@@ -2588,7 +2588,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_seed_idempotent() {
-        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
+        use server_contract::{BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 
         let (manager, _store) = make_manager_with_store().await;
 
@@ -2631,7 +2631,7 @@ mod tests {
     /// the lock is actually contended (the task cannot proceed while we hold it).
     #[tokio::test]
     async fn apply_seed_serializes_with_apply_lock() {
-        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, ProviderSpec};
+        use server_contract::{BuiltinSeedSet, BuiltinSpec, ProviderSpec};
         use std::sync::Arc;
 
         let (manager, _store) = make_manager_with_store().await;
@@ -2678,27 +2678,27 @@ mod tests {
     /// discovery-only ids that are never seeded still resolve via the overlay.
     #[tokio::test]
     async fn discovered_agent_overlays_seeded_agent_with_same_id() {
-        use awaken_contract::registry_spec::RemoteEndpoint;
-        use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
+        use server_contract::registry_spec::RemoteEndpoint;
+        use server_contract::{BuiltinSeedSet, BuiltinSpec};
 
         // Build the runtime with a pre-registered agent "shared" that has an
         // endpoint (so DiscoveredAgentRegistry picks it up) and a distinct
         // remote-only agent "remote-only" also with an endpoint.
         struct Stub;
         #[async_trait::async_trait]
-        impl awaken_contract::contract::executor::LlmExecutor for Stub {
+        impl server_contract::contract::executor::LlmExecutor for Stub {
             async fn execute(
                 &self,
-                _: awaken_contract::contract::executor::InferenceRequest,
+                _: server_contract::contract::executor::InferenceRequest,
             ) -> Result<
-                awaken_contract::contract::inference::StreamResult,
-                awaken_contract::contract::executor::InferenceExecutionError,
+                server_contract::contract::inference::StreamResult,
+                server_contract::contract::executor::InferenceExecutionError,
             > {
-                Ok(awaken_contract::contract::inference::StreamResult {
+                Ok(server_contract::contract::inference::StreamResult {
                     content: vec![],
                     tool_calls: vec![],
-                    usage: Some(awaken_contract::contract::inference::TokenUsage::default()),
-                    stop_reason: Some(awaken_contract::contract::inference::StopReason::EndTurn),
+                    usage: Some(server_contract::contract::inference::TokenUsage::default()),
+                    stop_reason: Some(server_contract::contract::inference::StopReason::EndTurn),
                     has_incomplete_tool_calls: false,
                 })
             }
@@ -2708,7 +2708,7 @@ mod tests {
         }
 
         let store = Arc::new(awaken_stores::InMemoryStore::new())
-            as Arc<dyn awaken_contract::contract::config_store::ConfigStore>;
+            as Arc<dyn server_contract::contract::config_store::ConfigStore>;
         let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
 
         // Register a "shared" agent with an endpoint (will be captured as discovered)
@@ -2753,7 +2753,7 @@ mod tests {
             fn build(
                 &self,
                 _spec: &ProviderSpec,
-            ) -> Result<Arc<dyn awaken_contract::contract::executor::LlmExecutor>, ConfigRuntimeError>
+            ) -> Result<Arc<dyn server_contract::contract::executor::LlmExecutor>, ConfigRuntimeError>
             {
                 Ok(Arc::new(Stub))
             }
@@ -2768,12 +2768,12 @@ mod tests {
         let seed = BuiltinSeedSet {
             binary_version: "overlay-test".to_owned(),
             specs: vec![
-                BuiltinSpec::Provider(awaken_contract::ProviderSpec {
+                BuiltinSpec::Provider(server_contract::ProviderSpec {
                     id: "boot-prov".into(),
                     adapter: "stub".into(),
                     ..Default::default()
                 }),
-                BuiltinSpec::Model(awaken_contract::ModelSpec::new(
+                BuiltinSpec::Model(server_contract::ModelSpec::new(
                     "boot-model",
                     "boot-prov",
                     "gpt-4o",
@@ -2831,7 +2831,7 @@ mod tests {
         binary_version: &str,
         user_overrides: Option<serde_json::Value>,
     ) -> serde_json::Value {
-        use awaken_contract::{ConfigRecord, RecordMeta};
+        use server_contract::{ConfigRecord, RecordMeta};
         let mut meta = RecordMeta::new_builtin(binary_version);
         meta.user_overrides = user_overrides;
         let record = ConfigRecord {
@@ -2843,7 +2843,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_overrides_merges_at_read() {
-        use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
+        use server_contract::{BuiltinSeedSet, BuiltinSpec};
 
         let (manager, store) = make_manager_with_store().await;
 
@@ -2904,7 +2904,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_candidate_validation_does_not_commit_provider_executor_cache() {
-        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, ConfigRecord, RecordMeta};
+        use server_contract::{BuiltinSeedSet, BuiltinSpec, ConfigRecord, RecordMeta};
 
         let (manager, store) = make_manager_with_store().await;
 
@@ -2990,7 +2990,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_overrides_no_user_overrides_uses_base() {
-        use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
+        use server_contract::{BuiltinSeedSet, BuiltinSpec};
 
         let (manager, store) = make_manager_with_store().await;
 
@@ -3016,8 +3016,8 @@ mod tests {
 
         // Ensure the record has no overrides (seed already writes None).
         let raw = store.get("agents", "y").await.unwrap().unwrap();
-        let rec: awaken_contract::ConfigRecord<serde_json::Value> =
-            awaken_contract::ConfigRecord::from_value(raw).unwrap();
+        let rec: server_contract::ConfigRecord<serde_json::Value> =
+            server_contract::ConfigRecord::from_value(raw).unwrap();
         assert!(rec.meta.user_overrides.is_none());
 
         manager.apply().await.expect("apply must succeed");
@@ -3040,8 +3040,8 @@ mod tests {
         // At read time, user_overrides is applied regardless of source.
         // The semantic guard (only Builtin records should have overrides set)
         // is enforced at the write path, not at read time.
-        use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
-        use awaken_contract::{ConfigRecord, RecordMeta};
+        use server_contract::{BuiltinSeedSet, BuiltinSpec};
+        use server_contract::{ConfigRecord, RecordMeta};
 
         let (manager, store) = make_manager_with_store().await;
 
@@ -3099,7 +3099,7 @@ mod tests {
 
     #[tokio::test]
     async fn version_upgrade_preserves_user_overrides() {
-        use awaken_contract::{BuiltinSeedSet, BuiltinSpec};
+        use server_contract::{BuiltinSeedSet, BuiltinSpec};
 
         let (manager, store) = make_manager_with_store().await;
 
@@ -3126,8 +3126,8 @@ mod tests {
 
         // Manually set user_overrides on the stored record.
         let raw = store.get("agents", "a").await.unwrap().unwrap();
-        let mut rec: awaken_contract::ConfigRecord<serde_json::Value> =
-            awaken_contract::ConfigRecord::from_value(raw).unwrap();
+        let mut rec: server_contract::ConfigRecord<serde_json::Value> =
+            server_contract::ConfigRecord::from_value(raw).unwrap();
         rec.meta.user_overrides = Some(json!({"system_prompt": "user-prompt"}));
         store
             .put("agents", "a", &rec.to_value().unwrap())
@@ -3157,11 +3157,11 @@ mod tests {
 
         // Assert store record: binary_version = v2, user_overrides preserved.
         let raw = store.get("agents", "a").await.unwrap().unwrap();
-        let stored: awaken_contract::ConfigRecord<serde_json::Value> =
-            awaken_contract::ConfigRecord::from_value(raw).unwrap();
+        let stored: server_contract::ConfigRecord<serde_json::Value> =
+            server_contract::ConfigRecord::from_value(raw).unwrap();
         assert_eq!(
             stored.meta.source,
-            awaken_contract::RecordSource::Builtin {
+            server_contract::RecordSource::Builtin {
                 binary_version: "v2".to_owned()
             },
             "binary_version must be updated to v2"
@@ -3208,18 +3208,18 @@ mod tests {
     ) -> (
         Arc<ConfigRuntimeManager>,
         Arc<awaken_runtime::AgentRuntime>,
-        Arc<dyn awaken_contract::contract::config_store::ConfigStore>,
+        Arc<dyn server_contract::contract::config_store::ConfigStore>,
     ) {
-        use awaken_contract::contract::executor::{
-            InferenceExecutionError, InferenceRequest, LlmExecutor,
-        };
-        use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-        use awaken_contract::contract::tool::{
-            Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
-        };
-        use awaken_contract::{BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec, ToolSpec};
         use awaken_stores::InMemoryStore;
         use serde_json::json;
+        use server_contract::contract::executor::{
+            InferenceExecutionError, InferenceRequest, LlmExecutor,
+        };
+        use server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+        use server_contract::contract::tool::{
+            Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+        };
+        use server_contract::{BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec, ToolSpec};
 
         struct Stub;
         #[async_trait::async_trait]
@@ -3264,14 +3264,14 @@ mod tests {
             fn build(
                 &self,
                 _spec: &ProviderSpec,
-            ) -> Result<Arc<dyn awaken_contract::contract::executor::LlmExecutor>, ConfigRuntimeError>
+            ) -> Result<Arc<dyn server_contract::contract::executor::LlmExecutor>, ConfigRuntimeError>
             {
                 Ok(Arc::new(Stub))
             }
         }
 
         let store = Arc::new(InMemoryStore::new())
-            as Arc<dyn awaken_contract::contract::config_store::ConfigStore>;
+            as Arc<dyn server_contract::contract::config_store::ConfigStore>;
         let thread_store = Arc::new(InMemoryStore::new());
 
         let runtime = Arc::new(
@@ -3350,7 +3350,7 @@ mod tests {
                 "updated_at": 2
             }
         });
-        awaken_contract::contract::config_store::ConfigStore::put(
+        server_contract::contract::config_store::ConfigStore::put(
             store.as_ref(),
             "tools",
             "echo",
@@ -3378,7 +3378,7 @@ mod tests {
         let specs = manager.snapshot_tool_specs();
         assert_eq!(specs.len(), 1);
         match &specs[0] {
-            awaken_contract::BuiltinSpec::Tool(t) => {
+            server_contract::BuiltinSpec::Tool(t) => {
                 assert_eq!(t.id, "echo");
                 assert_eq!(t.description, "stock description");
             }

@@ -1,6 +1,6 @@
 //! Recover hot metadata from committed WAL entries after partial writer failure.
 
-use awaken_contract::contract::storage::{StorageError, ThreadRunStore};
+use awaken_server_contract::contract::storage::{StorageError, ThreadRunStore};
 
 use super::{NatsBufferedThreadStore, entry, hot_meta, wal_state};
 

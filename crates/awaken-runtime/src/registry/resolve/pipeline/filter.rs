@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_contract::contract::tool::Tool;
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_runtime_contract::contract::tool::Tool;
+use awaken_runtime_contract::registry_spec::AgentSpec;
 
 /// Apply allow/exclude filtering to a mutable tool map.
 ///

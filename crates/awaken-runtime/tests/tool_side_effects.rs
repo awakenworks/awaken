@@ -9,18 +9,20 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use awaken_contract::StateError;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::contract::event_sink::VecEventSink;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-use awaken_contract::contract::inference::{StopReason, StreamResult};
-use awaken_contract::contract::message::{Message, ToolCall};
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::contract::event_sink::VecEventSink;
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult};
+use awaken_runtime_contract::contract::message::{Message, ToolCall};
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::state::{MergeStrategy, StateKey, StateKeyOptions};
+use awaken_runtime_contract::state::{MergeStrategy, StateKey, StateKeyOptions};
 
 use awaken_runtime::RuntimeError;
 use awaken_runtime::agent::state::{AddContextMessage, ContextMessageStore};

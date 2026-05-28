@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::time::Instant;
 
-use awaken_contract::contract::inference::TokenUsage;
+use awaken_runtime_contract::contract::inference::TokenUsage;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 

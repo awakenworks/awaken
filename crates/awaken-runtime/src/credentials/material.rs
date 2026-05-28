@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use awaken_contract::secret::RedactedString;
+use awaken_runtime_contract::secret::RedactedString;
 use serde::Deserialize;
 use serde_json::Value;
 

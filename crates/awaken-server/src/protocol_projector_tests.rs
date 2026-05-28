@@ -2,16 +2,16 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::*;
 use async_trait::async_trait;
-use awaken_contract::contract::durable_event_sink::{
+use awaken_server_contract::contract::durable_event_sink::{
     AgentEventNormalizationContext, AgentEventNormalizer, ScopedAgentEventNormalizer,
 };
-use awaken_contract::contract::event_store::{AppendOptions, EventScope, EventWriter};
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::event_store::{AppendOptions, EventScope, EventWriter};
+use awaken_server_contract::contract::lifecycle::TerminationReason;
+use awaken_server_contract::contract::outbox::{
     OUTBOX_LANE_CANONICAL, OUTBOX_TARGET_PROTOCOL_PROJECTOR, OutboxMessage, OutboxMessageDraft,
     OutboxStatus, OutboxStore,
 };
-use awaken_contract::contract::protocol_replay_log::{
+use awaken_server_contract::contract::protocol_replay_log::{
     ProtocolReplayAppendResult, ProtocolReplayReader, ProtocolReplayWriter, ProtocolStreamKey,
 };
 use awaken_stores::{InMemoryEventStore, InMemoryOutboxStore, InMemoryProtocolReplayLog};
@@ -329,9 +329,10 @@ async fn ai_sdk_projector_isolates_encoder_state_by_thread_stream() {
 #[tokio::test]
 async fn ai_sdk_projector_skips_non_runtime_domain_events() {
     let event_store = InMemoryEventStore::new();
-    let draft = awaken_contract::contract::event_store::CanonicalEventDraft::new(
+    let draft = awaken_server_contract::contract::event_store::CanonicalEventDraft::new(
         vec![EventScope::thread("thread-proto")],
-        awaken_contract::contract::event_store::CanonicalEventKind::new("RunQueued").unwrap(),
+        awaken_server_contract::contract::event_store::CanonicalEventKind::new("RunQueued")
+            .unwrap(),
         serde_json::json!({ "dispatch_id": "dispatch-1" }),
         "test",
     )

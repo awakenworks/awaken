@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
-use awaken_contract::validate_unique_model_ids;
+use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::registry_spec::{AgentSpec, ModelSpec};
+use awaken_runtime_contract::validate_unique_model_ids;
 use serde::Serialize;
 
 #[cfg(feature = "a2a")]
@@ -78,7 +78,7 @@ pub enum RegistryUpdateError {
     #[error("{0}")]
     Validation(#[from] RegistryValidationError),
     #[error("config validation failed: {0}")]
-    ConfigValidation(#[from] awaken_contract::ConfigValidationError),
+    ConfigValidation(#[from] awaken_runtime_contract::ConfigValidationError),
 }
 
 pub struct RuntimeRegistryUpdate {
@@ -405,8 +405,8 @@ fn agents_using_models_from_set(registries: &RegistrySet, model_ids: &[String]) 
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+    use awaken_runtime_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+    use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 
     struct StubExecutor;
 

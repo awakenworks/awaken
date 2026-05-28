@@ -1,7 +1,7 @@
 //! McpPlugin: integrates MCP tool registry with awaken's Plugin system.
 
-use awaken_contract::StateError;
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use awaken_runtime_contract::StateError;
 
 use crate::manager::McpToolRegistry;
 

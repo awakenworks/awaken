@@ -11,13 +11,13 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::inference::{
+use awaken_runtime::{PhaseContext, PhaseHook};
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::inference::{
     InferenceError, LLMResponse, StopReason, StreamResult, TokenUsage,
 };
-use awaken_contract::model::Phase;
-use awaken_contract::state::{Snapshot, StateMap};
-use awaken_runtime::{PhaseContext, PhaseHook};
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::state::{Snapshot, StateMap};
 
 use crate::InMemorySink;
 use crate::plugin::{AfterInferenceHook, BeforeInferenceHook, ObservabilityPlugin};

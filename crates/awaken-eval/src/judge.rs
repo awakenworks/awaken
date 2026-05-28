@@ -5,7 +5,7 @@
 //! * [`TensorZeroJudge`] — talks to a TensorZero gateway over the OpenAI-
 //!   compatible chat endpoint. Useful when a separate grading function is
 //!   already deployed there.
-//! * [`LlmExecutorJudge`] — wraps any [`awaken_contract::contract::executor::LlmExecutor`]
+//! * [`LlmExecutorJudge`] — wraps any [`awaken_runtime_contract::contract::executor::LlmExecutor`]
 //!   so server runs can grade with the same registered `ModelSpec` entries they
 //!   already use for replay.
 //!
@@ -18,9 +18,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use thiserror::Error;
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{InferenceRequest, LlmExecutor};
-use awaken_contract::contract::message::Message;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::executor::{InferenceRequest, LlmExecutor};
+use awaken_runtime_contract::contract::message::Message;
 
 use crate::expectation::{Expectation, Failure};
 use crate::outcome::ReplayOutcome;
@@ -270,7 +270,7 @@ impl Judge for TensorZeroJudge {
 }
 
 /// [`Judge`] implementation backed by an arbitrary
-/// [`awaken_contract::contract::executor::LlmExecutor`]. Lets the server
+/// [`awaken_runtime_contract::contract::executor::LlmExecutor`]. Lets the server
 /// reuse the same registered `ModelSpec` entries (and their cost tracking) for
 /// grading that it already uses for replay — no separate gateway needed.
 #[derive(Clone)]

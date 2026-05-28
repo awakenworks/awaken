@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use awaken_contract::contract::executor::InferenceExecutionError;
+use awaken_runtime_contract::contract::executor::InferenceExecutionError;
 use reqwest::StatusCode;
 
 use super::executor::GenaiExecutor;

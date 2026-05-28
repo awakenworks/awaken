@@ -1,7 +1,7 @@
 //! Artifact and tool-result compaction: shrink oversized content blocks to previews.
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::message::{Message, Role};
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::message::{Message, Role};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for compacting oversized tool-result artifacts.
@@ -156,7 +156,7 @@ pub fn compact_tool_results_with_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::message::ToolCall;
+    use awaken_runtime_contract::contract::message::ToolCall;
     use serde_json::json;
 
     #[test]

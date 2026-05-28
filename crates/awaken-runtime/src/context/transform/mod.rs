@@ -9,10 +9,10 @@ pub use compaction::{
 };
 pub use truncation::{adjust_split_for_tool_pairs, find_split_point};
 
-use awaken_contract::contract::inference::ContextWindowPolicy;
-use awaken_contract::contract::message::{Message, Role};
-use awaken_contract::contract::tool::ToolDescriptor;
-use awaken_contract::contract::transform::{
+use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
+use awaken_runtime_contract::contract::message::{Message, Role};
+use awaken_runtime_contract::contract::tool::ToolDescriptor;
+use awaken_runtime_contract::contract::transform::{
     InferenceRequestTransform, TransformOutput, estimate_message_tokens, estimate_tokens,
     estimate_tool_tokens, patch_dangling_tool_calls,
 };
@@ -99,8 +99,8 @@ impl InferenceRequestTransform for ContextTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::inference::ContextWindowPolicy;
-    use awaken_contract::contract::message::ToolCall;
+    use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
+    use awaken_runtime_contract::contract::message::ToolCall;
     use serde_json::json;
 
     fn make_policy(max_tokens: usize, min_recent: usize) -> ContextWindowPolicy {
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn truncation_with_tool_descriptors_reduces_budget() {
-        use awaken_contract::contract::tool::ToolDescriptor;
+        use awaken_runtime_contract::contract::tool::ToolDescriptor;
 
         let transform = ContextTransform::new(make_policy(100, 2));
         let messages = vec![

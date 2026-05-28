@@ -21,14 +21,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::commit_coordinator::{
+use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     MessageWriteMode, TransactionScopeId,
 };
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::message::PendingMessageRecord;
-use awaken_contract::contract::storage::{RunRecord, ThreadRunStore};
-use awaken_contract::thread::Thread;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::message::PendingMessageRecord;
+use awaken_server_contract::contract::storage::{RunRecord, ThreadRunStore};
+use awaken_server_contract::thread::Thread;
 use tokio::sync::Mutex;
 
 use crate::commit_batch::run_commit_batch;
@@ -126,8 +126,11 @@ impl CommitCoordinator for MemoryCommitCoordinator {
         self.scope.clone()
     }
 
-    fn thread_run_store(&self) -> Arc<dyn awaken_contract::contract::storage::ThreadRunStore> {
-        Arc::clone(&self.thread_run) as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>
+    fn thread_run_store(
+        &self,
+    ) -> Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore> {
+        Arc::clone(&self.thread_run)
+            as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>
     }
 
     async fn commit_checkpoint(
@@ -188,13 +191,13 @@ impl CommitCoordinator for MemoryCommitCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::commit_coordinator::StagedCanonicalEvent;
-    use awaken_contract::contract::event_store::{
+    use awaken_server_contract::contract::commit_coordinator::StagedCanonicalEvent;
+    use awaken_server_contract::contract::event_store::{
         AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope,
         EventVisibility, EventWriter,
     };
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::{RunRecord, ThreadStore};
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::storage::{RunRecord, ThreadStore};
     use serde_json::json;
 
     fn run_record(thread_id: &str, run_id: &str) -> RunRecord {
@@ -273,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_append_plan_advances_committed_messages() {
-        use awaken_contract::contract::message::Message;
+        use awaken_server_contract::contract::message::Message;
         let (coord, thread_run, _events, _outbox) = build_coordinator();
 
         let plan = CheckpointCommitPlan::append(
@@ -298,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_append_plan_stale_version_yields_message_conflict() {
-        use awaken_contract::contract::message::Message;
+        use awaken_server_contract::contract::message::Message;
         let (coord, thread_run, _events, _outbox) = build_coordinator();
 
         let plan = CheckpointCommitPlan::append(

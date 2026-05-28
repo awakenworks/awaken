@@ -23,12 +23,12 @@ use std::sync::Arc;
 
 use async_nats::jetstream::{consumer, kv, stream};
 use async_trait::async_trait;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessagePage, MessageQuery, RunPage, RunQuery, RunRecord, RunStore,
     StorageError, ThreadPage, ThreadQuery, ThreadRunStore, ThreadStore,
 };
-use awaken_contract::thread::{Thread, ThreadMetadata};
+use awaken_server_contract::thread::{Thread, ThreadMetadata};
 
 #[derive(Debug, Clone, Default)]
 struct HierarchyMutationTestHooks {
@@ -780,7 +780,7 @@ impl<T: ThreadRunStore + Send + Sync + 'static> ThreadStore for NatsBufferedThre
         let Some(records) = self.load_message_records(thread_id).await? else {
             return Ok(MessagePage::empty());
         };
-        Ok(awaken_contract::contract::storage::paginate_message_records(records, query))
+        Ok(awaken_server_contract::contract::storage::paginate_message_records(records, query))
     }
     async fn save_messages(
         &self,

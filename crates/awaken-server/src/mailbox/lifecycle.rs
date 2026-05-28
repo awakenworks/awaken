@@ -4,13 +4,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunQuery, RunRecord, StorageError};
-use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
-use awaken_contract::now_ms;
 use awaken_runtime::RunActivation;
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{RunQuery, RunRecord, StorageError};
+use awaken_server_contract::contract::tool_intercept::{AdapterKind, RunMode};
+use awaken_server_contract::now_ms;
 
 use super::{
     Mailbox, MailboxError, MailboxLifecycleConfig, MailboxLifecycleHandle, MailboxLifecycleTasks,
@@ -327,7 +327,7 @@ impl Mailbox {
             )
             .with_agent_id(run.agent_id.clone())
             .with_continue_run_id(run.run_id.clone())
-            .with_origin(awaken_contract::contract::storage::RunRequestOrigin::Internal)
+            .with_origin(awaken_server_contract::contract::storage::RunRequestOrigin::Internal)
             .with_run_mode(RunMode::InternalWake)
             .with_adapter(AdapterKind::Internal);
             self.submit_background(request).await?;

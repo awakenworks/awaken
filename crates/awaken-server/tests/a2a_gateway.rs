@@ -5,19 +5,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::ModelSpec;
-use awaken_contract::contract::event_sink::NullEventSink;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::message::ToolCall;
-use awaken_contract::contract::message::{Message, Role};
-use awaken_contract::contract::storage::{
-    RunRecord, RunStore, ThreadRunStore, ThreadStore, WaitingReason,
-};
-use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
-use awaken_contract::state::PersistedState;
 use awaken_protocol_a2a::{
     Artifact, Message as A2aMessage, MessageRole, Part, SendMessageRequest, SendMessageResponse,
     Task, TaskState, TaskStatus,
@@ -27,6 +14,21 @@ use awaken_runtime::extensions::a2a::A2aBackendFactory;
 use awaken_runtime::{AgentRuntime, BackendAbortRequest, ExecutionBackendFactory, RunActivation};
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
+use awaken_server_contract::ModelSpec;
+use awaken_server_contract::contract::event_sink::NullEventSink;
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::identity::{RunIdentity, RunOrigin};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::message::ToolCall;
+use awaken_server_contract::contract::message::{Message, Role};
+use awaken_server_contract::contract::storage::{
+    RunRecord, RunStore, ThreadRunStore, ThreadStore, WaitingReason,
+};
+use awaken_server_contract::registry_spec::{AgentSpec, RemoteEndpoint};
+use awaken_server_contract::state::PersistedState;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::extract::{Path, State};
@@ -94,9 +96,11 @@ impl LlmExecutor for DelegatingExecutor {
             })
         } else {
             Ok(StreamResult {
-                content: vec![awaken_contract::contract::content::ContentBlock::text(
-                    "delegation complete",
-                )],
+                content: vec![
+                    awaken_server_contract::contract::content::ContentBlock::text(
+                        "delegation complete",
+                    ),
+                ],
                 tool_calls: vec![],
                 usage: Some(TokenUsage::default()),
                 stop_reason: Some(StopReason::EndTurn),

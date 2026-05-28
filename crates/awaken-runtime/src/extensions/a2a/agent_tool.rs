@@ -11,12 +11,12 @@ use crate::backend::{
 };
 use crate::registry::{AgentResolver, ResolvedBackendAgent};
 use crate::resolution::ExecutionPlan;
-use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
-use awaken_contract::contract::progress::ProgressStatus;
-use awaken_contract::contract::suspension::{
+use awaken_runtime_contract::contract::event_sink::{EventSink, NullEventSink};
+use awaken_runtime_contract::contract::progress::ProgressStatus;
+use awaken_runtime_contract::contract::suspension::{
     PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode,
 };
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
 };
 
@@ -142,7 +142,9 @@ impl Tool for AgentTool {
         }
 
         let tool_id = format!("agent_run_{}", self.agent_id);
-        let messages = vec![awaken_contract::contract::message::Message::user(&prompt)];
+        let messages = vec![awaken_runtime_contract::contract::message::Message::user(
+            &prompt,
+        )];
 
         ctx.report_progress(
             ProgressStatus::Running,
@@ -364,7 +366,7 @@ struct FixedAgentResolver {
 
 impl FixedAgentResolver {
     fn non_local(agent_id: &str, description: &str, backend: Arc<dyn ExecutionBackend>) -> Self {
-        let spec = Arc::new(awaken_contract::registry_spec::AgentSpec {
+        let spec = Arc::new(awaken_runtime_contract::registry_spec::AgentSpec {
             id: agent_id.to_string(),
             model_id: String::new(),
             system_prompt: description.to_string(),

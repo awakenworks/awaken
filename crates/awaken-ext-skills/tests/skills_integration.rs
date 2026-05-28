@@ -7,8 +7,6 @@
 use std::fs;
 use std::sync::Arc;
 
-use awaken_contract::contract::tool::{Tool, ToolCallContext};
-use awaken_contract::state::StateKey;
 use awaken_ext_skills::registry::{InMemorySkillRegistry, SkillRegistry};
 use awaken_ext_skills::skill::{Skill, SkillResourceKind};
 use awaken_ext_skills::state::{SkillState, SkillStateUpdate, SkillStateValue};
@@ -16,6 +14,8 @@ use awaken_ext_skills::{
     EmbeddedSkill, EmbeddedSkillData, FsSkill, LoadSkillResourceTool, SkillActivateTool,
     SkillScriptTool, SkillSubsystem,
 };
+use awaken_runtime_contract::contract::tool::{Tool, ToolCallContext};
+use awaken_runtime_contract::state::StateKey;
 use serde_json::json;
 use tempfile::TempDir;
 

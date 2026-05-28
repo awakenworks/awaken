@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use awaken_contract::AuditAction;
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::contract::storage::StorageError;
-use awaken_contract::{
+use awaken_server_contract::AuditAction;
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::contract::storage::StorageError;
+use awaken_server_contract::{
     AgentSpec, ConfigRecord, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec, SkillSpec,
     ToolSpec,
 };
@@ -388,14 +388,14 @@ impl ConfigService {
         &self,
         namespace: ConfigNamespace,
         id: &str,
-    ) -> Result<Option<awaken_contract::RecordMeta>, ConfigServiceError> {
+    ) -> Result<Option<awaken_server_contract::RecordMeta>, ConfigServiceError> {
         let value = self.store.get(namespace.as_str(), id).await?;
         let Some(value) = value else {
             return Ok(None);
         };
         // For legacy records the envelope may not have been written yet
         // (legacy bare-spec). ConfigRecord::from_value handles both shapes.
-        let meta = awaken_contract::ConfigRecord::<Value>::from_value(value)
+        let meta = awaken_server_contract::ConfigRecord::<Value>::from_value(value)
             .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
             .meta;
         Ok(Some(meta))
@@ -404,12 +404,12 @@ impl ConfigService {
     pub(crate) async fn get_tool_meta(
         &self,
         id: &str,
-    ) -> Result<Option<awaken_contract::RecordMeta>, ConfigServiceError> {
+    ) -> Result<Option<awaken_server_contract::RecordMeta>, ConfigServiceError> {
         let value = self.store.get(TOOLS_NAMESPACE, id).await?;
         let Some(value) = value else {
             return Ok(None);
         };
-        let meta = awaken_contract::ConfigRecord::<Value>::from_value(value)
+        let meta = awaken_server_contract::ConfigRecord::<Value>::from_value(value)
             .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
             .meta;
         Ok(Some(meta))
@@ -422,11 +422,11 @@ impl ConfigService {
         namespace: ConfigNamespace,
         offset: usize,
         limit: usize,
-    ) -> Result<Vec<(String, awaken_contract::RecordMeta)>, ConfigServiceError> {
+    ) -> Result<Vec<(String, awaken_server_contract::RecordMeta)>, ConfigServiceError> {
         let values = self.store.list(namespace.as_str(), offset, limit).await?;
         let mut out = Vec::with_capacity(values.len());
         for (id, value) in values {
-            let meta = awaken_contract::ConfigRecord::<Value>::from_value(value)
+            let meta = awaken_server_contract::ConfigRecord::<Value>::from_value(value)
                 .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
                 .meta;
             out.push((id, meta));
@@ -438,11 +438,11 @@ impl ConfigService {
         &self,
         offset: usize,
         limit: usize,
-    ) -> Result<Vec<(String, awaken_contract::RecordMeta)>, ConfigServiceError> {
+    ) -> Result<Vec<(String, awaken_server_contract::RecordMeta)>, ConfigServiceError> {
         let values = self.store.list(TOOLS_NAMESPACE, offset, limit).await?;
         let mut out = Vec::with_capacity(values.len());
         for (id, value) in values {
-            let meta = awaken_contract::ConfigRecord::<Value>::from_value(value)
+            let meta = awaken_server_contract::ConfigRecord::<Value>::from_value(value)
                 .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?
                 .meta;
             out.push((id, meta));

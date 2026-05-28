@@ -9,11 +9,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
-use awaken_contract::thread::{Thread, ThreadMetadata};
+use awaken_server_contract::thread::{Thread, ThreadMetadata};
 use awaken_stores::InMemoryStore;
 
 mod support;

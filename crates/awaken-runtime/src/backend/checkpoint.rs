@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
-use awaken_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitError};
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{Message, Role};
-use awaken_contract::contract::storage::{
+use awaken_runtime_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitError};
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_runtime_contract::contract::message::{Message, Role};
+use awaken_runtime_contract::contract::storage::{
     MessageSeqRange, RunMessageInput, RunMessageOutput, RunOutcome, RunRecord, RunWaitingState,
     ThreadRunStore, WaitingReason,
 };
-use awaken_contract::now_ms;
-use awaken_contract::state::PersistedState;
+use awaken_runtime_contract::now_ms;
+use awaken_runtime_contract::state::PersistedState;
 use serde_json::Value;
 
 use crate::loop_runner::AgentLoopError;
@@ -303,8 +303,8 @@ fn is_remote_run_output_message(message: &Message) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::identity::RunOrigin;
-    use awaken_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
+    use awaken_runtime_contract::contract::identity::RunOrigin;
+    use awaken_runtime_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
     use awaken_stores::{InMemoryStore, MemoryCommitCoordinator};
     use std::sync::Arc;
 

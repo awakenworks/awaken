@@ -16,11 +16,11 @@
 
 use std::collections::HashSet;
 
-use awaken_contract::AgentSpec;
 use awaken_ext_permission::{
     ArgMatcher, PermissionConfigKey, PermissionRule, PermissionRulesConfig, PermissionRuleset,
     PermissionSubject, ToolCallPattern, ToolMatcher, ToolPermissionBehavior,
 };
+use awaken_server_contract::AgentSpec;
 use serde::Serialize;
 
 use crate::app::ConfigRoutesState;

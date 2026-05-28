@@ -38,12 +38,12 @@ pub use config::NatsMailboxConfig;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::mailbox::{
+use awaken_server_contract::contract::mailbox::{
     DispatchSignalEntry, DispatchSignalReceipt, LiveCommandReceipt, LiveDeliveryOutcome,
     LiveRunCommand, LiveRunCommandEntry, LiveRunCommandStream, LiveRunTarget, MailboxInterrupt,
     MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::storage::StorageError;
 use bytes::Bytes;
 use futures::StreamExt;
 

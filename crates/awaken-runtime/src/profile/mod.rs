@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_contract::contract::profile_store::{
+use awaken_runtime_contract::contract::profile_store::{
     ProfileEntry, ProfileKey, ProfileOwner, ProfileStore,
 };
-use awaken_contract::contract::storage::StorageError;
+use awaken_runtime_contract::contract::storage::StorageError;
 
 /// Registry of valid profile key names, built from plugin registrations.
 pub struct ProfileKeyRegistry {

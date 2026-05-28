@@ -5,16 +5,18 @@ use crate::hooks::PhaseContext;
 use crate::phase::ExecutionEnv;
 use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use crate::state::StateStore;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::VecEventSink;
-use awaken_contract::contract::message::{Message, Role};
-use awaken_contract::contract::suspension::{SuspendTicket, ToolCallOutcome, ToolCallStatus};
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::VecEventSink;
+use awaken_runtime_contract::contract::message::{Message, Role};
+use awaken_runtime_contract::contract::suspension::{
+    SuspendTicket, ToolCallOutcome, ToolCallStatus,
+};
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::model::{
+use awaken_runtime_contract::model::{
     PendingScheduledActions, Phase, ScheduledAction, ScheduledActionEnvelope,
     ScheduledActionQueueUpdate, ScheduledActionSpec,
 };
@@ -345,8 +347,8 @@ async fn throttle_bypassed_on_content_change() {
 #[test]
 fn tracing_does_not_panic_without_subscriber() {
     use crate::context::ContextTransform;
-    use awaken_contract::contract::inference::ContextWindowPolicy;
-    use awaken_contract::contract::transform::InferenceRequestTransform;
+    use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
+    use awaken_runtime_contract::contract::transform::InferenceRequestTransform;
 
     // Exercise ContextTransform truncation path (emits tracing::debug!)
     let policy = ContextWindowPolicy {
@@ -611,12 +613,12 @@ fn exclude_nonexistent_tool_is_harmless() {
 
 #[test]
 fn inference_override_state_merges_correctly() {
-    let ovr1 = awaken_contract::contract::inference::InferenceOverride {
+    let ovr1 = awaken_runtime_contract::contract::inference::InferenceOverride {
         upstream_model: Some("gpt-4".into()),
         temperature: Some(0.7),
         ..Default::default()
     };
-    let ovr2 = awaken_contract::contract::inference::InferenceOverride {
+    let ovr2 = awaken_runtime_contract::contract::inference::InferenceOverride {
         temperature: Some(0.9),
         max_tokens: Some(1000),
         ..Default::default()
@@ -638,7 +640,7 @@ fn inference_override_state_clear_resets() {
     InferenceOverrideState::apply(
         &mut val,
         InferenceOverrideStateAction::Merge(
-            awaken_contract::contract::inference::InferenceOverride {
+            awaken_runtime_contract::contract::inference::InferenceOverride {
                 upstream_model: Some("gpt-4".into()),
                 ..Default::default()
             },
@@ -650,12 +652,12 @@ fn inference_override_state_clear_resets() {
 
 #[test]
 fn inference_override_merge_helper_works() {
-    let ovr1 = awaken_contract::contract::inference::InferenceOverride {
+    let ovr1 = awaken_runtime_contract::contract::inference::InferenceOverride {
         upstream_model: Some("gpt-4".into()),
         temperature: Some(0.7),
         ..Default::default()
     };
-    let ovr2 = awaken_contract::contract::inference::InferenceOverride {
+    let ovr2 = awaken_runtime_contract::contract::inference::InferenceOverride {
         temperature: Some(0.9),
         max_tokens: Some(1000),
         ..Default::default()
@@ -675,10 +677,10 @@ fn inference_override_merge_helper_works() {
 
 #[test]
 fn intercept_block_wins_over_suspend() {
-    use awaken_contract::contract::suspension::{
+    use awaken_runtime_contract::contract::suspension::{
         PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode,
     };
-    use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+    use awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload;
 
     let payloads = vec![
         ToolInterceptPayload::Suspend(SuspendTicket {
@@ -696,8 +698,8 @@ fn intercept_block_wins_over_suspend() {
 
 #[test]
 fn intercept_same_priority_keeps_first() {
-    use awaken_contract::contract::tool::ToolResult;
-    use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+    use awaken_runtime_contract::contract::tool::ToolResult;
+    use awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload;
 
     let payloads = vec![
         ToolInterceptPayload::SetResult(ToolResult::success("first", serde_json::json!({}))),
@@ -720,13 +722,13 @@ fn intercept_empty_returns_none() {
 struct DummyLlm;
 
 #[async_trait::async_trait]
-impl awaken_contract::contract::executor::LlmExecutor for DummyLlm {
+impl awaken_runtime_contract::contract::executor::LlmExecutor for DummyLlm {
     async fn execute(
         &self,
-        _request: awaken_contract::contract::executor::InferenceRequest,
+        _request: awaken_runtime_contract::contract::executor::InferenceRequest,
     ) -> Result<
-        awaken_contract::contract::inference::StreamResult,
-        awaken_contract::contract::executor::InferenceExecutionError,
+        awaken_runtime_contract::contract::inference::StreamResult,
+        awaken_runtime_contract::contract::executor::InferenceExecutionError,
     > {
         panic!("dummy llm should not execute in tool-only tests");
     }
@@ -753,10 +755,10 @@ impl crate::execution::ToolExecutor for RecordingExecutor {
         &self,
         _tools: &std::collections::HashMap<
             String,
-            std::sync::Arc<dyn awaken_contract::contract::tool::Tool>,
+            std::sync::Arc<dyn awaken_runtime_contract::contract::tool::Tool>,
         >,
-        calls: &[awaken_contract::contract::message::ToolCall],
-        _base_ctx: &awaken_contract::contract::tool::ToolCallContext,
+        calls: &[awaken_runtime_contract::contract::message::ToolCall],
+        _base_ctx: &awaken_runtime_contract::contract::tool::ToolCallContext,
     ) -> Result<Vec<crate::execution::ToolExecutionResult>, crate::execution::ToolExecutorError>
     {
         self.batches.lock().expect("lock poisoned").push(
@@ -770,11 +772,11 @@ impl crate::execution::ToolExecutor for RecordingExecutor {
             .iter()
             .map(|call| crate::execution::ToolExecutionResult {
                 call: call.clone(),
-                result: awaken_contract::contract::tool::ToolResult::success(
+                result: awaken_runtime_contract::contract::tool::ToolResult::success(
                     &call.name,
                     serde_json::json!({"id": call.id}),
                 ),
-                outcome: awaken_contract::contract::suspension::ToolCallOutcome::Succeeded,
+                outcome: awaken_runtime_contract::contract::suspension::ToolCallOutcome::Succeeded,
                 command: crate::state::StateCommand::new(),
             })
             .collect())
@@ -833,19 +835,19 @@ impl Tool for SuspendedUnlockTool {
         _ctx: &ToolCallContext,
     ) -> Result<ToolOutput, ToolError> {
         let ticket = SuspendTicket::new(
-            awaken_contract::contract::suspension::Suspension {
+            awaken_runtime_contract::contract::suspension::Suspension {
                 id: "suspend_unlock".into(),
                 action: "tool:UnlockConfirm".into(),
                 message: "unlock requires approval".into(),
                 parameters: serde_json::json!({}),
                 response_schema: None,
             },
-            awaken_contract::contract::suspension::PendingToolCall::new(
+            awaken_runtime_contract::contract::suspension::PendingToolCall::new(
                 "call_unlock",
                 "unlock",
                 serde_json::json!({}),
             ),
-            awaken_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall,
+            awaken_runtime_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall,
         );
         Ok(ToolResult::suspended_with("unlock", "unlock suspended", ticket).into())
     }
@@ -876,8 +878,8 @@ impl ToolGateHook for UnlockingToolGateHook {
         &self,
         ctx: &PhaseContext,
     ) -> Result<
-        Option<awaken_contract::contract::tool_intercept::ToolInterceptPayload>,
-        awaken_contract::StateError,
+        Option<awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload>,
+        awaken_runtime_contract::StateError,
     > {
         if ctx.tool_name.as_deref() != Some("guarded") {
             return Ok(None);
@@ -887,7 +889,7 @@ impl ToolGateHook for UnlockingToolGateHook {
             Ok(None)
         } else {
             Ok(Some(
-                awaken_contract::contract::tool_intercept::ToolInterceptPayload::Block {
+                awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload::Block {
                     reason: "guarded locked".into(),
                 },
             ))
@@ -901,7 +903,10 @@ struct GuardedBeforeHook {
 
 #[async_trait::async_trait]
 impl crate::hooks::PhaseHook for GuardedBeforeHook {
-    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, awaken_contract::StateError> {
+    async fn run(
+        &self,
+        ctx: &PhaseContext,
+    ) -> Result<StateCommand, awaken_runtime_contract::StateError> {
         if ctx.tool_name.as_deref() == Some("guarded")
             && let Some(call_id) = ctx.tool_call_id.clone()
         {
@@ -922,7 +927,10 @@ impl Plugin for ToolGateTestPlugin {
         }
     }
 
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+    fn register(
+        &self,
+        registrar: &mut PluginRegistrar,
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         registrar.register_key::<ToolGateUnlockKey>(StateKeyOptions::default())?;
         registrar.register_tool_gate_hook("tool-gate-test", UnlockingToolGateHook)?;
         registrar.register_phase_hook(
@@ -946,18 +954,20 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
             "c3",
             "gamma",
             serde_json::json!({"resumed": true}),
-            awaken_contract::contract::suspension::ToolCallStatus::Resuming,
+            awaken_runtime_contract::contract::suspension::ToolCallStatus::Resuming,
             1,
         )
-        .with_resume_mode(awaken_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall)
+        .with_resume_mode(
+            awaken_runtime_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall,
+        )
         .with_suspension(
             Some("perm_c3".into()),
             Some("tool:PermissionConfirm".into()),
         )
         .with_resume_input(Some(
-            awaken_contract::contract::suspension::ToolCallResume {
+            awaken_runtime_contract::contract::suspension::ToolCallResume {
                 decision_id: "decision-1".into(),
-                action: awaken_contract::contract::suspension::ResumeDecisionAction::Resume,
+                action: awaken_runtime_contract::contract::suspension::ResumeDecisionAction::Resume,
                 result: serde_json::json!({"approved": true}),
                 reason: None,
                 updated_at: 2,
@@ -975,10 +985,10 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
     )
     .with_tool_executor(executor.clone());
 
-    let sink: std::sync::Arc<dyn awaken_contract::contract::event_sink::EventSink> =
-        std::sync::Arc::new(awaken_contract::contract::event_sink::NullEventSink);
+    let sink: std::sync::Arc<dyn awaken_runtime_contract::contract::event_sink::EventSink> =
+        std::sync::Arc::new(awaken_runtime_contract::contract::event_sink::NullEventSink);
     let mut messages = vec![std::sync::Arc::new(Message::user("go"))];
-    let run_identity = awaken_contract::contract::identity::RunIdentity::default();
+    let run_identity = awaken_runtime_contract::contract::identity::RunIdentity::default();
     let run_overrides = None;
     let mut total_input_tokens = 0;
     let mut total_output_tokens = 0;
@@ -1002,11 +1012,31 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
         thread_ctx: None,
     };
     let calls = vec![
-        awaken_contract::contract::message::ToolCall::new("c1", "alpha", serde_json::json!({})),
-        awaken_contract::contract::message::ToolCall::new("c2", "beta", serde_json::json!({})),
-        awaken_contract::contract::message::ToolCall::new("c3", "gamma", serde_json::json!({})),
-        awaken_contract::contract::message::ToolCall::new("c4", "delta", serde_json::json!({})),
-        awaken_contract::contract::message::ToolCall::new("c5", "epsilon", serde_json::json!({})),
+        awaken_runtime_contract::contract::message::ToolCall::new(
+            "c1",
+            "alpha",
+            serde_json::json!({}),
+        ),
+        awaken_runtime_contract::contract::message::ToolCall::new(
+            "c2",
+            "beta",
+            serde_json::json!({}),
+        ),
+        awaken_runtime_contract::contract::message::ToolCall::new(
+            "c3",
+            "gamma",
+            serde_json::json!({}),
+        ),
+        awaken_runtime_contract::contract::message::ToolCall::new(
+            "c4",
+            "delta",
+            serde_json::json!({}),
+        ),
+        awaken_runtime_contract::contract::message::ToolCall::new(
+            "c5",
+            "epsilon",
+            serde_json::json!({}),
+        ),
     ];
 
     let mut transcript = super::step::ToolBatchTranscript::for_resume();
@@ -1034,7 +1064,7 @@ async fn resumed_calls_do_not_serialize_neighboring_fresh_batches() {
     let resumed = states.calls.get("c3").expect("resumed call state");
     assert_eq!(
         resumed.status,
-        awaken_contract::contract::suspension::ToolCallStatus::Succeeded
+        awaken_runtime_contract::contract::suspension::ToolCallStatus::Succeeded
     );
     assert!(
         resumed.resume_input.is_none(),
@@ -1056,18 +1086,20 @@ async fn cancelled_resume_is_emitted_once_even_when_other_calls_replay() {
             "cancel_a",
             "alpha",
             serde_json::json!({"cancelled": true}),
-            awaken_contract::contract::suspension::ToolCallStatus::Cancelled,
+            awaken_runtime_contract::contract::suspension::ToolCallStatus::Cancelled,
             1,
         )
-        .with_resume_mode(awaken_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall)
+        .with_resume_mode(
+            awaken_runtime_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall,
+        )
         .with_suspension(
             Some("perm_cancel_a".into()),
             Some("tool:PermissionConfirm".into()),
         )
         .with_resume_input(Some(
-            awaken_contract::contract::suspension::ToolCallResume {
+            awaken_runtime_contract::contract::suspension::ToolCallResume {
                 decision_id: "decision-cancel".into(),
-                action: awaken_contract::contract::suspension::ResumeDecisionAction::Cancel,
+                action: awaken_runtime_contract::contract::suspension::ResumeDecisionAction::Cancel,
                 result: serde_json::json!({"kind": "permission_decision", "approved": false}),
                 reason: None,
                 updated_at: 2,
@@ -1079,18 +1111,20 @@ async fn cancelled_resume_is_emitted_once_even_when_other_calls_replay() {
             "resume_b",
             "beta",
             serde_json::json!({"resumed": true}),
-            awaken_contract::contract::suspension::ToolCallStatus::Resuming,
+            awaken_runtime_contract::contract::suspension::ToolCallStatus::Resuming,
             1,
         )
-        .with_resume_mode(awaken_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall)
+        .with_resume_mode(
+            awaken_runtime_contract::contract::suspension::ToolCallResumeMode::ReplayToolCall,
+        )
         .with_suspension(
             Some("perm_resume_b".into()),
             Some("tool:PermissionConfirm".into()),
         )
         .with_resume_input(Some(
-            awaken_contract::contract::suspension::ToolCallResume {
+            awaken_runtime_contract::contract::suspension::ToolCallResume {
                 decision_id: "decision-resume".into(),
-                action: awaken_contract::contract::suspension::ResumeDecisionAction::Resume,
+                action: awaken_runtime_contract::contract::suspension::ResumeDecisionAction::Resume,
                 result: serde_json::json!({"kind": "permission_decision", "approved": true}),
                 reason: None,
                 updated_at: 2,
@@ -1109,7 +1143,7 @@ async fn cancelled_resume_is_emitted_once_even_when_other_calls_replay() {
         std::sync::Arc::new(DummyLlm),
     )
     .with_tool_executor(executor);
-    let run_identity = awaken_contract::contract::identity::RunIdentity::default();
+    let run_identity = awaken_runtime_contract::contract::identity::RunIdentity::default();
     let sink = std::sync::Arc::new(VecEventSink::new());
     let mut messages = vec![std::sync::Arc::new(Message::user("go"))];
 
@@ -1165,7 +1199,7 @@ async fn cancelled_resume_is_emitted_once_even_when_other_calls_replay() {
     let cancelled = states.calls.get("cancel_a").expect("cancelled call state");
     assert_eq!(
         cancelled.status,
-        awaken_contract::contract::suspension::ToolCallStatus::Cancelled
+        awaken_runtime_contract::contract::suspension::ToolCallStatus::Cancelled
     );
     assert!(
         cancelled.resume_input.is_none(),
@@ -1192,9 +1226,9 @@ async fn tool_gate_recheck_executes_before_tool_hook_once() {
     let store = runtime.store();
 
     let sink = Arc::new(VecEventSink::new());
-    let sink_dyn: Arc<dyn awaken_contract::contract::event_sink::EventSink> = sink.clone();
+    let sink_dyn: Arc<dyn awaken_runtime_contract::contract::event_sink::EventSink> = sink.clone();
     let mut messages = vec![Arc::new(Message::user("go"))];
-    let run_identity = awaken_contract::contract::identity::RunIdentity::default();
+    let run_identity = awaken_runtime_contract::contract::identity::RunIdentity::default();
     let run_overrides = None;
     let mut total_input_tokens = 0;
     let mut total_output_tokens = 0;
@@ -1223,8 +1257,16 @@ async fn tool_gate_recheck_executes_before_tool_hook_once() {
         thread_ctx: None,
     };
     let calls = vec![
-        awaken_contract::contract::message::ToolCall::new("c1", "unlock", serde_json::json!({})),
-        awaken_contract::contract::message::ToolCall::new("c2", "guarded", serde_json::json!({})),
+        awaken_runtime_contract::contract::message::ToolCall::new(
+            "c1",
+            "unlock",
+            serde_json::json!({}),
+        ),
+        awaken_runtime_contract::contract::message::ToolCall::new(
+            "c2",
+            "guarded",
+            serde_json::json!({}),
+        ),
     ];
 
     let mut transcript =
@@ -1271,9 +1313,9 @@ async fn tool_gate_flush_suspension_backfills_rechecked_and_later_calls() {
     let store = runtime.store();
 
     let sink = Arc::new(VecEventSink::new());
-    let sink_dyn: Arc<dyn awaken_contract::contract::event_sink::EventSink> = sink.clone();
+    let sink_dyn: Arc<dyn awaken_runtime_contract::contract::event_sink::EventSink> = sink.clone();
     let mut messages = vec![Arc::new(Message::user("go"))];
-    let run_identity = awaken_contract::contract::identity::RunIdentity::default();
+    let run_identity = awaken_runtime_contract::contract::identity::RunIdentity::default();
     let run_overrides = None;
     let mut total_input_tokens = 0;
     let mut total_output_tokens = 0;
@@ -1302,9 +1344,21 @@ async fn tool_gate_flush_suspension_backfills_rechecked_and_later_calls() {
         thread_ctx: None,
     };
     let calls = vec![
-        awaken_contract::contract::message::ToolCall::new("c1", "unlock", serde_json::json!({})),
-        awaken_contract::contract::message::ToolCall::new("c2", "guarded", serde_json::json!({})),
-        awaken_contract::contract::message::ToolCall::new("c3", "guarded", serde_json::json!({})),
+        awaken_runtime_contract::contract::message::ToolCall::new(
+            "c1",
+            "unlock",
+            serde_json::json!({}),
+        ),
+        awaken_runtime_contract::contract::message::ToolCall::new(
+            "c2",
+            "guarded",
+            serde_json::json!({}),
+        ),
+        awaken_runtime_contract::contract::message::ToolCall::new(
+            "c3",
+            "guarded",
+            serde_json::json!({}),
+        ),
     ];
 
     let mut transcript =

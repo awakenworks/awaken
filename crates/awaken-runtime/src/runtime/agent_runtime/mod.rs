@@ -8,17 +8,17 @@ mod runner;
 
 use std::sync::{Arc, RwLock};
 
-use awaken_contract::contract::commit_coordinator::CommitCoordinator;
-use awaken_contract::contract::mailbox::{
+use awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator;
+use awaken_runtime_contract::contract::mailbox::{
     LiveRunCommand, LiveRunCommandEntry, LiveRunTarget, MailboxStore,
 };
-use awaken_contract::contract::storage::ThreadRunStore;
+use awaken_runtime_contract::contract::storage::ThreadRunStore;
 
 use crate::error::RuntimeError;
 #[cfg(feature = "a2a")]
 use crate::registry::composite::CompositeAgentSpecRegistry;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::suspension::ToolCallResume;
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::contract::suspension::ToolCallResume;
 use futures::StreamExt;
 use futures::channel::mpsc;
 
@@ -117,7 +117,7 @@ pub struct AgentRuntime {
     pub(crate) storage: Option<Arc<dyn ThreadRunStore>>,
     pub(crate) commit_coordinator: Option<Arc<dyn CommitCoordinator>>,
     pub(crate) profile_store:
-        Option<Arc<dyn awaken_contract::contract::profile_store::ProfileStore>>,
+        Option<Arc<dyn awaken_runtime_contract::contract::profile_store::ProfileStore>>,
     pub(crate) mailbox_store: Option<Arc<dyn MailboxStore>>,
     pub(crate) active_runs: ActiveRunRegistry,
     pub(crate) registry_handle: Option<RegistryHandle>,
@@ -191,7 +191,7 @@ impl AgentRuntime {
     #[must_use]
     pub(crate) fn with_profile_store(
         mut self,
-        store: Arc<dyn awaken_contract::contract::profile_store::ProfileStore>,
+        store: Arc<dyn awaken_runtime_contract::contract::profile_store::ProfileStore>,
     ) -> Self {
         self.profile_store = Some(store);
         self

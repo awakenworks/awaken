@@ -3,8 +3,8 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use awaken_contract::ScopeContext;
-use awaken_contract::contract::protocol_replay_log::{
+use awaken_server_contract::ScopeContext;
+use awaken_server_contract::contract::protocol_replay_log::{
     ProtocolReplayCursor, ProtocolReplayError, ProtocolReplayLog, ProtocolReplayRecord,
     ProtocolStreamKey, ScopedProtocolReplayLog,
 };
@@ -176,10 +176,10 @@ fn map_protocol_replay_error(error: ProtocolReplayError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::protocol_replay_log::{
+    use awaken_runtime::AgentRuntime;
+    use awaken_server_contract::contract::protocol_replay_log::{
         ProtocolReplayDraft, ProtocolReplayWriter,
     };
-    use awaken_runtime::AgentRuntime;
     use awaken_stores::{InMemoryMailboxStore, InMemoryProtocolReplayLog, InMemoryStore};
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};

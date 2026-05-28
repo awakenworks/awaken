@@ -9,12 +9,6 @@
 
 use std::sync::Arc;
 
-use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
-use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::profile_store::ProfileStore;
-use awaken_contract::contract::storage::{RunRequestOrigin, ThreadRunStore};
-use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
 use awaken_runtime::backend::{
     BackendControl, BackendLocalRootContext, BackendRootRunRequest, ExecutionBackend,
     ExecutionBackendError, LocalBackend,
@@ -25,6 +19,12 @@ use awaken_runtime::registry::{
 };
 use awaken_runtime::resolution::{BackendProfile, ExecutionPlan};
 use awaken_runtime::{AgentRuntime, RunActivation, RuntimeError};
+use awaken_runtime_contract::contract::event_sink::{EventSink, NullEventSink};
+use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::contract::profile_store::ProfileStore;
+use awaken_runtime_contract::contract::storage::{RunRequestOrigin, ThreadRunStore};
+use awaken_runtime_contract::contract::tool_intercept::{AdapterKind, RunMode};
 
 struct NopResolver;
 

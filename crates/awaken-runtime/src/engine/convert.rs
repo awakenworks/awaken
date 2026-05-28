@@ -5,11 +5,11 @@ use genai::chat::{
     ToolCall as GenaiToolCall, ToolResponse,
 };
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::inference::{StopReason, TokenUsage};
-use awaken_contract::contract::message::{Message, Role, ToolCall};
-use awaken_contract::contract::tool::ToolDescriptor;
-use awaken_contract::contract::tool_schema::sanitize_for_llm;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::inference::{StopReason, TokenUsage};
+use awaken_runtime_contract::contract::message::{Message, Role, ToolCall};
+use awaken_runtime_contract::contract::tool::ToolDescriptor;
+use awaken_runtime_contract::contract::tool_schema::sanitize_for_llm;
 
 // ---------------------------------------------------------------------------
 // Message → ChatMessage
@@ -67,52 +67,56 @@ fn to_content_parts(blocks: &[ContentBlock]) -> Vec<ContentPart> {
         .filter_map(|b| match b {
             ContentBlock::Text { text } => Some(ContentPart::Text(text.clone())),
             ContentBlock::Image { source } => match source {
-                awaken_contract::contract::content::ImageSource::Url { url } => {
+                awaken_runtime_contract::contract::content::ImageSource::Url { url } => {
                     Some(ContentPart::from_binary_url("image/png", url, None))
                 }
-                awaken_contract::contract::content::ImageSource::Base64 { media_type, data } => {
-                    Some(ContentPart::from_binary_base64(
-                        media_type,
-                        data.as_str(),
-                        None,
-                    ))
-                }
+                awaken_runtime_contract::contract::content::ImageSource::Base64 {
+                    media_type,
+                    data,
+                } => Some(ContentPart::from_binary_base64(
+                    media_type,
+                    data.as_str(),
+                    None,
+                )),
             },
             ContentBlock::Document { source, .. } => match source {
-                awaken_contract::contract::content::DocumentSource::Url { url } => {
+                awaken_runtime_contract::contract::content::DocumentSource::Url { url } => {
                     Some(ContentPart::from_binary_url("application/pdf", url, None))
                 }
-                awaken_contract::contract::content::DocumentSource::Base64 { media_type, data } => {
-                    Some(ContentPart::from_binary_base64(
-                        media_type,
-                        data.as_str(),
-                        None,
-                    ))
-                }
+                awaken_runtime_contract::contract::content::DocumentSource::Base64 {
+                    media_type,
+                    data,
+                } => Some(ContentPart::from_binary_base64(
+                    media_type,
+                    data.as_str(),
+                    None,
+                )),
             },
             ContentBlock::Audio { source } => match source {
-                awaken_contract::contract::content::AudioSource::Url { url } => {
+                awaken_runtime_contract::contract::content::AudioSource::Url { url } => {
                     Some(ContentPart::from_binary_url("audio/mpeg", url, None))
                 }
-                awaken_contract::contract::content::AudioSource::Base64 { media_type, data } => {
-                    Some(ContentPart::from_binary_base64(
-                        media_type,
-                        data.as_str(),
-                        None,
-                    ))
-                }
+                awaken_runtime_contract::contract::content::AudioSource::Base64 {
+                    media_type,
+                    data,
+                } => Some(ContentPart::from_binary_base64(
+                    media_type,
+                    data.as_str(),
+                    None,
+                )),
             },
             ContentBlock::Video { source } => match source {
-                awaken_contract::contract::content::VideoSource::Url { url } => {
+                awaken_runtime_contract::contract::content::VideoSource::Url { url } => {
                     Some(ContentPart::from_binary_url("video/mp4", url, None))
                 }
-                awaken_contract::contract::content::VideoSource::Base64 { media_type, data } => {
-                    Some(ContentPart::from_binary_base64(
-                        media_type,
-                        data.as_str(),
-                        None,
-                    ))
-                }
+                awaken_runtime_contract::contract::content::VideoSource::Base64 {
+                    media_type,
+                    data,
+                } => Some(ContentPart::from_binary_base64(
+                    media_type,
+                    data.as_str(),
+                    None,
+                )),
             },
             // ToolUse, ToolResult, Thinking are handled separately
             _ => None,
@@ -165,7 +169,7 @@ pub fn build_chat_request(
 
     // System prompt as first message
     if !system.is_empty() {
-        let text = awaken_contract::contract::content::extract_text(system);
+        let text = awaken_runtime_contract::contract::content::extract_text(system);
         if !text.is_empty() {
             let mut msg = ChatMessage::system(text);
             if enable_prompt_cache {

@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event_store::{
     CanonicalEvent, EventCursor, EventPage, EventReader, EventScope, EventStoreError,
     EventSubscriber, SubscribeHandle, SubscribeStart,
 };
@@ -142,7 +142,7 @@ fn scope_key(scope: &EventScope) -> Result<String, EventStoreError> {
 
 #[cfg(test)]
 mod tests {
-    use awaken_contract::contract::event_store::EventStore;
+    use awaken_server_contract::contract::event_store::EventStore;
 
     use super::*;
 

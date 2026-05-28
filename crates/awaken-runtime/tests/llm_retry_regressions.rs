@@ -2,10 +2,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::StreamResult;
-use awaken_contract::contract::message::Message;
 use awaken_runtime::engine::{LlmRetryPolicy, RetryingExecutor};
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::inference::StreamResult;
+use awaken_runtime_contract::contract::message::Message;
 
 struct AlwaysUnauthorized {
     calls: AtomicU32,

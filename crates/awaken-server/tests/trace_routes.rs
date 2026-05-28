@@ -4,8 +4,6 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_ext_observability::trace_store::file::FileTraceStore;
 use awaken_ext_observability::trace_store::{RunSummary, TraceStore};
 use awaken_ext_observability::{GenAISpan, MetricsEvent, SpanContext};
@@ -13,6 +11,10 @@ use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_server::app::{AdminApiConfig, ServerConfig, ServerState, TraceModuleState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_stores::InMemoryStore;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
-use awaken_contract::contract::storage::StorageError;
-use awaken_contract::contract::versioned_registry::{
+use awaken_server_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::versioned_registry::{
     ConfigRevisionRef, PublishOutcome, RegistryPublication, RegistryResourcePublish, VersionRef,
     VersionedRecord, VersionedRegistryError, VersionedRegistryStore, VersionedResourceState,
     build_rollback_metadata, registry_content_hash, sort_publication_entries,

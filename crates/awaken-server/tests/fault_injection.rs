@@ -7,21 +7,23 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult};
-use awaken_contract::contract::lifecycle::RunStatus;
-use awaken_contract::contract::mailbox::{
+use awaken_runtime::builder::AgentRuntimeBuilder;
+use awaken_server::mailbox::{Mailbox, MailboxConfig};
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult};
+use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::mailbox::{
     MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
     RunDispatchStatus,
 };
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::storage::{
     RunRecord, RunStore, RunWaitingState, StorageError, WaitingReason,
 };
-use awaken_contract::{AgentSpec, ModelSpec};
-use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_server::mailbox::{Mailbox, MailboxConfig};
+use awaken_server_contract::{AgentSpec, ModelSpec};
 use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
 use tokio::sync::mpsc;
 
@@ -562,7 +564,7 @@ async fn unbounded_channel_sink_handles_closed_receiver() {
         run_id: "r1".into(),
         identity: None,
         result: None,
-        termination: awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd,
+        termination: awaken_server_contract::contract::lifecycle::TerminationReason::NaturalEnd,
     })
     .await;
     sink.close().await;
@@ -662,7 +664,7 @@ async fn bounded_channel_sink_under_backpressure() {
 
 #[tokio::test]
 async fn vec_sink_handles_massive_event_volume() {
-    use awaken_contract::contract::event_sink::VecEventSink;
+    use awaken_server_contract::contract::event_sink::VecEventSink;
 
     let sink = VecEventSink::new();
 

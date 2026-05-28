@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use awaken_contract::state::{KeyScope, MergeStrategy, StateKey};
+use awaken_runtime_contract::state::{KeyScope, MergeStrategy, StateKey};
 use serde::{Deserialize, Serialize};
 
 use crate::skill::SkillMeta;

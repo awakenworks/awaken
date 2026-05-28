@@ -1,6 +1,6 @@
-use awaken_contract::model::ScheduledActionSpec;
-use awaken_contract::state::StateCommand;
 use awaken_runtime::state::StateKey;
+use awaken_runtime_contract::model::ScheduledActionSpec;
+use awaken_runtime_contract::state::StateCommand;
 
 use crate::config::{DeferredToolsConfig, ToolLoadMode};
 use crate::plugin::hooks::{apply_deferral_actions, build_deferred_tool_list, collect_exclusions};

@@ -3,7 +3,7 @@
 //! Each module state knows its own route surface; [`crate::routes::build_router`]
 //! folds available modules together without per-module imperative if-chains.
 
-use awaken_contract::RequestSurface;
+use awaken_server_contract::RequestSurface;
 use axum::extract::{Request, State};
 use axum::http::HeaderMap;
 use axum::middleware::Next;

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::state::KeyScope;
-use awaken_contract::{StateError, UnknownKeyPolicy};
+use awaken_runtime_contract::{StateError, UnknownKeyPolicy};
 
 use super::{PersistedState, StateMap, StateStore};
 
@@ -160,7 +160,7 @@ mod tests {
     use super::*;
     use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
     use crate::state::{StateKey, StateKeyOptions};
-    use awaken_contract::UnknownKeyPolicy;
+    use awaken_runtime_contract::UnknownKeyPolicy;
 
     struct PersistentCounter;
 
@@ -198,7 +198,7 @@ mod tests {
         fn register(
             &self,
             registrar: &mut PluginRegistrar,
-        ) -> Result<(), awaken_contract::StateError> {
+        ) -> Result<(), awaken_runtime_contract::StateError> {
             registrar.register_key::<PersistentCounter>(StateKeyOptions {
                 persistent: true,
                 ..Default::default()
@@ -308,7 +308,7 @@ mod tests {
         let err = store.apply_seed(seed, UnknownKeyPolicy::Error).unwrap_err();
         assert!(matches!(
             err,
-            awaken_contract::StateError::UnknownKey { .. }
+            awaken_runtime_contract::StateError::UnknownKey { .. }
         ));
         assert_eq!(
             store.read::<PersistentCounter>(),
@@ -343,7 +343,10 @@ mod tests {
         };
 
         let err = store.apply_seed(seed, UnknownKeyPolicy::Error).unwrap_err();
-        assert!(matches!(err, awaken_contract::StateError::KeyDecode { .. }));
+        assert!(matches!(
+            err,
+            awaken_runtime_contract::StateError::KeyDecode { .. }
+        ));
         assert_eq!(
             store.read::<PersistentCounter>(),
             Some(10),

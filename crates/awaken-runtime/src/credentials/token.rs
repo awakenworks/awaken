@@ -9,7 +9,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use awaken_contract::secret::RedactedString;
+use awaken_runtime_contract::secret::RedactedString;
 
 /// Cached token entry held by the broker. Not exposed to callers directly.
 #[derive(Debug, Clone)]

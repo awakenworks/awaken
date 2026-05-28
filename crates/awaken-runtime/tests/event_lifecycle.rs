@@ -10,18 +10,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use awaken_contract::StateError;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::{EventSink, VecEventSink};
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::message::{Message, ToolCall};
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::{EventSink, VecEventSink};
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::lifecycle::TerminationReason;
+use awaken_runtime_contract::contract::message::{Message, ToolCall};
+use awaken_runtime_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::state::{StateKey, StateKeyOptions};
+use awaken_runtime_contract::state::{StateKey, StateKeyOptions};
 
 use awaken_runtime::engine::MockLlmExecutor;
 use awaken_runtime::execution::ParallelToolExecutor;
@@ -136,8 +138,10 @@ impl ToolGateHook for UnlockGuardHook {
     async fn run(
         &self,
         ctx: &PhaseContext,
-    ) -> Result<Option<awaken_contract::contract::tool_intercept::ToolInterceptPayload>, StateError>
-    {
+    ) -> Result<
+        Option<awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload>,
+        StateError,
+    > {
         let Some(tool_name) = ctx.tool_name.as_deref() else {
             return Ok(None);
         };
@@ -145,7 +149,7 @@ impl ToolGateHook for UnlockGuardHook {
             return Ok(None);
         }
         Ok(Some(
-            awaken_contract::contract::tool_intercept::ToolInterceptPayload::Block {
+            awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload::Block {
                 reason: "guarded tool requires unlock".into(),
             },
         ))
@@ -356,9 +360,10 @@ async fn suspended_tool_cancel_emits_resumed_event_and_finishes() {
             "thread-deny",
             vec![(
                 "c1".into(),
-                awaken_contract::contract::suspension::ToolCallResume {
+                awaken_runtime_contract::contract::suspension::ToolCallResume {
                     decision_id: "d1".into(),
-                    action: awaken_contract::contract::suspension::ResumeDecisionAction::Cancel,
+                    action:
+                        awaken_runtime_contract::contract::suspension::ResumeDecisionAction::Cancel,
                     result: json!({"approved": false}),
                     reason: Some("user denied".into()),
                     updated_at: 1,
@@ -645,11 +650,11 @@ async fn prior_tool_state_allows_later_guarded_tool_in_same_step() {
         vec![
             (
                 "u1",
-                awaken_contract::contract::suspension::ToolCallOutcome::Succeeded
+                awaken_runtime_contract::contract::suspension::ToolCallOutcome::Succeeded
             ),
             (
                 "g1",
-                awaken_contract::contract::suspension::ToolCallOutcome::Succeeded
+                awaken_runtime_contract::contract::suspension::ToolCallOutcome::Succeeded
             ),
         ]
     );
@@ -712,11 +717,11 @@ async fn guarded_tool_before_unlock_still_blocks_same_step() {
         vec![
             (
                 "g1",
-                awaken_contract::contract::suspension::ToolCallOutcome::Failed,
+                awaken_runtime_contract::contract::suspension::ToolCallOutcome::Failed,
             ),
             (
                 "u1",
-                awaken_contract::contract::suspension::ToolCallOutcome::Failed,
+                awaken_runtime_contract::contract::suspension::ToolCallOutcome::Failed,
             ),
         ]
     );

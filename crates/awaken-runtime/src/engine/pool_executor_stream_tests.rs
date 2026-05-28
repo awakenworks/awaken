@@ -3,10 +3,10 @@ use super::pool_executor_test_support::*;
 mod tests {
     use super::*;
     use crate::engine::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-    use awaken_contract::contract::executor::{
+    use awaken_runtime_contract::contract::executor::{
         InferenceExecutionError, InterruptCause, InterruptSnapshot, LlmExecutor, LlmStreamEvent,
     };
-    use awaken_contract::registry_spec::PoolSwitchPolicy;
+    use awaken_runtime_contract::registry_spec::PoolSwitchPolicy;
     use futures::StreamExt;
     use std::collections::HashMap;
     use std::sync::Arc;

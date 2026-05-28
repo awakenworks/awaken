@@ -6,20 +6,20 @@ use std::sync::Arc;
 use crate::EventBuffer;
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
-use awaken_contract::contract::commit_coordinator::{
+use awaken_runtime_contract::contract::commit_coordinator::{
     CheckpointCommitPlan, CommitCoordinator, CommitError,
 };
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{Message, Role, Visibility};
-use awaken_contract::contract::storage::{
+use awaken_runtime_contract::contract::event::AgentEvent;
+use awaken_runtime_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_runtime_contract::contract::message::{Message, Role, Visibility};
+use awaken_runtime_contract::contract::storage::{
     MessageSeqRange, RunMessageInput, RunMessageOutput, RunOutcome, RunRecord, RunWaitingState,
     RunWaitingTicket, ThreadRunStore, WaitingReason,
 };
-use awaken_contract::contract::suspension::ToolCallStatus;
-use awaken_contract::model::Phase;
+use awaken_runtime_contract::contract::suspension::ToolCallStatus;
+use awaken_runtime_contract::model::Phase;
 use serde_json::Value;
 
 use super::{AgentLoopError, commit_update, now_ms};

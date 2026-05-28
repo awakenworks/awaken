@@ -30,9 +30,9 @@ pub use sink::{ChildErrorForwarding, StreamingPassthroughSink};
 
 use std::sync::Arc;
 
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::message::Message;
-use awaken_contract::state::PersistedState;
+use awaken_runtime_contract::contract::event_sink::EventSink;
+use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::state::PersistedState;
 
 use crate::RuntimeError;
 use crate::backend::{

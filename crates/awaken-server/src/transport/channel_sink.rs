@@ -1,8 +1,8 @@
 //! Channel-based event sink that bridges AgentRuntime to SSE relay.
 
 use async_trait::async_trait;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::event_sink::EventSink;
 use tokio::sync::mpsc;
 
 /// An EventSink that forwards events to an mpsc channel.
@@ -90,7 +90,7 @@ impl EventSink for BoundedChannelEventSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::event::AgentEvent;
+    use awaken_server_contract::contract::event::AgentEvent;
 
     #[tokio::test]
     async fn channel_sink_forwards_events() {

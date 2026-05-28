@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::engine::retry::LlmRetryPolicy;
 use crate::registry::ResolvedAgent;
-use awaken_contract::contract::executor::{
+use awaken_runtime_contract::contract::executor::{
     InferenceExecutionError, InferenceRequest, InterruptCause,
 };
 

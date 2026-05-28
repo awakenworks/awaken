@@ -204,7 +204,7 @@ async fn ack_rejects_wrong_claim_token() {
 
 #[tokio::test]
 async fn records_dispatch_start_and_run_result_separately_from_ack() {
-    use awaken_contract::contract::lifecycle::TerminationReason;
+    use awaken_server_contract::contract::lifecycle::TerminationReason;
 
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
@@ -910,8 +910,8 @@ async fn claim_after_nack_works() {
 
 mod live_channel {
     use super::*;
-    use awaken_contract::contract::mailbox::{LiveDeliveryOutcome, LiveRunCommand};
-    use awaken_contract::contract::message::Message;
+    use awaken_server_contract::contract::mailbox::{LiveDeliveryOutcome, LiveRunCommand};
+    use awaken_server_contract::contract::message::Message;
     use futures::StreamExt;
     use std::time::Duration;
     use tokio::time::timeout;

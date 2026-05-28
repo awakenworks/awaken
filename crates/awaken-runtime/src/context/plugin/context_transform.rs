@@ -18,7 +18,7 @@ pub struct ContextTransformConfig {
 /// Plugin config key for [`ContextTransformConfig`].
 pub struct ContextTransformConfigKey;
 
-impl awaken_contract::registry_spec::PluginConfigKey for ContextTransformConfigKey {
+impl awaken_runtime_contract::registry_spec::PluginConfigKey for ContextTransformConfigKey {
     const KEY: &'static str = "context_transform";
     type Config = ContextTransformConfig;
 }
@@ -27,17 +27,17 @@ impl awaken_contract::registry_spec::PluginConfigKey for ContextTransformConfigK
 /// Wraps a `ContextWindowPolicy` and registers a `ContextTransform` via
 /// `register_request_transform()` during plugin registration (ADR-0001).
 pub struct ContextTransformPlugin {
-    policy: awaken_contract::contract::inference::ContextWindowPolicy,
+    policy: awaken_runtime_contract::contract::inference::ContextWindowPolicy,
     config: ContextTransformConfig,
 }
 
 impl ContextTransformPlugin {
-    pub fn new(policy: awaken_contract::contract::inference::ContextWindowPolicy) -> Self {
+    pub fn new(policy: awaken_runtime_contract::contract::inference::ContextWindowPolicy) -> Self {
         Self::with_config(policy, ContextTransformConfig::default())
     }
 
     pub fn with_config(
-        policy: awaken_contract::contract::inference::ContextWindowPolicy,
+        policy: awaken_runtime_contract::contract::inference::ContextWindowPolicy,
         config: ContextTransformConfig,
     ) -> Self {
         Self { policy, config }
@@ -48,7 +48,9 @@ impl ContextTransformPlugin {
     /// Only used by resolve-pipeline tests; gated to avoid `dead_code` in
     /// release builds where no consumer reaches in to read the policy.
     #[cfg(test)]
-    pub(crate) fn policy(&self) -> &awaken_contract::contract::inference::ContextWindowPolicy {
+    pub(crate) fn policy(
+        &self,
+    ) -> &awaken_runtime_contract::contract::inference::ContextWindowPolicy {
         &self.policy
     }
 
@@ -65,12 +67,15 @@ impl Plugin for ContextTransformPlugin {
         }
     }
 
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+    fn register(
+        &self,
+        registrar: &mut PluginRegistrar,
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         self.config
             .artifact_compaction
             .validate()
-            .map_err(|message| awaken_contract::StateError::KeyDecode {
-                key: <ContextTransformConfigKey as awaken_contract::registry_spec::PluginConfigKey>::KEY
+            .map_err(|message| awaken_runtime_contract::StateError::KeyDecode {
+                key: <ContextTransformConfigKey as awaken_runtime_contract::registry_spec::PluginConfigKey>::KEY
                     .into(),
                 message,
             })?;
@@ -101,14 +106,14 @@ mod tests {
 
     #[test]
     fn context_transform_plugin_descriptor_name() {
-        let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+        let policy = awaken_runtime_contract::contract::inference::ContextWindowPolicy::default();
         let plugin = ContextTransformPlugin::new(policy);
         assert_eq!(plugin.descriptor().name, CONTEXT_TRANSFORM_PLUGIN_ID);
     }
 
     #[test]
     fn context_transform_plugin_registers_transform() {
-        let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+        let policy = awaken_runtime_contract::contract::inference::ContextWindowPolicy::default();
         let plugin = ContextTransformPlugin::new(policy);
         let mut registrar = PluginRegistrar::new();
         plugin.register(&mut registrar).unwrap();
@@ -125,10 +130,10 @@ mod tests {
 
     #[test]
     fn context_transform_plugin_uses_artifact_compaction_config() {
-        use awaken_contract::contract::message::{Message, ToolCall};
+        use awaken_runtime_contract::contract::message::{Message, ToolCall};
         use serde_json::json;
 
-        let policy = awaken_contract::contract::inference::ContextWindowPolicy {
+        let policy = awaken_runtime_contract::contract::inference::ContextWindowPolicy {
             max_context_tokens: 100_000,
             max_output_tokens: 0,
             ..Default::default()
@@ -167,7 +172,7 @@ mod tests {
 
     #[test]
     fn context_transform_plugin_rejects_invalid_artifact_compaction_config() {
-        let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+        let policy = awaken_runtime_contract::contract::inference::ContextWindowPolicy::default();
         let plugin = ContextTransformPlugin::with_config(
             policy,
             ContextTransformConfig {
@@ -189,13 +194,13 @@ mod tests {
 
     #[test]
     fn context_transform_plugin_declares_config_schema() {
-        let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+        let policy = awaken_runtime_contract::contract::inference::ContextWindowPolicy::default();
         let plugin = ContextTransformPlugin::new(policy);
         let schemas = plugin.config_schemas();
         assert_eq!(schemas.len(), 1);
         assert_eq!(
             schemas[0].key,
-            <ContextTransformConfigKey as awaken_contract::registry_spec::PluginConfigKey>::KEY
+            <ContextTransformConfigKey as awaken_runtime_contract::registry_spec::PluginConfigKey>::KEY
         );
     }
 
@@ -211,7 +216,7 @@ mod tests {
             "CompactionPlugin should not register request transforms"
         );
         // ContextTransformPlugin should register exactly one transform
-        let policy = awaken_contract::contract::inference::ContextWindowPolicy::default();
+        let policy = awaken_runtime_contract::contract::inference::ContextWindowPolicy::default();
         let mut reg_transform = PluginRegistrar::new();
         ContextTransformPlugin::new(policy)
             .register(&mut reg_transform)
@@ -221,8 +226,8 @@ mod tests {
 
     #[test]
     fn token_count_estimation_for_various_content_types() {
-        use awaken_contract::contract::message::Message;
-        use awaken_contract::contract::transform::estimate_message_tokens;
+        use awaken_runtime_contract::contract::message::Message;
+        use awaken_runtime_contract::contract::transform::estimate_message_tokens;
 
         // Text message
         let text_msg = Message::user("Hello, this is a test message with some content.");
@@ -251,13 +256,13 @@ mod tests {
 
     #[test]
     fn enable_prompt_cache_flag_in_policy() {
-        let policy_cached = awaken_contract::contract::inference::ContextWindowPolicy {
+        let policy_cached = awaken_runtime_contract::contract::inference::ContextWindowPolicy {
             enable_prompt_cache: true,
             ..Default::default()
         };
         assert!(policy_cached.enable_prompt_cache);
 
-        let policy_uncached = awaken_contract::contract::inference::ContextWindowPolicy {
+        let policy_uncached = awaken_runtime_contract::contract::inference::ContextWindowPolicy {
             enable_prompt_cache: false,
             ..Default::default()
         };
@@ -270,13 +275,14 @@ mod tests {
 
     #[test]
     fn autocompact_threshold_check() {
-        use awaken_contract::contract::message::Message;
-        use awaken_contract::contract::transform::estimate_tokens;
+        use awaken_runtime_contract::contract::message::Message;
+        use awaken_runtime_contract::contract::transform::estimate_tokens;
 
-        let policy_with_threshold = awaken_contract::contract::inference::ContextWindowPolicy {
-            autocompact_threshold: Some(500),
-            ..Default::default()
-        };
+        let policy_with_threshold =
+            awaken_runtime_contract::contract::inference::ContextWindowPolicy {
+                autocompact_threshold: Some(500),
+                ..Default::default()
+            };
 
         // Simulate checking if messages exceed autocompact threshold
         let messages = vec![Message::user("short"), Message::assistant("reply")];

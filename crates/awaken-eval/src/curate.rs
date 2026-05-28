@@ -28,11 +28,11 @@
 //! use it for Live-only eval fixtures when `provider_script` cannot
 //! faithfully represent a captured provider turn.
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::inference::{StopReason, TokenUsage};
-use awaken_contract::contract::message::{Message, Role, ToolCall};
 use awaken_ext_observability::{GenAISpan, MetricsEvent};
 use awaken_runtime::engine::ProviderScriptEvent;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::inference::{StopReason, TokenUsage};
+use awaken_runtime_contract::contract::message::{Message, Role, ToolCall};
 use thiserror::Error;
 
 /// What a successful conversion returns.

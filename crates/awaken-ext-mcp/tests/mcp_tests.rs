@@ -6,12 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use awaken_contract::{AgentSpec, CancellationToken, contract::tool::ToolCallContext};
 use awaken_ext_mcp::{
     McpError, McpProgressUpdate, McpPromptArgument, McpPromptDefinition, McpPromptMessage,
     McpPromptResult, McpResourceDefinition, McpServerConnectionConfig, McpToolRegistryManager,
     McpToolTransport, SamplingHandler, SamplingHandlerFactory,
 };
+use awaken_runtime_contract::{AgentSpec, CancellationToken, contract::tool::ToolCallContext};
 use mcp::transport::{McpTransportError, ServerCapabilities, TransportTypeId};
 use mcp::{
     CallToolResult, CreateMessageParams, CreateMessageResult, McpToolDefinition, ToolContent,

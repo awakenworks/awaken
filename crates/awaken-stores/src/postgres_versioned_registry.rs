@@ -3,7 +3,7 @@
 mod helpers;
 
 use async_trait::async_trait;
-use awaken_contract::contract::versioned_registry::{
+use awaken_server_contract::contract::versioned_registry::{
     ConfigRevisionRef, PublishOutcome, RegistryPublication, RegistryResourcePublish, VersionRef,
     VersionedRecord, VersionedRegistryError, VersionedRegistryStore, VersionedResourceState,
     build_rollback_metadata, registry_content_hash,

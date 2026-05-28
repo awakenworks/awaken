@@ -5,12 +5,12 @@
 //! Storage backend implementations for the awaken framework.
 //!
 //! Provides concrete implementations of the storage traits defined in
-//! `awaken-contract`: [`ThreadStore`](awaken_contract::contract::storage::ThreadStore),
-//! [`RunStore`](awaken_contract::contract::storage::RunStore),
-//! [`ThreadRunStore`](awaken_contract::contract::storage::ThreadRunStore),
-//! [`ProfileStore`](awaken_contract::contract::profile_store::ProfileStore),
-//! [`ConfigStore`](awaken_contract::contract::config_store::ConfigStore), and
-//! [`MailboxStore`](awaken_contract::contract::mailbox::MailboxStore).
+//! `awaken-contract`: [`ThreadStore`](awaken_server_contract::contract::storage::ThreadStore),
+//! [`RunStore`](awaken_server_contract::contract::storage::RunStore),
+//! [`ThreadRunStore`](awaken_server_contract::contract::storage::ThreadRunStore),
+//! [`ProfileStore`](awaken_server_contract::contract::profile_store::ProfileStore),
+//! [`ConfigStore`](awaken_server_contract::contract::config_store::ConfigStore), and
+//! [`MailboxStore`](awaken_server_contract::contract::mailbox::MailboxStore).
 
 mod commit_batch;
 mod mailbox_state;

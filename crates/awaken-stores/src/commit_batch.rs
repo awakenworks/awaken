@@ -9,12 +9,12 @@
 
 use std::future::Future;
 
-use awaken_contract::contract::commit_coordinator::{
+use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitError,
 };
-use awaken_contract::contract::event_store::EventWriter;
-use awaken_contract::contract::outbox::OutboxStore;
-use awaken_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::event_store::EventWriter;
+use awaken_server_contract::contract::outbox::OutboxStore;
+use awaken_server_contract::contract::storage::StorageError;
 
 use crate::memory_event_store::InMemoryEventStore;
 use crate::memory_outbox::InMemoryOutboxStore;
@@ -114,16 +114,16 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use awaken_contract::contract::commit_coordinator::{
+    use awaken_server_contract::contract::commit_coordinator::{
         CheckpointCommitPlan, CommitError, StagedCanonicalEvent,
     };
-    use awaken_contract::contract::event_store::{
+    use awaken_server_contract::contract::event_store::{
         AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope,
         EventVisibility, EventWriter,
     };
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::outbox::{OutboxMessageDraft, OutboxStatus, OutboxStore};
-    use awaken_contract::contract::storage::{RunRecord, StorageError};
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::outbox::{OutboxMessageDraft, OutboxStatus, OutboxStore};
+    use awaken_server_contract::contract::storage::{RunRecord, StorageError};
 
     use super::run_commit_batch;
     use crate::memory_event_store::InMemoryEventStore;

@@ -1,23 +1,23 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::run::RunResolutionScope;
-use awaken_contract::contract::versioned_registry::VersionedRecord;
-use awaken_contract::skill_spec::SkillSpec;
-use awaken_contract::tool_spec::ToolSpec;
-use awaken_contract::{
-    AgentSpec, ModelPoolSpec, ModelSpec, PinnedRegistryEntry, PinnedRegistryManifest, ProviderSpec,
-    REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_MODEL_POOL,
-    REGISTRY_KIND_PLUGIN_CONFIG, REGISTRY_KIND_PROVIDER, REGISTRY_KIND_SKILL, REGISTRY_KIND_TOOL,
-    RegistryGraphValidationError, RegistryGraphValidationRequest, RegistryGraphValidator,
-    StandardRegistryGraphValidator, VersionSelector, VersionedRegistryError,
-    VersionedRegistryStore,
-};
 use awaken_runtime::registry::{
     PinnedAgentSpecRegistry, PinnedModelRegistry, PinnedRegistryError, PinnedSpecMap,
     RegistryHandle,
 };
 use awaken_runtime::resolution::{
     PersistenceRequirement, ResolutionRequest, ResolveError, ResolvedRunPlan, Resolver,
+};
+use awaken_server_contract::contract::run::RunResolutionScope;
+use awaken_server_contract::contract::versioned_registry::VersionedRecord;
+use awaken_server_contract::skill_spec::SkillSpec;
+use awaken_server_contract::tool_spec::ToolSpec;
+use awaken_server_contract::{
+    AgentSpec, ModelPoolSpec, ModelSpec, PinnedRegistryEntry, PinnedRegistryManifest, ProviderSpec,
+    REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_MODEL_POOL,
+    REGISTRY_KIND_PLUGIN_CONFIG, REGISTRY_KIND_PROVIDER, REGISTRY_KIND_SKILL, REGISTRY_KIND_TOOL,
+    RegistryGraphValidationError, RegistryGraphValidationRequest, RegistryGraphValidator,
+    StandardRegistryGraphValidator, VersionSelector, VersionedRegistryError,
+    VersionedRegistryStore,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -379,9 +379,9 @@ fn selector_scope_id(selector: &VersionSelector) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::versioned_registry::PublishOutcome;
-    use awaken_contract::{ModelSpec, ProviderSpec, VersionRef};
     use awaken_runtime::registry::AgentSpecRegistry;
+    use awaken_server_contract::contract::versioned_registry::PublishOutcome;
+    use awaken_server_contract::{ModelSpec, ProviderSpec, VersionRef};
     use awaken_stores::InMemoryVersionedRegistryStore;
     use serde_json::{Value, json};
 
@@ -454,7 +454,7 @@ mod tests {
         assert!(frozen.models.get("m0").is_some());
         assert!(frozen.models.get("m1").is_some());
         assert!(frozen.manifest.entries.iter().any(|entry| {
-            entry.kind == awaken_contract::REGISTRY_KIND_MODEL_POOL && entry.id == "pool-1"
+            entry.kind == awaken_server_contract::REGISTRY_KIND_MODEL_POOL && entry.id == "pool-1"
         }));
     }
 
@@ -479,7 +479,7 @@ mod tests {
         assert!(frozen.manifest.publication_id.is_none());
         assert_eq!(frozen.agents.pin_for_agent("root").unwrap().version, 1);
         assert!(frozen.manifest.entries.iter().any(|entry| {
-            entry.kind == awaken_contract::REGISTRY_KIND_MODEL && entry.id == "model-1"
+            entry.kind == awaken_server_contract::REGISTRY_KIND_MODEL && entry.id == "model-1"
         }));
     }
 

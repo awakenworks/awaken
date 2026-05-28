@@ -13,10 +13,10 @@ use std::hash::{Hash, Hasher};
 
 use crate::hooks::{PhaseContext, TypedScheduledActionHandler};
 use crate::state::StateCommand;
-use awaken_contract::StateError;
-use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::contract::inference::InferenceOverride;
-use awaken_contract::contract::message::{Message, Role};
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::contract::inference::InferenceOverride;
+use awaken_runtime_contract::contract::message::{Message, Role};
 
 use crate::agent::state::{
     AddContextMessage, ContextMessageAction, ContextMessageStore, ContextThrottleState,
@@ -27,8 +27,8 @@ use crate::agent::state::{
 
 /// Merge multiple inference override payloads with last-wins-per-field semantics.
 pub(super) fn merge_override_payloads(
-    base: &mut Option<awaken_contract::contract::inference::InferenceOverride>,
-    payloads: Vec<awaken_contract::contract::inference::InferenceOverride>,
+    base: &mut Option<awaken_runtime_contract::contract::inference::InferenceOverride>,
+    payloads: Vec<awaken_runtime_contract::contract::inference::InferenceOverride>,
 ) {
     for ovr in payloads {
         if let Some(existing) = base.as_mut() {
@@ -45,7 +45,7 @@ pub(super) fn merge_override_payloads(
 ///   allow-list are kept.
 /// - Then any `ExcludeTool` tool IDs are removed.
 pub(super) fn apply_tool_filter_payloads(
-    tools: &mut Vec<awaken_contract::contract::tool::ToolDescriptor>,
+    tools: &mut Vec<awaken_runtime_contract::contract::tool::ToolDescriptor>,
     exclusion_payloads: Vec<String>,
     inclusion_payloads: Vec<Vec<String>>,
 ) {
@@ -65,9 +65,9 @@ pub(super) fn apply_tool_filter_payloads(
 /// Resolve the winning intercept decision from multiple payloads using
 /// priority: Block > Suspend > SetResult.
 pub(super) fn resolve_intercept_payloads(
-    payloads: Vec<awaken_contract::contract::tool_intercept::ToolInterceptPayload>,
-) -> Option<awaken_contract::contract::tool_intercept::ToolInterceptPayload> {
-    use awaken_contract::contract::tool_intercept::ToolInterceptPayload;
+    payloads: Vec<awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload>,
+) -> Option<awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload> {
+    use awaken_runtime_contract::contract::tool_intercept::ToolInterceptPayload;
 
     fn priority(p: &ToolInterceptPayload) -> u8 {
         match p {
@@ -237,7 +237,7 @@ impl crate::plugins::Plugin for LoopActionHandlersPlugin {
     fn register(
         &self,
         r: &mut crate::plugins::PluginRegistrar,
-    ) -> Result<(), awaken_contract::StateError> {
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         use crate::state::StateKeyOptions;
 
         // State keys for action accumulators
@@ -293,7 +293,7 @@ pub(super) fn apply_context_messages(
     context_messages: Vec<ContextMessage>,
     has_system_prompt: bool,
 ) {
-    use awaken_contract::contract::context_message::ContextMessageTarget;
+    use awaken_runtime_contract::contract::context_message::ContextMessageTarget;
 
     let mut system = Vec::new();
     let mut session = Vec::new();
@@ -302,7 +302,7 @@ pub(super) fn apply_context_messages(
 
     for entry in context_messages {
         let msg = Message {
-            id: Some(awaken_contract::contract::message::gen_message_id()),
+            id: Some(awaken_runtime_contract::contract::message::gen_message_id()),
             role: entry.role,
             content: entry.content,
             tool_calls: None,
@@ -349,7 +349,7 @@ pub(super) fn apply_context_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::context_message::ContextMessage;
+    use awaken_runtime_contract::contract::context_message::ContextMessage;
 
     // ---- apply_context_messages ----
 

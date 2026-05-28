@@ -2,39 +2,41 @@
 
 use super::*;
 use async_trait::async_trait;
-use awaken_contract::RuntimeEventDurability;
-use awaken_contract::contract::commit_coordinator::{
-    EventPublishError, OutboxServerEventPublisher, ServerEventPublishOutcome,
-};
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event_store::{
-    AppendOptions, CanonicalEventDraft, EventReader, EventScope, EventWriter,
-};
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult};
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
-    RunDispatchStatus,
-};
-use awaken_contract::contract::message::{Message, ToolCall};
-use awaken_contract::contract::outbox::OutboxError;
-use awaken_contract::contract::storage::RunRequestOrigin;
-use awaken_contract::contract::storage::{
-    PinnedRegistryEntry, PinnedRegistryManifest, RunRecord, RunStore, RunWaitingState,
-    ThreadRunStore, ThreadStore, WaitingReason,
-};
-use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
-};
-use awaken_contract::now_ms;
-use awaken_contract::thread::Thread;
 use awaken_runtime::extensions::background::{
     BackgroundTaskManager, BackgroundTaskPlugin, TaskParentContext,
     TaskResult as BackgroundTaskResult,
 };
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult, build_agent_env};
 use awaken_runtime::{AgentRuntime, Plugin, ResolvedAgent};
+use awaken_server_contract::RuntimeEventDurability;
+use awaken_server_contract::contract::commit_coordinator::{
+    EventPublishError, OutboxServerEventPublisher, ServerEventPublishOutcome,
+};
+use awaken_server_contract::contract::content::ContentBlock;
+use awaken_server_contract::contract::event_store::{
+    AppendOptions, CanonicalEventDraft, EventReader, EventScope, EventWriter,
+};
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult};
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::mailbox::{
+    MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
+    RunDispatchStatus,
+};
+use awaken_server_contract::contract::message::{Message, ToolCall};
+use awaken_server_contract::contract::outbox::OutboxError;
+use awaken_server_contract::contract::storage::RunRequestOrigin;
+use awaken_server_contract::contract::storage::{
+    PinnedRegistryEntry, PinnedRegistryManifest, RunRecord, RunStore, RunWaitingState,
+    ThreadRunStore, ThreadStore, WaitingReason,
+};
+use awaken_server_contract::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
+use awaken_server_contract::now_ms;
+use awaken_server_contract::thread::Thread;
 use awaken_stores::{InMemoryEventStore, InMemoryMailboxStore, InMemoryStore, PendingMessageStore};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
@@ -65,7 +67,7 @@ fn make_store() -> Arc<InMemoryMailboxStore> {
 fn make_resume() -> ToolCallResume {
     ToolCallResume {
         decision_id: "d1".into(),
-        action: awaken_contract::contract::suspension::ResumeDecisionAction::Resume,
+        action: awaken_server_contract::contract::suspension::ResumeDecisionAction::Resume,
         result: serde_json::json!({"approved": true}),
         reason: None,
         updated_at: 0,
@@ -413,7 +415,9 @@ struct TestDispatchSignalReceipt {
 }
 
 #[async_trait::async_trait]
-impl awaken_contract::contract::mailbox::DispatchSignalReceipt for TestDispatchSignalReceipt {
+impl awaken_server_contract::contract::mailbox::DispatchSignalReceipt
+    for TestDispatchSignalReceipt
+{
     async fn ack(self: Box<Self>) -> Result<(), StorageError> {
         self.acked_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -690,23 +694,26 @@ impl MailboxStore for SignalMailboxStore {
         &self,
         max: usize,
         _expires: Duration,
-    ) -> Result<Vec<awaken_contract::contract::mailbox::DispatchSignalEntry>, StorageError> {
+    ) -> Result<Vec<awaken_server_contract::contract::mailbox::DispatchSignalEntry>, StorageError>
+    {
         let mut signals = self.signals.lock().await;
         let mut entries = Vec::new();
         for _ in 0..max {
             let Some(signal) = signals.pop_front() else {
                 break;
             };
-            entries.push(awaken_contract::contract::mailbox::DispatchSignalEntry {
-                thread_id: signal.thread_id.clone(),
-                dispatch_id: signal.dispatch_id.clone(),
-                receipt: Box::new(TestDispatchSignalReceipt {
-                    signal,
-                    queue: Arc::clone(&self.signals),
-                    acked_count: Arc::clone(&self.acked_count),
-                    nacked_count: Arc::clone(&self.nacked_count),
-                }),
-            });
+            entries.push(
+                awaken_server_contract::contract::mailbox::DispatchSignalEntry {
+                    thread_id: signal.thread_id.clone(),
+                    dispatch_id: signal.dispatch_id.clone(),
+                    receipt: Box::new(TestDispatchSignalReceipt {
+                        signal,
+                        queue: Arc::clone(&self.signals),
+                        acked_count: Arc::clone(&self.acked_count),
+                        nacked_count: Arc::clone(&self.nacked_count),
+                    }),
+                },
+            );
         }
         Ok(entries)
     }
@@ -1308,11 +1315,11 @@ impl RunDispatchExecutor for InferenceFailingMailboxRuntime {
     ) -> Result<AgentRunResult, AgentLoopError> {
         self.run_count.fetch_add(1, Ordering::SeqCst);
         let error = if self.retryable {
-            awaken_contract::contract::executor::InferenceExecutionError::rate_limited(
+            awaken_server_contract::contract::executor::InferenceExecutionError::rate_limited(
                 "429 too many requests",
             )
         } else {
-            awaken_contract::contract::executor::InferenceExecutionError::Unauthorized(
+            awaken_server_contract::contract::executor::InferenceExecutionError::Unauthorized(
                 "403 pre_consume_token_quota_failed".to_string(),
             )
         };
@@ -3592,7 +3599,7 @@ async fn prepare_run_for_dispatch_inherits_previous_runtime_state() {
     let thread_store = Arc::new(InMemoryStore::new());
     let mut previous = seeded_waiting_run("run-prev", "thread-state", "agent-prev");
     previous.status = RunStatus::Done;
-    previous.state = Some(awaken_contract::state::PersistedState {
+    previous.state = Some(awaken_server_contract::state::PersistedState {
         revision: 7,
         extensions: std::collections::HashMap::from([(
             "remote".to_string(),
@@ -3746,9 +3753,9 @@ fn mailbox_submit_result_fields() {
 
 #[tokio::test]
 async fn suspension_aware_sink_sets_flag_on_suspended_tool_call() {
-    use awaken_contract::contract::event_sink::{EventSink, VecEventSink};
-    use awaken_contract::contract::suspension::ToolCallOutcome;
-    use awaken_contract::contract::tool::{ToolResult, ToolStatus};
+    use awaken_server_contract::contract::event_sink::{EventSink, VecEventSink};
+    use awaken_server_contract::contract::suspension::ToolCallOutcome;
+    use awaken_server_contract::contract::tool::{ToolResult, ToolStatus};
 
     let inner: Arc<dyn EventSink> = Arc::new(VecEventSink::new());
     let suspended = Arc::new(AtomicBool::new(false));
@@ -3804,7 +3811,7 @@ async fn suspension_aware_sink_sets_flag_on_suspended_tool_call() {
 
 #[test]
 fn classify_error_ok_is_completed() {
-    use awaken_contract::contract::lifecycle::TerminationReason;
+    use awaken_server_contract::contract::lifecycle::TerminationReason;
     let result = Ok(awaken_runtime::loop_runner::AgentRunResult {
         run_id: "run-1".to_string(),
         response: "done".to_string(),
@@ -3880,8 +3887,8 @@ fn classify_error_inference_failed_is_transient() {
 
 #[test]
 fn classify_error_permanent_inference_error_is_permanent() {
-    use awaken_contract::contract::executor::InferenceExecutionError;
     use awaken_runtime::loop_runner::AgentLoopError;
+    use awaken_server_contract::contract::executor::InferenceExecutionError;
     // HTTP 401/403 (bad credentials / exhausted token quota) is permanent:
     // retrying just burns the full max_attempts budget. Must dead-letter,
     // not nack. Constructed via the real `From` seam every production
@@ -3897,8 +3904,8 @@ fn classify_error_permanent_inference_error_is_permanent() {
 
 #[test]
 fn classify_error_context_overflow_is_permanent() {
-    use awaken_contract::contract::executor::InferenceExecutionError;
     use awaken_runtime::loop_runner::AgentLoopError;
+    use awaken_server_contract::contract::executor::InferenceExecutionError;
     // A prompt that exceeds the context window fails identically on every
     // retry — permanent.
     let result = Err(AgentLoopError::from(
@@ -3912,8 +3919,8 @@ fn classify_error_context_overflow_is_permanent() {
 
 #[test]
 fn classify_error_model_not_found_is_permanent() {
-    use awaken_contract::contract::executor::InferenceExecutionError;
     use awaken_runtime::loop_runner::AgentLoopError;
+    use awaken_server_contract::contract::executor::InferenceExecutionError;
     let result = Err(AgentLoopError::from(
         InferenceExecutionError::ModelNotFound("404 unknown model".to_string()),
     ));
@@ -3925,8 +3932,8 @@ fn classify_error_model_not_found_is_permanent() {
 
 #[test]
 fn classify_error_transient_inference_error_is_transient() {
-    use awaken_contract::contract::executor::InferenceExecutionError;
     use awaken_runtime::loop_runner::AgentLoopError;
+    use awaken_server_contract::contract::executor::InferenceExecutionError;
     // HTTP 429 / 5xx / network are transient: retry with backoff. Guards
     // against over-correcting the permanent-classification fix.
     let rate_limited = Err(AgentLoopError::from(InferenceExecutionError::rate_limited(
@@ -3951,8 +3958,8 @@ fn classify_error_transient_inference_error_is_transient() {
 /// silently defaulting to the wrong recoverability class.
 #[test]
 fn classify_error_covers_all_inference_variants() {
-    use awaken_contract::contract::executor::InferenceExecutionError as IE;
     use awaken_runtime::loop_runner::AgentLoopError;
+    use awaken_server_contract::contract::executor::InferenceExecutionError as IE;
 
     // (variant, expected_permanent). `expected_permanent` mirrors the
     // documented recoverability classes on `InferenceExecutionError`.
@@ -3997,7 +4004,7 @@ fn classify_error_covers_all_inference_variants() {
 fn classify_error_phase_error_is_completed() {
     use awaken_runtime::loop_runner::AgentLoopError;
     let result = Err(AgentLoopError::PhaseError(
-        awaken_contract::StateError::UnknownKey {
+        awaken_server_contract::StateError::UnknownKey {
             key: "bad".to_string(),
         },
     ));
@@ -4163,9 +4170,9 @@ async fn prepare_run_preserves_request_extras_on_run_snapshot() {
 
     let mut request = RunActivation::new("thread-ext", vec![Message::user("hi")])
         .with_agent_id("a1")
-        .with_frontend_tools(vec![awaken_contract::contract::tool::ToolDescriptor::new(
-            "ft1", "FT1", "desc",
-        )]);
+        .with_frontend_tools(vec![
+            awaken_server_contract::contract::tool::ToolDescriptor::new("ft1", "FT1", "desc"),
+        ]);
     let (thread_id, messages) = validate_run_inputs(
         request.thread_id().to_owned(),
         request.messages().to_vec(),
@@ -4185,7 +4192,7 @@ async fn prepare_run_preserves_request_extras_on_run_snapshot() {
 
 #[test]
 fn run_request_extras_serde_roundtrip() {
-    use awaken_contract::contract::tool::ToolDescriptor;
+    use awaken_server_contract::contract::tool::ToolDescriptor;
     let extras = LegacyRunSnapshotExtras {
         overrides: None,
         decisions: vec![],
@@ -4227,7 +4234,7 @@ fn run_request_extras_empty_returns_none() {
 
 #[test]
 fn run_request_extras_apply_to_request() {
-    use awaken_contract::contract::tool::ToolDescriptor;
+    use awaken_server_contract::contract::tool::ToolDescriptor;
     let extras = LegacyRunSnapshotExtras {
         overrides: None,
         decisions: vec![],
@@ -4374,7 +4381,7 @@ async fn prepare_run_defaults_origin_to_user() {
 
 #[test]
 fn mailbox_error_store_variant() {
-    use awaken_contract::contract::storage::StorageError;
+    use awaken_server_contract::contract::storage::StorageError;
     let err: MailboxError = StorageError::NotFound("x".to_string()).into();
     let msg = err.to_string();
     assert!(msg.contains("store error"));
@@ -6075,8 +6082,8 @@ async fn live_then_queue_steers_active_run_without_new_dispatch() {
         assert_eq!(recorded.len(), 2);
         recorded[1].messages.iter().any(|message| {
             message.text() == "live steer"
-                && message.role == awaken_contract::contract::message::Role::User
-                && message.visibility == awaken_contract::contract::message::Visibility::All
+                && message.role == awaken_server_contract::contract::message::Role::User
+                && message.visibility == awaken_server_contract::contract::message::Visibility::All
         })
     };
     assert!(
@@ -6194,7 +6201,7 @@ async fn live_then_queue_falls_back_to_durable_dispatch_when_receiver_unavailabl
 
 #[tokio::test]
 async fn foreground_submit_sends_live_cancel_for_remote_active_dispatch() {
-    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use awaken_server_contract::contract::mailbox::LiveRunCommand;
     use futures::StreamExt;
 
     let mailbox_store = make_store();
@@ -6318,7 +6325,7 @@ async fn foreground_submit_sends_live_cancel_for_remote_active_dispatch() {
 
 #[tokio::test]
 async fn foreground_submit_does_not_prepare_replacement_when_remote_cancel_times_out() {
-    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use awaken_server_contract::contract::mailbox::LiveRunCommand;
     use futures::StreamExt;
 
     let mailbox_store = make_store();
@@ -6610,7 +6617,7 @@ async fn live_then_queue_wakes_local_active_pending_run() {
 /// receive) and return Running rather than falling back.
 #[tokio::test]
 async fn live_then_queue_publishes_for_remote_active_run() {
-    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use awaken_server_contract::contract::mailbox::LiveRunCommand;
     use futures::StreamExt;
 
     let mailbox_store = make_store();
@@ -6685,7 +6692,7 @@ async fn live_then_queue_publishes_for_remote_active_run() {
 
 #[tokio::test]
 async fn live_then_queue_wakes_remote_active_pending_run() {
-    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use awaken_server_contract::contract::mailbox::LiveRunCommand;
     use futures::StreamExt;
 
     let mailbox_store = make_store();
@@ -6830,7 +6837,7 @@ async fn live_then_queue_is_at_least_once_when_ack_lost() {
     let _consumer = tokio::spawn(async move {
         let mut subscriber = subscriber;
         while let Some(entry) = subscriber.next().await {
-            if let awaken_contract::contract::mailbox::LiveRunCommand::Messages(ref msgs) =
+            if let awaken_server_contract::contract::mailbox::LiveRunCommand::Messages(ref msgs) =
                 entry.command
             {
                 for m in msgs {
@@ -6917,7 +6924,7 @@ async fn live_then_queue_rejects_remote_mismatched_expected_run_id() {
 
 #[tokio::test]
 async fn send_decision_live_delivers_to_remote_waiting_run() {
-    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use awaken_server_contract::contract::mailbox::LiveRunCommand;
     use futures::StreamExt;
 
     let mailbox_store = make_store();
@@ -6965,7 +6972,7 @@ async fn send_decision_live_delivers_to_remote_waiting_run() {
 
 #[tokio::test]
 async fn runtime_event_capture_records_mailbox_decision_received() {
-    use awaken_contract::contract::mailbox::LiveRunCommand;
+    use awaken_server_contract::contract::mailbox::LiveRunCommand;
     use futures::StreamExt;
 
     let mailbox_store = make_store();
@@ -7834,8 +7841,8 @@ async fn background_task_completion_should_enqueue_internal_wake_message() {
         .unwrap_or_default();
     assert!(
         messages.iter().any(|msg| {
-            msg.role == awaken_contract::contract::message::Role::User
-                && msg.visibility == awaken_contract::contract::message::Visibility::Internal
+            msg.role == awaken_server_contract::contract::message::Role::User
+                && msg.visibility == awaken_server_contract::contract::message::Visibility::Internal
                 && msg.text().contains("<background-task-event")
                 && msg.text().contains("\"done\":true")
         }),
@@ -7856,7 +7863,7 @@ fn send_decision_unknown_id_returns_false() {
         "tc-1".to_string(),
         ToolCallResume {
             decision_id: "d1".into(),
-            action: awaken_contract::contract::suspension::ResumeDecisionAction::Resume,
+            action: awaken_server_contract::contract::suspension::ResumeDecisionAction::Resume,
             result: serde_json::json!({"approved": true}),
             reason: None,
             updated_at: 0,
@@ -8313,7 +8320,7 @@ async fn reconnect_sink_succeeds_for_running_worker() {
 
 #[tokio::test]
 async fn build_dispatch_extras_roundtrip_with_decisions() {
-    use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+    use awaken_server_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 
     let decisions = vec![(
         "call-1".to_string(),

@@ -7,18 +7,18 @@ use std::{
 };
 
 use async_trait::async_trait;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::event_store::{
     CanonicalEvent, CanonicalEventId, EventLookup, EventStoreError,
 };
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::outbox::{
     OUTBOX_LANE_CANONICAL, OUTBOX_TARGET_PROTOCOL_PROJECTOR, OutboxMessage,
 };
-use awaken_contract::contract::protocol_replay_log::{
+use awaken_server_contract::contract::protocol_replay_log::{
     ProtocolReplayDraft, ProtocolReplayError, ProtocolReplayRecord, ProtocolReplayWriter,
     SourceEventCursor,
 };
-use awaken_contract::contract::transport::Transcoder;
+use awaken_server_contract::contract::transport::Transcoder;
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::Value;

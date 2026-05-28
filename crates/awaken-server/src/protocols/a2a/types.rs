@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use awaken_contract::contract::mailbox::RunDispatch;
-use awaken_contract::contract::storage::RunRecord;
 use awaken_protocol_a2a::{PushNotificationConfig, Task, TaskState};
 use awaken_runtime::RunActivation;
+use awaken_server_contract::contract::mailbox::RunDispatch;
+use awaken_server_contract::contract::storage::RunRecord;
 use serde::{Deserialize, Serialize};
 
 pub(super) const A2A_VERSION: &str = "1.0";

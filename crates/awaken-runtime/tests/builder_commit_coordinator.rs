@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::commit_coordinator::{
+use awaken_runtime::builder::AgentRuntimeBuilder;
+use awaken_runtime_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     TransactionScopeId,
 };
-use awaken_contract::contract::storage::ThreadRunStore;
-use awaken_runtime::builder::AgentRuntimeBuilder;
+use awaken_runtime_contract::contract::storage::ThreadRunStore;
 use awaken_stores::InMemoryStore;
 
 struct NoopCoord {
@@ -58,12 +58,12 @@ fn builder_wires_commit_coordinator_into_runtime() {
 /// and the checkpoint-drain buffer share identity.
 #[test]
 fn run_request_accepts_shared_event_buffer() {
-    use awaken_contract::contract::commit_coordinator::CanonicalEventStager;
-    use awaken_contract::contract::event_store::{
-        CanonicalEventDraft, CanonicalEventKind, EventScope,
-    };
     use awaken_runtime::EventBuffer;
     use awaken_runtime::RunActivation;
+    use awaken_runtime_contract::contract::commit_coordinator::CanonicalEventStager;
+    use awaken_runtime_contract::contract::event_store::{
+        CanonicalEventDraft, CanonicalEventKind, EventScope,
+    };
     use serde_json::json;
 
     let buffer = Arc::new(EventBuffer::new());

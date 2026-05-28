@@ -21,8 +21,8 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use awaken_contract::PluginConfigKey;
-use awaken_contract::config_loader::{
+use awaken_runtime_contract::PluginConfigKey;
+use awaken_runtime_contract::config_loader::{
     ConfigLoadError, load_config_from_file, load_config_from_str,
 };
 

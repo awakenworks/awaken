@@ -281,17 +281,17 @@ fn usage_stats_empty_presence_freq_is_zero() {
     assert_eq!(entry.presence_freq(10), 0.0);
 }
 
-use awaken_contract::contract::profile_store::ProfileKey;
+use awaken_runtime_contract::contract::profile_store::ProfileKey;
 
 use crate::state::{AgentToolPriors, AgentToolPriorsKey, DeferToolAction, PromoteToolAction};
-use awaken_contract::model::ScheduledActionSpec;
+use awaken_runtime_contract::model::ScheduledActionSpec;
 
 #[test]
 fn defer_tool_action_spec() {
     assert_eq!(DeferToolAction::KEY, "deferred_tools.defer");
     assert_eq!(
         DeferToolAction::PHASE,
-        awaken_contract::model::Phase::BeforeInference
+        awaken_runtime_contract::model::Phase::BeforeInference
     );
 }
 
@@ -300,7 +300,7 @@ fn promote_tool_action_spec() {
     assert_eq!(PromoteToolAction::KEY, "deferred_tools.promote");
     assert_eq!(
         PromoteToolAction::PHASE,
-        awaken_contract::model::Phase::BeforeInference
+        awaken_runtime_contract::model::Phase::BeforeInference
     );
 }
 

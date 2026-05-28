@@ -5,11 +5,11 @@ use std::sync::Arc;
 #[cfg(feature = "a2a")]
 use crate::backend::ExecutionBackendFactory;
 use crate::plugins::Plugin;
-use awaken_contract::contract::executor::LlmExecutor;
-use awaken_contract::contract::tool::Tool;
+use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::contract::tool::Tool;
 
 use crate::registry::model_capabilities::ModelCapabilityPatch;
-use awaken_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
+use awaken_runtime_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 
 // ---------------------------------------------------------------------------
 // ToolRegistry

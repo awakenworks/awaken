@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use awaken_contract::contract::storage::StorageError;
-use awaken_contract::contract::versioned_registry::{
+use awaken_server_contract::contract::storage::StorageError;
+use awaken_server_contract::contract::versioned_registry::{
     ConfigRevisionRef, RegistryPublication, RegistryResourcePublish, VersionRef, VersionedRecord,
     VersionedRegistryError, VersionedResourceState,
 };

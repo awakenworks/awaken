@@ -6,8 +6,8 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::transport::Transcoder;
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::transport::Transcoder;
 
 use crate::event_relay::relay_events_stream;
 use crate::http_sse::format_sse_data;
@@ -90,8 +90,8 @@ pub fn format_relay_error(msg: &str) -> Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::event::AgentEvent;
-    use awaken_contract::contract::transport::Identity;
+    use awaken_server_contract::contract::event::AgentEvent;
+    use awaken_server_contract::contract::transport::Identity;
 
     #[tokio::test]
     async fn wire_sse_relay_transcodes_identity() {

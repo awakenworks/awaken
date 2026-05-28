@@ -22,11 +22,11 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use awaken_contract::PluginConfigKey;
-use awaken_contract::config_loader::{
+use awaken_runtime_contract::PluginConfigKey;
+use awaken_runtime_contract::config_loader::{
     ConfigLoadError, load_config_from_file, load_config_from_str,
 };
-use awaken_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
 use awaken_tool_pattern::{FieldCondition, MatchOp, PathSegment, parse_pattern};
 
 use crate::output_matcher::{ContentMatcher, OutputMatcher, ToolStatusMatcher};
@@ -288,12 +288,12 @@ fn parse_message_entry(
         "suffix_system" => ContextMessage::suffix_system(&key, &entry.content),
         "session" => ContextMessage::session(
             &key,
-            awaken_contract::contract::message::Role::System,
+            awaken_runtime_contract::contract::message::Role::System,
             &entry.content,
         ),
         "conversation" => ContextMessage::conversation(
             &key,
-            awaken_contract::contract::message::Role::System,
+            awaken_runtime_contract::contract::message::Role::System,
             &entry.content,
         ),
         other => {

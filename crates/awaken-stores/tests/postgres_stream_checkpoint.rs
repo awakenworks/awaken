@@ -1,6 +1,8 @@
 #![cfg(feature = "postgres")]
 
-use awaken_contract::contract::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use awaken_server_contract::contract::stream_checkpoint::{
+    StreamCheckpoint, StreamCheckpointStore,
+};
 use awaken_stores::PostgresStore;
 use sqlx::PgPool;
 

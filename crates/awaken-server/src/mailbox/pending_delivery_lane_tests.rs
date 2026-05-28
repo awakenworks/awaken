@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::{
-    DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message,
-};
-use awaken_contract::contract::storage::{
-    PinnedRegistryManifest, RunRecord, RunStore, ThreadStore,
-};
-use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_runtime::RunActivation;
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::message::{
+    DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message,
+};
+use awaken_server_contract::contract::storage::{
+    PinnedRegistryManifest, RunRecord, RunStore, ThreadStore,
+};
+use awaken_server_contract::contract::suspension::ToolCallResume;
 use awaken_stores::{InMemoryMailboxStore, InMemoryStore, PendingMessageStore};
 
 use super::*;
@@ -249,7 +249,7 @@ async fn targeted_next_step_does_not_fall_through_to_new_run() {
 
 #[tokio::test]
 async fn resume_input_does_not_consume_unrelated_queued_new_run() {
-    use awaken_contract::contract::tool_intercept::RunMode;
+    use awaken_server_contract::contract::tool_intercept::RunMode;
 
     let thread_store = Arc::new(InMemoryStore::new());
     let mailbox = Arc::new(Mailbox::new_with_pending_thread_run_store(

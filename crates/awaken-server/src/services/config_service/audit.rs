@@ -1,4 +1,4 @@
-use awaken_contract::AuditAction;
+use awaken_server_contract::AuditAction;
 use axum::http::HeaderMap;
 use serde_json::Value;
 

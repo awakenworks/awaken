@@ -27,8 +27,8 @@
 //! the synthetic mock tests in `mcp_tests.rs` — the reference server
 //! doesn't fault on demand.
 
-use awaken_contract::contract::tool::ToolCallContext;
 use awaken_ext_mcp::{McpServerConnectionConfig, McpToolRegistryManager};
+use awaken_runtime_contract::contract::tool::ToolCallContext;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

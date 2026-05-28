@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use awaken_contract::contract::executor::{
+use awaken_runtime_contract::contract::executor::{
     InferenceExecutionError, InferenceStream, LlmStreamEvent,
 };
 use futures::Stream;

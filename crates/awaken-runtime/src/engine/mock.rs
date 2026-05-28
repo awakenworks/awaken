@@ -4,10 +4,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::registry_spec::ModelSpec;
+use awaken_runtime_contract::contract::content::ContentBlock;
+use awaken_runtime_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_runtime_contract::registry_spec::ModelSpec;
 
 /// A mock LLM executor that returns canned responses without calling any API.
 /// Used for testing and development.
@@ -130,7 +132,7 @@ impl LlmExecutor for MockLlmExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::message::Message;
+    use awaken_runtime_contract::contract::message::Message;
 
     fn make_request() -> InferenceRequest {
         InferenceRequest {

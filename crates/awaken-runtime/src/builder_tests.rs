@@ -2,15 +2,15 @@
 
 use super::*;
 use async_trait::async_trait;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_runtime_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
+use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 #[cfg(feature = "a2a")]
-use awaken_contract::contract::lifecycle::TerminationReason;
-use awaken_contract::contract::tool::{
+use awaken_runtime_contract::contract::lifecycle::TerminationReason;
+use awaken_runtime_contract::contract::tool::{
     ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 #[cfg(feature = "a2a")]
-use awaken_contract::registry_spec::RemoteEndpoint;
+use awaken_runtime_contract::registry_spec::RemoteEndpoint;
 use serde_json::Value;
 #[cfg(feature = "a2a")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -288,7 +288,7 @@ fn builder_with_plugin() {
         fn register(
             &self,
             _registrar: &mut PluginRegistrar,
-        ) -> Result<(), awaken_contract::StateError> {
+        ) -> Result<(), awaken_runtime_contract::StateError> {
             Ok(())
         }
     }
@@ -435,10 +435,10 @@ fn builder_model_spec_provider_name() {
 
 #[test]
 fn builder_with_profile_store() {
-    use awaken_contract::contract::profile_store::{
+    use awaken_runtime_contract::contract::profile_store::{
         ProfileEntry, ProfileOwner as POwner, ProfileStore,
     };
-    use awaken_contract::contract::storage::StorageError;
+    use awaken_runtime_contract::contract::storage::StorageError;
 
     struct NoOpProfileStore;
 
@@ -579,7 +579,7 @@ fn duplicate_model_errors_at_build() {
                 matches!(
                     e,
                     BuildError::ConfigValidation(
-                        awaken_contract::ConfigValidationError::DuplicateModelId { ref id }
+                        awaken_runtime_contract::ConfigValidationError::DuplicateModelId { ref id }
                     ) if id == "dup-model"
                 ),
                 "expected DuplicateModelId at builder surface, got: {e:?}"
@@ -642,10 +642,10 @@ fn builder_rejects_invalid_model_specs() {
         (
             "duplicate input modalities",
             ModelSpec {
-                modalities: awaken_contract::registry_spec::Modalities {
+                modalities: awaken_runtime_contract::registry_spec::Modalities {
                     input: vec![
-                        awaken_contract::registry_spec::Modality::Text,
-                        awaken_contract::registry_spec::Modality::Text,
+                        awaken_runtime_contract::registry_spec::Modality::Text,
+                        awaken_runtime_contract::registry_spec::Modality::Text,
                     ],
                     output: vec![],
                 },
@@ -719,7 +719,9 @@ async fn builder_runtime_resolves_persistent_activation_as_replayable() {
 
     let activation = crate::RunActivation::new(
         "thread",
-        vec![awaken_contract::contract::message::Message::user("hi")],
+        vec![awaken_runtime_contract::contract::message::Message::user(
+            "hi",
+        )],
     )
     .with_agent_id("test-agent");
     let plan = runtime
@@ -737,6 +739,6 @@ async fn builder_runtime_resolves_persistent_activation_as_replayable() {
         runtime.registry_version()
     );
     assert!(plan.scope.manifest.entries.iter().any(|entry| {
-        entry.kind == awaken_contract::REGISTRY_KIND_AGENT && entry.id == "test-agent"
+        entry.kind == awaken_runtime_contract::REGISTRY_KIND_AGENT && entry.id == "test-agent"
     }));
 }

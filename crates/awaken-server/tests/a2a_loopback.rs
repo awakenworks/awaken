@@ -17,17 +17,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::ModelSpec;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_contract::contract::message::ToolCall;
-use awaken_contract::contract::storage::{RunQuery, RunStore};
-use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
-};
-use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::engine::executor::GenaiExecutor;
 use awaken_runtime::extensions::background::{
@@ -37,6 +26,19 @@ use awaken_runtime::extensions::background::{
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
+use awaken_server_contract::ModelSpec;
+use awaken_server_contract::contract::content::ContentBlock;
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
+use awaken_server_contract::contract::message::ToolCall;
+use awaken_server_contract::contract::storage::{RunQuery, RunStore};
+use awaken_server_contract::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
+use awaken_server_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use awaken_stores::InMemoryMailboxStore;
 use awaken_stores::memory::InMemoryStore;
 use serde_json::Value;
@@ -791,7 +793,7 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
         .with_max_rounds(3)
         .with_delegate("worker-remote");
 
-    let executor: Arc<dyn awaken_contract::contract::executor::LlmExecutor> =
+    let executor: Arc<dyn awaken_server_contract::contract::executor::LlmExecutor> =
         Arc::new(GenaiExecutor::with_client(build_genai_client()));
 
     let store = Arc::new(InMemoryStore::new());

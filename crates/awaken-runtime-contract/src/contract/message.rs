@@ -204,7 +204,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// use awaken_contract::contract::message::Message;
+    /// use awaken_runtime_contract::contract::message::Message;
     ///
     /// let msg = Message::system("You are helpful");
     /// assert_eq!(msg.text(), "You are helpful");
@@ -252,7 +252,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// use awaken_contract::contract::message::Message;
+    /// use awaken_runtime_contract::contract::message::Message;
     ///
     /// let msg = Message::user("Hello");
     /// assert_eq!(msg.text(), "Hello");
@@ -339,7 +339,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// use awaken_contract::contract::message::Message;
+    /// use awaken_runtime_contract::contract::message::Message;
     ///
     /// let msg = Message::user("Hello world");
     /// assert_eq!(msg.text(), "Hello world");

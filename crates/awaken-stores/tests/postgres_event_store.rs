@@ -2,11 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use awaken_contract::contract::event_store::{
+use awaken_server_contract::contract::event_store::{
     AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventCursor, EventLookup, EventReader,
     EventScope, EventStoreError, EventSubscriber, EventWriter, SubscribeStart,
 };
-use awaken_contract::contract::outbox::{
+use awaken_server_contract::contract::outbox::{
     OUTBOX_LANE_CANONICAL, OUTBOX_TARGET_PROTOCOL_PROJECTOR, OutboxStatus, OutboxStore,
 };
 use awaken_stores::PostgresStore;

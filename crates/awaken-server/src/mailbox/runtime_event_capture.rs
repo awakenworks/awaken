@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use awaken_contract::contract::commit_coordinator::{
+use awaken_runtime::EventBuffer;
+use awaken_server_contract::contract::commit_coordinator::{
     CanonicalEventStager, OutboxServerEventPublisher,
 };
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::mailbox::RunDispatch;
-use awaken_contract::{
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::mailbox::RunDispatch;
+use awaken_server_contract::{
     AgentEventNormalizationContext, DurableEventSink, RuntimeEventDurability,
     ScopedAgentEventNormalizer,
 };
-use awaken_runtime::EventBuffer;
 
 use crate::transport::channel_sink::ReconnectableEventSink;
 

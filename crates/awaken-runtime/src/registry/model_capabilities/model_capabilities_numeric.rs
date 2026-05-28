@@ -1,4 +1,4 @@
-use awaken_contract::registry_spec::ModelSpec;
+use awaken_runtime_contract::registry_spec::ModelSpec;
 
 use super::{CapabilitySource, ModelCapabilityPatch, ModelCapabilitySources};
 

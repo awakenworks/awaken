@@ -1,4 +1,4 @@
-use awaken_contract::model::Phase;
+use awaken_runtime_contract::model::Phase;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectDispatchReport {

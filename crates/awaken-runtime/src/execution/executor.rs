@@ -1,10 +1,10 @@
 //! Tool execution strategies: Sequential and Parallel.
 
 use async_trait::async_trait;
-use awaken_contract::contract::message::ToolCall;
-use awaken_contract::contract::suspension::ToolCallOutcome;
-use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolOutput, ToolResult};
-use awaken_contract::state::StateCommand;
+use awaken_runtime_contract::contract::message::ToolCall;
+use awaken_runtime_contract::contract::suspension::ToolCallOutcome;
+use awaken_runtime_contract::contract::tool::{Tool, ToolCallContext, ToolOutput, ToolResult};
+use awaken_runtime_contract::state::StateCommand;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -230,7 +230,7 @@ async fn execute_tool_with_runtime_context(
     tool: &Arc<dyn Tool>,
     call: &ToolCall,
     ctx: &ToolCallContext,
-) -> Result<ToolOutput, awaken_contract::contract::tool::ToolError> {
+) -> Result<ToolOutput, awaken_runtime_contract::contract::tool::ToolError> {
     scope_tool_lineage_context(
         ToolLineageContext {
             run_id: ctx.run_identity.run_id.clone(),
@@ -247,14 +247,14 @@ async fn execute_tool_with_runtime_context(
     tool: &Arc<dyn Tool>,
     call: &ToolCall,
     ctx: &ToolCallContext,
-) -> Result<ToolOutput, awaken_contract::contract::tool::ToolError> {
+) -> Result<ToolOutput, awaken_runtime_contract::contract::tool::ToolError> {
     tool.execute(call.arguments.clone(), ctx).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::tool::{ToolDescriptor, ToolError, ToolOutput};
+    use awaken_runtime_contract::contract::tool::{ToolDescriptor, ToolError, ToolOutput};
     use serde_json::{Value, json};
 
     #[cfg(feature = "background")]
@@ -268,7 +268,7 @@ mod tests {
     #[cfg(feature = "background")]
     use crate::state::StateStore;
     #[cfg(feature = "background")]
-    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
 
     struct EchoTool;
 

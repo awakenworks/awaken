@@ -12,20 +12,20 @@ use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
-use awaken_contract::contract::commit_coordinator::{
+use awaken_runtime::RunActivation;
+use awaken_server_contract::contract::commit_coordinator::{
     CommitCoordinator, OutboxServerEventPublisher,
 };
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::mailbox::{MailboxStore, RunDispatchStatus};
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::run::{
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::mailbox::{MailboxStore, RunDispatchStatus};
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::run::{
     RunActivationSnapshot, RunInputSnapshot, RunIntent, RunKind, RunOptions, RunTraceContext,
 };
-use awaken_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
-use awaken_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
-use awaken_contract::contract::tool_intercept::{AdapterKind, RunMode};
-use awaken_runtime::RunActivation;
+use awaken_server_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
+use awaken_server_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
+use awaken_server_contract::contract::tool_intercept::{AdapterKind, RunMode};
 
 use crate::transport::channel_sink::ReconnectableEventSink;
 
@@ -70,14 +70,14 @@ pub(crate) const ACTIVE_RUN_CONFLICT_MESSAGE: &str =
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct LegacyRunSnapshotExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    overrides: Option<awaken_contract::contract::inference::InferenceOverride>,
+    overrides: Option<awaken_server_contract::contract::inference::InferenceOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     decisions: Vec<(
         String,
-        awaken_contract::contract::suspension::ToolCallResume,
+        awaken_server_contract::contract::suspension::ToolCallResume,
     )>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
+    frontend_tools: Vec<awaken_server_contract::contract::tool::ToolDescriptor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     continue_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,9 +167,9 @@ impl LegacyRunSnapshotExtras {
 }
 
 pub(super) struct LegacyRunRequestSnapshotAdapter {
-    pub snapshot: awaken_contract::contract::storage::RunRequestSnapshot,
+    pub snapshot: awaken_server_contract::contract::storage::RunRequestSnapshot,
     pub input: RunInputSnapshot,
-    pub manifest: awaken_contract::contract::storage::PinnedRegistryManifest,
+    pub manifest: awaken_server_contract::contract::storage::PinnedRegistryManifest,
     pub thread_id: String,
     pub agent_id: Option<String>,
     pub parent_run_id: Option<String>,
@@ -243,7 +243,7 @@ impl TryFrom<LegacyRunRequestSnapshotAdapter> for RunActivationSnapshot {
 
 pub(super) fn legacy_input_snapshot(
     run: &RunRecord,
-    snapshot: &awaken_contract::contract::storage::RunRequestSnapshot,
+    snapshot: &awaken_server_contract::contract::storage::RunRequestSnapshot,
 ) -> RunInputSnapshot {
     if let Some(input) = run.input.as_ref() {
         return RunInputSnapshot {
@@ -298,7 +298,7 @@ impl awaken_runtime::inbox::OnInboxClosed for TaskDoneMailboxNotify {
         // Spawn because OnInboxClosed::closed is sync but enqueue+dispatch is async
         tokio::spawn(async move {
             let mut request = RunActivation::new(thread_id.clone(), vec![wake_message])
-                .with_origin(awaken_contract::contract::storage::RunRequestOrigin::Internal)
+                .with_origin(awaken_server_contract::contract::storage::RunRequestOrigin::Internal)
                 .with_run_mode(RunMode::InternalWake)
                 .with_adapter(AdapterKind::Internal);
             if let Some(run_id) = continue_run_id {

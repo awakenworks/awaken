@@ -1,8 +1,8 @@
 use std::any::Any;
 
 use crate::state::MutationBatch;
-use awaken_contract::registry_spec::AgentSpec;
-use awaken_contract::{PluginConfigKey, StateError};
+use awaken_runtime_contract::registry_spec::AgentSpec;
+use awaken_runtime_contract::{PluginConfigKey, StateError};
 
 use super::{PluginDescriptor, PluginRegistrar};
 

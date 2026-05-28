@@ -1,10 +1,10 @@
 use async_trait::async_trait;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore,
     checkpoint_parent_thread_id, message_append,
 };
-use awaken_contract::thread::Thread;
+use awaken_server_contract::thread::Thread;
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 
@@ -505,8 +505,8 @@ fn run_record_from_pg_row(row: PgRow) -> RunRecord {
     }
 }
 
-pub(super) fn parse_run_status(s: &str) -> awaken_contract::contract::lifecycle::RunStatus {
-    use awaken_contract::contract::lifecycle::RunStatus;
+pub(super) fn parse_run_status(s: &str) -> awaken_server_contract::contract::lifecycle::RunStatus {
+    use awaken_server_contract::contract::lifecycle::RunStatus;
     match s {
         "created" => RunStatus::Created,
         "running" => RunStatus::Running,

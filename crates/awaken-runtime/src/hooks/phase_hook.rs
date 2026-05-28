@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::state::StateCommand;
-use awaken_contract::StateError;
+use awaken_runtime_contract::StateError;
 
 use super::PhaseContext;
 

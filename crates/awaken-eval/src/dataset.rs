@@ -12,7 +12,7 @@
 //! avoids non-trivial Vec-merge semantics. [`NoConfigPatch`] enforces it
 //! at the contract layer.
 
-use awaken_contract::config_record::{ConfigRecordMerge, NoConfigPatch};
+use awaken_runtime_contract::config_record::{ConfigRecordMerge, NoConfigPatch};
 use serde::{Deserialize, Serialize};
 
 use crate::fixture::Fixture;
@@ -94,7 +94,7 @@ mod tests {
     use super::*;
     use crate::expectation::Expectation;
     use crate::fixture::{Fixture, MockResponse};
-    use awaken_contract::config_record::{
+    use awaken_runtime_contract::config_record::{
         ConfigRecord, RecordMeta, validate_config_record, validate_config_record_overrides,
     };
     use serde_json::json;

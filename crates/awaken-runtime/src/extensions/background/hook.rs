@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use awaken_contract::StateError;
-use awaken_contract::model::Phase;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::model::Phase;
 
 use crate::hooks::{PhaseContext, PhaseHook};
 use crate::state::StateCommand;

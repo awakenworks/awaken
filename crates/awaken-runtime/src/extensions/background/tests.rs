@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_contract::contract::identity::RunIdentity;
-use awaken_contract::model::Phase;
+use awaken_runtime_contract::contract::identity::RunIdentity;
+use awaken_runtime_contract::model::Phase;
 
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
@@ -1808,7 +1808,7 @@ fn plugin_descriptor_returns_correct_name() {
 fn plugin_on_activate_is_noop() {
     let manager = Arc::new(BackgroundTaskManager::new());
     let plugin = BackgroundTaskPlugin::new(manager.clone());
-    let spec = awaken_contract::registry_spec::AgentSpec::default();
+    let spec = awaken_runtime_contract::registry_spec::AgentSpec::default();
     let mut patch = crate::state::MutationBatch::new();
     let result = plugin.on_activate(&spec, &mut patch);
     assert!(result.is_ok());
@@ -2772,7 +2772,7 @@ async fn spawn_fails_when_background_store_is_not_configured() {
 
 #[tokio::test]
 async fn spawn_agent_fails_when_background_keys_are_not_registered() {
-    use awaken_contract::StateError;
+    use awaken_runtime_contract::StateError;
 
     let store = StateStore::new();
     let manager = Arc::new(BackgroundTaskManager::new());

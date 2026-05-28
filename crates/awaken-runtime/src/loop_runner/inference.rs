@@ -1,17 +1,15 @@
 //! LLM inference execution.
 use super::{AgentLoopError, now_ms};
-use crate::cancellation::CancellationToken;
-use crate::registry::ResolvedAgent;
-use awaken_contract::contract::content::ContentBlock;
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::event_sink::EventSink;
-use awaken_contract::contract::executor::{
+use crate::{cancellation::CancellationToken, registry::ResolvedAgent};
+use awaken_runtime_contract::contract;
+use contract::executor::{
     InFlightTool, InferenceExecutionError, InferenceRequest, InterruptCause, InterruptSnapshot,
     LlmStreamEvent, RecoveryPlan,
 };
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::contract::message::{Message, ToolCall};
-use awaken_contract::contract::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use contract::inference::{StopReason, StreamResult, TokenUsage};
+use contract::message::{Message, ToolCall};
+use contract::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use contract::{content::ContentBlock, event::AgentEvent, event_sink::EventSink};
 use futures::StreamExt;
 use std::time::Duration;
 
@@ -661,14 +659,14 @@ mod tests {
     use crate::engine::retry::LlmRetryPolicy;
     use crate::registry::ResolvedAgent;
     use async_trait::async_trait;
-    use awaken_contract::contract::content::ContentBlock;
-    use awaken_contract::contract::event::AgentEvent;
-    use awaken_contract::contract::event_sink::VecEventSink;
-    use awaken_contract::contract::executor::{
+    use contract::content::ContentBlock;
+    use contract::event::AgentEvent;
+    use contract::event_sink::VecEventSink;
+    use contract::executor::{
         InferenceExecutionError, InferenceRequest, InferenceStream, LlmStreamEvent,
     };
-    use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::contract::message::Message;
+    use contract::inference::{StopReason, StreamResult, TokenUsage};
+    use contract::message::Message;
 
     // -- Scripted LLM executor used by every test in this module --
 
@@ -697,7 +695,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for ScriptedPerAttemptExecutor {
+    impl contract::executor::LlmExecutor for ScriptedPerAttemptExecutor {
         async fn execute(
             &self,
             _r: InferenceRequest,
@@ -1209,7 +1207,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for FailAfterNEventsExecutor {
+    impl contract::executor::LlmExecutor for FailAfterNEventsExecutor {
         async fn execute(
             &self,
             _request: InferenceRequest,
@@ -1321,7 +1319,7 @@ mod tests {
     struct ImmediateStreamFailExecutor;
 
     #[async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for ImmediateStreamFailExecutor {
+    impl contract::executor::LlmExecutor for ImmediateStreamFailExecutor {
         async fn execute(
             &self,
             _request: InferenceRequest,
@@ -1438,7 +1436,7 @@ mod tests {
     struct HangingExecutor;
 
     #[async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for HangingExecutor {
+    impl contract::executor::LlmExecutor for HangingExecutor {
         async fn execute(
             &self,
             _request: InferenceRequest,
@@ -1816,7 +1814,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_contract::contract::executor::LlmExecutor for StallingExecutor {
+    impl contract::executor::LlmExecutor for StallingExecutor {
         async fn execute(
             &self,
             _r: InferenceRequest,
@@ -2003,9 +2001,7 @@ mod tests {
 
     #[tokio::test]
     async fn checkpoint_is_flushed_on_mid_stream_interruption() {
-        use awaken_contract::contract::stream_checkpoint::{
-            InMemoryStreamCheckpointStore, StreamCheckpointStore,
-        };
+        use contract::stream_checkpoint::{InMemoryStreamCheckpointStore, StreamCheckpointStore};
 
         // Attempt 1 emits 8 text deltas then fails. With
         // CHECKPOINT_FLUSH_DELTAS = 4 the writer must flush at least
@@ -2062,7 +2058,7 @@ mod tests {
 
     #[tokio::test]
     async fn cross_process_resume_injects_continuation_from_checkpoint() {
-        use awaken_contract::contract::stream_checkpoint::{
+        use contract::stream_checkpoint::{
             InMemoryStreamCheckpointStore, StreamCheckpoint, StreamCheckpointStore,
         };
 
@@ -2092,7 +2088,7 @@ mod tests {
         }
 
         #[async_trait]
-        impl awaken_contract::contract::executor::LlmExecutor for CapturingExec {
+        impl contract::executor::LlmExecutor for CapturingExec {
             async fn execute(
                 &self,
                 _r: InferenceRequest,
@@ -2195,7 +2191,7 @@ mod tests {
 
     #[tokio::test]
     async fn cross_process_resume_with_completed_tool_checkpoint_short_circuits_to_tool_use() {
-        use awaken_contract::contract::stream_checkpoint::{
+        use contract::stream_checkpoint::{
             InMemoryStreamCheckpointStore, StreamCheckpoint, StreamCheckpointStore,
         };
         use serde_json::json;
@@ -2220,7 +2216,7 @@ mod tests {
         struct NeverCallMe;
 
         #[async_trait]
-        impl awaken_contract::contract::executor::LlmExecutor for NeverCallMe {
+        impl contract::executor::LlmExecutor for NeverCallMe {
             async fn execute(
                 &self,
                 _r: InferenceRequest,

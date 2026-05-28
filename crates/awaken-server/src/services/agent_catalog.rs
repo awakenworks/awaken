@@ -10,8 +10,8 @@
 //! `Warning` issues emit `tracing::warn!` and the operation proceeds. This
 //! helper centralizes the loop so the three sites can't drift on policy.
 
-use awaken_contract::AgentSpec;
-use awaken_contract::registry_spec::IssueSeverity;
+use awaken_server_contract::AgentSpec;
+use awaken_server_contract::registry_spec::IssueSeverity;
 
 /// Run `AgentSpec::validate_catalog`: warnings emit `tracing::warn!`, the
 /// raw error messages are returned (empty on success). The tracing target

@@ -3,14 +3,16 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_contract::contract::config_store::ConfigStore;
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
-use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-use awaken_contract::{
+use awaken_runtime::builder::AgentRuntimeBuilder;
+use awaken_server_contract::contract::config_store::ConfigStore;
+use awaken_server_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, LlmExecutor,
+};
+use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
+use awaken_server_contract::{
     AgentSpec, BuiltinSeedSet, BuiltinSpec, ConfigRecord, ModelSpec, ProviderSpec, RecordMeta,
     SkillSpec,
 };
-use awaken_runtime::builder::AgentRuntimeBuilder;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
@@ -117,7 +119,7 @@ impl ConfigStore for BlockingConfigStore {
         &self,
         namespace: &str,
         id: &str,
-    ) -> Result<Option<Value>, awaken_contract::contract::storage::StorageError> {
+    ) -> Result<Option<Value>, awaken_server_contract::contract::storage::StorageError> {
         ConfigStore::get(self.inner.as_ref(), namespace, id).await
     }
 
@@ -126,7 +128,7 @@ impl ConfigStore for BlockingConfigStore {
         namespace: &str,
         offset: usize,
         limit: usize,
-    ) -> Result<Vec<(String, Value)>, awaken_contract::contract::storage::StorageError> {
+    ) -> Result<Vec<(String, Value)>, awaken_server_contract::contract::storage::StorageError> {
         if self.block_lists.load(Ordering::SeqCst) {
             self.list_started.store(true, Ordering::SeqCst);
             self.release_lists.notified().await;
@@ -140,7 +142,7 @@ impl ConfigStore for BlockingConfigStore {
         namespace: &str,
         id: &str,
         value: &Value,
-    ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+    ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
         ConfigStore::put(self.inner.as_ref(), namespace, id, value).await
     }
 
@@ -148,7 +150,7 @@ impl ConfigStore for BlockingConfigStore {
         &self,
         namespace: &str,
         id: &str,
-    ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+    ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
         ConfigStore::delete(self.inner.as_ref(), namespace, id).await
     }
 }
@@ -159,7 +161,7 @@ impl ConfigStore for FailingModelDeleteConfigStore {
         &self,
         namespace: &str,
         id: &str,
-    ) -> Result<Option<Value>, awaken_contract::contract::storage::StorageError> {
+    ) -> Result<Option<Value>, awaken_server_contract::contract::storage::StorageError> {
         ConfigStore::get(self.inner.as_ref(), namespace, id).await
     }
 
@@ -168,7 +170,7 @@ impl ConfigStore for FailingModelDeleteConfigStore {
         namespace: &str,
         offset: usize,
         limit: usize,
-    ) -> Result<Vec<(String, Value)>, awaken_contract::contract::storage::StorageError> {
+    ) -> Result<Vec<(String, Value)>, awaken_server_contract::contract::storage::StorageError> {
         ConfigStore::list(self.inner.as_ref(), namespace, offset, limit).await
     }
 
@@ -177,7 +179,7 @@ impl ConfigStore for FailingModelDeleteConfigStore {
         namespace: &str,
         id: &str,
         value: &Value,
-    ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+    ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
         ConfigStore::put(self.inner.as_ref(), namespace, id, value).await
     }
 
@@ -185,7 +187,7 @@ impl ConfigStore for FailingModelDeleteConfigStore {
         &self,
         namespace: &str,
         id: &str,
-    ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+    ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
         ConfigStore::delete(self.inner.as_ref(), namespace, id).await
     }
 
@@ -194,7 +196,7 @@ impl ConfigStore for FailingModelDeleteConfigStore {
         namespace: &str,
         id: &str,
         value: &Value,
-    ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+    ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
         ConfigStore::put_if_absent(self.inner.as_ref(), namespace, id, value).await
     }
 
@@ -204,7 +206,7 @@ impl ConfigStore for FailingModelDeleteConfigStore {
         id: &str,
         value: &Value,
         expected_revision: u64,
-    ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+    ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
         ConfigStore::put_if_revision(self.inner.as_ref(), namespace, id, value, expected_revision)
             .await
     }
@@ -214,11 +216,11 @@ impl ConfigStore for FailingModelDeleteConfigStore {
         namespace: &str,
         id: &str,
         expected_revision: u64,
-    ) -> Result<(), awaken_contract::contract::storage::StorageError> {
+    ) -> Result<(), awaken_server_contract::contract::storage::StorageError> {
         if namespace == ConfigNamespace::Models.as_str() {
             let call = self.model_delete_calls.fetch_add(1, Ordering::SeqCst) + 1;
             if call == self.fail_model_delete_call {
-                return Err(awaken_contract::contract::storage::StorageError::Io(
+                return Err(awaken_server_contract::contract::storage::StorageError::Io(
                     format!("forced model delete failure for {id}"),
                 ));
             }
@@ -536,7 +538,7 @@ async fn find_dependents_model_uses_effective_agent_model_override() {
         .await
         .expect("read bootstrap agent")
         .expect("bootstrap agent exists");
-    let mut record = awaken_contract::ConfigRecord::<AgentSpec>::from_value(raw)
+    let mut record = awaken_server_contract::ConfigRecord::<AgentSpec>::from_value(raw)
         .expect("parse bootstrap agent record");
     record.meta.user_overrides = Some(json!({ "model_id": "model-b" }));
     ConfigStore::put(
@@ -578,7 +580,7 @@ async fn find_dependents_model_ignores_effective_remote_endpoint_agents() {
         .await
         .expect("read bootstrap agent")
         .expect("bootstrap agent exists");
-    let mut record = awaken_contract::ConfigRecord::<AgentSpec>::from_value(raw)
+    let mut record = awaken_server_contract::ConfigRecord::<AgentSpec>::from_value(raw)
         .expect("parse bootstrap agent record");
     record.meta.user_overrides = Some(json!({
         "endpoint": {
@@ -745,7 +747,7 @@ async fn test_provider_redacts_provider_secrets_from_error() {
     headers.insert(format!("{secret} invalid"), json!("header-value"));
     let mut adapter_options = std::collections::BTreeMap::new();
     adapter_options.insert("headers".to_string(), Value::Object(headers));
-    let record = awaken_contract::ConfigRecord {
+    let record = awaken_server_contract::ConfigRecord {
         spec: ProviderSpec {
             id: "leaky-provider".into(),
             adapter: "openai".into(),
@@ -753,7 +755,7 @@ async fn test_provider_redacts_provider_secrets_from_error() {
             adapter_options,
             ..Default::default()
         },
-        meta: awaken_contract::RecordMeta::new_user(),
+        meta: awaken_server_contract::RecordMeta::new_user(),
     };
     ConfigStore::put(
         config_store.as_ref(),
@@ -1026,7 +1028,7 @@ impl ProviderExecutorFactory for FailingProviderFactory {
 #[tokio::test]
 async fn delete_rollback_re_emits_envelope() {
     // Step 1: build a manager with the succeeding TestProviderFactory and PUT a provider.
-    let config_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+    let config_store: Arc<dyn awaken_server_contract::contract::config_store::ConfigStore> =
         Arc::new(awaken_stores::InMemoryStore::new());
     let (state, _manager) = build_state(config_store.clone()).await;
     let service = ConfigService::new(&state).expect("config service");
@@ -1143,7 +1145,7 @@ fn namespace_all_lists_every_variant() {
 
 #[test]
 fn namespace_all_matches_builtin_spec_namespace() {
-    use awaken_contract::{BuiltinSpec, McpServerSpec, ModelPoolSpec, SkillSpec};
+    use awaken_server_contract::{BuiltinSpec, McpServerSpec, ModelPoolSpec, SkillSpec};
 
     for &ns in ConfigNamespace::all() {
         let spec = match ns {
@@ -1233,7 +1235,7 @@ async fn get_skills_merges_user_overrides_into_effective_spec() {
 mod audit_integration {
     use std::sync::Arc;
 
-    use awaken_contract::AuditAction;
+    use awaken_server_contract::AuditAction;
     use axum::http::HeaderMap;
     use serde_json::json;
 
@@ -1446,7 +1448,7 @@ mod audit_integration {
                 .expect("create without audit should succeed");
 
         // Confirm no audit entries exist.
-        let audit_entries = awaken_contract::contract::config_store::ConfigStore::list(
+        let audit_entries = awaken_server_contract::contract::config_store::ConfigStore::list(
             config_store.as_ref(),
             AUDIT_NAMESPACE,
             0,
@@ -1480,7 +1482,7 @@ async fn put_emits_envelope_with_user_meta() {
         .await
         .expect("create agent");
 
-    let raw = awaken_contract::contract::config_store::ConfigStore::get(
+    let raw = awaken_server_contract::contract::config_store::ConfigStore::get(
         config_store.as_ref(),
         "agents",
         "env-agent",
@@ -1533,7 +1535,7 @@ async fn put_existing_envelope_preserves_created_at() {
         .expect("create agent");
 
     // Read back created_at from envelope
-    let first = awaken_contract::contract::config_store::ConfigStore::get(
+    let first = awaken_server_contract::contract::config_store::ConfigStore::get(
         config_store.as_ref(),
         "agents",
         "ts-agent",
@@ -1561,7 +1563,7 @@ async fn put_existing_envelope_preserves_created_at() {
         .await
         .expect("update agent");
 
-    let second = awaken_contract::contract::config_store::ConfigStore::get(
+    let second = awaken_server_contract::contract::config_store::ConfigStore::get(
         config_store.as_ref(),
         "agents",
         "ts-agent",
@@ -1659,9 +1661,9 @@ fn config_namespace_schema_for_tools_is_object() {
 // ── patch_tool_overrides helpers ──────────────────────────────────────────
 
 use crate::services::audit_log::{AuditLogger, AuditQuery};
-use awaken_contract::ToolSpec;
-use awaken_contract::contract::audit_log::AuditEvent;
-use awaken_contract::contract::tool::{
+use awaken_server_contract::ToolSpec;
+use awaken_server_contract::contract::audit_log::AuditEvent;
+use awaken_server_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
@@ -1688,11 +1690,11 @@ async fn build_test_service_with_tool(
     id: &str,
     description: &str,
 ) -> (ConfigService, Arc<AuditLogger>) {
-    use awaken_contract::{BuiltinSeedSet, BuiltinSpec, RecordMeta};
+    use awaken_server_contract::{BuiltinSeedSet, BuiltinSpec, RecordMeta};
 
-    let config_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+    let config_store: Arc<dyn awaken_server_contract::contract::config_store::ConfigStore> =
         Arc::new(awaken_stores::InMemoryStore::new());
-    let audit_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+    let audit_store: Arc<dyn awaken_server_contract::contract::config_store::ConfigStore> =
         Arc::new(awaken_stores::InMemoryStore::new());
     let audit_logger = Arc::new(AuditLogger::new(audit_store));
 
@@ -1729,7 +1731,7 @@ async fn build_test_service_with_tool(
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(awaken_contract::ModelSpec::new(
+            BuiltinSpec::model(awaken_server_contract::ModelSpec::new(
                 "bootstrap",
                 "bootstrap",
                 "bootstrap-model",
@@ -1750,12 +1752,12 @@ async fn build_test_service_with_tool(
     let mut meta = RecordMeta::new_builtin("test");
     meta.user_overrides = None;
     meta.revision = 1;
-    let record = awaken_contract::ConfigRecord {
+    let record = awaken_server_contract::ConfigRecord {
         spec: tool_spec,
         meta,
     };
     let envelope = record.to_value().expect("serialize tool record");
-    awaken_contract::contract::config_store::ConfigStore::put_if_absent(
+    awaken_server_contract::contract::config_store::ConfigStore::put_if_absent(
         config_store.as_ref(),
         "tools",
         id,
@@ -1816,7 +1818,7 @@ async fn patch_tool_overrides_replaces_description_and_emits_audit() {
     let events: Vec<AuditEvent> = recent_audit_events(&audit_logger, "tools/echo").await;
     let event = events
         .iter()
-        .find(|e| e.action == awaken_contract::AuditAction::Update)
+        .find(|e| e.action == awaken_server_contract::AuditAction::Update)
         .expect("audit event missing");
     assert_eq!(event.resource, "tools/echo/overrides");
     let before = event.before.as_ref().expect("before payload missing");
@@ -2000,27 +2002,31 @@ async fn patch_tool_overrides_bumps_revision() {
 
 #[tokio::test]
 async fn patch_tool_overrides_conflict_on_stale_revision() {
-    use awaken_contract::ConfigRecord;
+    use awaken_server_contract::ConfigRecord;
 
     let (service, _audit) = build_test_service_with_tool("echo", "stock").await;
 
     let store = service.store.clone();
-    let raw =
-        awaken_contract::contract::config_store::ConfigStore::get(store.as_ref(), "tools", "echo")
-            .await
-            .expect("read")
-            .expect("present");
+    let raw = awaken_server_contract::contract::config_store::ConfigStore::get(
+        store.as_ref(),
+        "tools",
+        "echo",
+    )
+    .await
+    .expect("read")
+    .expect("present");
 
     let mut stale_record =
-        ConfigRecord::<awaken_contract::ToolSpec>::from_value(raw.clone()).expect("parse record");
+        ConfigRecord::<awaken_server_contract::ToolSpec>::from_value(raw.clone())
+            .expect("parse record");
     let stale_expected = stale_record.meta.revision;
 
     let mut concurrent_record =
-        ConfigRecord::<awaken_contract::ToolSpec>::from_value(raw).expect("parse current");
+        ConfigRecord::<awaken_server_contract::ToolSpec>::from_value(raw).expect("parse current");
     concurrent_record.spec.description = "concurrent".into();
     concurrent_record.meta.revision = stale_expected + 1;
     let concurrent_envelope = concurrent_record.to_value().expect("serialize concurrent");
-    awaken_contract::contract::config_store::ConfigStore::put_if_revision(
+    awaken_server_contract::contract::config_store::ConfigStore::put_if_revision(
         store.as_ref(),
         "tools",
         "echo",
@@ -2053,12 +2059,12 @@ async fn patch_tool_overrides_conflict_on_stale_revision() {
 
 #[tokio::test]
 async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
-    use awaken_contract::{BuiltinSeedSet, BuiltinSpec, RecordMeta};
+    use awaken_server_contract::{BuiltinSeedSet, BuiltinSpec, RecordMeta};
 
     // Step 1: seed a config store with a builtin tool, apply successfully.
-    let config_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+    let config_store: Arc<dyn awaken_server_contract::contract::config_store::ConfigStore> =
         Arc::new(awaken_stores::InMemoryStore::new());
-    let audit_store: Arc<dyn awaken_contract::contract::config_store::ConfigStore> =
+    let audit_store: Arc<dyn awaken_server_contract::contract::config_store::ConfigStore> =
         Arc::new(awaken_stores::InMemoryStore::new());
     let audit_logger = Arc::new(AuditLogger::new(audit_store));
 
@@ -2094,7 +2100,7 @@ async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
                 adapter: "stub".into(),
                 ..Default::default()
             }),
-            BuiltinSpec::model(awaken_contract::ModelSpec::new(
+            BuiltinSpec::model(awaken_server_contract::ModelSpec::new(
                 "bootstrap",
                 "bootstrap",
                 "bootstrap-model",
@@ -2115,12 +2121,12 @@ async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
     let mut meta = RecordMeta::new_builtin("test");
     meta.user_overrides = None;
     meta.revision = 1;
-    let record = awaken_contract::ConfigRecord {
+    let record = awaken_server_contract::ConfigRecord {
         spec: tool_spec,
         meta,
     };
     let envelope = record.to_value().expect("serialize tool record");
-    awaken_contract::contract::config_store::ConfigStore::put_if_absent(
+    awaken_server_contract::contract::config_store::ConfigStore::put_if_absent(
         config_store.as_ref(),
         "tools",
         "echo",
@@ -2185,7 +2191,7 @@ async fn patch_tool_overrides_apply_failure_emits_apply_failed_audit_event() {
     let failed_events: Vec<_> = page
         .items
         .iter()
-        .filter(|e| e.action == awaken_contract::AuditAction::ApplyFailed)
+        .filter(|e| e.action == awaken_server_contract::AuditAction::ApplyFailed)
         .collect();
     assert_eq!(
         failed_events.len(),

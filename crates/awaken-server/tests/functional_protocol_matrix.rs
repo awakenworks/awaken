@@ -1,8 +1,8 @@
-use awaken_contract::contract::event::AgentEvent;
-use awaken_contract::contract::transport::Transcoder;
 use awaken_server::protocols::{
     acp::encoder::AcpEncoder, ag_ui::encoder::AgUiEncoder, ai_sdk_v6::encoder::AiSdkEncoder,
 };
+use awaken_server_contract::contract::event::AgentEvent;
+use awaken_server_contract::contract::transport::Transcoder;
 
 #[test]
 fn protocol_matrix_basic_flow() {
@@ -21,7 +21,7 @@ fn protocol_matrix_basic_flow() {
             run_id: "r".into(),
             identity: None,
             result: None,
-            termination: awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd,
+            termination: awaken_server_contract::contract::lifecycle::TerminationReason::NaturalEnd,
         },
     ];
 

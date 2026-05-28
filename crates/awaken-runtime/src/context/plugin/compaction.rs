@@ -83,7 +83,7 @@ impl Default for CompactionConfig {
 /// Plugin config key for [`CompactionConfig`].
 pub struct CompactionConfigKey;
 
-impl awaken_contract::registry_spec::PluginConfigKey for CompactionConfigKey {
+impl awaken_runtime_contract::registry_spec::PluginConfigKey for CompactionConfigKey {
     const KEY: &'static str = "compaction";
     type Config = CompactionConfig;
 }
@@ -284,16 +284,19 @@ impl Plugin for CompactionPlugin {
         }
     }
 
-    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), awaken_contract::StateError> {
+    fn register(
+        &self,
+        registrar: &mut PluginRegistrar,
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         registrar.register_key::<CompactionStateKey>(StateKeyOptions::default())?;
         Ok(())
     }
 
     fn on_activate(
         &self,
-        _agent_spec: &awaken_contract::registry_spec::AgentSpec,
+        _agent_spec: &awaken_runtime_contract::registry_spec::AgentSpec,
         _patch: &mut MutationBatch,
-    ) -> Result<(), awaken_contract::StateError> {
+    ) -> Result<(), awaken_runtime_contract::StateError> {
         Ok(())
     }
 }

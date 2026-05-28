@@ -1,6 +1,6 @@
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunRecord, StorageError};
-use awaken_contract::thread::Thread;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{RunRecord, StorageError};
+use awaken_server_contract::thread::Thread;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +28,7 @@ pub fn decode(bytes: &[u8]) -> Result<CheckpointEntry, StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
 
     fn sample() -> CheckpointEntry {
         CheckpointEntry {

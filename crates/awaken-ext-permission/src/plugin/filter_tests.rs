@@ -1,9 +1,5 @@
 use std::sync::Arc;
 
-use awaken_contract::StateMap;
-use awaken_contract::contract::tool::Tool;
-use awaken_contract::model::{Phase, ScheduledActionSpec};
-use awaken_contract::state::Snapshot;
 use awaken_runtime::agent::state::ExcludeTool;
 use awaken_runtime::registry::{
     MapAgentSpecRegistry, MapBackendRegistry, MapModelRegistry, MapPluginSource,
@@ -11,6 +7,10 @@ use awaken_runtime::registry::{
 };
 use awaken_runtime::state::StateCommand;
 use awaken_runtime::{PhaseContext, PhaseHook};
+use awaken_runtime_contract::StateMap;
+use awaken_runtime_contract::contract::tool::Tool;
+use awaken_runtime_contract::model::{Phase, ScheduledActionSpec};
+use awaken_runtime_contract::state::Snapshot;
 
 use crate::rules::{PermissionRule, ToolCallPattern, ToolPermissionBehavior};
 use crate::state::{PermissionPolicy, PermissionPolicyKey};

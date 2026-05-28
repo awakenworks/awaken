@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use awaken_contract::StateError;
-use awaken_contract::contract::context_message::ContextMessage;
-use awaken_contract::model::Phase;
-use awaken_contract::state::StateCommand;
+use awaken_runtime_contract::StateError;
+use awaken_runtime_contract::contract::context_message::ContextMessage;
+use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::state::StateCommand;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::state::AddContextMessage;
@@ -27,7 +27,7 @@ impl Default for KnowledgeCutoffConfig {
 
 pub struct KnowledgeCutoffConfigKey;
 
-impl awaken_contract::registry_spec::PluginConfigKey for KnowledgeCutoffConfigKey {
+impl awaken_runtime_contract::registry_spec::PluginConfigKey for KnowledgeCutoffConfigKey {
     const KEY: &'static str = KNOWLEDGE_CUTOFF_PLUGIN_ID;
     type Config = KnowledgeCutoffConfig;
 }
@@ -133,7 +133,7 @@ fn civil_from_unix_days(days: i64) -> (i32, u32, u32) {
 mod tests {
     use std::sync::Arc;
 
-    use awaken_contract::model::Phase;
+    use awaken_runtime_contract::model::Phase;
 
     use crate::agent::state::{ContextMessageStore, RunLifecycle, RunLifecycleUpdate};
     use crate::loop_runner::{LoopActionHandlersPlugin, LoopStatePlugin};
@@ -195,7 +195,7 @@ mod tests {
 
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].key, KNOWLEDGE_CUTOFF_CONTEXT_KEY);
-        let awaken_contract::contract::content::ContentBlock::Text { text } =
+        let awaken_runtime_contract::contract::content::ContentBlock::Text { text } =
             &messages[0].content[0]
         else {
             panic!("expected text content block");

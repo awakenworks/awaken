@@ -1,12 +1,12 @@
 use async_trait::async_trait;
-use awaken_contract::contract::message::{
+use awaken_server_contract::contract::message::{
     Message, MessageRecord, strip_unpaired_tool_calls_from_view,
 };
-use awaken_contract::contract::storage::{
+use awaken_server_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessagePage, MessageQuery, StorageError, ThreadPage,
     ThreadParentFilter, ThreadQuery, ThreadStore, paginate_message_records,
 };
-use awaken_contract::thread::{Thread, normalize_lineage_id_owned};
+use awaken_server_contract::thread::{Thread, normalize_lineage_id_owned};
 use sqlx::{Postgres, Row, Transaction};
 
 use super::PostgresStore;
@@ -392,7 +392,7 @@ impl ThreadStore for PostgresStore {
                 let mut children = self
                     .list_child_threads_tx(&mut tx, thread_id, "FOR UPDATE")
                     .await?;
-                let updated_at = awaken_contract::now_ms();
+                let updated_at = awaken_server_contract::now_ms();
                 for child in &mut children {
                     child.parent_thread_id = None;
                     child.metadata.updated_at = Some(updated_at);
@@ -645,7 +645,7 @@ impl ThreadStore for PostgresStore {
     async fn update_thread_metadata(
         &self,
         id: &str,
-        metadata: awaken_contract::thread::ThreadMetadata,
+        metadata: awaken_server_contract::thread::ThreadMetadata,
     ) -> Result<(), StorageError> {
         self.ensure_schema().await?;
         let mut tx = self

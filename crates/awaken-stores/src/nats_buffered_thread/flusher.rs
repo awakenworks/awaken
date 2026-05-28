@@ -16,9 +16,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
-use awaken_contract::thread::Thread;
+use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
+use awaken_server_contract::thread::Thread;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -1101,8 +1101,8 @@ use super::recovery::now_millis;
 mod tests {
     use super::*;
     use crate::InMemoryStore;
-    use awaken_contract::contract::lifecycle::RunStatus;
-    use awaken_contract::contract::storage::ThreadStore;
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::storage::ThreadStore;
 
     fn mk_run(run_id: &str, thread_id: &str) -> RunRecord {
         RunRecord {

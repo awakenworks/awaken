@@ -15,7 +15,7 @@ pub mod resolver;
 pub mod snapshot;
 pub mod traits;
 
-pub use awaken_contract::registry_spec::AgentSpec;
+pub use awaken_runtime_contract::registry_spec::AgentSpec;
 #[cfg(feature = "a2a")]
 pub use composite::{CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource};
 pub use config::AgentSystemConfig;
