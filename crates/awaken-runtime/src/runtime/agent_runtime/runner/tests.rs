@@ -1,6 +1,7 @@
 #![allow(deprecated)]
 
 use super::super::*;
+use super::build_compaction_runtime;
 #[cfg(feature = "a2a")]
 use crate::extensions::a2a::{
     AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
@@ -2459,6 +2460,61 @@ async fn truncation_recovery_gives_up_after_max_retries() {
         awaken_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
     assert_eq!(result.response, "truncated ");
+}
+
+#[test]
+fn build_compaction_runtime_wires_default_manager_and_summarizer_for_background_mode() {
+    let mut agent = ResolvedAgent::new("agent", "m", "sys", Arc::new(ScriptedLlm::new(vec![])))
+        .with_context_policy(awaken_contract::contract::inference::ContextWindowPolicy {
+            autocompact_threshold: Some(4096),
+            ..Default::default()
+        });
+    let mut spec = (*agent.spec).clone();
+    spec.set_config::<crate::context::CompactionConfigKey>(crate::context::CompactionConfig {
+        summary_model: Some("summary-upstream".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    agent.spec = Arc::new(spec);
+    let store = crate::state::StateStore::new();
+    let (sender, _receiver) = crate::inbox::inbox_channel();
+
+    let runtime = build_compaction_runtime(&agent, &store, &sender)
+        .unwrap()
+        .expect("background compaction should be wired");
+
+    assert!(runtime.manager.has_owner_inbox_for_test());
+    assert!(Arc::strong_count(&runtime.summarizer) >= 1);
+}
+
+#[test]
+fn build_compaction_runtime_respects_compaction_mode_off() {
+    let mut agent = ResolvedAgent::new("agent", "m", "sys", Arc::new(ScriptedLlm::new(vec![])))
+        .with_context_policy(awaken_contract::contract::inference::ContextWindowPolicy {
+            autocompact_threshold: Some(4096),
+            ..Default::default()
+        });
+    let mut spec = (*agent.spec).clone();
+    spec.set_config::<crate::context::CompactionConfigKey>(crate::context::CompactionConfig {
+        execution_mode: crate::context::CompactionExecutionMode::Off,
+        ..Default::default()
+    })
+    .unwrap();
+    agent.spec = Arc::new(spec);
+    let store = crate::state::StateStore::new();
+    let (sender, _receiver) = crate::inbox::inbox_channel();
+
+    assert!(
+        build_compaction_runtime(&agent, &store, &sender)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .read::<crate::extensions::background::BackgroundTaskStateKey>()
+            .is_none(),
+        "off mode should not install background task state"
+    );
 }
 
 // ── strip_unpaired_tool_calls tests ──────────────────────────────

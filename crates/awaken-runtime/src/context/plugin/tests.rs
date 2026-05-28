@@ -347,6 +347,7 @@ fn compaction_config_serde_roundtrip() {
         summary_max_tokens: Some(512),
         summary_model: Some("claude-3-haiku".into()),
         min_savings_ratio: 0.5,
+        ..Default::default()
     };
     let json = serde_json::to_string(&config).unwrap();
     let parsed: CompactionConfig = serde_json::from_str(&json).unwrap();

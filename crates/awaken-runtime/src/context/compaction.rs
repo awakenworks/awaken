@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use awaken_contract::contract::inference::ContextWindowPolicy;
+use awaken_contract::contract::inference::{ContextCompactionMode, ContextWindowPolicy};
 use awaken_contract::contract::message::{Message, Role, Visibility};
 use awaken_contract::contract::transform::estimate_message_tokens;
 
@@ -146,7 +146,7 @@ pub fn plan_compaction(
     if messages.len() < 2 {
         return None;
     }
-    let keep_suffix = policy.compaction_raw_suffix_messages.min(messages.len());
+    let keep_suffix = compaction_keep_suffix(messages, policy);
     let search_end = messages.len().saturating_sub(keep_suffix);
     if search_end < 2 {
         return None;
@@ -171,6 +171,20 @@ pub fn plan_compaction(
         boundary_message_id,
         pre_tokens,
     })
+}
+
+fn compaction_keep_suffix(messages: &[Arc<Message>], policy: &ContextWindowPolicy) -> usize {
+    let configured = match policy.compaction_mode {
+        ContextCompactionMode::KeepRecentRawSuffix => policy.compaction_raw_suffix_messages,
+        ContextCompactionMode::CompactToSafeFrontier => policy.min_recent_messages,
+    };
+    let latest_user_suffix = messages
+        .iter()
+        .rposition(|message| {
+            message.role == Role::User && message.visibility != Visibility::Internal
+        })
+        .map_or(0, |idx| messages.len().saturating_sub(idx));
+    configured.max(latest_user_suffix).min(messages.len())
 }
 
 /// Mark a background compaction pass as in-flight in the state store.
@@ -236,19 +250,27 @@ pub fn try_consume_compaction_event(
             let prior_in_flight = store
                 .read::<CompactionStateKey>()
                 .and_then(|state| state.in_flight);
+            let event_task_id = compaction_event_task_id(payload, inner);
+            let Some(in_flight) =
+                matching_in_flight(prior_in_flight, event_task_id.as_deref(), boundary_id)
+            else {
+                tracing::warn!(
+                    task_id = event_task_id.as_deref().unwrap_or_default(),
+                    boundary_message_id = boundary_id,
+                    "ignoring stale compaction completion event"
+                );
+                return true;
+            };
 
             let mut batch = MutationBatch::new();
             if !boundary_id.is_empty()
                 && !summary.is_empty()
                 && let Some(applied) = apply_summary(messages, boundary_id, summary)
             {
-                let task_id = prior_in_flight
-                    .as_ref()
-                    .map(|in_flight| in_flight.task_id.clone());
                 batch.update::<CompactionStateKey>(CompactionAction::RecordBoundary(
                     CompactionBoundary {
                         summary: summary.to_string(),
-                        task_id,
+                        task_id: Some(in_flight.task_id.clone()),
                         boundary_message_id: Some(boundary_id.to_string()),
                         pre_tokens: applied.pre_tokens.max(reported_pre_tokens),
                         post_tokens: applied.post_tokens,
@@ -294,6 +316,19 @@ pub fn try_consume_compaction_event(
                         .map(|in_flight| in_flight.boundary_message_id.clone())
                 })
                 .unwrap_or_default();
+            let event_task_id = compaction_event_task_id(payload, inner);
+            let Some(in_flight) = matching_in_flight(
+                prior_in_flight,
+                event_task_id.as_deref(),
+                &boundary_message_id,
+            ) else {
+                tracing::warn!(
+                    task_id = event_task_id.as_deref().unwrap_or_default(),
+                    boundary_message_id = boundary_message_id,
+                    "ignoring stale compaction failure event"
+                );
+                return true;
+            };
             tracing::warn!(
                 error = error_text,
                 "background compaction failed; clearing in-flight marker"
@@ -301,7 +336,7 @@ pub fn try_consume_compaction_event(
             let mut batch = MutationBatch::new();
             batch.update::<CompactionStateKey>(CompactionAction::RecordFailure(
                 CompactionFailure {
-                    task_id: prior_in_flight.map(|in_flight| in_flight.task_id),
+                    task_id: Some(in_flight.task_id),
                     boundary_message_id,
                     error: error_text.to_string(),
                     timestamp_ms: now_ms(),
@@ -366,10 +401,23 @@ pub fn try_consume_compaction_event(
                         .unwrap_or(0)
                         .into()
                 }) as u32;
+            let event_task_id = compaction_event_task_id(payload, inner);
+            let Some(in_flight) = matching_in_flight(
+                prior_in_flight,
+                event_task_id.as_deref(),
+                &boundary_message_id,
+            ) else {
+                tracing::warn!(
+                    task_id = event_task_id.as_deref().unwrap_or_default(),
+                    boundary_message_id = boundary_message_id,
+                    "ignoring stale compaction skipped event"
+                );
+                return true;
+            };
             let mut batch = MutationBatch::new();
             batch.update::<CompactionStateKey>(CompactionAction::RecordSkipped(
                 CompactionSkipped {
-                    task_id: prior_in_flight.map(|in_flight| in_flight.task_id),
+                    task_id: Some(in_flight.task_id),
                     boundary_message_id,
                     reason,
                     pre_tokens,
@@ -391,6 +439,39 @@ pub fn try_consume_compaction_event(
         _ => {}
     }
     true
+}
+
+fn compaction_event_task_id(
+    payload: &serde_json::Value,
+    inner: Option<&serde_json::Value>,
+) -> Option<String> {
+    payload
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            inner
+                .and_then(|p| p.get("task_id"))
+                .and_then(|v| v.as_str())
+        })
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn matching_in_flight(
+    prior_in_flight: Option<CompactionInFlight>,
+    event_task_id: Option<&str>,
+    boundary_message_id: &str,
+) -> Option<CompactionInFlight> {
+    let in_flight = prior_in_flight?;
+    if event_task_id != Some(in_flight.task_id.as_str()) {
+        return None;
+    }
+    if !boundary_message_id.is_empty()
+        && boundary_message_id != in_flight.boundary_message_id.as_str()
+    {
+        return None;
+    }
+    Some(in_flight)
 }
 
 fn compaction_event_type(payload: &serde_json::Value) -> Option<&str> {

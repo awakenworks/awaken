@@ -95,29 +95,35 @@ The compaction subsystem is configured through `CompactionConfig`, stored in the
 use awaken::CompactionConfig;
 
 let config = CompactionConfig {
+    execution_mode: CompactionExecutionMode::Background,
     summarizer_system_prompt: "You are a conversation summarizer. \
         Preserve all key facts, decisions, tool results, and action items. \
         Be concise but complete.".into(),
-    summarizer_user_prompt: "Summarize the following conversation:\n\n{messages}".into(),
+    summarizer_user_prompt: "Update the cumulative conversation summary.\n\n\
+        <existing-summary>\n{previous_summary}\n</existing-summary>\n\n\
+        <new-conversation>\n{messages}\n</new-conversation>".into(),
     summary_max_tokens: Some(1024),
     summary_model: Some("claude-3-haiku".into()),
     min_savings_ratio: 0.3,
+    raw_retention: CompactionRawRetention::PreserveDurable,
 };
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `mode` | `CompactionExecutionMode` | `background` | `background` runs summaries asynchronously; `off` disables automatic compaction even when the threshold is set |
 | `summarizer_system_prompt` | `String` | Conversation summarizer prompt | System prompt for the summarizer LLM call |
-| `summarizer_user_prompt` | `String` | `"Summarize...\n\n{messages}"` | User prompt template; `{messages}` is replaced with the conversation transcript |
+| `summarizer_user_prompt` | `String` | Cumulative summary prompt | User prompt template; `{messages}` is replaced with the conversation transcript and `{previous_summary}` with the prior summary when present |
 | `summary_max_tokens` | `Option<u32>` | `None` | Maximum tokens for the summary response |
-| `summary_model` | `Option<String>` | `None` | Model for summarization (defaults to the agent's model) |
+| `summary_model` | `Option<String>` | `None` | Upstream model override for summarization on the same resolved provider/executor. If this value matches a registry model id, it must belong to the agent model's provider and is normalized to that model's upstream name |
 | `min_savings_ratio` | `f64` | `0.3` | Minimum token savings ratio (0.0-1.0) to accept a compaction |
+| `raw_retention` | `CompactionRawRetention` | `preserve_durable` | Compaction rewrites the runtime prompt window but preserves original user messages in durable thread/run history |
 
 The compaction pass only runs when the expected savings ratio exceeds `min_savings_ratio`. A minimum gain of 1024 tokens (`MIN_COMPACTION_GAIN_TOKENS`) is also required to justify the summarization LLM call.
 
 ### DefaultSummarizer
 
-The built-in `DefaultSummarizer` reads prompts from `CompactionConfig` and supports cumulative summarization. When a previous summary exists, it asks the LLM to update the existing summary with new conversation rather than re-summarizing everything from scratch.
+The built-in `DefaultSummarizer` reads prompts from `CompactionConfig` and supports cumulative summarization. The same `summarizer_user_prompt` template is used for initial and incremental compaction; include `{previous_summary}` when you want the prompt to carry the prior cumulative summary forward.
 
 The transcript renderer filters out `Visibility::Internal` messages before sending to the summarizer, since system-injected context is re-injected each turn and should not be included in summaries.
 
@@ -137,9 +143,17 @@ Two consequences worth knowing:
   is true, subsequent inference rounds skip planning a new compaction and run
   with the un-compacted history. Once the swap completes, the next round
   continues with the summarized prefix.
-- A compaction pass needs both an LLM summarizer and a `BackgroundTaskManager`
-  on the resolved agent. Without either, `maybe_spawn_compaction` is a no-op
-  and the runtime falls back to truncation.
+- Config-driven local runs automatically attach the built-in summarizer and a
+  per-run `BackgroundTaskManager` when `autocompact_threshold` is set and
+  `mode` is `background`. Custom runtimes that construct `ResolvedAgent`
+  directly must provide both; without either, `maybe_spawn_compaction` is a
+  no-op and the runtime falls back to truncation.
+- The latest user turn is always kept raw in the prompt window. Older user
+  messages can be summarized, but durable thread/run history is preserved.
+- `KeepRecentRawSuffix` keeps `compaction_raw_suffix_messages` at the tail.
+  `CompactToSafeFrontier` rolls the window forward to the latest safe frontier
+  while honoring `min_recent_messages`. Both modes avoid splitting tool
+  call/result pairs.
 
 ### Summary storage
 

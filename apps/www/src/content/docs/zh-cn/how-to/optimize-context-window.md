@@ -89,27 +89,33 @@ let policy = ContextWindowPolicy {
 use awaken::CompactionConfig;
 
 let config = CompactionConfig {
+    execution_mode: CompactionExecutionMode::Background,
     summarizer_system_prompt: "You are a conversation summarizer. \
         Preserve all key facts, decisions, tool results, and action items. \
         Be concise but complete.".into(),
-    summarizer_user_prompt: "Summarize the following conversation:\n\n{messages}".into(),
+    summarizer_user_prompt: "Update the cumulative conversation summary.\n\n\
+        <existing-summary>\n{previous_summary}\n</existing-summary>\n\n\
+        <new-conversation>\n{messages}\n</new-conversation>".into(),
     summary_max_tokens: Some(1024),
     summary_model: Some("claude-3-haiku".into()),
     min_savings_ratio: 0.3,
+    raw_retention: CompactionRawRetention::PreserveDurable,
 };
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
+| `mode` | `CompactionExecutionMode` | `background` | `background` 异步执行摘要；`off` 即使设置阈值也不自动压缩 |
 | `summarizer_system_prompt` | `String` | 内置摘要 prompt | 摘要 LLM 的 system prompt |
-| `summarizer_user_prompt` | `String` | `"Summarize...\n\n{messages}"` | 摘要用户 prompt 模板；`{messages}` 会被替换为对话记录 |
+| `summarizer_user_prompt` | `String` | 累积摘要 prompt | 摘要用户 prompt 模板；`{messages}` 会被替换为对话记录，`{previous_summary}` 会在已有摘要时替换为上一次累积摘要 |
 | `summary_max_tokens` | `Option<u32>` | `None` | 摘要响应的最大 token 数 |
-| `summary_model` | `Option<String>` | `None` | 摘要所用模型，默认沿用 agent 模型 |
+| `summary_model` | `Option<String>` | `None` | 同一已解析 provider/executor 上的上游模型覆盖。若该值匹配 registry model id，则必须与 agent 模型属于同一 provider，并会在解析时规范化为该模型的 upstream name |
 | `min_savings_ratio` | `f64` | `0.3` | 接受一次压缩所需的最低 token 节省比例（0.0-1.0） |
+| `raw_retention` | `CompactionRawRetention` | `preserve_durable` | 压缩只改写运行时 prompt 窗口，原始用户消息仍保留在线程/运行历史中 |
 
 ### DefaultSummarizer
 
-内置 `DefaultSummarizer` 会读取 `CompactionConfig`，并支持“在已有摘要上继续增量总结”。
+内置 `DefaultSummarizer` 会读取 `CompactionConfig`，并支持“在已有摘要上继续增量总结”。初次压缩和增量压缩都会使用同一个 `summarizer_user_prompt` 模板；如果希望 prompt 带上已有累积摘要，请在模板中包含 `{previous_summary}`。
 
 ### 后台执行
 
@@ -124,8 +130,15 @@ let config = CompactionConfig {
 - 同一 agent 上的压缩是单飞（single-flight）的。`CompactionState::is_compacting`
   为真时，下一轮推理不会再规划新的压缩，直接以未压缩的历史继续；swap 完成后
   下一轮才会基于新的摘要前缀继续。
-- 一次压缩需要已解析 agent 上同时存在 LLM summarizer 和 `BackgroundTaskManager`。
-  缺少任意一个，`maybe_spawn_compaction` 直接 no-op，runtime 退回到 truncation。
+- config-driven 本地运行在设置了 `autocompact_threshold` 且 `mode` 为
+  `background` 时，会自动挂接内置 summarizer 和每次运行的
+  `BackgroundTaskManager`。直接构造 `ResolvedAgent` 的自定义 runtime 需要自行提供
+  两者；缺少任意一个，`maybe_spawn_compaction` 会 no-op，runtime 退回到 truncation。
+- 最新用户消息始终以原文保留在 prompt 窗口。更早的用户消息可以进入摘要，但
+  durable thread/run history 会保留原文。
+- `KeepRecentRawSuffix` 保留尾部 `compaction_raw_suffix_messages` 条原始消息。
+  `CompactToSafeFrontier` 会滚动到最新安全边界，并遵守 `min_recent_messages`。
+  两种模式都不会切断 tool call/result 对。
 
 ### 摘要存储
 

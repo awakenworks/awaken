@@ -238,6 +238,40 @@ pub enum ContextCompactionMode {
 }
 ```
 
+## CompactionConfig
+
+保存在 `AgentSpec.sections["compaction"]`。`context_policy` 负责窗口和触发条
+件；这个 section 负责摘要器。
+
+```rust,ignore
+pub enum CompactionExecutionMode {
+    Off,
+    Background,
+}
+
+pub enum CompactionRawRetention {
+    PreserveDurable,
+}
+
+pub struct CompactionConfig {
+    pub execution_mode: CompactionExecutionMode, // JSON key: "mode"
+    pub summarizer_system_prompt: String,
+    pub summarizer_user_prompt: String,          // 支持 "{messages}" 和 "{previous_summary}"
+    pub summary_max_tokens: Option<u32>,
+    pub summary_model: Option<String>,           // 同 provider 的 upstream override
+    pub min_savings_ratio: f64,
+    pub raw_retention: CompactionRawRetention,
+}
+```
+
+默认执行模式是 `background`：当前推理继续执行，摘要完成后通过 owner inbox
+在后续轮次生效。运行时 prompt 窗口中被替换的原始消息仍保留在 durable
+thread/run history 中。
+
+`summary_model` 不会解析到另一套 provider/executor；它是已解析 agent provider
+上的 upstream model 覆盖。如果该值匹配 registry model id，则该 model 必须与
+agent 模型使用同一个 provider，resolver 会把它规范化为对应 upstream name。
+
 ## InferenceOverride
 
 用于单次推理的参数覆盖。所有字段都是 `Option`，多插件同时写时按字段 last-wins 合并。

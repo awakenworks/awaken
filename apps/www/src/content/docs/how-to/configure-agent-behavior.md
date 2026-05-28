@@ -201,7 +201,7 @@ consumer that reads that key.
     },
     "compaction": {
       "summarizer_system_prompt": "You are a conversation summarizer. Preserve decisions, facts, tool results, and unresolved tasks.",
-      "summarizer_user_prompt": "Summarize the following conversation:\n\n{messages}",
+      "summarizer_user_prompt": "Update the cumulative conversation summary.\n\n<existing-summary>\n{previous_summary}\n</existing-summary>\n\n<new-conversation>\n{messages}\n</new-conversation>",
       "summary_max_tokens": 1024,
       "summary_model": "claude-3-haiku",
       "min_savings_ratio": 0.3

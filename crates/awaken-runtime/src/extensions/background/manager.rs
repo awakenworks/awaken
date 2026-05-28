@@ -193,6 +193,14 @@ impl BackgroundTaskManager {
         format!("bg_{n}")
     }
 
+    /// Reserve a unique task id before spawning.
+    ///
+    /// Used by callers that must persist external single-flight state before
+    /// the task closure can emit events.
+    pub(crate) fn reserve_task_id(&self) -> TaskId {
+        self.next_task_id()
+    }
+
     fn merge_ambient_parent_context(
         &self,
         mut parent_context: TaskParentContext,
@@ -287,6 +295,34 @@ impl BackgroundTaskManager {
         F: FnOnce(TaskContext) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = TaskResult> + Send + 'static,
     {
+        let task_id = self.reserve_task_id();
+        self.spawn_with_task_id(
+            task_id,
+            owner_thread_id,
+            task_type,
+            name,
+            description,
+            parent_context,
+            task_fn,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_with_task_id<F, Fut>(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        owner_thread_id: &str,
+        task_type: &str,
+        name: Option<&str>,
+        description: &str,
+        parent_context: TaskParentContext,
+        task_fn: F,
+    ) -> Result<TaskId, SpawnError>
+    where
+        F: FnOnce(TaskContext) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = TaskResult> + Send + 'static,
+    {
         let parent_context = self.merge_ambient_parent_context(parent_context);
         if let Some(n) = name {
             self.validate_name(n, owner_thread_id)?;
@@ -294,7 +330,6 @@ impl BackgroundTaskManager {
         if let Some(run_id) = self.is_parent_run_cancelled(&parent_context) {
             return Err(SpawnError::ParentRunCancelled(run_id));
         }
-        let task_id = self.next_task_id();
         let (cancel_handle, cancel_token) = CancellationToken::new_pair();
         let now = now_ms();
 

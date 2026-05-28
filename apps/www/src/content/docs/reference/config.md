@@ -265,6 +265,42 @@ pub enum ContextCompactionMode {
 }
 ```
 
+## CompactionConfig
+
+Stored in `AgentSpec.sections["compaction"]`. `context_policy` controls the
+window and trigger; this section controls the summarizer.
+
+```rust,no_run
+pub enum CompactionExecutionMode {
+    Off,
+    Background,
+}
+
+pub enum CompactionRawRetention {
+    PreserveDurable,
+}
+
+pub struct CompactionConfig {
+    pub execution_mode: CompactionExecutionMode, // JSON key: "mode"
+    pub summarizer_system_prompt: String,
+    pub summarizer_user_prompt: String,          // supports "{messages}" and "{previous_summary}"
+    pub summary_max_tokens: Option<u32>,
+    pub summary_model: Option<String>,           // same-provider upstream override
+    pub min_savings_ratio: f64,
+    pub raw_retention: CompactionRawRetention,
+}
+```
+
+`background` is the default execution mode: the current inference continues,
+and the summary is applied through the owner inbox before a later round. Raw
+messages replaced in the runtime prompt window are preserved in durable
+thread/run history.
+
+`summary_model` does not resolve a separate provider/executor. It is an
+upstream model override for the already resolved agent provider. If it matches a
+registry model id, that model must use the same provider and the resolver
+normalizes it to the model's upstream name.
+
 ## InferenceOverride
 
 Per-inference parameter override. All fields are `Option`; `None` means "use

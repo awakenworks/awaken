@@ -838,10 +838,7 @@ describe("agent editor review and history flows", () => {
           updated_at: 0,
         });
       }
-      if (
-        method === "POST" &&
-        href.endsWith(`/v1/config/agents/${agentId}/restore`)
-      ) {
+      if (method === "POST" && href.endsWith(`/v1/config/agents/${agentId}/restore`)) {
         restored = true;
         return jsonResponse({});
       }
@@ -1399,9 +1396,9 @@ describe("agent editor source badges", () => {
 
     renderEditorRoute(`/agents/${agentId}`);
     await screen.findByText(new RegExp(`Edit ${agentId}`, "i"));
-    expect((screen.getByRole("textbox", { name: /system prompt/i }) as HTMLTextAreaElement).value).toBe(
-      "custom prompt",
-    );
+    expect(
+      (screen.getByRole("textbox", { name: /system prompt/i }) as HTMLTextAreaElement).value,
+    ).toBe("custom prompt");
 
     fireEvent.click(screen.getByRole("button", { name: /^Reset to default$/i }));
 
@@ -1781,6 +1778,49 @@ describe("agent editor context policy inputs", () => {
   });
 });
 
+describe("agent editor compaction config inputs", () => {
+  it("writes summarizer settings into the compaction section", async () => {
+    renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Advanced" }));
+    fireEvent.click(screen.getByLabelText("Customize summarizer"));
+    fireEvent.change(screen.getByLabelText(/^Summary upstream model override/), {
+      target: { value: "summary-fast" },
+    });
+    fireEvent.change(screen.getByLabelText("Summary max tokens"), {
+      target: { value: "768" },
+    });
+    fireEvent.change(screen.getByLabelText("Minimum savings ratio"), {
+      target: { value: "0.42" },
+    });
+    fireEvent.change(screen.getByLabelText("Summarizer system prompt"), {
+      target: { value: "Preserve user goals and decisions." },
+    });
+    fireEvent.change(screen.getByLabelText(/^Summarizer user prompt/), {
+      target: { value: "Summarize these messages:\n\n{messages}" },
+    });
+
+    const textarea = screen
+      .getAllByRole("textbox")
+      .find(
+        (element): element is HTMLTextAreaElement =>
+          element instanceof HTMLTextAreaElement && element.value.includes('"sections"'),
+      );
+    if (!textarea) throw new Error("Raw JSON textarea not found");
+    const raw = JSON.parse(textarea.value);
+    expect(raw.sections.compaction).toMatchObject({
+      mode: "background",
+      summary_model: "summary-fast",
+      summary_max_tokens: 768,
+      min_savings_ratio: 0.42,
+      raw_retention: "preserve_durable",
+      summarizer_system_prompt: "Preserve user goals and decisions.",
+      summarizer_user_prompt: "Summarize these messages:\n\n{messages}",
+    });
+  });
+});
+
 // ── Save → PATCH vs PUT branching ────────────────────────────────────────────
 
 describe("agent editor Save → PATCH vs PUT branching", () => {
@@ -2045,4 +2085,3 @@ describe("agent editor Save → PATCH vs PUT branching", () => {
     expect(patchCalled).toBe(false);
   });
 });
-

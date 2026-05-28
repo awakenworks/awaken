@@ -71,6 +71,13 @@ fn build_compaction_runtime(
     if !opts_in {
         return Ok(None);
     }
+    let compaction_config = preflight_resolved
+        .spec
+        .config::<crate::context::CompactionConfigKey>()
+        .unwrap_or_default();
+    if compaction_config.execution_mode == crate::context::CompactionExecutionMode::Off {
+        return Ok(None);
+    }
     if preflight_resolved.background_manager.is_some()
         && preflight_resolved.context_summarizer.is_some()
     {
@@ -91,10 +98,6 @@ fn build_compaction_runtime(
         }
         Err(error) => return Err(AgentLoopError::PhaseError(error)),
     }
-    let compaction_config = preflight_resolved
-        .spec
-        .config::<crate::context::CompactionConfigKey>()
-        .unwrap_or_default();
     let summarizer: std::sync::Arc<dyn crate::context::ContextSummarizer> = std::sync::Arc::new(
         crate::context::DefaultSummarizer::with_config(compaction_config),
     );

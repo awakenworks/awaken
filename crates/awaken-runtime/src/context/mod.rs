@@ -18,11 +18,11 @@ pub use compaction::{
 pub use effective_policy::effective_policy;
 pub use plugin::{
     CONTEXT_COMPACTION_PLUGIN_ID, CONTEXT_TRANSFORM_PLUGIN_ID, CompactionAction,
-    CompactionBoundary, CompactionConfig, CompactionConfigKey, CompactionFailure,
-    CompactionInFlight, CompactionPlugin, CompactionSkipped, CompactionState, CompactionStateKey,
-    ContextTransformConfig, ContextTransformConfigKey, ContextTransformPlugin,
-    KNOWLEDGE_CUTOFF_PLUGIN_ID, KnowledgeCutoffConfig, KnowledgeCutoffConfigKey,
-    KnowledgeCutoffPlugin,
+    CompactionBoundary, CompactionConfig, CompactionConfigKey, CompactionExecutionMode,
+    CompactionFailure, CompactionInFlight, CompactionPlugin, CompactionRawRetention,
+    CompactionSkipped, CompactionState, CompactionStateKey, ContextTransformConfig,
+    ContextTransformConfigKey, ContextTransformPlugin, KNOWLEDGE_CUTOFF_PLUGIN_ID,
+    KnowledgeCutoffConfig, KnowledgeCutoffConfigKey, KnowledgeCutoffPlugin,
 };
 pub use summarizer::{
     ContextSummarizer, DefaultSummarizer, MIN_COMPACTION_GAIN_TOKENS, SummarizationError,

@@ -18,28 +18,64 @@ pub const CONTEXT_COMPACTION_PLUGIN_ID: &str = "context_compaction";
 /// Stored in `AgentSpec.sections["compaction"]` and read via `PluginConfigKey`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CompactionConfig {
+    /// Whether automatic compaction runs in the background or is disabled.
+    #[serde(default, rename = "mode")]
+    pub execution_mode: CompactionExecutionMode,
     /// System prompt for the summarizer LLM call.
     pub summarizer_system_prompt: String,
-    /// User prompt template. `{messages}` is replaced with the conversation transcript.
+    /// User prompt template. `{messages}` is replaced with the conversation transcript
+    /// and `{previous_summary}` with the last cumulative summary when present.
     pub summarizer_user_prompt: String,
     /// Maximum tokens for the summary response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_max_tokens: Option<u32>,
-    /// Model to use for summarization (if different from the agent's model).
+    /// Upstream model override for summarization on the same resolved provider/executor.
+    ///
+    /// If this matches a registry model id during resolution, it must point to
+    /// the same provider as the agent model and is normalized to that model's
+    /// upstream name before execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_model: Option<String>,
     /// Minimum token savings ratio to accept a compaction (0.0-1.0).
     pub min_savings_ratio: f64,
+    /// Durable retention policy for raw messages replaced in the runtime prompt.
+    ///
+    /// The only production mode today is preserving durable history: compaction
+    /// rewrites the in-memory prompt window but does not erase user messages
+    /// from thread/run storage or audit trails.
+    #[serde(default)]
+    pub raw_retention: CompactionRawRetention,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionExecutionMode {
+    Off,
+    #[default]
+    Background,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionRawRetention {
+    #[default]
+    PreserveDurable,
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
+            execution_mode: CompactionExecutionMode::Background,
             summarizer_system_prompt: "You are a conversation summarizer. Preserve all key facts, decisions, tool results, and action items. Be concise but complete.".into(),
-            summarizer_user_prompt: "Summarize the following conversation:\n\n{messages}".into(),
+            summarizer_user_prompt: "Update the cumulative conversation summary.\n\n<existing-summary>\n{previous_summary}\n</existing-summary>\n\n<new-conversation>\n{messages}\n</new-conversation>".into(),
             summary_max_tokens: None,
             summary_model: None,
             min_savings_ratio: 0.3,
+            raw_retention: CompactionRawRetention::PreserveDurable,
         }
     }
 }

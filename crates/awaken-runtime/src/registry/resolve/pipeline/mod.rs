@@ -80,7 +80,7 @@ pub(crate) fn resolve_registry_set(
     }
     let (executor, upstream_model, model, capability_sources) =
         resolve_model_and_executor(registries, &spec)?;
-    let spec = effective_runtime_spec(spec, &model);
+    let spec = effective_runtime_spec(registries, spec, &model)?;
 
     // Stage 2: Plugin pipeline
     let plugins = build_plugin_chain(registries, &spec, &model, &capability_sources)?;
@@ -156,11 +156,66 @@ fn lookup_spec(registries: &RegistrySet, agent_id: &str) -> Result<AgentSpec, Re
         .ok_or_else(|| ResolveError::AgentNotFound(agent_id.into()))
 }
 
-fn effective_runtime_spec(mut spec: AgentSpec, model: &ModelSpec) -> AgentSpec {
+fn effective_runtime_spec(
+    registries: &RegistrySet,
+    mut spec: AgentSpec,
+    model: &ModelSpec,
+) -> Result<AgentSpec, ResolveError> {
     if let Some(policy) = spec.context_policy.as_ref() {
         spec.context_policy = Some(crate::context::effective_policy(policy, model));
     }
-    spec
+    normalize_compaction_summary_model(registries, &mut spec, model)?;
+    Ok(spec)
+}
+
+fn normalize_compaction_summary_model(
+    registries: &RegistrySet,
+    spec: &mut AgentSpec,
+    agent_model: &ModelSpec,
+) -> Result<(), ResolveError> {
+    if !spec
+        .sections
+        .contains_key(<crate::context::CompactionConfigKey as awaken_contract::registry_spec::PluginConfigKey>::KEY)
+    {
+        return Ok(());
+    }
+    let mut config = spec
+        .config::<crate::context::CompactionConfigKey>()
+        .map_err(|error| match error {
+            awaken_contract::StateError::KeyDecode { key, message } => {
+                ResolveError::InvalidPluginConfig {
+                    plugin: crate::context::CONTEXT_COMPACTION_PLUGIN_ID.into(),
+                    key,
+                    message,
+                }
+            }
+            other => ResolveError::EnvBuild(other),
+        })?;
+    let Some(summary_model) = config
+        .summary_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let Some(summary_model_spec) = registries.models.get_model(summary_model) else {
+        return Ok(());
+    };
+    if summary_model_spec.provider_id != agent_model.provider_id {
+        return Err(ResolveError::InvalidPluginConfig {
+            plugin: crate::context::CONTEXT_COMPACTION_PLUGIN_ID.into(),
+            key: <crate::context::CompactionConfigKey as awaken_contract::registry_spec::PluginConfigKey>::KEY
+                .into(),
+            message: format!(
+                "summary_model `{summary_model}` resolves to provider `{}`, but compaction uses the agent executor for provider `{}`; use a model on the same provider or an upstream model override",
+                summary_model_spec.provider_id, agent_model.provider_id
+            ),
+        });
+    }
+    config.summary_model = Some(summary_model_spec.upstream_model);
+    spec.set_config::<crate::context::CompactionConfigKey>(config)
+        .map_err(ResolveError::EnvBuild)
 }
 
 fn resolve_local_spec(
@@ -169,7 +224,7 @@ fn resolve_local_spec(
 ) -> Result<ResolvedAgent, ResolveError> {
     let (executor, upstream_model, model, capability_sources) =
         resolve_model_and_executor(registries, &spec)?;
-    let spec = effective_runtime_spec(spec, &model);
+    let spec = effective_runtime_spec(registries, spec, &model)?;
     let plugins = build_plugin_chain(registries, &spec, &model, &capability_sources)?;
     let env = ExecutionEnv::from_plugins(&plugins, &spec.active_hook_filter)?;
     let tools = build_tool_set(registries, &spec, &env)?;

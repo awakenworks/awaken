@@ -1,4 +1,16 @@
 export type ContextCompactionMode = "keep_recent_raw_suffix" | "compact_to_safe_frontier";
+export type CompactionExecutionMode = "off" | "background";
+export type CompactionRawRetention = "preserve_durable";
+
+export interface CompactionConfig {
+  mode?: CompactionExecutionMode;
+  summarizer_system_prompt: string;
+  summarizer_user_prompt: string;
+  summary_max_tokens?: number | null;
+  summary_model?: string | null;
+  min_savings_ratio: number;
+  raw_retention?: CompactionRawRetention;
+}
 
 export interface ContextWindowPolicy {
   max_context_tokens: number;
@@ -57,6 +69,18 @@ export const DEFAULT_CONTEXT_POLICY: ContextWindowPolicy = {
   autocompact_threshold: null,
   compaction_mode: "keep_recent_raw_suffix",
   compaction_raw_suffix_messages: 2,
+};
+
+export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
+  mode: "background",
+  summarizer_system_prompt:
+    "You are a conversation summarizer. Preserve all key facts, decisions, tool results, and action items. Be concise but complete.",
+  summarizer_user_prompt:
+    "Update the cumulative conversation summary.\n\n<existing-summary>\n{previous_summary}\n</existing-summary>\n\n<new-conversation>\n{messages}\n</new-conversation>",
+  summary_max_tokens: null,
+  summary_model: null,
+  min_savings_ratio: 0.3,
+  raw_retention: "preserve_durable",
 };
 
 export interface ToolSpec {

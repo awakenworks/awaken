@@ -67,19 +67,12 @@ impl ContextSummarizer for DefaultSummarizer {
         previous_summary: Option<&str>,
         executor: &dyn LlmExecutor,
     ) -> Result<String, SummarizationError> {
-        let user_prompt = match previous_summary {
-            Some(prev) if !prev.trim().is_empty() => format!(
-                "Update the cumulative summary with the new conversation span.\n\n\
-                 <existing-summary>\n{}\n</existing-summary>\n\n\
-                 <new-conversation>\n{}\n</new-conversation>",
-                prev.trim(),
-                transcript.trim(),
-            ),
-            _ => self
-                .config
-                .summarizer_user_prompt
-                .replace("{messages}", transcript.trim()),
-        };
+        let previous_summary = previous_summary.unwrap_or_default().trim();
+        let user_prompt = self
+            .config
+            .summarizer_user_prompt
+            .replace("{previous_summary}", previous_summary)
+            .replace("{messages}", transcript.trim());
 
         let max_tokens = self.config.summary_max_tokens.unwrap_or(1024);
         let model = self.config.summary_model.clone().unwrap_or_default();
@@ -329,6 +322,10 @@ mod tests {
             config.summarizer_user_prompt.contains("{messages}"),
             "default user prompt should contain {{messages}} template variable"
         );
+        assert!(
+            config.summarizer_user_prompt.contains("{previous_summary}"),
+            "default user prompt should contain {{previous_summary}} template variable"
+        );
         assert!(config.summary_max_tokens.is_none());
         assert!(config.summary_model.is_none());
         assert!(
@@ -345,6 +342,7 @@ mod tests {
             summary_max_tokens: Some(2048),
             summary_model: Some("gpt-4".into()),
             min_savings_ratio: 0.5,
+            ..Default::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: CompactionConfig = serde_json::from_str(&json).unwrap();
@@ -370,5 +368,61 @@ mod tests {
     fn summarization_error_empty_summary_formats_message() {
         let err = SummarizationError::EmptySummary;
         assert_eq!(err.to_string(), "empty summary returned");
+    }
+
+    struct CapturingExecutor {
+        request: std::sync::Mutex<Option<awaken_contract::contract::executor::InferenceRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for CapturingExecutor {
+        async fn execute(
+            &self,
+            request: awaken_contract::contract::executor::InferenceRequest,
+        ) -> Result<
+            awaken_contract::contract::inference::StreamResult,
+            awaken_contract::contract::executor::InferenceExecutionError,
+        > {
+            *self.request.lock().unwrap() = Some(request);
+            Ok(awaken_contract::contract::inference::StreamResult {
+                content: vec![awaken_contract::contract::content::ContentBlock::Text {
+                    text: "summary".into(),
+                }],
+                tool_calls: vec![],
+                usage: None,
+                stop_reason: Some(awaken_contract::contract::inference::StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "capturing"
+        }
+    }
+
+    #[tokio::test]
+    async fn default_summarizer_applies_custom_prompt_to_incremental_updates() {
+        let executor = CapturingExecutor {
+            request: std::sync::Mutex::new(None),
+        };
+        let summarizer = DefaultSummarizer::with_config(CompactionConfig {
+            summarizer_user_prompt: "PREV={previous_summary}\nMESSAGES={messages}".into(),
+            summary_model: Some("summary-upstream".into()),
+            summary_max_tokens: Some(256),
+            ..Default::default()
+        });
+
+        let summary = summarizer
+            .summarize("new transcript", Some("old summary"), &executor)
+            .await
+            .unwrap();
+        assert_eq!(summary, "summary");
+
+        let request = executor.request.lock().unwrap().take().unwrap();
+        assert_eq!(request.upstream_model, "summary-upstream");
+        assert_eq!(request.overrides.unwrap().max_tokens, Some(256));
+        let prompt = request.messages[1].text();
+        assert!(prompt.contains("PREV=old summary"));
+        assert!(prompt.contains("MESSAGES=new transcript"));
     }
 }

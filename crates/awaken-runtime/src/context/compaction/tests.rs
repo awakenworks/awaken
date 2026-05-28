@@ -187,6 +187,38 @@ fn try_consume_compaction_event_records_skipped_and_preserves_messages() {
 }
 
 #[test]
+fn try_consume_compaction_event_ignores_stale_task_without_clearing_current_in_flight() {
+    let store = store_with_compaction_plugin();
+    let mut messages: Vec<Arc<Message>> = vec![
+        Arc::new(Message::user("old")),
+        Arc::new(Message::assistant("boundary")),
+        Arc::new(Message::user("new")),
+    ];
+    let current_boundary = messages[1].id.clone().unwrap();
+    mark_in_flight(&store, &current_boundary);
+
+    let stale = json!({
+        "kind": "custom",
+        "task_id": "bg_stale",
+        "event_type": COMPACTION_COMPLETED_EVENT,
+        "payload": {
+            "task_id": "bg_stale",
+            "boundary_message_id": current_boundary,
+            "summary": "stale summary",
+            "pre_tokens": 4000,
+        },
+    });
+    let consumed = try_consume_compaction_event(&mut messages, &stale, &store);
+    assert!(consumed, "stale compaction event is still claimed");
+
+    let state = store.read::<CompactionStateKey>().unwrap();
+    assert!(state.is_compacting(), "current in-flight marker remains");
+    assert_eq!(state.in_flight.unwrap().task_id, "bg_99");
+    assert!(state.boundaries.is_empty(), "stale summary not applied");
+    assert_eq!(messages[0].text(), "old");
+}
+
+#[test]
 fn try_consume_compaction_event_passes_through_unrelated_payloads() {
     let store = store_with_compaction_plugin();
     let mut messages: Vec<Arc<Message>> = vec![Arc::new(Message::user("x"))];
@@ -254,6 +286,58 @@ fn plan_compaction_captures_boundary_message_id() {
     );
     assert!(plan.pre_tokens >= MIN_COMPACTION_GAIN_TOKENS);
     assert!(!plan.transcript.is_empty());
+}
+
+#[test]
+fn plan_compaction_preserves_latest_user_message_raw() {
+    let messages: Vec<Arc<Message>> = vec![
+        long_user("old context ", 700),
+        Arc::new(Message::assistant("ack")),
+        long_user("more old context ", 700),
+        Arc::new(Message::user("latest user turn must stay raw")),
+    ];
+    let latest_user_id = messages[3].id.clone().unwrap();
+    let policy = ContextWindowPolicy {
+        min_recent_messages: 0,
+        compaction_raw_suffix_messages: 0,
+        compaction_mode:
+            awaken_contract::contract::inference::ContextCompactionMode::CompactToSafeFrontier,
+        ..Default::default()
+    };
+
+    let plan = plan_compaction(&messages, &policy).expect("plan");
+    assert_ne!(plan.boundary_message_id, latest_user_id);
+    assert!(
+        !plan.transcript.contains("latest user turn must stay raw"),
+        "latest user message should remain outside the summarized prefix"
+    );
+}
+
+#[test]
+fn keep_recent_raw_suffix_honors_min_recent_messages() {
+    let messages: Vec<Arc<Message>> = vec![
+        long_user("old context ", 700),
+        Arc::new(Message::assistant("ack")),
+        long_user("middle context ", 700),
+        Arc::new(Message::assistant("recent assistant")),
+        Arc::new(Message::user("recent user")),
+    ];
+    let policy = ContextWindowPolicy {
+        min_recent_messages: 3,
+        compaction_raw_suffix_messages: 1,
+        compaction_mode:
+            awaken_contract::contract::inference::ContextCompactionMode::CompactToSafeFrontier,
+        ..Default::default()
+    };
+
+    let plan = plan_compaction(&messages, &policy).expect("plan");
+    assert_eq!(
+        messages
+            .iter()
+            .position(|m| m.id.as_deref() == Some(plan.boundary_message_id.as_str())),
+        Some(1),
+        "compact_to_safe_frontier should keep the last three messages raw"
+    );
 }
 
 #[test]

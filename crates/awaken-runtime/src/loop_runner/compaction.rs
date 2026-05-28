@@ -15,9 +15,9 @@ use serde_json::json;
 use super::step::StepContext;
 use crate::context::{
     COMPACTION_COMPLETED_EVENT, COMPACTION_FAILED_EVENT, COMPACTION_SKIP_REASON_MIN_SAVINGS_RATIO,
-    COMPACTION_SKIPPED_EVENT, COMPACTION_STARTED_EVENT, CompactionConfigKey, CompactionInFlight,
-    CompactionStateKey, compaction_savings_ratio_ppm, plan_compaction, record_compaction_in_flight,
-    summary_message_tokens,
+    COMPACTION_SKIPPED_EVENT, COMPACTION_STARTED_EVENT, CompactionConfigKey,
+    CompactionExecutionMode, CompactionInFlight, CompactionStateKey, compaction_savings_ratio_ppm,
+    plan_compaction, record_compaction_in_flight, summary_message_tokens,
 };
 use crate::extensions::background::{TaskParentContext, TaskResult};
 use crate::state::MutationBatch;
@@ -51,6 +51,15 @@ pub(super) async fn maybe_spawn_compaction(
     let owner_thread_id = thread_id.to_string();
 
     let store = ctx.runtime.store();
+    let compaction_config = ctx
+        .agent
+        .spec
+        .config::<CompactionConfigKey>()
+        .unwrap_or_default();
+    if compaction_config.execution_mode == CompactionExecutionMode::Off {
+        return false;
+    }
+
     if store
         .read::<CompactionStateKey>()
         .is_some_and(|s| s.is_compacting())
@@ -63,19 +72,31 @@ pub(super) async fn maybe_spawn_compaction(
     };
 
     let executor = Arc::clone(&ctx.agent.llm_executor);
-    let compaction_config = ctx
-        .agent
-        .spec
-        .config::<CompactionConfigKey>()
-        .unwrap_or_default();
     let min_savings_ratio = compaction_config.min_savings_ratio.clamp(0.0, 1.0);
     let min_savings_ratio_ppm = (min_savings_ratio * 1_000_000.0).round() as u32;
     let plan_for_task = plan.clone();
     let boundary_id_for_state = plan.boundary_message_id.clone();
     let pre_tokens = plan.pre_tokens;
+    let task_id = manager.reserve_task_id();
 
-    let task_id = match manager
-        .spawn(
+    let mut batch = MutationBatch::new();
+    batch.update::<CompactionStateKey>(record_compaction_in_flight(CompactionInFlight {
+        task_id: task_id.clone(),
+        boundary_message_id: boundary_id_for_state.clone(),
+        started_at_ms: now_ms(),
+    }));
+    if let Err(error) = store.commit(batch) {
+        tracing::warn!(
+            error = %error,
+            task_id = %task_id,
+            "failed to record CompactionInFlight; skipping background compaction"
+        );
+        return false;
+    }
+
+    if let Err(error) = manager
+        .spawn_with_task_id(
+            task_id.clone(),
             &owner_thread_id,
             COMPACTION_TASK_TYPE,
             None,
@@ -85,6 +106,7 @@ pub(super) async fn maybe_spawn_compaction(
                 task_ctx.emit(
                     COMPACTION_STARTED_EVENT,
                     json!({
+                        "task_id": task_ctx.task_id.as_str(),
                         "boundary_message_id": plan_for_task.boundary_message_id.as_str(),
                         "pre_tokens": pre_tokens,
                     }),
@@ -105,6 +127,7 @@ pub(super) async fn maybe_spawn_compaction(
                             task_ctx.emit(
                                 COMPACTION_SKIPPED_EVENT,
                                 json!({
+                                    "task_id": task_ctx.task_id.as_str(),
                                     "boundary_message_id": plan_for_task.boundary_message_id.as_str(),
                                     "reason": COMPACTION_SKIP_REASON_MIN_SAVINGS_RATIO,
                                     "pre_tokens": pre_tokens,
@@ -120,6 +143,7 @@ pub(super) async fn maybe_spawn_compaction(
                         task_ctx.emit(
                             COMPACTION_COMPLETED_EVENT,
                             json!({
+                                "task_id": task_ctx.task_id.as_str(),
                                 "boundary_message_id": plan_for_task.boundary_message_id,
                                 "summary": summary,
                                 "pre_tokens": pre_tokens,
@@ -132,6 +156,7 @@ pub(super) async fn maybe_spawn_compaction(
                         task_ctx.emit(
                             COMPACTION_FAILED_EVENT,
                             json!({
+                                "task_id": task_ctx.task_id.as_str(),
                                 "boundary_message_id": plan_for_task.boundary_message_id,
                                 "error": error_text,
                             }),
@@ -143,30 +168,33 @@ pub(super) async fn maybe_spawn_compaction(
         )
         .await
     {
-        Ok(id) => id,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "failed to spawn background compaction task; skipping this round"
-            );
-            return false;
-        }
-    };
+        tracing::warn!(
+            error = %error,
+            "failed to spawn background compaction task; skipping this round"
+        );
+        clear_in_flight_after_spawn_failure(store, &task_id);
+        return false;
+    }
+    true
+}
 
+fn clear_in_flight_after_spawn_failure(store: &crate::state::StateStore, task_id: &str) {
+    if store
+        .read::<CompactionStateKey>()
+        .and_then(|state| state.in_flight)
+        .is_none_or(|in_flight| in_flight.task_id != task_id)
+    {
+        return;
+    }
     let mut batch = MutationBatch::new();
-    batch.update::<CompactionStateKey>(record_compaction_in_flight(CompactionInFlight {
-        task_id: task_id.clone(),
-        boundary_message_id: boundary_id_for_state,
-        started_at_ms: now_ms(),
-    }));
+    batch.update::<CompactionStateKey>(crate::context::clear_compaction_in_flight());
     if let Err(error) = store.commit(batch) {
         tracing::warn!(
             error = %error,
             task_id = %task_id,
-            "failed to record CompactionInFlight; another spawn may race"
+            "failed to clear CompactionInFlight after spawn failure"
         );
     }
-    true
 }
 
 fn now_ms() -> u64 {

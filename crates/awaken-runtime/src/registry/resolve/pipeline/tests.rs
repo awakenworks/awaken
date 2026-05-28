@@ -533,6 +533,114 @@ fn resolve_happy_path() {
 }
 
 #[test]
+fn resolve_normalizes_compaction_summary_model_registry_id_on_same_provider() {
+    let mut spec = AgentSpec {
+        context_policy: Some(awaken_contract::contract::inference::ContextWindowPolicy {
+            autocompact_threshold: Some(4096),
+            ..Default::default()
+        }),
+        ..make_spec("agent-1")
+    };
+    spec.set_config::<crate::context::CompactionConfigKey>(crate::context::CompactionConfig {
+        summary_model: Some("summary-model".into()),
+        ..Default::default()
+    })
+    .unwrap();
+
+    let mut model_reg = MapModelRegistry::new();
+    model_reg
+        .register_model(ModelSpec::new("test-model", "anthropic", "claude-opus"))
+        .unwrap();
+    model_reg
+        .register_model(ModelSpec::new(
+            "summary-model",
+            "anthropic",
+            "claude-haiku-summary",
+        ))
+        .unwrap();
+    let mut provider_reg = MapProviderRegistry::new();
+    provider_reg
+        .register_provider("anthropic", Arc::new(MockExecutor))
+        .unwrap();
+    let mut agent_reg = MapAgentSpecRegistry::new();
+    agent_reg.register_spec(spec).unwrap();
+    let regs = RegistrySet {
+        agents: Arc::new(agent_reg),
+        tools: Arc::new(MapToolRegistry::new()),
+        models: Arc::new(model_reg),
+        providers: Arc::new(provider_reg),
+        plugins: Arc::new(MapPluginSource::new()),
+        #[cfg(feature = "a2a")]
+        backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+            as Arc<dyn BackendRegistry>,
+    };
+
+    let run = resolve(&regs, "agent-1").unwrap();
+    let config = run
+        .spec
+        .config::<crate::context::CompactionConfigKey>()
+        .unwrap();
+    assert_eq!(
+        config.summary_model.as_deref(),
+        Some("claude-haiku-summary")
+    );
+}
+
+#[test]
+fn resolve_rejects_compaction_summary_model_registry_id_on_different_provider() {
+    let mut spec = AgentSpec {
+        context_policy: Some(awaken_contract::contract::inference::ContextWindowPolicy {
+            autocompact_threshold: Some(4096),
+            ..Default::default()
+        }),
+        ..make_spec("agent-1")
+    };
+    spec.set_config::<crate::context::CompactionConfigKey>(crate::context::CompactionConfig {
+        summary_model: Some("summary-model".into()),
+        ..Default::default()
+    })
+    .unwrap();
+
+    let mut model_reg = MapModelRegistry::new();
+    model_reg
+        .register_model(ModelSpec::new("test-model", "anthropic", "claude-opus"))
+        .unwrap();
+    model_reg
+        .register_model(ModelSpec::new("summary-model", "openai", "gpt-summary"))
+        .unwrap();
+    let mut provider_reg = MapProviderRegistry::new();
+    provider_reg
+        .register_provider("anthropic", Arc::new(MockExecutor))
+        .unwrap();
+    provider_reg
+        .register_provider("openai", Arc::new(MockExecutor))
+        .unwrap();
+    let mut agent_reg = MapAgentSpecRegistry::new();
+    agent_reg.register_spec(spec).unwrap();
+    let regs = RegistrySet {
+        agents: Arc::new(agent_reg),
+        tools: Arc::new(MapToolRegistry::new()),
+        models: Arc::new(model_reg),
+        providers: Arc::new(provider_reg),
+        plugins: Arc::new(MapPluginSource::new()),
+        #[cfg(feature = "a2a")]
+        backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+            as Arc<dyn BackendRegistry>,
+    };
+
+    let err = resolve(&regs, "agent-1").unwrap_err();
+    match err {
+        ResolveError::InvalidPluginConfig { key, message, .. } => {
+            assert_eq!(key, "compaction");
+            assert!(message.contains("summary_model `summary-model`"));
+            assert!(message.contains("provider `openai`"));
+            assert!(message.contains("provider `anthropic`"));
+        }
+        other => panic!("expected InvalidPluginConfig, got {other:?}"),
+    }
+}
+
+#[test]
 fn resolve_agent_not_found() {
     let regs = build_registries(
         vec![],
