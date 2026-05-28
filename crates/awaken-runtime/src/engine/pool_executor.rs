@@ -513,11 +513,22 @@ impl PoolExecutorInner {
         // failure onto an innocent member's breaker. Skip recording instead.
         let Some(current) = attempt_key.as_deref().and_then(|key| {
             self.stream_attempts.read().get(key).and_then(|attempt| {
-                (!attempt.request_callbacks_ambiguous)
-                    .then_some(attempt.active)
-                    .flatten()
+                if attempt.request_callbacks_ambiguous {
+                    tracing::debug!(
+                        pool = %self.pool_id,
+                        attempt_key = key,
+                        "model pool skipped ambiguous stream failure callback"
+                    );
+                    return None;
+                }
+                attempt.active
             })
         }) else {
+            tracing::debug!(
+                pool = %self.pool_id,
+                has_attempt_key = attempt_key.is_some(),
+                "model pool skipped stale stream failure callback"
+            );
             return;
         };
         self.record_stream_attempt_failure_once(
