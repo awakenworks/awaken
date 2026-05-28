@@ -1,5 +1,6 @@
 //! /v1/ag-ui routes.
 
+use axum::Extension;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -7,6 +8,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::Value;
 
+use awaken_contract::ScopeContext;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 
@@ -185,39 +187,44 @@ fn input_part_to_block(
 
 async fn ag_ui_run(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Json(payload): Json<AgUiRunRequest>,
 ) -> Result<Response, ApiError> {
-    ag_ui_run_inner(st, payload).await
+    ag_ui_run_inner(st.scoped(&scope), payload).await
 }
 
 /// Thread-centric route: `POST /v1/ag-ui/threads/:thread_id/runs`
 async fn ag_ui_run_threaded(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(thread_id): Path<String>,
     Json(mut payload): Json<AgUiRunRequest>,
 ) -> Result<Response, ApiError> {
     payload.thread_id = Some(thread_id);
-    ag_ui_run_inner(st, payload).await
+    ag_ui_run_inner(st.scoped(&scope), payload).await
 }
 
 /// Agent-scoped route: `POST /v1/ag-ui/agents/:agent_id/runs`
 async fn ag_ui_run_agent_scoped(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(agent_id): Path<String>,
     Json(mut payload): Json<AgUiRunRequest>,
 ) -> Result<Response, ApiError> {
     payload.agent_id = Some(agent_id);
-    ag_ui_run_inner(st, payload).await
+    ag_ui_run_inner(st.scoped(&scope), payload).await
 }
 
 async fn interrupt_thread(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(thread_id): Path<String>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     let interrupted = st
         .run
-        .mailbox()
-        .interrupt(&thread_id)
+.mailbox()
+        .interrupt(&st.run.scoped_id(&thread_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -305,7 +312,7 @@ async fn ag_ui_run_inner(
     let (_result, event_rx) = st
         .run
         .mailbox()
-        .submit(request)
+        .submit(st.run.scope_activation(request))
         .await
         .map_err(map_mailbox_error)?;
 
@@ -317,9 +324,11 @@ async fn ag_ui_run_inner(
 
 async fn thread_messages(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Query(params): Query<crate::query::MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     let query = params.storage_query().map_err(ApiError::BadRequest)?;
     let page = st
         .run

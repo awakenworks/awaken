@@ -100,6 +100,26 @@ async fn typed_wrapper_rejects_publish_with_unsupported_schema_version() {
     ));
 }
 
+#[test]
+fn typed_wrapper_can_bind_validated_scope_id() {
+    use crate::contract::scope::{ScopeError, ScopeId};
+    use crate::contract::versioned_registry::ScopedVersionedRegistry;
+
+    let store =
+        std::sync::Arc::new(crate::contract::versioned_registry::tests::FakeStore::default());
+    let typed: ScopedVersionedRegistry<serde_json::Value> = ScopedVersionedRegistry::new_scoped(
+        store.clone(),
+        ScopeId::new("scope-a").unwrap(),
+        "tool",
+    );
+
+    assert_eq!(typed.scope_id(), "scope-a");
+    assert!(matches!(
+        ScopedVersionedRegistry::<serde_json::Value>::try_new(store, " ", "tool"),
+        Err(ScopeError::Empty)
+    ));
+}
+
 #[derive(Default)]
 pub(super) struct FakeStore {
     records: parking_lot::Mutex<Vec<VersionedRecord<Value>>>,

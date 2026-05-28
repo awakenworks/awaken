@@ -128,7 +128,7 @@ async fn send_message(
 
     st.run
         .mailbox()
-        .submit_background(request)
+        .submit_background(st.run.scope_activation(request))
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
 
@@ -196,7 +196,7 @@ async fn stream_message(
 
     st.run
         .mailbox()
-        .submit_background(request)
+        .submit_background(st.run.scope_activation(request))
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
 
@@ -517,7 +517,7 @@ async fn thread_has_prior_context(
         .run
         .mailbox()
         .list_dispatches(
-            thread_id,
+            &st.run.scoped_id(thread_id),
             Some(&[RunDispatchStatus::Queued, RunDispatchStatus::Claimed]),
             1,
             0,

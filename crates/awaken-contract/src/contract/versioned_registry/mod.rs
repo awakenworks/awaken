@@ -9,6 +9,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use super::scope::{ScopeError, ScopeId};
+
 /// A concrete published version reference.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct VersionRef {
@@ -567,6 +569,8 @@ pub struct TypedVersionedRegistry<T> {
     pub _phantom: PhantomData<T>,
 }
 
+pub type ScopedVersionedRegistry<T> = TypedVersionedRegistry<T>;
+
 impl<T> TypedVersionedRegistry<T> {
     #[must_use]
     pub fn new(
@@ -581,6 +585,33 @@ impl<T> TypedVersionedRegistry<T> {
             supported_schema_versions: Vec::new(),
             _phantom: PhantomData,
         }
+    }
+
+    pub fn try_new(
+        store: Arc<dyn VersionedRegistryStore>,
+        scope_id: impl Into<String>,
+        kind: impl Into<String>,
+    ) -> Result<Self, ScopeError> {
+        let scope_id = ScopeId::new(scope_id.into())?;
+        Ok(Self::new_scoped(store, scope_id, kind))
+    }
+
+    pub fn new_scoped(
+        store: Arc<dyn VersionedRegistryStore>,
+        scope_id: ScopeId,
+        kind: impl Into<String>,
+    ) -> Self {
+        Self {
+            store,
+            scope_id: scope_id.into(),
+            kind: kind.into(),
+            supported_schema_versions: Vec::new(),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn scope_id(&self) -> &str {
+        &self.scope_id
     }
 
     /// Declare which `value_schema_version`s this wrapper can decode.

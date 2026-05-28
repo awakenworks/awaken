@@ -110,7 +110,7 @@ pub use contract::protocol_replay_log::{
     ProtocolReplayAppendResult, ProtocolReplayCursor, ProtocolReplayDraft, ProtocolReplayError,
     ProtocolReplayId, ProtocolReplayLog, ProtocolReplayLookup, ProtocolReplayPage,
     ProtocolReplayReader, ProtocolReplayRecord, ProtocolReplayRedactionState, ProtocolReplayWriter,
-    ProtocolStreamKey, SourceEventCursor,
+    ProtocolStreamKey, ScopedProtocolReplayLog, SourceEventCursor,
 };
 
 // ── outbox ──
@@ -118,12 +118,13 @@ pub use contract::outbox::{
     OUTBOX_LANE_CANONICAL, OUTBOX_LANE_PROTOCOL_REPLAY, OUTBOX_TARGET_A2A_WEBHOOK,
     OUTBOX_TARGET_PROTOCOL_FANOUT, OUTBOX_TARGET_PROTOCOL_PROJECTOR, OutboxEnqueueResult,
     OutboxError, OutboxMessage, OutboxMessageDraft, OutboxNackOutcome, OutboxStatus, OutboxStore,
+    ScopedOutboxStore,
 };
 
 // ── mailbox ──
 pub use contract::mailbox::{
     MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
-    RunDispatchStatus,
+    RunDispatchStatus, ScopedMailboxStore,
 };
 pub use contract::registry_graph::{
     REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_MODEL_POOL,
@@ -136,18 +137,22 @@ pub use contract::run::{
     RunActivationSnapshot, RunInput, RunInputSnapshot, RunIntent, RunKind, RunOptions,
     RunResolutionScope, RunTraceContext,
 };
-pub use contract::storage::RunRequestOrigin;
+pub use contract::scope::{
+    DEFAULT_SCOPE_ID, RequestSurface, ScopeContext, ScopeError, ScopeId, scoped_key, unscoped_key,
+};
+pub use contract::storage::{RunRequestOrigin, ScopedThreadRunStore};
 pub use contract::versioned_registry::{
     ConfigRevisionRef, PinnedRegistryEntry, PinnedRegistryManifest, PublishOutcome,
-    RegistryPublication, RegistryResourcePublish, RegistryRetentionPolicy, TypedVersionedRegistry,
-    VersionRef, VersionedRecord, VersionedRegistryError, VersionedRegistryRetention,
-    VersionedRegistryStore, VersionedResourceState, canonical_registry_json_bytes,
-    registry_content_hash,
+    RegistryPublication, RegistryResourcePublish, RegistryRetentionPolicy, ScopedVersionedRegistry,
+    TypedVersionedRegistry, VersionRef, VersionedRecord, VersionedRegistryError,
+    VersionedRegistryRetention, VersionedRegistryStore, VersionedResourceState,
+    canonical_registry_json_bytes, registry_content_hash,
 };
 
 // ── profile store ──
 pub use contract::config_store::{
     ConfigChangeEvent, ConfigChangeKind, ConfigChangeNotifier, ConfigChangeSubscriber, ConfigStore,
+    ScopedConfigStore,
 };
 pub use contract::profile_store::{ProfileEntry, ProfileKey, ProfileOwner, ProfileStore};
 

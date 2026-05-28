@@ -84,7 +84,7 @@ pub(super) async fn cancel_task(
     let mailbox = st.run.mailbox();
     let queued_dispatches = mailbox
         .list_dispatches(
-            &existing.task.id,
+            &st.run.scoped_id(&existing.task.id),
             Some(&[RunDispatchStatus::Queued]),
             100,
             0,
@@ -100,7 +100,7 @@ pub(super) async fn cancel_task(
             .map_err(|e| A2aError::Internal(e.to_string()))?;
     }
     cancelled |= mailbox
-        .cancel(&existing.task.id)
+        .cancel(&st.run.scoped_id(&existing.task.id))
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
 
@@ -230,9 +230,10 @@ pub(super) async fn resolve_task(
         let dispatch = st
             .run
             .mailbox()
-            .load_dispatch(task_id)
+            .load_dispatch(&st.run.scoped_id(task_id))
             .await
-            .map_err(|e| A2aError::Internal(e.to_string()))?;
+            .map_err(|e| A2aError::Internal(e.to_string()))?
+            .map(|dispatch| st.run.unscope_dispatch(dispatch));
         return Ok(Some(ResolvedTask {
             thread_id: run.thread_id.clone(),
             run: Some(run),
@@ -243,9 +244,10 @@ pub(super) async fn resolve_task(
     let Some(dispatch) = st
         .run
         .mailbox()
-        .load_dispatch(task_id)
+        .load_dispatch(&st.run.scoped_id(task_id))
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
+        .map(|dispatch| st.run.unscope_dispatch(dispatch))
     else {
         return Ok(None);
     };
@@ -373,10 +375,11 @@ pub(super) async fn load_task_snapshot(
     } else {
         st.run
             .mailbox()
-            .list_dispatches(&thread_id, None, 100, 0)
+            .list_dispatches(&st.run.scoped_id(&thread_id), None, 100, 0)
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?
             .into_iter()
+            .map(|dispatch| st.run.unscope_dispatch(dispatch))
             .filter(|dispatch| dispatch.run_id == task_id || dispatch.dispatch_id == task_id)
             .max_by_key(|dispatch| dispatch.updated_at)
     };
@@ -630,14 +633,18 @@ pub(super) async fn collect_task_ids(st: &ProtocolRoutesState) -> Result<Vec<Str
                 .run
                 .mailbox()
                 .list_dispatches(
-                    &thread_id,
+                    &st.run.scoped_id(&thread_id),
                     Some(&[RunDispatchStatus::Queued, RunDispatchStatus::Claimed]),
                     100,
                     0,
                 )
                 .await
                 .map_err(|e| A2aError::Internal(e.to_string()))?;
-            ids.extend(dispatches.into_iter().map(|dispatch| dispatch.dispatch_id));
+            ids.extend(
+                dispatches
+                    .into_iter()
+                    .map(|dispatch| st.run.unscope_dispatch(dispatch).dispatch_id),
+            );
         }
     }
     Ok(ids.into_iter().collect())

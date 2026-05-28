@@ -3,10 +3,12 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use awaken_contract::ScopeContext;
 use awaken_contract::contract::protocol_replay_log::{
     ProtocolReplayCursor, ProtocolReplayError, ProtocolReplayLog, ProtocolReplayRecord,
-    ProtocolStreamKey,
+    ProtocolStreamKey, ScopedProtocolReplayLog,
 };
+use axum::Extension;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -37,10 +39,12 @@ pub fn ai_sdk_replay_routes() -> Router<ProtocolRoutesState> {
 
 async fn replay_stream(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(thread_id): Path<String>,
     Query(query): Query<ReplayQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     let log = configured_replay_log(&st)?;
     let cursor = cursor_from_query_or_header(query.cursor.as_deref(), &headers)?;
     let frames = replay_frames(log, &thread_id, cursor, replay_limit(query.limit)).await?;
@@ -52,9 +56,7 @@ pub(crate) async fn resume_from_replay_log(
     thread_id: &str,
     headers: &HeaderMap,
 ) -> Result<Option<Response>, ApiError> {
-    let Some(log) =
-        crate::protocol_replay_state::protocol_replay_log_for_buffers(&st.protocol.replay_buffers)
-    else {
+    let Some(log) = optional_configured_replay_log(st) else {
         return Ok(None);
     };
     let cursor = cursor_from_resume_header(headers)?;
@@ -66,10 +68,17 @@ pub(crate) async fn resume_from_replay_log(
 }
 
 fn configured_replay_log(st: &ProtocolRoutesState) -> Result<Arc<dyn ProtocolReplayLog>, ApiError> {
-    crate::protocol_replay_state::protocol_replay_log_for_buffers(&st.protocol.replay_buffers)
-        .ok_or_else(|| {
-            ApiError::ServiceUnavailable("protocol replay log is not configured".to_string())
-        })
+    optional_configured_replay_log(st).ok_or_else(|| {
+        ApiError::ServiceUnavailable("protocol replay log is not configured".to_string())
+    })
+}
+
+fn optional_configured_replay_log(st: &ProtocolRoutesState) -> Option<Arc<dyn ProtocolReplayLog>> {
+    let log =
+        crate::protocol_replay_state::protocol_replay_log_for_buffers(&st.protocol.replay_buffers)?;
+    Some(st.run.scope_id.as_ref().map_or(log.clone(), |scope_id| {
+        Arc::new(ScopedProtocolReplayLog::new(log, scope_id.clone())) as Arc<dyn ProtocolReplayLog>
+    }))
 }
 
 async fn replay_frames(
@@ -222,7 +231,7 @@ mod tests {
     }
 
     async fn append_replay(
-        log: &InMemoryProtocolReplayLog,
+        log: &Arc<InMemoryProtocolReplayLog>,
         thread_id: &str,
         wire_event_id: &str,
         payload: &str,

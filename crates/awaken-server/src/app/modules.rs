@@ -4,8 +4,12 @@ use std::time::Instant;
 
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::event_store::EventStore;
+use awaken_contract::contract::mailbox::{MailboxInterrupt, RunDispatch};
 use awaken_contract::contract::outbox::OutboxStore;
-use awaken_contract::contract::storage::ThreadRunStore;
+use awaken_contract::contract::run::{RunInput, RunKind};
+use awaken_contract::contract::scope::{scoped_key, unscoped_key};
+use awaken_contract::contract::storage::{ScopedThreadRunStore, ThreadRunStore};
+use awaken_contract::{DEFAULT_SCOPE_ID, ScopeContext, ScopeId};
 use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_ext_observability::trace_store::TraceStore;
 use awaken_runtime::credentials::CredentialBroker;
@@ -16,8 +20,10 @@ use awaken_contract::RedactedString;
 use super::{AdminApiConfig, AuditLogConfig, ReplayBufferMap, ServerState, SkillCatalogProvider};
 use crate::eval_limits::EvalLimits;
 use crate::mailbox::Mailbox;
+use crate::mailbox::MailboxSubmitResult;
 use crate::outbox_relay::OutboxRelayError;
 use crate::protocol_replay_state::A2aPushWebhookRelayConfig;
+use crate::scope::{HttpScopeProvider, SingleScopeProvider};
 use crate::services::audit_log::AuditLogger;
 
 #[derive(Clone)]
@@ -28,6 +34,7 @@ pub struct RunModuleState {
     pub store: Arc<dyn ThreadRunStore>,
     pub credential_broker: Arc<dyn CredentialBroker>,
     pub runtime_stats: Option<Arc<RuntimeStatsRegistry>>,
+    pub scope_id: Option<ScopeId>,
 }
 
 impl RunModuleState {
@@ -44,6 +51,7 @@ impl RunModuleState {
             store,
             credential_broker: Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
             runtime_stats: None,
+            scope_id: None,
         }
     }
 
@@ -67,6 +75,84 @@ impl RunModuleState {
     /// through `mailbox.coordinator()`.
     pub fn store(&self) -> &Arc<dyn ThreadRunStore> {
         &self.store
+    }
+
+    #[must_use]
+    pub fn scoped_id(&self, id: &str) -> String {
+        self.scope_id
+            .as_ref()
+            .map_or_else(|| id.to_string(), |scope| scoped_key(scope, id))
+    }
+
+    #[must_use]
+    pub fn unscoped_id(&self, id: &str) -> String {
+        self.scope_id.as_ref().map_or_else(
+            || id.to_string(),
+            |scope| unscoped_key(scope, id).unwrap_or(id).to_string(),
+        )
+    }
+
+    #[must_use]
+    pub fn scope_activation(
+        &self,
+        mut request: awaken_runtime::RunActivation,
+    ) -> awaken_runtime::RunActivation {
+        if self.scope_id.is_none() {
+            return request;
+        }
+        request.intent.thread_id = self.scoped_id(&request.intent.thread_id);
+        request.intent.kind = match request.intent.kind {
+            RunKind::NewIntent => RunKind::NewIntent,
+            RunKind::HitlResume { run_id } => RunKind::HitlResume {
+                run_id: self.scoped_id(&run_id),
+            },
+            RunKind::ContinuationFromRun { run_id } => RunKind::ContinuationFromRun {
+                run_id: self.scoped_id(&run_id),
+            },
+        };
+        if let RunInput::AlreadyPersisted(input) = &mut request.input {
+            input.thread_id = self.scoped_id(&input.thread_id);
+        }
+        if let Some(parent_run_id) = request.trace.parent_run_id.take() {
+            request.trace.parent_run_id = Some(self.scoped_id(&parent_run_id));
+        }
+        if let Some(parent_thread_id) = request.trace.parent_thread_id.take() {
+            request.trace.parent_thread_id = Some(self.scoped_id(&parent_thread_id));
+        }
+        if let Some(dispatch_id) = request.trace.dispatch_id.take() {
+            request.trace.dispatch_id = Some(self.scoped_id(&dispatch_id));
+        }
+        if let Some(run_id_hint) = request.persistence.run_id_hint.take() {
+            request.persistence.run_id_hint = Some(self.scoped_id(&run_id_hint));
+        }
+        if let Some(dispatch_id_hint) = request.persistence.dispatch_id_hint.take() {
+            request.persistence.dispatch_id_hint = Some(self.scoped_id(&dispatch_id_hint));
+        }
+        request
+    }
+
+    #[must_use]
+    pub fn unscope_submit_result(&self, mut result: MailboxSubmitResult) -> MailboxSubmitResult {
+        result.dispatch_id = self.unscoped_id(&result.dispatch_id);
+        result.run_id = self.unscoped_id(&result.run_id);
+        result.thread_id = self.unscoped_id(&result.thread_id);
+        result
+    }
+
+    #[must_use]
+    pub fn unscope_dispatch(&self, mut dispatch: RunDispatch) -> RunDispatch {
+        dispatch.dispatch_id = self.unscoped_id(&dispatch.dispatch_id);
+        dispatch.thread_id = self.unscoped_id(&dispatch.thread_id);
+        dispatch.run_id = self.unscoped_id(&dispatch.run_id);
+        dispatch
+    }
+
+    #[must_use]
+    pub fn unscope_interrupt(&self, mut interrupt: MailboxInterrupt) -> MailboxInterrupt {
+        interrupt.active_dispatch = interrupt
+            .active_dispatch
+            .map(|dispatch| self.unscope_dispatch(dispatch));
+        interrupt
     }
 }
 
@@ -214,12 +300,29 @@ pub struct RunRoutesState {
     pub run: RunModuleState,
     pub events: Option<EventModuleState>,
     pub sse_buffer_size: usize,
+    pub scope_provider: Arc<dyn HttpScopeProvider>,
+}
+
+impl RunRoutesState {
+    pub fn scoped(&self, scope: &ScopeContext) -> Self {
+        if scope.scope_id.as_str() == DEFAULT_SCOPE_ID {
+            return self.clone();
+        }
+        let mut next = self.clone();
+        next.run.store = Arc::new(ScopedThreadRunStore::new(
+            self.run.store.clone(),
+            scope.scope_id.clone(),
+        ));
+        next.run.scope_id = Some(scope.scope_id.clone());
+        next
+    }
 }
 
 #[derive(Clone)]
 pub struct AdminRunRoutesState {
     pub admin: AdminModuleState,
     pub run: RunModuleState,
+    pub scope_provider: Arc<dyn HttpScopeProvider>,
 }
 
 #[derive(Clone)]
@@ -227,6 +330,7 @@ pub struct ConfigRoutesState {
     pub admin: AdminModuleState,
     pub config: ConfigModuleState,
     pub run: RunModuleState,
+    pub scope_provider: Arc<dyn HttpScopeProvider>,
 }
 
 #[derive(Clone)]
@@ -238,6 +342,7 @@ pub struct EvalRoutesState {
     pub trace: Option<TraceModuleState>,
     pub events: Option<EventModuleState>,
     pub limits: EvalLimits,
+    pub scope_provider: Arc<dyn HttpScopeProvider>,
 }
 
 #[derive(Clone)]
@@ -248,9 +353,23 @@ pub struct ProtocolRoutesState {
     pub sse_buffer_size: usize,
     pub replay_buffer_capacity: usize,
     pub a2a_extended_card_bearer_token: Option<RedactedString>,
+    pub scope_provider: Arc<dyn HttpScopeProvider>,
 }
 
 impl ProtocolRoutesState {
+    pub fn scoped(&self, scope: &ScopeContext) -> Self {
+        if scope.scope_id.as_str() == DEFAULT_SCOPE_ID {
+            return self.clone();
+        }
+        let mut next = self.clone();
+        next.run.store = Arc::new(ScopedThreadRunStore::new(
+            self.run.store.clone(),
+            scope.scope_id.clone(),
+        ));
+        next.run.scope_id = Some(scope.scope_id.clone());
+        next
+    }
+
     pub fn insert_replay_buffer(
         &self,
         key: String,
@@ -285,12 +404,14 @@ pub struct SystemRoutesState {
     pub config_store_enabled: bool,
     pub audit_log_enabled: bool,
     pub runtime_stats_enabled: bool,
+    pub scope_provider: Arc<dyn HttpScopeProvider>,
 }
 
 #[derive(Clone)]
 pub struct TraceRoutesState {
     pub admin: AdminModuleState,
     pub trace: TraceModuleState,
+    pub scope_provider: Arc<dyn HttpScopeProvider>,
 }
 
 impl ServerState {
@@ -309,6 +430,7 @@ impl ServerState {
                 started_at: Instant::now(),
             },
             server_config,
+            scope_provider: Arc::new(SingleScopeProvider::default()),
         };
         state
             .protocol
@@ -420,6 +542,7 @@ impl ServerState {
             run: self.run_module(),
             events: self.event_module(),
             sse_buffer_size: self.server_config.sse_buffer_size,
+            scope_provider: self.scope_provider.clone(),
         }
     }
 
@@ -427,6 +550,7 @@ impl ServerState {
         AdminRunRoutesState {
             admin: self.admin_module(),
             run: self.run_module(),
+            scope_provider: self.scope_provider.clone(),
         }
     }
 
@@ -435,6 +559,7 @@ impl ServerState {
             admin: self.admin_module(),
             config: self.config_module()?,
             run: self.run_module(),
+            scope_provider: self.scope_provider.clone(),
         })
     }
 
@@ -447,6 +572,7 @@ impl ServerState {
             trace: self.trace_module(),
             events: self.event_module(),
             limits: self.server_config.eval_limits.clone(),
+            scope_provider: self.scope_provider.clone(),
         })
     }
 
@@ -461,6 +587,7 @@ impl ServerState {
                 .server_config
                 .a2a_extended_card_bearer_token
                 .clone(),
+            scope_provider: self.scope_provider.clone(),
         }
     }
 
@@ -471,6 +598,7 @@ impl ServerState {
             config_store_enabled: self.config.is_some(),
             audit_log_enabled: self.audit_log().is_some(),
             runtime_stats_enabled: self.runtime_stats().is_some(),
+            scope_provider: self.scope_provider.clone(),
         }
     }
 
@@ -478,6 +606,7 @@ impl ServerState {
         Some(TraceRoutesState {
             admin: self.admin_module(),
             trace: self.trace_module()?,
+            scope_provider: self.scope_provider.clone(),
         })
     }
 }

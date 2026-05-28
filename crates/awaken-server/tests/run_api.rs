@@ -17,6 +17,7 @@ use awaken_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
 use awaken_contract::contract::versioned_registry::PinnedRegistryManifest;
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_contract::registry_spec::RemoteEndpoint;
+use awaken_contract::{RequestSurface, ScopeContext, ScopeId, scoped_key};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::extensions::a2a::{
     AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
@@ -24,8 +25,10 @@ use awaken_runtime::extensions::a2a::{
 };
 use awaken_server::app::{ServerConfig, ServerState};
 use awaken_server::routes::build_router;
+use awaken_server::scope::{HttpScopeProvider, ScopeResolveError};
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
+use axum::http::request::Parts;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -250,6 +253,26 @@ struct TestApp {
 
 const TEST_ADMIN_TOKEN: &str = "run-api-test-token";
 
+struct HeaderScopeProvider;
+
+#[async_trait]
+impl HttpScopeProvider for HeaderScopeProvider {
+    async fn scope_for_http_request(
+        &self,
+        _surface: RequestSurface,
+        parts: &Parts,
+    ) -> Result<ScopeContext, ScopeResolveError> {
+        let scope = parts
+            .headers
+            .get("x-awaken-scope")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("default");
+        ScopeId::new(scope)
+            .map(ScopeContext::new)
+            .map_err(|error| ScopeResolveError::Failed(error.to_string()))
+    }
+}
+
 fn make_test_app_with_runtime(
     runtime: Arc<awaken_runtime::AgentRuntime>,
     store: Arc<InMemoryStore>,
@@ -281,6 +304,48 @@ fn make_test_app_with_runtime(
 
 fn make_test_app() -> TestApp {
     make_test_app_with_executor(Arc::new(ImmediateExecutor))
+}
+
+fn make_header_scoped_test_app() -> TestApp {
+    let mut app = make_test_app();
+    let store = app.store.clone();
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
+            .with_provider("mock", Arc::new(ImmediateExecutor))
+            .with_agent_spec(AgentSpec {
+                id: "test-agent".into(),
+                model_id: "test-model".into(),
+                system_prompt: "test".into(),
+                max_rounds: 0,
+                ..Default::default()
+            })
+            .with_in_memory_thread_run_store(store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+    runtime.set_run_resolver(Arc::new(TestRunResolver {
+        inner: runtime.resolver_arc(),
+    }));
+    let mailbox_store = std::sync::Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let mailbox = std::sync::Arc::new(awaken_server::mailbox::Mailbox::new(
+        runtime.clone(),
+        mailbox_store,
+        store.clone(),
+        "test".to_string(),
+        awaken_server::mailbox::MailboxConfig::default(),
+    ));
+    let mut state = ServerState::new(
+        runtime.clone(),
+        mailbox,
+        store.clone(),
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    )
+    .with_scope_provider(Arc::new(HeaderScopeProvider));
+    state.admin.admin_api_config.bearer_token = Some(TEST_ADMIN_TOKEN.into());
+    app.router = build_router(&state);
+    app
 }
 
 fn make_test_app_with_executor(
@@ -382,6 +447,25 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, String) {
     (status, String::from_utf8(body.to_vec()).expect("utf-8"))
 }
 
+async fn get_json_with_scope(app: axum::Router, uri: &str, scope: &str) -> (StatusCode, String) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("x-awaken-scope", scope)
+                .body(axum::body::Body::empty())
+                .expect("request build"),
+        )
+        .await
+        .expect("app should handle request");
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .expect("body readable");
+    (status, String::from_utf8(body.to_vec()).expect("utf-8"))
+}
+
 async fn get_json_admin(app: axum::Router, uri: &str) -> (StatusCode, String) {
     let resp = app
         .oneshot(
@@ -409,6 +493,32 @@ async fn post_json(app: axum::Router, uri: &str, payload: Value) -> (StatusCode,
                 .uri(uri)
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {TEST_ADMIN_TOKEN}"))
+                .body(axum::body::Body::from(payload.to_string()))
+                .expect("request build"),
+        )
+        .await
+        .expect("app should handle request");
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .expect("body readable");
+    (status, String::from_utf8(body.to_vec()).expect("utf-8"))
+}
+
+async fn post_json_with_scope(
+    app: axum::Router,
+    uri: &str,
+    payload: Value,
+    scope: &str,
+) -> (StatusCode, String) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {TEST_ADMIN_TOKEN}"))
+                .header("x-awaken-scope", scope)
                 .body(axum::body::Body::from(payload.to_string()))
                 .expect("request build"),
         )
@@ -467,6 +577,59 @@ fn find_event<'a>(events: &'a [Value], event_type: &str) -> Option<&'a Value> {
             .or_else(|| e.get("type").and_then(Value::as_str))
             == Some(event_type)
     })
+}
+
+// ============================================================================
+// Thread scope fencing
+// ============================================================================
+
+#[tokio::test]
+async fn thread_routes_fence_store_by_scope() {
+    let test = make_header_scoped_test_app();
+    let (status, body) = post_json_with_scope(
+        test.router.clone(),
+        "/v1/threads",
+        json!({"title": "tenant A"}),
+        "tenant-a",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "unexpected body: {body}");
+    let created: Value = serde_json::from_str(&body).expect("json body");
+    let thread_id = created["id"].as_str().expect("thread id").to_string();
+
+    let (status, _body) = get_json_with_scope(
+        test.router.clone(),
+        &format!("/v1/threads/{thread_id}"),
+        "tenant-a",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _body) = get_json_with_scope(
+        test.router.clone(),
+        &format!("/v1/threads/{thread_id}"),
+        "tenant-b",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    assert!(
+        test.store
+            .load_thread(&thread_id)
+            .await
+            .expect("base lookup")
+            .is_none(),
+        "unscoped backing key must not be populated"
+    );
+    let scoped_thread_id = scoped_key(&ScopeId::new("tenant-a").unwrap(), &thread_id);
+    assert!(
+        test.store
+            .load_thread(&scoped_thread_id)
+            .await
+            .expect("scoped lookup")
+            .is_some(),
+        "thread must be persisted under the resolved scope"
+    );
 }
 
 // ============================================================================
@@ -737,6 +900,45 @@ async fn ai_sdk_agent_run_creates_thread_record() {
         .expect("messages lookup should succeed")
         .expect("messages should be persisted");
     assert!(!messages.is_empty());
+}
+
+#[tokio::test]
+async fn ai_sdk_agent_run_uses_resolved_scope() {
+    let test = make_header_scoped_test_app();
+    let thread_id = "thread-ai-sdk-scope";
+    let (status, body) = post_json_with_scope(
+        test.router.clone(),
+        "/v1/ai-sdk/agents/test-agent/runs",
+        json!({
+            "threadId": thread_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "parts": [{ "type": "text", "text": "hello" }]
+                }
+            ]
+        }),
+        "tenant-a",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected body: {body}");
+
+    assert!(
+        test.store
+            .load_thread(thread_id)
+            .await
+            .expect("base lookup")
+            .is_none(),
+        "AI SDK run must not write unscoped thread IDs"
+    );
+    let scoped_thread_id = scoped_key(&ScopeId::new("tenant-a").unwrap(), thread_id);
+    let thread = test
+        .store
+        .load_thread(&scoped_thread_id)
+        .await
+        .expect("scoped lookup")
+        .expect("thread should be persisted under scope");
+    assert_eq!(thread.id, scoped_thread_id);
 }
 
 #[tokio::test]

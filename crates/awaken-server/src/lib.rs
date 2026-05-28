@@ -30,6 +30,7 @@ pub mod query;
 pub mod request;
 mod route_modules;
 pub mod routes;
+pub mod scope;
 pub mod services;
 pub(crate) mod system_routes;
 pub mod time;
