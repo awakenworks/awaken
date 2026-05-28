@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use awaken_ext_observability::trace_store::TraceStore;
 
 use crate::mailbox::{Mailbox, MailboxLifecycleConfig};
+use crate::scope::HttpScopeProvider;
 mod modules;
 use crate::services::audit_log::AuditLogger;
 use crate::transport::replay_buffer::EventReplayBuffer;
@@ -314,6 +315,7 @@ pub struct ServerState {
     pub protocol: ProtocolModuleState,
     pub admin: AdminModuleState,
     pub server_config: ServerConfig,
+    pub scope_provider: Arc<dyn HttpScopeProvider>,
 }
 
 #[deprecated(note = "use ServerState")]
@@ -376,6 +378,12 @@ impl ServerState {
 
     pub fn credential_broker(&self) -> Arc<dyn CredentialBroker> {
         self.run.credential_broker.clone()
+    }
+
+    #[must_use]
+    pub fn with_scope_provider(mut self, provider: Arc<dyn HttpScopeProvider>) -> Self {
+        self.scope_provider = provider;
+        self
     }
 
     #[must_use]

@@ -2,7 +2,9 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
+use std::sync::Arc;
 
+use super::scope::ScopeId;
 use super::storage::StorageError;
 
 /// Async CRUD store for namespaced JSON configuration documents.
@@ -117,6 +119,106 @@ pub trait ConfigStore: Send + Sync {
             });
         }
         self.delete(namespace, id).await
+    }
+}
+
+#[derive(Clone)]
+pub struct ScopedConfigStore {
+    inner: Arc<dyn ConfigStore>,
+    scope_id: ScopeId,
+}
+
+impl ScopedConfigStore {
+    pub fn new(inner: Arc<dyn ConfigStore>, scope_id: ScopeId) -> Self {
+        Self { inner, scope_id }
+    }
+
+    pub fn scope_id(&self) -> &ScopeId {
+        &self.scope_id
+    }
+
+    pub fn inner(&self) -> &dyn ConfigStore {
+        self.inner.as_ref()
+    }
+
+    fn scoped_namespace(&self, namespace: &str) -> String {
+        let scope = self.scope_id.as_str();
+        format!("scope:{}:{}:{}", scope.len(), scope, namespace)
+    }
+}
+
+#[async_trait]
+impl ConfigStore for ScopedConfigStore {
+    async fn get(&self, namespace: &str, id: &str) -> Result<Option<Value>, StorageError> {
+        self.inner.get(&self.scoped_namespace(namespace), id).await
+    }
+
+    async fn list(
+        &self,
+        namespace: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(String, Value)>, StorageError> {
+        self.inner
+            .list(&self.scoped_namespace(namespace), offset, limit)
+            .await
+    }
+
+    async fn put(&self, namespace: &str, id: &str, value: &Value) -> Result<(), StorageError> {
+        self.inner
+            .put(&self.scoped_namespace(namespace), id, value)
+            .await
+    }
+
+    async fn delete(&self, namespace: &str, id: &str) -> Result<(), StorageError> {
+        self.inner
+            .delete(&self.scoped_namespace(namespace), id)
+            .await
+    }
+
+    async fn put_if_absent(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &Value,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .put_if_absent(&self.scoped_namespace(namespace), id, value)
+            .await
+    }
+
+    async fn exists(&self, namespace: &str, id: &str) -> Result<bool, StorageError> {
+        self.inner
+            .exists(&self.scoped_namespace(namespace), id)
+            .await
+    }
+
+    async fn put_if_revision(
+        &self,
+        namespace: &str,
+        id: &str,
+        value: &Value,
+        expected_revision: u64,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .put_if_revision(
+                &self.scoped_namespace(namespace),
+                id,
+                value,
+                expected_revision,
+            )
+            .await
+    }
+
+    async fn delete_if_revision(
+        &self,
+        namespace: &str,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .delete_if_revision(&self.scoped_namespace(namespace), id, expected_revision)
+            .await
     }
 }
 
@@ -286,5 +388,32 @@ mod tests {
         let items = store.list("tests", 0, 10).await.unwrap();
         assert_eq!(items[0].0, "alpha");
         assert_eq!(items[1].0, "bravo");
+    }
+
+    #[tokio::test]
+    async fn scoped_config_store_isolates_same_namespace_and_id() {
+        let inner: Arc<dyn ConfigStore> = Arc::new(MemoryConfigStore::default());
+        let scope_a = ScopedConfigStore::new(inner.clone(), ScopeId::new("scope-a").unwrap());
+        let scope_b = ScopedConfigStore::new(inner, ScopeId::new("scope-b").unwrap());
+
+        scope_a
+            .put("agents", "assistant", &serde_json::json!({"scope": "a"}))
+            .await
+            .unwrap();
+        scope_b
+            .put("agents", "assistant", &serde_json::json!({"scope": "b"}))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            scope_a.get("agents", "assistant").await.unwrap(),
+            Some(serde_json::json!({"scope": "a"}))
+        );
+        assert_eq!(
+            scope_b.get("agents", "assistant").await.unwrap(),
+            Some(serde_json::json!({"scope": "b"}))
+        );
+        assert_eq!(scope_a.list("agents", 0, 10).await.unwrap().len(), 1);
+        assert_eq!(scope_b.list("agents", 0, 10).await.unwrap().len(), 1);
     }
 }

@@ -1,5 +1,6 @@
 //! Axum router setup — unified route registration.
 use crate::services::trace_service::{get_trace, list_traces, pin_trace};
+use axum::Extension;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
@@ -17,6 +18,7 @@ use crate::query::{self, MessageQueryParams, ThreadQueryParams};
 use crate::services::run_control_service::{
     InputMode, InterruptMode, RunControlError, RunControlService,
 };
+use awaken_contract::ScopeContext;
 use awaken_contract::contract::message::Message;
 use awaken_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError};
 use awaken_runtime::RunActivation;
@@ -207,8 +209,10 @@ struct ListParams {
 #[tracing::instrument(skip(st))]
 async fn list_threads(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Query(params): Query<ThreadQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     let query = params.storage_query().map_err(ApiError::BadRequest)?;
     let page = st
         .run
@@ -229,8 +233,10 @@ async fn list_threads(
 #[tracing::instrument(skip(st))]
 async fn list_thread_summaries(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Query(params): Query<ThreadQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     let query = params.storage_query().map_err(ApiError::BadRequest)?;
     let page = st
         .run
@@ -333,8 +339,10 @@ where
 #[tracing::instrument(skip(st, payload))]
 async fn create_thread(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Json(payload): Json<CreateThreadPayload>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let st = st.scoped(&scope);
     let thread = crate::services::thread_events::create_thread(
         &st,
         crate::services::thread_service::CreateThreadOptions {
@@ -352,8 +360,10 @@ async fn create_thread(
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn get_thread(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     let thread = st
         .run
         .store()
@@ -368,9 +378,11 @@ async fn get_thread(
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn delete_thread(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Query(params): Query<DeleteThreadParams>,
 ) -> Result<StatusCode, ApiError> {
+    let st = st.scoped(&scope);
     crate::services::thread_events::delete_thread(
         &st,
         &id,
@@ -399,9 +411,11 @@ struct PatchThreadPayload {
 #[tracing::instrument(skip(st, payload), fields(thread_id = %id))]
 async fn patch_thread(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Json(payload): Json<PatchThreadPayload>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     let thread = crate::services::thread_events::update_thread(
         &st,
         &id,
@@ -422,8 +436,10 @@ async fn patch_thread(
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn interrupt_thread(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     let interrupted = RunControlService::new(st.run.clone())
         .interrupt_thread(&id, InterruptMode::Graceful)
         .await
@@ -443,9 +459,11 @@ async fn interrupt_thread(
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn get_thread_messages(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     // Verify thread exists
     st.run
         .store()
@@ -511,9 +529,11 @@ struct PostThreadMessagesPayload {
 #[tracing::instrument(skip(st, payload), fields(thread_id = %id))]
 async fn post_thread_messages(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Json(payload): Json<PostThreadMessagesPayload>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     // Require existing thread for thread-centric API semantics.
     st.run
         .store()
@@ -569,9 +589,11 @@ struct MailboxPayload {
 #[tracing::instrument(skip(st, body), fields(thread_id = %id))]
 async fn push_mailbox(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Json(body): Json<MailboxPayload>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let st = st.scoped(&scope);
     // Convert the opaque payload into a user message for the mailbox.
     let text = body
         .payload
@@ -590,9 +612,10 @@ async fn push_mailbox(
     let result = st
         .run
         .mailbox()
-        .submit_background(RunActivation::new(id, messages))
+        .submit_background(st.run.scope_activation(RunActivation::new(id, messages)))
         .await
         .map_err(map_mailbox_error)?;
+    let result = st.run.unscope_submit_result(result);
 
     Ok((
         StatusCode::CREATED,
@@ -607,17 +630,23 @@ async fn push_mailbox(
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn peek_mailbox(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Query(params): Query<ListParams>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.clamp(1, 200);
     let dispatches = st
         .run
         .mailbox()
-        .list_dispatches(&id, None, limit, offset)
+        .list_dispatches(&st.run.scoped_id(&id), None, limit, offset)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let dispatches = dispatches
+        .into_iter()
+        .map(|dispatch| st.run.unscope_dispatch(dispatch))
+        .collect::<Vec<_>>();
 
     let value = serde_json::to_value(&dispatches).map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(json!({ "items": value })))
@@ -650,8 +679,10 @@ fn convert_run_messages(msgs: Vec<RunMessage>) -> Vec<Message> {
 #[tracing::instrument(skip(st, payload))]
 async fn start_run(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Json(payload): Json<CreateRunPayload>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     let agent_id = payload.agent_id.trim().to_string();
     if agent_id.is_empty() {
         return Err(ApiError::BadRequest("agent_id cannot be empty".to_string()));
@@ -664,7 +695,7 @@ async fn start_run(
     let (_result, event_rx) = st
         .run
         .mailbox()
-        .submit(request)
+        .submit(st.run.scope_activation(request))
         .await
         .map_err(map_mailbox_error)?;
     let encoder = awaken_contract::contract::transport::Identity::default();
@@ -676,8 +707,10 @@ async fn start_run(
 #[tracing::instrument(skip(st), fields(run_id = %id))]
 async fn get_run(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     let record = crate::services::run_service::get_run(st.run.store().as_ref(), &id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -688,8 +721,10 @@ async fn get_run(
 
 async fn list_runs(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Query(params): Query<ListRunsParams>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     use awaken_contract::contract::lifecycle::RunStatus;
     use awaken_contract::contract::storage::RunQuery;
 
@@ -736,9 +771,11 @@ struct PushRunInputsPayload {
 #[tracing::instrument(skip(st, payload), fields(run_id = %id))]
 async fn push_run_inputs(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Json(payload): Json<PushRunInputsPayload>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     let messages = convert_run_messages(payload.messages);
     if messages.is_empty() {
         return Err(ApiError::BadRequest(
@@ -770,8 +807,10 @@ async fn push_run_inputs(
 #[tracing::instrument(skip(st), fields(run_id = %id))]
 async fn cancel_run(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     RunControlService::new(st.run.clone())
         .cancel_run(&id)
         .await
@@ -790,8 +829,10 @@ async fn cancel_run(
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn cancel_thread(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     RunControlService::new(st.run.clone())
         .cancel_run(&id)
         .await
@@ -822,9 +863,11 @@ struct DecisionPayload {
 #[tracing::instrument(skip(st, payload), fields(run_id = %id))]
 async fn submit_decision(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Json(payload): Json<DecisionPayload>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 
     let action = match payload.action.as_str() {
@@ -864,9 +907,11 @@ async fn submit_decision(
 #[tracing::instrument(skip(st, payload), fields(thread_id = %id))]
 async fn submit_thread_decision(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Json(payload): Json<DecisionPayload>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
 
     let action = match payload.action.as_str() {
@@ -921,9 +966,11 @@ struct ListRunsParams {
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn list_thread_runs(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Query(params): Query<ListRunsParams>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     use awaken_contract::contract::lifecycle::RunStatus;
     use awaken_contract::contract::storage::RunQuery;
 
@@ -962,8 +1009,10 @@ async fn list_thread_runs(
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn latest_thread_run(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     let record = crate::services::run_service::latest_run(st.run.store().as_ref(), &id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -975,8 +1024,10 @@ async fn latest_thread_run(
 #[tracing::instrument(skip(st), fields(thread_id = %id))]
 async fn active_thread_run(
     State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     let active = RunControlService::new(st.run.clone())
         .get_active_run(&id)
         .await

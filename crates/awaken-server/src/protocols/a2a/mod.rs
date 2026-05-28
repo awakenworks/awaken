@@ -11,6 +11,7 @@ mod stream_projector;
 mod task;
 mod types;
 
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Uri};
@@ -28,6 +29,7 @@ pub use awaken_protocol_a2a::{
 };
 
 use crate::app::ProtocolRoutesState;
+use awaken_contract::ScopeContext;
 
 use common::{
     decode_json_body, decode_query, ensure_supported_version_from_request, parse_a2a_tail,
@@ -50,18 +52,22 @@ pub fn a2a_routes() -> Router<ProtocolRoutesState> {
 
 async fn a2a_agent_card_route(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     headers: HeaderMap,
     uri: Uri,
 ) -> Result<Json<AgentCard>, A2aError> {
+    let st = st.scoped(&scope);
     agent_card::a2a_agent_card(st, headers, uri).await
 }
 
 async fn a2a_get_dispatch(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(tail): Path<String>,
     headers: HeaderMap,
     uri: Uri,
 ) -> Result<Response, A2aError> {
+    let st = st.scoped(&scope);
     ensure_supported_version_from_request(&headers, &uri)?;
     let segments = parse_a2a_tail(&tail);
 
@@ -170,11 +176,13 @@ async fn a2a_get_dispatch(
 
 async fn a2a_post_dispatch(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(tail): Path<String>,
     headers: HeaderMap,
     uri: Uri,
     body: Bytes,
 ) -> Result<Response, A2aError> {
+    let st = st.scoped(&scope);
     ensure_supported_version_from_request(&headers, &uri)?;
     let segments = parse_a2a_tail(&tail);
 
@@ -272,10 +280,12 @@ async fn a2a_post_dispatch(
 
 async fn a2a_delete_dispatch(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(tail): Path<String>,
     headers: HeaderMap,
     uri: Uri,
 ) -> Result<Response, A2aError> {
+    let st = st.scoped(&scope);
     ensure_supported_version_from_request(&headers, &uri)?;
     let segments = parse_a2a_tail(&tail);
 

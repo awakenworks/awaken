@@ -2,10 +2,12 @@
 
 use std::sync::Arc;
 
+use awaken_contract::ScopeContext;
 use awaken_contract::contract::protocol_replay_log::{
     ProtocolReplayCursor, ProtocolReplayError, ProtocolReplayLog, ProtocolReplayRecord,
-    ProtocolStreamKey,
+    ProtocolStreamKey, ScopedProtocolReplayLog,
 };
+use axum::Extension;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -35,10 +37,12 @@ pub fn ag_ui_replay_routes() -> Router<ProtocolRoutesState> {
 
 async fn replay_stream(
     State(st): State<ProtocolRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
     Path(thread_id): Path<String>,
     Query(query): Query<ReplayQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     let log = configured_replay_log(&st)?;
     let cursor = cursor_from_query_or_header(query.cursor.as_deref(), &headers)?;
     let frames = replay_frames(log, &thread_id, cursor, replay_limit(query.limit)).await?;
@@ -46,10 +50,14 @@ async fn replay_stream(
 }
 
 fn configured_replay_log(st: &ProtocolRoutesState) -> Result<Arc<dyn ProtocolReplayLog>, ApiError> {
-    crate::protocol_replay_state::protocol_replay_log_for_buffers(&st.protocol.replay_buffers)
-        .ok_or_else(|| {
-            ApiError::ServiceUnavailable("protocol replay log is not configured".to_string())
-        })
+    let log =
+        crate::protocol_replay_state::protocol_replay_log_for_buffers(&st.protocol.replay_buffers)
+            .ok_or_else(|| {
+                ApiError::ServiceUnavailable("protocol replay log is not configured".to_string())
+            })?;
+    Ok(st.run.scope_id.as_ref().map_or(log.clone(), |scope_id| {
+        Arc::new(ScopedProtocolReplayLog::new(log, scope_id.clone())) as Arc<dyn ProtocolReplayLog>
+    }))
 }
 
 async fn replay_frames(

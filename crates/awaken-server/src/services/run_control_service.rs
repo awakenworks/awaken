@@ -188,7 +188,11 @@ impl RunControlService {
     ) -> Result<(), RunControlError> {
         let mailbox = self.mailbox();
         if mailbox
-            .send_decision_live(id, tool_call_id.clone(), resume.clone())
+            .send_decision_live(
+                &self.state.scoped_id(id),
+                tool_call_id.clone(),
+                resume.clone(),
+            )
             .await?
         {
             Ok(())
@@ -228,7 +232,9 @@ impl RunControlService {
             .with_continue_run_id(run.run_id.clone())
             .with_decisions(vec![(tool_call_id.clone(), resume.clone())]);
         let mailbox = self.mailbox();
-        mailbox.submit_background(request).await?;
+        mailbox
+            .submit_background(self.state.scope_activation(request))
+            .await?;
         mailbox
             .record_mailbox_decision_received_for_run(
                 &run,
@@ -242,7 +248,7 @@ impl RunControlService {
 
     /// Cancel an active run or queued mailbox dispatch by run ID, dispatch ID, or thread ID.
     pub async fn cancel_run(&self, id: &str) -> Result<(), RunControlError> {
-        if self.mailbox().cancel(id).await? {
+        if self.mailbox().cancel(&self.state.scoped_id(id)).await? {
             Ok(())
         } else {
             Err(RunControlError::RunNotFound(id.to_string()))
@@ -255,9 +261,12 @@ impl RunControlService {
         thread_id: &str,
         _mode: InterruptMode,
     ) -> Result<MailboxInterrupt, RunControlError> {
-        let interrupted = self.mailbox().interrupt(thread_id).await?;
+        let interrupted = self
+            .mailbox()
+            .interrupt(&self.state.scoped_id(thread_id))
+            .await?;
         if interrupted.active_dispatch.is_some() || interrupted.superseded_count > 0 {
-            Ok(interrupted)
+            Ok(self.state.unscope_interrupt(interrupted))
         } else {
             Err(RunControlError::ThreadNotFound(thread_id.to_string()))
         }
@@ -281,7 +290,7 @@ impl RunControlService {
         if mode == InputMode::InterruptThenQueue {
             let _ = self
                 .mailbox()
-                .interrupt(thread_id)
+                .interrupt(&self.state.scoped_id(thread_id))
                 .await
                 .map_err(RunControlError::Mailbox)?;
         }
@@ -299,8 +308,9 @@ impl RunControlService {
         }
 
         self.mailbox()
-            .submit_background(request)
+            .submit_background(self.state.scope_activation(request))
             .await
+            .map(|result| self.state.unscope_submit_result(result))
             .map_err(RunControlError::Mailbox)
     }
 
@@ -324,8 +334,9 @@ impl RunControlService {
         }
 
         self.mailbox()
-            .submit_live_then_queue(request, None)
+            .submit_live_then_queue(self.state.scope_activation(request), None)
             .await
+            .map(|result| self.state.unscope_submit_result(result))
             .map_err(RunControlError::Mailbox)
     }
 
@@ -355,8 +366,9 @@ impl RunControlService {
                 .with_continue_run_id(run.run_id);
             return self
                 .mailbox()
-                .submit_background(request)
+                .submit_background(self.state.scope_activation(request))
                 .await
+                .map(|result| self.state.unscope_submit_result(result))
                 .map_err(RunControlError::Mailbox);
         }
 
@@ -380,8 +392,12 @@ impl RunControlService {
         let request =
             RunActivation::new(run.thread_id.clone(), messages).with_agent_id(run.agent_id.clone());
         self.mailbox()
-            .submit_live_then_queue(request, Some(&run.run_id))
+            .submit_live_then_queue(
+                self.state.scope_activation(request),
+                Some(&self.state.scoped_id(&run.run_id)),
+            )
             .await
+            .map(|result| self.state.unscope_submit_result(result))
             .map_err(RunControlError::Mailbox)
     }
 

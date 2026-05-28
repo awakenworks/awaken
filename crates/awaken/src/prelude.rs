@@ -67,6 +67,10 @@ pub use awaken_contract::contract::lifecycle::{RunStatus, TerminationReason};
 // ── Storage ──
 pub use awaken_contract::MailboxStore;
 pub use awaken_contract::contract::storage::ThreadRunStore;
+pub use awaken_contract::{
+    RequestSurface, ScopeContext, ScopeId, ScopedConfigStore, ScopedMailboxStore,
+    ScopedOutboxStore, ScopedProtocolReplayLog, ScopedThreadRunStore, ScopedVersionedRegistry,
+};
 
 // ── Stop policies ──
 pub use crate::policies::{StopConditionPlugin, StopDecision, StopPolicy, StopPolicyStats};

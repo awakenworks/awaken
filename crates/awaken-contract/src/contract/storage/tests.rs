@@ -605,6 +605,90 @@ impl RunStore for MockRunStore {
     }
 }
 
+#[derive(Debug, Default)]
+struct MockThreadRunStore {
+    threads: MockThreadStore,
+    runs: MockRunStore,
+}
+
+#[async_trait]
+impl ThreadStore for MockThreadRunStore {
+    async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, StorageError> {
+        self.threads.load_thread(thread_id).await
+    }
+
+    async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError> {
+        self.threads.save_thread(thread).await
+    }
+
+    async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
+        self.threads.delete_thread(thread_id).await
+    }
+
+    async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
+        self.threads.list_threads(offset, limit).await
+    }
+
+    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
+        self.threads.load_messages(thread_id).await
+    }
+
+    async fn save_messages(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+    ) -> Result<(), StorageError> {
+        self.threads.save_messages(thread_id, messages).await
+    }
+
+    async fn delete_messages(&self, thread_id: &str) -> Result<(), StorageError> {
+        self.threads.delete_messages(thread_id).await
+    }
+
+    async fn update_thread_metadata(
+        &self,
+        id: &str,
+        metadata: crate::thread::ThreadMetadata,
+    ) -> Result<(), StorageError> {
+        self.threads.update_thread_metadata(id, metadata).await
+    }
+}
+
+#[async_trait]
+impl RunStore for MockThreadRunStore {
+    async fn create_run(&self, record: &RunRecord) -> Result<(), StorageError> {
+        self.runs.create_run(record).await
+    }
+
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError> {
+        self.runs.load_run(run_id).await
+    }
+
+    async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
+        self.runs.latest_run(thread_id).await
+    }
+
+    async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, StorageError> {
+        self.runs.list_runs(query).await
+    }
+}
+
+#[async_trait]
+impl ThreadRunStore for MockThreadRunStore {
+    async fn checkpoint(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+        run: &RunRecord,
+    ) -> Result<(), StorageError> {
+        if self.load_thread(thread_id).await?.is_none() {
+            self.save_thread(&Thread::with_id(thread_id)).await?;
+        }
+        self.save_messages(thread_id, messages).await?;
+        self.create_run(run).await
+    }
+}
+
 fn make_run(run_id: &str, thread_id: &str, updated_at: u64) -> RunRecord {
     RunRecord {
         run_id: run_id.to_owned(),
@@ -682,6 +766,61 @@ async fn run_store_list_with_filter() {
         .unwrap();
     assert_eq!(page.total, 2);
     assert_eq!(page.items.len(), 2);
+}
+
+#[tokio::test]
+async fn scoped_thread_run_store_isolates_thread_and_run_ids() {
+    let inner =
+        std::sync::Arc::new(MockThreadRunStore::default()) as std::sync::Arc<dyn ThreadRunStore>;
+    let scope_a = ScopedThreadRunStore::new(inner.clone(), ScopeId::new("scope-a").unwrap());
+    let scope_b = ScopedThreadRunStore::new(inner.clone(), ScopeId::new("scope-b").unwrap());
+
+    scope_a
+        .save_thread(&Thread::with_id("thread-1").with_parent_thread_id("parent"))
+        .await
+        .unwrap();
+    scope_b
+        .save_thread(&Thread::with_id("thread-1"))
+        .await
+        .unwrap();
+    scope_a
+        .create_run(&make_run("run-1", "thread-1", 100))
+        .await
+        .unwrap();
+    scope_b
+        .create_run(&make_run("run-1", "thread-1", 200))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        scope_a
+            .load_thread("thread-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .parent_thread_id
+            .as_deref(),
+        Some("parent")
+    );
+    assert_eq!(
+        scope_b
+            .load_thread("thread-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .parent_thread_id,
+        None
+    );
+    assert_eq!(
+        scope_a.load_run("run-1").await.unwrap().unwrap().updated_at,
+        100
+    );
+    assert_eq!(
+        scope_b.load_run("run-1").await.unwrap().unwrap().updated_at,
+        200
+    );
+    assert!(inner.load_thread("thread-1").await.unwrap().is_none());
+    assert!(inner.load_run("run-1").await.unwrap().is_none());
 }
 
 #[test]

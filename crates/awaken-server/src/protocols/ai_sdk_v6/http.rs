@@ -7,6 +7,7 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -16,6 +17,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use serde_json::{Value, json};
 
+use awaken_contract::ScopeContext;
 use awaken_contract::contract::content::{ContentBlock, extract_text};
 use awaken_contract::contract::event_sink::EventSink;
 use awaken_contract::contract::message::{Message, MessageRecord, Role, ToolCall};
@@ -89,29 +91,32 @@ pub fn ai_sdk_routes() -> Router<S> {
 
 async fn ai_sdk_chat(
     State(st): State<S>,
+    Extension(scope): Extension<ScopeContext>,
     Json(payload): Json<AiSdkChatRequest>,
 ) -> Result<Response, ApiError> {
-    ai_sdk_chat_inner(st, payload).await
+    ai_sdk_chat_inner(st.scoped(&scope), payload).await
 }
 
 /// Thread-centric route: `POST /v1/ai-sdk/threads/:thread_id/runs`
 async fn ai_sdk_chat_threaded(
     State(st): State<S>,
+    Extension(scope): Extension<ScopeContext>,
     Path(thread_id): Path<String>,
     Json(mut payload): Json<AiSdkChatRequest>,
 ) -> Result<Response, ApiError> {
     payload.thread_id = Some(thread_id);
-    ai_sdk_chat_inner(st, payload).await
+    ai_sdk_chat_inner(st.scoped(&scope), payload).await
 }
 
 /// Agent-scoped route: `POST /v1/ai-sdk/agents/:agent_id/runs`
 async fn ai_sdk_chat_agent_scoped(
     State(st): State<S>,
+    Extension(scope): Extension<ScopeContext>,
     Path(agent_id): Path<String>,
     Json(mut payload): Json<AiSdkChatRequest>,
 ) -> Result<Response, ApiError> {
     payload.agent_id = Some(agent_id);
-    ai_sdk_chat_inner(st, payload).await
+    ai_sdk_chat_inner(st.scoped(&scope), payload).await
 }
 
 /// Draft-agent preview route:
@@ -130,9 +135,11 @@ async fn ai_sdk_chat_agent_scoped(
 /// field forces the preview into the local-only resolve path.
 async fn ai_sdk_chat_preview_agent(
     State(st): State<S>,
+    Extension(scope): Extension<ScopeContext>,
     headers: HeaderMap,
     Json(payload): Json<super::request::PreviewAgentChatRequest>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     if let Err(err) = crate::config_routes::ensure_admin_auth(&st.admin, &headers) {
         return Ok(err.into_response());
     }
@@ -279,12 +286,18 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
     if !decisions.is_empty() {
         let (new_event_tx, new_event_rx) = tokio::sync::mpsc::channel(256);
         let mailbox = st.run.mailbox();
-        let reconnected = mailbox.reconnect_sink(&thread_id, new_event_tx).await;
+        let reconnected = mailbox
+            .reconnect_sink(&st.run.scoped_id(&thread_id), new_event_tx)
+            .await;
 
         if reconnected {
             let mut any_delivered = false;
             for (tool_call_id, resume) in &decisions {
-                if mailbox.send_decision(&thread_id, tool_call_id.clone(), resume.clone()) {
+                if mailbox.send_decision(
+                    &st.run.scoped_id(&thread_id),
+                    tool_call_id.clone(),
+                    resume.clone(),
+                ) {
                     any_delivered = true;
                 }
             }
@@ -292,7 +305,8 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
             if any_delivered {
                 // Wire the reconnected channel to a fresh SSE stream.
                 let replay_buffer = Arc::new(EventReplayBuffer::new(st.replay_buffer_capacity));
-                st.insert_replay_buffer(thread_id.clone(), Arc::clone(&replay_buffer));
+                let buffer_key = st.run.scoped_id(&thread_id);
+                st.insert_replay_buffer(buffer_key.clone(), Arc::clone(&replay_buffer));
 
                 let encoder = AiSdkEncoder::new();
                 let sse_rx = wire_sse_relay(
@@ -304,7 +318,7 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
 
                 let st_cleanup = st.clone();
                 let replay_buf = Arc::clone(&replay_buffer);
-                let tid = thread_id;
+                let tid = buffer_key;
                 let mut rx = sse_rx;
                 let (final_tx, final_rx) = tokio::sync::mpsc::channel::<Bytes>(st.sse_buffer_size);
                 tokio::spawn(async move {
@@ -344,7 +358,7 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
     let (_result, event_rx) = st
         .run
         .mailbox()
-        .submit(request)
+        .submit(st.run.scope_activation(request))
         .await
         .map_err(map_mailbox_error)?;
 
@@ -353,7 +367,8 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
     // Register buffer by thread_id (not run_id). External consumers only see
     // threads — runs are internal state. This matches AI SDK's reconnect URL
     // pattern: `{api}/{chatId}/stream` where chatId = threadId.
-    st.insert_replay_buffer(thread_id.clone(), Arc::clone(&replay_buffer));
+    let buffer_key = st.run.scoped_id(&thread_id);
+    st.insert_replay_buffer(buffer_key.clone(), Arc::clone(&replay_buffer));
 
     let encoder = AiSdkEncoder::new();
     let sse_rx = wire_sse_relay(event_rx, encoder, st.sse_buffer_size, Some(replay_buffer));
@@ -365,8 +380,9 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
     let st_cleanup = st.clone();
     let replay_buf_for_cleanup = st
         .get_replay_buffer(&thread_id)
+        .or_else(|| st.get_replay_buffer(&buffer_key))
         .ok_or_else(|| ApiError::Internal("replay buffer disappeared after insert".into()))?;
-    let cleanup_thread_id = thread_id;
+    let cleanup_thread_id = buffer_key;
     let mut sse_rx_forwarded = sse_rx;
     let (final_tx, final_rx) = tokio::sync::mpsc::channel::<Bytes>(st.sse_buffer_size);
     tokio::spawn(async move {
@@ -407,9 +423,11 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
 /// Reconnect to an active thread stream, or replay protocol cursors.
 async fn resume_stream(
     State(st): State<S>,
+    Extension(scope): Extension<ScopeContext>,
     Path(thread_id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    let st = st.scoped(&scope);
     if super::replay::resume_header_has_protocol_cursor(&headers) {
         match super::replay::resume_from_replay_log(&st, &thread_id, &headers).await {
             Ok(Some(response)) => return response,
@@ -420,7 +438,7 @@ async fn resume_stream(
     // ADR-0034 D3: numeric last-event-id is not a durable cursor; the
     // live cache reattach always replays the full retained window and
     // delegates durable resume to the protocol-cursor path above.
-    let buffer = st.get_replay_buffer(&thread_id);
+    let buffer = st.get_replay_buffer(&st.run.scoped_id(&thread_id));
 
     let Some(buffer) = buffer else {
         match super::replay::resume_from_replay_log(&st, &thread_id, &headers).await {
@@ -445,9 +463,11 @@ async fn resume_stream(
 
 async fn thread_messages(
     State(st): State<S>,
+    Extension(scope): Extension<ScopeContext>,
     Path(id): Path<String>,
     Query(params): Query<crate::query::MessageQueryParams>,
 ) -> Result<Json<Value>, ApiError> {
+    let st = st.scoped(&scope);
     let storage_query = params.storage_query().map_err(ApiError::BadRequest)?;
     let records = st
         .run
@@ -620,12 +640,14 @@ fn parse_tool_message_output(message: &Message) -> Value {
 
 async fn cancel_thread(
     State(st): State<S>,
+    Extension(scope): Extension<ScopeContext>,
     Path(thread_id): Path<String>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     let cancelled = st
         .run
         .mailbox()
-        .cancel(&thread_id)
+        .cancel(&st.run.scoped_id(&thread_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -645,12 +667,14 @@ async fn cancel_thread(
 
 async fn interrupt_thread(
     State(st): State<S>,
+    Extension(scope): Extension<ScopeContext>,
     Path(thread_id): Path<String>,
 ) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
     let interrupted = st
         .run
         .mailbox()
-        .interrupt(&thread_id)
+        .interrupt(&st.run.scoped_id(&thread_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
