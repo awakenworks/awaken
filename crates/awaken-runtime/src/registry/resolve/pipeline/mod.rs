@@ -80,6 +80,7 @@ pub(crate) fn resolve_registry_set(
     }
     let (executor, upstream_model, model, capability_sources) =
         resolve_model_and_executor(registries, &spec)?;
+    let spec = effective_runtime_spec(spec, &model);
 
     // Stage 2: Plugin pipeline
     let plugins = build_plugin_chain(registries, &spec, &model, &capability_sources)?;
@@ -155,12 +156,20 @@ fn lookup_spec(registries: &RegistrySet, agent_id: &str) -> Result<AgentSpec, Re
         .ok_or_else(|| ResolveError::AgentNotFound(agent_id.into()))
 }
 
+fn effective_runtime_spec(mut spec: AgentSpec, model: &ModelSpec) -> AgentSpec {
+    if let Some(policy) = spec.context_policy.as_ref() {
+        spec.context_policy = Some(crate::context::effective_policy(policy, model));
+    }
+    spec
+}
+
 fn resolve_local_spec(
     registries: &RegistrySet,
     spec: AgentSpec,
 ) -> Result<ResolvedAgent, ResolveError> {
     let (executor, upstream_model, model, capability_sources) =
         resolve_model_and_executor(registries, &spec)?;
+    let spec = effective_runtime_spec(spec, &model);
     let plugins = build_plugin_chain(registries, &spec, &model, &capability_sources)?;
     let env = ExecutionEnv::from_plugins(&plugins, &spec.active_hook_filter)?;
     let tools = build_tool_set(registries, &spec, &env)?;

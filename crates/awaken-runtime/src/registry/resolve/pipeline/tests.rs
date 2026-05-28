@@ -1828,6 +1828,11 @@ fn build_plugin_chain_clamps_context_policy_to_model_capabilities() {
     );
 
     let run = resolve(&regs, "a").unwrap();
+    let runtime_policy = run
+        .context_policy()
+        .expect("resolved agent should carry effective context policy");
+    assert_eq!(runtime_policy.max_context_tokens, 32_000);
+    assert_eq!(runtime_policy.max_output_tokens, 4_096);
     let plugin_arc = run
         .env
         .plugins
@@ -1841,6 +1846,45 @@ fn build_plugin_chain_clamps_context_policy_to_model_capabilities() {
         .expect("plugin must be ContextTransformPlugin");
     assert_eq!(transform.policy().max_context_tokens, 32_000);
     assert_eq!(transform.policy().max_output_tokens, 4_096);
+}
+
+#[test]
+fn resolved_agent_context_policy_clamps_autocompact_to_model_usable_input() {
+    use awaken_contract::contract::inference::ContextWindowPolicy;
+
+    let spec = AgentSpec {
+        context_policy: Some(ContextWindowPolicy {
+            max_context_tokens: 200_000,
+            max_output_tokens: 16_384,
+            autocompact_threshold: Some(150_000),
+            ..Default::default()
+        }),
+        ..make_spec("a")
+    };
+
+    let model_spec = ModelSpec {
+        context_window: Some(100_000),
+        max_output_tokens: Some(8_192),
+        ..ModelSpec::new("test-model", "p", "u")
+    };
+
+    let regs = build_registries(
+        vec![],
+        "test-model",
+        model_spec,
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        spec,
+    );
+
+    let run = resolve(&regs, "a").unwrap();
+    let policy = run
+        .context_policy()
+        .expect("resolved agent should carry effective context policy");
+    assert_eq!(policy.max_context_tokens, 100_000);
+    assert_eq!(policy.max_output_tokens, 8_192);
+    assert_eq!(policy.autocompact_threshold, Some(91_808));
 }
 
 #[test]
