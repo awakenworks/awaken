@@ -35,7 +35,7 @@ These are not opt-in libraries. They are the runtime.
 The above three rules combine to give four properties most agent frameworks lack:
 
 - **Snapshot isolation + deterministic replay.** Each phase reads an immutable `Snapshot`, emits a `MutationBatch`; `commit` applies atomically. Saved snapshots replay byte-for-byte — debug, regression-test, or re-run eval over past traffic without re-paying LLM cost.
-- **One backend, four protocols.** Single runtime serves AI SDK v6, AG-UI (CopilotKit), A2A, and MCP HTTP from one process. Frontend choice does not propagate to agent code.
+- **One backend, multiple protocol adapters.** One runtime serves AI SDK v6, AG-UI (CopilotKit), A2A, MCP HTTP, and ACP stdio from one process. Client protocol choice does not propagate to agent code.
 - **Permission gates as runtime primitives.** `Gate` phase runs between tool decision and tool execution; `Allow` / `Deny` / `Ask` rules match on name + arguments; `Ask` suspends through mailbox and resumes when answered.
 - **Generative UI as streamed primitive.** Agents emit A2UI / JSON Render / OpenUI Lang documents on the same event stream as text. Frontend renders without per-tool glue.
 
@@ -61,6 +61,6 @@ The above three rules combine to give four properties most agent frameworks lack
 
 1. [Get Started](/awaken/get-started/) → [First Agent](/awaken/tutorials/first-agent/).
 2. [Build Agents](/awaken/build-agents/) — tools, MCP, skills, reminders, HITL, UI.
-3. [Serve & Integrate](/awaken/serve-and-integrate/) — AI SDK / CopilotKit / A2A / MCP frontends.
+3. [Serve & Integrate](/awaken/serve-and-integrate/) — AI SDK / CopilotKit / A2A / MCP / ACP clients.
 4. [State & Storage](/awaken/state-and-storage/), [Operate](/awaken/operate/) — production hardening.
 5. [Design Philosophy](/awaken/explanation/philosophy/) — the "why" behind the three rules.

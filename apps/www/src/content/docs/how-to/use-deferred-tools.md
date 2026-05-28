@@ -12,8 +12,8 @@ Use this when your agent has many tools and you want to reduce context window us
 
 ```toml
 [dependencies]
-awaken-ext-deferred-tools = { version = "0.4.0" }
-awaken = { version = "0.4.0" }
+awaken-ext-deferred-tools = { version = "0.5" }
+awaken = { version = "0.5" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

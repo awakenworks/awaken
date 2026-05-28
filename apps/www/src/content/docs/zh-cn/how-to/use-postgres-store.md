@@ -17,7 +17,7 @@ description: "当你需要可持久化、可多实例共享的存储后端时，
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.4.0", features = ["postgres"] }
+awaken-stores = { version = "0.5", features = ["postgres"] }
 ```
 
 2. 创建连接池：

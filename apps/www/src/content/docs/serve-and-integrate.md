@@ -17,3 +17,4 @@ This path is for turning a local runtime into something other systems can call.
 - [AI SDK v6 Protocol](/awaken/reference/protocols/ai-sdk-v6/)
 - [AG-UI Protocol](/awaken/reference/protocols/ag-ui/)
 - [A2A Protocol](/awaken/reference/protocols/a2a/)
+- [ACP Protocol](/awaken/reference/protocols/acp/)

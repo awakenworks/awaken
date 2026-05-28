@@ -206,7 +206,7 @@ spec；`to_value()` 始终写出 envelope 形状。
 | `effective_config_record(record)` | 对单条记录应用 `meta.user_overrides` |
 | `effective_visible_config_records<T>(records)` | 解码记录、跳过 hidden 记录，并返回 effective specs |
 
-`AgentSpec`、`AgentSpecPatch`、provider 写入面和 model binding 写入面使用
+`AgentSpec`、`AgentSpecPatch`、provider 写入面和 model 写入面使用
 `UnknownFieldPolicy::Reject`；导出的 `AGENT_SPEC_UNKNOWN_FIELD_POLICY`、
 `AGENT_SPEC_PATCH_UNKNOWN_FIELD_POLICY`、`PROVIDER_SPEC_UNKNOWN_FIELD_POLICY`
 和 `MODEL_SPEC_UNKNOWN_FIELD_POLICY` 常量让集成方可以显式读取该行为。

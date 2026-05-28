@@ -44,12 +44,9 @@ The left sidebar groups every screen by intent:
 | **Observe** | Dashboard, Audit Log, Eval Reports, Skill Registry — read-only views into runtime state. |
 | **Assistant** | AI Assistant — chat interface that runs a real agent against your live config. |
 
-Hit `⌘K` (`Ctrl+K` on Linux/Windows) anywhere to open the **command
-palette**. Type to search by agent id, tool name, or page name; arrow keys
-to highlight; `Enter` to jump.
-
-The **breadcrumb** in the topbar always tells you which group you're in
-and lets you click back up.
+Use the **breadcrumb** in the topbar to confirm which group you are in
+and to move back up to the parent page. The core workflows below are all
+available through the visible navigation and editor controls.
 
 ## Inspect the system
 
@@ -112,7 +109,7 @@ The Providers list has a per-row **Test** button:
 3. A toast reports either `OK · <latency>ms` or the backend error
    verbatim — for example, `unsupported provider adapter: scripted`.
 
-Use this before publishing a new model binding to confirm the credentials
+Use this before publishing a new model config to confirm the credentials
 and adapter actually reach the upstream.
 
 ## Restart an MCP server

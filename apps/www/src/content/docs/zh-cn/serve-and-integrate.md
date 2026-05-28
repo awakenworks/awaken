@@ -17,3 +17,4 @@ description: "这条路径面向需要把本地 runtime 暴露给其他系统调
 - [AI SDK v6 协议](/awaken/zh-cn/reference/protocols/ai-sdk-v6/)
 - [AG-UI 协议](/awaken/zh-cn/reference/protocols/ag-ui/)
 - [A2A 协议](/awaken/zh-cn/reference/protocols/a2a/)
+- [ACP 协议](/awaken/zh-cn/reference/protocols/acp/)

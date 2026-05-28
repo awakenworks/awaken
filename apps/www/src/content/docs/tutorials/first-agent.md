@@ -10,7 +10,7 @@ Run one agent end-to-end and inspect the final result.
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0" }
+awaken = { version = "0.5" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"

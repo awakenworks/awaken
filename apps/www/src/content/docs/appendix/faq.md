@@ -61,11 +61,12 @@ Yes. Implement `ThreadRunStore` for state persistence, `ConfigStore` for runtime
 
 When `autocompact_threshold: Option<usize>` is set in `ContextWindowPolicy`, the `CompactionPlugin` monitors token usage. When the context exceeds that threshold, it finds a safe compaction boundary (where all tool call/result pairs are complete), summarizes older messages via LLM, and replaces them with a `<conversation-summary>` message. See [Optimize Context Window](/awaken/how-to/optimize-context-window/).
 
-## How do I choose between AI SDK v6, AG-UI, A2A, and MCP protocols?
+## How do I choose between AI SDK v6, AG-UI, A2A, MCP, and ACP protocols?
 
 - **AI SDK v6**: Best for React frontends using Vercel AI SDK. Supports text streaming, tool calls, and state snapshots.
 - **AG-UI**: Best for CopilotKit frontends. Supports generative UI components and agent collaboration.
 - **A2A**: Best for agent-to-agent communication. Used for delegate agents and inter-service orchestration.
 - **MCP HTTP**: Best when external MCP clients need to call Awaken tools over JSON-RPC with an `MCP-Session-Id` lifecycle.
+- **ACP stdio**: Best when an Agent Client Protocol host launches Awaken as a local process and exchanges messages over stdin/stdout.
 
 Choose based on the client ecosystem and wire protocol you need.

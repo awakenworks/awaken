@@ -1,9 +1,9 @@
 ---
 title: "Expose HTTP with SSE"
-description: "Use this when you need to serve agents over HTTP with Server-Sent Events streaming, supporting multiple protocol adapters (AI SDK, AG-UI, A2A)."
+description: "Use this when you need to serve agents over HTTP with Server-Sent Events streaming, supporting multiple protocol adapters (AI SDK, AG-UI, A2A, MCP)."
 ---
 
-Use this when you need to serve agents over HTTP with Server-Sent Events streaming, supporting multiple protocol adapters (AI SDK, AG-UI, A2A).
+Use this when you need to serve agents over HTTP with Server-Sent Events streaming, supporting multiple protocol adapters (AI SDK, AG-UI, A2A, MCP).
 
 ## Prerequisites
 
@@ -17,7 +17,7 @@ Use this when you need to serve agents over HTTP with Server-Sent Events streami
 
 ```toml
 [dependencies]
-awaken = { version = "0.4.0", features = ["server"] }
+awaken = { version = "0.5", features = ["server"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 ```
 

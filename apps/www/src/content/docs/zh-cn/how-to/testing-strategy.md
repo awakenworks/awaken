@@ -455,7 +455,7 @@ assert_eq!(*types.last().unwrap(), "run_finish");
 
 默认 CI 应保持无网络。确定性的 e2e 覆盖使用 scripted provider；真实 provider 检查放在 `#[ignore]` 测试中，只在显式请求时运行。
 
-README quickstart 路径由 `crates/awaken/tests/readme_quickstart.rs` 提供无网络覆盖。真实 provider smoke test 是 `crates/awaken/tests/readme_live_provider.rs`；它会通过真实 provider 验证 `GenaiExecutor`、`AgentRuntimeBuilder`、model binding 和 `run_to_completion`。
+README quickstart 路径由 `crates/awaken/tests/readme_quickstart.rs` 提供无网络覆盖。真实 provider smoke test 是 `crates/awaken/tests/readme_live_provider.rs`；它会通过真实 provider 验证 `GenaiExecutor`、`AgentRuntimeBuilder`、`ModelSpec` 解析和 `run_to_completion`。
 
 运行在线测试：
 

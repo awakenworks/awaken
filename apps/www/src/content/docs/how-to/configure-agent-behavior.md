@@ -1,13 +1,13 @@
 ---
 title: "Configure Agent Behavior"
-description: "Use managed configuration when the same server binary should host multiple agent profiles, switch model bindings, or tune plugin behavior without changing Rust code. Keep new tools, new plugins, and…"
+description: "Use managed configuration when the same server binary should host multiple agent profiles, switch model configs or model pools, or tune plugin behavior without changing Rust code. Keep new tools, new plugins, and…"
 ---
 
 Awaken is built around a **two-layer split**:
 
 - **Code (Rust, compiled once)** — tools, plugins, custom provider factories,
   storage backends.
-- **Config (declarative, hot-swappable)** — providers, model bindings, agents,
+- **Config (declarative, hot-swappable)** — `ProviderSpec` and `ModelSpec` records, model pools, agents,
   MCP servers, skills, and typed `AgentSpec.sections`.
 
 This guide is the canonical "tune at runtime" reference. Once your tools are
@@ -30,8 +30,8 @@ the referenced plugins have been registered in the runtime plugin registry.
 | Layer | Where it lives | Use it for |
 |---|---|---|
 | Provider | `/v1/config/providers/{id}` | Adapter, API key source, base URL, timeout |
-| Model binding | `/v1/config/models/{id}` | Stable model id -> provider id + upstream model name |
-| Agent | `/v1/config/agents/{id}` | Prompt, model binding, rounds, tools, plugins, context policy |
+| Model config | `/v1/config/models/{id}` | Stable model id -> `ModelSpec` with provider id, upstream model name, capabilities, and pricing |
+| Agent | `/v1/config/agents/{id}` | Prompt, stable `model_id`, rounds, tools, plugins, context policy |
 | MCP server | `/v1/config/mcp-servers/{id}` | External MCP server connections |
 | Plugin section | `AgentSpec.sections` | Per-agent typed config keyed by `PluginConfigKey::KEY` |
 | Runtime code | `AgentRuntimeBuilder` | Register tools, provider factories, plugins, backends |
@@ -54,7 +54,7 @@ AgentSpec.model_id
 ```
 
 `AgentSpec.model_id` is not the upstream provider model name. It is the stable
-model binding id used by agents and clients. `ModelSpec.upstream_model`
+`ModelSpec.id` used by agents and clients. `ModelSpec.upstream_model`
 is the string sent to the provider API.
 
 Config writes are compiled into a candidate registry snapshot, validated, and
@@ -82,7 +82,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/providers/anthropic-prod \
   }'
 ```
 
-Bind a stable model id to that provider:
+Create a `ModelSpec` that binds a stable model id to that provider:
 
 ```bash
 curl -sS -X PUT http://localhost:3000/v1/config/models/research-default \
@@ -94,7 +94,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/models/research-default \
   }'
 ```
 
-Create an agent that uses the model binding:
+Create an agent that references that stable model id:
 
 ```bash
 curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
@@ -211,9 +211,9 @@ for a specific agent.
 ## Tuning workflow
 
 1. Choose stable `providers`, `models`, and `agents` ids first. Let clients call
-   agents by agent id, and let agents refer to model binding ids.
-2. Use model bindings to change upstream model names. Use another binding when
-   the provider should change.
+   agents by agent id, and let agents refer to stable `ModelSpec.id` values.
+2. Change `ModelSpec.upstream_model` for same-provider model updates. Use a
+   different `ModelSpec` or a `ModelPoolSpec` when the provider should change.
 3. Tune broad loop behavior with `system_prompt`, `max_rounds`,
    `max_continuation_retries`, `reasoning_effort`, and `context_policy`.
 4. Restrict visible tools with `allowed_tools` and `excluded_tools`.

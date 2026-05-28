@@ -25,7 +25,7 @@ Two backends live in the `nats` feature of `awaken-stores`:
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.4.0", features = ["nats"] }
+awaken-stores = { version = "0.5", features = ["nats"] }
 ```
 
 ## NatsMailboxStore

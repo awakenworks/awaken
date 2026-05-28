@@ -60,16 +60,17 @@ Two consequences:
 
 The common alternative is mutable shared state behind locks (or forced serialisation). Both fail silently the moment two plugins touch the same field.
 
-### One backend, four protocols
+### One backend, multiple protocol adapters
 
-The same `/v1/runs` is exposed as:
+The same runtime is exposed through multiple wire formats:
 
 - **AI SDK v6** for Vercel `useChat()`
 - **AG-UI** for CopilotKit (chat + generative UI + HITL)
 - **A2A** for agent-to-agent calls
-- **MCP HTTP** for Claude / Cursor / Zed
+- **MCP HTTP** for JSON-RPC clients
+- **ACP stdio** for Agent Client Protocol hosts
 
-Runtime emits one `AgentEvent` stream; protocol adapters encode for each wire format. Switching frontends does not touch agent code; serving multiple does not multiply the runtime.
+Runtime emits one `AgentEvent` stream; protocol adapters encode for each wire format. Switching clients does not touch agent code; serving multiple does not multiply the runtime.
 
 The common alternative is pick-one-protocol-and-port. That binds agent code to a frontend choice that may not survive next quarter.
 
