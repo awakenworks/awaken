@@ -320,7 +320,7 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
 /* ============ protocol matrix ============ */
 .landing-page .proto-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 16px;
 }
 .landing-page .proto-card {

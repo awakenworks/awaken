@@ -85,8 +85,10 @@ Managed config is stored by namespace:
 |---|---|
 | `providers` | `ProviderSpec` |
 | `models` | `ModelSpec` |
+| `model-pools` | `ModelPoolSpec` |
 | `agents` | `AgentSpec` |
 | `mcp-servers` | `McpServerSpec` |
+| `skills` | `SkillSpec` |
 
 Example config documents:
 
@@ -119,6 +121,39 @@ Example config documents:
 {
   "id": "assistant",
   "model_id": "default",
+  "system_prompt": "You are helpful."
+}
+```
+
+Model pools live in their own namespace and are referenced through the same
+`AgentSpec.model_id` field as single models. Model and pool ids share one
+resolution namespace, so do not give a `ModelSpec` and `ModelPoolSpec` the same
+`id`.
+
+```json
+{
+  "id": "default-pool",
+  "members": [
+    { "model_id": "default", "weight": 3 },
+    { "model_id": "fallback", "role": "failover_only" }
+  ],
+  "routing": {
+    "home": "deterministic",
+    "sticky_scope": "thread"
+  },
+  "switch": {
+    "on_circuit_open": true,
+    "on_quota": true,
+    "on_permanent": true,
+    "max_switches_per_session": 2
+  }
+}
+```
+
+```json
+{
+  "id": "assistant",
+  "model_id": "default-pool",
   "system_prompt": "You are helpful."
 }
 ```

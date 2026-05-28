@@ -1,8 +1,7 @@
-//! Protocol parity tests — verifies AG-UI, AI-SDK, and ACP produce
-//! equivalent event sequences for the same runtime input.
+//! Protocol parity tests for the Awaken server.
 //!
-//! Mirrors uncarve's tirea-agentos-server/tests/protocol_parity.rs,
-//! adapted to awaken's encoder infrastructure.
+//! Validates equivalent event sequences for the same runtime input across
+//! protocol encoders.
 
 use async_trait::async_trait;
 use awaken_contract::ModelSpec;

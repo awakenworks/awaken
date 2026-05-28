@@ -1,5 +1,5 @@
 #![allow(deprecated)] // ADR-0038 D7: integration tests exercise the legacy checkpoint API directly
-//! HTTP API contract tests — migrated from tirea-agentos-server/tests/http_api.rs.
+//! HTTP API contract tests.
 //!
 //! Validates route construction, request/response serialization,
 //! API error types, and message conversion logic.

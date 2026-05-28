@@ -471,7 +471,7 @@ LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4/ \
   cargo test -p awaken --test readme_live_provider -- --ignored
 ```
 
-完整的可运行示例（含控制台输出）请参见 `examples/live_test.rs` 和 `examples/tool_call_live.rs`。
+完整的可运行示例（含控制台输出）请参见 `crates/awaken/examples/live_test.rs` 和 `crates/awaken/examples/tool_call_live.rs`。
 
 ## 关键文件
 

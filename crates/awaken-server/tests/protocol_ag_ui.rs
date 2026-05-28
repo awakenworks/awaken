@@ -1,4 +1,4 @@
-//! AG-UI encoder contract tests — migrated from tirea-protocol-ag-ui.
+//! AG-UI encoder contract tests.
 //!
 //! Validates event mapping, lifecycle management, state pass-through,
 //! message ID propagation, and terminal guard behavior.

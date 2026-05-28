@@ -79,8 +79,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 |---|---|
 | `providers` | `ProviderSpec` |
 | `models` | `ModelSpec` |
+| `model-pools` | `ModelPoolSpec` |
 | `agents` | `AgentSpec` |
 | `mcp-servers` | `McpServerSpec` |
+| `skills` | `SkillSpec` |
 
 配置示例：
 
@@ -113,6 +115,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 {
   "id": "assistant",
   "model_id": "default",
+  "system_prompt": "You are helpful."
+}
+```
+
+Model pool 使用独立 namespace，但仍通过 `AgentSpec.model_id` 像单模型一样被
+agent 引用。`ModelSpec` 和 `ModelPoolSpec` 共用同一个解析命名空间，因此二者
+不能使用相同的 `id`。
+
+```json
+{
+  "id": "default-pool",
+  "members": [
+    { "model_id": "default", "weight": 3 },
+    { "model_id": "fallback", "role": "failover_only" }
+  ],
+  "routing": {
+    "home": "deterministic",
+    "sticky_scope": "thread"
+  },
+  "switch": {
+    "on_circuit_open": true,
+    "on_quota": true,
+    "on_permanent": true,
+    "max_switches_per_session": 2
+  }
+}
+```
+
+```json
+{
+  "id": "assistant",
+  "model_id": "default-pool",
   "system_prompt": "You are helpful."
 }
 ```

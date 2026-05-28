@@ -28,7 +28,7 @@ Awaken 围绕三条准则构建。每一条都是硬边界,不是建议。三条
 
 ## 准则 2 —— 一个配置面,一个管理控制台
 
-`/v1/config/*` 是 runtime 状态的**唯一**修改 API。Agent、模型、Provider、插件、MCP server、Skill 包、权限规则、Trace 历史全部经它暴露。
+`/v1/config/*` 是托管 runtime 配置的**唯一**修改 API。Agent、模型、model pool、Provider、MCP server、Skill 和插件策略 section 全部经它暴露。
 
 管理控制台是这个 API 的一个消费者,CI 流水线是另一个。runtime 读的是控制台写的同一个源。
 
@@ -36,14 +36,14 @@ Awaken 围绕三条准则构建。每一条都是硬边界,不是建议。三条
 
 ## 准则 3 —— Runtime 就是平台
 
-启动服务自动开启,无需任何配置:
+Runtime 提供一等模块来承载:
 
 - 每个 phase、每次工具调用、每次 LLM 调用的 OpenTelemetry GenAI traces。
-- 管理控制台直接查询的持久化 trace store。
+- 管理控制台可查询的持久化 trace store（需要接入 trace store 并开启 trace routes）。
 - 自带 fixture 回放、打分、baseline 对比的 Eval 框架。
 - Permission gate + mailbox 实现的 HITL 挂起 / 恢复。
 
-它们不是用户拼装的可选库,**就是** runtime。Day-one 项目用的是最大型部署同一套表面。
+它们接入 runtime 与 server 的模块表面，而不是独立 sidecar。Day-one 项目使用和更大部署相同的执行、配置、权限与重放表面；需要存储后端的能力由部署显式开启。
 
 ---
 

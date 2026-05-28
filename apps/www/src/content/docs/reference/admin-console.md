@@ -107,9 +107,9 @@ notice. This is enforced by code review, not by runtime check.
 - `last_attempt_at` and `last_success_at` are shown as relative
   timestamps under the four-stat grid.
 - Restart-policy fields are visually disabled when `enabled === false`.
-- "Exposed tools" sub-table renders `tools[]` as a name + description grid
-  (per-tool latency lives on `/v1/agents/:id/runtime-stats`, not the MCP
-  endpoint — see [Audit gap §B6](#known-gaps)).
+- "Exposed tools" sub-table renders `tools[]` as a name + description grid.
+  Per-tool latency lives on `/v1/agents/:id/runtime-stats`, not the MCP
+  endpoint.
 
 ### Skill registry (`src/pages/skills-page.tsx`)
 
@@ -127,8 +127,7 @@ Paged table with filter bar (`since` / `until` / `action` / `resource` /
 
 100 % client-side: drag a NDJSON report onto the upload zone, optionally
 add a baseline, see **case status tabs** (All / Passing / Failing /
-Regressions / Newly fixed). No server persistence yet
-(see [Audit gap §B2](#known-gaps)).
+Regressions / Newly fixed). Uploaded reports are not persisted by the server.
 
 ## Token system
 
@@ -158,36 +157,34 @@ admin bearer token (`Authorization: Bearer <token>`).
 
 | Area | Endpoints | Why no UI yet |
 |---|---|---|
-| Threads | `GET/POST /v1/threads`, `GET/PATCH/DELETE /v1/threads/:id`, `GET/POST /v1/threads/:id/messages` | The console is configuration-focused; thread browsing belongs to a planned "Runs" surface |
-| Runs | `GET/POST /v1/runs`, `GET /v1/runs/:id`, `GET /v1/threads/:id/runs`, `GET /v1/threads/:id/runs/{latest,active}` | Same as above — see gap B1 |
-| Run control | `POST /v1/runs/:id/cancel`, `POST /v1/runs/:id/inputs`, `POST /v1/threads/:id/{cancel,interrupt}` | Decision/interrupt UI is gated on B1 (active-runs endpoint shape) |
+| Threads | `GET/POST /v1/threads`, `GET/PATCH/DELETE /v1/threads/:id`, `GET/POST /v1/threads/:id/messages` | The console is configuration-focused; thread browsing is served by the HTTP API |
+| Runs | `GET/POST /v1/runs`, `GET /v1/runs/:id`, `GET /v1/threads/:id/runs`, `GET /v1/threads/:id/runs/{latest,active}` | The HTTP API is the source for execution records |
+| Run control | `POST /v1/runs/:id/cancel`, `POST /v1/runs/:id/inputs`, `POST /v1/threads/:id/{cancel,interrupt}` | Use the REST endpoints for precise execution control |
 | HITL decisions | `POST /v1/runs/:id/decision`, `POST /v1/threads/:id/decision` | Tool-call resume/cancel needs an active-runs feed first |
 | Mailbox | `GET/POST /v1/threads/:id/mailbox` | Inter-agent dispatch is invisible in the browser today |
-| Skill CRUD | `POST/PUT/DELETE /v1/config/skills/:id` | Console renders skills read-only; full editor depends on B3 (version history) |
+| Skill CRUD | `POST /v1/config/skills`, `PUT/DELETE /v1/config/skills/:id` | Console renders skills read-only; edit over REST when automation owns skill config |
 | Config diagnostics | `GET /v1/config/diagnostics` | Registry-wide validation report is fetched on dashboard load but not yet surfaced |
 | Permission preview | `GET /v1/agents/:id/permission-preview` | Wired in the agent editor's Tools tab as a side-effect but has no dedicated screen |
 
 See [HTTP API](/awaken/reference/http-api/) for request/response shapes.
-These are the gaps to close when extending the console; do **not**
-duplicate them by hand-rolling a separate operator tool.
+When extending the console, reuse these HTTP surfaces instead of creating a
+separate operator API.
 
-## Known gaps (backend work required)
+## Server data not exposed to the console UI
 
-These need backend changes before the console can show real data:
+The console renders only data that the server exposes explicitly:
 
-- **B1** — no `/v1/agents/:id/active-runs` endpoint, so the per-agent
-  dashboard cannot show "currently running / paused / blocked" panels,
-  and the Runs/Decisions surfaces above can't be built honestly.
-- **B2** — eval reports have no server persistence; everything is
-  per-tab session memory.
-- **B3** — skill version history, file tree, and activation log are not
-  exposed; blocks the full skills editor.
-- **B4** — no notification center endpoint, so the topbar bell is a stub.
-- **B6 partial** — MCP `/status` does not track per-tool latency or a
-  rolling 24h error count. The console derives "freshness" from
-  `last_attempt_at` / `consecutive_failures` instead.
-- **B9** — no time-series endpoint, so per-agent sparklines cannot be
-  rendered honestly. The current cell shows totals + p95 instead.
+- There is no `/v1/agents/:id/active-runs` endpoint, so per-agent dashboards
+  show rolling stats rather than "currently running / paused / blocked" panels.
+- Eval reports are loaded from user-provided NDJSON files in the browser; the
+  server does not persist uploaded reports.
+- Skill version history, file trees, and activation logs are not exposed, so
+  skills are read-only in the console.
+- The topbar notification bell has no server endpoint.
+- MCP `/status` exposes connection health and restart counters, not per-tool
+  latency or rolling error totals.
+- Runtime stats expose aggregate totals and latency distributions for retained
+  windows, not a per-agent time-series endpoint.
 
 ## Related
 

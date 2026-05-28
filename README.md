@@ -235,7 +235,7 @@ Write your own with `ToolGateHook` (pure gate decisions) or `BeforeToolExecute` 
 ## When this fits
 
 - You want a **Rust backend** for AI agents with compile-time guarantees.
-- You need to serve **AI SDK, CopilotKit, A2A, and/or MCP** from a single backend.
+- You need to serve **AI SDK, CopilotKit, A2A, MCP, and/or ACP** from a single backend.
 - Tools need to **share state safely** during concurrent execution, and runs need **auditable history** with checkpoints and resume.
 - You're comfortable registering your own tools and providers instead of relying on batteries-included defaults.
 

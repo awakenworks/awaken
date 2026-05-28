@@ -1,4 +1,4 @@
-//! AI SDK v6 encoder contract tests — migrated from tirea-protocol-ai-sdk-v6.
+//! AI SDK v6 encoder contract tests.
 //!
 //! Validates event mapping, text block lifecycle, tool call handling,
 //! finish reason mapping, reasoning blocks, and message ID propagation.

@@ -1,4 +1,4 @@
-//! Transport layer tests — migrated from tirea-agentos-server/tests/transport.rs.
+//! Transport layer tests for the Awaken server.
 //!
 //! Validates SSE relay, transcoder integration, channel sink behavior,
 //! and protocol-specific SSE encoding.

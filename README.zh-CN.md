@@ -221,7 +221,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 ## 适合的场景
 
 - 想用 **Rust 后端**写 AI Agent，要编译期保证。
-- 需要从一个 backend 同时服务 **AI SDK、CopilotKit、A2A 或 MCP**。
+- 需要从一个 backend 同时服务 **AI SDK、CopilotKit、A2A、MCP 或 ACP**。
 - 工具需要在并发中**安全共享状态**，run 需要**可审计历史 + checkpoint + 可恢复控制路径**。
 - 可以接受自己注册工具与 provider，而不是依赖开箱即用的默认能力。
 

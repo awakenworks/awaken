@@ -168,8 +168,10 @@ Current built-in namespaces:
 
 - `agents`
 - `models`
+- `model-pools`
 - `providers`
 - `mcp-servers`
+- `skills`
 
 ### MCP server status
 

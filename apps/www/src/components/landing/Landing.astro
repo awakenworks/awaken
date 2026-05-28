@@ -50,8 +50,8 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
         </h1>
         <p class="hero-sub">
           {t(
-            "One backend serves AI SDK, AG-UI, A2A, and MCP. Streams recover from mid-flight failures. State is typed, mutations are atomic, and the whole run is replayable from a snapshot.",
-            "单后端同时服务 AI SDK、AG-UI、A2A 与 MCP。流式中断可恢复,状态类型化,变更原子提交,整轮可基于快照重放。",
+            "One backend serves AI SDK, AG-UI, A2A, MCP, and ACP. Streams recover from mid-flight failures. State is typed, mutations are atomic, and the whole run is replayable from a snapshot.",
+            "单后端同时服务 AI SDK、AG-UI、A2A、MCP 与 ACP。流式中断可恢复,状态类型化,变更原子提交,整轮可基于快照重放。",
           )}
         </p>
         <div class="hero-actions">
@@ -156,10 +156,10 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
       <div class="section-head">
         <div>
           <span class="eyebrow">{t("One runtime", "一个运行时")}</span>
-          <h2>{t("Four protocols, one backend", "四种协议,一套后端")}</h2>
+          <h2>{t("Five protocol surfaces, one backend", "五种协议表面,一套后端")}</h2>
           <p set:html={t(
-            "Same <code>/v1/runs</code> handles every frontend. Switch protocols without touching agent code.",
-            "同一个 <code>/v1/runs</code> 服务所有前端。切换协议无需改动智能体代码。",
+            "The same runtime and run model back every wire format. Switch protocols without touching agent code.",
+            "同一个 runtime 与 run model 支撑所有 wire format。切换协议无需改动智能体代码。",
           )} />
         </div>
         <div class="right">
@@ -206,6 +206,16 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
             "JSON-RPC 2.0 服务面 —— 通过 stdio 或 HTTP 传输承接任意 MCP 兼容客户端。",
           )}</p>
           <div class="proto-frontend">Claude · Cursor · Zed</div>
+        </article>
+        <article class="proto-card">
+          <div class="proto-icon">ACP</div>
+          <h3>ACP</h3>
+          <div class="proto-endpoint">stdio serve_stdio</div>
+          <p class="proto-desc">{t(
+            "Agent Client Protocol stdio adapter — launch Awaken as a local agent process.",
+            "Agent Client Protocol stdio 适配器 —— 将 Awaken 作为本地 agent 进程启动。",
+          )}</p>
+          <div class="proto-frontend">{t("ACP hosts", "ACP 宿主")}</div>
         </article>
       </div>
     </div>

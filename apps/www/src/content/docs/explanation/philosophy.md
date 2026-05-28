@@ -28,7 +28,7 @@ The inner loop most agent work spends time in — *tweak prompt → observe* —
 
 ## Rule 2 — One config plane, one admin console
 
-`/v1/config/*` is the only mutation API for runtime state. Agents, models, providers, plugins, MCP servers, skill packages, permission rules, trace history all surface through it.
+`/v1/config/*` is the only mutation API for managed runtime configuration. Agents, models, model pools, providers, MCP servers, skills, and plugin-backed policy sections all surface through it.
 
 The admin console is one consumer of that API. CI pipelines are another. The runtime reads from the same source the console writes to.
 
@@ -36,14 +36,14 @@ There is no "ops UI" sub-project, no shadow YAML in production, no out-of-band c
 
 ## Rule 3 — The runtime is the platform
 
-Booting the server enables, without configuration:
+The runtime provides first-class modules for:
 
 - OpenTelemetry GenAI traces per phase, per tool, per LLM call.
-- A persistent trace store the admin console queries.
+- A persistent trace store the admin console queries when a trace store and trace routes are enabled.
 - An eval framework with fixture replay, scoring, baseline diffing.
 - HITL via the permission gate + mailbox suspend/resume.
 
-These are not optional libraries the user composes. They are the runtime. Day-one projects get the same surface the largest deployments use.
+They plug into the runtime and server module surface instead of living as separate sidecars. Day-one projects use the same execution, config, permission, and replay surfaces as larger deployments; storage-backed features are enabled explicitly where the deployment owns the backend.
 
 ---
 

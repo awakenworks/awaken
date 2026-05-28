@@ -1,6 +1,6 @@
 //! Run API lifecycle tests — validates start, list, and contract behavior.
 //!
-//! Mirrors high-value run API tests from uncarve's tirea-agentos-server/tests/run_api.rs,
+//! High-value run API tests for the Awaken server.
 //! adapted to awaken's ServerState + Mailbox architecture.
 //!
 //! NOTE: Control operations (cancel, decision) are now unified under

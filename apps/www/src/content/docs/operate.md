@@ -13,6 +13,15 @@ This path is for hardening an agent service once the happy path already works.
 4. [Report Tool Progress](/awaken/how-to/report-tool-progress/) and [Testing Strategy](/awaken/how-to/testing-strategy/) to improve operator visibility and confidence.
 5. [Recover Streaming LLMs](/awaken/how-to/recover-streaming-llms/) when transient provider failures must not surface as run errors.
 
+## Replay and eval loop
+
+`awaken-eval` replays saved fixtures through `RuntimeReplayer`, scores the
+outputs, and diffs them against NDJSON baselines. Use it for regression checks
+over saved prompts, tool outputs, and provider scripts without paying live
+provider cost. Trace curation helpers can turn captured runs into fixtures;
+live mode remains available when provider drift is the behavior you want to
+measure.
+
 ## Harden the admin and config plane
 
 Two orthogonal levers, both detailed in the

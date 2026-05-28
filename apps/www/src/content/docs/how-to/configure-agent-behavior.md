@@ -31,15 +31,17 @@ the referenced plugins have been registered in the runtime plugin registry.
 |---|---|---|
 | Provider | `/v1/config/providers/{id}` | Adapter, API key source, base URL, timeout |
 | Model config | `/v1/config/models/{id}` | Stable model id -> `ModelSpec` with provider id, upstream model name, capabilities, and pricing |
+| Model pool | `/v1/config/model-pools/{id}` | Stable pool id -> ordered `ModelSpec` members with sticky routing and failover policy |
 | Agent | `/v1/config/agents/{id}` | Prompt, stable `model_id`, rounds, tools, plugins, context policy |
 | MCP server | `/v1/config/mcp-servers/{id}` | External MCP server connections |
+| Skill | `/v1/config/skills/{id}` | Reusable instructions, arguments, and allowed tools |
 | Plugin section | `AgentSpec.sections` | Per-agent typed config keyed by `PluginConfigKey::KEY` |
 | Runtime code | `AgentRuntimeBuilder` | Register tools, provider factories, plugins, backends |
 
-Provider adapters supported by the managed config runtime are:
-`anthropic`, `openai`, `openai_resp`, `deepseek`, `gemini`, `ollama`,
-`cohere`, `together`, `fireworks`, `groq`, `xai`, `zai`, `bigmodel`,
-`aliyun`, `mimo`, and `nebius`.
+Provider adapters supported by the managed config runtime are returned by
+`GET /v1/capabilities` as `supported_adapters`. The list is derived from the
+linked `genai` version at runtime, so new upstream adapters appear there after
+the dependency supports them.
 
 ## Resolution model
 
@@ -94,14 +96,47 @@ curl -sS -X PUT http://localhost:3000/v1/config/models/research-default \
   }'
 ```
 
-Create an agent that references that stable model id:
+For provider or quota failover, add a second `ModelSpec`, create a
+`ModelPoolSpec`, and point the agent at the pool id instead of a single model:
+
+```bash
+curl -sS -X PUT http://localhost:3000/v1/config/models/research-fallback \
+  -H 'content-type: application/json' \
+  -d '{
+    "id": "research-fallback",
+    "provider_id": "anthropic-prod",
+    "upstream_model": "claude-3-5-haiku-20241022"
+  }'
+
+curl -sS -X PUT http://localhost:3000/v1/config/model-pools/research-pool \
+  -H 'content-type: application/json' \
+  -d '{
+    "id": "research-pool",
+    "members": [
+      { "model_id": "research-default", "weight": 3 },
+      { "model_id": "research-fallback", "role": "failover_only" }
+    ],
+    "routing": {
+      "home": "deterministic",
+      "sticky_scope": "thread"
+    },
+    "switch": {
+      "on_circuit_open": true,
+      "on_quota": true,
+      "quota_retry_after_threshold_secs": 10,
+      "max_switches_per_session": 2
+    }
+  }'
+```
+
+Create an agent that references the stable model or pool id:
 
 ```bash
 curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
   -H 'content-type: application/json' \
   -d '{
     "id": "research-assistant",
-    "model_id": "research-default",
+    "model_id": "research-pool",
     "system_prompt": "You help with source-grounded research. Ask before using destructive tools.",
     "max_rounds": 12,
     "reasoning_effort": "medium",

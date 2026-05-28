@@ -1,9 +1,9 @@
 ---
 title: "Introduction"
-description: "Awaken — Rust agent runtime where the framework is itself the platform. Tools-first, live-tuned prompts, built-in tracing/eval/HITL."
+description: "Awaken — Rust agent runtime where the framework is itself the platform. Tools-first, live-tuned prompts, integrated tracing/eval/HITL."
 ---
 
-**Awaken** is a production AI agent runtime written in Rust. The framework is the platform: when the server is up, tracing, replay, eval, permission gating, and an admin console are already running.
+**Awaken** is a production AI agent runtime written in Rust. The framework is the platform: one runtime surface hosts config, protocol adapters, tracing, replay, eval, permission gating, and the admin console. Modules and plugins opt in where they own storage, secrets, or policy.
 
 Dependency snippets use the published `0.5` release line. If you are following
 main-branch APIs before the next release, use a git dependency on this
@@ -19,20 +19,20 @@ Editing config takes effect on the **next run**. No restart, no redeploy, no sch
 
 ## 2 — One config API, one admin console
 
-`/v1/config/*` is the single source for agents, models, providers, plugins, MCP servers, skill packages, permissions, and trace history. The bundled admin console is one consumer; your CI can be another.
+`/v1/config/*` is the single mutation surface for agents, models, providers, model pools, MCP servers, skills, and plugin-backed policy sections. The bundled admin console is one consumer; your CI can be another.
 
 What the console writes, the runtime reads. There is no separate ops project to maintain.
 
-## 3 — Observability/eval/HITL come with the server
+## 3 — Observability/eval/HITL are runtime modules
 
-Started services automatically expose:
+Started services can attach:
 
 - OpenTelemetry GenAI traces on every phase, tool, and LLM call (`awaken-ext-observability`).
-- A persistent trace store the admin console queries directly.
+- A persistent trace store the admin console queries directly; trace HTTP routes are opt-in.
 - An eval framework with fixture replay, scoring, and baseline diffing (`awaken-eval`).
 - Permission-gated HITL via mailbox suspend/resume.
 
-These are not opt-in libraries. They are the runtime.
+These are first-class runtime and server modules, not separate sidecars.
 
 ## Four capabilities that follow
 
@@ -54,6 +54,7 @@ The above three rules combine to give four properties most agent frameworks lack
 | `awaken-tool-pattern` | Glob/regex tool matching for permission and reminder rules |
 | `awaken-ext-permission` | Permission plugin (allow/deny/ask) |
 | `awaken-ext-observability` | OpenTelemetry traces + metrics |
+| `awaken-eval` | Fixture replay, scoring, and baseline diffing |
 | `awaken-ext-mcp` | MCP client integration |
 | `awaken-ext-skills` | Skill package discovery and activation |
 | `awaken-ext-reminder` | Declarative reminder rules |
