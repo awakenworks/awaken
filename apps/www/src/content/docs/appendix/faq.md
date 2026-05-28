@@ -12,7 +12,7 @@ Implement the storage trait for the surface you need: `ThreadRunStore` for threa
 
 ## Can I use awaken without the server?
 
-Yes. `AgentRuntime` is a standalone library type. Create a runtime, build a `RunRequest`, and call `runtime.run_to_completion(request)` when you only need the final result. Use `runtime.run(request, sink)` when your caller needs streaming events. The server crate (`awaken-server`) is an optional HTTP/SSE gateway layered on top.
+Yes. `AgentRuntime` is a standalone library type. Create a runtime, build a `RunActivation`, and call `runtime.run_to_completion(request)` when you only need the final result. Use `runtime.run(request, sink)` when your caller needs streaming events. The server crate (`awaken-server`) is an optional HTTP/SSE gateway layered on top.
 
 ## How do I run multiple agents?
 

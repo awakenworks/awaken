@@ -36,8 +36,8 @@ pub use crate::{Snapshot, StateError, StateMap};
 
 // ── Tools ──
 pub use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult, ToolStatus, ToolValidationError,
-    TypedTool,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
+    ToolValidationError, TypedTool,
 };
 pub use awaken_contract::contract::tool_schema::{
     generate_tool_schema, sanitize_for_llm, validate_against_schema,

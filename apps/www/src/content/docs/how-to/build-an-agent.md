@@ -166,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let user_message = Message::user("Hello");
 
-    let request = RunRequest::new("thread-1", vec![user_message])
+    let request = RunActivation::new("thread-1", vec![user_message])
         .with_agent_id("assistant");
 
     // Use runtime.run(..., sink) when callers need streaming events.

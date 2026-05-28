@@ -37,7 +37,7 @@ use awaken::contract::message::Message;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::AgentSpec;
 use awaken::registry_spec::ModelSpec;
-use awaken::{AgentRuntimeBuilder, RunRequest};
+use awaken::{AgentRuntimeBuilder, RunActivation};
 
 struct EchoTool;
 
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
-    let request = RunRequest::new(
+    let request = RunActivation::new(
         "thread-1",
         vec![Message::user("Say hello using the echo tool")],
     )
@@ -128,7 +128,7 @@ let result = runtime.run_to_completion(request).await?;
 
 Common usage patterns:
 
-- one-shot CLI program: construct `RunRequest`, call `runtime.run_to_completion(...)`, print the result
+- one-shot CLI program: construct `RunActivation`, call `runtime.run_to_completion(...)`, print the result
 - application service: use `runtime.run(...)` with an `EventSink` when callers need streaming events
 - HTTP server: store `Arc<AgentRuntime>` in app state and expose protocol routes
 

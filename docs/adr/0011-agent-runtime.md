@@ -7,6 +7,9 @@
 > Storage persistence details in this ADR are partially superseded by ADR-0012 (transactional thread+run checkpoint).
 >
 > Submission durability, queueing, lease ownership, reconnect, and cross-process thread execution ownership are superseded by ADR-0019. `AgentRuntime` remains the execution engine and active-run control surface once a run has been admitted for execution.
+>
+> The original unified request shape in D3 is superseded by ADR-0039. Current
+> code uses `RunActivation`.
 
 ## Context
 
@@ -48,22 +51,26 @@ pub struct ResolvedAgent {
 
 The loop runner receives `&dyn AgentResolver` (not a fixed config) so it can re-resolve at step boundaries for handoff.
 
-### D3: RunRequest — unified request
+### D3: RunActivation — unified request
 
 ```rust
-pub struct RunRequest {
-    pub agent_id: Option<String>,
-    pub thread_id: String,
-    pub messages: Vec<Message>,
-    pub overrides: Option<InferenceOverride>,
-    pub decisions: Vec<ToolCallDecision>,
+pub struct RunActivation {
+    pub intent: RunIntent,
+    pub input: RunInput,
+    pub options: RunOptions,
+    pub trace: RunTraceContext,
+    pub resolution_scope: RunResolutionScope,
+    pub control: RunControl,
+    pub capture: CaptureWiring,
+    pub persistence: PersistenceHints,
+    pub inherited: ResolverInheritance,
 }
 ```
 
-- `agent_id`: target agent. `None` = infer from thread state or default.
-- `thread_id`: existing thread → load history; new → create.
-- `messages`: new messages to append.
-- `decisions`: resume decisions for suspended tool calls. Empty = fresh run.
+- `intent`: target agent, thread id, and run kind.
+- `input`: new messages or an already-persisted submission.
+- `options`: inference overrides and frontend-provided tools.
+- `control`: seeded resume decisions for suspended tool calls.
 
 No separate "resume" request type. The runtime detects resume from decisions + thread state.
 

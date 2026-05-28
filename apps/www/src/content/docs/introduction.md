@@ -5,6 +5,10 @@ description: "Awaken — Rust agent runtime where the framework is itself the pl
 
 **Awaken** is a production AI agent runtime written in Rust. The framework is the platform: when the server is up, tracing, replay, eval, permission gating, and an admin console are already running.
 
+Dependency snippets use the published `0.5` release line. If you are following
+main-branch APIs before the next release, use a git dependency on this
+repository instead of the crates.io version.
+
 Three design rules drive everything else:
 
 ## 1 — Tools live in code, prompts live in config

@@ -43,9 +43,10 @@ pub struct Thread {
 `parent_thread_id` is normalized on assignment: leading/trailing whitespace is
 trimmed and empty strings deserialize to `None`. The same trimming is applied
 to `resource_id`. Thread hierarchy participates in the run lifecycle: when a
-sub-agent run begins, `RunRequestSnapshot.parent_thread_id` carries the parent
-thread, and the checkpoint projection populates `Thread.parent_thread_id` on
-the child thread the first time it is materialized.
+sub-agent run begins, `RunActivationSnapshot.trace.parent_thread_id` carries
+the parent thread. Legacy records can carry the same value on
+`RunRequestSnapshot.parent_thread_id`. The checkpoint projection populates
+`Thread.parent_thread_id` on the child thread the first time it is materialized.
 
 ### Constructors
 
@@ -213,6 +214,8 @@ pub struct RunRecord {
     pub thread_id: String,
     pub agent_id: String,
     pub parent_run_id: Option<String>,
+    pub registry_manifest: Option<PinnedRegistryManifest>,
+    pub activation: Option<RunActivationSnapshot>,
     pub request: Option<RunRequestSnapshot>,
     pub input: Option<RunMessageInput>,
     pub output: Option<RunMessageOutput>,
@@ -240,9 +243,23 @@ pub struct RunRecord {
 metadata, lifecycle state, waiting state, output/error outcome, and trace IDs.
 It does not own message bodies.
 
-### RunRequestSnapshot
+### RunActivationSnapshot and RunRequestSnapshot
 
-`RunRequestSnapshot` preserves the request that created or resumed the run:
+`RunActivationSnapshot` is the current replayable activation projection:
+
+```rust
+pub struct RunActivationSnapshot {
+    pub intent: RunIntent,
+    pub input: RunInputSnapshot,
+    pub options: RunOptions,
+    pub trace: RunTraceContext,
+    pub seeded_decisions: Vec<(String, ToolCallResume)>,
+    pub resolution_scope: PinnedRegistryManifest,
+}
+```
+
+`RunRequestSnapshot` is the legacy request projection still accepted for stored
+records:
 
 ```rust
 pub struct RunRequestSnapshot {
@@ -258,8 +275,8 @@ pub struct RunRequestSnapshot {
 }
 ```
 
-`input_message_ids` plus `input_message_count` point at thread-owned message
-records. Request snapshots do not own message bodies.
+Both snapshots reference thread-owned message records or ranges. They do not
+own message bodies.
 
 ### RunMessageInput and RunMessageOutput
 

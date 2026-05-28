@@ -197,7 +197,7 @@ use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::ModelSpec;
 use awaken::registry_spec::AgentSpec;
 use awaken::AgentRuntimeBuilder;
-use awaken::RunRequest;
+use awaken::RunActivation;
 
 struct GreetCount;
 
@@ -236,7 +236,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
-    let request = RunRequest::new(
+    let request = RunActivation::new(
         "thread-1",
         vec![Message::user("Greet Alice")],
     )

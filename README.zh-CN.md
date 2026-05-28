@@ -53,6 +53,13 @@ async-trait = "0.1"
 serde_json = "1"
 ```
 
+示例默认面向已发布的 `0.5` 版本线。如果你跟随 main 分支上的未发布 API，
+请改用仓库依赖：
+
+```toml
+awaken = { git = "https://github.com/AwakenWorks/awaken" }
+```
+
 ```bash
 export OPENAI_API_KEY=<your-key>
 ```
@@ -97,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
-    let request = RunRequest::new("thread-1", vec![Message::user("用 echo 工具说一句 hello")])
+    let request = RunActivation::new("thread-1", vec![Message::user("用 echo 工具说一句 hello")])
         .with_agent_id("assistant");
 
     let result = runtime.run_to_completion(request).await?;

@@ -33,6 +33,6 @@ then exchanges ACP JSON-RPC messages over stdin/stdout.
 
 ## Relationship to HTTP adapters
 
-ACP consumes the same runtime events as AI SDK v6, AG-UI, A2A, and MCP. It does
-not add a separate agent execution path; it only changes the client transport
-and wire format.
+ACP is backed by the same `AgentRuntime` and `AgentEvent` stream as the other
+protocol adapters. Each adapter projects or collects those events according to
+its own wire semantics; ACP does not add a separate agent execution path.

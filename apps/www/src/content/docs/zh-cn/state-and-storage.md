@@ -16,7 +16,8 @@ description: "这条路径面向已经不满足无状态演示、需要认真设
 ## Thread 父子层级
 
 Thread 携带可选的 `parent_thread_id`。当 sub-agent run 第一次物化子 thread
-时，runtime 会用 `RunRequestSnapshot.parent_thread_id` 填充该字段。
+时，runtime 会用 `RunActivationSnapshot.trace.parent_thread_id`（或旧记录里的
+`RunRequestSnapshot.parent_thread_id`）填充该字段。
 `ThreadStore` 暴露 `list_child_threads`、`validate_thread_hierarchy` 和
 `delete_thread_with_strategy(reject | detach | cascade)`，让调用方显式选择子
 线程的处理策略。默认 `Detach` 会保留子线程并清空它们的 `parent_thread_id`。

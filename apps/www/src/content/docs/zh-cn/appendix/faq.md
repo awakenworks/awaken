@@ -12,7 +12,7 @@ title: "常见问题"
 
 ## 不启用 server 能用 awaken 吗？
 
-可以。`AgentRuntime` 本身就是独立运行时。你可以自己构造 `RunRequest`；只需要最终结果时调用 `runtime.run_to_completion(request)`，调用方需要流式事件时调用 `runtime.run(request, sink)`。`awaken-server` 只是附加的 HTTP / SSE / mailbox / protocol gateway。
+可以。`AgentRuntime` 本身就是独立运行时。你可以自己构造 `RunActivation`；只需要最终结果时调用 `runtime.run_to_completion(request)`，调用方需要流式事件时调用 `runtime.run(request, sink)`。`awaken-server` 只是附加的 HTTP / SSE / mailbox / protocol gateway。
 
 ## 如何运行多个 agent？
 
