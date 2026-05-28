@@ -37,8 +37,9 @@ pub struct Thread {
 
 `parent_thread_id` 在赋值时会规范化：去除前后空白、空字符串反序列化为 `None`，
 `resource_id` 同样处理。Thread hierarchy 与 run 生命周期联动：当一个 sub-agent
-run 启动时，`RunRequestSnapshot.parent_thread_id` 携带父 thread；checkpoint
-投影会在子 thread 第一次被物化时填充 `Thread.parent_thread_id`。
+run 启动时，`RunActivationSnapshot.trace.parent_thread_id` 携带父 thread；旧记录
+也可能通过 `RunRequestSnapshot.parent_thread_id` 携带同一信息。checkpoint 投影会在
+子 thread 第一次被物化时填充 `Thread.parent_thread_id`。
 
 ### 构造函数
 
@@ -179,6 +180,8 @@ pub struct RunRecord {
     pub thread_id: String,
     pub agent_id: String,
     pub parent_run_id: Option<String>,
+    pub registry_manifest: Option<PinnedRegistryManifest>,
+    pub activation: Option<RunActivationSnapshot>,
     pub request: Option<RunRequestSnapshot>,
     pub input: Option<RunMessageInput>,
     pub output: Option<RunMessageOutput>,
@@ -205,9 +208,22 @@ pub struct RunRecord {
 `RunRecord` 是一次用户意图的事实来源。它保存 request 元信息、生命周期状态、
 waiting 状态、输出/错误结果和 trace id，但不拥有消息正文。
 
-### RunRequestSnapshot
+### RunActivationSnapshot 和 RunRequestSnapshot
 
-`RunRequestSnapshot` 保存创建或恢复 run 的请求：
+`RunActivationSnapshot` 是当前可重放的 activation 投影：
+
+```rust
+pub struct RunActivationSnapshot {
+    pub intent: RunIntent,
+    pub input: RunInputSnapshot,
+    pub options: RunOptions,
+    pub trace: RunTraceContext,
+    pub seeded_decisions: Vec<(String, ToolCallResume)>,
+    pub resolution_scope: PinnedRegistryManifest,
+}
+```
+
+`RunRequestSnapshot` 是仍可读取的旧 request 投影：
 
 ```rust
 pub struct RunRequestSnapshot {
@@ -223,8 +239,7 @@ pub struct RunRequestSnapshot {
 }
 ```
 
-`input_message_ids` 和 `input_message_count` 指向 thread 拥有的消息记录；
-request snapshot 不拥有消息正文。
+两种 snapshot 都只引用 thread 拥有的消息记录或范围，不拥有消息正文。
 
 ### RunMessageInput 和 RunMessageOutput
 

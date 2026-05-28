@@ -55,7 +55,7 @@ The following types are re-exported at the crate root for convenience:
 `AgentResolver`, `AgentRuntime`, `AgentRuntimeBuilder`, `BuildError`,
 `CancellationToken`, `CommitEvent`, `CommitHook`, `DEFAULT_MAX_PHASE_ROUNDS`,
 `ExecutionEnv`, `MutationBatch`, `PhaseContext`, `PhaseHook`, `PhaseRuntime`,
-`Plugin`, `PluginDescriptor`, `PluginRegistrar`, `ResolvedAgent`, `RunRequest`,
+`Plugin`, `PluginDescriptor`, `PluginRegistrar`, `ResolvedAgent`, `RunActivation`,
 `RuntimeError`, `StateCommand`, `StateStore`, `ToolGateHook`,
 `TypedEffectHandler`, `TypedScheduledActionHandler`
 

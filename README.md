@@ -53,6 +53,13 @@ async-trait = "0.1"
 serde_json = "1"
 ```
 
+The examples target the published `0.5` line. When following unreleased main-branch
+APIs, depend on the repository instead:
+
+```toml
+awaken = { git = "https://github.com/AwakenWorks/awaken" }
+```
+
 ```bash
 export OPENAI_API_KEY=<your-key>
 ```

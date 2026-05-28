@@ -27,4 +27,6 @@ Awaken-backed 进程，然后通过 stdin/stdout 交换 ACP JSON-RPC 消息。
 
 ## 与 HTTP 适配器的关系
 
-ACP 消费的仍是 AI SDK v6、AG-UI、A2A、MCP 共用的 runtime event；它不引入新的 agent 执行路径，只改变 client transport 和 wire format。
+ACP 背后仍是与其它协议适配器共用的 `AgentRuntime` 和 `AgentEvent` 流。
+每个适配器会按自己的 wire 语义投影或收集这些事件；ACP 不引入新的 agent
+执行路径。

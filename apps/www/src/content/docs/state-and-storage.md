@@ -17,7 +17,8 @@ This path is for teams moving beyond stateless demos.
 
 Threads carry an optional `parent_thread_id`. The runtime sets it on a child
 thread the first time a sub-agent run materializes the thread, taking the
-value from `RunRequestSnapshot.parent_thread_id`. `ThreadStore` exposes
+value from `RunActivationSnapshot.trace.parent_thread_id` (or legacy
+`RunRequestSnapshot.parent_thread_id`). `ThreadStore` exposes
 `list_child_threads`, `validate_thread_hierarchy`, and
 `delete_thread_with_strategy(reject | detach | cascade)` so callers can pick a
 child-handling policy explicitly. The default `Detach` strategy preserves

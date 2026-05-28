@@ -242,7 +242,7 @@ Providers and plugins are registered programmatically in this low-level helper b
 
 ### D8: ~~run_agent_loop accepts ResolvedRun~~ (superseded by ADR-0011 D6)
 
-The loop runner accepts `&dyn AgentResolver` and resolves dynamically at startup and step boundaries. `ResolvedRun` is an internal type. The production entry point is `AgentRuntime::run(RunRequest)`.
+The loop runner accepts `&dyn AgentResolver` and resolves dynamically at startup and step boundaries. `ResolvedRun` is an internal type. The production entry point is `AgentRuntime::run(RunActivation)`.
 
 ### D9: ~~Handoff via orchestration layer~~ (superseded by ADR-0011 D6)
 
@@ -289,7 +289,7 @@ attribution.
 - `ModelSpec` (unified addressing + capability + pricing): implemented
 - `resolve()` → `ResolvedRun` (internal): implemented
 - `RegistrySet` implements `AgentResolver`: implemented
-- `AgentRuntime::run(RunRequest)`: implemented
+- `AgentRuntime::run(RunActivation)`: implemented
 
 ### Deferred
 - `CompositeXxxRegistry` (merge multiple sources)

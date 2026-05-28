@@ -37,7 +37,7 @@ use awaken::contract::message::Message;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::AgentSpec;
 use awaken::registry_spec::ModelSpec;
-use awaken::{AgentRuntimeBuilder, RunRequest};
+use awaken::{AgentRuntimeBuilder, RunActivation};
 
 struct EchoTool;
 
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
-    let request = RunRequest::new(
+    let request = RunActivation::new(
         "thread-1",
         vec![Message::user("Say hello using the echo tool")],
     )
@@ -128,7 +128,7 @@ let result = runtime.run_to_completion(request).await?;
 
 常见使用模式：
 
-- 一次性 CLI 程序：构造 `RunRequest`，调用 `runtime.run_to_completion(...)`，打印结果
+- 一次性 CLI 程序：构造 `RunActivation`，调用 `runtime.run_to_completion(...)`，打印结果
 - 应用服务：当调用方需要流式事件时，使用带 `EventSink` 的 `runtime.run(...)`
 - HTTP 服务器：将 `Arc<AgentRuntime>` 存储在应用状态中，暴露协议路由
 

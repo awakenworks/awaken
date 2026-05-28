@@ -1,20 +1,14 @@
 #![allow(missing_docs)]
 
 use async_trait::async_trait;
-use awaken::ModelSpec;
 use awaken::contract::content::ContentBlock;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken::contract::inference::{StopReason, StreamResult};
-use awaken::contract::lifecycle::TerminationReason;
-use awaken::contract::message::{Message, ToolCall};
-use awaken::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
-};
-use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, RunActivation};
-use serde_json::{Value, json};
+use awaken::contract::message::ToolCall;
+use awaken::prelude::*;
+use serde_json::json;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 struct ScriptedProvider {
     responses: Mutex<Vec<StreamResult>>,
@@ -69,7 +63,11 @@ impl Tool for EchoTool {
         )
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        args: JsonValue,
+        _ctx: &ToolCallContext,
+    ) -> Result<ToolOutput, ToolError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let text = args["text"].as_str().unwrap_or_default();
         Ok(ToolResult::success("echo", json!({ "echoed": text })).into())

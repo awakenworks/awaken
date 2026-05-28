@@ -41,7 +41,7 @@ sequenceDiagram
     participant Tool
 
     Client->>Server: POST /v1/ai-sdk/chat
-    Server->>Runtime: RunRequest (agent_id, thread_id, messages)
+    Server->>Runtime: RunActivation (agent_id, thread_id, messages)
     Runtime->>Runtime: Resolve agent (AgentSpec -> ResolvedExecution)
     Runtime->>Runtime: Load thread history
     Runtime->>Runtime: RunStart phase
