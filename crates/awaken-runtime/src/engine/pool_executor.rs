@@ -73,6 +73,8 @@ struct PoolStreamAttemptState {
     tried: Vec<bool>,
     failure_observed: bool,
     in_flight: bool,
+    live_streams: usize,
+    request_callbacks_ambiguous: bool,
     last_access: usize,
 }
 
@@ -83,6 +85,8 @@ impl PoolStreamAttemptState {
             tried: vec![false; member_count],
             failure_observed: false,
             in_flight: false,
+            live_streams: 0,
+            request_callbacks_ambiguous: false,
             last_access: 0,
         }
     }
@@ -256,13 +260,19 @@ impl PoolExecutorInner {
         }
     }
 
-    fn mark_stream_active(&self, attempt_key: Option<&str>, idx: usize) {
+    fn mark_stream_active(&self, attempt_key: Option<&str>, idx: usize) -> bool {
         let Some(attempt_key) = attempt_key else {
-            return;
+            return false;
         };
         let mut attempts = self.stream_attempts.write();
         if !Self::ensure_stream_attempt_capacity(&mut attempts, attempt_key) {
-            return;
+            tracing::debug!(
+                pool = %self.pool_id,
+                attempt_key,
+                member = %self.members[idx].model_id,
+                "model pool stream attempt cache full; recording stream terminal events by captured member only"
+            );
+            return false;
         }
         let attempt = attempts
             .entry(attempt_key.to_string())
@@ -273,7 +283,10 @@ impl PoolExecutorInner {
         }
         attempt.active = Some(idx);
         attempt.failure_observed = false;
+        attempt.request_callbacks_ambiguous |= attempt.live_streams > 0;
+        attempt.live_streams = attempt.live_streams.saturating_add(1);
         attempt.in_flight = true;
+        true
     }
 
     fn mark_stream_open_failure(&self, attempt_key: Option<&str>, idx: usize) {
@@ -282,6 +295,12 @@ impl PoolExecutorInner {
         };
         let mut attempts = self.stream_attempts.write();
         if !Self::ensure_stream_attempt_capacity(&mut attempts, attempt_key) {
+            tracing::debug!(
+                pool = %self.pool_id,
+                attempt_key,
+                member = %self.members[idx].model_id,
+                "model pool stream attempt cache full; keeping stream-open failure in local tried mask only"
+            );
             return;
         }
         let attempt = attempts
@@ -293,13 +312,7 @@ impl PoolExecutorInner {
         }
         attempt.active = Some(idx);
         attempt.failure_observed = true;
-        attempt.in_flight = false;
-    }
-
-    fn clear_stream_attempt(&self, attempt_key: Option<&str>) {
-        if let Some(attempt_key) = attempt_key {
-            self.stream_attempts.write().remove(attempt_key);
-        }
+        attempt.in_flight = attempt.live_streams > 0;
     }
 
     fn home_sequence_for_new_session(&self) -> Option<u64> {
@@ -498,13 +511,22 @@ impl PoolExecutorInner {
         // a session-level failover may have moved `active` off the member
         // that opened the stream, so recording there would mis-attribute the
         // failure onto an innocent member's breaker. Skip recording instead.
-        let Some(current) = attempt_key
-            .as_deref()
-            .and_then(|key| self.stream_attempts.read().get(key).and_then(|a| a.active))
-        else {
+        let Some(current) = attempt_key.as_deref().and_then(|key| {
+            self.stream_attempts.read().get(key).and_then(|attempt| {
+                (!attempt.request_callbacks_ambiguous)
+                    .then_some(attempt.active)
+                    .flatten()
+            })
+        }) else {
             return;
         };
-        self.record_stream_attempt_failure_once(&session_key, attempt_key.as_deref(), current, err);
+        self.record_stream_attempt_failure_once(
+            &session_key,
+            attempt_key.as_deref(),
+            current,
+            err,
+            false,
+        );
     }
 
     fn record_stream_attempt_failure(
@@ -526,7 +548,7 @@ impl PoolExecutorInner {
                     attempt.tried[current] = true;
                 }
                 attempt.active = Some(current);
-                attempt.in_flight = false;
+                attempt.in_flight = attempt.live_streams > 0;
                 attempt.tried.clone()
             } else {
                 let mut tried = vec![false; self.members.len()];
@@ -555,9 +577,11 @@ impl PoolExecutorInner {
     ) {
         if let Some(attempt_key) = attempt_key {
             let mut attempts = self.stream_attempts.write();
-            let Some(attempt) = attempts.get(attempt_key) else {
+            let Some(attempt) = attempts.get_mut(attempt_key) else {
                 return;
             };
+            attempt.live_streams = attempt.live_streams.saturating_sub(1);
+            attempt.in_flight = attempt.live_streams > 0;
             if attempt.active != Some(current) {
                 return;
             }
@@ -573,6 +597,7 @@ impl PoolExecutorInner {
         attempt_key: Option<&str>,
         current: usize,
         err: &InferenceExecutionError,
+        stream_finished: bool,
     ) {
         if let Some(attempt_key) = attempt_key {
             let mut attempts = self.stream_attempts.write();
@@ -580,6 +605,10 @@ impl PoolExecutorInner {
                 return;
             };
             attempt.last_access = self.next_stream_attempt_sequence();
+            if stream_finished {
+                attempt.live_streams = attempt.live_streams.saturating_sub(1);
+                attempt.in_flight = attempt.live_streams > 0;
+            }
             if attempt.active != Some(current) {
                 return;
             }
@@ -588,7 +617,7 @@ impl PoolExecutorInner {
             }
             let duplicate = attempt.failure_observed;
             attempt.failure_observed = true;
-            attempt.in_flight = false;
+            attempt.in_flight = attempt.live_streams > 0;
             drop(attempts);
             if duplicate {
                 return;
@@ -603,11 +632,12 @@ impl PoolExecutorInner {
             let Some(attempt) = attempts.get_mut(attempt_key) else {
                 return;
             };
+            attempt.live_streams = attempt.live_streams.saturating_sub(1);
+            attempt.in_flight = attempt.live_streams > 0;
             if attempt.active != Some(current) {
                 return;
             }
             attempt.last_access = self.next_stream_attempt_sequence();
-            attempt.in_flight = false;
             if !attempt.failure_observed {
                 attempts.remove(attempt_key);
             }

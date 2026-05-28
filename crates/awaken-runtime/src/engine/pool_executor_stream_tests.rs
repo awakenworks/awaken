@@ -616,6 +616,53 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn stream_terminal_failure_records_member_when_attempt_cache_is_full() {
+        let thread_id = (0..200)
+            .map(|i| format!("stream-full-cache-terminal-{i}"))
+            .find(|key| home_of(key, 2) == 0)
+            .expect("thread home on m0");
+        let cb = breaker_threshold(1);
+        let (pool, _stubs) = pool_all(
+            "agent-x",
+            vec![Behavior::StreamErr(InferenceExecutionError::Provider(
+                "reset".into(),
+            ))],
+            PoolSwitchPolicy::default(),
+            cb.clone(),
+        );
+        {
+            let mut attempts = pool.inner.stream_attempts.write();
+            for i in 0..super::super::MAX_POOL_STREAM_ATTEMPTS {
+                let mut active = super::super::PoolStreamAttemptState::new(1);
+                active.in_flight = true;
+                active.live_streams = 1;
+                active.last_access = i + 1;
+                attempts.insert(format!("active-{i}"), active);
+            }
+        }
+
+        let mut stream = pool
+            .execute_stream(stream_request_for_thread(
+                &thread_id,
+                "logical-full-cache-terminal",
+            ))
+            .await
+            .expect("stream opens even when attempt cache cannot track a new key");
+        assert!(stream.next().await.expect("stream delta").is_ok());
+        assert!(stream.next().await.expect("stream error").is_err());
+
+        assert!(
+            !cb.is_available("m0"),
+            "terminal stream failure must still hit the captured member breaker"
+        );
+        assert_eq!(
+            pool.inner.stream_attempts.read().len(),
+            super::super::MAX_POOL_STREAM_ATTEMPTS,
+            "full in-flight cache remains capped"
+        );
+    }
+
     #[test]
     fn stream_attempt_capacity_is_hard_cap_when_all_entries_are_in_flight() {
         let mut attempts = HashMap::new();

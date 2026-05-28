@@ -50,6 +50,7 @@ impl Stream for PoolObservedStream {
                     this.attempt_key.as_deref(),
                     this.member_idx,
                     &err,
+                    true,
                 );
                 Poll::Ready(Some(Err(err)))
             }

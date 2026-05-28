@@ -83,7 +83,10 @@ impl LlmExecutor for PoolExecutor {
                 let req = inner.request_for(idx, &request);
                 match inner.members[idx].executor.execute_stream(req).await {
                     Ok(stream) => {
-                        inner.mark_stream_active(attempt_key.as_deref(), idx);
+                        let attempt_key = inner
+                            .mark_stream_active(attempt_key.as_deref(), idx)
+                            .then_some(attempt_key)
+                            .flatten();
                         let observed = PoolObservedStream::new(
                             stream,
                             Arc::clone(&inner),
@@ -127,22 +130,12 @@ impl LlmExecutor for PoolExecutor {
         false
     }
 
-    fn record_stream_success(&self, request: &InferenceRequest) {
-        let session_key = self.inner.session_key(request);
-        let attempt_key = self.inner.stream_attempt_key(&session_key, request);
-        if let Some(idx) = attempt_key.as_deref().and_then(|key| {
-            self.inner
-                .stream_attempts
-                .read()
-                .get(key)
-                .and_then(|attempt| attempt.active)
-        }) {
-            self.inner
-                .breaker
-                .record_success(&self.inner.members[idx].model_id);
-            self.inner.reset_switch_budget(&session_key);
-        }
-        self.inner.clear_stream_attempt(attempt_key.as_deref());
+    fn record_stream_success(&self, _request: &InferenceRequest) {
+        // Request-scoped success callbacks do not carry the immutable stream
+        // identity needed to distinguish an old stream from the current
+        // recovery stream for the same logical request. PoolObservedStream
+        // records drain success with its captured member index, so ignore this
+        // ambiguous duplicate path.
     }
 
     fn record_stream_failure(&self, request: &InferenceRequest, err: &InferenceExecutionError) {
