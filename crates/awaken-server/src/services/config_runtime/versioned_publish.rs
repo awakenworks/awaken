@@ -2,40 +2,48 @@ use std::sync::Arc;
 
 use awaken_runtime::registry::RegistrySet;
 use awaken_server_contract::{
-    ProviderSpec, RegistryResourcePublish, VersionSelector, VersionedRegistryStore,
+    ProviderSpec, RegistryResourcePublish, ScopeError, ScopeId, VersionSelector,
+    VersionedRegistryStore,
 };
 use serde::Serialize;
 use serde_json::json;
 
 use super::{ConfigRuntimeError, ConfigRuntimeManager};
 use crate::services::config_runtime::managed_config::ManagedConfigSnapshot;
-use crate::services::frozen_registry::{
-    FrozenAgentRegistryMaterializer, LatestPublicationResolver,
-};
+use crate::services::frozen_registry::{FrozenAgentRegistryMaterializer, ScopedServerResolver};
 
 pub(super) struct VersionedRegistryPublicationTarget {
-    pub(super) scope_id: String,
+    pub(super) scope_id: ScopeId,
     pub(super) store: Arc<dyn VersionedRegistryStore>,
 }
 
 impl ConfigRuntimeManager {
     #[must_use]
     pub fn with_versioned_registry_store(
-        mut self,
+        self,
         scope_id: impl Into<String>,
         store: Arc<dyn VersionedRegistryStore>,
     ) -> Self {
-        let scope_id = scope_id.into();
+        self.try_with_versioned_registry_store(scope_id, store)
+            .expect("scope_id must be valid")
+    }
+
+    pub fn try_with_versioned_registry_store(
+        mut self,
+        scope_id: impl Into<String>,
+        store: Arc<dyn VersionedRegistryStore>,
+    ) -> Result<Self, ScopeError> {
+        let scope_id = ScopeId::new(scope_id.into())?;
         if let Some(handle) = self.runtime.registry_handle() {
             self.runtime
-                .set_run_resolver(Arc::new(LatestPublicationResolver::new(
+                .set_run_resolver(Arc::new(ScopedServerResolver::new(
                     scope_id.clone(),
                     store.clone(),
                     handle,
                 )));
         }
         self.versioned_registry = Some(VersionedRegistryPublicationTarget { scope_id, store });
-        self
+        Ok(self)
     }
 
     /// Pick the `RegistrySet` to install via runtime hot-swap: prefer
@@ -54,7 +62,7 @@ impl ConfigRuntimeManager {
         let materializer = FrozenAgentRegistryMaterializer::new(target.store.clone());
         match materializer
             .materialize(VersionSelector::LatestPublication {
-                scope_id: target.scope_id.clone(),
+                scope_id: target.scope_id.as_str().to_string(),
             })
             .await
         {
@@ -117,7 +125,7 @@ impl ConfigRuntimeManager {
         target
             .store
             .publish_resources_and_create_publication(
-                &target.scope_id,
+                target.scope_id.as_str(),
                 &uuid::Uuid::now_v7().to_string(),
                 resources,
                 managed.source_config_revisions.clone(),

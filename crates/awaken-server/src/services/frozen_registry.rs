@@ -16,8 +16,8 @@ use awaken_server_contract::{
     REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_MODEL_POOL,
     REGISTRY_KIND_PLUGIN_CONFIG, REGISTRY_KIND_PROVIDER, REGISTRY_KIND_SKILL, REGISTRY_KIND_TOOL,
     RegistryGraphValidationError, RegistryGraphValidationRequest, RegistryGraphValidator,
-    StandardRegistryGraphValidator, VersionSelector, VersionedRegistryError,
-    VersionedRegistryStore,
+    ScopeContext, ScopeError, ScopeId, StandardRegistryGraphValidator, VersionSelector,
+    VersionedRegistryError, VersionedRegistryStore,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -86,29 +86,43 @@ pub struct FrozenAgentRegistryMaterializer {
     validator: StandardRegistryGraphValidator,
 }
 
-pub struct LatestPublicationResolver {
-    scope_id: String,
+pub struct ScopedServerResolver {
+    scope_id: ScopeId,
     materializer: FrozenAgentRegistryMaterializer,
     registry_handle: RegistryHandle,
 }
 
-impl LatestPublicationResolver {
+impl ScopedServerResolver {
     #[must_use]
     pub fn new(
-        scope_id: impl Into<String>,
+        scope_id: ScopeId,
         store: Arc<dyn VersionedRegistryStore>,
         registry_handle: RegistryHandle,
     ) -> Self {
         Self {
-            scope_id: scope_id.into(),
+            scope_id,
             materializer: FrozenAgentRegistryMaterializer::new(store),
             registry_handle,
         }
     }
+
+    #[must_use]
+    pub fn from_scope_context(
+        scope: ScopeContext,
+        store: Arc<dyn VersionedRegistryStore>,
+        registry_handle: RegistryHandle,
+    ) -> Self {
+        Self::new(scope.scope_id, store, registry_handle)
+    }
+
+    #[must_use]
+    pub fn scope_id(&self) -> &ScopeId {
+        &self.scope_id
+    }
 }
 
 #[async_trait::async_trait]
-impl Resolver for LatestPublicationResolver {
+impl Resolver for ScopedServerResolver {
     async fn resolve(
         &self,
         mut request: ResolutionRequest,
@@ -123,10 +137,10 @@ impl Resolver for LatestPublicationResolver {
         }
         let selector = match request.resolution_scope.clone() {
             RunResolutionScope::Live => VersionSelector::LatestPublication {
-                scope_id: self.scope_id.clone(),
+                scope_id: self.scope_id.as_str().to_string(),
             },
             RunResolutionScope::Pinned(manifest) => VersionSelector::Manifest {
-                scope_id: self.scope_id.clone(),
+                scope_id: self.scope_id.as_str().to_string(),
                 manifest,
             },
         };
@@ -139,6 +153,47 @@ impl Resolver for LatestPublicationResolver {
         awaken_runtime::registry::resolve::RegistrySetResolver::new(frozen.to_registry_set(&live))
             .resolve(request)
             .await
+    }
+}
+
+pub struct LatestPublicationResolver {
+    inner: ScopedServerResolver,
+}
+
+impl LatestPublicationResolver {
+    #[must_use]
+    pub fn new(
+        scope_id: impl Into<String>,
+        store: Arc<dyn VersionedRegistryStore>,
+        registry_handle: RegistryHandle,
+    ) -> Self {
+        Self::try_new(scope_id, store, registry_handle).expect("scope_id must be valid")
+    }
+
+    pub fn try_new(
+        scope_id: impl Into<String>,
+        store: Arc<dyn VersionedRegistryStore>,
+        registry_handle: RegistryHandle,
+    ) -> Result<Self, ScopeError> {
+        Ok(Self {
+            inner: ScopedServerResolver::new(
+                ScopeId::new(scope_id.into())?,
+                store,
+                registry_handle,
+            ),
+        })
+    }
+
+    #[must_use]
+    pub fn scope_id(&self) -> &ScopeId {
+        self.inner.scope_id()
+    }
+}
+
+#[async_trait::async_trait]
+impl Resolver for LatestPublicationResolver {
+    async fn resolve(&self, request: ResolutionRequest) -> Result<ResolvedRunPlan, ResolveError> {
+        self.inner.resolve(request).await
     }
 }
 
@@ -379,7 +434,19 @@ fn selector_scope_id(selector: &VersionSelector) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime::registry::AgentSpecRegistry;
+    use awaken_runtime::registry::{
+        AgentSpecRegistry, MapAgentSpecRegistry, MapModelRegistry, MapPluginSource,
+        MapProviderRegistry, MapToolRegistry, RegistrySet,
+    };
+    use awaken_runtime::registry::{BackendRegistry, MapBackendRegistry};
+    use awaken_runtime::resolution::{
+        DelegatePersistence, ExecutionRole, HandoffTranscriptRef, ResolutionTarget, RunFeatureSet,
+    };
+    use awaken_server_contract::contract::executor::{
+        InferenceExecutionError, InferenceRequest, LlmExecutor,
+    };
+    use awaken_server_contract::contract::identity::RunIdentity;
+    use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
     use awaken_server_contract::contract::versioned_registry::PublishOutcome;
     use awaken_server_contract::{ModelSpec, ProviderSpec, VersionRef};
     use awaken_stores::InMemoryVersionedRegistryStore;
@@ -419,6 +486,99 @@ mod tests {
             frozen.agents.pin_for_agent("delegate").unwrap().version,
             delegate.version
         );
+    }
+
+    #[tokio::test]
+    async fn scoped_server_resolver_resolves_delegate_from_current_scope() {
+        let store = InMemoryVersionedRegistryStore::new();
+        let provider = publish_provider(&store, "provider-1").await;
+        let model = publish_model(&store, "model-1", "provider-1").await;
+        let delegate = publish_agent(&store, agent("delegate", "model-1", [])).await;
+        let root = publish_agent(&store, agent("root", "model-1", ["delegate"])).await;
+        store
+            .create_publication(
+                "default",
+                "pub-1",
+                refs([&provider, &model, &delegate, &root]),
+                Vec::new(),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let resolver = ScopedServerResolver::from_scope_context(
+            ScopeContext::default_scope(),
+            Arc::new(store),
+            live_registry_handle(),
+        );
+        let plan = resolver
+            .resolve(nested_request(ResolutionTarget::Delegate {
+                agent_id: "delegate".to_string(),
+                parent_run: RunIdentity::for_thread("thread-1"),
+                persistence: DelegatePersistence::Ephemeral,
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(resolver.scope_id().as_str(), "default");
+        assert_eq!(plan.role(), ExecutionRole::Delegate);
+        assert_eq!(plan.agent_spec().id, "delegate");
+        assert!(plan.replayable_manifest().is_some_and(|manifest| {
+            manifest
+                .entries
+                .iter()
+                .any(|entry| entry.kind == REGISTRY_KIND_AGENT && entry.id == "delegate")
+        }));
+    }
+
+    #[tokio::test]
+    async fn scoped_server_resolver_resolves_handoff_from_current_scope() {
+        let store = InMemoryVersionedRegistryStore::new();
+        let provider = publish_provider(&store, "provider-1").await;
+        let model = publish_model(&store, "model-1", "provider-1").await;
+        let handoff = publish_agent(&store, agent("handoff", "model-1", [])).await;
+        let root = publish_agent(&store, agent("root", "model-1", [])).await;
+        store
+            .create_publication(
+                "default",
+                "pub-1",
+                refs([&provider, &model, &handoff, &root]),
+                Vec::new(),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let resolver = ScopedServerResolver::new(
+            ScopeId::default_scope(),
+            Arc::new(store),
+            live_registry_handle(),
+        );
+        let plan = resolver
+            .resolve(nested_request(ResolutionTarget::Handoff {
+                agent_id: "handoff".to_string(),
+                from_agent: "root".to_string(),
+                transcript_ref: HandoffTranscriptRef {
+                    run_id: "run-1".to_string(),
+                },
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(plan.role(), ExecutionRole::Handoff);
+        assert_eq!(plan.agent_spec().id, "handoff");
+        assert!(matches!(plan, ResolvedRunPlan::Replayable(_)));
+    }
+
+    #[tokio::test]
+    async fn latest_publication_resolver_rejects_invalid_scope_id() {
+        let store = InMemoryVersionedRegistryStore::new();
+        let result =
+            LatestPublicationResolver::try_new(" ", Arc::new(store), live_registry_handle());
+
+        assert!(matches!(result, Err(ScopeError::Empty)));
     }
 
     #[tokio::test]
@@ -552,6 +712,57 @@ mod tests {
             }
             other => panic!("expected Graph(ContentHashMismatch), got {other:?}"),
         }
+    }
+
+    struct StubExecutor;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for StubExecutor {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            Ok(StreamResult {
+                content: Vec::new(),
+                tool_calls: Vec::new(),
+                usage: Some(TokenUsage::default()),
+                stop_reason: Some(StopReason::EndTurn),
+                has_incomplete_tool_calls: false,
+            })
+        }
+
+        fn name(&self) -> &str {
+            "stub"
+        }
+    }
+
+    fn nested_request(target: ResolutionTarget) -> ResolutionRequest {
+        ResolutionRequest {
+            target,
+            resolution_scope: RunResolutionScope::Live,
+            overrides: None,
+            frontend_tools: Vec::new(),
+            features: RunFeatureSet {
+                requested_persistence: PersistenceRequirement::CheckpointRequired,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn live_registry_handle() -> RegistryHandle {
+        let mut providers = MapProviderRegistry::new();
+        providers
+            .register_provider("provider-1", Arc::new(StubExecutor))
+            .unwrap();
+        RegistryHandle::new(RegistrySet {
+            agents: Arc::new(MapAgentSpecRegistry::new()),
+            tools: Arc::new(MapToolRegistry::new()),
+            models: Arc::new(MapModelRegistry::new()),
+            providers: Arc::new(providers),
+            plugins: Arc::new(MapPluginSource::new()),
+            backends: Arc::new(MapBackendRegistry::with_default_remote_backends())
+                as Arc<dyn BackendRegistry>,
+        })
     }
 
     async fn publish_agent(
