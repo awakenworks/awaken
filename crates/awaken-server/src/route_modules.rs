@@ -47,7 +47,8 @@ impl RouteModule for RunRoutesState {
         router
             .merge(crate::routes::health_routes().with_state(self.clone()))
             .merge(crate::routes::thread_routes().with_state(self.clone()))
-            .merge(crate::routes::run_routes().with_state(self))
+            .merge(crate::routes::run_routes().with_state(self.clone()))
+            .merge(crate::services::run_service::summary_routes().with_state(self.run))
     }
 }
 

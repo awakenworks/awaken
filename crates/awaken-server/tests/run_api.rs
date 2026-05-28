@@ -368,6 +368,37 @@ async fn post_json(app: axum::Router, uri: &str, payload: Value) -> (StatusCode,
     (status, String::from_utf8(body.to_vec()).expect("utf-8"))
 }
 
+fn run_record_with_status(run_id: &str, status: RunStatus) -> RunRecord {
+    RunRecord {
+        run_id: run_id.to_string(),
+        thread_id: format!("{run_id}-thread"),
+        agent_id: "test-agent".to_string(),
+        parent_run_id: None,
+        registry_manifest: None,
+        activation: None,
+        request: None,
+        input: None,
+        output: None,
+        status,
+        termination_reason: None,
+        final_output: None,
+        error_payload: None,
+        dispatch_id: None,
+        session_id: None,
+        transport_request_id: None,
+        waiting: None,
+        outcome: None,
+        created_at: 1000,
+        started_at: None,
+        finished_at: None,
+        updated_at: 1000,
+        steps: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        state: None,
+    }
+}
+
 fn extract_sse_events(body: &str) -> Vec<Value> {
     body.lines()
         .filter_map(|line| line.strip_prefix("data: "))
@@ -996,6 +1027,30 @@ async fn list_runs_returns_empty_initially() {
     let payload: Value = serde_json::from_str(&body).expect("valid json");
     let items = payload["items"].as_array().expect("items should be array");
     assert!(items.is_empty());
+}
+
+#[tokio::test]
+async fn runs_summary_route_returns_non_terminal_counts() {
+    let test = make_test_app();
+    for (run_id, status) in [
+        ("run-summary-running", RunStatus::Running),
+        ("run-summary-waiting", RunStatus::Waiting),
+        ("run-summary-created", RunStatus::Created),
+        ("run-summary-done", RunStatus::Done),
+    ] {
+        test.store
+            .create_run(&run_record_with_status(run_id, status))
+            .await
+            .expect("seed run");
+    }
+
+    let (status, body) = get_json(test.router, "/v1/runs/summary").await;
+    assert_eq!(status, StatusCode::OK);
+    let payload: Value = serde_json::from_str(&body).expect("valid json");
+    assert_eq!(payload["running"], 1);
+    assert_eq!(payload["waiting"], 1);
+    assert_eq!(payload["created"], 1);
+    assert!(payload.get("done").is_none());
 }
 
 #[tokio::test]
