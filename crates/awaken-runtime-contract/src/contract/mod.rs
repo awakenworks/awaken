@@ -1,6 +1,4 @@
 pub mod active_agent;
-pub mod audit_log;
-pub mod bundle;
 pub mod commit_coordinator;
 pub mod content;
 pub mod context_message;
@@ -28,4 +26,3 @@ pub mod tool;
 pub mod tool_intercept;
 pub mod tool_schema;
 pub mod transform;
-pub mod transport;

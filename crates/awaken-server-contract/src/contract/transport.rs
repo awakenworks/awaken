@@ -47,7 +47,7 @@ impl<T: Clone + Send + 'static> Transcoder for Identity<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::event::AgentEvent;
+    use awaken_runtime_contract::contract::event::AgentEvent;
 
     #[test]
     fn identity_passthrough() {
