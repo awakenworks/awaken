@@ -32,7 +32,7 @@ use super::{
     LegacyRunSnapshotExtras, Mailbox, MailboxDispatchStatus, MailboxError, MailboxSubmitResult,
     MailboxWorkerStatus, ThreadContext, build_run_input, legacy_input_snapshot, lock_thread_append,
     normalize_mailbox_run_mode, normalize_message_ids, record_mailbox_operation_result,
-    result_label, validate_run_inputs,
+    result_label, run_activation_snapshot, validate_run_inputs,
 };
 
 impl Mailbox {
@@ -498,7 +498,11 @@ impl Mailbox {
             let last_new_seq = expected_version + normalized_messages.len() as u64;
             let (input_snapshot, input) =
                 build_run_input(thread_id, last_new_seq, &input_message_ids);
-            record.activation = Some(request.snapshot(input_snapshot, manifest.clone()));
+            record.activation = Some(run_activation_snapshot(
+                request,
+                input_snapshot,
+                manifest.clone(),
+            ));
             record.input = input;
             record.updated_at = now_ms() / 1000;
 

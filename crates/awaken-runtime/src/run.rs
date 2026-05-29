@@ -3,10 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
 use awaken_runtime_contract::contract::run::{
-    RunActivationSnapshot, RunInput, RunInputSnapshot, RunIntent, RunKind, RunOptions,
-    RunTraceContext,
+    RunInput, RunInputSnapshot, RunIntent, RunKind, RunOptions, RunTraceContext,
 };
 use awaken_runtime_contract::contract::storage::{RunRecord, RunRequestOrigin};
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
@@ -348,24 +346,6 @@ impl RunActivation {
         self.capture.thread_context_cache = Some(cache);
         self
     }
-
-    /// Build the replay-safe durable snapshot after message persistence and
-    /// registry pinning have already completed.
-    #[must_use]
-    pub fn snapshot(
-        &self,
-        persisted_input: RunInputSnapshot,
-        pinned_manifest: PinnedRegistryManifest,
-    ) -> RunActivationSnapshot {
-        RunActivationSnapshot {
-            intent: self.intent.clone(),
-            input: persisted_input,
-            options: self.options.clone(),
-            trace: self.trace.clone(),
-            seeded_decisions: self.control.seeded_decisions.clone(),
-            resolution_scope: pinned_manifest,
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -378,21 +358,6 @@ pub enum RunActivationError {
 mod tests {
     use super::*;
     use crate::resolution::{ResolutionRequest, ResolveError, ResolvedRunPlan};
-    use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryEntry;
-
-    fn manifest(id: &str) -> PinnedRegistryManifest {
-        PinnedRegistryManifest {
-            publication_id: Some("pub-1".into()),
-            registry_snapshot_version: Some(1),
-            entries: vec![PinnedRegistryEntry {
-                kind: "agent".into(),
-                id: id.into(),
-                version: 1,
-                content_hash:
-                    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
-            }],
-        }
-    }
 
     fn assert_send_static<T: Send + 'static>(_: T) {}
 
@@ -412,23 +377,6 @@ mod tests {
     fn activation_is_owned_send_static() {
         let activation = RunActivation::new("thread", vec![Message::user("hi")]);
         assert_send_static(activation);
-    }
-
-    #[test]
-    fn snapshot_uses_caller_supplied_persisted_input_and_manifest() {
-        let activation = RunActivation::new("thread", vec![Message::user("hi")])
-            .with_agent_id("agent-a")
-            .with_dispatch_id("dispatch-1");
-        let input = RunInputSnapshot {
-            thread_id: "thread".into(),
-            trigger_message_ids: vec!["msg-1".into()],
-            ..Default::default()
-        };
-        let snapshot = activation.snapshot(input.clone(), manifest("agent-a"));
-        assert_eq!(snapshot.intent.agent_id.as_deref(), Some("agent-a"));
-        assert_eq!(snapshot.input, input);
-        assert_eq!(snapshot.trace.dispatch_id.as_deref(), Some("dispatch-1"));
-        assert_eq!(snapshot.resolution_scope.entries[0].id, "agent-a");
     }
 
     /// Pins the routing between builder methods and the three split
