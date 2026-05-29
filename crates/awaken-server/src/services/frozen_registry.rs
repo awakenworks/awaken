@@ -92,6 +92,36 @@ pub struct ScopedServerResolver {
     registry_handle: RegistryHandle,
 }
 
+#[derive(Clone)]
+pub struct ScopedServerResolverFactory {
+    store: Arc<dyn VersionedRegistryStore>,
+    registry_handle: RegistryHandle,
+}
+
+impl ScopedServerResolverFactory {
+    #[must_use]
+    pub fn new(store: Arc<dyn VersionedRegistryStore>, registry_handle: RegistryHandle) -> Self {
+        Self {
+            store,
+            registry_handle,
+        }
+    }
+
+    #[must_use]
+    pub fn resolver_for_scope(&self, scope_id: ScopeId) -> Arc<dyn Resolver> {
+        Arc::new(ScopedServerResolver::new(
+            scope_id,
+            self.store.clone(),
+            self.registry_handle.clone(),
+        ))
+    }
+
+    #[must_use]
+    pub fn resolver_for_context(&self, scope: &ScopeContext) -> Arc<dyn Resolver> {
+        self.resolver_for_scope(scope.scope_id.clone())
+    }
+}
+
 impl ScopedServerResolver {
     #[must_use]
     pub fn new(
@@ -573,6 +603,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scoped_server_resolver_factory_binds_scope_per_resolver() {
+        let store = Arc::new(InMemoryVersionedRegistryStore::new());
+        let scope_a_provider = publish_provider_in_scope(&store, "scope-a", "provider-1").await;
+        let scope_a_model =
+            publish_model_in_scope(&store, "scope-a", "model-1", "provider-1").await;
+        let scope_a_root =
+            publish_agent_in_scope(&store, "scope-a", agent_with_prompt("root", "model-1", "a"))
+                .await;
+        store
+            .create_publication(
+                "scope-a",
+                "pub-a",
+                refs([&scope_a_provider, &scope_a_model, &scope_a_root]),
+                Vec::new(),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let scope_b_provider = publish_provider_in_scope(&store, "scope-b", "provider-1").await;
+        let scope_b_model =
+            publish_model_in_scope(&store, "scope-b", "model-1", "provider-1").await;
+        let scope_b_root =
+            publish_agent_in_scope(&store, "scope-b", agent_with_prompt("root", "model-1", "b"))
+                .await;
+        store
+            .create_publication(
+                "scope-b",
+                "pub-b",
+                refs([&scope_b_provider, &scope_b_model, &scope_b_root]),
+                Vec::new(),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let factory = ScopedServerResolverFactory::new(store, live_registry_handle());
+        let plan_a = factory
+            .resolver_for_scope(ScopeId::new("scope-a").unwrap())
+            .resolve(nested_request(ResolutionTarget::Root {
+                agent_id: "root".into(),
+                thread_id: "thread-a".into(),
+            }))
+            .await
+            .unwrap();
+        let plan_b = factory
+            .resolver_for_scope(ScopeId::new("scope-b").unwrap())
+            .resolve(nested_request(ResolutionTarget::Root {
+                agent_id: "root".into(),
+                thread_id: "thread-b".into(),
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(plan_a.agent_spec().system_prompt, "a");
+        assert_eq!(plan_b.agent_spec().system_prompt, "b");
+    }
+
+    #[tokio::test]
     async fn latest_publication_resolver_rejects_invalid_scope_id() {
         let store = InMemoryVersionedRegistryStore::new();
         let result =
@@ -773,6 +864,22 @@ mod tests {
         publish(store, "agent", &id, serde_json::to_value(spec).unwrap()).await
     }
 
+    async fn publish_agent_in_scope(
+        store: &InMemoryVersionedRegistryStore,
+        scope_id: &str,
+        spec: AgentSpec,
+    ) -> PinnedRegistryEntry {
+        let id = spec.id.clone();
+        publish_in_scope(
+            store,
+            scope_id,
+            "agent",
+            &id,
+            serde_json::to_value(spec).unwrap(),
+        )
+        .await
+    }
+
     async fn publish_model(
         store: &InMemoryVersionedRegistryStore,
         id: &str,
@@ -780,6 +887,23 @@ mod tests {
     ) -> PinnedRegistryEntry {
         let spec = ModelSpec::new(id, provider_id, "upstream");
         publish(store, "model", id, serde_json::to_value(spec).unwrap()).await
+    }
+
+    async fn publish_model_in_scope(
+        store: &InMemoryVersionedRegistryStore,
+        scope_id: &str,
+        id: &str,
+        provider_id: &str,
+    ) -> PinnedRegistryEntry {
+        let spec = ModelSpec::new(id, provider_id, "upstream");
+        publish_in_scope(
+            store,
+            scope_id,
+            "model",
+            id,
+            serde_json::to_value(spec).unwrap(),
+        )
+        .await
     }
 
     async fn publish_model_pool<'a>(
@@ -803,14 +927,44 @@ mod tests {
         publish(store, "provider", id, serde_json::to_value(spec).unwrap()).await
     }
 
+    async fn publish_provider_in_scope(
+        store: &InMemoryVersionedRegistryStore,
+        scope_id: &str,
+        id: &str,
+    ) -> PinnedRegistryEntry {
+        let spec = ProviderSpec {
+            id: id.to_string(),
+            adapter: "openai".to_string(),
+            ..Default::default()
+        };
+        publish_in_scope(
+            store,
+            scope_id,
+            "provider",
+            id,
+            serde_json::to_value(spec).unwrap(),
+        )
+        .await
+    }
+
     async fn publish(
         store: &InMemoryVersionedRegistryStore,
         kind: &str,
         id: &str,
         value: Value,
     ) -> PinnedRegistryEntry {
+        publish_in_scope(store, "default", kind, id, value).await
+    }
+
+    async fn publish_in_scope(
+        store: &InMemoryVersionedRegistryStore,
+        scope_id: &str,
+        kind: &str,
+        id: &str,
+        value: Value,
+    ) -> PinnedRegistryEntry {
         let outcome = store
-            .publish_resource("default", kind, id, value, 1, json!({}))
+            .publish_resource(scope_id, kind, id, value, 1, json!({}))
             .await
             .unwrap();
         let record = match outcome {
@@ -834,6 +988,15 @@ mod tests {
             model_id: model_id.to_string(),
             system_prompt: "system".to_string(),
             delegates: delegates.into_iter().map(str::to_string).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn agent_with_prompt(id: &str, model_id: &str, system_prompt: &str) -> AgentSpec {
+        AgentSpec {
+            id: id.to_string(),
+            model_id: model_id.to_string(),
+            system_prompt: system_prompt.to_string(),
             ..Default::default()
         }
     }

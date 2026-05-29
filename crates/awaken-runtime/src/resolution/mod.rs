@@ -293,6 +293,45 @@ mod tests {
         }
     }
 
+    struct ReplayableEverywhereResolver;
+
+    #[async_trait::async_trait]
+    impl Resolver for ReplayableEverywhereResolver {
+        async fn resolve(&self, req: ResolutionRequest) -> Result<ResolvedRunPlan, ResolveError> {
+            let agent_id = match &req.target {
+                ResolutionTarget::Root { agent_id, .. } => agent_id.clone(),
+                ResolutionTarget::Delegate { agent_id, .. } => agent_id.clone(),
+                ResolutionTarget::Handoff { agent_id, .. } => agent_id.clone(),
+            };
+            let role = match &req.target {
+                ResolutionTarget::Root { .. } => ExecutionRole::Root,
+                ResolutionTarget::Delegate { .. } => ExecutionRole::Delegate,
+                ResolutionTarget::Handoff { .. } => ExecutionRole::Handoff,
+            };
+            let requirements = BackendRequirements::from_features(&req.features);
+            let agent = ResolvedAgent::new(&agent_id, "model", "system", Arc::new(MockResolver));
+            Ok(ResolvedRunPlan::Replayable(ResolvedRun {
+                agent_spec: (*agent.spec).clone(),
+                role,
+                execution: ExecutionPlan::from_resolved_agent(&agent),
+                model: ResolvedModelBinding {
+                    upstream_model: agent.upstream_model.clone(),
+                },
+                tools: Vec::new(),
+                overrides: req.overrides,
+                backend_profile: BackendProfile::full_local(),
+                requirements,
+                scope: ReplayableScope {
+                    manifest: PinnedRegistryManifest {
+                        publication_id: Some("override-publication".into()),
+                        registry_snapshot_version: Some(1),
+                        entries: Vec::new(),
+                    },
+                },
+            }))
+        }
+    }
+
     fn runtime_with_resolver<R: Resolver + 'static>(r: R) -> crate::AgentRuntime {
         let runtime = crate::AgentRuntime::new(Arc::new(MockResolver));
         runtime.set_run_resolver(Arc::new(r));
@@ -349,5 +388,24 @@ mod tests {
             .await
             .expect("live-only parent accepts live-only sub");
         assert!(matches!(plan, ResolvedRunPlan::LiveOnly(_)));
+    }
+
+    #[tokio::test]
+    async fn activation_scoped_resolver_overrides_runtime_default() {
+        let runtime = crate::AgentRuntime::new(Arc::new(MockResolver));
+        let activation = RunActivation::new("thread", vec![Message::user("hi")])
+            .with_agent_id("agent-a")
+            .with_run_resolver(Arc::new(ReplayableEverywhereResolver));
+
+        let plan = runtime
+            .resolve_activation(&activation, ResolutionPolicy::PersistentServer)
+            .await
+            .expect("activation resolver supplies replayable plan");
+
+        assert_eq!(
+            plan.replayable_manifest()
+                .and_then(|manifest| manifest.publication_id.as_deref()),
+            Some("override-publication")
+        );
     }
 }
