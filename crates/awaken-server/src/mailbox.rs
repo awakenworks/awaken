@@ -23,7 +23,9 @@ use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::run::{
     RunActivationSnapshot, RunInputSnapshot, RunIntent, RunKind, RunOptions, RunTraceContext,
 };
-use awaken_server_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
+use awaken_server_contract::contract::storage::{
+    PinnedRegistryManifest, RunRecord, StorageError, ThreadRunStore,
+};
 use awaken_server_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
 use awaken_server_contract::contract::tool_intercept::{AdapterKind, RunMode};
 
@@ -62,6 +64,21 @@ const MAILBOX_DEPTH_STATUSES: [RunDispatchStatus; 6] = [
 /// Validation message returned when an inline submit loses the active-run race.
 pub(crate) const ACTIVE_RUN_CONFLICT_MESSAGE: &str =
     "thread has an active run; cannot claim inline";
+
+pub(super) fn run_activation_snapshot(
+    request: &RunActivation,
+    persisted_input: RunInputSnapshot,
+    pinned_manifest: PinnedRegistryManifest,
+) -> RunActivationSnapshot {
+    RunActivationSnapshot {
+        intent: request.intent.clone(),
+        input: persisted_input,
+        options: request.options.clone(),
+        trace: request.trace.clone(),
+        seeded_decisions: request.control.seeded_decisions.clone(),
+        resolution_scope: pinned_manifest,
+    }
+}
 
 // ── Legacy run snapshot conversion ───────────────────────────────
 

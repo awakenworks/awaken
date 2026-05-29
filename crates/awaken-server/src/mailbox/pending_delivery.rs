@@ -16,7 +16,7 @@ use awaken_server_contract::now_ms;
 
 use super::Mailbox;
 use super::helpers::{build_run_input, normalize_message_ids};
-use super::{IntoDispatchExecutor, MailboxConfig, MailboxError};
+use super::{IntoDispatchExecutor, MailboxConfig, MailboxError, run_activation_snapshot};
 
 const MAX_PENDING_FREEZE_ATTEMPTS: usize = 8;
 
@@ -298,7 +298,8 @@ impl Mailbox {
         manifest: &PinnedRegistryManifest,
         append: Option<(&[Message], &DeliveryMode)>,
     ) -> Result<Option<String>, MailboxError> {
-        let snapshot_template = request.snapshot(RunInputSnapshot::default(), manifest.clone());
+        let snapshot_template =
+            run_activation_snapshot(request, RunInputSnapshot::default(), manifest.clone());
         self.prepare_pending_boundary_snapshot_for_run(
             &snapshot_template,
             thread_id,
@@ -500,7 +501,8 @@ impl Mailbox {
         manifest: &PinnedRegistryManifest,
     ) -> Option<Arc<dyn PendingBoundaryHandler>> {
         self.pending_thread_run_store.as_ref()?;
-        let snapshot_template = request.snapshot(RunInputSnapshot::default(), manifest.clone());
+        let snapshot_template =
+            run_activation_snapshot(request, RunInputSnapshot::default(), manifest.clone());
         Some(Arc::new(MailboxPendingBoundaryHandler {
             mailbox: Arc::clone(self),
             thread_id: request.thread_id().to_string(),
