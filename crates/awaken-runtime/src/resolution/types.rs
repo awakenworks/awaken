@@ -1,7 +1,7 @@
 use awaken_runtime_contract::contract::identity::RunIdentity;
 use awaken_runtime_contract::contract::inference::InferenceOverride;
 use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
-use awaken_runtime_contract::contract::run::{RunKind, RunResolutionScope};
+use awaken_runtime_contract::contract::run::RunKind;
 use awaken_runtime_contract::contract::tool::ToolDescriptor;
 use awaken_runtime_contract::registry_spec::AgentSpec;
 
@@ -13,7 +13,7 @@ use super::{BackendProfile, BackendRequirements, ResolveError};
 #[derive(Debug, Clone)]
 pub struct ResolutionRequest {
     pub target: ResolutionTarget,
-    pub resolution_scope: RunResolutionScope,
+    pub resolution_scope: RegistryResolutionScope,
     pub overrides: Option<InferenceOverride>,
     pub frontend_tools: Vec<ToolDescriptor>,
     pub features: RunFeatureSet,
@@ -22,14 +22,14 @@ pub struct ResolutionRequest {
 impl ResolutionRequest {
     #[must_use]
     pub fn from_activation(activation: &RunActivation, policy: ResolutionPolicy) -> Self {
-        Self::from_activation_with_scope(activation, policy, RunResolutionScope::Live)
+        Self::from_activation_with_scope(activation, policy, RegistryResolutionScope::Live)
     }
 
     #[must_use]
     pub fn from_activation_with_scope(
         activation: &RunActivation,
         policy: ResolutionPolicy,
-        resolution_scope: RunResolutionScope,
+        resolution_scope: RegistryResolutionScope,
     ) -> Self {
         let agent_id = activation
             .intent
@@ -47,6 +47,13 @@ impl ResolutionRequest {
             features: RunFeatureSet::from_activation(activation, policy),
         }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum RegistryResolutionScope {
+    #[default]
+    Live,
+    Pinned(PinnedRegistryManifest),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -127,8 +134,19 @@ pub struct HandoffTranscriptRef {
 
 #[derive(Clone)]
 pub enum ResolvedRunPlan {
-    Replayable(ResolvedRun<ReplayableScope>),
+    Replayable(ReplayableResolvedRun),
     LiveOnly(ResolvedRun<LiveOnlyScope>),
+}
+
+#[derive(Clone)]
+pub struct ResolutionArtifact {
+    pub registry_manifest: PinnedRegistryManifest,
+}
+
+#[derive(Clone)]
+pub struct ReplayableResolvedRun {
+    pub execution: ResolvedRun<ReplayableScope>,
+    pub artifact: ResolutionArtifact,
 }
 
 /// Scope kind of a resolved plan, used for nested-resolution constraints
@@ -141,7 +159,7 @@ pub enum RootScopeKind {
 }
 
 impl ResolvedRunPlan {
-    pub fn into_replayable(self) -> Result<ResolvedRun<ReplayableScope>, ResolveError> {
+    pub fn into_replayable(self) -> Result<ReplayableResolvedRun, ResolveError> {
         match self {
             Self::Replayable(plan) => Ok(plan),
             Self::LiveOnly(_) => Err(ResolveError::UnsupportedPersistence(
@@ -153,7 +171,7 @@ impl ResolvedRunPlan {
     #[must_use]
     pub fn execution(&self) -> &ExecutionPlan {
         match self {
-            Self::Replayable(plan) => &plan.execution,
+            Self::Replayable(plan) => &plan.execution.execution,
             Self::LiveOnly(plan) => &plan.execution,
         }
     }
@@ -161,7 +179,7 @@ impl ResolvedRunPlan {
     #[must_use]
     pub fn agent_spec(&self) -> &AgentSpec {
         match self {
-            Self::Replayable(plan) => &plan.agent_spec,
+            Self::Replayable(plan) => &plan.execution.agent_spec,
             Self::LiveOnly(plan) => &plan.agent_spec,
         }
     }
@@ -169,7 +187,7 @@ impl ResolvedRunPlan {
     #[must_use]
     pub fn role(&self) -> ExecutionRole {
         match self {
-            Self::Replayable(plan) => plan.role,
+            Self::Replayable(plan) => plan.execution.role,
             Self::LiveOnly(plan) => plan.role,
         }
     }
@@ -177,7 +195,7 @@ impl ResolvedRunPlan {
     #[must_use]
     pub fn replayable_manifest(&self) -> Option<&PinnedRegistryManifest> {
         match self {
-            Self::Replayable(plan) => Some(&plan.scope.manifest),
+            Self::Replayable(plan) => Some(&plan.artifact.registry_manifest),
             Self::LiveOnly(_) => None,
         }
     }
@@ -185,7 +203,7 @@ impl ResolvedRunPlan {
     #[must_use]
     pub fn backend_profile(&self) -> &BackendProfile {
         match self {
-            Self::Replayable(plan) => &plan.backend_profile,
+            Self::Replayable(plan) => &plan.execution.backend_profile,
             Self::LiveOnly(plan) => &plan.backend_profile,
         }
     }
@@ -193,7 +211,7 @@ impl ResolvedRunPlan {
     #[must_use]
     pub fn requirements(&self) -> &BackendRequirements {
         match self {
-            Self::Replayable(plan) => &plan.requirements,
+            Self::Replayable(plan) => &plan.execution.requirements,
             Self::LiveOnly(plan) => &plan.requirements,
         }
     }
@@ -208,9 +226,7 @@ impl ResolvedRunPlan {
 }
 
 #[derive(Clone)]
-pub struct ReplayableScope {
-    pub manifest: PinnedRegistryManifest,
-}
+pub struct ReplayableScope;
 
 #[derive(Clone)]
 pub struct LiveOnlyScope;

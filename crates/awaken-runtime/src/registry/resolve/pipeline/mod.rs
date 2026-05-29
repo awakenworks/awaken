@@ -18,15 +18,15 @@ use crate::registry::ResolvedBackendAgent;
 use crate::registry::{AgentResolver, ResolvedAgent};
 use crate::resolution::{
     BackendProfile, BackendRequirements, ExecutionPlan, ExecutionRole, LiveOnlyScope,
-    ReplayableScope, ResolutionRequest, ResolutionTarget, ResolveError as RunResolveError,
-    ResolvedModelBinding, ResolvedRun, ResolvedRunPlan, ResolvedTool, Resolver,
+    RegistryResolutionScope, ReplayableResolvedRun, ReplayableScope, ResolutionArtifact,
+    ResolutionRequest, ResolutionTarget, ResolveError as RunResolveError, ResolvedModelBinding,
+    ResolvedRun, ResolvedRunPlan, ResolvedTool, Resolver,
 };
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::executor::LlmExecutor;
 use awaken_runtime_contract::contract::pinned_registry::{
     PinnedRegistryEntry, PinnedRegistryManifest, REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL_POOL,
 };
-use awaken_runtime_contract::contract::run::RunResolutionScope;
 use awaken_runtime_contract::contract::tool::Tool;
 use awaken_runtime_contract::registry_spec::{AgentSpec, ModelSpec};
 
@@ -582,18 +582,18 @@ impl RegistrySetResolver {
     fn resolution_scope_for_request(
         &self,
         agent_id: &str,
-        scope: RunResolutionScope,
+        scope: RegistryResolutionScope,
         requirements: &BackendRequirements,
-    ) -> Result<RunResolutionScope, RunResolveError> {
+    ) -> Result<RegistryResolutionScope, RunResolveError> {
         match scope {
-            RunResolutionScope::Live if requirements.persistence.is_some() => Ok(
-                RunResolutionScope::Pinned(self.in_memory_manifest(agent_id)?),
+            RegistryResolutionScope::Live if requirements.persistence.is_some() => Ok(
+                RegistryResolutionScope::Pinned(self.in_memory_manifest(agent_id)?),
             ),
-            RunResolutionScope::Pinned(manifest) => {
+            RegistryResolutionScope::Pinned(manifest) => {
                 self.validate_manifest_snapshot(&manifest)?;
-                Ok(RunResolutionScope::Pinned(manifest))
+                Ok(RegistryResolutionScope::Pinned(manifest))
             }
-            RunResolutionScope::Live => Ok(RunResolutionScope::Live),
+            RegistryResolutionScope::Live => Ok(RegistryResolutionScope::Live),
         }
     }
 
@@ -700,7 +700,7 @@ fn resolved_run(
     overrides: Option<awaken_runtime_contract::contract::inference::InferenceOverride>,
     requirements: BackendRequirements,
     backend_profile: BackendProfile,
-    resolution_scope: RunResolutionScope,
+    resolution_scope: RegistryResolutionScope,
 ) -> Result<ResolvedRunPlan, RunResolveError> {
     let agent_spec = execution.spec().clone();
     let upstream_model = match &execution {
@@ -716,18 +716,25 @@ fn resolved_run(
         ExecutionPlan::Remote(_) => Vec::new(),
     };
     match resolution_scope {
-        RunResolutionScope::Pinned(manifest) => Ok(ResolvedRunPlan::Replayable(ResolvedRun {
-            agent_spec,
-            role,
-            execution,
-            model: ResolvedModelBinding { upstream_model },
-            tools,
-            overrides,
-            backend_profile,
-            requirements,
-            scope: ReplayableScope { manifest },
-        })),
-        RunResolutionScope::Live => {
+        RegistryResolutionScope::Pinned(manifest) => {
+            Ok(ResolvedRunPlan::Replayable(ReplayableResolvedRun {
+                execution: ResolvedRun {
+                    agent_spec,
+                    role,
+                    execution,
+                    model: ResolvedModelBinding { upstream_model },
+                    tools,
+                    overrides,
+                    backend_profile,
+                    requirements,
+                    scope: ReplayableScope,
+                },
+                artifact: ResolutionArtifact {
+                    registry_manifest: manifest,
+                },
+            }))
+        }
+        RegistryResolutionScope::Live => {
             if requirements.persistence.is_some() {
                 return Err(RunResolveError::UnsupportedPersistence(
                     "live RegistrySetResolver cannot materialize a replayable registry scope"

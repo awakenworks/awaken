@@ -16,6 +16,12 @@ use awaken_stores::{
 use serde_json::json;
 use std::sync::Arc;
 
+fn checkpoint_reader(
+    store: Arc<InMemoryStore>,
+) -> crate::checkpoint_store::ThreadRunCheckpointStore {
+    crate::checkpoint_store::ThreadRunCheckpointStore::new(store as Arc<dyn ThreadRunStore>)
+}
+
 fn store_with_loop_state() -> crate::state::StateStore {
     let store = crate::state::StateStore::new();
     store
@@ -429,10 +435,11 @@ async fn persist_checkpoint_preserves_existing_registry_manifest() {
         awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
     let messages = vec![Arc::new(Message::user("hello"))];
+    let reader = checkpoint_reader(checkpoint_store.clone());
 
     persist_checkpoint(CheckpointPersist {
         store: &state_store,
-        checkpoint_store: Some(&*checkpoint_store),
+        checkpoint_store: Some(&reader),
         commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator), None),
         messages: &messages,
         input_message_count: 1,
@@ -524,10 +531,11 @@ async fn persist_checkpoint_appends_delta_after_concurrent_committed_message() {
         awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
     let messages = vec![Arc::new(input), Arc::new(assistant)];
+    let reader = checkpoint_reader(checkpoint_store.clone());
 
     persist_checkpoint(CheckpointPersist {
         store: &state_store,
-        checkpoint_store: Some(&*checkpoint_store),
+        checkpoint_store: Some(&reader),
         commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator), None),
         messages: &messages,
         input_message_count: 1,
@@ -602,10 +610,11 @@ async fn persist_checkpoint_uses_commit_seed_when_no_previous_record() {
         awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
     let messages = vec![Arc::new(Message::user("hi"))];
+    let reader = checkpoint_reader(checkpoint_store.clone());
 
     persist_checkpoint(CheckpointPersist {
         store: &state_store,
-        checkpoint_store: Some(&*checkpoint_store),
+        checkpoint_store: Some(&reader),
         commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator), None)
             .with_registry_manifest_seed(Some(&manifest)),
         messages: &messages,
@@ -670,10 +679,11 @@ async fn persist_checkpoint_routes_through_commit_coordinator() {
         awaken_runtime_contract::contract::identity::RunOrigin::User,
     );
     let messages = vec![Arc::new(Message::user("hello"))];
+    let reader = checkpoint_reader(checkpoint_store.clone());
 
     persist_checkpoint(CheckpointPersist {
         store: &state_store,
-        checkpoint_store: Some(checkpoint_store.as_ref()),
+        checkpoint_store: Some(&reader),
         commit: CommitWiring {
             commit_coordinator: Some(&coordinator),
             event_buffer: Some(&buffer),

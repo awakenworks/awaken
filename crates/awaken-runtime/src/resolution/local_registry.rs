@@ -2,14 +2,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::inference::InferenceOverride;
-use awaken_runtime_contract::contract::run::RunResolutionScope;
 
 use crate::registry::{AgentResolver, ResolvedAgent};
 
 use super::{
     BackendProfile, BackendRequirements, ExecutionPlan, ExecutionRole, LiveOnlyScope,
-    ResolutionRequest, ResolutionTarget, ResolveError, ResolvedModelBinding, ResolvedRun,
-    ResolvedRunPlan, ResolvedTool, Resolver,
+    RegistryResolutionScope, ResolutionRequest, ResolutionTarget, ResolveError,
+    ResolvedModelBinding, ResolvedRun, ResolvedRunPlan, ResolvedTool, Resolver,
 };
 
 /// `Resolver` backed by an `AgentResolver` registry. Handles root local /
@@ -35,7 +34,7 @@ impl Resolver for LocalRegistryResolver {
                 "local-registry resolver supports root resolution only".into(),
             ));
         };
-        if matches!(req.resolution_scope, RunResolutionScope::Pinned(_)) {
+        if matches!(req.resolution_scope, RegistryResolutionScope::Pinned(_)) {
             return Err(ResolveError::UnsupportedPersistence(
                 "local-registry resolver cannot materialize pinned registry scopes".into(),
             ));

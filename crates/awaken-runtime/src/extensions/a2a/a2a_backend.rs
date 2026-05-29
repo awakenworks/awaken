@@ -290,9 +290,7 @@ impl<'a> A2aExecutionRequest<'a> {
         }
     }
 
-    fn checkpoint_store(
-        &self,
-    ) -> Option<&'a dyn awaken_runtime_contract::contract::storage::ThreadRunStore> {
+    fn checkpoint_store(&self) -> Option<&'a dyn crate::checkpoint_store::RuntimeCheckpointStore> {
         match self {
             Self::Root(request) => request.checkpoint_store,
             Self::Delegate(_) => None,
@@ -2171,8 +2169,10 @@ mod tests {
             )
             .await
             .expect("checkpoint newer run");
-
         let resolver = NoopResolver;
+        let reader = crate::checkpoint_store::ThreadRunCheckpointStore::new(
+            Arc::new(store) as Arc<dyn ThreadRunStore>
+        );
         let request = BackendRootRunRequest {
             agent_id: "remote-agent",
             messages: vec![Message::user("resume")],
@@ -2187,7 +2187,7 @@ mod tests {
                 "remote-agent".into(),
                 RunOrigin::User,
             ),
-            checkpoint_store: Some(&store),
+            checkpoint_store: Some(&reader),
             commit: crate::loop_runner::CommitWiring::default(),
             control: crate::backend::BackendControl::default(),
             decisions: Vec::new(),

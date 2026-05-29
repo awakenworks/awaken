@@ -23,6 +23,7 @@ mod tests;
 use std::sync::Arc;
 
 use crate::cancellation::CancellationToken;
+use crate::checkpoint_store::RuntimeCheckpointStore;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use crate::registry::AgentResolver;
 use crate::state::MutationBatch;
@@ -32,7 +33,6 @@ use awaken_runtime_contract::contract::event_sink::EventSink;
 use awaken_runtime_contract::contract::identity::RunIdentity;
 use awaken_runtime_contract::contract::inference::InferenceOverride;
 use awaken_runtime_contract::contract::message::{DeliveryBoundary, Message};
-use awaken_runtime_contract::contract::storage::ThreadRunStore;
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
 use awaken_runtime_contract::contract::tool::{ToolResult, ToolStatus};
 use futures::channel::mpsc;
@@ -230,7 +230,7 @@ pub struct AgentLoopParams<'a> {
     /// Event sink for streaming events to the caller.
     pub sink: Arc<dyn EventSink>,
     /// Optional persistent storage for checkpointing.
-    pub checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub checkpoint_store: Option<&'a dyn RuntimeCheckpointStore>,
     /// Optional commit-coordinator + canonical-draft buffer (ADR-0036).
     pub commit: checkpoint::CommitWiring<'a>,
     /// Messages to seed the conversation (history + new user input).

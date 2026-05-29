@@ -11,14 +11,12 @@ use std::time::Instant;
 
 use tokio::sync::mpsc;
 
-use awaken_runtime::{ResolutionPolicy, RunActivation};
+use awaken_runtime::{RegistryResolutionScope, ResolutionPolicy, RunActivation};
 use awaken_server_contract::contract::event::AgentEvent;
 use awaken_server_contract::contract::lifecycle::RunStatus;
 use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_server_contract::contract::message::Message;
-use awaken_server_contract::contract::run::{
-    RunInput, RunInputSnapshot, RunKind, RunResolutionScope,
-};
+use awaken_server_contract::contract::run::{RunInput, RunInputSnapshot, RunKind};
 use awaken_server_contract::contract::storage::{
     MessageSeqRange, PinnedRegistryManifest, RunRecord, RunRequestSnapshot,
 };
@@ -409,7 +407,7 @@ impl Mailbox {
                 manifest
             } else {
                 let manifest = self
-                    .resolve_replayable_manifest(request, RunResolutionScope::Live)
+                    .resolve_replayable_manifest(request, RegistryResolutionScope::Live)
                     .await?;
                 existing.registry_manifest = Some(manifest.clone());
                 manifest
@@ -437,7 +435,7 @@ impl Mailbox {
                 request.intent.agent_id = Some(inferred_agent_id.clone());
             }
             let manifest = self
-                .resolve_replayable_manifest(request, RunResolutionScope::Live)
+                .resolve_replayable_manifest(request, RegistryResolutionScope::Live)
                 .await?;
             let now = now_ms() / 1000;
             let record = RunRecord {
@@ -556,7 +554,7 @@ impl Mailbox {
     async fn resolve_replayable_manifest(
         &self,
         request: &RunActivation,
-        resolution_scope: RunResolutionScope,
+        resolution_scope: RegistryResolutionScope,
     ) -> Result<PinnedRegistryManifest, MailboxError> {
         self.executor
             .resolve_activation_in_scope(
@@ -566,7 +564,7 @@ impl Mailbox {
             )
             .await
             .and_then(|plan| plan.into_replayable())
-            .map(|plan| plan.scope.manifest)
+            .map(|plan| plan.artifact.registry_manifest)
             .map_err(|error| {
                 MailboxError::Validation(format!(
                     "persistent mailbox dispatch requires a replayable resolved run: {error}"

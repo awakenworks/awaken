@@ -148,19 +148,22 @@ impl awaken_runtime::Resolver for FixedRunResolver {
         );
         let requirements = awaken_runtime::BackendRequirements::from_features(&req.features);
         Ok(awaken_runtime::ResolvedRunPlan::Replayable(
-            awaken_runtime::ResolvedRun {
-                agent_spec: (*agent.spec).clone(),
-                role: awaken_runtime::ExecutionRole::Root,
-                execution: awaken_runtime::ExecutionPlan::from_resolved_agent(&agent),
-                model: awaken_runtime::ResolvedModelBinding {
-                    upstream_model: agent.upstream_model.clone(),
+            awaken_runtime::ReplayableResolvedRun {
+                artifact: awaken_runtime::ResolutionArtifact {
+                    registry_manifest: self.manifest.clone(),
                 },
-                tools: Vec::new(),
-                overrides: req.overrides,
-                backend_profile: awaken_runtime::BackendProfile::full_local(),
-                requirements,
-                scope: awaken_runtime::ReplayableScope {
-                    manifest: self.manifest.clone(),
+                execution: awaken_runtime::ResolvedRun {
+                    agent_spec: (*agent.spec).clone(),
+                    role: awaken_runtime::ExecutionRole::Root,
+                    execution: awaken_runtime::ExecutionPlan::from_resolved_agent(&agent),
+                    model: awaken_runtime::ResolvedModelBinding {
+                        upstream_model: agent.upstream_model.clone(),
+                    },
+                    tools: Vec::new(),
+                    overrides: req.overrides,
+                    backend_profile: awaken_runtime::BackendProfile::full_local(),
+                    requirements,
+                    scope: awaken_runtime::ReplayableScope,
                 },
             },
         ))

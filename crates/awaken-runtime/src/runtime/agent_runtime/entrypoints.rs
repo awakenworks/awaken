@@ -4,7 +4,7 @@ use awaken_runtime_contract::contract::event_sink::{EventSink, NullEventSink};
 
 use super::AgentRuntime;
 use crate::loop_runner::{AgentLoopError, AgentRunResult};
-use crate::resolution::{ReplayableScope, ResolvedRun, ResolvedRunPlan};
+use crate::resolution::{ReplayableResolvedRun, ResolvedRunPlan};
 use crate::run::{RunActivation, ThreadContextSnapshot};
 
 impl AgentRuntime {
@@ -38,7 +38,7 @@ impl AgentRuntime {
     pub async fn run_replayable(
         &self,
         activation: RunActivation,
-        plan: ResolvedRun<ReplayableScope>,
+        plan: ReplayableResolvedRun,
         sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
         self.run_inner(
@@ -76,7 +76,7 @@ impl AgentRuntime {
     pub async fn run_replayable_with_thread_context(
         &self,
         activation: RunActivation,
-        plan: ResolvedRun<ReplayableScope>,
+        plan: ReplayableResolvedRun,
         sink: Arc<dyn EventSink>,
         thread_ctx: Option<ThreadContextSnapshot>,
     ) -> Result<AgentRunResult, AgentLoopError> {

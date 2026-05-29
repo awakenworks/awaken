@@ -6,9 +6,10 @@
 //! threads, time). Runtime crates implement these traits; user code and
 //! extension crates consume them.
 //!
-//! Most items are re-exported from the `awaken` facade crate. Import
-//! `awaken::prelude::*` for the common subset, or use the sub-modules below
-//! for precise imports.
+//! Most items are re-exported at the crate root for convenient imports; use the
+//! sub-modules below when you need precise paths. Server- and store-facing code
+//! should depend on `awaken-server-contract`, which re-exports this crate's
+//! surface alongside the scope-boundary types.
 
 #![allow(missing_docs)]
 

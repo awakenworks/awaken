@@ -735,10 +735,10 @@ async fn builder_runtime_resolves_persistent_activation_as_replayable() {
         panic!("persistent builder runtime must resolve replayable plans");
     };
     assert_eq!(
-        plan.scope.manifest.registry_snapshot_version,
+        plan.artifact.registry_manifest.registry_snapshot_version,
         runtime.registry_version()
     );
-    assert!(plan.scope.manifest.entries.iter().any(|entry| {
+    assert!(plan.artifact.registry_manifest.entries.iter().any(|entry| {
         entry.kind == awaken_runtime_contract::contract::pinned_registry::REGISTRY_KIND_AGENT
             && entry.id == "test-agent"
     }));

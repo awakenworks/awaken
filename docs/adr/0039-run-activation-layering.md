@@ -109,7 +109,7 @@ pub struct RunTraceContext {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RunResolutionScope {
+pub enum RegistryResolutionScope {
     Live,
     Pinned(PinnedRegistryManifest),
 }
@@ -139,7 +139,7 @@ pub struct RunActivation {
     pub trace: RunTraceContext,
     /// Requested scope. Persistent snapshots use the resolved pinned manifest
     /// supplied by ADR-0040, not this field directly.
-    pub resolution_scope: RunResolutionScope,
+    pub resolution_scope: RegistryResolutionScope,
     pub control: RunControl,
     /// Event capture + thread-context fast-path. Orthogonal to user
     /// intent and trace metadata.
@@ -252,12 +252,12 @@ Mailbox/server submit paths own the order:
 3. resolve `RunActivation` through ADR-0040 with
    `ResolutionPolicy::PersistentServer` and require
    `ResolvedRun<ReplayableScope>`;
-4. pass `plan.scope.manifest` into `snapshot(...)`;
+4. pass `plan.artifact.registry_manifest` into `snapshot(...)`;
 5. persist `RunActivationSnapshot` on the `RunRecord`;
 6. discard the live execution handles from this pre-dispatch resolution
    unless the run is executed immediately in the same task.
 
-Embedded non-persistent callers may run with `RunResolutionScope::Live`,
+Embedded non-persistent callers may run with `RegistryResolutionScope::Live`,
 but they cannot produce a replay-safe snapshot because they do not have a
 `PinnedRegistryManifest`.
 
@@ -272,7 +272,7 @@ the pinned manifest from D3, never `ResolvedRunPlan`.
 Persistent server/mailbox flows therefore have two resolution moments:
 
 1. submit-time resolution pins the registry scope so the run record is
-   replay-safe; only `plan.scope.manifest` is persisted;
+   replay-safe; only `plan.artifact.registry_manifest` is persisted;
 2. dispatch-time resolution rebuilds live execution handles from that
    pinned scope, and the resulting plan is passed to `run_replayable`.
 
@@ -326,7 +326,7 @@ is enabled, the composition root wraps `live_sink` in ADR-0038's
 
 `RunRequestExtras` was a JSON escape hatch for fields that did not fit the
 snapshot schema. With typed `RunIntent`, `RunInputSnapshot`, `RunOptions`,
-`RunTraceContext`, and `RunResolutionScope`, every field has an explicit
+`RunTraceContext`, and `RegistryResolutionScope`, every field has an explicit
 home. `RunRequestExtras` is removed in 0.6.0.
 
 ### D6: `RunRequest` is deleted

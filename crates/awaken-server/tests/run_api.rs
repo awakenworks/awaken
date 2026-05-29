@@ -59,26 +59,33 @@ impl awaken_runtime::Resolver for TestRunResolver {
             awaken_runtime::ExecutionPlan::Remote(_) => Vec::new(),
         };
         Ok(awaken_runtime::ResolvedRunPlan::Replayable(
-            awaken_runtime::ResolvedRun {
-                agent_spec: execution.spec().clone(),
-                role: awaken_runtime::ExecutionRole::Root,
-                model: awaken_runtime::ResolvedModelBinding {
-                    upstream_model: match &execution {
-                        awaken_runtime::ExecutionPlan::Local(agent) => agent.upstream_model.clone(),
-                        awaken_runtime::ExecutionPlan::Remote(agent) => agent.spec.model_id.clone(),
-                    },
-                },
-                execution,
-                tools,
-                overrides: req.overrides,
-                backend_profile: awaken_runtime::BackendProfile::full_local(),
-                requirements: awaken_runtime::BackendRequirements::from_features(&req.features),
-                scope: awaken_runtime::ReplayableScope {
-                    manifest: PinnedRegistryManifest {
+            awaken_runtime::ReplayableResolvedRun {
+                artifact: awaken_runtime::ResolutionArtifact {
+                    registry_manifest: PinnedRegistryManifest {
                         publication_id: Some("test-publication".into()),
                         registry_snapshot_version: Some(1),
                         entries: Vec::new(),
                     },
+                },
+                execution: awaken_runtime::ResolvedRun {
+                    agent_spec: execution.spec().clone(),
+                    role: awaken_runtime::ExecutionRole::Root,
+                    model: awaken_runtime::ResolvedModelBinding {
+                        upstream_model: match &execution {
+                            awaken_runtime::ExecutionPlan::Local(agent) => {
+                                agent.upstream_model.clone()
+                            }
+                            awaken_runtime::ExecutionPlan::Remote(agent) => {
+                                agent.spec.model_id.clone()
+                            }
+                        },
+                    },
+                    execution,
+                    tools,
+                    overrides: req.overrides,
+                    backend_profile: awaken_runtime::BackendProfile::full_local(),
+                    requirements: awaken_runtime::BackendRequirements::from_features(&req.features),
+                    scope: awaken_runtime::ReplayableScope,
                 },
             },
         ))

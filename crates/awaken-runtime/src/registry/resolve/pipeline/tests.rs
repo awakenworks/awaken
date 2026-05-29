@@ -13,6 +13,7 @@ use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
 use crate::registry::traits::ModelRegistry;
+use crate::resolution::RegistryResolutionScope;
 use crate::resolution::{PersistenceRequirement, RunFeatureSet};
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
@@ -21,7 +22,6 @@ use awaken_runtime_contract::contract::lifecycle::TerminationReason;
 use awaken_runtime_contract::contract::pinned_registry::{
     REGISTRY_KIND_MODEL, REGISTRY_KIND_MODEL_POOL, REGISTRY_KIND_PROVIDER,
 };
-use awaken_runtime_contract::contract::run::RunResolutionScope;
 use awaken_runtime_contract::contract::tool::{
     ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
@@ -368,7 +368,7 @@ async fn replayable_manifest_includes_model_pool_and_member_models() {
                 agent_id: "agent-1".into(),
                 thread_id: "thread-1".into(),
             },
-            resolution_scope: RunResolutionScope::Live,
+            resolution_scope: RegistryResolutionScope::Live,
             overrides: None,
             frontend_tools: vec![],
             features: RunFeatureSet {
@@ -482,7 +482,7 @@ async fn replayable_manifest_rejects_model_pool_id_collision() {
                 agent_id: "agent-1".into(),
                 thread_id: "thread-1".into(),
             },
-            resolution_scope: RunResolutionScope::Live,
+            resolution_scope: RegistryResolutionScope::Live,
             overrides: None,
             frontend_tools: vec![],
             features: RunFeatureSet {

@@ -5,9 +5,9 @@ use awaken_runtime::registry::{
     RegistryHandle,
 };
 use awaken_runtime::resolution::{
-    PersistenceRequirement, ResolutionRequest, ResolveError, ResolvedRunPlan, Resolver,
+    PersistenceRequirement, RegistryResolutionScope, ResolutionRequest, ResolveError,
+    ResolvedRunPlan, Resolver,
 };
-use awaken_server_contract::contract::run::RunResolutionScope;
 use awaken_server_contract::contract::versioned_registry::VersionedRecord;
 use awaken_server_contract::skill_spec::SkillSpec;
 use awaken_server_contract::tool_spec::ToolSpec;
@@ -158,7 +158,7 @@ impl Resolver for ScopedServerResolver {
         mut request: ResolutionRequest,
     ) -> Result<ResolvedRunPlan, ResolveError> {
         let live = self.registry_handle.snapshot().into_registries();
-        if matches!(request.resolution_scope, RunResolutionScope::Live)
+        if matches!(request.resolution_scope, RegistryResolutionScope::Live)
             && request.features.requested_persistence == PersistenceRequirement::NotRequired
         {
             return awaken_runtime::registry::resolve::RegistrySetResolver::new(live)
@@ -166,10 +166,10 @@ impl Resolver for ScopedServerResolver {
                 .await;
         }
         let selector = match request.resolution_scope.clone() {
-            RunResolutionScope::Live => VersionSelector::LatestPublication {
+            RegistryResolutionScope::Live => VersionSelector::LatestPublication {
                 scope_id: self.scope_id.as_str().to_string(),
             },
-            RunResolutionScope::Pinned(manifest) => VersionSelector::Manifest {
+            RegistryResolutionScope::Pinned(manifest) => VersionSelector::Manifest {
                 scope_id: self.scope_id.as_str().to_string(),
                 manifest,
             },
@@ -179,7 +179,7 @@ impl Resolver for ScopedServerResolver {
             .materialize(selector)
             .await
             .map_err(|error| ResolveError::Runtime(error.to_string()))?;
-        request.resolution_scope = RunResolutionScope::Pinned(frozen.manifest.clone());
+        request.resolution_scope = RegistryResolutionScope::Pinned(frozen.manifest.clone());
         awaken_runtime::registry::resolve::RegistrySetResolver::new(frozen.to_registry_set(&live))
             .resolve(request)
             .await
@@ -830,7 +830,7 @@ mod tests {
     fn nested_request(target: ResolutionTarget) -> ResolutionRequest {
         ResolutionRequest {
             target,
-            resolution_scope: RunResolutionScope::Live,
+            resolution_scope: RegistryResolutionScope::Live,
             overrides: None,
             frontend_tools: Vec::new(),
             features: RunFeatureSet {

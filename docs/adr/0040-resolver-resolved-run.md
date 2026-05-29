@@ -75,7 +75,7 @@ which backend requirements are derived:
 #[derive(Debug, Clone)]
 pub struct ResolutionRequest {
     pub target: ResolutionTarget,
-    pub resolution_scope: RunResolutionScope,
+    pub resolution_scope: RegistryResolutionScope,
     pub overrides: Option<InferenceOverride>,
     pub frontend_tools: Vec<ToolDescriptor>,
     pub features: RunFeatureSet,
@@ -177,8 +177,8 @@ checks `plan.backend_profile.check(&requirements)` as a defensive invariant
 before execution. A mismatch is reported as a resolve/capability error and
 no execution side effect has started.
 
-For persistent submits, `RunResolutionScope::Live` means "materialize a
-pinned registry snapshot now"; `RunResolutionScope::Pinned(manifest)` means
+For persistent submits, `RegistryResolutionScope::Live` means "materialize a
+pinned registry snapshot now"; `RegistryResolutionScope::Pinned(manifest)` means
 "resolve against this exact pinned snapshot." The durable queue stores only
 that pinned snapshot. Dispatch resolves again from the pinned scope to
 recreate live handles.
@@ -189,13 +189,20 @@ A resolved run is either replayable or live-only:
 
 ```rust
 pub enum ResolvedRunPlan {
-    Replayable(ResolvedRun<ReplayableScope>),
+    Replayable(ReplayableResolvedRun),
     LiveOnly(ResolvedRun<LiveOnlyScope>),
 }
 
-pub struct ReplayableScope {
-    pub manifest: PinnedRegistryManifest,
+pub struct ReplayableResolvedRun {
+    pub execution: ResolvedRun<ReplayableScope>,
+    pub artifact: ResolutionArtifact,
 }
+
+pub struct ResolutionArtifact {
+    pub registry_manifest: PinnedRegistryManifest,
+}
+
+pub struct ReplayableScope;
 
 pub struct LiveOnlyScope;
 
@@ -330,7 +337,7 @@ impl<R: AgentResolver + 'static> Resolver for LocalRegistryResolver<R> {
                 "legacy AgentResolver adapter supports root local resolution only".into(),
             ));
         };
-        if matches!(req.resolution_scope, RunResolutionScope::Pinned(_)) {
+        if matches!(req.resolution_scope, RegistryResolutionScope::Pinned(_)) {
             return Err(ResolveError::UnsupportedPersistence(
                 "legacy AgentResolver adapter cannot materialize pinned registry scopes".into(),
             ));
@@ -376,7 +383,7 @@ The scope of a sub-run is constrained by the root's scope:
 | `LiveOnlyScope` | either | accept and continue |
 
 The runtime constructs the nested `ResolutionRequest` with
-`resolution_scope` inherited from the root (the root's
+`resolution_scope` inherited from the root (the root resolution artifact's
 `PinnedRegistryManifest` for replayable runs, `Live` for live-only) and the
 appropriate `ResolutionTarget::{Delegate, Handoff}`. Sub-run
 `RunFeatureSet` is derived from the sub-run's own `RunActivation` (not the
@@ -429,8 +436,8 @@ enforces it for the root, using the same type boundary.
    and remote execution without a second registry lookup.
 7. Runtime validation fails before execution side effects when a resolver
    returns a plan whose profile does not satisfy derived requirements.
-8. Persistent submit with `RunResolutionScope::Live` materializes a pinned
-   registry snapshot, and dispatch with `RunResolutionScope::Pinned`
+8. Persistent submit with `RegistryResolutionScope::Live` materializes a pinned
+   registry snapshot, and dispatch with `RegistryResolutionScope::Pinned`
    resolves against exactly that pinned snapshot.
 9. A delegate/handoff spawned from a `ReplayableScope` parent run that
    resolves to `LiveOnly` fails the parent run with

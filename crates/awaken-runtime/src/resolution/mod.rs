@@ -20,7 +20,8 @@ pub use capabilities::{
 pub use local_registry::LocalRegistryResolver;
 pub use types::{
     DelegatePersistence, ExecutionPlan, ExecutionRole, HandoffTranscriptRef, LiveOnlyScope,
-    PersistenceRequirement, ReplayableScope, ResolutionPolicy, ResolutionRequest, ResolutionTarget,
+    PersistenceRequirement, RegistryResolutionScope, ReplayableResolvedRun, ReplayableScope,
+    ResolutionArtifact, ResolutionPolicy, ResolutionRequest, ResolutionTarget,
     ResolvedModelBinding, ResolvedRun, ResolvedRunPlan, ResolvedTool, RootScopeKind, RunFeatureSet,
 };
 
@@ -68,7 +69,6 @@ mod tests {
     use awaken_runtime_contract::contract::identity::RunIdentity;
     use awaken_runtime_contract::contract::message::Message;
     use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
-    use awaken_runtime_contract::contract::run::RunResolutionScope;
 
     use crate::registry::{AgentResolver, ResolvedAgent};
     use crate::run::RunActivation;
@@ -221,7 +221,7 @@ mod tests {
             RunActivation::new("thread", vec![Message::user("hi")]).with_agent_id("agent-a");
         let mut request =
             ResolutionRequest::from_activation(&activation, ResolutionPolicy::LiveOnlyEmbedded);
-        request.resolution_scope = RunResolutionScope::Pinned(PinnedRegistryManifest {
+        request.resolution_scope = RegistryResolutionScope::Pinned(PinnedRegistryManifest {
             publication_id: None,
             registry_snapshot_version: None,
             entries: Vec::new(),
@@ -310,19 +310,22 @@ mod tests {
             };
             let requirements = BackendRequirements::from_features(&req.features);
             let agent = ResolvedAgent::new(&agent_id, "model", "system", Arc::new(MockResolver));
-            Ok(ResolvedRunPlan::Replayable(ResolvedRun {
-                agent_spec: (*agent.spec).clone(),
-                role,
-                execution: ExecutionPlan::from_resolved_agent(&agent),
-                model: ResolvedModelBinding {
-                    upstream_model: agent.upstream_model.clone(),
+            Ok(ResolvedRunPlan::Replayable(ReplayableResolvedRun {
+                execution: ResolvedRun {
+                    agent_spec: (*agent.spec).clone(),
+                    role,
+                    execution: ExecutionPlan::from_resolved_agent(&agent),
+                    model: ResolvedModelBinding {
+                        upstream_model: agent.upstream_model.clone(),
+                    },
+                    tools: Vec::new(),
+                    overrides: req.overrides,
+                    backend_profile: BackendProfile::full_local(),
+                    requirements,
+                    scope: ReplayableScope,
                 },
-                tools: Vec::new(),
-                overrides: req.overrides,
-                backend_profile: BackendProfile::full_local(),
-                requirements,
-                scope: ReplayableScope {
-                    manifest: PinnedRegistryManifest {
+                artifact: ResolutionArtifact {
+                    registry_manifest: PinnedRegistryManifest {
                         publication_id: Some("override-publication".into()),
                         registry_snapshot_version: Some(1),
                         entries: Vec::new(),

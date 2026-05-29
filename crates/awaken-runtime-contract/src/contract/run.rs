@@ -109,14 +109,6 @@ impl RunTraceContext {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "scope", content = "manifest")]
-pub enum RunResolutionScope {
-    #[default]
-    Live,
-    Pinned(PinnedRegistryManifest),
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunActivationSnapshot {
     pub intent: RunIntent,

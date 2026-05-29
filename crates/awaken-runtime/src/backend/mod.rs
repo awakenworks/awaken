@@ -16,7 +16,6 @@ use awaken_runtime_contract::contract::event_sink::EventSink;
 use awaken_runtime_contract::contract::identity::RunIdentity;
 use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_runtime_contract::contract::message::{Message, gen_message_id};
-use awaken_runtime_contract::contract::storage::ThreadRunStore;
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
 use awaken_runtime_contract::contract::tool::ToolDescriptor;
 use awaken_runtime_contract::now_ms;
@@ -27,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cancellation::CancellationToken;
+use crate::checkpoint_store::RuntimeCheckpointStore;
 use crate::inbox::{InboxReceiver, InboxSender};
 use crate::loop_runner::{AgentLoopError, AgentRunResult, PendingBoundaryHandler};
 use crate::phase::PhaseRuntime;
@@ -63,7 +63,7 @@ pub struct BackendRootRunRequest<'a> {
     pub sink: Arc<dyn EventSink>,
     pub resolver: &'a dyn AgentResolver,
     pub run_identity: RunIdentity,
-    pub checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub checkpoint_store: Option<&'a dyn RuntimeCheckpointStore>,
     pub commit: crate::loop_runner::CommitWiring<'a>,
     pub control: BackendControl,
     pub decisions: Vec<(String, ToolCallResume)>,
@@ -620,7 +620,7 @@ pub async fn execute_remote_root_lifecycle(
 }
 
 async fn load_checkpoint_state(
-    storage: Option<&dyn ThreadRunStore>,
+    storage: Option<&dyn RuntimeCheckpointStore>,
     run_id: &str,
     fallback: Option<PersistedState>,
 ) -> Option<PersistedState> {
@@ -639,7 +639,7 @@ async fn load_checkpoint_state(
 
 #[allow(clippy::too_many_arguments)]
 async fn finish_remote_root_run(
-    storage: Option<&dyn ThreadRunStore>,
+    storage: Option<&dyn RuntimeCheckpointStore>,
     thread_id: &str,
     run_id: &str,
     agent_id: &str,

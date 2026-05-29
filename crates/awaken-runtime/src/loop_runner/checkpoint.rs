@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::EventBuffer;
+use crate::checkpoint_store::RuntimeCheckpointStore;
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use awaken_runtime_contract::contract::commit_coordinator::{
@@ -17,7 +18,7 @@ use awaken_runtime_contract::contract::message::{Message, Role, Visibility};
 use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
 use awaken_runtime_contract::contract::storage::{
     MessageSeqRange, RunMessageInput, RunMessageOutput, RunOutcome, RunRecord, RunWaitingState,
-    RunWaitingTicket, ThreadRunStore, WaitingReason,
+    RunWaitingTicket, WaitingReason,
 };
 use awaken_runtime_contract::contract::suspension::ToolCallStatus;
 use awaken_runtime_contract::model::Phase;
@@ -64,7 +65,7 @@ pub(super) struct StepCompletion<'a> {
     pub(super) runtime: &'a PhaseRuntime,
     pub(super) env: &'a ExecutionEnv,
     pub(super) sink: &'a dyn EventSink,
-    pub(super) checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub(super) checkpoint_store: Option<&'a dyn RuntimeCheckpointStore>,
     pub(super) commit: CommitWiring<'a>,
     pub(super) messages: &'a [Arc<Message>],
     pub(super) input_message_count: usize,
@@ -77,7 +78,7 @@ pub(super) struct StepCompletion<'a> {
 
 pub(super) struct CheckpointPersist<'a> {
     pub(super) store: &'a crate::state::StateStore,
-    pub(super) checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub(super) checkpoint_store: Option<&'a dyn RuntimeCheckpointStore>,
     pub(super) commit: CommitWiring<'a>,
     pub(super) messages: &'a [Arc<Message>],
     pub(super) input_message_count: usize,

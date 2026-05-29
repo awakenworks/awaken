@@ -18,17 +18,18 @@ use crate::error::RuntimeError;
 #[cfg(feature = "a2a")]
 use crate::registry::composite::CompositeAgentSpecRegistry;
 use awaken_runtime_contract::contract::message::Message;
-use awaken_runtime_contract::contract::run::RunResolutionScope;
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
 use futures::StreamExt;
 use futures::channel::mpsc;
 
 use crate::cancellation::CancellationToken;
+use crate::checkpoint_store::{RuntimeCheckpointStore, ThreadRunCheckpointStore};
 use crate::inbox::InboxSender;
 use crate::registry::{AgentResolver, RegistryHandle, RegistrySet, RegistrySnapshot};
 use crate::resolution::{
-    BackendRequirements, CapabilityDecision, LocalRegistryResolver, ResolutionPolicy,
-    ResolutionRequest, ResolutionTarget, ResolveError, ResolvedRunPlan, Resolver, RootScopeKind,
+    BackendRequirements, CapabilityDecision, LocalRegistryResolver, RegistryResolutionScope,
+    ResolutionPolicy, ResolutionRequest, ResolutionTarget, ResolveError, ResolvedRunPlan, Resolver,
+    RootScopeKind,
 };
 
 use active_registry::ActiveRunRegistry;
@@ -116,6 +117,7 @@ pub struct AgentRuntime {
     pub(crate) resolver: Arc<dyn AgentResolver>,
     pub(crate) run_resolver: RwLock<Arc<dyn Resolver>>,
     pub(crate) storage: Option<Arc<dyn ThreadRunStore>>,
+    pub(crate) checkpoint_storage: Option<Arc<dyn RuntimeCheckpointStore>>,
     pub(crate) commit_coordinator: Option<Arc<dyn CommitCoordinator>>,
     pub(crate) profile_store:
         Option<Arc<dyn awaken_runtime_contract::contract::profile_store::ProfileStore>>,
@@ -141,6 +143,7 @@ impl AgentRuntime {
             resolver,
             run_resolver: RwLock::new(run_resolver),
             storage: None,
+            checkpoint_storage: None,
             commit_coordinator: None,
             profile_store: None,
             live_control_source: None,
@@ -176,6 +179,7 @@ impl AgentRuntime {
 
     #[must_use]
     pub fn with_thread_run_store(mut self, store: Arc<dyn ThreadRunStore>) -> Self {
+        self.checkpoint_storage = Some(Arc::new(ThreadRunCheckpointStore::new(store.clone())));
         self.storage = Some(store);
         self
     }
@@ -235,7 +239,7 @@ impl AgentRuntime {
         activation: &crate::RunActivation,
         policy: ResolutionPolicy,
     ) -> Result<ResolvedRunPlan, ResolveError> {
-        self.resolve_activation_in_scope(activation, policy, RunResolutionScope::Live)
+        self.resolve_activation_in_scope(activation, policy, RegistryResolutionScope::Live)
             .await
     }
 
@@ -243,7 +247,7 @@ impl AgentRuntime {
         &self,
         activation: &crate::RunActivation,
         policy: ResolutionPolicy,
-        resolution_scope: RunResolutionScope,
+        resolution_scope: RegistryResolutionScope,
     ) -> Result<ResolvedRunPlan, ResolveError> {
         let request =
             ResolutionRequest::from_activation_with_scope(activation, policy, resolution_scope);

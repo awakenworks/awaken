@@ -192,6 +192,9 @@ mod tests {
             .expect("concurrent append");
 
         let resolver = NoopResolver;
+        let reader = crate::checkpoint_store::ThreadRunCheckpointStore::new(
+            store.clone() as Arc<dyn ThreadRunStore>
+        );
         let request = BackendRootRunRequest {
             agent_id: "agent-1",
             messages: vec![input, accepted],
@@ -206,7 +209,7 @@ mod tests {
                 "agent-1".into(),
                 RunOrigin::User,
             ),
-            checkpoint_store: Some(store.as_ref()),
+            checkpoint_store: Some(&reader),
             commit: crate::loop_runner::CommitWiring::new(Some(coordinator.as_ref()), None),
             control: BackendControl::default(),
             decisions: Vec::new(),

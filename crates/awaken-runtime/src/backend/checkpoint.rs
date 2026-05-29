@@ -6,12 +6,13 @@ use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason}
 use awaken_runtime_contract::contract::message::{Message, Role};
 use awaken_runtime_contract::contract::storage::{
     MessageSeqRange, RunMessageInput, RunMessageOutput, RunOutcome, RunRecord, RunWaitingState,
-    ThreadRunStore, WaitingReason,
+    WaitingReason,
 };
 use awaken_runtime_contract::now_ms;
 use awaken_runtime_contract::state::PersistedState;
 use serde_json::Value;
 
+use crate::checkpoint_store::RuntimeCheckpointStore;
 use crate::loop_runner::AgentLoopError;
 
 fn waiting_reason_from_backend_status(status_reason: Option<&str>) -> WaitingReason {
@@ -27,7 +28,7 @@ fn waiting_reason_from_backend_status(status_reason: Option<&str>) -> WaitingRea
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn persist_remote_root_checkpoint(
-    storage: Option<&dyn ThreadRunStore>,
+    storage: Option<&dyn RuntimeCheckpointStore>,
     thread_id: &str,
     run_id: &str,
     agent_id: &str,
@@ -421,8 +422,11 @@ mod tests {
             .await
             .expect("concurrent append");
 
+        let checkpoint_reader = crate::checkpoint_store::ThreadRunCheckpointStore::new(
+            store.clone() as Arc<dyn ThreadRunStore>,
+        );
         persist_remote_root_checkpoint(
-            Some(store.as_ref()),
+            Some(&checkpoint_reader),
             "thread-1",
             "run-1",
             "agent-1",

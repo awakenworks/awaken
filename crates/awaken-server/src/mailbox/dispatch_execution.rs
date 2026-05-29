@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use awaken_runtime::RegistryResolutionScope;
 use awaken_runtime::ThreadContextSnapshot;
 use awaken_runtime::{EventBuffer, ResolutionPolicy, RuntimeError};
 use awaken_server_contract::contract::event::AgentEvent;
@@ -15,7 +16,6 @@ use awaken_server_contract::contract::event_sink::EventSink;
 use awaken_server_contract::contract::mailbox::{
     RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
-use awaken_server_contract::contract::run::RunResolutionScope;
 use awaken_server_contract::now_ms;
 
 use crate::transport::channel_sink::ReconnectableEventSink;
@@ -300,15 +300,17 @@ pub(super) async fn run_claimed_dispatch(
                 .resolve_activation_in_scope(
                     &request,
                     ResolutionPolicy::PersistentServer,
-                    RunResolutionScope::Pinned(registry_manifest),
+                    RegistryResolutionScope::Pinned(registry_manifest),
                 )
                 .await
                 .and_then(|plan| plan.into_replayable())
             {
                 Ok(plan) => {
-                    if let Some(handler) =
-                        this.pending_boundary_handler(&request, &run_id, &plan.scope.manifest)
-                    {
+                    if let Some(handler) = this.pending_boundary_handler(
+                        &request,
+                        &run_id,
+                        &plan.artifact.registry_manifest,
+                    ) {
                         request = request.with_pending_boundary_handler(handler);
                     }
                     this.executor

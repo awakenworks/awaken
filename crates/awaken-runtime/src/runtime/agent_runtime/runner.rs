@@ -332,7 +332,13 @@ impl AgentRuntime {
         };
         #[rustfmt::skip]
         let coord_store = self.commit_coordinator.as_ref().map(|c| c.thread_run_store());
-        let storage = self.storage.as_deref().or(coord_store.as_deref());
+        let coord_checkpoint_store =
+            coord_store.map(crate::checkpoint_store::ThreadRunCheckpointStore::new);
+        let storage = self.checkpoint_storage.as_deref().or_else(|| {
+            coord_checkpoint_store
+                .as_ref()
+                .map(|store| store as &dyn crate::checkpoint_store::RuntimeCheckpointStore)
+        });
         let backend_request = BackendRootRunRequest {
             agent_id: &agent_id,
             messages,
@@ -450,7 +456,7 @@ impl AgentRuntime {
                     .map_err(AgentLoopError::PhaseError)?;
             }
             ctx.messages.clone()
-        } else if let Some(ref ts) = self.storage {
+        } else if let Some(ref ts) = self.checkpoint_storage {
             if let Some(prev_run) = ts
                 .latest_run(thread_id)
                 .await
@@ -501,7 +507,7 @@ impl AgentRuntime {
     ) -> Result<Vec<Message>, AgentLoopError> {
         let mut messages = if let Some(ctx) = thread_ctx {
             ctx.messages.clone()
-        } else if let Some(ref storage) = self.storage {
+        } else if let Some(ref storage) = self.checkpoint_storage {
             storage
                 .load_messages(thread_id)
                 .await
@@ -533,7 +539,7 @@ impl AgentRuntime {
             {
                 return Ok((run_id, true));
             }
-            let Some(ref ts) = self.storage else {
+            let Some(ref ts) = self.checkpoint_storage else {
                 return Err(AgentLoopError::InvalidResume(format!(
                     "continue_run_id '{run_id}' requires run storage"
                 )));
@@ -562,7 +568,7 @@ impl AgentRuntime {
             };
             let existing = if existing.is_some() {
                 existing
-            } else if let Some(ref ts) = self.storage {
+            } else if let Some(ref ts) = self.checkpoint_storage {
                 ts.load_run(&run_id)
                     .await
                     .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
@@ -585,7 +591,7 @@ impl AgentRuntime {
             let trimmed = id.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         }) {
-            if let Some(ref ts) = self.storage
+            if let Some(ref ts) = self.checkpoint_storage
                 && ts
                     .load_run(&run_id)
                     .await
@@ -614,7 +620,7 @@ impl AgentRuntime {
         &self,
         thread_id: &str,
     ) -> Result<Option<RunRecord>, AgentLoopError> {
-        let Some(ref ts) = self.storage else {
+        let Some(ref ts) = self.checkpoint_storage else {
             return Ok(None);
         };
 
@@ -678,7 +684,7 @@ impl AgentRuntime {
             return Ok(None);
         }
 
-        let Some(storage) = &self.storage else {
+        let Some(storage) = &self.checkpoint_storage else {
             return Ok(None);
         };
 
@@ -715,7 +721,7 @@ impl AgentRuntime {
             return Ok(ctx.latest_run.as_ref().and_then(|r| r.state.clone()));
         }
 
-        let Some(storage) = &self.storage else {
+        let Some(storage) = &self.checkpoint_storage else {
             return Ok(None);
         };
 

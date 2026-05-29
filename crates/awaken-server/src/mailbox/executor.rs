@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
 use awaken_runtime::{
-    AgentRuntime, ReplayableScope, ResolutionPolicy, ResolveError, ResolvedRun, ResolvedRunPlan,
-    RunActivation, ThreadContextSnapshot,
+    AgentRuntime, RegistryResolutionScope, ReplayableResolvedRun, ResolutionPolicy, ResolveError,
+    ResolvedRunPlan, RunActivation, ThreadContextSnapshot,
 };
 #[cfg(test)]
 use awaken_runtime::{
@@ -14,7 +14,6 @@ use awaken_runtime::{
 use awaken_server_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_server_contract::contract::event_sink::EventSink;
 use awaken_server_contract::contract::message::Message;
-use awaken_server_contract::contract::run::RunResolutionScope;
 use awaken_server_contract::contract::suspension::ToolCallResume;
 
 /// Execution boundary used by mailbox dispatch.
@@ -52,7 +51,7 @@ pub trait RunDispatchExecutor: Send + Sync {
         activation: &RunActivation,
         policy: ResolutionPolicy,
     ) -> Result<ResolvedRunPlan, ResolveError> {
-        self.resolve_activation_in_scope(activation, policy, RunResolutionScope::Live)
+        self.resolve_activation_in_scope(activation, policy, RegistryResolutionScope::Live)
             .await
     }
 
@@ -63,7 +62,7 @@ pub trait RunDispatchExecutor: Send + Sync {
         &self,
         activation: &RunActivation,
         policy: ResolutionPolicy,
-        resolution_scope: RunResolutionScope,
+        resolution_scope: RegistryResolutionScope,
     ) -> Result<ResolvedRunPlan, ResolveError> {
         #[cfg(test)]
         {
@@ -84,7 +83,7 @@ pub trait RunDispatchExecutor: Send + Sync {
     async fn run_replayable_with_thread_context(
         &self,
         activation: RunActivation,
-        plan: ResolvedRun<ReplayableScope>,
+        plan: ReplayableResolvedRun,
         sink: Arc<dyn EventSink>,
         thread_ctx: Option<ThreadContextSnapshot>,
     ) -> Result<AgentRunResult, AgentLoopError> {
@@ -135,7 +134,7 @@ pub trait RunDispatchExecutor: Send + Sync {
 
 #[cfg(test)]
 fn test_replayable_plan(activation: &RunActivation) -> ResolvedRunPlan {
-    use awaken_runtime::{ReplayableScope, ResolvedRun};
+    use awaken_runtime::{ReplayableScope, ResolutionArtifact, ResolvedRun};
     use awaken_server_contract::contract::versioned_registry::PinnedRegistryManifest;
 
     let agent_id = activation.agent_id().unwrap_or("default");
@@ -145,19 +144,22 @@ fn test_replayable_plan(activation: &RunActivation) -> ResolvedRunPlan {
             activation,
             ResolutionPolicy::PersistentServer,
         ));
-    ResolvedRunPlan::Replayable(ResolvedRun {
-        agent_spec: (*agent.spec).clone(),
-        role: ExecutionRole::Root,
-        execution: ExecutionPlan::from_resolved_agent(&agent),
-        model: ResolvedModelBinding {
-            upstream_model: agent.upstream_model.clone(),
+    ResolvedRunPlan::Replayable(ReplayableResolvedRun {
+        execution: ResolvedRun {
+            agent_spec: (*agent.spec).clone(),
+            role: ExecutionRole::Root,
+            execution: ExecutionPlan::from_resolved_agent(&agent),
+            model: ResolvedModelBinding {
+                upstream_model: agent.upstream_model.clone(),
+            },
+            tools: Vec::new(),
+            overrides: activation.options.overrides.clone(),
+            backend_profile: BackendProfile::full_local(),
+            requirements,
+            scope: ReplayableScope,
         },
-        tools: Vec::new(),
-        overrides: activation.options.overrides.clone(),
-        backend_profile: BackendProfile::full_local(),
-        requirements,
-        scope: ReplayableScope {
-            manifest: PinnedRegistryManifest {
+        artifact: ResolutionArtifact {
+            registry_manifest: PinnedRegistryManifest {
                 publication_id: Some("test-publication".to_string()),
                 registry_snapshot_version: Some(1),
                 entries: Vec::new(),
@@ -217,7 +219,7 @@ impl RunDispatchExecutor for AgentRuntime {
         activation: &RunActivation,
         policy: ResolutionPolicy,
     ) -> Result<ResolvedRunPlan, ResolveError> {
-        self.resolve_activation_in_scope(activation, policy, RunResolutionScope::Live)
+        self.resolve_activation_in_scope(activation, policy, RegistryResolutionScope::Live)
             .await
     }
 
@@ -225,7 +227,7 @@ impl RunDispatchExecutor for AgentRuntime {
         &self,
         activation: &RunActivation,
         policy: ResolutionPolicy,
-        resolution_scope: RunResolutionScope,
+        resolution_scope: RegistryResolutionScope,
     ) -> Result<ResolvedRunPlan, ResolveError> {
         let resolved =
             AgentRuntime::resolve_activation_in_scope(self, activation, policy, resolution_scope)
@@ -243,7 +245,7 @@ impl RunDispatchExecutor for AgentRuntime {
     async fn run_replayable_with_thread_context(
         &self,
         activation: RunActivation,
-        plan: ResolvedRun<ReplayableScope>,
+        plan: ReplayableResolvedRun,
         sink: Arc<dyn EventSink>,
         thread_ctx: Option<ThreadContextSnapshot>,
     ) -> Result<AgentRunResult, AgentLoopError> {

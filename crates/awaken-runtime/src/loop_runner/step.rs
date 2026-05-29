@@ -12,6 +12,7 @@ use crate::agent::state::{
     ToolCallState, ToolCallStates, ToolCallStatesUpdate, ToolFilterState, ToolFilterStateAction,
 };
 use crate::cancellation::CancellationToken;
+use crate::checkpoint_store::RuntimeCheckpointStore;
 use crate::context::{TruncationState, continuation_message, should_retry};
 use crate::hooks::PhaseContext;
 use crate::phase::PhaseRuntime;
@@ -26,7 +27,6 @@ use awaken_runtime_contract::contract::inference::{
 };
 use awaken_runtime_contract::contract::lifecycle::TerminationReason;
 use awaken_runtime_contract::contract::message::{Message, ToolCall};
-use awaken_runtime_contract::contract::storage::ThreadRunStore;
 use awaken_runtime_contract::contract::suspension::{
     SuspendTicket, ToolCallOutcome, ToolCallStatus,
 };
@@ -84,7 +84,7 @@ pub(super) struct StepContext<'a> {
     pub messages: &'a mut Vec<Arc<Message>>,
     pub runtime: &'a PhaseRuntime,
     pub sink: Arc<dyn EventSink>,
-    pub checkpoint_store: Option<&'a dyn ThreadRunStore>,
+    pub checkpoint_store: Option<&'a dyn RuntimeCheckpointStore>,
     pub commit: CommitWiring<'a>,
     pub run_identity: &'a RunIdentity,
     pub input_message_count: usize,

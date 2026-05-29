@@ -11,6 +11,7 @@ pub mod agent;
 pub mod backend;
 pub mod builder;
 pub(crate) mod cancellation;
+pub mod checkpoint_store;
 pub mod child_agent;
 pub mod context;
 pub mod credentials;
@@ -37,6 +38,7 @@ pub mod state;
 
 // CancellationToken now lives in awaken-contract; re-export for backward compat.
 pub use awaken_runtime_contract::{CancellationHandle, CancellationToken};
+pub use checkpoint_store::RuntimeCheckpointStore;
 pub use error::RuntimeError;
 pub use event_buffer::EventBuffer;
 pub use profile::ProfileAccess;
@@ -71,9 +73,10 @@ pub use resolution::{
     AgentSpecLookup, BackendProfile, BackendRequirements, CapabilityDecision, CapabilityMismatch,
     DecisionCapability, DelegatePersistence, ExecutionPlan, ExecutionRole, FrontendToolCapability,
     HandoffTranscriptRef, LiveOnlyScope, LocalRegistryResolver, OverrideCapability,
-    PersistenceCapability, PersistenceRequirement, ReplayableScope, ResolutionPolicy,
-    ResolutionRequest, ResolutionTarget, ResolveError, ResolvedModelBinding, ResolvedRun,
-    ResolvedRunPlan, ResolvedTool, Resolver, RunFeatureSet,
+    PersistenceCapability, PersistenceRequirement, RegistryResolutionScope, ReplayableResolvedRun,
+    ReplayableScope, ResolutionArtifact, ResolutionPolicy, ResolutionRequest, ResolutionTarget,
+    ResolveError, ResolvedModelBinding, ResolvedRun, ResolvedRunPlan, ResolvedTool, Resolver,
+    RunFeatureSet,
 };
 pub use run::{
     CaptureWiring, PersistenceHints, ResolverInheritance, RunActivation, RunActivationError,

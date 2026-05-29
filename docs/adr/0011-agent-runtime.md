@@ -59,7 +59,7 @@ pub struct RunActivation {
     pub input: RunInput,
     pub options: RunOptions,
     pub trace: RunTraceContext,
-    pub resolution_scope: RunResolutionScope,
+    pub resolution_scope: RegistryResolutionScope,
     pub control: RunControl,
     pub capture: CaptureWiring,
     pub persistence: PersistenceHints,
