@@ -1,9 +1,9 @@
 //! Storage traits for thread, run record, and persistence.
 use super::lifecycle::{RunStatus, TerminationReason};
 use super::message::{Message, MessageRecord, Visibility};
+pub use super::pinned_registry::{PinnedRegistryEntry, PinnedRegistryManifest};
 use super::suspension::{ToolCallResume, ToolCallResumeMode};
 use super::tool::ToolDescriptor;
-pub use super::versioned_registry::{PinnedRegistryEntry, PinnedRegistryManifest};
 use crate::state::PersistedState;
 use crate::thread::{Thread, normalize_lineage_id};
 use async_trait::async_trait;

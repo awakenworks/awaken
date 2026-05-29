@@ -1,8 +1,8 @@
 use awaken_runtime_contract::contract::identity::RunIdentity;
 use awaken_runtime_contract::contract::inference::InferenceOverride;
+use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
 use awaken_runtime_contract::contract::run::{RunKind, RunResolutionScope};
 use awaken_runtime_contract::contract::tool::ToolDescriptor;
-use awaken_runtime_contract::contract::versioned_registry::PinnedRegistryManifest;
 use awaken_runtime_contract::registry_spec::AgentSpec;
 
 use crate::registry::{ResolvedAgent, ResolvedBackendAgent};

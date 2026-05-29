@@ -121,25 +121,7 @@ pub struct RegistryPublication {
     pub metadata: Value,
 }
 
-/// Pinned published runtime-config graph attached to one run.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PinnedRegistryManifest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publication_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub registry_snapshot_version: Option<u64>,
-    #[serde(default)]
-    pub entries: Vec<PinnedRegistryEntry>,
-}
-
-/// One published runtime-config version pinned by a run.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PinnedRegistryEntry {
-    pub kind: String,
-    pub id: String,
-    pub version: u64,
-    pub content_hash: String,
-}
+pub use super::pinned_registry::{PinnedRegistryEntry, PinnedRegistryManifest};
 
 /// Errors returned by versioned registry stores.
 ///

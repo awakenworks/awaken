@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
-use awaken_runtime_contract::contract::versioned_registry::PinnedRegistryEntry;
+use awaken_runtime_contract::contract::pinned_registry::{
+    PinnedRegistryEntry, REGISTRY_KIND_MODEL, REGISTRY_KIND_PROVIDER, registry_content_hash,
+};
 use awaken_runtime_contract::registry_spec::ModelSpec;
-use awaken_runtime_contract::{REGISTRY_KIND_MODEL, REGISTRY_KIND_PROVIDER, registry_content_hash};
 use serde::Serialize;
 
 pub(super) fn collect_model_manifest_entries(

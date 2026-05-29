@@ -6037,7 +6037,7 @@ async fn live_then_queue_steers_active_run_without_new_dispatch() {
     let runtime = Arc::new(
         AgentRuntime::new(resolver)
             .with_in_memory_thread_run_store(store.clone())
-            .with_mailbox_store(mailbox_store.clone()),
+            .with_live_control_source(mailbox_store.clone()),
     );
     let mailbox = make_mailbox_with_run_store(
         runtime,

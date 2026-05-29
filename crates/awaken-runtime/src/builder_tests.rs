@@ -739,6 +739,7 @@ async fn builder_runtime_resolves_persistent_activation_as_replayable() {
         runtime.registry_version()
     );
     assert!(plan.scope.manifest.entries.iter().any(|entry| {
-        entry.kind == awaken_runtime_contract::REGISTRY_KIND_AGENT && entry.id == "test-agent"
+        entry.kind == awaken_runtime_contract::contract::pinned_registry::REGISTRY_KIND_AGENT
+            && entry.id == "test-agent"
     }));
 }

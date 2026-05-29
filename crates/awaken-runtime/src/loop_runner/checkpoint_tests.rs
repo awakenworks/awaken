@@ -5,9 +5,10 @@ use awaken_runtime_contract::contract::commit_coordinator::CanonicalEventStager;
 use awaken_runtime_contract::contract::event_store::{
     CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope, EventVisibility,
 };
-use awaken_runtime_contract::contract::storage::{
-    PinnedRegistryEntry, PinnedRegistryManifest, RunStore, ThreadRunStore, ThreadStore,
+use awaken_runtime_contract::contract::pinned_registry::{
+    PinnedRegistryEntry, PinnedRegistryManifest,
 };
+use awaken_runtime_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
 use awaken_runtime_contract::contract::suspension::ToolCallResumeMode;
 use awaken_stores::{
     InMemoryEventStore, InMemoryOutboxStore, InMemoryStore, MemoryCommitCoordinator,

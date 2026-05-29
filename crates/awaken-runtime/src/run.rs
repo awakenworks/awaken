@@ -3,13 +3,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
 use awaken_runtime_contract::contract::run::{
     RunActivationSnapshot, RunInput, RunInputSnapshot, RunIntent, RunKind, RunOptions,
     RunResolutionScope, RunTraceContext,
 };
-use awaken_runtime_contract::contract::storage::{
-    PinnedRegistryManifest, RunRecord, RunRequestOrigin,
-};
+use awaken_runtime_contract::contract::storage::{RunRecord, RunRequestOrigin};
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
 use awaken_runtime_contract::contract::tool_intercept::{AdapterKind, RunMode};
 use awaken_runtime_contract::contract::{
@@ -407,7 +406,7 @@ pub enum RunActivationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::contract::storage::PinnedRegistryEntry;
+    use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryEntry;
 
     fn manifest(id: &str) -> PinnedRegistryManifest {
         PinnedRegistryManifest {

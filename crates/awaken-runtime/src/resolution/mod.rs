@@ -67,8 +67,8 @@ mod tests {
     use super::*;
     use awaken_runtime_contract::contract::identity::RunIdentity;
     use awaken_runtime_contract::contract::message::Message;
+    use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
     use awaken_runtime_contract::contract::run::RunResolutionScope;
-    use awaken_runtime_contract::contract::versioned_registry::PinnedRegistryManifest;
 
     use crate::registry::{AgentResolver, ResolvedAgent};
     use crate::run::RunActivation;

@@ -18,6 +18,9 @@ use async_trait::async_trait;
 use awaken_runtime_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_runtime_contract::contract::lifecycle::TerminationReason;
+use awaken_runtime_contract::contract::pinned_registry::{
+    REGISTRY_KIND_MODEL, REGISTRY_KIND_MODEL_POOL, REGISTRY_KIND_PROVIDER,
+};
 use awaken_runtime_contract::contract::run::RunResolutionScope;
 use awaken_runtime_contract::contract::tool::{
     ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
@@ -25,7 +28,6 @@ use awaken_runtime_contract::contract::tool::{
 #[cfg(feature = "a2a")]
 use awaken_runtime_contract::registry_spec::RemoteEndpoint;
 use awaken_runtime_contract::registry_spec::{ModelPoolSpec, ModelSpec};
-use awaken_runtime_contract::{REGISTRY_KIND_MODEL, REGISTRY_KIND_PROVIDER};
 use serde_json::Value;
 #[cfg(feature = "a2a")]
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -9,8 +9,8 @@ mod runner;
 use std::sync::{Arc, RwLock};
 
 use awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator;
-use awaken_runtime_contract::contract::mailbox::{
-    LiveRunCommand, LiveRunCommandEntry, LiveRunTarget, MailboxStore,
+use awaken_runtime_contract::contract::live_control::{
+    LiveRunCommand, LiveRunCommandEntry, LiveRunCommandSource, LiveRunTarget,
 };
 use awaken_runtime_contract::contract::storage::ThreadRunStore;
 
@@ -118,13 +118,13 @@ pub struct AgentRuntime {
     pub(crate) commit_coordinator: Option<Arc<dyn CommitCoordinator>>,
     pub(crate) profile_store:
         Option<Arc<dyn awaken_runtime_contract::contract::profile_store::ProfileStore>>,
-    pub(crate) mailbox_store: Option<Arc<dyn MailboxStore>>,
+    pub(crate) live_control_source: Option<Arc<dyn LiveRunCommandSource>>,
     pub(crate) active_runs: ActiveRunRegistry,
     pub(crate) registry_handle: Option<RegistryHandle>,
-    /// One-shot guard for the "mailbox_store not wired" warning; flips true
+    /// One-shot guard for the "live control source not wired" warning; flips true
     /// on the first `register_run` without a store so we emit exactly one
     /// tracing event per runtime instance.
-    missing_mailbox_store_warned: std::sync::atomic::AtomicBool,
+    missing_live_control_source_warned: std::sync::atomic::AtomicBool,
     #[cfg(feature = "a2a")]
     composite_registry: Option<Arc<CompositeAgentSpecRegistry>>,
 }
@@ -142,10 +142,10 @@ impl AgentRuntime {
             storage: None,
             commit_coordinator: None,
             profile_store: None,
-            mailbox_store: None,
+            live_control_source: None,
             active_runs: ActiveRunRegistry::new(),
             registry_handle: None,
-            missing_mailbox_store_warned: std::sync::atomic::AtomicBool::new(false),
+            missing_live_control_source_warned: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "a2a")]
             composite_registry: None,
         }
@@ -179,12 +179,12 @@ impl AgentRuntime {
         self
     }
 
-    /// Wire the mailbox store used to subscribe to live-steering commands for
-    /// each active run. If unset, runs never receive remote `LiveRunCommand`s — this
-    /// is the single-process / test default.
+    /// Wire the live-control source used to subscribe to ephemeral commands
+    /// for each active run. If unset, runs never receive remote
+    /// `LiveRunCommand`s — this is the single-process / test default.
     #[must_use]
-    pub fn with_mailbox_store(mut self, store: Arc<dyn MailboxStore>) -> Self {
-        self.mailbox_store = Some(store);
+    pub fn with_live_control_source(mut self, source: Arc<dyn LiveRunCommandSource>) -> Self {
+        self.live_control_source = Some(source);
         self
     }
 
@@ -399,9 +399,9 @@ impl AgentRuntime {
     ) -> Result<(), RuntimeError> {
         let run_id = handle.run_id.clone();
         let dispatch_id = handle.dispatch_id.clone();
-        let forwarder_inputs = self.mailbox_store.as_ref().map(|store| {
+        let forwarder_inputs = self.live_control_source.as_ref().map(|source| {
             (
-                Arc::clone(store),
+                Arc::clone(source),
                 handle.inbox_tx.clone(),
                 handle.cancellation_token.clone(),
                 handle.live_forwarder_token.clone(),
@@ -413,24 +413,31 @@ impl AgentRuntime {
                 thread_id: thread_id.to_string(),
             });
         }
-        if let Some((store, inbox_tx, token, forwarder_token, decision_tx)) = forwarder_inputs {
+        if let Some((source, inbox_tx, token, forwarder_token, decision_tx)) = forwarder_inputs {
             let thread_id = thread_id.to_string();
             let mut target = LiveRunTarget::new(thread_id.clone(), run_id.clone());
             if let Some(dispatch_id) = dispatch_id {
                 target = target.with_dispatch_id(dispatch_id);
             }
             tokio::spawn(async move {
-                run_live_forwarder(store, target, inbox_tx, token, forwarder_token, decision_tx)
-                    .await;
+                run_live_forwarder(
+                    source,
+                    target,
+                    inbox_tx,
+                    token,
+                    forwarder_token,
+                    decision_tx,
+                )
+                .await;
             });
         } else if !self
-            .missing_mailbox_store_warned
+            .missing_live_control_source_warned
             .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             tracing::warn!(
-                "AgentRuntime has no mailbox_store wired: cross-node live steering \
+                "AgentRuntime has no live control source wired: cross-node live steering \
                  (LiveRunCommand) will always fall through to durable queue. Call \
-                 `AgentRuntime::with_mailbox_store(store)` on multi-node deployments."
+                 `AgentRuntime::with_live_control_source(source)` on multi-node deployments."
             );
         }
         Ok(())
@@ -451,14 +458,14 @@ impl AgentRuntime {
 /// - a `Cancel` has been dispatched (nothing more for this run to process),
 /// - or a downstream channel is closed (agent loop already finished).
 async fn run_live_forwarder(
-    store: Arc<dyn MailboxStore>,
+    source: Arc<dyn LiveRunCommandSource>,
     target: LiveRunTarget,
     inbox_tx: Option<InboxSender>,
     cancellation_token: CancellationToken,
     live_forwarder_token: CancellationToken,
     decision_tx: mpsc::UnboundedSender<DecisionBatch>,
 ) {
-    let mut stream = match store.open_live_channel_for(&target).await {
+    let mut stream = match source.open_live_channel_for(&target).await {
         Ok(s) => s,
         Err(err) => {
             tracing::warn!(

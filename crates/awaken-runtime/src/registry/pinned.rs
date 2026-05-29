@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_runtime_contract::contract::storage::PinnedRegistryEntry;
+use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryEntry;
 use awaken_runtime_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 use thiserror::Error;
 

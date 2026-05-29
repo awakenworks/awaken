@@ -162,7 +162,8 @@ fn run_handle_send_decisions_closed_channel() {
 
 mod live_forwarder {
     use super::*;
-    use awaken_runtime_contract::contract::mailbox::LiveRunCommand;
+    use awaken_runtime_contract::contract::live_control::LiveRunCommand;
+    use awaken_runtime_contract::contract::mailbox::MailboxStore;
     use awaken_stores::InMemoryMailboxStore;
     use std::time::Duration;
 
@@ -182,7 +183,7 @@ mod live_forwarder {
     #[tokio::test]
     async fn messages_variant_lands_in_inbox() {
         let store = Arc::new(InMemoryMailboxStore::new());
-        let rt = make_runtime().with_mailbox_store(store.clone());
+        let rt = make_runtime().with_live_control_source(store.clone());
         let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
         let (handle, _token, _rx) =
             rt.create_run_channels_with_inbox("run-1".into(), None, Some(inbox_tx));
@@ -214,7 +215,7 @@ mod live_forwarder {
     #[tokio::test]
     async fn pending_boundary_wake_variant_lands_in_inbox() {
         let store = Arc::new(InMemoryMailboxStore::new());
-        let rt = make_runtime().with_mailbox_store(store.clone());
+        let rt = make_runtime().with_live_control_source(store.clone());
         let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
         let (handle, _token, _rx) =
             rt.create_run_channels_with_inbox("run-wake".into(), None, Some(inbox_tx));
@@ -244,7 +245,7 @@ mod live_forwarder {
     #[tokio::test]
     async fn cancel_variant_triggers_token() {
         let store = Arc::new(InMemoryMailboxStore::new());
-        let rt = make_runtime().with_mailbox_store(store.clone());
+        let rt = make_runtime().with_live_control_source(store.clone());
         let (handle, token, _rx) = rt.create_run_channels("run-1".into());
         rt.register_run("thread-1", handle).unwrap();
         settle().await;
@@ -271,7 +272,7 @@ mod live_forwarder {
     #[tokio::test]
     async fn decision_variant_lands_on_decision_channel() {
         let store = Arc::new(InMemoryMailboxStore::new());
-        let rt = make_runtime().with_mailbox_store(store.clone());
+        let rt = make_runtime().with_live_control_source(store.clone());
         let (handle, _token, mut rx) = rt.create_run_channels("run-1".into());
         rt.register_run("thread-1", handle).unwrap();
         settle().await;
@@ -300,7 +301,7 @@ mod live_forwarder {
 
     #[tokio::test]
     async fn no_store_wired_no_forwarder_runs() {
-        // Baseline: without `with_mailbox_store`, deliver_live published
+        // Baseline: without `with_live_control_source`, deliver_live published
         // elsewhere must not reach this runtime's channels.
         let detached_store = InMemoryMailboxStore::new();
         let rt = make_runtime(); // no store
@@ -326,7 +327,7 @@ mod live_forwarder {
     #[tokio::test]
     async fn separate_threads_isolated() {
         let store = Arc::new(InMemoryMailboxStore::new());
-        let rt = make_runtime().with_mailbox_store(store.clone());
+        let rt = make_runtime().with_live_control_source(store.clone());
 
         let (tx_a, mut rx_a) = crate::inbox::inbox_channel();
         let (tx_b, mut rx_b) = crate::inbox::inbox_channel();
@@ -357,7 +358,7 @@ mod live_forwarder {
     #[tokio::test]
     async fn unregister_stops_live_forwarder_subscription() {
         let store = Arc::new(InMemoryMailboxStore::new());
-        let rt = make_runtime().with_mailbox_store(store.clone());
+        let rt = make_runtime().with_live_control_source(store.clone());
         let (handle, _token, _rx) = rt.create_run_channels("run-1".into());
         rt.register_run("thread-1", handle).unwrap();
         settle().await;
@@ -394,7 +395,7 @@ mod live_forwarder {
         // this forwarder instance (agent loop is expected to be torn
         // down anyway).
         let store = Arc::new(InMemoryMailboxStore::new());
-        let rt = make_runtime().with_mailbox_store(store.clone());
+        let rt = make_runtime().with_live_control_source(store.clone());
         let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
         let (handle, token, _rx) =
             rt.create_run_channels_with_inbox("run-1".into(), None, Some(inbox_tx));

@@ -23,13 +23,12 @@ use crate::resolution::{
 };
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::executor::LlmExecutor;
+use awaken_runtime_contract::contract::pinned_registry::{
+    PinnedRegistryEntry, PinnedRegistryManifest, REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL_POOL,
+};
 use awaken_runtime_contract::contract::run::RunResolutionScope;
 use awaken_runtime_contract::contract::tool::Tool;
-use awaken_runtime_contract::contract::versioned_registry::{
-    PinnedRegistryEntry, PinnedRegistryManifest,
-};
 use awaken_runtime_contract::registry_spec::{AgentSpec, ModelSpec};
-use awaken_runtime_contract::{REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL_POOL};
 
 use crate::registry::model_capabilities::ModelCapabilitySources;
 use crate::registry::snapshot::RegistryHandle;
