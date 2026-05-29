@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
+use awaken_runtime_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 
 use super::versioned_registry::{
     PinnedRegistryEntry, PinnedRegistryManifest, VersionRef, VersionedRecord,

@@ -13,8 +13,10 @@ categories = ["artificial-intelligence"]
 [dependencies]
 awaken-runtime-contract = { workspace = true }
 async-trait = { workspace = true }
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
 thiserror = { workspace = true }
 
 [dev-dependencies]

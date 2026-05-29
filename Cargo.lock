@@ -620,8 +620,10 @@ version = "0.5.1-dev"
 dependencies = [
  "async-trait",
  "awaken-runtime-contract",
+ "futures",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
 ]

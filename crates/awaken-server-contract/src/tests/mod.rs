@@ -7,17 +7,16 @@ use awaken_runtime_contract::contract::message::Message;
 use awaken_runtime_contract::contract::storage::{
     RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
-use awaken_runtime_contract::contract::versioned_registry::{
-    ConfigRevisionRef, PublishOutcome, RegistryPublication, RegistryResourcePublish, VersionRef,
-    VersionedRecord, VersionedRegistryError, VersionedRegistryStore, VersionedResourceState,
-    registry_content_hash,
-};
 use awaken_runtime_contract::thread::{Thread, ThreadMetadata};
 use serde_json::{Value, json};
 
 use crate::contract::config_store::{ConfigStore, ScopedConfigStore};
 use crate::contract::storage::ScopedThreadRunStore;
-use crate::contract::versioned_registry::{ScopedVersionedRegistry, TypedVersionedRegistry};
+use crate::contract::versioned_registry::{
+    ConfigRevisionRef, PublishOutcome, RegistryPublication, RegistryResourcePublish,
+    ScopedVersionedRegistry, TypedVersionedRegistry, VersionRef, VersionedRecord,
+    VersionedRegistryError, VersionedRegistryStore, VersionedResourceState, registry_content_hash,
+};
 use crate::{RequestSurface, ScopeError, ScopeId};
 
 #[test]
