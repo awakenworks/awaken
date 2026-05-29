@@ -25,6 +25,7 @@ use crate::outbox_relay::OutboxRelayError;
 use crate::protocol_replay_state::A2aPushWebhookRelayConfig;
 use crate::scope::{HttpScopeProvider, SingleScopeProvider};
 use crate::services::audit_log::AuditLogger;
+use crate::services::frozen_registry::ScopedServerResolverFactory;
 
 #[derive(Clone)]
 pub struct RunModuleState {
@@ -35,6 +36,7 @@ pub struct RunModuleState {
     pub credential_broker: Arc<dyn CredentialBroker>,
     pub runtime_stats: Option<Arc<RuntimeStatsRegistry>>,
     pub scope_id: Option<ScopeId>,
+    pub resolver_factory: Option<Arc<ScopedServerResolverFactory>>,
 }
 
 impl RunModuleState {
@@ -52,6 +54,7 @@ impl RunModuleState {
             credential_broker: Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
             runtime_stats: None,
             scope_id: None,
+            resolver_factory: None,
         }
     }
 
@@ -68,6 +71,15 @@ impl RunModuleState {
     #[must_use]
     pub fn with_runtime_stats(mut self, registry: Arc<RuntimeStatsRegistry>) -> Self {
         self.runtime_stats = Some(registry);
+        self
+    }
+
+    #[must_use]
+    pub fn with_scoped_resolver_factory(
+        mut self,
+        factory: Arc<ScopedServerResolverFactory>,
+    ) -> Self {
+        self.resolver_factory = Some(factory);
         self
     }
 
@@ -99,6 +111,11 @@ impl RunModuleState {
     ) -> awaken_runtime::RunActivation {
         if self.scope_id.is_none() {
             return request;
+        }
+        if let Some(scope_id) = self.scope_id.clone()
+            && let Some(factory) = &self.resolver_factory
+        {
+            request = request.with_run_resolver(factory.resolver_for_scope(scope_id));
         }
         request.intent.thread_id = self.scoped_id(&request.intent.thread_id);
         request.intent.kind = match request.intent.kind {

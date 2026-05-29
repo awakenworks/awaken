@@ -10,11 +10,14 @@ use serde_json::json;
 
 use super::{ConfigRuntimeError, ConfigRuntimeManager};
 use crate::services::config_runtime::managed_config::ManagedConfigSnapshot;
-use crate::services::frozen_registry::{FrozenAgentRegistryMaterializer, ScopedServerResolver};
+use crate::services::frozen_registry::{
+    FrozenAgentRegistryMaterializer, ScopedServerResolver, ScopedServerResolverFactory,
+};
 
 pub(super) struct VersionedRegistryPublicationTarget {
     pub(super) scope_id: ScopeId,
     pub(super) store: Arc<dyn VersionedRegistryStore>,
+    pub(super) resolver_factory: Option<Arc<ScopedServerResolverFactory>>,
 }
 
 impl ConfigRuntimeManager {
@@ -34,16 +37,28 @@ impl ConfigRuntimeManager {
         store: Arc<dyn VersionedRegistryStore>,
     ) -> Result<Self, ScopeError> {
         let scope_id = ScopeId::new(scope_id.into())?;
-        if let Some(handle) = self.runtime.registry_handle() {
+        let resolver_factory = self.runtime.registry_handle().map(|handle| {
             self.runtime
                 .set_run_resolver(Arc::new(ScopedServerResolver::new(
                     scope_id.clone(),
                     store.clone(),
-                    handle,
+                    handle.clone(),
                 )));
-        }
-        self.versioned_registry = Some(VersionedRegistryPublicationTarget { scope_id, store });
+            Arc::new(ScopedServerResolverFactory::new(store.clone(), handle))
+        });
+        self.versioned_registry = Some(VersionedRegistryPublicationTarget {
+            scope_id,
+            store,
+            resolver_factory,
+        });
         Ok(self)
+    }
+
+    #[must_use]
+    pub fn scoped_resolver_factory(&self) -> Option<Arc<ScopedServerResolverFactory>> {
+        self.versioned_registry
+            .as_ref()
+            .and_then(|target| target.resolver_factory.clone())
     }
 
     /// Pick the `RegistrySet` to install via runtime hot-swap: prefer

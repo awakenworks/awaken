@@ -21,6 +21,7 @@ use crate::cancellation::CancellationToken;
 use crate::inbox::{InboxReceiver, InboxSender};
 use crate::loop_runner::PendingBoundaryHandler;
 use crate::registry::RegistrySet;
+use crate::resolution::Resolver;
 
 /// Read-only snapshot of cached thread state, passed from mailbox to runtime.
 #[non_exhaustive]
@@ -121,6 +122,7 @@ pub struct PersistenceHints {
 #[derive(Default)]
 pub struct ResolverInheritance {
     pub pinned_registry_set: Option<RegistrySet>,
+    pub run_resolver: Option<Arc<dyn Resolver>>,
 }
 
 /// Owned request to execute or resume a run.
@@ -367,6 +369,12 @@ impl RunActivation {
     }
 
     #[must_use]
+    pub fn with_run_resolver(mut self, resolver: Arc<dyn Resolver>) -> Self {
+        self.inherited.run_resolver = Some(resolver);
+        self
+    }
+
+    #[must_use]
     pub fn with_event_buffer(mut self, buffer: Arc<EventBuffer>) -> Self {
         self.capture.event_buffer = Some(buffer);
         self
@@ -406,6 +414,7 @@ pub enum RunActivationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resolution::{ResolutionRequest, ResolveError, ResolvedRunPlan};
     use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryEntry;
 
     fn manifest(id: &str) -> PinnedRegistryManifest {
@@ -423,6 +432,18 @@ mod tests {
     }
 
     fn assert_send_static<T: Send + 'static>(_: T) {}
+
+    struct NoopResolver;
+
+    #[async_trait::async_trait]
+    impl Resolver for NoopResolver {
+        async fn resolve(
+            &self,
+            _request: ResolutionRequest,
+        ) -> Result<ResolvedRunPlan, ResolveError> {
+            Err(ResolveError::Runtime("noop".into()))
+        }
+    }
 
     #[test]
     fn activation_is_owned_send_static() {
@@ -483,7 +504,8 @@ mod tests {
             .with_dispatch_id_hint("hinted-dispatch-id")
             .with_continuation_run_id("parent-run")
             .with_messages_already_persisted(true)
-            .with_pinned_registry_set(registry_set);
+            .with_pinned_registry_set(registry_set)
+            .with_run_resolver(Arc::new(NoopResolver));
 
         // Capture sub-struct: runtime-side event capture + context fast path.
         assert!(
@@ -521,12 +543,17 @@ mod tests {
             activation.inherited.pinned_registry_set.is_some(),
             "with_pinned_registry_set routes to ResolverInheritance"
         );
+        assert!(
+            activation.inherited.run_resolver.is_some(),
+            "with_run_resolver routes to ResolverInheritance"
+        );
 
         // Reverse spot-check: capture must not be mutated by submit-side or
         // inheritance setters, and vice versa.
         let neutral = RunActivation::new("t", Vec::new()).with_run_id_hint("x");
         assert!(neutral.capture.event_buffer.is_none());
         assert!(neutral.inherited.pinned_registry_set.is_none());
+        assert!(neutral.inherited.run_resolver.is_none());
         assert_eq!(neutral.persistence.run_id_hint.as_deref(), Some("x"));
     }
 }

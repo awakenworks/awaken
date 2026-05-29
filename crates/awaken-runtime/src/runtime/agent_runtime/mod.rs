@@ -236,7 +236,11 @@ impl AgentRuntime {
     ) -> Result<ResolvedRunPlan, ResolveError> {
         let request = ResolutionRequest::from_activation(activation, policy);
         let expected = BackendRequirements::from_features(&request.features);
-        let resolver = self.run_resolver_arc();
+        let resolver = activation
+            .inherited
+            .run_resolver
+            .clone()
+            .unwrap_or_else(|| self.run_resolver_arc());
         let plan = resolver.resolve(request).await?;
         if let CapabilityDecision::Unsupported(mismatches) = plan.backend_profile().check(&expected)
         {
@@ -280,7 +284,11 @@ impl AgentRuntime {
         let mut request = ResolutionRequest::from_activation(sub_activation, policy);
         request.target = sub_target;
         let expected = BackendRequirements::from_features(&request.features);
-        let resolver = self.run_resolver_arc();
+        let resolver = sub_activation
+            .inherited
+            .run_resolver
+            .clone()
+            .unwrap_or_else(|| self.run_resolver_arc());
         let plan = resolver.resolve(request).await?;
         if let CapabilityDecision::Unsupported(mismatches) = plan.backend_profile().check(&expected)
         {

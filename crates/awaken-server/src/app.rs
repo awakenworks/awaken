@@ -431,6 +431,9 @@ impl ServerState {
         mut self,
         manager: Arc<crate::services::config_runtime::ConfigRuntimeManager>,
     ) -> Self {
+        if let Some(factory) = manager.scoped_resolver_factory() {
+            self.run.resolver_factory = Some(factory);
+        }
         self.config
             .as_mut()
             .expect(
@@ -458,6 +461,9 @@ impl ServerState {
         store: Arc<dyn ConfigStore>,
         manager: Arc<crate::services::config_runtime::ConfigRuntimeManager>,
     ) -> Self {
+        if let Some(factory) = manager.scoped_resolver_factory() {
+            self.run.resolver_factory = Some(factory);
+        }
         let mut next = ConfigModuleState::new(store, manager);
         if let Some(existing) = self.config.take() {
             next.audit_log = existing.audit_log;
