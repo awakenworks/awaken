@@ -135,7 +135,6 @@ pub trait RunDispatchExecutor: Send + Sync {
 #[cfg(test)]
 fn test_replayable_plan(activation: &RunActivation) -> ResolvedRunPlan {
     use awaken_runtime::{ReplayableScope, ResolutionArtifact, ResolvedRun};
-    use awaken_server_contract::contract::versioned_registry::PinnedRegistryManifest;
 
     let agent_id = activation.agent_id().unwrap_or("default");
     let agent = ResolvedAgent::new(agent_id, "model", "system", Arc::new(TestLlmExecutor));
@@ -159,11 +158,7 @@ fn test_replayable_plan(activation: &RunActivation) -> ResolvedRunPlan {
             scope: ReplayableScope,
         },
         artifact: ResolutionArtifact {
-            registry_manifest: PinnedRegistryManifest {
-                publication_id: Some("test-publication".to_string()),
-                registry_snapshot_version: Some(1),
-                entries: Vec::new(),
-            },
+            resolution_id: "test-resolution".to_string(),
         },
     })
 }

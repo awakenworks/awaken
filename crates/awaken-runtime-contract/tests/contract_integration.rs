@@ -11,8 +11,8 @@ use awaken_runtime_contract::contract::message::{
     Message, MessageMetadata, Role, ToolCall, Visibility,
 };
 use awaken_runtime_contract::contract::storage::{
-    MessageQuery, MessageSeqRange, PinnedRegistryEntry, PinnedRegistryManifest, RunMessageInput,
-    RunMessageOutput, RunPage, RunQuery, RunRecord, StorageError,
+    MessageQuery, MessageSeqRange, RunMessageInput, RunMessageOutput, RunPage, RunQuery, RunRecord,
+    StorageError,
 };
 use awaken_runtime_contract::contract::suspension::ToolCallOutcome;
 use awaken_runtime_contract::contract::tool::{ToolDescriptor, ToolError, ToolResult};
@@ -214,16 +214,7 @@ fn run_record_roundtrip_preserves_all_fields() {
         thread_id: "t-1".into(),
         agent_id: "agent-1".into(),
         parent_run_id: Some("r-parent".into()),
-        registry_manifest: Some(PinnedRegistryManifest {
-            publication_id: Some("pub-1".to_string()),
-            registry_snapshot_version: Some(7),
-            entries: vec![PinnedRegistryEntry {
-                kind: "agent".to_string(),
-                id: "agent-1".to_string(),
-                version: 3,
-                content_hash: "sha256:agent".to_string(),
-            }],
-        }),
+        resolution_id: Some("resolution-7".to_string()),
         activation: None,
         request: None,
         input: Some(RunMessageInput {
@@ -266,10 +257,7 @@ fn run_record_roundtrip_preserves_all_fields() {
     assert_eq!(parsed.steps, 5);
     assert_eq!(parsed.input_tokens, 1000);
     assert_eq!(parsed.output_tokens, 500);
-    let manifest = parsed.registry_manifest.as_ref().unwrap();
-    assert_eq!(manifest.registry_snapshot_version, Some(7));
-    assert_eq!(manifest.entries[0].kind, "agent");
-    assert_eq!(manifest.entries[0].version, 3);
+    assert_eq!(parsed.resolution_id.as_deref(), Some("resolution-7"));
     assert_eq!(parsed.input.as_ref().unwrap().range.unwrap().len(), 2);
     assert_eq!(
         parsed.output.unwrap().message_ids,
@@ -296,7 +284,7 @@ fn run_page_with_multiple_records_roundtrips() {
                 thread_id: "t-1".into(),
                 agent_id: "a-1".into(),
                 parent_run_id: None,
-                registry_manifest: None,
+                resolution_id: None,
                 activation: None,
                 request: None,
                 input: None,
@@ -324,7 +312,7 @@ fn run_page_with_multiple_records_roundtrips() {
                 thread_id: "t-1".into(),
                 agent_id: "a-1".into(),
                 parent_run_id: Some("r-1".into()),
-                registry_manifest: None,
+                resolution_id: None,
                 activation: None,
                 request: None,
                 input: None,

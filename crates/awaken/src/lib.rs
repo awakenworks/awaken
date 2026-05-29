@@ -151,10 +151,16 @@ pub use awaken_runtime_contract::{
     validate_provider_spec, validate_skill_spec, validate_unique_model_ids,
 };
 pub use awaken_server_contract::{
-    DEFAULT_SCOPE_ID, RequestSurface, ScopeContext, ScopeId, ScopedConfigStore, ScopedMailboxStore,
-    ScopedOutboxStore, ScopedProtocolReplayLog, ScopedThreadRunStore, ScopedVersionedRegistry,
-    scoped_key, unscoped_key,
+    ConfigStore, DEFAULT_SCOPE_ID, RequestSurface, ScopeContext, ScopeId, ScopedConfigStore,
+    ScopedMailboxStore, ScopedOutboxStore, ScopedProtocolReplayLog, ScopedThreadRunStore,
+    ScopedVersionedRegistry, scoped_key, unscoped_key,
 };
+/// Server/store-owned contract surfaces relocated out of `contract::*`.
+pub mod server_contract {
+    pub use awaken_server_contract::contract::config_store;
+    pub use awaken_server_contract::contract::registry_graph;
+    pub use awaken_server_contract::contract::versioned_registry;
+}
 
 // runtime types
 pub use awaken_runtime::engine::MockProviderProfile;

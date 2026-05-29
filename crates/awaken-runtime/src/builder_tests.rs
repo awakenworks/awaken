@@ -724,22 +724,32 @@ async fn builder_runtime_resolves_persistent_activation_as_replayable() {
         )],
     )
     .with_agent_id("test-agent");
+    // A server-issued resolution id pins the run: the runtime echoes it into a
+    // Replayable plan. The runtime never mints the id itself — pinning is a
+    // server-side concern carried via `RegistryResolutionScope::Pinned`.
     let plan = runtime
+        .resolve_activation_in_scope(
+            &activation,
+            crate::resolution::ResolutionPolicy::PersistentServer,
+            crate::resolution::RegistryResolutionScope::Pinned("resolution-test".into()),
+        )
+        .await
+        .expect("pinned persistent resolution");
+    let crate::ResolvedRunPlan::Replayable(plan) = plan else {
+        panic!("a pinned persistent resolution must yield a Replayable plan");
+    };
+    assert_eq!(plan.artifact.resolution_id, "resolution-test");
+
+    // Without a resolution id the runtime resolves the live registry into a
+    // LiveOnly plan, which cannot satisfy a persistent (server) policy.
+    let result = runtime
         .resolve_activation(
             &activation,
             crate::resolution::ResolutionPolicy::PersistentServer,
         )
-        .await
-        .expect("persistent resolution");
-    let crate::ResolvedRunPlan::Replayable(plan) = plan else {
-        panic!("persistent builder runtime must resolve replayable plans");
-    };
-    assert_eq!(
-        plan.artifact.registry_manifest.registry_snapshot_version,
-        runtime.registry_version()
-    );
-    assert!(plan.artifact.registry_manifest.entries.iter().any(|entry| {
-        entry.kind == awaken_runtime_contract::contract::pinned_registry::REGISTRY_KIND_AGENT
-            && entry.id == "test-agent"
-    }));
+        .await;
+    assert!(matches!(
+        result,
+        Err(crate::resolution::ResolveError::UnsupportedPersistence(_))
+    ));
 }

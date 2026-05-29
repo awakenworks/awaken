@@ -219,7 +219,7 @@ fn run_record_fields() {
         thread_id: "t1".into(),
         agent_id: "agent-1".into(),
         parent_run_id: None,
-        registry_manifest: None,
+        resolution_id: None,
         activation: None,
         request: None,
         input: None,
@@ -280,7 +280,6 @@ mod integration {
         WaitingReason,
     };
     use awaken_server_contract::contract::suspension::ToolCallResumeMode;
-    use awaken_server_contract::contract::versioned_registry::PinnedRegistryManifest;
     use awaken_server_contract::registry_spec::AgentSpec;
     use awaken_server_contract::thread::Thread;
     use awaken_stores::{InMemoryEventStore, memory::InMemoryStore};
@@ -325,11 +324,7 @@ mod integration {
             Ok(awaken_runtime::ResolvedRunPlan::Replayable(
                 awaken_runtime::ReplayableResolvedRun {
                     artifact: awaken_runtime::ResolutionArtifact {
-                        registry_manifest: PinnedRegistryManifest {
-                            publication_id: Some("test-publication".into()),
-                            registry_snapshot_version: Some(1),
-                            entries: Vec::new(),
-                        },
+                        resolution_id: "test-resolution".to_string(),
                     },
                     execution: awaken_runtime::ResolvedRun {
                         agent_spec: execution.spec().clone(),
@@ -588,7 +583,7 @@ mod integration {
             thread_id: thread_id.to_string(),
             agent_id: "test-agent".to_string(),
             parent_run_id: None,
-            registry_manifest: None,
+            resolution_id: None,
             activation: None,
             request: None,
             input: None,

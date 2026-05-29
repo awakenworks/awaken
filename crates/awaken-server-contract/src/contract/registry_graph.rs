@@ -15,8 +15,8 @@ use super::versioned_registry::{
     VersionedRegistryError, VersionedRegistryStore,
 };
 
-// Pinnable kinds share one source of truth with the runtime manifest builder.
-pub use awaken_runtime_contract::contract::pinned_registry::{
+// Pinnable kinds share one source of truth with the manifest builder.
+pub use super::pinned_registry::{
     REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_MODEL_POOL, REGISTRY_KIND_PROVIDER,
 };
 

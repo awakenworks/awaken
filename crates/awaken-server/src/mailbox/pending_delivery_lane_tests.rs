@@ -8,9 +8,7 @@ use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_server_contract::contract::message::{
     DeliveryBoundary, DeliveryGranularity, DeliveryMode, Message,
 };
-use awaken_server_contract::contract::storage::{
-    PinnedRegistryManifest, RunRecord, RunStore, ThreadStore,
-};
+use awaken_server_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
 use awaken_server_contract::contract::suspension::ToolCallResume;
 use awaken_stores::{InMemoryMailboxStore, InMemoryStore, PendingMessageStore};
 
@@ -18,14 +16,6 @@ use super::*;
 use crate::mailbox::{MailboxConfig, RunDispatchExecutor};
 
 struct NoopExecutor;
-
-fn empty_manifest() -> PinnedRegistryManifest {
-    PinnedRegistryManifest {
-        publication_id: None,
-        registry_snapshot_version: None,
-        entries: Vec::new(),
-    }
-}
 
 fn created_run_record(thread_id: &str, run_id: &str) -> RunRecord {
     RunRecord {
@@ -139,7 +129,7 @@ async fn next_step_freeze_skips_queued_new_run_pending() {
     let request = RunActivation::new("thread-next-step-lane", Vec::new())
         .with_run_id_hint("run-next-step-lane");
     let handler = mailbox
-        .pending_boundary_handler(&request, "run-next-step-lane", &empty_manifest())
+        .pending_boundary_handler(&request, "run-next-step-lane", "resolution-test")
         .expect("handler configured");
 
     mailbox
@@ -206,7 +196,7 @@ async fn targeted_next_step_does_not_fall_through_to_new_run() {
         .unwrap();
     let request = RunActivation::new("thread-targeted", Vec::new()).with_run_id_hint("run-b");
     let handler = mailbox
-        .pending_boundary_handler(&request, "run-b", &empty_manifest())
+        .pending_boundary_handler(&request, "run-b", "resolution-test")
         .expect("handler configured");
 
     mailbox
@@ -280,7 +270,7 @@ async fn resume_input_does_not_consume_unrelated_queued_new_run() {
             &messages,
             "run-r",
             &mut record,
-            &empty_manifest(),
+            "resolution-test",
         )
         .await
         .unwrap()

@@ -23,12 +23,15 @@ pub trait RuntimeCheckpointStore: Send + Sync {
     async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError>;
 }
 
-pub(crate) struct ThreadRunCheckpointStore {
+/// Adapts a [`ThreadRunStore`] into a [`RuntimeCheckpointStore`] for the
+/// agent loop. Exposed so embedders/tests can supply a checkpoint store
+/// backed by any `ThreadRunStore`.
+pub struct ThreadRunCheckpointStore {
     inner: Arc<dyn ThreadRunStore>,
 }
 
 impl ThreadRunCheckpointStore {
-    pub(crate) fn new(inner: Arc<dyn ThreadRunStore>) -> Self {
+    pub fn new(inner: Arc<dyn ThreadRunStore>) -> Self {
         Self { inner }
     }
 }

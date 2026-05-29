@@ -68,7 +68,6 @@ mod tests {
     use super::*;
     use awaken_runtime_contract::contract::identity::RunIdentity;
     use awaken_runtime_contract::contract::message::Message;
-    use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
 
     use crate::registry::{AgentResolver, ResolvedAgent};
     use crate::run::RunActivation;
@@ -221,11 +220,7 @@ mod tests {
             RunActivation::new("thread", vec![Message::user("hi")]).with_agent_id("agent-a");
         let mut request =
             ResolutionRequest::from_activation(&activation, ResolutionPolicy::LiveOnlyEmbedded);
-        request.resolution_scope = RegistryResolutionScope::Pinned(PinnedRegistryManifest {
-            publication_id: None,
-            registry_snapshot_version: None,
-            entries: Vec::new(),
-        });
+        request.resolution_scope = RegistryResolutionScope::Pinned("resolution-1".to_string());
         assert!(matches!(
             adapter.resolve(request).await,
             Err(ResolveError::UnsupportedPersistence(_))
@@ -325,11 +320,7 @@ mod tests {
                     scope: ReplayableScope,
                 },
                 artifact: ResolutionArtifact {
-                    registry_manifest: PinnedRegistryManifest {
-                        publication_id: Some("override-publication".into()),
-                        registry_snapshot_version: Some(1),
-                        entries: Vec::new(),
-                    },
+                    resolution_id: "override-publication".to_string(),
                 },
             }))
         }
@@ -405,10 +396,13 @@ mod tests {
             .await
             .expect("activation resolver supplies replayable plan");
 
-        assert_eq!(
-            plan.replayable_manifest()
-                .and_then(|manifest| manifest.publication_id.as_deref()),
-            Some("override-publication")
-        );
+        assert_eq!(plan.resolution_id(), Some("override-publication"));
+        // Exercise the shared ResolvedRunPlan accessors on the replayable plan.
+        assert_eq!(plan.agent_spec().id, "agent-a");
+        assert_eq!(plan.role(), ExecutionRole::Root);
+        let _ = plan.execution();
+        let _ = plan.backend_profile();
+        let replayable = plan.into_replayable().expect("plan is replayable");
+        assert_eq!(replayable.artifact.resolution_id, "override-publication");
     }
 }

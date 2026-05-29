@@ -14,6 +14,7 @@ pub mod frozen_registry;
 pub mod online_eval_service;
 #[cfg(feature = "permission")]
 pub mod permission_preview;
+pub mod pinned_registry;
 pub mod run_control_service;
 pub mod run_service;
 pub mod thread_events;

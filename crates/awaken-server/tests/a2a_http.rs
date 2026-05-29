@@ -1175,7 +1175,7 @@ async fn waiting_task_id_resumes_the_same_task() {
         thread_id: context_id.to_string(),
         agent_id: "alpha".to_string(),
         parent_run_id: None,
-        registry_manifest: None,
+        resolution_id: None,
         activation: None,
         request: None,
         input: None,
@@ -1867,12 +1867,8 @@ async fn message_send_can_switch_agent_and_model_on_same_thread() {
             .as_ref()
             .unwrap_or_else(|| panic!("activation must persist on run {task_id}"));
         assert!(
-            activation
-                .resolution_scope
-                .entries
-                .iter()
-                .any(|entry| entry.kind == "agent" && entry.id == expected_agent),
-            "pinned manifest must include the active agent {expected_agent}"
+            activation.resolution_id.is_some(),
+            "persisted activation must carry a resolution id for agent {expected_agent}"
         );
         // Model binding correctness is also proven by the labelled-
         // executor reply marker asserted below.

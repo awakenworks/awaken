@@ -8,9 +8,8 @@ use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::storage::RunRecord;
 use awaken_server_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessageOrder, MessageQuery, MessageSeqRange,
-    MessageVisibilityFilter, PinnedRegistryEntry, PinnedRegistryManifest, RunMessageInput,
-    RunMessageOutput, RunQuery, RunRequestSnapshot, RunStore, StorageError, ThreadParentFilter,
-    ThreadQuery, ThreadRunStore, ThreadStore,
+    MessageVisibilityFilter, RunMessageInput, RunMessageOutput, RunQuery, RunRequestSnapshot,
+    RunStore, StorageError, ThreadParentFilter, ThreadQuery, ThreadRunStore, ThreadStore,
 };
 use awaken_server_contract::thread::Thread;
 use awaken_stores::FileStore;
@@ -378,20 +377,11 @@ async fn create_and_load_run() {
 }
 
 #[tokio::test]
-async fn run_registry_manifest_roundtrips() {
+async fn run_resolution_id_roundtrips() {
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());
     let mut run = make_run("r-manifest", "t-1", 100);
-    run.registry_manifest = Some(PinnedRegistryManifest {
-        publication_id: Some("pub-1".to_string()),
-        registry_snapshot_version: Some(11),
-        entries: vec![PinnedRegistryEntry {
-            kind: "agent".to_string(),
-            id: "agent-1".to_string(),
-            version: 4,
-            content_hash: "sha256:agent-1-v4".to_string(),
-        }],
-    });
+    run.resolution_id = Some("resolution-11".to_string());
 
     store.create_run(&run).await.unwrap();
 
@@ -399,7 +389,7 @@ async fn run_registry_manifest_roundtrips() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(loaded.registry_manifest, run.registry_manifest);
+    assert_eq!(loaded.resolution_id, run.resolution_id);
 }
 
 #[tokio::test]

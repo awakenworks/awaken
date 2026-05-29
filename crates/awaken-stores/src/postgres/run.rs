@@ -11,7 +11,7 @@ use sqlx::postgres::PgRow;
 use super::PostgresStore;
 
 const RUN_COLUMNS: &str = concat!(
-    "run_id, thread_id, agent_id, parent_run_id, registry_manifest, activation, request, ",
+    "run_id, thread_id, agent_id, parent_run_id, resolution_id, activation, request, ",
     "run_input, run_output, status, termination_reason, final_output, error_payload, ",
     "dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, ",
     "started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state"
@@ -55,12 +55,12 @@ impl RunStore for PostgresStore {
             .outcome
             .as_ref()
             .and_then(|outcome| serde_json::to_value(outcome).ok());
-        let registry_manifest_json = record
-            .registry_manifest
+        let resolution_id_json = record
+            .resolution_id
             .as_ref()
             .and_then(|manifest| serde_json::to_value(manifest).ok());
         let sql = format!(
-            "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, registry_manifest, activation, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state)
+            "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, resolution_id, activation, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)",
             self.runs_table
         );
@@ -69,7 +69,7 @@ impl RunStore for PostgresStore {
             .bind(&record.thread_id)
             .bind(&record.agent_id)
             .bind(&record.parent_run_id)
-            .bind(&registry_manifest_json)
+            .bind(&resolution_id_json)
             .bind(&activation_json)
             .bind(&request_json)
             .bind(&input_json)
@@ -347,15 +347,15 @@ impl PostgresStore {
             .outcome
             .as_ref()
             .and_then(|outcome| serde_json::to_value(outcome).ok());
-        let registry_manifest_json = run
-            .registry_manifest
+        let resolution_id_json = run
+            .resolution_id
             .as_ref()
             .and_then(|manifest| serde_json::to_value(manifest).ok());
         let run_sql = format!(
-            "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, registry_manifest, activation, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state)
+            "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, resolution_id, activation, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
              ON CONFLICT (run_id) DO UPDATE SET
-                registry_manifest = $5, activation = $6, request = $7, run_input = $8, run_output = $9,
+                resolution_id = $5, activation = $6, request = $7, run_input = $8, run_output = $9,
                 status = $10, termination_reason = $11, final_output = $12,
                 error_payload = $13, dispatch_id = $14, session_id = $15,
                 transport_request_id = $16, waiting = $17, outcome = $18,
@@ -368,7 +368,7 @@ impl PostgresStore {
             .bind(&run.thread_id)
             .bind(&run.agent_id)
             .bind(&run.parent_run_id)
-            .bind(&registry_manifest_json)
+            .bind(&resolution_id_json)
             .bind(&activation_json)
             .bind(&request_json)
             .bind(&input_json)
@@ -459,7 +459,7 @@ impl ThreadRunStore for PostgresStore {
 fn run_record_from_pg_row(row: PgRow) -> RunRecord {
     let status: String = row.get("status");
     let state: Option<serde_json::Value> = row.get("state");
-    let registry_manifest: Option<serde_json::Value> = row.get("registry_manifest");
+    let resolution_id: Option<serde_json::Value> = row.get("resolution_id");
     let activation: Option<serde_json::Value> = row.get("activation");
     let request: Option<serde_json::Value> = row.get("request");
     let input: Option<serde_json::Value> = row.get("run_input");
@@ -480,7 +480,7 @@ fn run_record_from_pg_row(row: PgRow) -> RunRecord {
         thread_id: row.get("thread_id"),
         agent_id: row.get("agent_id"),
         parent_run_id: row.get("parent_run_id"),
-        registry_manifest: registry_manifest.and_then(|value| serde_json::from_value(value).ok()),
+        resolution_id: resolution_id.and_then(|value| serde_json::from_value(value).ok()),
         activation: activation.and_then(|value| serde_json::from_value(value).ok()),
         request: request.and_then(|value| serde_json::from_value(value).ok()),
         input: input.and_then(|value| serde_json::from_value(value).ok()),

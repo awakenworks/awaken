@@ -5,9 +5,6 @@ use awaken_runtime_contract::contract::commit_coordinator::CanonicalEventStager;
 use awaken_runtime_contract::contract::event_store::{
     CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope, EventVisibility,
 };
-use awaken_runtime_contract::contract::pinned_registry::{
-    PinnedRegistryEntry, PinnedRegistryManifest,
-};
 use awaken_runtime_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
 use awaken_runtime_contract::contract::suspension::ToolCallResumeMode;
 use awaken_stores::{
@@ -124,7 +121,7 @@ fn materialize_message_log_preserves_output_across_same_run_resume() {
         thread_id: "thread-1".into(),
         agent_id: "agent".into(),
         parent_run_id: None,
-        registry_manifest: None,
+        resolution_id: None,
         activation: None,
         request: None,
         input: Some(RunMessageInput {
@@ -384,23 +381,13 @@ async fn persist_checkpoint_preserves_existing_registry_manifest() {
 
     let checkpoint_store = Arc::new(InMemoryStore::new());
     let coordinator = MemoryCommitCoordinator::wrap(Arc::clone(&checkpoint_store));
-    let manifest = PinnedRegistryManifest {
-        publication_id: Some("pub-1".to_string()),
-        registry_snapshot_version: Some(9),
-        entries: vec![PinnedRegistryEntry {
-            kind: "agent".to_string(),
-            id: "agent-1".to_string(),
-            version: 3,
-            content_hash: "sha256:agent-1-v3".to_string(),
-        }],
-    };
     checkpoint_store
         .create_run(&RunRecord {
             run_id: "run-1".into(),
             thread_id: "thread-1".into(),
             agent_id: "agent".into(),
             parent_run_id: None,
-            registry_manifest: Some(manifest.clone()),
+            resolution_id: Some("resolution-9".to_string()),
             activation: None,
             request: None,
             input: None,
@@ -460,7 +447,7 @@ async fn persist_checkpoint_preserves_existing_registry_manifest() {
         .await
         .expect("load run")
         .expect("run exists");
-    assert_eq!(loaded.registry_manifest, Some(manifest));
+    assert_eq!(loaded.resolution_id, Some("resolution-9".to_string()));
     assert_eq!(loaded.input_tokens, 2);
     assert_eq!(loaded.output_tokens, 3);
 }
@@ -591,16 +578,6 @@ async fn persist_checkpoint_uses_commit_seed_when_no_previous_record() {
 
     let checkpoint_store = Arc::new(InMemoryStore::new());
     let coordinator = MemoryCommitCoordinator::wrap(Arc::clone(&checkpoint_store));
-    let manifest = PinnedRegistryManifest {
-        publication_id: Some("pub-seed".to_string()),
-        registry_snapshot_version: Some(2),
-        entries: vec![PinnedRegistryEntry {
-            kind: "agent".to_string(),
-            id: "agent-seed".to_string(),
-            version: 5,
-            content_hash: "sha256:agent-seed-v5".to_string(),
-        }],
-    };
     let identity = RunIdentity::new(
         "thread-seed".into(),
         None,
@@ -616,7 +593,7 @@ async fn persist_checkpoint_uses_commit_seed_when_no_previous_record() {
         store: &state_store,
         checkpoint_store: Some(&reader),
         commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator), None)
-            .with_registry_manifest_seed(Some(&manifest)),
+            .with_resolution_id_seed(Some("resolution-2")),
         messages: &messages,
         input_message_count: 1,
         run_identity: &identity,
@@ -636,7 +613,7 @@ async fn persist_checkpoint_uses_commit_seed_when_no_previous_record() {
         .await
         .expect("load run")
         .expect("run exists");
-    assert_eq!(loaded.registry_manifest, Some(manifest));
+    assert_eq!(loaded.resolution_id, Some("resolution-2".to_string()));
 }
 
 #[tokio::test]
@@ -687,7 +664,7 @@ async fn persist_checkpoint_routes_through_commit_coordinator() {
         commit: CommitWiring {
             commit_coordinator: Some(&coordinator),
             event_buffer: Some(&buffer),
-            registry_manifest_seed: None,
+            resolution_id_seed: None,
         },
         messages: &messages,
         input_message_count: 1,

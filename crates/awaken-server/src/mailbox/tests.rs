@@ -29,8 +29,7 @@ use awaken_server_contract::contract::message::{Message, ToolCall};
 use awaken_server_contract::contract::outbox::OutboxError;
 use awaken_server_contract::contract::storage::RunRequestOrigin;
 use awaken_server_contract::contract::storage::{
-    PinnedRegistryEntry, PinnedRegistryManifest, RunRecord, RunStore, RunWaitingState,
-    ThreadRunStore, ThreadStore, WaitingReason,
+    RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
 };
 use awaken_server_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
@@ -126,7 +125,7 @@ impl OutboxServerEventPublisher for EventStoreServerEventPublisher {
 }
 
 struct FixedRunResolver {
-    manifest: PinnedRegistryManifest,
+    resolution_id: String,
 }
 
 #[async_trait]
@@ -150,7 +149,7 @@ impl awaken_runtime::Resolver for FixedRunResolver {
         Ok(awaken_runtime::ResolvedRunPlan::Replayable(
             awaken_runtime::ReplayableResolvedRun {
                 artifact: awaken_runtime::ResolutionArtifact {
-                    registry_manifest: self.manifest.clone(),
+                    resolution_id: self.resolution_id.clone(),
                 },
                 execution: awaken_runtime::ResolvedRun {
                     agent_spec: (*agent.spec).clone(),
@@ -1791,7 +1790,7 @@ fn seeded_waiting_run(run_id: &str, thread_id: &str, agent_id: &str) -> RunRecor
         thread_id: thread_id.to_string(),
         agent_id: agent_id.to_string(),
         parent_run_id: None,
-        registry_manifest: None,
+        resolution_id: None,
         activation: None,
         request: None,
         input: None,
@@ -3548,25 +3547,15 @@ async fn prepare_run_for_dispatch_precreates_created_run_and_thread_projection()
 }
 
 #[tokio::test]
-async fn prepare_run_for_dispatch_persists_resolved_registry_manifest() {
+async fn prepare_run_for_dispatch_persists_resolved_resolution_id() {
     let thread_store = Arc::new(InMemoryStore::new());
-    let manifest = PinnedRegistryManifest {
-        publication_id: Some("pub-1".to_string()),
-        registry_snapshot_version: Some(1),
-        entries: vec![PinnedRegistryEntry {
-            kind: "agent".to_string(),
-            id: "agent-created".to_string(),
-            version: 3,
-            content_hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                .to_string(),
-        }],
-    };
+    let resolution_id = "resolution-1".to_string();
     let runtime = Arc::new(
         AgentRuntime::new(Arc::new(StubResolver))
             .with_in_memory_thread_run_store(thread_store.clone()),
     );
     runtime.set_run_resolver(Arc::new(FixedRunResolver {
-        manifest: manifest.clone(),
+        resolution_id: resolution_id.clone(),
     }));
     let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
@@ -3594,7 +3583,7 @@ async fn prepare_run_for_dispatch_persists_resolved_registry_manifest() {
         .await
         .expect("load run")
         .expect("created run");
-    assert_eq!(run.registry_manifest, Some(manifest));
+    assert_eq!(run.resolution_id, Some(resolution_id));
 }
 
 #[tokio::test]
@@ -8542,7 +8531,7 @@ fn make_run_record(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecor
         thread_id: thread_id.to_string(),
         agent_id: "agent".to_string(),
         parent_run_id: None,
-        registry_manifest: None,
+        resolution_id: None,
         activation: None,
         request: None,
         input: None,

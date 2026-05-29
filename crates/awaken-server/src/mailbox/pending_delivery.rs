@@ -9,7 +9,7 @@ use awaken_server_contract::contract::message::{
 };
 use awaken_server_contract::contract::run::{RunActivationSnapshot, RunInputSnapshot};
 use awaken_server_contract::contract::storage::{
-    PinnedRegistryManifest, RunMessageInput, RunRecord, StorageError, ThreadRunStore,
+    RunMessageInput, RunRecord, StorageError, ThreadRunStore,
 };
 use awaken_server_contract::contract::tool_intercept::RunMode;
 use awaken_server_contract::now_ms;
@@ -208,7 +208,7 @@ impl Mailbox {
         normalized_messages: &[Message],
         run_id: &str,
         record: &mut RunRecord,
-        manifest: &PinnedRegistryManifest,
+        resolution_id: &str,
     ) -> Result<Option<String>, MailboxError> {
         if self.pending_thread_run_store.is_none() {
             return Ok(None);
@@ -249,7 +249,7 @@ impl Mailbox {
                 boundary,
                 run_id,
                 record,
-                manifest,
+                resolution_id,
                 Some((normalized_messages, &append_mode)),
             )
             .await?
@@ -295,11 +295,14 @@ impl Mailbox {
         boundary: DeliveryBoundary,
         run_id: &str,
         record: &mut RunRecord,
-        manifest: &PinnedRegistryManifest,
+        resolution_id: &str,
         append: Option<(&[Message], &DeliveryMode)>,
     ) -> Result<Option<String>, MailboxError> {
-        let snapshot_template =
-            run_activation_snapshot(request, RunInputSnapshot::default(), manifest.clone());
+        let snapshot_template = run_activation_snapshot(
+            request,
+            RunInputSnapshot::default(),
+            Some(resolution_id.to_string()),
+        );
         self.prepare_pending_boundary_snapshot_for_run(
             &snapshot_template,
             thread_id,
@@ -498,11 +501,14 @@ impl Mailbox {
         self: &Arc<Self>,
         request: &RunActivation,
         run_id: &str,
-        manifest: &PinnedRegistryManifest,
+        resolution_id: &str,
     ) -> Option<Arc<dyn PendingBoundaryHandler>> {
         self.pending_thread_run_store.as_ref()?;
-        let snapshot_template =
-            run_activation_snapshot(request, RunInputSnapshot::default(), manifest.clone());
+        let snapshot_template = run_activation_snapshot(
+            request,
+            RunInputSnapshot::default(),
+            Some(resolution_id.to_string()),
+        );
         Some(Arc::new(MailboxPendingBoundaryHandler {
             mailbox: Arc::clone(self),
             thread_id: request.thread_id().to_string(),

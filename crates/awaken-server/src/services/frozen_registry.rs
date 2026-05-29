@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use awaken_runtime::registry::{
+use crate::services::pinned_registry::{
     PinnedAgentSpecRegistry, PinnedModelRegistry, PinnedRegistryError, PinnedSpecMap,
-    RegistryHandle,
 };
+use awaken_runtime::registry::RegistryHandle;
 use awaken_runtime::resolution::{
     PersistenceRequirement, RegistryResolutionScope, ResolutionRequest, ResolveError,
     ResolvedRunPlan, Resolver,
@@ -169,9 +169,17 @@ impl Resolver for ScopedServerResolver {
             RegistryResolutionScope::Live => VersionSelector::LatestPublication {
                 scope_id: self.scope_id.as_str().to_string(),
             },
-            RegistryResolutionScope::Pinned(manifest) => VersionSelector::Manifest {
-                scope_id: self.scope_id.as_str().to_string(),
-                manifest,
+            // The runtime carries an opaque resolution id; for the published
+            // path it is the publication snapshot version. Anything else falls
+            // back to the latest publication.
+            RegistryResolutionScope::Pinned(resolution_id) => match resolution_id.parse::<u64>() {
+                Ok(snapshot_version) => VersionSelector::Publication {
+                    scope_id: self.scope_id.as_str().to_string(),
+                    snapshot_version,
+                },
+                Err(_) => VersionSelector::LatestPublication {
+                    scope_id: self.scope_id.as_str().to_string(),
+                },
             },
         };
         let frozen = self
@@ -179,7 +187,13 @@ impl Resolver for ScopedServerResolver {
             .materialize(selector)
             .await
             .map_err(|error| ResolveError::Runtime(error.to_string()))?;
-        request.resolution_scope = RegistryResolutionScope::Pinned(frozen.manifest.clone());
+        request.resolution_scope = RegistryResolutionScope::Pinned(
+            frozen
+                .manifest
+                .registry_snapshot_version
+                .map(|version| version.to_string())
+                .unwrap_or_default(),
+        );
         awaken_runtime::registry::resolve::RegistrySetResolver::new(frozen.to_registry_set(&live))
             .resolve(request)
             .await
@@ -554,12 +568,9 @@ mod tests {
         assert_eq!(resolver.scope_id().as_str(), "default");
         assert_eq!(plan.role(), ExecutionRole::Delegate);
         assert_eq!(plan.agent_spec().id, "delegate");
-        assert!(plan.replayable_manifest().is_some_and(|manifest| {
-            manifest
-                .entries
-                .iter()
-                .any(|entry| entry.kind == REGISTRY_KIND_AGENT && entry.id == "delegate")
-        }));
+        // A published-registry resolution is replayable: it carries a
+        // server-issued resolution id (the publication snapshot version).
+        assert!(plan.resolution_id().is_some());
     }
 
     #[tokio::test]
@@ -600,6 +611,56 @@ mod tests {
         assert_eq!(plan.role(), ExecutionRole::Handoff);
         assert_eq!(plan.agent_spec().id, "handoff");
         assert!(matches!(plan, ResolvedRunPlan::Replayable(_)));
+    }
+
+    #[tokio::test]
+    async fn scoped_server_resolver_round_trips_resolution_id_on_resume() {
+        let store = InMemoryVersionedRegistryStore::new();
+        let provider = publish_provider(&store, "provider-1").await;
+        let model = publish_model(&store, "model-1", "provider-1").await;
+        let root = publish_agent(&store, agent("root", "model-1", [])).await;
+        store
+            .create_publication(
+                "default",
+                "pub-1",
+                refs([&provider, &model, &root]),
+                Vec::new(),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let resolver = ScopedServerResolver::new(
+            ScopeId::default_scope(),
+            Arc::new(store),
+            live_registry_handle(),
+        );
+
+        // First (live) resolution pins the latest publication and surfaces an
+        // opaque resolution id (the publication snapshot version).
+        let plan = resolver
+            .resolve(nested_request(ResolutionTarget::Root {
+                agent_id: "root".into(),
+                thread_id: "thread-1".into(),
+            }))
+            .await
+            .unwrap();
+        let resolution_id = plan
+            .resolution_id()
+            .expect("published resolution is pinned")
+            .to_string();
+
+        // Resuming with that id re-selects the same publication via the
+        // `Pinned` path (VersionSelector::Publication), round-tripping the id.
+        let mut resume = nested_request(ResolutionTarget::Root {
+            agent_id: "root".into(),
+            thread_id: "thread-1".into(),
+        });
+        resume.resolution_scope = RegistryResolutionScope::Pinned(resolution_id.clone());
+        let resumed = resolver.resolve(resume).await.unwrap();
+        assert_eq!(resumed.resolution_id(), Some(resolution_id.as_str()));
+        assert_eq!(resumed.agent_spec().id, "root");
     }
 
     #[tokio::test]

@@ -1,8 +1,8 @@
 //! Published versioned runtime-config registry contracts.
 
+use super::pinned_registry as canonical;
 use crate::contract::scope::{ScopeError, ScopeId};
 use async_trait::async_trait;
-use awaken_runtime_contract::contract::pinned_registry as canonical;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -126,9 +126,7 @@ pub struct RegistryPublication {
     pub metadata: Value,
 }
 
-pub use awaken_runtime_contract::contract::pinned_registry::{
-    PinnedRegistryEntry, PinnedRegistryManifest,
-};
+pub use super::pinned_registry::{PinnedRegistryEntry, PinnedRegistryManifest};
 
 /// Errors returned by versioned registry stores.
 ///
@@ -162,13 +160,9 @@ pub enum VersionedRegistryError {
     Backend(String),
 }
 
-impl From<awaken_runtime_contract::contract::pinned_registry::PinnedRegistryHashError>
-    for VersionedRegistryError
-{
-    fn from(
-        error: awaken_runtime_contract::contract::pinned_registry::PinnedRegistryHashError,
-    ) -> Self {
-        use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryHashError as Hash;
+impl From<canonical::PinnedRegistryHashError> for VersionedRegistryError {
+    fn from(error: canonical::PinnedRegistryHashError) -> Self {
+        use canonical::PinnedRegistryHashError as Hash;
         match error {
             Hash::Serialization(message) => VersionedRegistryError::Serialization(message),
             Hash::InvalidRequest(message) => VersionedRegistryError::InvalidRequest(message),

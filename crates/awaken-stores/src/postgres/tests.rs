@@ -1,7 +1,6 @@
 use awaken_server_contract::contract::config_store::ConfigStore;
 use awaken_server_contract::contract::storage::{
-    PinnedRegistryEntry, PinnedRegistryManifest, RunRecord, RunStore, StorageError, ThreadRunStore,
-    ThreadStore,
+    RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
 };
 use awaken_server_contract::contract::versioned_registry::{
     PublishOutcome, RegistryResourcePublish, VersionRef, VersionedRegistryStore,
@@ -132,7 +131,7 @@ async fn run_create_duplicate_returns_already_exists() {
         thread_id: "t-1".to_string(),
         agent_id: "agent".to_string(),
         parent_run_id: None,
-        registry_manifest: None,
+        resolution_id: None,
         activation: None,
         request: None,
         input: None,
@@ -179,16 +178,7 @@ async fn checkpoint_atomicity() {
         thread_id: thread_id.clone(),
         agent_id: "agent".to_string(),
         parent_run_id: None,
-        registry_manifest: Some(PinnedRegistryManifest {
-            publication_id: Some("pub-1".to_string()),
-            registry_snapshot_version: Some(11),
-            entries: vec![PinnedRegistryEntry {
-                kind: "agent".to_string(),
-                id: "agent".to_string(),
-                version: 4,
-                content_hash: "sha256:agent-v4".to_string(),
-            }],
-        }),
+        resolution_id: Some("resolution-11".to_string()),
         activation: None,
         request: None,
         input: None,
@@ -218,7 +208,7 @@ async fn checkpoint_atomicity() {
     assert_eq!(loaded_msgs.len(), 1);
     let loaded_run = store.load_run(&run.run_id).await.unwrap().unwrap();
     assert_eq!(loaded_run.thread_id, thread_id);
-    assert_eq!(loaded_run.registry_manifest, run.registry_manifest);
+    assert_eq!(loaded_run.resolution_id, run.resolution_id);
 }
 
 #[tokio::test]

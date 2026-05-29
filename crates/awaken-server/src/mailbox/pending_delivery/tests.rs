@@ -13,14 +13,6 @@ use crate::mailbox::{MailboxConfig, RunDispatchExecutor};
 
 struct NoopExecutor;
 
-fn empty_manifest() -> PinnedRegistryManifest {
-    PinnedRegistryManifest {
-        publication_id: None,
-        registry_snapshot_version: None,
-        entries: Vec::new(),
-    }
-}
-
 fn created_run_record(thread_id: &str, run_id: &str) -> RunRecord {
     RunRecord {
         run_id: run_id.to_string(),
@@ -199,7 +191,7 @@ async fn boundary_freeze_uses_requested_delivery_boundary() {
             DeliveryBoundary::NextStep,
             "run-next-step",
             &mut record,
-            &empty_manifest(),
+            "resolution-test",
             None,
         )
         .await
@@ -248,7 +240,7 @@ async fn runtime_pending_boundary_handler_freezes_next_step_messages() {
 
     let request = RunActivation::new("thread-handler", Vec::new()).with_run_id_hint("run-handler");
     let handler = mailbox
-        .pending_boundary_handler(&request, "run-handler", &empty_manifest())
+        .pending_boundary_handler(&request, "run-handler", "resolution-test")
         .expect("handler configured");
     let frozen = handler
         .freeze_pending_boundary(DeliveryBoundary::NextStep)

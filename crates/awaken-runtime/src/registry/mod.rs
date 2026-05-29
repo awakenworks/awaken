@@ -9,7 +9,6 @@ pub mod diagnostics;
 pub mod lifecycle;
 pub mod memory;
 pub mod model_capabilities;
-pub mod pinned;
 pub mod resolve;
 pub mod resolver;
 pub mod snapshot;
@@ -35,9 +34,6 @@ pub use memory::{
     MapToolRegistry,
 };
 pub use model_capabilities::ModelCapabilityPatch;
-pub use pinned::{
-    PinnedAgentSpecRegistry, PinnedModelRegistry, PinnedRegistryError, PinnedSpecMap,
-};
 pub use resolve::ResolveError;
 pub use resolver::{AgentResolver, ResolvedAgent, ResolvedBackendAgent};
 pub use snapshot::{RegistryHandle, RegistrySnapshot};

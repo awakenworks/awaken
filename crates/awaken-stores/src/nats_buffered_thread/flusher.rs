@@ -1110,7 +1110,7 @@ mod tests {
             thread_id: thread_id.into(),
             agent_id: "a".into(),
             parent_run_id: None,
-            registry_manifest: None,
+            resolution_id: None,
             activation: None,
             request: None,
             input: None,

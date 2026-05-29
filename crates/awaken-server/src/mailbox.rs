@@ -23,9 +23,7 @@ use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::run::{
     RunActivationSnapshot, RunInputSnapshot, RunIntent, RunKind, RunOptions, RunTraceContext,
 };
-use awaken_server_contract::contract::storage::{
-    PinnedRegistryManifest, RunRecord, StorageError, ThreadRunStore,
-};
+use awaken_server_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
 use awaken_server_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
 use awaken_server_contract::contract::tool_intercept::{AdapterKind, RunMode};
 
@@ -68,7 +66,7 @@ pub(crate) const ACTIVE_RUN_CONFLICT_MESSAGE: &str =
 pub(super) fn run_activation_snapshot(
     request: &RunActivation,
     persisted_input: RunInputSnapshot,
-    pinned_manifest: PinnedRegistryManifest,
+    resolution_id: Option<String>,
 ) -> RunActivationSnapshot {
     RunActivationSnapshot {
         intent: request.intent.clone(),
@@ -76,7 +74,7 @@ pub(super) fn run_activation_snapshot(
         options: request.options.clone(),
         trace: request.trace.clone(),
         seeded_decisions: request.control.seeded_decisions.clone(),
-        resolution_scope: pinned_manifest,
+        resolution_id,
     }
 }
 
@@ -186,7 +184,7 @@ impl LegacyRunSnapshotExtras {
 pub(super) struct LegacyRunRequestSnapshotAdapter {
     pub snapshot: awaken_server_contract::contract::storage::RunRequestSnapshot,
     pub input: RunInputSnapshot,
-    pub manifest: awaken_server_contract::contract::storage::PinnedRegistryManifest,
+    pub resolution_id: Option<String>,
     pub thread_id: String,
     pub agent_id: Option<String>,
     pub parent_run_id: Option<String>,
@@ -253,7 +251,7 @@ impl TryFrom<LegacyRunRequestSnapshotAdapter> for RunActivationSnapshot {
             options,
             trace,
             seeded_decisions,
-            resolution_scope: value.manifest,
+            resolution_id: value.resolution_id,
         })
     }
 }

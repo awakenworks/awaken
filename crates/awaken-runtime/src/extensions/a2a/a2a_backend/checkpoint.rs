@@ -41,9 +41,9 @@ pub(super) async fn persist_accepted_checkpoint(
         thread_id: root.run_identity.thread_id.clone(),
         agent_id: root.agent_id.to_string(),
         parent_run_id: root.run_identity.parent_run_id.clone(),
-        registry_manifest: previous
+        resolution_id: previous
             .as_ref()
-            .and_then(|record| record.registry_manifest.clone()),
+            .and_then(|record| record.resolution_id.clone()),
         activation: previous
             .as_ref()
             .and_then(|record| record.activation.clone()),

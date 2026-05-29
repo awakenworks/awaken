@@ -22,7 +22,6 @@ use awaken_server_contract::contract::executor::{InferenceExecutionError, Infere
 use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_server_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
-use awaken_server_contract::contract::versioned_registry::PinnedRegistryManifest;
 use awaken_server_contract::registry_spec::AgentSpec;
 use awaken_server_contract::registry_spec::RemoteEndpoint;
 use awaken_server_contract::{RequestSurface, ScopeContext, ScopeId, scoped_key};
@@ -61,11 +60,7 @@ impl awaken_runtime::Resolver for TestRunResolver {
         Ok(awaken_runtime::ResolvedRunPlan::Replayable(
             awaken_runtime::ReplayableResolvedRun {
                 artifact: awaken_runtime::ResolutionArtifact {
-                    registry_manifest: PinnedRegistryManifest {
-                        publication_id: Some("test-publication".into()),
-                        registry_snapshot_version: Some(1),
-                        entries: Vec::new(),
-                    },
+                    resolution_id: "test-resolution".to_string(),
                 },
                 execution: awaken_runtime::ResolvedRun {
                     agent_spec: execution.spec().clone(),
@@ -548,7 +543,7 @@ fn run_record_with_status(run_id: &str, status: RunStatus) -> RunRecord {
         thread_id: format!("{run_id}-thread"),
         agent_id: "test-agent".to_string(),
         parent_run_id: None,
-        registry_manifest: None,
+        resolution_id: None,
         activation: None,
         request: None,
         input: None,
@@ -1387,7 +1382,7 @@ async fn list_runs_returns_seeded_records() {
             thread_id: format!("thread-list-{i}"),
             agent_id: "test-agent".to_string(),
             parent_run_id: None,
-            registry_manifest: None,
+            resolution_id: None,
             activation: None,
             request: None,
             input: None,
@@ -1429,7 +1424,7 @@ async fn list_runs_supports_status_filter() {
         thread_id: "thread-filter".to_string(),
         agent_id: "test-agent".to_string(),
         parent_run_id: None,
-        registry_manifest: None,
+        resolution_id: None,
         activation: None,
         request: None,
         input: None,
@@ -1457,7 +1452,7 @@ async fn list_runs_supports_status_filter() {
         thread_id: "thread-filter-2".to_string(),
         agent_id: "test-agent".to_string(),
         parent_run_id: None,
-        registry_manifest: None,
+        resolution_id: None,
         activation: None,
         request: None,
         input: None,

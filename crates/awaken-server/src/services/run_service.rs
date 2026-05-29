@@ -147,7 +147,7 @@ mod tests {
             thread_id: thread_id.to_owned(),
             agent_id: "agent-1".to_owned(),
             parent_run_id: None,
-            registry_manifest: None,
+            resolution_id: None,
             activation: None,
             request: None,
             input: None,

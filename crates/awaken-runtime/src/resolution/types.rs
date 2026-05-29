@@ -1,6 +1,5 @@
 use awaken_runtime_contract::contract::identity::RunIdentity;
 use awaken_runtime_contract::contract::inference::InferenceOverride;
-use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
 use awaken_runtime_contract::contract::run::RunKind;
 use awaken_runtime_contract::contract::tool::ToolDescriptor;
 use awaken_runtime_contract::registry_spec::AgentSpec;
@@ -53,7 +52,9 @@ impl ResolutionRequest {
 pub enum RegistryResolutionScope {
     #[default]
     Live,
-    Pinned(PinnedRegistryManifest),
+    /// Bound to a server-owned resolved registry snapshot, referenced by an
+    /// opaque id. The runtime never inspects the underlying manifest.
+    Pinned(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -140,7 +141,8 @@ pub enum ResolvedRunPlan {
 
 #[derive(Clone)]
 pub struct ResolutionArtifact {
-    pub registry_manifest: PinnedRegistryManifest,
+    /// Opaque id of the server-owned resolved registry snapshot.
+    pub resolution_id: String,
 }
 
 #[derive(Clone)]
@@ -193,9 +195,9 @@ impl ResolvedRunPlan {
     }
 
     #[must_use]
-    pub fn replayable_manifest(&self) -> Option<&PinnedRegistryManifest> {
+    pub fn resolution_id(&self) -> Option<&str> {
         match self {
-            Self::Replayable(plan) => Some(&plan.artifact.registry_manifest),
+            Self::Replayable(plan) => Some(plan.artifact.resolution_id.as_str()),
             Self::LiveOnly(_) => None,
         }
     }

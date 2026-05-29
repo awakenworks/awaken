@@ -277,10 +277,10 @@ pub(super) async fn run_claimed_dispatch(
             continue_run_id,
         )));
     request = request.with_inbox(inbox_sender, inbox_receiver);
-    let registry_manifest = match this.run_store.load_run(&run_id).await {
-        Ok(Some(record)) => record.registry_manifest.ok_or_else(|| {
+    let resolution_id = match this.run_store.load_run(&run_id).await {
+        Ok(Some(record)) => record.resolution_id.ok_or_else(|| {
             format!(
-                "persistent dispatch for run '{}' has no pinned registry manifest",
+                "persistent dispatch for run '{}' has no resolution id",
                 record.run_id
             )
         }),
@@ -293,14 +293,14 @@ pub(super) async fn run_claimed_dispatch(
             run_id
         )),
     };
-    let result = match registry_manifest {
-        Ok(registry_manifest) => {
+    let result = match resolution_id {
+        Ok(resolution_id) => {
             match this
                 .executor
                 .resolve_activation_in_scope(
                     &request,
                     ResolutionPolicy::PersistentServer,
-                    RegistryResolutionScope::Pinned(registry_manifest),
+                    RegistryResolutionScope::Pinned(resolution_id),
                 )
                 .await
                 .and_then(|plan| plan.into_replayable())
@@ -309,7 +309,7 @@ pub(super) async fn run_claimed_dispatch(
                     if let Some(handler) = this.pending_boundary_handler(
                         &request,
                         &run_id,
-                        &plan.artifact.registry_manifest,
+                        plan.artifact.resolution_id.as_str(),
                     ) {
                         request = request.with_pending_boundary_handler(handler);
                     }

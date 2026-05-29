@@ -4,9 +4,8 @@
 mod capability_runtime;
 mod catalog;
 mod filter;
-mod manifest;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::error::RuntimeError;
@@ -24,16 +23,12 @@ use crate::resolution::{
 };
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::executor::LlmExecutor;
-use awaken_runtime_contract::contract::pinned_registry::{
-    PinnedRegistryEntry, PinnedRegistryManifest, REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL_POOL,
-};
 use awaken_runtime_contract::contract::tool::Tool;
 use awaken_runtime_contract::registry_spec::{AgentSpec, ModelSpec};
 
 use crate::registry::model_capabilities::ModelCapabilitySources;
 use crate::registry::snapshot::RegistryHandle;
 use crate::registry::traits::RegistrySet;
-use manifest::{collect_model_manifest_entries, insert_manifest_entry};
 
 use self::filter::filter_tools;
 use super::error::ResolveError;
@@ -511,24 +506,12 @@ fn resolve_delegate_tools(
 /// resolution logic. `RegistrySet` stays a pure data container.
 pub struct RegistrySetResolver {
     registries: RegistrySet,
-    snapshot_version: Option<u64>,
 }
 
 impl RegistrySetResolver {
     #[must_use]
     pub fn new(registries: RegistrySet) -> Self {
-        Self {
-            registries,
-            snapshot_version: None,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn with_snapshot_version(registries: RegistrySet, snapshot_version: u64) -> Self {
-        Self {
-            registries,
-            snapshot_version: Some(snapshot_version),
-        }
+        Self { registries }
     }
 }
 
@@ -564,116 +547,15 @@ impl Resolver for RegistrySetResolver {
             .map_err(|error| RunResolveError::Runtime(error.to_string()))?;
         let requirements = BackendRequirements::from_features(&request.features);
         let profile = backend_profile_for_execution(&execution)?;
-        let resolution_scope =
-            self.resolution_scope_for_request(&agent_id, request.resolution_scope, &requirements)?;
         let plan = resolved_run(
             execution,
             role,
             request.overrides,
             requirements,
             profile,
-            resolution_scope,
+            request.resolution_scope,
         )?;
         Ok(plan)
-    }
-}
-
-impl RegistrySetResolver {
-    fn resolution_scope_for_request(
-        &self,
-        agent_id: &str,
-        scope: RegistryResolutionScope,
-        requirements: &BackendRequirements,
-    ) -> Result<RegistryResolutionScope, RunResolveError> {
-        match scope {
-            RegistryResolutionScope::Live if requirements.persistence.is_some() => Ok(
-                RegistryResolutionScope::Pinned(self.in_memory_manifest(agent_id)?),
-            ),
-            RegistryResolutionScope::Pinned(manifest) => {
-                self.validate_manifest_snapshot(&manifest)?;
-                Ok(RegistryResolutionScope::Pinned(manifest))
-            }
-            RegistryResolutionScope::Live => Ok(RegistryResolutionScope::Live),
-        }
-    }
-
-    fn validate_manifest_snapshot(
-        &self,
-        manifest: &PinnedRegistryManifest,
-    ) -> Result<(), RunResolveError> {
-        let (Some(expected), Some(actual)) =
-            (manifest.registry_snapshot_version, self.snapshot_version)
-        else {
-            return Ok(());
-        };
-        if expected != actual {
-            return Err(RunResolveError::UnsupportedPersistence(format!(
-                "pinned registry snapshot version {expected} is not active in this runtime \
-                 (current snapshot version {actual}); configure a versioned registry store \
-                 to replay across registry updates"
-            )));
-        }
-        Ok(())
-    }
-
-    fn in_memory_manifest(
-        &self,
-        root_agent_id: &str,
-    ) -> Result<PinnedRegistryManifest, RunResolveError> {
-        let mut entries = BTreeMap::<(String, String), PinnedRegistryEntry>::new();
-        let mut visiting = HashSet::<String>::new();
-        self.collect_agent_manifest_entries(root_agent_id, &mut entries, &mut visiting)?;
-        Ok(PinnedRegistryManifest {
-            publication_id: None,
-            registry_snapshot_version: self.snapshot_version,
-            entries: entries.into_values().collect(),
-        })
-    }
-
-    fn collect_agent_manifest_entries(
-        &self,
-        agent_id: &str,
-        entries: &mut BTreeMap<(String, String), PinnedRegistryEntry>,
-        visiting: &mut HashSet<String>,
-    ) -> Result<(), RunResolveError> {
-        if !visiting.insert(agent_id.to_string()) {
-            return Ok(());
-        }
-        let agent = self.registries.agents.get_agent(agent_id).ok_or_else(|| {
-            RunResolveError::Runtime(format!(
-                "agent not found while pinning registry: {agent_id}"
-            ))
-        })?;
-        insert_manifest_entry(entries, REGISTRY_KIND_AGENT, &agent.id, &agent);
-
-        let model = self.registries.models.get_model(&agent.model_id);
-        let pool = self.registries.models.get_pool(&agent.model_id);
-        match (model, pool) {
-            (Some(_), Some(_)) => {
-                return Err(RunResolveError::Runtime(format!(
-                    "model id resolves to both a model and a model pool: {}",
-                    agent.model_id
-                )));
-            }
-            (Some(model), None) => {
-                collect_model_manifest_entries(entries, &agent.model_id, model);
-            }
-            (None, Some(pool)) => {
-                insert_manifest_entry(entries, REGISTRY_KIND_MODEL_POOL, &pool.id, &pool);
-                for member in &pool.members {
-                    if let Some(model) = self.registries.models.get_model(&member.model_id) {
-                        collect_model_manifest_entries(entries, &member.model_id, model);
-                    }
-                }
-            }
-            (None, None) => {}
-        }
-
-        for delegate_id in &agent.delegates {
-            self.collect_agent_manifest_entries(delegate_id, entries, visiting)?;
-        }
-        visiting.remove(agent_id);
-        Ok(())
     }
 }
 
@@ -716,7 +598,7 @@ fn resolved_run(
         ExecutionPlan::Remote(_) => Vec::new(),
     };
     match resolution_scope {
-        RegistryResolutionScope::Pinned(manifest) => {
+        RegistryResolutionScope::Pinned(resolution_id) => {
             Ok(ResolvedRunPlan::Replayable(ReplayableResolvedRun {
                 execution: ResolvedRun {
                     agent_spec,
@@ -729,18 +611,13 @@ fn resolved_run(
                     requirements,
                     scope: ReplayableScope,
                 },
-                artifact: ResolutionArtifact {
-                    registry_manifest: manifest,
-                },
+                artifact: ResolutionArtifact { resolution_id },
             }))
         }
         RegistryResolutionScope::Live => {
-            if requirements.persistence.is_some() {
-                return Err(RunResolveError::UnsupportedPersistence(
-                    "live RegistrySetResolver cannot materialize a replayable registry scope"
-                        .into(),
-                ));
-            }
+            // No server-issued resolution id: the run resolves against the live
+            // registry. Persistent runs are best-effort (resume re-resolves
+            // live); deterministic replay requires a `Pinned` resolution id.
             Ok(ResolvedRunPlan::LiveOnly(ResolvedRun {
                 agent_spec,
                 role,
@@ -801,9 +678,7 @@ impl Resolver for DynamicRegistryResolver {
         request: ResolutionRequest,
     ) -> Result<ResolvedRunPlan, RunResolveError> {
         let snapshot = self.handle.snapshot();
-        let version = snapshot.version();
-        let resolver =
-            RegistrySetResolver::with_snapshot_version(snapshot.into_registries(), version);
+        let resolver = RegistrySetResolver::new(snapshot.into_registries());
         Resolver::resolve(&resolver, request).await
     }
 }

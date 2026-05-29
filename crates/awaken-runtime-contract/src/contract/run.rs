@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::identity::RunOrigin;
 use super::inference::InferenceOverride;
 use super::message::Message;
-use super::storage::{MessageSeqRange, PinnedRegistryManifest, RunRequestOrigin};
+use super::storage::{MessageSeqRange, RunRequestOrigin};
 use super::suspension::ToolCallResume;
 use super::tool::ToolDescriptor;
 use super::tool_intercept::{AdapterKind, RunMode};
@@ -117,7 +117,10 @@ pub struct RunActivationSnapshot {
     pub trace: RunTraceContext,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seeded_decisions: Vec<(String, ToolCallResume)>,
-    pub resolution_scope: PinnedRegistryManifest,
+    /// Opaque id of the resolved registry binding for this activation. The
+    /// server owns the referenced content; the runtime treats it as opaque.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_id: Option<String>,
 }
 
 impl From<RunRequestOrigin> for RunOrigin {
@@ -145,24 +148,9 @@ impl From<RunOrigin> for RunRequestOrigin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::storage::PinnedRegistryEntry;
-
-    fn manifest() -> PinnedRegistryManifest {
-        PinnedRegistryManifest {
-            publication_id: Some("pub-1".into()),
-            registry_snapshot_version: Some(1),
-            entries: vec![PinnedRegistryEntry {
-                kind: "agent".into(),
-                id: "agent-a".into(),
-                version: 1,
-                content_hash:
-                    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
-            }],
-        }
-    }
 
     #[test]
-    fn activation_snapshot_serializes_pinned_scope_not_live() {
+    fn activation_snapshot_carries_resolution_id() {
         let snapshot = RunActivationSnapshot {
             intent: RunIntent {
                 agent_id: Some("agent-a".into()),
@@ -177,10 +165,10 @@ mod tests {
             options: RunOptions::default(),
             trace: RunTraceContext::default(),
             seeded_decisions: Vec::new(),
-            resolution_scope: manifest(),
+            resolution_id: Some("resolution-1".into()),
         };
         let value = serde_json::to_value(&snapshot).expect("serialize snapshot");
-        assert!(value.get("resolution_scope").is_some());
+        assert_eq!(value["resolution_id"], "resolution-1");
         assert_eq!(value["intent"]["thread_id"], "thread");
     }
 

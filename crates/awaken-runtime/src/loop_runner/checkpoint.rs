@@ -15,7 +15,6 @@ use awaken_runtime_contract::contract::event_sink::EventSink;
 use awaken_runtime_contract::contract::identity::RunIdentity;
 use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_runtime_contract::contract::message::{Message, Role, Visibility};
-use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
 use awaken_runtime_contract::contract::storage::{
     MessageSeqRange, RunMessageInput, RunMessageOutput, RunOutcome, RunRecord, RunWaitingState,
     RunWaitingTicket, WaitingReason,
@@ -34,7 +33,7 @@ use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates};
 pub struct CommitWiring<'a> {
     pub commit_coordinator: Option<&'a dyn CommitCoordinator>,
     pub event_buffer: Option<&'a EventBuffer>,
-    pub registry_manifest_seed: Option<&'a PinnedRegistryManifest>,
+    pub resolution_id_seed: Option<&'a str>,
 }
 
 impl<'a> CommitWiring<'a> {
@@ -49,13 +48,13 @@ impl<'a> CommitWiring<'a> {
         Self {
             commit_coordinator: coordinator,
             event_buffer: buffer,
-            registry_manifest_seed: None,
+            resolution_id_seed: None,
         }
     }
 
     #[must_use]
-    pub fn with_registry_manifest_seed(mut self, seed: Option<&'a PinnedRegistryManifest>) -> Self {
-        self.registry_manifest_seed = seed;
+    pub fn with_resolution_id_seed(mut self, seed: Option<&'a str>) -> Self {
+        self.resolution_id_seed = seed;
         self
     }
 }
@@ -232,10 +231,10 @@ pub(super) async fn persist_checkpoint(
         thread_id: run_identity.thread_id.clone(),
         agent_id: run_identity.agent_id.clone(),
         parent_run_id: run_identity.parent_run_id.clone(),
-        registry_manifest: previous
+        resolution_id: previous
             .as_ref()
-            .and_then(|record| record.registry_manifest.clone())
-            .or_else(|| commit.registry_manifest_seed.cloned()),
+            .and_then(|record| record.resolution_id.clone())
+            .or_else(|| commit.resolution_id_seed.map(str::to_string)),
         activation: previous
             .as_ref()
             .and_then(|record| record.activation.clone()),

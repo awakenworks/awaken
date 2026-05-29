@@ -38,7 +38,7 @@ mod tests {
                 thread_id: "t1".to_string(),
                 agent_id: "agent".to_string(),
                 parent_run_id: None,
-                registry_manifest: None,
+                resolution_id: None,
                 activation: None,
                 request: None,
                 input: None,

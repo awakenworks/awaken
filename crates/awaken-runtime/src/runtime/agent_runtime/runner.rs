@@ -215,9 +215,9 @@ impl AgentRuntime {
         } else {
             self.execution_resolver_arc()
         };
-        let registry_manifest_seed = resolved_plan
+        let resolution_id_seed = resolved_plan
             .as_ref()
-            .and_then(|plan| plan.replayable_manifest().cloned());
+            .and_then(|plan| plan.resolution_id().map(str::to_string));
         let resolved_execution = if let Some(plan) = resolved_plan {
             validate_resolved_root_plan(&plan, &agent_id)?;
             plan.execution().clone()
@@ -351,7 +351,7 @@ impl AgentRuntime {
                 ExecutionPlan::Remote(_) => storage,
             },
             commit: CommitWiring::new(self.commit_coordinator.as_deref(), event_buffer.as_deref())
-                .with_registry_manifest_seed(registry_manifest_seed.as_ref()),
+                .with_resolution_id_seed(resolution_id_seed.as_deref()),
             control: BackendControl {
                 cancellation_token: capabilities
                     .cancellation

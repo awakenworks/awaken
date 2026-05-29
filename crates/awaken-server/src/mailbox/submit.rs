@@ -17,9 +17,7 @@ use awaken_server_contract::contract::lifecycle::RunStatus;
 use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::run::{RunInput, RunInputSnapshot, RunKind};
-use awaken_server_contract::contract::storage::{
-    MessageSeqRange, PinnedRegistryManifest, RunRecord, RunRequestSnapshot,
-};
+use awaken_server_contract::contract::storage::{MessageSeqRange, RunRecord, RunRequestSnapshot};
 use awaken_server_contract::contract::tool_intercept::RunMode;
 use awaken_server_contract::now_ms;
 
@@ -388,7 +386,7 @@ impl Mailbox {
         // append retries: a version-conflicting append never commits the run,
         // so `load_run(run_id)` is invariant under retry.
         let existing_run = self.run_store.load_run(&run_id).await?;
-        let (mut record, manifest) = if let Some(mut existing) = existing_run {
+        let (mut record, resolution_id) = if let Some(mut existing) = existing_run {
             if existing.thread_id != thread_id {
                 return Err(MailboxError::Validation(format!(
                     "run_id '{run_id}' belongs to thread '{}', not '{thread_id}'",
@@ -403,18 +401,18 @@ impl Mailbox {
             if request.intent.agent_id.is_none() {
                 request.intent.agent_id = Some(existing.agent_id.clone());
             }
-            let manifest = if let Some(manifest) = existing.registry_manifest.clone() {
-                manifest
+            let resolution_id = if let Some(id) = existing.resolution_id.clone() {
+                id
             } else {
-                let manifest = self
-                    .resolve_replayable_manifest(request, RegistryResolutionScope::Live)
+                let id = self
+                    .resolve_replayable_resolution_id(request, run_id.clone())
                     .await?;
-                existing.registry_manifest = Some(manifest.clone());
-                manifest
+                existing.resolution_id = Some(id.clone());
+                id
             };
             existing.request = None;
             existing.dispatch_id = Some(dispatch_id);
-            (existing, manifest)
+            (existing, resolution_id)
         } else {
             let inferred_agent_id = request
                 .intent
@@ -434,8 +432,8 @@ impl Mailbox {
             if request.intent.agent_id.is_none() {
                 request.intent.agent_id = Some(inferred_agent_id.clone());
             }
-            let manifest = self
-                .resolve_replayable_manifest(request, RegistryResolutionScope::Live)
+            let resolution_id = self
+                .resolve_replayable_resolution_id(request, run_id.clone())
                 .await?;
             let now = now_ms() / 1000;
             let record = RunRecord {
@@ -443,7 +441,7 @@ impl Mailbox {
                 thread_id: thread_id.to_string(),
                 agent_id: inferred_agent_id,
                 parent_run_id: request.trace.parent_run_id.clone(),
-                registry_manifest: Some(manifest.clone()),
+                resolution_id: Some(resolution_id.clone()),
                 activation: None,
                 request: None,
                 input: None,
@@ -466,7 +464,7 @@ impl Mailbox {
                 output_tokens: 0,
                 state: inherited_state,
             };
-            (record, manifest)
+            (record, resolution_id)
         };
 
         if let Some(run_id) = self
@@ -476,7 +474,7 @@ impl Mailbox {
                 &normalized_messages,
                 &run_id,
                 &mut record,
-                &manifest,
+                resolution_id.as_str(),
             )
             .await?
         {
@@ -499,7 +497,7 @@ impl Mailbox {
             record.activation = Some(run_activation_snapshot(
                 request,
                 input_snapshot,
-                manifest.clone(),
+                Some(resolution_id.clone()),
             ));
             record.input = input;
             record.updated_at = now_ms() / 1000;
@@ -551,20 +549,23 @@ impl Mailbox {
         )))
     }
 
-    async fn resolve_replayable_manifest(
+    /// Validate that `request` resolves to a replayable plan bound to
+    /// `resolution_id`, returning the id the plan carries. The server owns the
+    /// resolution id; the runtime treats it as opaque.
+    async fn resolve_replayable_resolution_id(
         &self,
         request: &RunActivation,
-        resolution_scope: RegistryResolutionScope,
-    ) -> Result<PinnedRegistryManifest, MailboxError> {
+        resolution_id: String,
+    ) -> Result<String, MailboxError> {
         self.executor
             .resolve_activation_in_scope(
                 request,
                 ResolutionPolicy::PersistentServer,
-                resolution_scope,
+                RegistryResolutionScope::Pinned(resolution_id),
             )
             .await
             .and_then(|plan| plan.into_replayable())
-            .map(|plan| plan.artifact.registry_manifest)
+            .map(|plan| plan.artifact.resolution_id)
             .map_err(|error| {
                 MailboxError::Validation(format!(
                     "persistent mailbox dispatch requires a replayable resolved run: {error}"
@@ -676,18 +677,13 @@ impl Mailbox {
                 })
             })
             .transpose()?;
-        let manifest = run.registry_manifest.clone().ok_or_else(|| {
-            MailboxError::Validation(format!(
-                "legacy run '{}' has no pinned registry manifest",
-                run.run_id
-            ))
-        })?;
+        let resolution_id = run.resolution_id.clone();
         let input = legacy_input_snapshot(&run, &snapshot);
         let snapshot = awaken_server_contract::contract::run::RunActivationSnapshot::try_from(
             LegacyRunRequestSnapshotAdapter {
                 snapshot,
                 input,
-                manifest,
+                resolution_id,
                 thread_id: run.thread_id.clone(),
                 agent_id: (!run.agent_id.trim().is_empty()).then(|| run.agent_id.clone()),
                 parent_run_id: run.parent_run_id.clone(),

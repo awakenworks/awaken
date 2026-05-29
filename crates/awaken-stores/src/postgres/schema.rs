@@ -33,7 +33,7 @@ impl PostgresStore {
                     thread_id TEXT NOT NULL,
                     agent_id TEXT NOT NULL DEFAULT '',
                     parent_run_id TEXT,
-                    registry_manifest JSONB,
+                    resolution_id JSONB,
                     activation JSONB,
                     request JSONB,
                     run_input JSONB,
@@ -137,7 +137,7 @@ impl PostgresStore {
         let run_migrations = [
             ("activation", "JSONB"),
             ("request", "JSONB"),
-            ("registry_manifest", "JSONB"),
+            ("resolution_id", "JSONB"),
             ("run_input", "JSONB"),
             ("run_output", "JSONB"),
             ("termination_reason", "JSONB"),

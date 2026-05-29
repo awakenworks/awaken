@@ -14,7 +14,6 @@ pub mod live_control;
 pub mod mailbox;
 pub mod message;
 pub mod outbox;
-pub mod pinned_registry;
 pub mod profile_store;
 pub mod progress;
 pub mod run;

@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::json;
 
-use awaken::contract::config_store::ConfigStore;
 use awaken::contract::content::ContentBlock;
 use awaken::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
 use awaken::contract::inference::{StopReason, StreamResult};
@@ -15,6 +14,7 @@ use awaken::ext_skills::{
     ActiveSkillInstructionsPlugin, ConfigSkillRegistry, SkillDiscoveryPlugin, SkillRegistry,
 };
 use awaken::server::services::config_runtime::{ConfigRuntimeError, ConfigRuntimeManager};
+use awaken::server_contract::config_store::ConfigStore;
 use awaken::{
     AgentRuntime, AgentRuntimeBuilder, Plugin, RunActivation, SkillArgumentSpec, SkillSpec,
     SkillSpecSink,

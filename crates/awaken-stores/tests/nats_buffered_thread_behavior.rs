@@ -106,7 +106,7 @@ fn mk_run(id: &str, thread: &str) -> RunRecord {
         thread_id: thread.into(),
         agent_id: "a".into(),
         parent_run_id: None,
-        registry_manifest: None,
+        resolution_id: None,
         activation: None,
         request: None,
         input: None,

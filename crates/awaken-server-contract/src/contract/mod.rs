@@ -9,6 +9,7 @@ pub mod audit_log;
 pub mod config_store;
 pub mod mailbox;
 pub mod outbox;
+pub mod pinned_registry;
 pub mod protocol_replay_log;
 pub mod registry_graph;
 pub mod scope;

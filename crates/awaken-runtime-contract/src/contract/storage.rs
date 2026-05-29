@@ -1,7 +1,6 @@
 //! Storage traits for thread, run record, and persistence.
 use super::lifecycle::{RunStatus, TerminationReason};
 use super::message::{Message, MessageRecord, Visibility};
-pub use super::pinned_registry::{PinnedRegistryEntry, PinnedRegistryManifest};
 use super::suspension::{ToolCallResume, ToolCallResumeMode};
 use super::tool::ToolDescriptor;
 use crate::state::PersistedState;
@@ -216,9 +215,10 @@ pub struct RunRecord {
     pub agent_id: String,
     /// Parent run identifier for nested/handoff runs.
     pub parent_run_id: Option<String>,
-    /// Published runtime-config versions frozen for this run.
+    /// Opaque id of the resolved registry binding frozen for this run. The
+    /// server owns the referenced content; the runtime treats it as opaque.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub registry_manifest: Option<PinnedRegistryManifest>,
+    pub resolution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation: Option<super::run::RunActivationSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

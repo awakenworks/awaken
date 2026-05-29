@@ -510,7 +510,7 @@ mod tests {
             run_id: "run-1".to_string(),
             thread_id: "t-1".to_string(),
             agent_id: "agent-1".to_string(),
-            registry_manifest: None,
+            resolution_id: None,
             activation: None,
             ..Default::default()
         }

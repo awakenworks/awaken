@@ -572,14 +572,6 @@ async fn foreground_prepare_consumes_messages_through_interrupt_boundary() {
     );
 }
 
-fn empty_manifest() -> awaken_server_contract::contract::storage::PinnedRegistryManifest {
-    awaken_server_contract::contract::storage::PinnedRegistryManifest {
-        publication_id: None,
-        registry_snapshot_version: None,
-        entries: Vec::new(),
-    }
-}
-
 #[tokio::test]
 async fn resume_with_user_messages_routes_through_pending() {
     use awaken_server_contract::contract::tool_intercept::RunMode;
@@ -605,7 +597,7 @@ async fn resume_with_user_messages_routes_through_pending() {
             &messages,
             "run-resume-user",
             &mut record,
-            &empty_manifest(),
+            "resolution-test",
         )
         .await
         .unwrap();
@@ -641,7 +633,7 @@ async fn internal_wake_skips_pending() {
             &messages,
             "run-wake",
             &mut record,
-            &empty_manifest(),
+            "resolution-test",
         )
         .await
         .unwrap();
@@ -665,7 +657,7 @@ async fn boundary_freeze_accumulates_run_input_across_freezes() {
         .unwrap();
     let request = RunActivation::new("thread-acc", Vec::new()).with_run_id_hint("run-acc");
     let handler = mailbox
-        .pending_boundary_handler(&request, "run-acc", &empty_manifest())
+        .pending_boundary_handler(&request, "run-acc", "resolution-test")
         .expect("handler configured");
 
     mailbox
@@ -746,7 +738,7 @@ async fn freeze_retry_after_conflict_does_not_leave_phantom_trigger_ids() {
             DeliveryBoundary::NewRun,
             "run-conflict",
             &mut record,
-            &empty_manifest(),
+            "resolution-test",
             None,
         )
         .await
@@ -833,7 +825,7 @@ async fn freeze_event_publish_failure_is_repairable_success() {
             DeliveryBoundary::NewRun,
             "run-event-fail",
             &mut record,
-            &empty_manifest(),
+            "resolution-test",
             None,
         )
         .await

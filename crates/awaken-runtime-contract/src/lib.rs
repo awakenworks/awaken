@@ -112,11 +112,6 @@ pub use contract::live_control::{
     LiveRunCommandSource, LiveRunCommandStream, LiveRunTarget,
 };
 
-// ── pinned registry ──
-pub use contract::pinned_registry::{
-    PinnedRegistryEntry, PinnedRegistryHashError, PinnedRegistryManifest,
-};
-
 // ── profile store ──
 pub use contract::profile_store::{ProfileEntry, ProfileKey, ProfileOwner, ProfileStore};
 

@@ -89,9 +89,9 @@ pub(super) async fn persist_remote_root_checkpoint(
         thread_id: thread_id.to_string(),
         agent_id: agent_id.to_string(),
         parent_run_id,
-        registry_manifest: previous
+        resolution_id: previous
             .as_ref()
-            .and_then(|record| record.registry_manifest.clone()),
+            .and_then(|record| record.resolution_id.clone()),
         activation: previous
             .as_ref()
             .and_then(|record| record.activation.clone()),
