@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::EventBuffer;
 use crate::checkpoint_store::RuntimeCheckpointStore;
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
@@ -26,28 +25,22 @@ use serde_json::Value;
 use super::{AgentLoopError, commit_update, now_ms};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates};
 
-/// Optional coordinator + buffer references threaded through the
-/// loop-runner call chain so individual sites carry one field, not two
-/// (ADR-0036).
+/// Optional coordinator reference threaded through the loop-runner call
+/// chain (ADR-0036). Canonical event drafts are staged and folded into the
+/// commit by the (server-supplied) coordinator itself, so the runtime carries
+/// no staging buffer here.
 #[derive(Default, Clone, Copy)]
 pub struct CommitWiring<'a> {
     pub commit_coordinator: Option<&'a dyn CommitCoordinator>,
-    pub event_buffer: Option<&'a EventBuffer>,
     pub resolution_id_seed: Option<&'a str>,
 }
 
 impl<'a> CommitWiring<'a> {
-    /// Wire a coordinator and an optional per-run staging buffer. The
-    /// buffer is the same handle the sink-wrap layer was given, so the
-    /// checkpoint commit drains exactly the drafts staged for this run.
+    /// Wire a coordinator for this run.
     #[must_use]
-    pub fn new(
-        coordinator: Option<&'a dyn CommitCoordinator>,
-        buffer: Option<&'a EventBuffer>,
-    ) -> Self {
+    pub fn new(coordinator: Option<&'a dyn CommitCoordinator>) -> Self {
         Self {
             commit_coordinator: coordinator,
-            event_buffer: buffer,
             resolution_id_seed: None,
         }
     }
@@ -272,10 +265,6 @@ pub(super) async fn persist_checkpoint(
                 .to_string(),
         )
     })?;
-    let canonical_drafts = commit
-        .event_buffer
-        .map(|buf| buf.drain())
-        .unwrap_or_default();
     const MAX_APPEND_ATTEMPTS: usize = 8;
     for _ in 0..MAX_APPEND_ATTEMPTS {
         let committed_messages = storage
@@ -299,8 +288,7 @@ pub(super) async fn persist_checkpoint(
             delta,
             Some(expected_version),
             record,
-        )
-        .with_canonical_drafts(canonical_drafts.clone());
+        );
         match coordinator.commit_checkpoint(plan).await {
             Ok(_) => {
                 // `storage` is read at function start for `load_run`; the checkpoint

@@ -173,11 +173,14 @@ impl AgentRuntime {
             options,
             trace,
             control,
-            capture,
+            capture: _,
             persistence,
             inherited,
         } = activation;
-        let event_buffer = capture.event_buffer;
+        // Per-run coordinator override (server staging coordinator) supersedes
+        // the build-time coordinator. Canonical event drafts are folded into
+        // the commit by that coordinator, so the runtime carries no buffer.
+        let commit_coordinator_override = control.commit_coordinator_override.clone();
         let pinned_registry_set = inherited.pinned_registry_set;
         let run_id_hint = persistence.run_id_hint;
         let dispatch_id_hint = persistence.dispatch_id_hint;
@@ -330,8 +333,10 @@ impl AgentRuntime {
             Some(wrapper) => wrapper,
             None => run_resolver.as_ref(),
         };
-        #[rustfmt::skip]
-        let coord_store = self.commit_coordinator.as_ref().map(|c| c.thread_run_store());
+        let effective_coordinator: Option<
+            Arc<dyn awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator>,
+        > = commit_coordinator_override.or_else(|| self.commit_coordinator.clone());
+        let coord_store = effective_coordinator.as_ref().map(|c| c.thread_run_store());
         let coord_checkpoint_store =
             coord_store.map(crate::checkpoint_store::ThreadRunCheckpointStore::new);
         let storage = self.checkpoint_storage.as_deref().or_else(|| {
@@ -350,7 +355,7 @@ impl AgentRuntime {
                 ExecutionPlan::Local(_) => phase_runtime.as_ref().and(storage),
                 ExecutionPlan::Remote(_) => storage,
             },
-            commit: CommitWiring::new(self.commit_coordinator.as_deref(), event_buffer.as_deref())
+            commit: CommitWiring::new(effective_coordinator.as_deref())
                 .with_resolution_id_seed(resolution_id_seed.as_deref()),
             control: BackendControl {
                 cancellation_token: capabilities

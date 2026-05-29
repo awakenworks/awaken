@@ -1,10 +1,6 @@
 use super::*;
-use crate::EventBuffer;
 use crate::agent::state::{ToolCallState, ToolCallStatesUpdate};
-use awaken_runtime_contract::contract::commit_coordinator::CanonicalEventStager;
-use awaken_runtime_contract::contract::event_store::{
-    CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope, EventVisibility,
-};
+use awaken_runtime_contract::contract::event_store::{EventReader, EventScope};
 use awaken_runtime_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
 use awaken_runtime_contract::contract::suspension::ToolCallResumeMode;
 use awaken_stores::{
@@ -427,7 +423,7 @@ async fn persist_checkpoint_preserves_existing_registry_manifest() {
     persist_checkpoint(CheckpointPersist {
         store: &state_store,
         checkpoint_store: Some(&reader),
-        commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator), None),
+        commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator)),
         messages: &messages,
         input_message_count: 1,
         run_identity: &identity,
@@ -523,7 +519,7 @@ async fn persist_checkpoint_appends_delta_after_concurrent_committed_message() {
     persist_checkpoint(CheckpointPersist {
         store: &state_store,
         checkpoint_store: Some(&reader),
-        commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator), None),
+        commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator)),
         messages: &messages,
         input_message_count: 1,
         run_identity: &identity,
@@ -592,7 +588,7 @@ async fn persist_checkpoint_uses_commit_seed_when_no_previous_record() {
     persist_checkpoint(CheckpointPersist {
         store: &state_store,
         checkpoint_store: Some(&reader),
-        commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator), None)
+        commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator))
             .with_resolution_id_seed(Some("resolution-2")),
         messages: &messages,
         input_message_count: 1,
@@ -618,9 +614,10 @@ async fn persist_checkpoint_uses_commit_seed_when_no_previous_record() {
 
 #[tokio::test]
 async fn persist_checkpoint_routes_through_commit_coordinator() {
-    // ADR-0036 D1+D2: when a coordinator is wired, the checkpoint and
-    // buffered canonical drafts commit atomically through the coordinator
-    // instead of through `ThreadRunStore::checkpoint`.
+    // ADR-0036 D1+D2: when a coordinator is wired, the checkpoint commits
+    // through the coordinator instead of `ThreadRunStore::checkpoint`. The
+    // runtime stages no canonical drafts itself — that is the server staging
+    // coordinator's job — so the plan carries an empty draft list here.
     let state_store = store_with_loop_state();
     let checkpoint_store = Arc::new(InMemoryStore::new());
     let event_store = Arc::new(InMemoryEventStore::new());
@@ -631,21 +628,6 @@ async fn persist_checkpoint_routes_through_commit_coordinator() {
         Arc::clone(&outbox_store),
     )
     .expect("memory coordinator builds");
-
-    // Pre-stage two canonical drafts via the runtime event buffer.
-    let buffer = EventBuffer::new();
-    for kind in ["RunStarted", "ToolCallReady"] {
-        let mut draft = CanonicalEventDraft::new(
-            vec![EventScope::thread("thread-c"), EventScope::run("run-c")],
-            CanonicalEventKind::new(kind).unwrap(),
-            json!({"kind": kind}),
-            "runtime",
-        )
-        .unwrap();
-        draft.visibility = EventVisibility::Public;
-        buffer.stage(draft);
-    }
-    assert_eq!(buffer.len(), 2, "buffer holds staged drafts before commit");
 
     let identity = RunIdentity::new(
         "thread-c".into(),
@@ -661,11 +643,7 @@ async fn persist_checkpoint_routes_through_commit_coordinator() {
     persist_checkpoint(CheckpointPersist {
         store: &state_store,
         checkpoint_store: Some(&reader),
-        commit: CommitWiring {
-            commit_coordinator: Some(&coordinator),
-            event_buffer: Some(&buffer),
-            resolution_id_seed: None,
-        },
+        commit: CommitWiring::new(Some(&coordinator)),
         messages: &messages,
         input_message_count: 1,
         run_identity: &identity,
@@ -680,9 +658,6 @@ async fn persist_checkpoint_routes_through_commit_coordinator() {
     .await
     .expect("coordinator commit succeeds");
 
-    // Buffer was drained as part of the commit.
-    assert!(buffer.is_empty(), "buffer drained by commit");
-
     // Thread checkpoint persisted (via coordinator path, not legacy
     // ThreadRunStore.checkpoint()).
     let loaded = checkpoint_store
@@ -692,10 +667,14 @@ async fn persist_checkpoint_routes_through_commit_coordinator() {
         .expect("run persisted by coordinator");
     assert_eq!(loaded.thread_id, "thread-c");
 
-    // Canonical events appended atomically with the checkpoint.
+    // The runtime stages no canonical events; that responsibility moved to the
+    // server staging coordinator (exercised in its own unit tests).
     let count = event_store
         .count(EventScope::run("run-c"))
         .await
         .expect("count canonical events");
-    assert_eq!(count, 2, "both staged drafts committed");
+    assert_eq!(
+        count, 0,
+        "runtime no longer stages canonical events directly"
+    );
 }

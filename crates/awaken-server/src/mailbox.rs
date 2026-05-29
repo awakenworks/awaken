@@ -811,6 +811,7 @@ mod pending_delivery;
 mod runtime_event_capture;
 mod server_event_capture;
 mod signal_loop;
+mod staging_coordinator;
 mod submit;
 
 use self::coordinator_facade::MailboxRunStoreCoordinator;

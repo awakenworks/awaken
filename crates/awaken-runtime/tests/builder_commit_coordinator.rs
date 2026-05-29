@@ -53,39 +53,26 @@ fn builder_wires_commit_coordinator_into_runtime() {
     assert_eq!(coord.scope().as_str(), "test::noop");
 }
 
-/// Event buffer plumbing: `RunActivation::with_event_buffer` must accept the
-/// same `Arc<EventBuffer>` the sink-wrap layer receives so the staging buffer
-/// and the checkpoint-drain buffer share identity.
+/// Per-run coordinator override plumbing: `RunActivation`'s
+/// `with_commit_coordinator_override` attaches the server staging coordinator
+/// for one run, which the runtime prefers over its build-time coordinator. The
+/// runtime never observes a canonical-event staging buffer.
 #[test]
-fn run_request_accepts_shared_event_buffer() {
-    use awaken_runtime::EventBuffer;
+fn run_activation_accepts_commit_coordinator_override() {
     use awaken_runtime::RunActivation;
-    use awaken_runtime_contract::contract::commit_coordinator::CanonicalEventStager;
-    use awaken_runtime_contract::contract::event_store::{
-        CanonicalEventDraft, CanonicalEventKind, EventScope,
-    };
-    use serde_json::json;
 
-    let buffer = Arc::new(EventBuffer::new());
-    let request = RunActivation::new("t-buf", Vec::new()).with_event_buffer(Arc::clone(&buffer));
+    let coordinator: Arc<dyn CommitCoordinator> = Arc::new(NoopCoord::default());
+    let activation = RunActivation::new("t-override", Vec::new())
+        .with_commit_coordinator_override(Arc::clone(&coordinator));
 
-    // The buffer field is exposed for the sink-wrap layer to pick up.
-    let from_request = request
-        .capture
-        .event_buffer
+    let attached = activation
+        .control
+        .commit_coordinator_override
         .as_ref()
-        .expect("buffer must be attached to RunActivation");
-    assert!(Arc::ptr_eq(from_request, &buffer));
+        .expect("override must be attached to RunActivation");
+    assert!(Arc::ptr_eq(attached, &coordinator));
 
-    // Staging through the same handle is observable from the original Arc,
-    // proving sink-side stages and runtime-side drains can share state.
-    let draft = CanonicalEventDraft::new(
-        vec![EventScope::thread("t-buf"), EventScope::run("r-buf")],
-        CanonicalEventKind::new("ToolCallReady").unwrap(),
-        json!({"id": "c1"}),
-        "test",
-    )
-    .unwrap();
-    (Arc::clone(&buffer) as Arc<dyn CanonicalEventStager>).stage(draft);
-    assert_eq!(buffer.len(), 1, "stage must reach the shared buffer");
+    // A neutral activation carries no override.
+    let neutral = RunActivation::new("t-neutral", Vec::new());
+    assert!(neutral.control.commit_coordinator_override.is_none());
 }

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_runtime_contract::contract::run::{
     RunInput, RunInputSnapshot, RunIntent, RunKind, RunOptions, RunTraceContext,
 };
@@ -14,7 +15,6 @@ use awaken_runtime_contract::contract::{
 };
 use futures::channel::mpsc;
 
-use crate::EventBuffer;
 use crate::cancellation::CancellationToken;
 use crate::inbox::{InboxReceiver, InboxSender};
 use crate::loop_runner::PendingBoundaryHandler;
@@ -58,16 +58,19 @@ pub struct RunControl {
     pub inbox: Option<RunInbox>,
     pub pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
     pub seeded_decisions: Vec<(String, ToolCallResume)>,
+    /// Optional per-run commit coordinator override. The server dispatch path
+    /// supplies a staging coordinator that folds canonical event drafts into
+    /// each checkpoint commit, so the runtime never observes the staging
+    /// buffer. When `None`, the runtime's build-time coordinator is used.
+    pub commit_coordinator_override: Option<Arc<dyn CommitCoordinator>>,
 }
 
-/// Event-capture and thread-context bundle threaded into runtime
-/// execution. `event_buffer == None` disables canonical capture for this
-/// activation; persistent runs always carry `Some`. `thread_context_cache`
-/// is an optional caller-side fast path; absent means the runtime loads
-/// thread context from the store as usual.
+/// Thread-context bundle threaded into runtime execution.
+/// `thread_context_cache` is an optional caller-side fast path; absent means
+/// the runtime loads thread context from the store as usual. Canonical event
+/// staging is owned by the (server-supplied) commit coordinator, not here.
 #[derive(Default)]
 pub struct CaptureWiring {
-    pub event_buffer: Option<Arc<EventBuffer>>,
     pub thread_context_cache: Option<Arc<ThreadContextSnapshot>>,
 }
 
@@ -335,9 +338,16 @@ impl RunActivation {
         self
     }
 
+    /// Attach a per-run commit coordinator override (server staging
+    /// coordinator). Supersedes the runtime's build-time coordinator for this
+    /// run only, so canonical drafts staged by the dispatch sink commit
+    /// atomically with the checkpoint without the runtime observing them.
     #[must_use]
-    pub fn with_event_buffer(mut self, buffer: Arc<EventBuffer>) -> Self {
-        self.capture.event_buffer = Some(buffer);
+    pub fn with_commit_coordinator_override(
+        mut self,
+        coordinator: Arc<dyn CommitCoordinator>,
+    ) -> Self {
+        self.control.commit_coordinator_override = Some(coordinator);
         self
     }
 
@@ -373,6 +383,32 @@ mod tests {
         }
     }
 
+    struct StubCoordinator;
+
+    #[async_trait::async_trait]
+    impl CommitCoordinator for StubCoordinator {
+        fn scope(
+            &self,
+        ) -> awaken_runtime_contract::contract::commit_coordinator::TransactionScopeId {
+            awaken_runtime_contract::contract::commit_coordinator::TransactionScopeId::new("test")
+                .unwrap()
+        }
+        fn thread_run_store(
+            &self,
+        ) -> Arc<dyn awaken_runtime_contract::contract::storage::ThreadRunStore> {
+            unreachable!("routing test does not commit")
+        }
+        async fn commit_checkpoint(
+            &self,
+            _plan: awaken_runtime_contract::contract::commit_coordinator::CheckpointCommitPlan,
+        ) -> Result<
+            awaken_runtime_contract::contract::commit_coordinator::CheckpointCommitOutcome,
+            awaken_runtime_contract::contract::commit_coordinator::CommitError,
+        > {
+            unreachable!("routing test does not commit")
+        }
+    }
+
     #[test]
     fn activation_is_owned_send_static() {
         let activation = RunActivation::new("thread", vec![Message::user("hi")]);
@@ -392,7 +428,7 @@ mod tests {
             MapToolRegistry,
         };
 
-        let buffer = Arc::new(EventBuffer::new());
+        let coordinator: Arc<dyn CommitCoordinator> = Arc::new(StubCoordinator);
         let cache = Arc::new(ThreadContextSnapshot::new(
             Vec::new(),
             None,
@@ -409,7 +445,7 @@ mod tests {
         };
 
         let activation = RunActivation::new("thread", vec![Message::user("hi")])
-            .with_event_buffer(Arc::clone(&buffer))
+            .with_commit_coordinator_override(Arc::clone(&coordinator))
             .with_thread_context_cache(Arc::clone(&cache))
             .with_run_id_hint("hinted-run-id")
             .with_dispatch_id_hint("hinted-dispatch-id")
@@ -418,11 +454,12 @@ mod tests {
             .with_pinned_registry_set(registry_set)
             .with_run_resolver(Arc::new(NoopResolver));
 
-        // Capture sub-struct: runtime-side event capture + context fast path.
+        // Control sub-struct: per-run commit coordinator override.
         assert!(
-            activation.capture.event_buffer.is_some(),
-            "with_event_buffer routes to CaptureWiring"
+            activation.control.commit_coordinator_override.is_some(),
+            "with_commit_coordinator_override routes to RunControl"
         );
+        // Capture sub-struct: thread-context fast path.
         assert!(
             activation.capture.thread_context_cache.is_some(),
             "with_thread_context_cache routes to CaptureWiring"
@@ -462,7 +499,7 @@ mod tests {
         // Reverse spot-check: capture must not be mutated by submit-side or
         // inheritance setters, and vice versa.
         let neutral = RunActivation::new("t", Vec::new()).with_run_id_hint("x");
-        assert!(neutral.capture.event_buffer.is_none());
+        assert!(neutral.control.commit_coordinator_override.is_none());
         assert!(neutral.inherited.pinned_registry_set.is_none());
         assert!(neutral.inherited.run_resolver.is_none());
         assert_eq!(neutral.persistence.run_id_hint.as_deref(), Some("x"));

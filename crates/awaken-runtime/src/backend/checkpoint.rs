@@ -125,10 +125,6 @@ pub(super) async fn persist_remote_root_checkpoint(
                 .to_string(),
         )
     })?;
-    let canonical_drafts = commit
-        .event_buffer
-        .map(|buffer| buffer.drain())
-        .unwrap_or_default();
     const MAX_APPEND_ATTEMPTS: usize = 8;
     for _ in 0..MAX_APPEND_ATTEMPTS {
         let committed_messages = storage
@@ -152,8 +148,7 @@ pub(super) async fn persist_remote_root_checkpoint(
             delta,
             Some(expected_version),
             record,
-        )
-        .with_canonical_drafts(canonical_drafts.clone());
+        );
         match coordinator.commit_checkpoint(plan).await {
             Ok(_) => return Ok(()),
             Err(CommitError::MessageVersionConflict { .. }) => continue,
@@ -442,7 +437,7 @@ mod tests {
             &identity(),
             1,
             None,
-            crate::loop_runner::CommitWiring::new(Some(coordinator.as_ref()), None),
+            crate::loop_runner::CommitWiring::new(Some(coordinator.as_ref())),
         )
         .await
         .expect("remote checkpoint persists");

@@ -10,7 +10,8 @@ use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult, build_agent_en
 use awaken_runtime::{AgentRuntime, Plugin, ResolvedAgent};
 use awaken_server_contract::RuntimeEventDurability;
 use awaken_server_contract::contract::commit_coordinator::{
-    EventPublishError, OutboxServerEventPublisher, ServerEventPublishOutcome,
+    CheckpointCommitPlan, CommitCoordinator, EventPublishError, OutboxServerEventPublisher,
+    ServerEventPublishOutcome,
 };
 use awaken_server_contract::contract::content::ContentBlock;
 use awaken_server_contract::contract::event_store::{
@@ -36,7 +37,10 @@ use awaken_server_contract::contract::tool::{
 };
 use awaken_server_contract::now_ms;
 use awaken_server_contract::thread::Thread;
-use awaken_stores::{InMemoryEventStore, InMemoryMailboxStore, InMemoryStore, PendingMessageStore};
+use awaken_stores::{
+    InMemoryEventStore, InMemoryMailboxStore, InMemoryOutboxStore, InMemoryStore,
+    MemoryCommitCoordinator, PendingMessageStore,
+};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::Mutex as StdMutex;
@@ -1119,24 +1123,50 @@ fn empty_live_registry_set() -> awaken_runtime::registry::RegistrySet {
 }
 
 struct CommittingEmittingMailboxRuntime {
-    event_store: Arc<InMemoryEventStore>,
+    coordinator: Arc<MemoryCommitCoordinator>,
 }
 
 impl CommittingEmittingMailboxRuntime {
     fn new(event_store: Arc<InMemoryEventStore>) -> Self {
-        Self { event_store }
+        // Build a durable coordinator over the asserted event store so that the
+        // per-run staging coordinator (installed by the dispatch path and
+        // wrapping this one) drains buffered canonical drafts into it.
+        let run_store = Arc::new(InMemoryStore::new());
+        let outbox = Arc::new(InMemoryOutboxStore::new());
+        let coordinator = Arc::new(
+            MemoryCommitCoordinator::new(run_store, event_store, outbox)
+                .expect("memory coordinator builds"),
+        );
+        Self { coordinator }
     }
 
-    async fn append_staged_events(&self, request: &RunActivation) -> Result<(), AgentLoopError> {
-        let Some(buffer) = request.capture.event_buffer.as_ref() else {
+    /// Drive the per-run staging coordinator the dispatch path installed,
+    /// committing a checkpoint so the buffered canonical drafts (RunStarted,
+    /// ToolCallReady, RunFinished) are appended to the shared event store —
+    /// exactly as the real runtime does at checkpoint cadence.
+    async fn commit_runtime_checkpoint(
+        &self,
+        request: &RunActivation,
+        run_id: &str,
+    ) -> Result<(), AgentLoopError> {
+        let Some(coordinator) = request.control.commit_coordinator_override.clone() else {
             return Ok(());
         };
-        for staged in buffer.drain() {
-            self.event_store
-                .append(staged.draft, staged.append_options)
-                .await
-                .map_err(|error| AgentLoopError::StorageError(error.to_string()))?;
-        }
+        let run = RunRecord {
+            run_id: run_id.to_string(),
+            thread_id: request.thread_id().to_string(),
+            agent_id: request
+                .intent
+                .agent_id
+                .clone()
+                .unwrap_or_else(|| "agent-1".to_string()),
+            ..Default::default()
+        };
+        let plan = CheckpointCommitPlan::checkpoint_only(request.thread_id(), Vec::new(), run);
+        coordinator
+            .commit_checkpoint(plan)
+            .await
+            .map_err(|error| AgentLoopError::StorageError(error.to_string()))?;
         Ok(())
     }
 }
@@ -1179,13 +1209,17 @@ impl RunDispatchExecutor for CommittingEmittingMailboxRuntime {
             termination: TerminationReason::NaturalEnd,
         })
         .await;
-        self.append_staged_events(&request).await?;
+        self.commit_runtime_checkpoint(&request, &run_id).await?;
         Ok(AgentRunResult {
             run_id,
             response: "ok".to_string(),
             termination: TerminationReason::NaturalEnd,
             steps: 1,
         })
+    }
+
+    fn commit_coordinator(&self) -> Option<Arc<dyn CommitCoordinator>> {
+        Some(Arc::clone(&self.coordinator) as Arc<dyn CommitCoordinator>)
     }
 
     fn cancel(&self, _id: &str) -> bool {

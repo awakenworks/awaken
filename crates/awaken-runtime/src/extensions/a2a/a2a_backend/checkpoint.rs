@@ -210,7 +210,7 @@ mod tests {
                 RunOrigin::User,
             ),
             checkpoint_store: Some(&reader),
-            commit: crate::loop_runner::CommitWiring::new(Some(coordinator.as_ref()), None),
+            commit: crate::loop_runner::CommitWiring::new(Some(coordinator.as_ref())),
             control: BackendControl::default(),
             decisions: Vec::new(),
             overrides: None,

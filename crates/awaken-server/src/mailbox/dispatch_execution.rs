@@ -206,8 +206,9 @@ pub(super) async fn run_claimed_dispatch(
     };
     let is_resume = request.resume_run_id().is_some();
     // When runtime event capture is enabled, mint a per-run EventBuffer and
-    // share it between the sink wrap (stages drafts here) and the runtime's
-    // CheckpointCommitPlan (drains).
+    // share it between the sink wrap (stages canonical drafts as events flow)
+    // and a per-run staging commit coordinator (drains them into each
+    // checkpoint commit). The runtime itself never sees the buffer.
     let event_buffer = this
         .runtime_event_capture
         .is_some()
@@ -228,7 +229,13 @@ pub(super) async fn run_claimed_dispatch(
         .with_dispatch_id(dispatch_id.clone())
         .with_session_id(dispatch_instance_id.clone());
     if let Some(buffer) = event_buffer {
-        request = request.with_event_buffer(buffer);
+        // Fold staged canonical drafts into the run's checkpoint commits via a
+        // per-run coordinator wrapping the mailbox's durable coordinator.
+        let staging = super::staging_coordinator::StagingCommitCoordinator::new(
+            Arc::clone(&this.coordinator),
+            buffer,
+        );
+        request = request.with_commit_coordinator_override(staging);
     }
     let record_start = Instant::now();
     let record_start_result = this
