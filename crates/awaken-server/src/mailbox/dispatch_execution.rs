@@ -15,6 +15,7 @@ use awaken_server_contract::contract::event_sink::EventSink;
 use awaken_server_contract::contract::mailbox::{
     RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
+use awaken_server_contract::contract::run::RunResolutionScope;
 use awaken_server_contract::now_ms;
 
 use crate::transport::channel_sink::ReconnectableEventSink;
@@ -276,26 +277,53 @@ pub(super) async fn run_claimed_dispatch(
             continue_run_id,
         )));
     request = request.with_inbox(inbox_sender, inbox_receiver);
-    let result = match this
-        .executor
-        .resolve_activation(&request, ResolutionPolicy::PersistentServer)
-        .await
-        .and_then(|plan| plan.into_replayable())
-    {
-        Ok(plan) => {
-            if let Some(handler) =
-                this.pending_boundary_handler(&request, &run_id, &plan.scope.manifest)
-            {
-                request = request.with_pending_boundary_handler(handler);
-            }
-            this.executor
-                .run_replayable_with_thread_context(request, plan, sink.clone(), thread_ctx)
+    let registry_manifest = match this.run_store.load_run(&run_id).await {
+        Ok(Some(record)) => record.registry_manifest.ok_or_else(|| {
+            format!(
+                "persistent dispatch for run '{}' has no pinned registry manifest",
+                record.run_id
+            )
+        }),
+        Ok(None) => Err(format!(
+            "persistent dispatch run '{}' disappeared before resolution",
+            run_id
+        )),
+        Err(error) => Err(format!(
+            "failed to load run '{}' before persistent dispatch resolution: {error}",
+            run_id
+        )),
+    };
+    let result = match registry_manifest {
+        Ok(registry_manifest) => {
+            match this
+                .executor
+                .resolve_activation_in_scope(
+                    &request,
+                    ResolutionPolicy::PersistentServer,
+                    RunResolutionScope::Pinned(registry_manifest),
+                )
                 .await
+                .and_then(|plan| plan.into_replayable())
+            {
+                Ok(plan) => {
+                    if let Some(handler) =
+                        this.pending_boundary_handler(&request, &run_id, &plan.scope.manifest)
+                    {
+                        request = request.with_pending_boundary_handler(handler);
+                    }
+                    this.executor
+                        .run_replayable_with_thread_context(request, plan, sink.clone(), thread_ctx)
+                        .await
+                }
+                Err(error) => Err(awaken_runtime::loop_runner::AgentLoopError::RuntimeError(
+                    RuntimeError::ResolveFailed {
+                        message: error.to_string(),
+                    },
+                )),
+            }
         }
-        Err(error) => Err(awaken_runtime::loop_runner::AgentLoopError::RuntimeError(
-            RuntimeError::ResolveFailed {
-                message: error.to_string(),
-            },
+        Err(message) => Err(awaken_runtime::loop_runner::AgentLoopError::RuntimeError(
+            RuntimeError::ResolveFailed { message },
         )),
     };
     let now = now_ms();

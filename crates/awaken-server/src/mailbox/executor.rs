@@ -14,6 +14,7 @@ use awaken_runtime::{
 use awaken_server_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_server_contract::contract::event_sink::EventSink;
 use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::run::RunResolutionScope;
 use awaken_server_contract::contract::suspension::ToolCallResume;
 
 /// Execution boundary used by mailbox dispatch.
@@ -51,14 +52,27 @@ pub trait RunDispatchExecutor: Send + Sync {
         activation: &RunActivation,
         policy: ResolutionPolicy,
     ) -> Result<ResolvedRunPlan, ResolveError> {
+        self.resolve_activation_in_scope(activation, policy, RunResolutionScope::Live)
+            .await
+    }
+
+    /// Resolve an activation with explicit resolver-scope input supplied by
+    /// the server persistence layer. This keeps pinned registry manifests out
+    /// of `RunActivation` while preserving replayable dispatch semantics.
+    async fn resolve_activation_in_scope(
+        &self,
+        activation: &RunActivation,
+        policy: ResolutionPolicy,
+        resolution_scope: RunResolutionScope,
+    ) -> Result<ResolvedRunPlan, ResolveError> {
         #[cfg(test)]
         {
-            let _ = policy;
+            let _ = (policy, resolution_scope);
             return Ok(test_replayable_plan(activation));
         }
         #[cfg(not(test))]
         {
-            let _ = (activation, policy);
+            let _ = (activation, policy, resolution_scope);
             Err(ResolveError::UnsupportedPersistence(
                 "RunDispatchExecutor implementations used by persistent mailbox dispatch must resolve activations".into(),
             ))
@@ -203,7 +217,19 @@ impl RunDispatchExecutor for AgentRuntime {
         activation: &RunActivation,
         policy: ResolutionPolicy,
     ) -> Result<ResolvedRunPlan, ResolveError> {
-        let resolved = AgentRuntime::resolve_activation(self, activation, policy).await;
+        self.resolve_activation_in_scope(activation, policy, RunResolutionScope::Live)
+            .await
+    }
+
+    async fn resolve_activation_in_scope(
+        &self,
+        activation: &RunActivation,
+        policy: ResolutionPolicy,
+        resolution_scope: RunResolutionScope,
+    ) -> Result<ResolvedRunPlan, ResolveError> {
+        let resolved =
+            AgentRuntime::resolve_activation_in_scope(self, activation, policy, resolution_scope)
+                .await;
         #[cfg(test)]
         {
             resolved.or_else(|_| Ok(test_replayable_plan(activation)))

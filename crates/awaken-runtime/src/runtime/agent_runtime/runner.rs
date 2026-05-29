@@ -8,14 +8,14 @@ use crate::backend::{
 use crate::loop_runner::{AgentLoopError, AgentRunResult, CommitWiring};
 use crate::registry::AgentResolver;
 use crate::resolution::{ExecutionPlan, ExecutionRole, ResolvedRunPlan};
-use crate::run::{RunActivation, RunInbox, ThreadContextSnapshot, attach_registry_manifest_seed};
+use crate::run::{RunActivation, RunInbox, ThreadContextSnapshot};
 use awaken_runtime_contract::contract::active_agent::ActiveAgentIdKey;
 use awaken_runtime_contract::contract::event_sink::EventSink;
 use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_runtime_contract::contract::message::{
     Message, Role, Visibility, strip_unpaired_tool_calls_from_view,
 };
-use awaken_runtime_contract::contract::run::{RunInput, RunKind, RunResolutionScope};
+use awaken_runtime_contract::contract::run::{RunInput, RunKind};
 use awaken_runtime_contract::contract::storage::RunRecord;
 use awaken_runtime_contract::contract::suspension::ToolCallStatus;
 use awaken_runtime_contract::now_ms;
@@ -164,7 +164,7 @@ impl AgentRuntime {
         &self,
         activation: RunActivation,
         sink: Arc<dyn EventSink>,
-        mut thread_ctx: Option<ThreadContextSnapshot>,
+        thread_ctx: Option<ThreadContextSnapshot>,
         resolved_plan: Option<ResolvedRunPlan>,
     ) -> Result<AgentRunResult, AgentLoopError> {
         let RunActivation {
@@ -172,7 +172,6 @@ impl AgentRuntime {
             input,
             options,
             trace,
-            resolution_scope,
             control,
             capture,
             persistence,
@@ -193,10 +192,6 @@ impl AgentRuntime {
             RunKind::HitlResume { run_id } => (Some(run_id), false),
             RunKind::ContinuationFromRun { run_id } => (Some(run_id), true),
         };
-        let registry_manifest = match resolution_scope {
-            RunResolutionScope::Live => None,
-            RunResolutionScope::Pinned(manifest) => Some(manifest),
-        };
         let thread_id = intent.thread_id;
         let agent_id = intent.agent_id;
         let overrides = options.overrides;
@@ -208,7 +203,6 @@ impl AgentRuntime {
         let (dispatch_id, session_id) = (trace.dispatch_id, trace.session_id);
         let transport_request_id = trace.transport_request_id;
         let run_inbox = control.inbox;
-        attach_registry_manifest_seed(&mut thread_ctx, registry_manifest);
         let new_messages = request_messages.clone();
         let requested_continue_run_id = continue_run_id.clone();
         let agent_id = self
@@ -221,11 +215,11 @@ impl AgentRuntime {
         } else {
             self.execution_resolver_arc()
         };
+        let registry_manifest_seed = resolved_plan
+            .as_ref()
+            .and_then(|plan| plan.replayable_manifest().cloned());
         let resolved_execution = if let Some(plan) = resolved_plan {
             validate_resolved_root_plan(&plan, &agent_id)?;
-            if let Some(manifest) = plan.replayable_manifest().cloned() {
-                attach_registry_manifest_seed(&mut thread_ctx, Some(manifest));
-            }
             plan.execution().clone()
         } else {
             run_resolver
@@ -350,7 +344,8 @@ impl AgentRuntime {
                 ExecutionPlan::Local(_) => phase_runtime.as_ref().and(storage),
                 ExecutionPlan::Remote(_) => storage,
             },
-            commit: CommitWiring::new(self.commit_coordinator.as_deref(), event_buffer.as_deref()),
+            commit: CommitWiring::new(self.commit_coordinator.as_deref(), event_buffer.as_deref())
+                .with_registry_manifest_seed(registry_manifest_seed.as_ref()),
             control: BackendControl {
                 cancellation_token: capabilities
                     .cancellation

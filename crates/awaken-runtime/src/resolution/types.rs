@@ -22,6 +22,15 @@ pub struct ResolutionRequest {
 impl ResolutionRequest {
     #[must_use]
     pub fn from_activation(activation: &RunActivation, policy: ResolutionPolicy) -> Self {
+        Self::from_activation_with_scope(activation, policy, RunResolutionScope::Live)
+    }
+
+    #[must_use]
+    pub fn from_activation_with_scope(
+        activation: &RunActivation,
+        policy: ResolutionPolicy,
+        resolution_scope: RunResolutionScope,
+    ) -> Self {
         let agent_id = activation
             .intent
             .agent_id
@@ -32,7 +41,7 @@ impl ResolutionRequest {
                 agent_id,
                 thread_id: activation.intent.thread_id.clone(),
             },
-            resolution_scope: activation.resolution_scope.clone(),
+            resolution_scope,
             overrides: activation.options.overrides.clone(),
             frontend_tools: activation.options.frontend_tools.clone(),
             features: RunFeatureSet::from_activation(activation, policy),

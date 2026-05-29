@@ -6,7 +6,7 @@ use std::sync::Arc;
 use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryManifest;
 use awaken_runtime_contract::contract::run::{
     RunActivationSnapshot, RunInput, RunInputSnapshot, RunIntent, RunKind, RunOptions,
-    RunResolutionScope, RunTraceContext,
+    RunTraceContext,
 };
 use awaken_runtime_contract::contract::storage::{RunRecord, RunRequestOrigin};
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
@@ -29,8 +29,6 @@ pub struct ThreadContextSnapshot {
     pub messages: Vec<Message>,
     pub latest_run: Option<RunRecord>,
     pub run_cache: HashMap<String, RunRecord>,
-    /// Registry manifest seed for newly-created RunRecords inside the runtime.
-    pub registry_manifest_seed: Option<PinnedRegistryManifest>,
 }
 
 impl ThreadContextSnapshot {
@@ -44,29 +42,7 @@ impl ThreadContextSnapshot {
             messages,
             latest_run,
             run_cache,
-            registry_manifest_seed: None,
         }
-    }
-
-    /// Attach a registry manifest seed inherited from the activation.
-    #[must_use]
-    pub fn with_registry_manifest_seed(mut self, seed: PinnedRegistryManifest) -> Self {
-        self.registry_manifest_seed = Some(seed);
-        self
-    }
-}
-
-/// Forward a pinned registry manifest into the runtime's thread context so it
-/// can seed the first RunRecord built by checkpoint persistence.
-pub fn attach_registry_manifest_seed(
-    thread_ctx: &mut Option<ThreadContextSnapshot>,
-    manifest: Option<PinnedRegistryManifest>,
-) {
-    if let Some(seed) = manifest {
-        thread_ctx
-            .get_or_insert_with(|| ThreadContextSnapshot::new(Vec::new(), None, HashMap::new()))
-            .registry_manifest_seed
-            .get_or_insert(seed);
     }
 }
 
@@ -131,7 +107,6 @@ pub struct RunActivation {
     pub input: RunInput,
     pub options: RunOptions,
     pub trace: RunTraceContext,
-    pub resolution_scope: RunResolutionScope,
     pub control: RunControl,
     /// Event capture and thread-context inputs the runtime threads into
     /// execution; orthogonal to user intent and trace metadata.
@@ -154,7 +129,6 @@ impl RunActivation {
             input: RunInput::NewMessages(messages),
             options: RunOptions::default(),
             trace: RunTraceContext::default(),
-            resolution_scope: RunResolutionScope::Live,
             control: RunControl::default(),
             capture: CaptureWiring::default(),
             persistence: PersistenceHints::default(),
@@ -349,17 +323,6 @@ impl RunActivation {
     pub fn with_messages_already_persisted(mut self, value: bool) -> Self {
         self.persistence.messages_already_persisted = value;
         self
-    }
-
-    #[must_use]
-    pub fn with_pinned_resolution(mut self, manifest: PinnedRegistryManifest) -> Self {
-        self.resolution_scope = RunResolutionScope::Pinned(manifest);
-        self
-    }
-
-    #[must_use]
-    pub fn with_registry_manifest(self, manifest: PinnedRegistryManifest) -> Self {
-        self.with_pinned_resolution(manifest)
     }
 
     #[must_use]

@@ -406,12 +406,12 @@ impl Mailbox {
                 request.intent.agent_id = Some(existing.agent_id.clone());
             }
             let manifest = if let Some(manifest) = existing.registry_manifest.clone() {
-                request.resolution_scope = RunResolutionScope::Pinned(manifest.clone());
                 manifest
             } else {
-                let manifest = self.resolve_replayable_manifest(request).await?;
+                let manifest = self
+                    .resolve_replayable_manifest(request, RunResolutionScope::Live)
+                    .await?;
                 existing.registry_manifest = Some(manifest.clone());
-                request.resolution_scope = RunResolutionScope::Pinned(manifest.clone());
                 manifest
             };
             existing.request = None;
@@ -436,8 +436,9 @@ impl Mailbox {
             if request.intent.agent_id.is_none() {
                 request.intent.agent_id = Some(inferred_agent_id.clone());
             }
-            let manifest = self.resolve_replayable_manifest(request).await?;
-            request.resolution_scope = RunResolutionScope::Pinned(manifest.clone());
+            let manifest = self
+                .resolve_replayable_manifest(request, RunResolutionScope::Live)
+                .await?;
             let now = now_ms() / 1000;
             let record = RunRecord {
                 run_id: run_id.clone(),
@@ -551,9 +552,14 @@ impl Mailbox {
     async fn resolve_replayable_manifest(
         &self,
         request: &RunActivation,
+        resolution_scope: RunResolutionScope,
     ) -> Result<PinnedRegistryManifest, MailboxError> {
         self.executor
-            .resolve_activation(request, ResolutionPolicy::PersistentServer)
+            .resolve_activation_in_scope(
+                request,
+                ResolutionPolicy::PersistentServer,
+                resolution_scope,
+            )
             .await
             .and_then(|plan| plan.into_replayable())
             .map(|plan| plan.scope.manifest)
@@ -650,7 +656,6 @@ impl Mailbox {
             request.options = snapshot.options;
             request.trace = snapshot.trace;
             request.control.seeded_decisions = snapshot.seeded_decisions;
-            request.resolution_scope = RunResolutionScope::Pinned(snapshot.resolution_scope);
             return self
                 .attach_dispatch_replay_wiring(&run, dispatch, request)
                 .await;
@@ -696,7 +701,6 @@ impl Mailbox {
         request.options = snapshot.options;
         request.trace = snapshot.trace;
         request.control.seeded_decisions = snapshot.seeded_decisions;
-        request.resolution_scope = RunResolutionScope::Pinned(snapshot.resolution_scope);
         self.attach_dispatch_replay_wiring(&run, dispatch, request)
             .await
     }
@@ -718,9 +722,6 @@ impl Mailbox {
         } else {
             request.with_run_id_hint(run.run_id.clone())
         };
-        if let Some(manifest) = run.registry_manifest.clone() {
-            request = request.with_registry_manifest(manifest);
-        }
         Ok(request.with_trace_dispatch_id(dispatch.dispatch_id.clone()))
     }
 

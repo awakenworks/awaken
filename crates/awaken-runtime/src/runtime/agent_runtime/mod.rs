@@ -18,6 +18,7 @@ use crate::error::RuntimeError;
 #[cfg(feature = "a2a")]
 use crate::registry::composite::CompositeAgentSpecRegistry;
 use awaken_runtime_contract::contract::message::Message;
+use awaken_runtime_contract::contract::run::RunResolutionScope;
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -234,7 +235,18 @@ impl AgentRuntime {
         activation: &crate::RunActivation,
         policy: ResolutionPolicy,
     ) -> Result<ResolvedRunPlan, ResolveError> {
-        let request = ResolutionRequest::from_activation(activation, policy);
+        self.resolve_activation_in_scope(activation, policy, RunResolutionScope::Live)
+            .await
+    }
+
+    pub async fn resolve_activation_in_scope(
+        &self,
+        activation: &crate::RunActivation,
+        policy: ResolutionPolicy,
+        resolution_scope: RunResolutionScope,
+    ) -> Result<ResolvedRunPlan, ResolveError> {
+        let request =
+            ResolutionRequest::from_activation_with_scope(activation, policy, resolution_scope);
         let expected = BackendRequirements::from_features(&request.features);
         let resolver = activation
             .inherited

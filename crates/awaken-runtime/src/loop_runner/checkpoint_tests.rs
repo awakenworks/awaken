@@ -566,10 +566,10 @@ async fn persist_checkpoint_appends_delta_after_concurrent_committed_message() {
 }
 
 #[tokio::test]
-async fn persist_checkpoint_uses_thread_ctx_seed_when_no_previous_record() {
+async fn persist_checkpoint_uses_commit_seed_when_no_previous_record() {
     // ADR-0035 D9: when persist_checkpoint runs without a previous
-    // RunRecord (direct runtime.run path), the manifest seed carried
-    // by ThreadContextSnapshot must populate the new RunRecord so
+    // RunRecord (direct runtime.run path), the manifest seed carried by
+    // CommitWiring must populate the new RunRecord so
     // resume can later verify pinned versions.
     let state_store = store_with_loop_state();
     commit_update::<RunLifecycle>(
@@ -593,10 +593,6 @@ async fn persist_checkpoint_uses_thread_ctx_seed_when_no_previous_record() {
             content_hash: "sha256:agent-seed-v5".to_string(),
         }],
     };
-    let thread_ctx =
-        crate::ThreadContextSnapshot::new(Vec::new(), None, std::collections::HashMap::new())
-            .with_registry_manifest_seed(manifest.clone());
-
     let identity = RunIdentity::new(
         "thread-seed".into(),
         None,
@@ -610,7 +606,8 @@ async fn persist_checkpoint_uses_thread_ctx_seed_when_no_previous_record() {
     persist_checkpoint(CheckpointPersist {
         store: &state_store,
         checkpoint_store: Some(&*checkpoint_store),
-        commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator), None),
+        commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator), None)
+            .with_registry_manifest_seed(Some(&manifest)),
         messages: &messages,
         input_message_count: 1,
         run_identity: &identity,
@@ -620,7 +617,7 @@ async fn persist_checkpoint_uses_thread_ctx_seed_when_no_previous_record() {
         termination_reason: None,
         final_output: None,
         error_payload: None,
-        thread_ctx: Some(&thread_ctx),
+        thread_ctx: None,
     })
     .await
     .expect("checkpoint persists with seed");
@@ -680,6 +677,7 @@ async fn persist_checkpoint_routes_through_commit_coordinator() {
         commit: CommitWiring {
             commit_coordinator: Some(&coordinator),
             event_buffer: Some(&buffer),
+            registry_manifest_seed: None,
         },
         messages: &messages,
         input_message_count: 1,
