@@ -19,7 +19,6 @@ pub mod outbox;
 pub mod pinned_registry;
 pub mod profile_store;
 pub mod progress;
-pub mod protocol_replay_log;
 pub mod run;
 pub mod shared_state;
 pub mod storage;
