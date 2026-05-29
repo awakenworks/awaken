@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::storage::StorageError;
-use crate::contract::scope::ScopeId;
+use crate::contract::scope::{ScopeId, scoped_key};
 use std::sync::Arc;
 
 /// Async CRUD store for namespaced JSON configuration documents.
@@ -185,8 +185,7 @@ impl ScopedConfigStore {
     }
 
     fn scoped_namespace(&self, namespace: &str) -> String {
-        let scope = self.scope_id.as_str();
-        format!("scope:{}:{}:{}", scope.len(), scope, namespace)
+        scoped_key(&self.scope_id, namespace)
     }
 }
 
