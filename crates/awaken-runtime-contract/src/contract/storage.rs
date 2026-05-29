@@ -1176,5 +1176,66 @@ pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
     }
 }
 
+// ── runtime read port ────────────────────────────────────────────────
+
+/// Narrow read port the runtime needs from durable storage during a run:
+/// the handful of resume reads (thread, messages, run records). The full
+/// `ThreadStore`/`RunStore`/`ThreadRunStore` CRUD + query surface is a
+/// server/store concern and is not exposed to the runtime through this port.
+#[async_trait]
+pub trait RuntimeCheckpointStore: Send + Sync {
+    async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, StorageError>;
+
+    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError>;
+
+    async fn load_committed_messages(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<Message>>, StorageError>;
+
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError>;
+
+    async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError>;
+}
+
+/// Adapts a [`ThreadRunStore`] into a [`RuntimeCheckpointStore`] for the agent
+/// loop. Exposed so embedders/tests can supply a checkpoint reader backed by
+/// any `ThreadRunStore`.
+pub struct ThreadRunCheckpointStore {
+    inner: std::sync::Arc<dyn ThreadRunStore>,
+}
+
+impl ThreadRunCheckpointStore {
+    pub fn new(inner: std::sync::Arc<dyn ThreadRunStore>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl RuntimeCheckpointStore for ThreadRunCheckpointStore {
+    async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, StorageError> {
+        ThreadStore::load_thread(self.inner.as_ref(), thread_id).await
+    }
+
+    async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
+        ThreadStore::load_messages(self.inner.as_ref(), thread_id).await
+    }
+
+    async fn load_committed_messages(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Vec<Message>>, StorageError> {
+        ThreadStore::load_committed_messages(self.inner.as_ref(), thread_id).await
+    }
+
+    async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError> {
+        RunStore::load_run(self.inner.as_ref(), run_id).await
+    }
+
+    async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
+        RunStore::latest_run(self.inner.as_ref(), thread_id).await
+    }
+}
+
 #[cfg(test)]
 mod tests;
