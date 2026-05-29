@@ -2,6 +2,7 @@
 
 use crate::contract::scope::{ScopeError, ScopeId};
 use async_trait::async_trait;
+use awaken_runtime_contract::contract::pinned_registry as canonical;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -161,78 +162,33 @@ pub enum VersionedRegistryError {
     Backend(String),
 }
 
-/// Canonical JSON bytes used as the persisted hash source. Subset of
-/// RFC 8785 (ADR-0035 D3): object keys are sorted lexicographically by
-/// their JSON-encoded byte order at every depth, non-finite numbers are
-/// rejected, and the resulting bytes are reproducible regardless of
-/// whether the input `serde_json::Value` was built from a sorting or
-/// preserve-order map representation. Unicode normalization (NFD/NFC)
-/// is intentionally NOT applied — strings round-trip unchanged from
-/// upstream encoders, matching the rest of the codebase.
+impl From<awaken_runtime_contract::contract::pinned_registry::PinnedRegistryHashError>
+    for VersionedRegistryError
+{
+    fn from(
+        error: awaken_runtime_contract::contract::pinned_registry::PinnedRegistryHashError,
+    ) -> Self {
+        use awaken_runtime_contract::contract::pinned_registry::PinnedRegistryHashError as Hash;
+        match error {
+            Hash::Serialization(message) => VersionedRegistryError::Serialization(message),
+            Hash::InvalidRequest(message) => VersionedRegistryError::InvalidRequest(message),
+        }
+    }
+}
+
+/// Canonical JSON bytes used as the persisted hash source (ADR-0035 D3).
+///
+/// Delegates to the single canonicalization implementation in
+/// [`awaken_runtime_contract::contract::pinned_registry`] so a locally pinned
+/// manifest entry and a server-published version always hash identically.
 pub fn canonical_registry_json_bytes(
     value_schema_version: u32,
     value: &Value,
 ) -> Result<Vec<u8>, VersionedRegistryError> {
-    let mut buffer = Vec::with_capacity(64);
-    buffer.extend_from_slice(b"{\"value\":");
-    write_canonical_json(&mut buffer, value)?;
-    buffer.extend_from_slice(b",\"value_schema_version\":");
-    write_canonical_json(&mut buffer, &Value::from(value_schema_version))?;
-    buffer.push(b'}');
-    Ok(buffer)
-}
-
-fn write_canonical_json(out: &mut Vec<u8>, value: &Value) -> Result<(), VersionedRegistryError> {
-    match value {
-        Value::Null | Value::Bool(_) | Value::String(_) => serde_json::to_writer(&mut *out, value)
-            .map_err(|error| VersionedRegistryError::Serialization(error.to_string())),
-        Value::Number(number) => {
-            if let Some(float) = number.as_f64()
-                && !float.is_finite()
-            {
-                return Err(VersionedRegistryError::InvalidRequest(format!(
-                    "non-finite number cannot be canonicalized: {float}"
-                )));
-            }
-            serde_json::to_writer(&mut *out, number)
-                .map_err(|error| VersionedRegistryError::Serialization(error.to_string()))
-        }
-        Value::Array(items) => {
-            out.push(b'[');
-            for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    out.push(b',');
-                }
-                write_canonical_json(out, item)?;
-            }
-            out.push(b']');
-            Ok(())
-        }
-        Value::Object(map) => {
-            // Sort by JSON-encoded key byte order so the canonical bytes
-            // never depend on whether `serde_json::Map` uses BTreeMap or
-            // the optional `preserve_order` IndexMap.
-            let mut entries: Vec<(Vec<u8>, &Value)> = Vec::with_capacity(map.len());
-            for (key, val) in map {
-                let mut encoded = Vec::with_capacity(key.len() + 2);
-                serde_json::to_writer(&mut encoded, key)
-                    .map_err(|error| VersionedRegistryError::Serialization(error.to_string()))?;
-                entries.push((encoded, val));
-            }
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
-            out.push(b'{');
-            for (index, (key_bytes, val)) in entries.iter().enumerate() {
-                if index > 0 {
-                    out.push(b',');
-                }
-                out.extend_from_slice(key_bytes);
-                out.push(b':');
-                write_canonical_json(out, val)?;
-            }
-            out.push(b'}');
-            Ok(())
-        }
-    }
+    Ok(canonical::canonical_registry_json_bytes(
+        value_schema_version,
+        value,
+    )?)
 }
 
 /// ADR-0035 D19 retention policy. A historical version is eligible for
@@ -325,13 +281,17 @@ fn value_kind_name(value: &Value) -> &'static str {
 }
 
 /// Compute the ADR-0035 content hash for a canonical published value envelope.
+///
+/// Delegates to the single implementation in
+/// [`awaken_runtime_contract::contract::pinned_registry`].
 pub fn registry_content_hash(
     value_schema_version: u32,
     value: &Value,
 ) -> Result<(String, Vec<u8>), VersionedRegistryError> {
-    let canonical_json_bytes = canonical_registry_json_bytes(value_schema_version, value)?;
-    let digest = Sha256::digest(&canonical_json_bytes);
-    Ok((format!("sha256:{digest:x}"), canonical_json_bytes))
+    Ok(canonical::registry_content_hash(
+        value_schema_version,
+        value,
+    )?)
 }
 
 /// Async server/store contract for immutable published runtime-config versions.

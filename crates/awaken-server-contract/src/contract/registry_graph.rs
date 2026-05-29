@@ -15,10 +15,12 @@ use super::versioned_registry::{
     VersionedRegistryError, VersionedRegistryStore,
 };
 
-pub const REGISTRY_KIND_AGENT: &str = "agent";
-pub const REGISTRY_KIND_MODEL: &str = "model";
-pub const REGISTRY_KIND_MODEL_POOL: &str = "model_pool";
-pub const REGISTRY_KIND_PROVIDER: &str = "provider";
+// Pinnable kinds share one source of truth with the runtime manifest builder.
+pub use awaken_runtime_contract::contract::pinned_registry::{
+    REGISTRY_KIND_AGENT, REGISTRY_KIND_MODEL, REGISTRY_KIND_MODEL_POOL, REGISTRY_KIND_PROVIDER,
+};
+
+// Server-only registry kinds (validated/published but not pinned in run manifests).
 pub const REGISTRY_KIND_SKILL: &str = "skill";
 pub const REGISTRY_KIND_TOOL: &str = "tool";
 pub const REGISTRY_KIND_PLUGIN_CONFIG: &str = "plugin_config";
