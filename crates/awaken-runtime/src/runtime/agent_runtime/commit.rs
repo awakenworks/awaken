@@ -14,20 +14,23 @@ impl AgentRuntime {
     /// and `EventWriter::append` run in independent transactions.
     #[must_use]
     pub fn with_commit_coordinator(mut self, coordinator: Arc<dyn CommitCoordinator>) -> Self {
+        // Adopt the coordinator's reader as the runtime's checkpoint read port
+        // unless an explicit reader was already wired.
+        if self.checkpoint_storage.is_none() {
+            self.checkpoint_storage = Some(coordinator.reader());
+        }
         self.commit_coordinator = Some(coordinator);
         self
     }
 
-    /// ADR-0036 D8 test/development convenience: pair an in-memory
-    /// `ThreadRunStore` with a matching `MemoryCommitCoordinator` in one call.
+    /// ADR-0036 D8 test/development convenience: pair an in-memory store with a
+    /// matching `MemoryCommitCoordinator` in one call. The runtime adopts the
+    /// coordinator's `reader()` as its checkpoint read port.
     #[cfg(feature = "test-utils")]
     #[must_use]
     pub fn with_in_memory_thread_run_store(self, store: Arc<awaken_stores::InMemoryStore>) -> Self {
-        let coord = awaken_stores::MemoryCommitCoordinator::wrap(Arc::clone(&store));
-        self.with_thread_run_store(
-            store as Arc<dyn awaken_runtime_contract::contract::storage::ThreadRunStore>,
-        )
-        .with_commit_coordinator(coord as Arc<dyn CommitCoordinator>)
+        let coord = awaken_stores::MemoryCommitCoordinator::wrap(store);
+        self.with_commit_coordinator(coord as Arc<dyn CommitCoordinator>)
     }
 
     /// Return the wired commit coordinator, if any.

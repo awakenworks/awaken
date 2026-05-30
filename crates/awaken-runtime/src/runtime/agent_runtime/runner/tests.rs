@@ -34,7 +34,7 @@ use awaken_runtime_contract::contract::inference::{InferenceOverride, StopReason
 use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_runtime_contract::contract::message::Message;
 use awaken_runtime_contract::contract::storage::{
-    RunQuery, RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
+    RunQuery, RunRecord, RunWaitingState, WaitingReason,
 };
 use awaken_runtime_contract::contract::suspension::ResumeDecisionAction;
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
@@ -48,6 +48,7 @@ use awaken_runtime_contract::contract::tool_intercept::{
 use awaken_runtime_contract::registry_spec::ModelSpec;
 #[cfg(feature = "a2a")]
 use awaken_runtime_contract::registry_spec::{AgentSpec, RemoteEndpoint};
+use awaken_server_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
 use awaken_stores::InMemoryStore;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -221,7 +222,10 @@ impl AgentBackendFactory for StaticRemoteBackendFactory {
 }
 
 #[cfg(feature = "a2a")]
-fn build_remote_runtime(endpoint: RemoteEndpoint, abort_count: Arc<AtomicUsize>) -> AgentRuntime {
+fn build_remote_runtime(
+    endpoint: RemoteEndpoint,
+    abort_count: Arc<AtomicUsize>,
+) -> (AgentRuntime, Arc<InMemoryStore>) {
     let mut models = MapModelRegistry::new();
     models
         .register_model(ModelSpec::new("test-model", "mock", "mock-model"))
@@ -256,17 +260,19 @@ fn build_remote_runtime(endpoint: RemoteEndpoint, abort_count: Arc<AtomicUsize>)
         backends: Arc::new(backends) as Arc<dyn BackendRegistry>,
     };
     let handle = RegistryHandle::new(registries.clone());
-    AgentRuntime::new(Arc::new(
+    let store = Arc::new(InMemoryStore::new());
+    let runtime = AgentRuntime::new(Arc::new(
         crate::registry::resolve::DynamicRegistryResolver::new(handle.clone()),
     ))
     .with_registry_handle(handle)
-    .with_in_memory_thread_run_store(Arc::new(InMemoryStore::new()))
+    .with_in_memory_thread_run_store(store.clone());
+    (runtime, store)
 }
 
 #[cfg(feature = "a2a")]
 #[tokio::test]
 async fn run_supports_endpoint_root_agents() {
-    let runtime = build_remote_runtime(
+    let (runtime, store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -302,9 +308,7 @@ async fn run_supports_endpoint_root_agents() {
         }
     )));
 
-    let latest_run = runtime
-        .thread_run_store()
-        .expect("store")
+    let latest_run = store
         .latest_run("remote-thread")
         .await
         .expect("run lookup should succeed")
@@ -312,9 +316,7 @@ async fn run_supports_endpoint_root_agents() {
     assert_eq!(latest_run.agent_id, "remote-root");
     assert_eq!(latest_run.status, RunStatus::Done);
 
-    let messages = runtime
-        .thread_run_store()
-        .expect("store")
+    let messages = store
         .load_messages("remote-thread")
         .await
         .expect("message lookup should succeed")
@@ -328,7 +330,7 @@ async fn run_supports_endpoint_root_agents() {
 #[cfg(feature = "a2a")]
 #[tokio::test]
 async fn run_persists_non_local_waiting_reason_from_backend() {
-    let runtime = build_remote_runtime(
+    let (runtime, store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -353,9 +355,7 @@ async fn run_persists_non_local_waiting_reason_from_backend() {
 
     assert_eq!(result.termination, TerminationReason::Suspended);
 
-    let latest_run = runtime
-        .thread_run_store()
-        .expect("store")
+    let latest_run = store
         .latest_run("remote-thread-waiting")
         .await
         .expect("run lookup should succeed")
@@ -377,7 +377,7 @@ async fn run_persists_non_local_waiting_reason_from_backend() {
 #[cfg(feature = "a2a")]
 #[tokio::test]
 async fn run_rejects_remote_overrides_without_backend_capability() {
-    let runtime = build_remote_runtime(
+    let (runtime, _store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -406,7 +406,7 @@ async fn run_rejects_remote_overrides_without_backend_capability() {
 #[tokio::test]
 async fn run_allows_non_local_root_backends_without_cancellation_capability() {
     let abort_count = Arc::new(AtomicUsize::new(0));
-    let runtime = Arc::new(build_remote_runtime(
+    let (runtime, _store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -417,7 +417,8 @@ async fn run_allows_non_local_root_backends_without_cancellation_capability() {
             ..Default::default()
         },
         abort_count.clone(),
-    ));
+    );
+    let runtime = Arc::new(runtime);
 
     let run_handle = {
         let runtime = runtime.clone();
@@ -454,7 +455,7 @@ async fn run_allows_non_local_root_backends_without_cancellation_capability() {
 #[tokio::test]
 async fn run_non_local_root_cancel_invokes_backend_abort_hook() {
     let abort_count = Arc::new(AtomicUsize::new(0));
-    let runtime = Arc::new(build_remote_runtime(
+    let (runtime, _store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -462,7 +463,8 @@ async fn run_non_local_root_cancel_invokes_backend_abort_hook() {
             ..Default::default()
         },
         abort_count.clone(),
-    ));
+    );
+    let runtime = Arc::new(runtime);
 
     let run_handle = {
         let runtime = runtime.clone();
@@ -493,7 +495,7 @@ async fn run_non_local_root_cancel_invokes_backend_abort_hook() {
 #[cfg(feature = "a2a")]
 #[tokio::test]
 async fn run_rejects_remote_resume_decisions_without_backend_capability() {
-    let runtime = build_remote_runtime(
+    let (runtime, _store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -527,7 +529,7 @@ async fn run_rejects_remote_resume_decisions_without_backend_capability() {
 #[cfg(feature = "a2a")]
 #[tokio::test]
 async fn run_rejects_remote_frontend_tools_without_backend_capability() {
-    let runtime = build_remote_runtime(
+    let (runtime, _store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -556,7 +558,7 @@ async fn run_rejects_remote_frontend_tools_without_backend_capability() {
 }
 #[tokio::test]
 async fn run_rejects_remote_continuation_without_backend_capability() {
-    let runtime = build_remote_runtime(
+    let (runtime, store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -564,7 +566,7 @@ async fn run_rejects_remote_continuation_without_backend_capability() {
         },
         Arc::new(AtomicUsize::new(0)),
     );
-    let store = runtime.thread_run_store().expect("store");
+    // `store` is the shared InMemoryStore handle from build_remote_runtime.
     let existing_run = RunRecord {
         run_id: "existing-run".into(),
         thread_id: "remote-thread-cont".into(),
@@ -614,7 +616,7 @@ async fn run_rejects_remote_continuation_without_backend_capability() {
 }
 #[tokio::test]
 async fn run_rejects_unknown_continue_run_id() {
-    let runtime = build_remote_runtime(
+    let (runtime, _store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -646,7 +648,7 @@ async fn run_rejects_unknown_continue_run_id() {
 
 #[tokio::test]
 async fn run_uses_dispatch_id_hint_for_new_run_identity() {
-    let runtime = build_remote_runtime(
+    let (runtime, store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -665,7 +667,7 @@ async fn run_uses_dispatch_id_hint_for_new_run_identity() {
         .await
         .expect("dispatch id hint should create the run identity");
 
-    let store = runtime.thread_run_store().expect("store");
+    // `store` is the shared InMemoryStore handle from build_remote_runtime.
     let run = store
         .load_run("external-task-1")
         .await
@@ -886,7 +888,7 @@ async fn run_trace_dispatch_id_is_trace_not_canonical_run_id_for_new_run() {
 
 #[tokio::test]
 async fn run_non_local_continuation_uses_requested_run_state_not_latest() {
-    let runtime = build_remote_runtime(
+    let (runtime, store) = build_remote_runtime(
         RemoteEndpoint {
             backend: "test-remote".into(),
             base_url: "https://remote.example.com".into(),
@@ -898,7 +900,7 @@ async fn run_non_local_continuation_uses_requested_run_state_not_latest() {
         },
         Arc::new(AtomicUsize::new(0)),
     );
-    let store = runtime.thread_run_store().expect("store");
+    // `store` is the shared InMemoryStore handle from build_remote_runtime.
     let continued_state = PersistedState {
         revision: 1,
         extensions: HashMap::from([("marker".into(), json!("continued-run-state"))]),
@@ -1015,10 +1017,8 @@ async fn send_decisions_returns_false_for_remote_backend_without_decision_suppor
     endpoint
         .options
         .insert("delay_ms".into(), serde_json::json!(100));
-    let runtime = Arc::new(build_remote_runtime(
-        endpoint,
-        Arc::new(AtomicUsize::new(0)),
-    ));
+    let (runtime, _store) = build_remote_runtime(endpoint, Arc::new(AtomicUsize::new(0)));
+    let runtime = Arc::new(runtime);
     let sink: Arc<dyn EventSink> = Arc::new(NullEventSink);
     let run_task = {
         let runtime = runtime.clone();
@@ -1746,7 +1746,7 @@ async fn background_events_buffer_while_suspended_until_decision_arrives() {
 async fn new_user_message_supersedes_suspended_calls_but_keeps_completed_results() {
     use awaken_runtime_contract::contract::lifecycle::RunStatus;
     use awaken_runtime_contract::contract::message::Role;
-    use awaken_runtime_contract::contract::storage::ThreadStore;
+    use awaken_server_contract::contract::storage::ThreadStore;
     use awaken_stores::InMemoryStore;
 
     let llm = Arc::new(ScriptedLlm::new(vec![

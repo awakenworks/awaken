@@ -159,6 +159,10 @@ pub use awaken_server_contract::{
 pub mod server_contract {
     pub use awaken_server_contract::contract::config_store;
     pub use awaken_server_contract::contract::registry_graph;
+    /// Full thread/run store traits + checkpoint adapter. The data types stay
+    /// in `crate::contract::storage`; the `ThreadStore`/`RunStore`/
+    /// `ThreadRunStore` traits moved here (server/store concern).
+    pub use awaken_server_contract::contract::storage;
     pub use awaken_server_contract::contract::versioned_registry;
 }
 

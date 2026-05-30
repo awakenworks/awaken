@@ -136,7 +136,6 @@ where
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
             .with_provider("bootstrap", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>)
             .with_commit_coordinator(coordinator)
             .build()
             .expect("build runtime"),
@@ -216,7 +215,6 @@ where
                 max_rounds: 0,
                 ..Default::default()
             })
-            .with_thread_run_store(store.clone() as Arc<dyn ThreadRunStore>)
             .with_commit_coordinator(coordinator)
             .build()
             .expect("build runtime"),

@@ -519,6 +519,7 @@ dependencies = [
  "awaken-protocol-a2a",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "awaken-server-contract",
  "awaken-stores",
  "awaken-tool-pattern",
  "futures",

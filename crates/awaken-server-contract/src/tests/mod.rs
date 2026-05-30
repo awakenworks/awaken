@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use crate::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::lifecycle::RunStatus;
 use awaken_runtime_contract::contract::message::Message;
-use awaken_runtime_contract::contract::storage::{
-    RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
-};
+use awaken_runtime_contract::contract::storage::{RunPage, RunQuery, RunRecord, StorageError};
 use awaken_runtime_contract::thread::{Thread, ThreadMetadata};
 use serde_json::{Value, json};
 

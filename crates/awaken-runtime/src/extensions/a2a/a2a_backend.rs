@@ -1502,7 +1502,7 @@ mod tests {
     use awaken_runtime_contract::contract::event_sink::NullEventSink;
     use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
     use awaken_runtime_contract::contract::lifecycle::RunStatus;
-    use awaken_runtime_contract::contract::storage::{RunRecord, ThreadRunStore};
+    use awaken_server_contract::contract::storage::{RunRecord, ThreadRunStore};
     use awaken_stores::memory::InMemoryStore;
     use serde_json::json;
 

@@ -53,7 +53,6 @@ async fn make_manager() -> (ConfigRuntimeManager, Arc<dyn ConfigStore>) {
                 max_rounds: 1,
                 ..Default::default()
             })
-            .with_thread_run_store(thread_store.clone())
             .with_commit_coordinator(MemoryCommitCoordinator::wrap(thread_store))
             .build()
             .expect("build runtime"),

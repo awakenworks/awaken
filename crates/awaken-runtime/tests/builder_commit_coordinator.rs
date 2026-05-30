@@ -8,9 +8,8 @@ use awaken_runtime_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     TransactionScopeId,
 };
-use awaken_runtime_contract::contract::storage::{
-    RuntimeCheckpointStore, ThreadRunCheckpointStore, ThreadRunStore,
-};
+use awaken_runtime_contract::contract::storage::RuntimeCheckpointStore;
+use awaken_server_contract::contract::storage::{ThreadRunCheckpointStore, ThreadRunStore};
 use awaken_stores::InMemoryStore;
 
 struct NoopCoord {

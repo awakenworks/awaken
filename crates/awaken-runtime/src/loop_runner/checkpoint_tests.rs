@@ -1,8 +1,8 @@
 use super::*;
 use crate::agent::state::{ToolCallState, ToolCallStatesUpdate};
 use awaken_runtime_contract::contract::event_store::{EventReader, EventScope};
-use awaken_runtime_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
 use awaken_runtime_contract::contract::suspension::ToolCallResumeMode;
+use awaken_server_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
 use awaken_stores::{
     InMemoryEventStore, InMemoryOutboxStore, InMemoryStore, MemoryCommitCoordinator,
 };

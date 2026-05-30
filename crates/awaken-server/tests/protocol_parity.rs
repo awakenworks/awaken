@@ -61,8 +61,6 @@ fn make_app() -> axum::Router {
         let builder = AgentRuntimeBuilder::new()
             .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", Arc::new(ImmediateExecutor))
-            .with_thread_run_store(Arc::clone(&store)
-                as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>)
             .with_commit_coordinator(
                 coordinator
                     as Arc<

@@ -340,7 +340,7 @@ impl AgentRuntime {
         let storage = self
             .checkpoint_storage
             .as_deref()
-            .or_else(|| coord_reader.as_deref());
+            .or(coord_reader.as_deref());
         let backend_request = BackendRootRunRequest {
             agent_id: &agent_id,
             messages,

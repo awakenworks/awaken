@@ -139,7 +139,7 @@ mod tests {
     use awaken_runtime_contract::contract::event_sink::NullEventSink;
     use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
     use awaken_runtime_contract::contract::message::Message;
-    use awaken_runtime_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
+    use awaken_server_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
     use awaken_stores::{InMemoryStore, MemoryCommitCoordinator};
     use std::collections::HashMap;
     use std::sync::Arc;

@@ -2,7 +2,7 @@
 //! the trait method shapes `reference/thread-model.md` cites.
 
 use awaken::contract::message::{Message, Role};
-use awaken::contract::storage::ThreadStore;
+use awaken::server_contract::storage::ThreadStore;
 use awaken::stores::InMemoryStore;
 use awaken_contract::Thread;
 

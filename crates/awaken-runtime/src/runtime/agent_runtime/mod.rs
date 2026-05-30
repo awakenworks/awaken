@@ -12,7 +12,6 @@ use awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_runtime_contract::contract::live_control::{
     LiveRunCommand, LiveRunCommandEntry, LiveRunCommandSource, LiveRunTarget,
 };
-use awaken_runtime_contract::contract::storage::ThreadRunStore;
 
 use crate::error::RuntimeError;
 #[cfg(feature = "a2a")]
@@ -23,7 +22,7 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 
 use crate::cancellation::CancellationToken;
-use crate::checkpoint_store::{RuntimeCheckpointStore, ThreadRunCheckpointStore};
+use crate::checkpoint_store::RuntimeCheckpointStore;
 use crate::inbox::InboxSender;
 use crate::registry::{AgentResolver, RegistryHandle, RegistrySet, RegistrySnapshot};
 use crate::resolution::{
@@ -116,7 +115,6 @@ impl RunHandle {
 pub struct AgentRuntime {
     pub(crate) resolver: Arc<dyn AgentResolver>,
     pub(crate) run_resolver: RwLock<Arc<dyn Resolver>>,
-    pub(crate) storage: Option<Arc<dyn ThreadRunStore>>,
     pub(crate) checkpoint_storage: Option<Arc<dyn RuntimeCheckpointStore>>,
     pub(crate) commit_coordinator: Option<Arc<dyn CommitCoordinator>>,
     pub(crate) profile_store:
@@ -142,7 +140,6 @@ impl AgentRuntime {
         Self {
             resolver,
             run_resolver: RwLock::new(run_resolver),
-            storage: None,
             checkpoint_storage: None,
             commit_coordinator: None,
             profile_store: None,
@@ -177,10 +174,13 @@ impl AgentRuntime {
         self
     }
 
+    /// Set the runtime's checkpoint read port directly. The full store is a
+    /// server/store concern; the runtime only reads resume state through this
+    /// narrow port. Populated from `coordinator.reader()` by
+    /// [`Self::with_commit_coordinator`], or supplied directly by embedders.
     #[must_use]
-    pub fn with_thread_run_store(mut self, store: Arc<dyn ThreadRunStore>) -> Self {
-        self.checkpoint_storage = Some(Arc::new(ThreadRunCheckpointStore::new(store.clone())));
-        self.storage = Some(store);
+    pub fn with_checkpoint_reader(mut self, reader: Arc<dyn RuntimeCheckpointStore>) -> Self {
+        self.checkpoint_storage = Some(reader);
         self
     }
 
@@ -366,8 +366,9 @@ impl AgentRuntime {
         Ok(())
     }
 
-    pub fn thread_run_store(&self) -> Option<&dyn ThreadRunStore> {
-        self.storage.as_deref()
+    /// The runtime's checkpoint read port, if persistence is wired.
+    pub fn checkpoint_reader(&self) -> Option<&dyn RuntimeCheckpointStore> {
+        self.checkpoint_storage.as_deref()
     }
 
     /// Create a run handle pair (handle + internal channels).

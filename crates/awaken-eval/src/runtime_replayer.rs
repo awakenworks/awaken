@@ -82,10 +82,10 @@ fn with_eval_memory_store(
     builder: AgentRuntimeBuilder,
     store: Arc<InMemoryStore>,
 ) -> AgentRuntimeBuilder {
-    let coordinator = MemoryCommitCoordinator::wrap(Arc::clone(&store));
-    builder
-        .with_thread_run_store(store)
-        .with_commit_coordinator(coordinator)
+    // The coordinator wraps the store and exposes its `reader()`; the runtime
+    // adopts that as its checkpoint read port (ADR-0038 D7).
+    let coordinator = MemoryCommitCoordinator::wrap(store);
+    builder.with_commit_coordinator(coordinator)
 }
 
 /// How the replay sources its LLM responses.

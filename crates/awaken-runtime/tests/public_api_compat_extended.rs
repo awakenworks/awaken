@@ -23,8 +23,9 @@ use awaken_runtime_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_runtime_contract::contract::message::Message;
 use awaken_runtime_contract::contract::profile_store::ProfileStore;
-use awaken_runtime_contract::contract::storage::{RunRequestOrigin, ThreadRunStore};
+use awaken_runtime_contract::contract::storage::{RunRequestOrigin, RuntimeCheckpointStore};
 use awaken_runtime_contract::contract::tool_intercept::{AdapterKind, RunMode};
+use awaken_server_contract::contract::storage::ThreadRunStore;
 
 struct NopResolver;
 
@@ -47,8 +48,8 @@ fn agent_runtime_0_2_methods_resolve_at_expected_signatures() {
         AgentRuntime::new_with_execution_resolver;
     let _with_reg: fn(AgentRuntime, RegistryHandle) -> AgentRuntime =
         AgentRuntime::with_registry_handle;
-    let _with_store: fn(AgentRuntime, Arc<dyn ThreadRunStore>) -> AgentRuntime =
-        AgentRuntime::with_thread_run_store;
+    let _with_reader: fn(AgentRuntime, Arc<dyn RuntimeCheckpointStore>) -> AgentRuntime =
+        AgentRuntime::with_checkpoint_reader;
     let _resolver: fn(&AgentRuntime) -> &dyn AgentResolver = AgentRuntime::resolver;
     let _resolver_arc: fn(&AgentRuntime) -> Arc<dyn AgentResolver> = AgentRuntime::resolver_arc;
     let _exec_resolver: fn(&AgentRuntime) -> &dyn AgentResolver = AgentRuntime::execution_resolver;
@@ -60,8 +61,8 @@ fn agent_runtime_0_2_methods_resolve_at_expected_signatures() {
     let _reg_set: fn(&AgentRuntime) -> Option<RegistrySet> = AgentRuntime::registry_set;
     let _replace_set: fn(&AgentRuntime, RegistrySet) -> Option<u64> =
         AgentRuntime::replace_registry_set;
-    let _thread_store: fn(&AgentRuntime) -> Option<&dyn ThreadRunStore> =
-        AgentRuntime::thread_run_store;
+    let _checkpoint_reader: fn(&AgentRuntime) -> Option<&dyn RuntimeCheckpointStore> =
+        AgentRuntime::checkpoint_reader;
 }
 
 #[test]

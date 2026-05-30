@@ -300,7 +300,7 @@ fn is_remote_run_output_message(message: &Message) -> bool {
 mod tests {
     use super::*;
     use awaken_runtime_contract::contract::identity::RunOrigin;
-    use awaken_runtime_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
+    use awaken_server_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
     use awaken_stores::{InMemoryStore, MemoryCommitCoordinator};
     use std::sync::Arc;
 

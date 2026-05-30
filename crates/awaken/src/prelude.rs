@@ -69,8 +69,8 @@ pub use awaken_runtime_contract::contract::event_sink::EventSink;
 pub use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
 
 // ── Storage ──
-pub use awaken_runtime_contract::contract::storage::ThreadRunStore;
 pub use awaken_server_contract::MailboxStore;
+pub use awaken_server_contract::contract::storage::ThreadRunStore;
 pub use awaken_server_contract::{
     RequestSurface, ScopeContext, ScopeId, ScopedConfigStore, ScopedMailboxStore,
     ScopedOutboxStore, ScopedProtocolReplayLog, ScopedThreadRunStore, ScopedVersionedRegistry,

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use awaken_runtime_contract::StateError;
 use awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_runtime_contract::contract::executor::LlmExecutor;
-use awaken_runtime_contract::contract::storage::ThreadRunStore;
 use awaken_runtime_contract::contract::tool::Tool;
 use awaken_runtime_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
 
@@ -72,7 +71,6 @@ pub struct AgentRuntimeBuilder {
     plugins: MapPluginSource,
     #[cfg(feature = "a2a")]
     backends: MapBackendRegistry,
-    thread_run_store: Option<Arc<dyn ThreadRunStore>>,
     commit_coordinator: Option<Arc<dyn CommitCoordinator>>,
     profile_store: Option<Arc<dyn awaken_runtime_contract::contract::profile_store::ProfileStore>>,
     errors: Vec<BuildError>,
@@ -90,7 +88,6 @@ impl AgentRuntimeBuilder {
             plugins: MapPluginSource::new(),
             #[cfg(feature = "a2a")]
             backends: MapBackendRegistry::with_default_remote_backends(),
-            thread_run_store: None,
             commit_coordinator: None,
             profile_store: None,
             errors: Vec::new(),
@@ -187,25 +184,18 @@ impl AgentRuntimeBuilder {
         self
     }
 
-    /// Set the thread run store for persistence.
-    pub fn with_thread_run_store(mut self, store: Arc<dyn ThreadRunStore>) -> Self {
-        self.thread_run_store = Some(store);
-        self
-    }
-
-    /// ADR-0036 D8 test/development convenience: install an in-memory `ThreadRunStore` together
-    /// with a `MemoryCommitCoordinator` that wraps the same handle, so the
-    /// runtime tee and checkpoint writes share one transaction scope. Callers
-    /// previously paired `with_thread_run_store(store.clone())` for tests; that
-    /// shape silently produced a non-atomic mode and is now rejected at build
-    /// time.
+    /// ADR-0036 D8 test/development convenience: install an in-memory store
+    /// paired with a `MemoryCommitCoordinator` that wraps the same handle, so
+    /// the runtime tee and checkpoint writes share one transaction scope and
+    /// the runtime adopts the coordinator's `reader()` as its checkpoint read
+    /// port. Persistence is always coordinator-mediated now (ADR-0038 D7), so
+    /// there is no store-without-coordinator shape to reject.
     #[cfg(feature = "test-utils")]
     pub fn with_in_memory_thread_run_store(
         mut self,
         store: Arc<awaken_stores::InMemoryStore>,
     ) -> Self {
-        let coordinator = awaken_stores::MemoryCommitCoordinator::wrap(Arc::clone(&store));
-        self.thread_run_store = Some(store as Arc<dyn ThreadRunStore>);
+        let coordinator = awaken_stores::MemoryCommitCoordinator::wrap(store);
         self.commit_coordinator = Some(coordinator as Arc<dyn CommitCoordinator>);
         self
     }
@@ -315,12 +305,6 @@ impl AgentRuntimeBuilder {
         if !self.errors.is_empty() {
             return Err(self.errors.remove(0));
         }
-        // ADR-0036 D8: a thread-run store without a paired coordinator is
-        // forbidden — that combination is the silently non-atomic mode the
-        // ADR rejects in §117-124.
-        if self.thread_run_store.is_some() && self.commit_coordinator.is_none() {
-            return Err(BuildError::CommitCoordinatorRequired);
-        }
 
         #[cfg(feature = "a2a")]
         let (agents, composite_registry): (Arc<dyn AgentSpecRegistry>, _) =
@@ -361,10 +345,6 @@ impl AgentRuntimeBuilder {
         #[cfg(feature = "a2a")]
         if let Some(composite) = composite_registry {
             runtime = runtime.with_composite_registry(composite);
-        }
-
-        if let Some(store) = self.thread_run_store {
-            runtime = runtime.with_thread_run_store(store);
         }
 
         if let Some(coordinator) = self.commit_coordinator {

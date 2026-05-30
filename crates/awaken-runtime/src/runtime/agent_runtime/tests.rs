@@ -33,7 +33,7 @@ fn make_resume() -> ToolCallResume {
 #[test]
 fn new_creates_runtime() {
     let rt = make_runtime();
-    assert!(rt.storage.is_none());
+    assert!(rt.checkpoint_storage.is_none());
     assert!(rt.profile_store.is_none());
     assert!(rt.registry_handle().is_none());
 }
@@ -61,16 +61,16 @@ fn resolver_arc_returns_clone() {
 }
 
 #[test]
-fn with_thread_run_store_sets_store() {
+fn with_in_memory_thread_run_store_sets_checkpoint_reader() {
     let store = Arc::new(awaken_stores::InMemoryStore::new());
     let rt = make_runtime().with_in_memory_thread_run_store(store);
-    assert!(rt.thread_run_store().is_some());
+    assert!(rt.checkpoint_reader().is_some());
 }
 
 #[test]
-fn thread_run_store_none_by_default() {
+fn checkpoint_reader_none_by_default() {
     let rt = make_runtime();
-    assert!(rt.thread_run_store().is_none());
+    assert!(rt.checkpoint_reader().is_none());
 }
 
 #[test]

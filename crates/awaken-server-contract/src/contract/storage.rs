@@ -1,4 +1,9 @@
 pub use awaken_runtime_contract::contract::storage::*;
+// Thread/run store traits + checkpoint adapter moved out of runtime-contract
+// into `store_traits`; re-export them here so `storage::ThreadRunStore` etc.
+// keep resolving for every server/store consumer, and bind them locally for
+// the `ScopedThreadRunStore` impls below.
+pub use super::store_traits::{RunStore, ThreadRunCheckpointStore, ThreadRunStore, ThreadStore};
 
 use std::sync::Arc;
 

@@ -15,5 +15,6 @@ pub mod registry_graph;
 pub mod scope;
 pub mod staged_commit;
 pub mod storage;
+pub mod store_traits;
 pub mod transport;
 pub mod versioned_registry;

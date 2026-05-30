@@ -8199,7 +8199,7 @@ async fn checkpoint_store_receives_data() {
         sink: sink.clone(),
         checkpoint_store: Some(
             &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::contract::storage::ThreadRunStore>
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
             ),
         ),
         messages: vec![Message::user("hi")],
@@ -8216,7 +8216,7 @@ async fn checkpoint_store_receives_data() {
     .await
     .unwrap();
 
-    use awaken::contract::storage::RunStore;
+    use awaken::server_contract::storage::RunStore;
     let record = checkpoint.load_run("run-1").await.unwrap();
     assert!(
         record.is_some(),
@@ -8262,7 +8262,7 @@ async fn checkpoint_includes_correct_step_count() {
         sink: sink.clone(),
         checkpoint_store: Some(
             &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::contract::storage::ThreadRunStore>
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
             ),
         ),
         messages: vec![Message::user("go")],
@@ -8279,7 +8279,7 @@ async fn checkpoint_includes_correct_step_count() {
     .await
     .unwrap();
 
-    use awaken::contract::storage::RunStore;
+    use awaken::server_contract::storage::RunStore;
     let record = checkpoint.load_run("run-1").await.unwrap().unwrap();
     assert_eq!(record.steps, 2, "checkpoint should reflect 2 steps");
 }
@@ -8310,7 +8310,7 @@ async fn checkpoint_contains_state_blob() {
         sink: sink.clone(),
         checkpoint_store: Some(
             &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::contract::storage::ThreadRunStore>
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
             ),
         ),
         messages: vec![Message::user("hi")],
@@ -8327,7 +8327,7 @@ async fn checkpoint_contains_state_blob() {
     .await
     .unwrap();
 
-    use awaken::contract::storage::RunStore;
+    use awaken::server_contract::storage::RunStore;
     let record = checkpoint.load_run("run-1").await.unwrap().unwrap();
     assert!(
         record.state.is_some(),
@@ -8361,7 +8361,7 @@ async fn checkpoint_stores_thread_messages() {
         sink: sink.clone(),
         checkpoint_store: Some(
             &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::contract::storage::ThreadRunStore>
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
             ),
         ),
         messages: vec![Message::user("hello")],
@@ -8378,7 +8378,7 @@ async fn checkpoint_stores_thread_messages() {
     .await
     .unwrap();
 
-    use awaken::contract::storage::{RunStore, ThreadStore};
+    use awaken::server_contract::storage::{RunStore, ThreadStore};
     let msgs = checkpoint.load_messages("thread-1").await.unwrap();
     assert!(msgs.is_some(), "checkpoint should store thread messages");
     let msgs = msgs.unwrap();
@@ -8415,7 +8415,7 @@ async fn checkpoint_stores_thread_messages() {
 
 #[tokio::test]
 async fn checkpoint_output_supports_child_result_lookup_after_tool_messages() {
-    use awaken::contract::storage::{RunStore, ThreadStore};
+    use awaken::server_contract::storage::{RunStore, ThreadStore};
     use awaken::stores::InMemoryStore;
 
     let llm = Arc::new(ScriptedLlm::new(vec![
@@ -8452,7 +8452,7 @@ async fn checkpoint_output_supports_child_result_lookup_after_tool_messages() {
         sink,
         checkpoint_store: Some(
             &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::contract::storage::ThreadRunStore>
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
             ),
         ),
         messages: vec![Message::user("delegate with a tool")],
@@ -8552,7 +8552,7 @@ async fn checkpoint_stores_blocked_tool_batch_consistently() {
         sink,
         checkpoint_store: Some(
             &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::contract::storage::ThreadRunStore>
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
             ),
         ),
         messages: vec![Message::user("use tools")],
@@ -8574,7 +8574,7 @@ async fn checkpoint_stores_blocked_tool_batch_consistently() {
         TerminationReason::Blocked(ref reason) if reason == "tool is forbidden"
     ));
 
-    use awaken::contract::storage::ThreadStore;
+    use awaken::server_contract::storage::ThreadStore;
     let msgs = checkpoint
         .load_messages("thread-1")
         .await
@@ -8626,7 +8626,7 @@ async fn checkpoint_stores_suspended_tool_batch_consistently() {
         sink,
         checkpoint_store: Some(
             &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::contract::storage::ThreadRunStore>
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
             ),
         ),
         messages: vec![Message::user("run dangerous tool")],
@@ -8645,7 +8645,7 @@ async fn checkpoint_stores_suspended_tool_batch_consistently() {
 
     assert_eq!(result.termination, TerminationReason::Suspended);
 
-    use awaken::contract::storage::ThreadStore;
+    use awaken::server_contract::storage::ThreadStore;
     let msgs = checkpoint
         .load_messages("thread-1")
         .await
@@ -8702,7 +8702,7 @@ async fn checkpoint_records_agent_id() {
         sink: sink.clone(),
         checkpoint_store: Some(
             &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::contract::storage::ThreadRunStore>
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
             ),
         ),
         messages: vec![Message::user("hi")],
@@ -8719,7 +8719,7 @@ async fn checkpoint_records_agent_id() {
     .await
     .unwrap();
 
-    use awaken::contract::storage::RunStore;
+    use awaken::server_contract::storage::RunStore;
     let record = checkpoint.load_run("r-1").await.unwrap().unwrap();
     assert_eq!(record.agent_id, "my-agent");
 }
