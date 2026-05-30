@@ -1,8 +1,13 @@
-//! Durable canonical event store contracts.
+//! Durable canonical event store data vocabulary.
+//!
+//! The store traits (`EventWriter`/`EventReader`/`EventLookup`/
+//! `EventSubscriber`/`EventStore`) are a server/store concern and moved to
+//! `awaken-server-contract`. The runtime only needs these data types
+//! (`CanonicalEventDraft`/`AppendOptions`/`EventStoreError` are named by the
+//! commit-coordinator write boundary).
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -385,53 +390,6 @@ pub struct SubscribeHandle {
     pub start_cursor: Option<EventCursor>,
     pub stream: CanonicalEventStream,
 }
-
-/// Append canonical events.
-#[async_trait]
-pub trait EventWriter: Send + Sync {
-    async fn append(
-        &self,
-        draft: CanonicalEventDraft,
-        options: AppendOptions,
-    ) -> Result<AppendResult, EventStoreError>;
-}
-
-/// Read canonical event history.
-#[async_trait]
-pub trait EventReader: Send + Sync {
-    async fn list(
-        &self,
-        scope: EventScope,
-        from: Option<EventCursor>,
-        limit: usize,
-    ) -> Result<EventPage, EventStoreError>;
-
-    async fn count(&self, scope: EventScope) -> Result<u64, EventStoreError>;
-}
-
-/// Lookup canonical events by stable event id.
-#[async_trait]
-pub trait EventLookup: Send + Sync {
-    async fn load_event(
-        &self,
-        event_id: &CanonicalEventId,
-    ) -> Result<CanonicalEvent, EventStoreError>;
-}
-
-/// Subscribe to canonical event history and live tail.
-#[async_trait]
-pub trait EventSubscriber: Send + Sync {
-    async fn subscribe(
-        &self,
-        scope: EventScope,
-        start: SubscribeStart,
-    ) -> Result<SubscribeHandle, EventStoreError>;
-}
-
-/// Full canonical event store capability.
-pub trait EventStore: EventWriter + EventReader + EventLookup + EventSubscriber {}
-
-impl<T> EventStore for T where T: EventWriter + EventReader + EventLookup + EventSubscriber {}
 
 fn reject_blank(field: &str, value: &str) -> Result<(), EventStoreError> {
     if value.trim().is_empty() {

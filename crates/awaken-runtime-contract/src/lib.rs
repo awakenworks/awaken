@@ -98,12 +98,13 @@ pub use contract::commit_coordinator::{
     StagedCanonicalEvent, TransactionScopeId,
 };
 
-// ── canonical event store ──
+// ── canonical event store (data vocabulary; store traits live in
+// awaken-server-contract) ──
 pub use contract::event_store::{
     AppendOptions, AppendResult, CanonicalEvent, CanonicalEventDraft, CanonicalEventId,
-    CanonicalEventKind, CanonicalEventStream, EventCursor, EventLookup, EventPage, EventReader,
-    EventScope, EventScopeFamily, EventScopeIds, EventStore, EventStoreError, EventSubscriber,
-    EventVisibility, EventWriter, FidelityClass, SubscribeHandle, SubscribeStart,
+    CanonicalEventKind, CanonicalEventStream, EventCursor, EventPage, EventScope, EventScopeFamily,
+    EventScopeIds, EventStoreError, EventVisibility, FidelityClass, SubscribeHandle,
+    SubscribeStart,
 };
 
 // ── live control ──

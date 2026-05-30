@@ -1,6 +1,9 @@
-//! Generic at-least-once outbox contract.
+//! Generic at-least-once outbox data vocabulary.
+//!
+//! The `OutboxStore` trait (the server/store write+claim surface) moved to
+//! `awaken-server-contract`; the runtime only needs these data types
+//! (`OutboxError` is named by the commit-coordinator write boundary).
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -140,69 +143,6 @@ pub enum OutboxNackOutcome {
     Requeued,
     DeadLettered,
     LostClaim,
-}
-
-/// Outbox store contract (ADR-0034 D9/D10).
-///
-/// `enqueue_outbox` is the protocol-neutral entry point and does NOT share a
-/// transaction with the caller's domain writes. Backends with transactional
-/// guarantees expose an additional concrete-type entry point that accepts a
-/// backend-specific transaction handle:
-///
-/// - [`crate::PostgresStore`] provides `enqueue_outbox_in_transaction` to
-///   attach an outbox insert to an externally-managed `sqlx::Transaction`.
-///   This is the path control-plane writers use to honor ADR-0034 D9's
-///   `BEGIN ... update domain row ... append canonical event ... insert outbox
-///   ... COMMIT` atomicity requirement.
-/// - The canonical EventStore append paths (Postgres) already enqueue the
-///   canonical outbox row within the same EventStore transaction, so callers
-///   that only need EventStore + outbox atomicity get it for free via
-///   `EventWriter::append`.
-/// - Implementations whose database is different from the canonical event
-///   backend can ONLY provide eventually-consistent canonical→outbox writes;
-///   the deployment must accept the eventual-consistency profile that
-///   ADR-0034 documents.
-#[async_trait]
-pub trait OutboxStore: Send + Sync {
-    /// Enqueue an outbox row in the backend's own transaction. Use the
-    /// concrete-type transactional method (see trait docs) when the caller
-    /// needs to share a transaction with other writes.
-    async fn enqueue_outbox(
-        &self,
-        draft: OutboxMessageDraft,
-    ) -> Result<OutboxEnqueueResult, OutboxError>;
-
-    async fn claim_outbox(
-        &self,
-        lane: &str,
-        target: &str,
-        limit: usize,
-        lease_ms: u64,
-        consumer_id: &str,
-        now: u64,
-    ) -> Result<Vec<OutboxMessage>, OutboxError>;
-
-    async fn ack_outbox(
-        &self,
-        outbox_id: &str,
-        claim_token: &str,
-        now: u64,
-    ) -> Result<bool, OutboxError>;
-
-    async fn nack_outbox(
-        &self,
-        outbox_id: &str,
-        claim_token: &str,
-        error: &str,
-        retry_at: u64,
-        now: u64,
-    ) -> Result<OutboxNackOutcome, OutboxError>;
-
-    async fn list_outbox(
-        &self,
-        status: Option<OutboxStatus>,
-        limit: usize,
-    ) -> Result<Vec<OutboxMessage>, OutboxError>;
 }
 
 fn default_max_attempts() -> u32 {
