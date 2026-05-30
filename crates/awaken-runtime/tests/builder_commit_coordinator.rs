@@ -8,7 +8,9 @@ use awaken_runtime_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     TransactionScopeId,
 };
-use awaken_runtime_contract::contract::storage::ThreadRunStore;
+use awaken_runtime_contract::contract::storage::{
+    RuntimeCheckpointStore, ThreadRunCheckpointStore, ThreadRunStore,
+};
 use awaken_stores::InMemoryStore;
 
 struct NoopCoord {
@@ -29,8 +31,10 @@ impl CommitCoordinator for NoopCoord {
         TransactionScopeId::new("test::noop").unwrap()
     }
 
-    fn thread_run_store(&self) -> Arc<dyn ThreadRunStore> {
-        Arc::clone(&self.thread_run) as Arc<dyn ThreadRunStore>
+    fn reader(&self) -> Arc<dyn RuntimeCheckpointStore> {
+        Arc::new(ThreadRunCheckpointStore::new(
+            Arc::clone(&self.thread_run) as Arc<dyn ThreadRunStore>
+        ))
     }
 
     async fn commit_checkpoint(

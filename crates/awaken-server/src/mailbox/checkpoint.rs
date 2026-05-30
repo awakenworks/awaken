@@ -102,8 +102,14 @@ mod tests {
             TransactionScopeId::new("mailbox-test").expect("scope id")
         }
 
-        fn thread_run_store(&self) -> Arc<dyn ThreadRunStore> {
-            Arc::clone(&self.store) as Arc<dyn ThreadRunStore>
+        fn reader(
+            &self,
+        ) -> Arc<dyn awaken_server_contract::contract::storage::RuntimeCheckpointStore> {
+            Arc::new(
+                awaken_server_contract::contract::storage::ThreadRunCheckpointStore::new(
+                    Arc::clone(&self.store) as Arc<dyn ThreadRunStore>,
+                ),
+            )
         }
 
         async fn commit_checkpoint(

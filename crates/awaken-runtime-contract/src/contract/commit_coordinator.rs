@@ -30,7 +30,7 @@ use std::sync::Arc;
 use super::event_store::{AppendOptions, CanonicalEventDraft, EventScope, EventStoreError};
 use super::message::Message;
 use super::outbox::{OutboxError, OutboxMessageDraft};
-use super::storage::{RunRecord, StorageError, ThreadRunStore};
+use super::storage::{RunRecord, RuntimeCheckpointStore, StorageError};
 
 // ── transaction scope id ─────────────────────────────────────────────
 
@@ -459,11 +459,12 @@ pub trait CommitCoordinator: Send + Sync {
     /// scope compatibility per ADR-0036 D3.
     fn scope(&self) -> TransactionScopeId;
 
-    /// Return the underlying [`ThreadRunStore`] handle. The runtime uses
-    /// this for reads (e.g. `load_run`) while writes flow through
-    /// [`Self::commit_checkpoint`]. Returning the same backing store as
-    /// the one driven by `commit_checkpoint` is required.
-    fn thread_run_store(&self) -> Arc<dyn ThreadRunStore>;
+    /// Return the runtime read port backed by the same store the coordinator
+    /// commits to. The runtime uses this for resume reads (e.g. `load_run`);
+    /// writes flow through [`Self::commit_checkpoint`]. The full store CRUD +
+    /// query surface is a server/store concern and is intentionally not
+    /// exposed to the runtime through this port.
+    fn reader(&self) -> Arc<dyn RuntimeCheckpointStore>;
 
     /// Commit one checkpoint plan atomically. See trait docs for
     /// ordering and failure semantics.

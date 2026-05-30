@@ -336,14 +336,11 @@ impl AgentRuntime {
         let effective_coordinator: Option<
             Arc<dyn awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator>,
         > = commit_coordinator_override.or_else(|| self.commit_coordinator.clone());
-        let coord_store = effective_coordinator.as_ref().map(|c| c.thread_run_store());
-        let coord_checkpoint_store =
-            coord_store.map(crate::checkpoint_store::ThreadRunCheckpointStore::new);
-        let storage = self.checkpoint_storage.as_deref().or_else(|| {
-            coord_checkpoint_store
-                .as_ref()
-                .map(|store| store as &dyn crate::checkpoint_store::RuntimeCheckpointStore)
-        });
+        let coord_reader = effective_coordinator.as_ref().map(|c| c.reader());
+        let storage = self
+            .checkpoint_storage
+            .as_deref()
+            .or_else(|| coord_reader.as_deref());
         let backend_request = BackendRootRunRequest {
             agent_id: &agent_id,
             messages,

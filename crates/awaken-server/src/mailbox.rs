@@ -685,7 +685,8 @@ pub struct Mailbox {
     store: Arc<dyn MailboxStore>,
     /// Single durable-write boundary from `executor.commit_coordinator()` (see `try_new`).
     coordinator: Arc<dyn CommitCoordinator>,
-    /// Projection of `coordinator.thread_run_store()`; never diverges by construction.
+    /// Full thread/run store for server-side reads and queries. Supplied by
+    /// the caller, which builds the coordinator from this same store.
     run_store: Arc<dyn ThreadRunStore>,
     pending_thread_run_store: Option<Arc<dyn awaken_stores::PendingThreadRunStore>>,
     consumer_id: String,
@@ -747,7 +748,6 @@ impl Mailbox {
                     .to_string(),
             ));
         };
-        let run_store = coordinator.thread_run_store();
         Ok(Self {
             executor,
             store,
