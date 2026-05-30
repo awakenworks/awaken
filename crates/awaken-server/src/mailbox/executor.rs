@@ -14,6 +14,7 @@ use awaken_runtime::{
 use awaken_server_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_server_contract::contract::event_sink::EventSink;
 use awaken_server_contract::contract::message::Message;
+use awaken_server_contract::contract::staged_commit::StagedCommitCoordinator;
 use awaken_server_contract::contract::suspension::ToolCallResume;
 
 /// Execution boundary used by mailbox dispatch.
@@ -123,6 +124,17 @@ pub trait RunDispatchExecutor: Send + Sync {
 
     /// Durable checkpoint boundary wired into the executor, when available.
     fn commit_coordinator(&self) -> Option<Arc<dyn CommitCoordinator>> {
+        None
+    }
+
+    /// Staged checkpoint boundary, when the executor's coordinator can commit
+    /// canonical-event/outbox writes atomically with the checkpoint (the
+    /// store-backed coordinators). Required for runtime event capture, which
+    /// folds the dispatch-staged canonical drafts into each commit. Defaults to
+    /// `None`: the runtime erases its coordinator to `dyn CommitCoordinator`
+    /// and cannot name this server-contract trait, so embedders that need
+    /// capture supply the staged coordinator directly.
+    fn staged_commit_coordinator(&self) -> Option<Arc<dyn StagedCommitCoordinator>> {
         None
     }
 

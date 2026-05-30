@@ -208,10 +208,12 @@ pub(super) async fn run_claimed_dispatch(
     // When runtime event capture is enabled, mint a per-run EventBuffer and
     // share it between the sink wrap (stages canonical drafts as events flow)
     // and a per-run staging commit coordinator (drains them into each
-    // checkpoint commit). The runtime itself never sees the buffer.
-    let event_buffer = this
-        .runtime_event_capture
-        .is_some()
+    // checkpoint commit). The runtime itself never sees the buffer. Capture
+    // requires a staged coordinator (one that can append canonical events
+    // atomically with the checkpoint); `with_runtime_event_capture` validated
+    // a commit coordinator is present, and the staged variant is the one that
+    // does the atomic event write.
+    let event_buffer = (this.runtime_event_capture.is_some() && this.staged_coordinator.is_some())
         .then(|| Arc::new(EventBuffer::new()));
     let sink = Arc::new(SuspensionAwareSink {
         inner: this.wrap_dispatch_runtime_event_sink(
@@ -228,13 +230,13 @@ pub(super) async fn run_claimed_dispatch(
     request = request
         .with_dispatch_id(dispatch_id.clone())
         .with_session_id(dispatch_instance_id.clone());
-    if let Some(buffer) = event_buffer {
+    if let Some(buffer) = event_buffer
+        && let Some(staged) = this.staged_coordinator.as_ref()
+    {
         // Fold staged canonical drafts into the run's checkpoint commits via a
-        // per-run coordinator wrapping the mailbox's durable coordinator.
-        let staging = super::staging_coordinator::StagingCommitCoordinator::new(
-            Arc::clone(&this.coordinator),
-            buffer,
-        );
+        // per-run coordinator wrapping the mailbox's durable staged coordinator.
+        let staging =
+            super::staging_coordinator::StagingCommitCoordinator::new(Arc::clone(staged), buffer);
         request = request.with_commit_coordinator_override(staging);
     }
     let record_start = Instant::now();

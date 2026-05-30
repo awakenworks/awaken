@@ -1222,6 +1222,13 @@ impl RunDispatchExecutor for CommittingEmittingMailboxRuntime {
         Some(Arc::clone(&self.coordinator) as Arc<dyn CommitCoordinator>)
     }
 
+    fn staged_commit_coordinator(
+        &self,
+    ) -> Option<Arc<dyn awaken_server_contract::contract::staged_commit::StagedCommitCoordinator>>
+    {
+        Some(Arc::clone(&self.coordinator) as Arc<_>)
+    }
+
     fn cancel(&self, _id: &str) -> bool {
         false
     }

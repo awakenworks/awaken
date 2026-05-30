@@ -17,13 +17,17 @@ use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     StagedCanonicalEvent, TransactionScopeId,
 };
+use awaken_server_contract::contract::staged_commit::{
+    CheckpointStagedWrites, StagedCommitCoordinator,
+};
 use awaken_server_contract::contract::storage::RuntimeCheckpointStore;
 use parking_lot::Mutex;
 
-/// Wraps a base [`CommitCoordinator`], draining a per-run [`EventBuffer`] into
-/// each checkpoint commit.
+/// Wraps a base [`StagedCommitCoordinator`], draining a per-run [`EventBuffer`]
+/// into each checkpoint commit via the staged path so the runtime never names
+/// canonical-event vocabulary.
 pub(super) struct StagingCommitCoordinator {
-    inner: Arc<dyn CommitCoordinator>,
+    inner: Arc<dyn StagedCommitCoordinator>,
     buffer: Arc<EventBuffer>,
     /// Drafts staged but not yet committed. They survive the runtime's
     /// version-conflict retry loop (each retry re-submits the same plan) and
@@ -32,7 +36,10 @@ pub(super) struct StagingCommitCoordinator {
 }
 
 impl StagingCommitCoordinator {
-    pub(super) fn new(inner: Arc<dyn CommitCoordinator>, buffer: Arc<EventBuffer>) -> Arc<Self> {
+    pub(super) fn new(
+        inner: Arc<dyn StagedCommitCoordinator>,
+        buffer: Arc<EventBuffer>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             inner,
             buffer,
@@ -53,7 +60,7 @@ impl CommitCoordinator for StagingCommitCoordinator {
 
     async fn commit_checkpoint(
         &self,
-        mut plan: CheckpointCommitPlan,
+        plan: CheckpointCommitPlan,
     ) -> Result<CheckpointCommitOutcome, CommitError> {
         // Accumulate newly staged drafts onto any that an earlier (conflicted)
         // attempt staged, so a version-conflict retry never drops events.
@@ -62,8 +69,8 @@ impl CommitCoordinator for StagingCommitCoordinator {
             pending.extend(self.buffer.drain());
             pending.clone()
         };
-        plan.canonical_drafts = drafts;
-        let outcome = self.inner.commit_checkpoint(plan).await?;
+        let staged = CheckpointStagedWrites::default().with_canonical_drafts(drafts);
+        let outcome = self.inner.commit_checkpoint_staged(plan, staged).await?;
         // Success: the drafts are durable, so the pending buffer is cleared.
         // On error we leave `pending` intact for the runtime's retry.
         self.pending.lock().clear();
@@ -132,7 +139,19 @@ mod tests {
             &self,
             plan: CheckpointCommitPlan,
         ) -> Result<CheckpointCommitOutcome, CommitError> {
-            let kinds: Vec<String> = plan
+            self.commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
+                .await
+        }
+    }
+
+    #[async_trait]
+    impl StagedCommitCoordinator for RecordingCoordinator {
+        async fn commit_checkpoint_staged(
+            &self,
+            plan: CheckpointCommitPlan,
+            staged: CheckpointStagedWrites,
+        ) -> Result<CheckpointCommitOutcome, CommitError> {
+            let kinds: Vec<String> = staged
                 .canonical_drafts
                 .iter()
                 .map(|staged| staged.draft.event_kind.as_str().to_string())

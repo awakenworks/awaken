@@ -9,11 +9,10 @@
 
 use std::future::Future;
 
-use awaken_server_contract::contract::commit_coordinator::{
-    CheckpointCommitOutcome, CheckpointCommitPlan, CommitError,
-};
+use awaken_server_contract::contract::commit_coordinator::{CheckpointCommitOutcome, CommitError};
 use awaken_server_contract::contract::event_store::EventWriter;
 use awaken_server_contract::contract::outbox::OutboxStore;
+use awaken_server_contract::contract::staged_commit::CheckpointStagedWrites;
 use awaken_server_contract::contract::storage::StorageError;
 
 use crate::memory_event_store::InMemoryEventStore;
@@ -31,7 +30,7 @@ use crate::memory_outbox::InMemoryOutboxStore;
 /// `write_thread_run` may also perform backend-specific snapshot/restore for
 /// the thread-run store; this helper does not touch that state.
 pub(crate) async fn run_commit_batch<W, Fut>(
-    plan: &CheckpointCommitPlan,
+    staged: &CheckpointStagedWrites,
     events: &InMemoryEventStore,
     outbox: &InMemoryOutboxStore,
     write_thread_run: W,
@@ -48,10 +47,13 @@ where
         outbox.restore_state(outbox_snapshot.clone()).await;
     };
 
-    let mut canonical_event_ids = Vec::with_capacity(plan.canonical_drafts.len());
-    for staged in &plan.canonical_drafts {
+    let mut canonical_event_ids = Vec::with_capacity(staged.canonical_drafts.len());
+    for staged_event in &staged.canonical_drafts {
         match events
-            .append(staged.draft.clone(), staged.append_options.clone())
+            .append(
+                staged_event.draft.clone(),
+                staged_event.append_options.clone(),
+            )
             .await
         {
             Ok(result) => canonical_event_ids.push(result.event.event_id.as_str().to_string()),
@@ -62,8 +64,8 @@ where
         }
     }
 
-    let mut server_event_ids = Vec::with_capacity(plan.server_events.len());
-    for event in &plan.server_events {
+    let mut server_event_ids = Vec::with_capacity(staged.server_events.len());
+    for event in &staged.server_events {
         match events
             .append(event.draft.clone(), event.options.clone())
             .await
@@ -76,8 +78,8 @@ where
         }
     }
 
-    let mut additional_outbox_ids = Vec::with_capacity(plan.additional_outbox.len());
-    for draft in &plan.additional_outbox {
+    let mut additional_outbox_ids = Vec::with_capacity(staged.additional_outbox.len());
+    for draft in &staged.additional_outbox {
         match outbox.enqueue_outbox(draft.clone()).await {
             Ok(result) => additional_outbox_ids.push(result.message.outbox_id),
             Err(error) => {
@@ -114,16 +116,14 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use awaken_server_contract::contract::commit_coordinator::{
-        CheckpointCommitPlan, CommitError, StagedCanonicalEvent,
-    };
+    use awaken_server_contract::contract::commit_coordinator::{CommitError, StagedCanonicalEvent};
     use awaken_server_contract::contract::event_store::{
         AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope,
         EventVisibility, EventWriter,
     };
-    use awaken_server_contract::contract::lifecycle::RunStatus;
     use awaken_server_contract::contract::outbox::{OutboxMessageDraft, OutboxStatus, OutboxStore};
-    use awaken_server_contract::contract::storage::{RunRecord, StorageError};
+    use awaken_server_contract::contract::staged_commit::CheckpointStagedWrites;
+    use awaken_server_contract::contract::storage::StorageError;
 
     use super::run_commit_batch;
     use crate::memory_event_store::InMemoryEventStore;
@@ -139,15 +139,6 @@ mod tests {
         .unwrap();
         draft.visibility = EventVisibility::Public;
         draft
-    }
-
-    fn run_record(thread_id: &str, run_id: &str) -> RunRecord {
-        RunRecord {
-            run_id: run_id.into(),
-            thread_id: thread_id.into(),
-            status: RunStatus::Done,
-            ..Default::default()
-        }
     }
 
     async fn fresh() -> (Arc<InMemoryEventStore>, Arc<InMemoryOutboxStore>) {
@@ -179,15 +170,13 @@ mod tests {
         // Build a plan whose canonical_drafts collide with the seeded draft.
         let mut colliding = sample_draft("RunStarted", "t-1", "r-1");
         colliding.payload = serde_json::json!({"kind": "RunStarted", "diff": true});
-        let plan =
-            CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), run_record("t-1", "r-1"))
-                .with_canonical_drafts(vec![
-                    StagedCanonicalEvent::new(colliding).with_options(opts),
-                ]);
+        let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
+            StagedCanonicalEvent::new(colliding).with_options(opts),
+        ]);
 
         let write_called = Arc::new(AtomicBool::new(false));
         let write_called_clone = Arc::clone(&write_called);
-        let result = run_commit_batch(&plan, &events, &outbox, || async move {
+        let result = run_commit_batch(&staged, &events, &outbox, || async move {
             write_called_clone.store(true, Ordering::SeqCst);
             Ok(())
         })
@@ -222,18 +211,17 @@ mod tests {
         let mut bad = OutboxMessageDraft::new("lane", "target", serde_json::json!({})).unwrap();
         bad.lane.clear();
 
-        let plan =
-            CheckpointCommitPlan::checkpoint_only("t-2", Vec::new(), run_record("t-2", "r-2"))
-                .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
-                    "RunStarted",
-                    "t-2",
-                    "r-2",
-                ))])
-                .with_additional_outbox(vec![bad]);
+        let staged = CheckpointStagedWrites::default()
+            .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
+                "RunStarted",
+                "t-2",
+                "r-2",
+            ))])
+            .with_additional_outbox(vec![bad]);
 
         let write_called = Arc::new(AtomicBool::new(false));
         let write_called_clone = Arc::clone(&write_called);
-        let result = run_commit_batch(&plan, &events, &outbox, || async move {
+        let result = run_commit_batch(&staged, &events, &outbox, || async move {
             write_called_clone.store(true, Ordering::SeqCst);
             Ok(())
         })
@@ -264,18 +252,17 @@ mod tests {
     async fn write_thread_run_failure_rolls_back_events_and_outbox() {
         let (events, outbox) = fresh().await;
 
-        let plan =
-            CheckpointCommitPlan::checkpoint_only("t-3", Vec::new(), run_record("t-3", "r-3"))
-                .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
-                    "RunStarted",
-                    "t-3",
-                    "r-3",
-                ))])
-                .with_additional_outbox(vec![
-                    OutboxMessageDraft::new("lane", "target", serde_json::json!({"k": 1})).unwrap(),
-                ]);
+        let staged = CheckpointStagedWrites::default()
+            .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
+                "RunStarted",
+                "t-3",
+                "r-3",
+            ))])
+            .with_additional_outbox(vec![
+                OutboxMessageDraft::new("lane", "target", serde_json::json!({"k": 1})).unwrap(),
+            ]);
 
-        let result = run_commit_batch(&plan, &events, &outbox, || async {
+        let result = run_commit_batch(&staged, &events, &outbox, || async {
             Err(StorageError::Validation(
                 "simulated thread-run write failure".into(),
             ))
@@ -305,20 +292,19 @@ mod tests {
     #[tokio::test]
     async fn happy_path_returns_ids_and_runs_write() {
         let (events, outbox) = fresh().await;
-        let plan =
-            CheckpointCommitPlan::checkpoint_only("t-ok", Vec::new(), run_record("t-ok", "r-ok"))
-                .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
-                    "RunStarted",
-                    "t-ok",
-                    "r-ok",
-                ))])
-                .with_additional_outbox(vec![
-                    OutboxMessageDraft::new("lane", "target", serde_json::json!({})).unwrap(),
-                ]);
+        let staged = CheckpointStagedWrites::default()
+            .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
+                "RunStarted",
+                "t-ok",
+                "r-ok",
+            ))])
+            .with_additional_outbox(vec![
+                OutboxMessageDraft::new("lane", "target", serde_json::json!({})).unwrap(),
+            ]);
 
         let write_called = Arc::new(AtomicBool::new(false));
         let write_called_clone = Arc::clone(&write_called);
-        let outcome = run_commit_batch(&plan, &events, &outbox, || async move {
+        let outcome = run_commit_batch(&staged, &events, &outbox, || async move {
             write_called_clone.store(true, Ordering::SeqCst);
             Ok(())
         })

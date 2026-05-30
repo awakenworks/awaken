@@ -27,6 +27,9 @@ use awaken_server_contract::contract::commit_coordinator::{
 };
 use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::message::PendingMessageRecord;
+use awaken_server_contract::contract::staged_commit::{
+    CheckpointStagedWrites, StagedCommitCoordinator,
+};
 use awaken_server_contract::contract::storage::{RunRecord, ThreadRunStore};
 use awaken_server_contract::thread::Thread;
 use tokio::sync::Mutex;
@@ -139,7 +142,20 @@ impl CommitCoordinator for MemoryCommitCoordinator {
         &self,
         plan: CheckpointCommitPlan,
     ) -> Result<CheckpointCommitOutcome, CommitError> {
+        self.commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
+            .await
+    }
+}
+
+#[async_trait]
+impl StagedCommitCoordinator for MemoryCommitCoordinator {
+    async fn commit_checkpoint_staged(
+        &self,
+        plan: CheckpointCommitPlan,
+        staged: CheckpointStagedWrites,
+    ) -> Result<CheckpointCommitOutcome, CommitError> {
         plan.validate()?;
+        staged.validate(&plan.thread_id, &plan.run.run_id)?;
 
         // Serialise commits so concurrent attempts do not interleave
         // partial state.
@@ -180,7 +196,7 @@ impl CommitCoordinator for MemoryCommitCoordinator {
             }
         };
 
-        let outcome = run_commit_batch(&plan, &self.events, &self.outbox, write_thread_run).await;
+        let outcome = run_commit_batch(&staged, &self.events, &self.outbox, write_thread_run).await;
         match plan.message_mode {
             MessageWriteMode::Append => {
                 outcome.map_err(|error| error.reclassify_append_conflict(&plan.thread_id))
@@ -199,6 +215,9 @@ mod tests {
         EventVisibility, EventWriter,
     };
     use awaken_server_contract::contract::lifecycle::RunStatus;
+    use awaken_server_contract::contract::staged_commit::{
+        CheckpointStagedWrites, StagedCommitCoordinator,
+    };
     use awaken_server_contract::contract::storage::{RunRecord, ThreadStore};
     use serde_json::json;
 
@@ -261,13 +280,13 @@ mod tests {
     async fn commit_with_drafts_appends_and_persists() {
         let (coord, thread_run, events, _outbox) = build_coordinator();
         let plan =
-            CheckpointCommitPlan::checkpoint_only("t-2", Vec::new(), run_record("t-2", "r-2"))
-                .with_canonical_drafts(vec![
-                    StagedCanonicalEvent::new(sample_draft("RunStarted", "t-2", "r-2")),
-                    StagedCanonicalEvent::new(sample_draft("RunCompleted", "t-2", "r-2")),
-                ]);
+            CheckpointCommitPlan::checkpoint_only("t-2", Vec::new(), run_record("t-2", "r-2"));
+        let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
+            StagedCanonicalEvent::new(sample_draft("RunStarted", "t-2", "r-2")),
+            StagedCanonicalEvent::new(sample_draft("RunCompleted", "t-2", "r-2")),
+        ]);
 
-        let outcome = coord.commit_checkpoint(plan).await.unwrap();
+        let outcome = coord.commit_checkpoint_staged(plan, staged).await.unwrap();
         assert_eq!(outcome.canonical_event_ids.len(), 2);
 
         let thread = thread_run.load_thread("t-2").await.unwrap();
@@ -362,15 +381,15 @@ mod tests {
         conflicting_draft.payload = json!({"kind": "RunStarted", "different": true});
 
         let plan =
-            CheckpointCommitPlan::checkpoint_only("t-3", Vec::new(), run_record("t-3", "r-3"))
-                .with_canonical_drafts(vec![
-                    StagedCanonicalEvent::new(conflicting_draft).with_options(seed_options),
-                ]);
+            CheckpointCommitPlan::checkpoint_only("t-3", Vec::new(), run_record("t-3", "r-3"));
+        let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
+            StagedCanonicalEvent::new(conflicting_draft).with_options(seed_options),
+        ]);
 
         // Capture pre-commit event count for rollback assertion.
         let pre_count = events.count(EventScope::run("r-3")).await.unwrap();
 
-        let result = coord.commit_checkpoint(plan).await;
+        let result = coord.commit_checkpoint_staged(plan, staged).await;
         assert!(matches!(result, Err(CommitError::EventAppend(_))));
 
         // Thread checkpoint NOT advanced.
@@ -400,17 +419,17 @@ mod tests {
         conflicting_second.payload = json!({"kind": "ToolCallReady", "diff": true});
 
         let plan =
-            CheckpointCommitPlan::checkpoint_only("t-4", Vec::new(), run_record("t-4", "r-4"))
-                .with_canonical_drafts(vec![
-                    // First draft would succeed in isolation.
-                    StagedCanonicalEvent::new(sample_draft("RunStarted", "t-4", "r-4")),
-                    // Second draft conflicts via idempotency.
-                    StagedCanonicalEvent::new(conflicting_second).with_options(collide_opts),
-                ]);
+            CheckpointCommitPlan::checkpoint_only("t-4", Vec::new(), run_record("t-4", "r-4"));
+        let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
+            // First draft would succeed in isolation.
+            StagedCanonicalEvent::new(sample_draft("RunStarted", "t-4", "r-4")),
+            // Second draft conflicts via idempotency.
+            StagedCanonicalEvent::new(conflicting_second).with_options(collide_opts),
+        ]);
 
         let pre_count = events.count(EventScope::run("r-4")).await.unwrap();
 
-        let result = coord.commit_checkpoint(plan).await;
+        let result = coord.commit_checkpoint_staged(plan, staged).await;
         assert!(matches!(result, Err(CommitError::EventAppend(_))));
 
         // The first draft's append must have been rolled back.
@@ -432,10 +451,13 @@ mod tests {
         ];
 
         let plan =
-            CheckpointCommitPlan::checkpoint_only("t-5", Vec::new(), run_record("t-5", "r-5"))
-                .with_canonical_drafts(staged);
+            CheckpointCommitPlan::checkpoint_only("t-5", Vec::new(), run_record("t-5", "r-5"));
+        let staged_writes = CheckpointStagedWrites::default().with_canonical_drafts(staged);
 
-        coord.commit_checkpoint(plan).await.unwrap();
+        coord
+            .commit_checkpoint_staged(plan, staged_writes)
+            .await
+            .unwrap();
         let count = events.count(EventScope::run("r-5")).await.unwrap();
         assert_eq!(count, 2);
     }

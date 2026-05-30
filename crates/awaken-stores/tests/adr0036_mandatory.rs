@@ -23,6 +23,9 @@ use awaken_server_contract::contract::event_store::{
     EventVisibility, EventWriter,
 };
 use awaken_server_contract::contract::lifecycle::RunStatus;
+use awaken_server_contract::contract::staged_commit::{
+    CheckpointStagedWrites, StagedCommitCoordinator,
+};
 use awaken_server_contract::contract::storage::{RunRecord, ThreadStore};
 use awaken_stores::{
     InMemoryEventStore, InMemoryOutboxStore, InMemoryStore, MemoryCommitCoordinator,
@@ -283,10 +286,10 @@ async fn memory_commit_atomicity() {
     conflicting.draft.payload = json!({"kind": "RunStarted", "diverged": true});
 
     let plan =
-        CheckpointCommitPlan::checkpoint_only("t-ma", Vec::new(), run_record("t-ma", "r-ma"))
-            .with_canonical_drafts(vec![conflicting]);
+        CheckpointCommitPlan::checkpoint_only("t-ma", Vec::new(), run_record("t-ma", "r-ma"));
+    let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![conflicting]);
 
-    let result = coord.commit_checkpoint(plan).await;
+    let result = coord.commit_checkpoint_staged(plan, staged).await;
     assert!(
         matches!(result, Err(CommitError::EventAppend(_))),
         "append failure must surface as CommitError::EventAppend"

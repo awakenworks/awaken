@@ -13,6 +13,7 @@ pub mod pinned_registry;
 pub mod protocol_replay_log;
 pub mod registry_graph;
 pub mod scope;
+pub mod staged_commit;
 pub mod storage;
 pub mod transport;
 pub mod versioned_registry;

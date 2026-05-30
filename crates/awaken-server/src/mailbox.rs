@@ -23,6 +23,7 @@ use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::run::{
     RunActivationSnapshot, RunInputSnapshot, RunIntent, RunKind, RunOptions, RunTraceContext,
 };
+use awaken_server_contract::contract::staged_commit::StagedCommitCoordinator;
 use awaken_server_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
 use awaken_server_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
 use awaken_server_contract::contract::tool_intercept::{AdapterKind, RunMode};
@@ -685,6 +686,10 @@ pub struct Mailbox {
     store: Arc<dyn MailboxStore>,
     /// Single durable-write boundary from `executor.commit_coordinator()` (see `try_new`).
     coordinator: Arc<dyn CommitCoordinator>,
+    /// Staged variant of `coordinator`, when the executor exposes one. Present
+    /// only when the executor can commit canonical-event/outbox writes
+    /// atomically with the checkpoint; required for runtime event capture.
+    staged_coordinator: Option<Arc<dyn StagedCommitCoordinator>>,
     /// Full thread/run store for server-side reads and queries. Supplied by
     /// the caller, which builds the coordinator from this same store.
     run_store: Arc<dyn ThreadRunStore>,
@@ -732,6 +737,7 @@ impl Mailbox {
         config: MailboxConfig,
     ) -> Result<Self, MailboxError> {
         let executor = executor.into_dispatch_executor();
+        let staged_coordinator = executor.staged_commit_coordinator();
         let coordinator = if let Some(coordinator) = executor.commit_coordinator() {
             coordinator
         } else if cfg!(debug_assertions) {
@@ -752,6 +758,7 @@ impl Mailbox {
             executor,
             store,
             coordinator,
+            staged_coordinator,
             run_store,
             pending_thread_run_store: None,
             consumer_id,

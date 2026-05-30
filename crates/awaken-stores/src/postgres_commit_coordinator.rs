@@ -14,6 +14,9 @@ use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     MessageWriteMode, TransactionScopeId,
 };
+use awaken_server_contract::contract::staged_commit::{
+    CheckpointStagedWrites, StagedCommitCoordinator,
+};
 use awaken_server_contract::contract::storage::StorageError;
 
 use crate::postgres::PostgresStore;
@@ -71,7 +74,20 @@ impl CommitCoordinator for PgCommitCoordinator {
         &self,
         plan: CheckpointCommitPlan,
     ) -> Result<CheckpointCommitOutcome, CommitError> {
+        self.commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
+            .await
+    }
+}
+
+#[async_trait]
+impl StagedCommitCoordinator for PgCommitCoordinator {
+    async fn commit_checkpoint_staged(
+        &self,
+        plan: CheckpointCommitPlan,
+        staged: CheckpointStagedWrites,
+    ) -> Result<CheckpointCommitOutcome, CommitError> {
         plan.validate()?;
+        staged.validate(&plan.thread_id, &plan.run.run_id)?;
         self.store
             .ensure_schema()
             .await
@@ -84,17 +100,21 @@ impl CommitCoordinator for PgCommitCoordinator {
             .await
             .map_err(|error| CommitError::Commit(error.to_string()))?;
 
-        let mut canonical_event_ids = Vec::with_capacity(plan.canonical_drafts.len());
-        for staged in &plan.canonical_drafts {
+        let mut canonical_event_ids = Vec::with_capacity(staged.canonical_drafts.len());
+        for staged_event in &staged.canonical_drafts {
             let result = self
                 .store
-                .append_in_tx(&mut tx, staged.draft.clone(), staged.append_options.clone())
+                .append_in_tx(
+                    &mut tx,
+                    staged_event.draft.clone(),
+                    staged_event.append_options.clone(),
+                )
                 .await?;
             canonical_event_ids.push(result.event.event_id.as_str().to_string());
         }
 
-        let mut server_event_ids = Vec::with_capacity(plan.server_events.len());
-        for event in &plan.server_events {
+        let mut server_event_ids = Vec::with_capacity(staged.server_events.len());
+        for event in &staged.server_events {
             let result = self
                 .store
                 .append_in_tx(&mut tx, event.draft.clone(), event.options.clone())
@@ -102,8 +122,8 @@ impl CommitCoordinator for PgCommitCoordinator {
             server_event_ids.push(result.event.event_id.as_str().to_string());
         }
 
-        let mut additional_outbox_ids = Vec::with_capacity(plan.additional_outbox.len());
-        for draft in &plan.additional_outbox {
+        let mut additional_outbox_ids = Vec::with_capacity(staged.additional_outbox.len());
+        for draft in &staged.additional_outbox {
             let result = enqueue_outbox_in_transaction(&self.store, &mut tx, draft.clone()).await?;
             additional_outbox_ids.push(result.message.outbox_id);
         }

@@ -20,6 +20,9 @@ use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     MessageWriteMode, TransactionScopeId,
 };
+use awaken_server_contract::contract::staged_commit::{
+    CheckpointStagedWrites, StagedCommitCoordinator,
+};
 use awaken_server_contract::contract::storage::ThreadRunStore;
 use tokio::sync::Mutex;
 
@@ -110,7 +113,20 @@ impl CommitCoordinator for FileCommitCoordinator {
         &self,
         plan: CheckpointCommitPlan,
     ) -> Result<CheckpointCommitOutcome, CommitError> {
+        self.commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
+            .await
+    }
+}
+
+#[async_trait]
+impl StagedCommitCoordinator for FileCommitCoordinator {
+    async fn commit_checkpoint_staged(
+        &self,
+        plan: CheckpointCommitPlan,
+        staged: CheckpointStagedWrites,
+    ) -> Result<CheckpointCommitOutcome, CommitError> {
         plan.validate()?;
+        staged.validate(&plan.thread_id, &plan.run.run_id)?;
 
         let _guard = self.commit_lock.lock().await;
 
@@ -139,7 +155,7 @@ impl CommitCoordinator for FileCommitCoordinator {
             }
         };
 
-        let outcome = run_commit_batch(&plan, &self.events, &self.outbox, write_thread_run).await;
+        let outcome = run_commit_batch(&staged, &self.events, &self.outbox, write_thread_run).await;
         match plan.message_mode {
             MessageWriteMode::Append => {
                 outcome.map_err(|error| error.reclassify_append_conflict(&plan.thread_id))
@@ -178,7 +194,7 @@ mod tests {
     }
 
     use awaken_server_contract::contract::commit_coordinator::{
-        CheckpointCommitPlan, CommitCoordinator, CommitError, StagedCanonicalEvent,
+        CheckpointCommitPlan, CommitError, StagedCanonicalEvent,
     };
     use awaken_server_contract::contract::event_store::{
         AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope,
@@ -186,6 +202,9 @@ mod tests {
     };
     use awaken_server_contract::contract::lifecycle::RunStatus;
     use awaken_server_contract::contract::outbox::OutboxMessageDraft;
+    use awaken_server_contract::contract::staged_commit::{
+        CheckpointStagedWrites, StagedCommitCoordinator,
+    };
     use awaken_server_contract::contract::storage::{RunRecord, RunStore};
 
     use super::{FileCommitCoordinator, file_coordinator_allowed};
@@ -259,15 +278,13 @@ mod tests {
             thread_id.clone(),
             Vec::new(),
             run_record(&thread_id, &run_id),
-        )
-        .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
-            "RunStarted",
-            &thread_id,
-            &run_id,
-        ))]);
+        );
+        let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
+            StagedCanonicalEvent::new(sample_draft("RunStarted", &thread_id, &run_id)),
+        ]);
 
         let outcome = coord
-            .commit_checkpoint(plan)
+            .commit_checkpoint_staged(plan, staged)
             .await
             .expect("file-backed commit succeeds");
         assert_eq!(outcome.canonical_event_ids.len(), 1);
@@ -312,10 +329,11 @@ mod tests {
             thread_id.clone(),
             Vec::new(),
             run_record(&thread_id, &run_id),
-        )
-        .with_canonical_drafts(vec![StagedCanonicalEvent::new(collide).with_options(opts)]);
+        );
+        let staged = CheckpointStagedWrites::default()
+            .with_canonical_drafts(vec![StagedCanonicalEvent::new(collide).with_options(opts)]);
 
-        let result = coord.commit_checkpoint(plan).await;
+        let result = coord.commit_checkpoint_staged(plan, staged).await;
         assert!(
             matches!(result, Err(CommitError::EventAppend(_))),
             "expected EventAppend variant, got {:?}",
@@ -359,13 +377,13 @@ mod tests {
             thread_id.clone(),
             Vec::new(),
             run_record(&thread_id, &first_run),
-        )
-        .with_canonical_drafts(vec![
+        );
+        let first_staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
             StagedCanonicalEvent::new(sample_draft("RunStarted", &thread_id, &first_run))
                 .with_options(opts.clone()),
         ]);
         coord
-            .commit_checkpoint(first_plan)
+            .commit_checkpoint_staged(first_plan, first_staged)
             .await
             .expect("first commit succeeds");
         // Disk now has the first run.
@@ -387,9 +405,12 @@ mod tests {
             thread_id.clone(),
             Vec::new(),
             run_record(&thread_id, &second_run),
-        )
-        .with_canonical_drafts(vec![StagedCanonicalEvent::new(collide).with_options(opts)]);
-        let result = coord.commit_checkpoint(second_plan).await;
+        );
+        let second_staged = CheckpointStagedWrites::default()
+            .with_canonical_drafts(vec![StagedCanonicalEvent::new(collide).with_options(opts)]);
+        let result = coord
+            .commit_checkpoint_staged(second_plan, second_staged)
+            .await;
         assert!(matches!(result, Err(CommitError::EventAppend(_))));
 
         // First commit's on-disk state is preserved (no spurious cleanup
@@ -419,15 +440,16 @@ mod tests {
             thread_id.clone(),
             Vec::new(),
             run_record(&thread_id, &run_id),
-        )
-        .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
-            "RunStarted",
-            &thread_id,
-            &run_id,
-        ))])
-        .with_additional_outbox(vec![bad]);
+        );
+        let staged = CheckpointStagedWrites::default()
+            .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
+                "RunStarted",
+                &thread_id,
+                &run_id,
+            ))])
+            .with_additional_outbox(vec![bad]);
 
-        let result = coord.commit_checkpoint(plan).await;
+        let result = coord.commit_checkpoint_staged(plan, staged).await;
         assert!(
             matches!(result, Err(CommitError::OutboxInsert(_))),
             "expected OutboxInsert variant, got {:?}",
