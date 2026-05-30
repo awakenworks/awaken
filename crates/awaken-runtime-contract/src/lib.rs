@@ -84,12 +84,6 @@ pub use contract::progress::{
     ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState,
 };
 
-// ── durable event sink ──
-pub use contract::durable_event_sink::{
-    AgentEventNormalizationContext, AgentEventNormalizer, DurableEventSink,
-    NormalizedCanonicalEvent, RuntimeEventDurability, ScopedAgentEventNormalizer,
-};
-
 // ── commit coordinator ──
 pub use contract::commit_coordinator::{
     CanonicalEventStager, CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator,

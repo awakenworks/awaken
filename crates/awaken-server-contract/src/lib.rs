@@ -20,6 +20,7 @@ pub use awaken_runtime_contract::*;
 // not add explicit re-exports for items the glob already brings in.
 pub use contract::audit_log::*;
 pub use contract::config_store::*;
+pub use contract::durable_event_sink::*;
 pub use contract::event_store::*;
 pub use contract::mailbox::*;
 pub use contract::outbox::*;

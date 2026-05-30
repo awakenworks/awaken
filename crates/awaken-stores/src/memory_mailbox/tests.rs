@@ -535,6 +535,93 @@ async fn purge_terminal() {
 }
 
 #[tokio::test]
+async fn purge_terminal_drops_state_only_for_fully_drained_threads() {
+    let store = InMemoryMailboxStore::new();
+
+    // Thread A: enqueue, claim, ack -> fully terminal.
+    let a = make_dispatch("thread-a", "agent-1");
+    store.enqueue(&a).await.unwrap();
+    let claimed = store
+        .claim("thread-a", "consumer-1", 30_000, 1000, 1)
+        .await
+        .unwrap();
+    let token = claimed[0].claim_token.as_ref().unwrap().clone();
+    store
+        .ack(&claimed[0].dispatch_id, &token, 1500)
+        .await
+        .unwrap();
+
+    // Thread B: enqueue only -> stays Queued (non-terminal).
+    store
+        .enqueue(&make_dispatch("thread-b", "agent-1"))
+        .await
+        .unwrap();
+
+    // Both threads have tracked epoch state before the purge.
+    assert_eq!(store.tracked_thread_state_count().await, 2);
+
+    // Purge terminal dispatches older than 2000: thread-a drains, thread-b stays.
+    let purged = store.purge_terminal(2000).await.unwrap();
+    assert_eq!(purged, 1);
+
+    // thread-a's state is dropped (no remaining dispatch); thread-b is retained
+    // because it still has a non-terminal dispatch.
+    assert_eq!(store.tracked_thread_state_count().await, 1);
+    assert!(
+        store
+            .list_dispatches("thread-a", None, 100, 0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .list_dispatches("thread-b", None, 100, 0)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Re-enqueuing on the drained thread recreates state cleanly (epoch resets
+    // to the fresh baseline; no surviving dispatch to be wrongly superseded).
+    store
+        .enqueue(&make_dispatch("thread-a", "agent-1"))
+        .await
+        .unwrap();
+    assert_eq!(store.tracked_thread_state_count().await, 2);
+    let revived = store
+        .list_dispatches("thread-a", None, 100, 0)
+        .await
+        .unwrap();
+    assert_eq!(revived.len(), 1);
+    assert_eq!(revived[0].status, RunDispatchStatus::Queued);
+}
+
+#[tokio::test]
+async fn purge_terminal_with_no_remaining_dispatches_clears_all_state() {
+    let store = InMemoryMailboxStore::new();
+    for thread in ["t-1", "t-2", "t-3"] {
+        let d = make_dispatch(thread, "agent-1");
+        store.enqueue(&d).await.unwrap();
+        let claimed = store
+            .claim(thread, "consumer-1", 30_000, 1000, 1)
+            .await
+            .unwrap();
+        let token = claimed[0].claim_token.as_ref().unwrap().clone();
+        store
+            .ack(&claimed[0].dispatch_id, &token, 1500)
+            .await
+            .unwrap();
+    }
+    assert_eq!(store.tracked_thread_state_count().await, 3);
+
+    let purged = store.purge_terminal(2000).await.unwrap();
+    assert_eq!(purged, 3);
+    assert_eq!(store.tracked_thread_state_count().await, 0);
+}
+
+#[tokio::test]
 async fn queued_thread_ids() {
     let store = InMemoryMailboxStore::new();
     store

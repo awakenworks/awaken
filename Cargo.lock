@@ -622,11 +622,13 @@ dependencies = [
  "async-trait",
  "awaken-runtime-contract",
  "futures",
+ "parking_lot",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

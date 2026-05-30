@@ -772,6 +772,16 @@ impl MailboxStore for InMemoryMailboxStore {
         let mut dispatches = self.dispatches.write().await;
         let before = dispatches.len();
         dispatches.retain(|_, j| !(j.status.is_terminal() && j.updated_at < older_than));
+        // Drop per-thread dispatch-epoch state for threads that no longer have
+        // any dispatch. Without this the `state` map grows unbounded across
+        // every thread id ever seen. A later enqueue recreates the entry at a
+        // fresh epoch, which is correct because no dispatch survives to be
+        // superseded. Lock order matches the rest of the store (dispatches then
+        // state) to avoid deadlock.
+        let live_threads: std::collections::HashSet<&str> =
+            dispatches.values().map(|j| j.thread_id.as_str()).collect();
+        let mut state = self.state.write().await;
+        state.retain(|thread_id, _| live_threads.contains(thread_id.as_str()));
         Ok(before - dispatches.len())
     }
 
@@ -824,6 +834,15 @@ impl MailboxStore for InMemoryMailboxStore {
         target: &LiveRunTarget,
     ) -> Result<LiveRunCommandStream, StorageError> {
         self.open_live_key(Self::live_key_for_target(target)).await
+    }
+}
+
+#[cfg(test)]
+impl InMemoryMailboxStore {
+    /// Number of threads with retained dispatch-epoch state. Test-only probe
+    /// for the `purge_terminal` state-map GC.
+    async fn tracked_thread_state_count(&self) -> usize {
+        self.state.read().await.len()
     }
 }
 
