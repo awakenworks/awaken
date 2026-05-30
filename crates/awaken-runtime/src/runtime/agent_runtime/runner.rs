@@ -446,36 +446,53 @@ impl AgentRuntime {
         .map_err(AgentLoopError::PhaseError)?;
 
         let compaction = build_compaction_runtime(preflight_resolved, &store, &owner_inbox)?;
+        let restore_thread_scoped = |persisted| {
+            store
+                .restore_thread_scoped(persisted, awaken_runtime_contract::UnknownKeyPolicy::Skip)
+                .map_err(AgentLoopError::PhaseError)
+        };
         let mut messages = if let Some(ctx) = thread_ctx {
-            if let Some(ref prev_run) = ctx.latest_run
-                && let Some(ref persisted) = prev_run.state
+            // Hot path: the pre-warmed snapshot supplies messages without a
+            // storage read. Restore legacy thread-scoped keys from the cached
+            // run record, then overlay the authoritative per-thread state (C4),
+            // which the pre-warm snapshot does not carry.
+            if let Some(persisted) = ctx.latest_run.as_ref().and_then(|run| run.state.clone()) {
+                restore_thread_scoped(persisted)?;
+            }
+            if let Some(ref ts) = self.checkpoint_storage
+                && let Some(thread_state) = ts
+                    .load_thread_state(thread_id)
+                    .await
+                    .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
             {
-                store
-                    .restore_thread_scoped(
-                        persisted.clone(),
-                        awaken_runtime_contract::UnknownKeyPolicy::Skip,
-                    )
-                    .map_err(AgentLoopError::PhaseError)?;
+                restore_thread_scoped(thread_state)?;
             }
             ctx.messages.clone()
         } else if let Some(ref ts) = self.checkpoint_storage {
-            if let Some(prev_run) = ts
-                .latest_run(thread_id)
+            // ADR-0038 C5: one consistent read of messages + latest run +
+            // thread state, replacing the previously stitched reads.
+            match ts
+                .load_checkpoint(thread_id)
                 .await
                 .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
-                && let Some(persisted) = prev_run.state
             {
-                store
-                    .restore_thread_scoped(
-                        persisted,
-                        awaken_runtime_contract::UnknownKeyPolicy::Skip,
-                    )
-                    .map_err(AgentLoopError::PhaseError)?;
+                Some(snapshot) => {
+                    // Legacy: thread-scoped keys older runs wrote onto the run record.
+                    if let Some(persisted) = snapshot
+                        .latest_run
+                        .as_ref()
+                        .and_then(|run| run.state.clone())
+                    {
+                        restore_thread_scoped(persisted)?;
+                    }
+                    // Authoritative per-thread state overlays legacy values.
+                    if let Some(thread_state) = snapshot.thread_state {
+                        restore_thread_scoped(thread_state)?;
+                    }
+                    snapshot.messages
+                }
+                None => vec![],
             }
-            ts.load_messages(thread_id)
-                .await
-                .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
-                .unwrap_or_default()
         } else {
             vec![]
         };

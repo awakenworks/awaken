@@ -400,7 +400,7 @@ mod tests {
         }
         async fn commit_checkpoint(
             &self,
-            _plan: awaken_runtime_contract::contract::commit_coordinator::CheckpointCommitPlan,
+            _plan: awaken_runtime_contract::contract::commit_coordinator::Checkpoint,
         ) -> Result<
             awaken_runtime_contract::contract::commit_coordinator::CheckpointCommitOutcome,
             awaken_runtime_contract::contract::commit_coordinator::CommitError,

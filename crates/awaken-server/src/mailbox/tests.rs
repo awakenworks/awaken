@@ -10,7 +10,7 @@ use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult, build_agent_en
 use awaken_runtime::{AgentRuntime, Plugin, ResolvedAgent};
 use awaken_server_contract::RuntimeEventDurability;
 use awaken_server_contract::contract::commit_coordinator::{
-    CheckpointCommitPlan, CommitCoordinator, EventPublishError, OutboxServerEventPublisher,
+    Checkpoint, CommitCoordinator, EventPublishError, OutboxServerEventPublisher,
     ServerEventPublishOutcome,
 };
 use awaken_server_contract::contract::content::ContentBlock;
@@ -1162,7 +1162,7 @@ impl CommittingEmittingMailboxRuntime {
                 .unwrap_or_else(|| "agent-1".to_string()),
             ..Default::default()
         };
-        let plan = CheckpointCommitPlan::checkpoint_only(request.thread_id(), Vec::new(), run);
+        let plan = Checkpoint::checkpoint_only(request.thread_id(), run);
         coordinator
             .commit_checkpoint(plan)
             .await

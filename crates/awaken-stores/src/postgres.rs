@@ -58,6 +58,12 @@ impl PostgresStore {
         }
     }
 
+    /// Name of the thread-scoped state table, derived from the threads
+    /// table so a custom prefix carries through without an extra field.
+    pub(crate) fn thread_states_table(&self) -> String {
+        format!("{}_state", self.threads_table)
+    }
+
     pub(crate) fn transaction_scope_descriptor(&self) -> String {
         let options = self.pool.connect_options();
         let socket = options

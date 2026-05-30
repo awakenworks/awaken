@@ -5,7 +5,7 @@
 //! `DurableEventSink` (which stages canonical drafts as runtime events flow)
 //! and with this coordinator (which drains them at commit time). Wrapping the
 //! mailbox's base [`CommitCoordinator`] this way keeps the staging buffer off
-//! the runtime entirely: the runtime builds a plain `CheckpointCommitPlan`
+//! the runtime entirely: the runtime builds a plain `Checkpoint`
 //! and never observes the canonical drafts, while atomicity (drafts + run
 //! record commit together) is preserved here.
 
@@ -14,8 +14,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_runtime::EventBuffer;
 use awaken_server_contract::contract::commit_coordinator::{
-    CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
-    StagedCanonicalEvent, TransactionScopeId,
+    Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError, StagedCanonicalEvent,
+    TransactionScopeId,
 };
 use awaken_server_contract::contract::staged_commit::{
     CheckpointStagedWrites, StagedCommitCoordinator,
@@ -60,7 +60,7 @@ impl CommitCoordinator for StagingCommitCoordinator {
 
     async fn commit_checkpoint(
         &self,
-        plan: CheckpointCommitPlan,
+        plan: Checkpoint,
     ) -> Result<CheckpointCommitOutcome, CommitError> {
         // Accumulate newly staged drafts onto any that an earlier (conflicted)
         // attempt staged, so a version-conflict retry never drops events.
@@ -137,7 +137,7 @@ mod tests {
         }
         async fn commit_checkpoint(
             &self,
-            plan: CheckpointCommitPlan,
+            plan: Checkpoint,
         ) -> Result<CheckpointCommitOutcome, CommitError> {
             self.commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
                 .await
@@ -148,7 +148,7 @@ mod tests {
     impl StagedCommitCoordinator for RecordingCoordinator {
         async fn commit_checkpoint_staged(
             &self,
-            plan: CheckpointCommitPlan,
+            plan: Checkpoint,
             staged: CheckpointStagedWrites,
         ) -> Result<CheckpointCommitOutcome, CommitError> {
             let kinds: Vec<String> = staged
@@ -177,7 +177,7 @@ mod tests {
         let inner = RecordingCoordinator::new(0);
         let staging = StagingCommitCoordinator::new(inner.clone(), buffer.clone());
 
-        let plan = CheckpointCommitPlan::checkpoint_only("t-1", vec![], run_record());
+        let plan = Checkpoint::checkpoint_only("t-1", run_record());
         staging.commit_checkpoint(plan).await.unwrap();
 
         let observed = inner.observed.lock();
@@ -196,11 +196,7 @@ mod tests {
         let staging = StagingCommitCoordinator::new(inner.clone(), buffer.clone());
 
         let conflict = staging
-            .commit_checkpoint(CheckpointCommitPlan::checkpoint_only(
-                "t-1",
-                vec![],
-                run_record(),
-            ))
+            .commit_checkpoint(Checkpoint::checkpoint_only("t-1", run_record()))
             .await;
         assert!(matches!(
             conflict,
@@ -208,11 +204,7 @@ mod tests {
         ));
         // Retry: buffer is already empty, but the draft was retained.
         staging
-            .commit_checkpoint(CheckpointCommitPlan::checkpoint_only(
-                "t-1",
-                vec![],
-                run_record(),
-            ))
+            .commit_checkpoint(Checkpoint::checkpoint_only("t-1", run_record()))
             .await
             .unwrap();
 
@@ -234,21 +226,13 @@ mod tests {
         let staging = StagingCommitCoordinator::new(inner.clone(), buffer.clone());
 
         staging
-            .commit_checkpoint(CheckpointCommitPlan::checkpoint_only(
-                "t-1",
-                vec![],
-                run_record(),
-            ))
+            .commit_checkpoint(Checkpoint::checkpoint_only("t-1", run_record()))
             .await
             .unwrap();
         // Second checkpoint with a fresh draft must not re-include the first.
         buffer.stage(sample_draft("StepEnd"));
         staging
-            .commit_checkpoint(CheckpointCommitPlan::checkpoint_only(
-                "t-1",
-                vec![],
-                run_record(),
-            ))
+            .commit_checkpoint(Checkpoint::checkpoint_only("t-1", run_record()))
             .await
             .unwrap();
 

@@ -2,8 +2,8 @@ use super::pool_executor_test_support::*;
 
 mod tests {
     use super::*;
-    use awaken_contract::contract::executor::{InferenceExecutionError, LlmExecutor};
-    use awaken_contract::registry_spec::PoolSwitchPolicy;
+    use awaken_runtime_contract::contract::executor::{InferenceExecutionError, LlmExecutor};
+    use awaken_runtime_contract::registry_spec::PoolSwitchPolicy;
     use futures::StreamExt;
 
     #[tokio::test]

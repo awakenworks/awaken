@@ -416,18 +416,21 @@ mod tests {
                 awaken_server_contract::contract::message::MessageMetadata {
                     run_id: Some("run-1".to_string()),
                     step_index: Some(0),
+                    compaction: None,
                 },
             ),
             Message::assistant("other").with_metadata(
                 awaken_server_contract::contract::message::MessageMetadata {
                     run_id: Some("run-2".to_string()),
                     step_index: Some(0),
+                    compaction: None,
                 },
             ),
             Message::assistant("new").with_metadata(
                 awaken_server_contract::contract::message::MessageMetadata {
                     run_id: Some("run-1".to_string()),
                     step_index: Some(1),
+                    compaction: None,
                 },
             ),
         ];

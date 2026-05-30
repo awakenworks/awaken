@@ -47,6 +47,29 @@ pub trait ThreadStore: Send + Sync {
     /// child handling should use [`ThreadStore::delete_thread_with_strategy`].
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError>;
 
+    /// Persist thread-scoped state for `thread_id` (overwrite the prior value).
+    ///
+    /// Default is a no-op for stores that do not yet persist thread-scoped
+    /// state; the runtime then keeps state on the run record only. Production
+    /// stores override this and pair it with [`ThreadStore::load_thread_state`].
+    async fn save_thread_state(
+        &self,
+        thread_id: &str,
+        state: &awaken_runtime_contract::state::PersistedState,
+    ) -> Result<(), StorageError> {
+        let _ = (thread_id, state);
+        Ok(())
+    }
+
+    /// Load thread-scoped state for `thread_id`, if any. Default `None`.
+    async fn load_thread_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<awaken_runtime_contract::state::PersistedState>, StorageError> {
+        let _ = thread_id;
+        Ok(None)
+    }
+
     /// Delete a thread while managing direct and transitive children.
     ///
     /// The default implementation performs multiple low-level writes and is
@@ -397,6 +420,34 @@ pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
         self.checkpoint(thread_id, &merged, run).await?;
         Ok(new_version)
     }
+
+    /// Read a consistent [`CheckpointSnapshot`] for resume (ADR-0038 C5).
+    ///
+    /// The default composes the committed-message, latest-run, and
+    /// thread-state reads and applies the committed-history view filter.
+    /// Backends that can read atomically (a transaction or lock spanning all
+    /// three) override this to avoid torn reads against a concurrent commit.
+    async fn load_checkpoint(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CheckpointSnapshot>, StorageError> {
+        let committed = ThreadStore::load_committed_messages(self, thread_id).await?;
+        let latest_run = RunStore::latest_run(self, thread_id).await?;
+        if committed.is_none() && latest_run.is_none() {
+            return Ok(None);
+        }
+        let raw = committed.unwrap_or_default();
+        let message_version = raw.len() as u64;
+        let messages =
+            awaken_runtime_contract::contract::message::effective_committed_view(raw, thread_id);
+        let thread_state = ThreadStore::load_thread_state(self, thread_id).await?;
+        Ok(Some(CheckpointSnapshot {
+            messages,
+            message_version,
+            latest_run,
+            thread_state,
+        }))
+    }
 }
 
 /// Adapts a [`ThreadRunStore`] into a [`RuntimeCheckpointStore`] for the agent
@@ -435,6 +486,21 @@ impl RuntimeCheckpointStore for ThreadRunCheckpointStore {
 
     async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
         RunStore::latest_run(self.inner.as_ref(), thread_id).await
+    }
+
+    async fn load_thread_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<awaken_runtime_contract::state::PersistedState>, StorageError> {
+        ThreadStore::load_thread_state(self.inner.as_ref(), thread_id).await
+    }
+
+    async fn load_checkpoint(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CheckpointSnapshot>, StorageError> {
+        // Delegate to the store's (possibly atomic) consistent read.
+        ThreadRunStore::load_checkpoint(self.inner.as_ref(), thread_id).await
     }
 }
 

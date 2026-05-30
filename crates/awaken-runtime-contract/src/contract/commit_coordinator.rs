@@ -8,7 +8,7 @@
 //! Runtime tee for durable `AgentEvent` variants is folded into this
 //! commit boundary through a staging step: a `CanonicalEventStager`
 //! receives drafts from the reshaped `DurableEventSink`, and the
-//! `LoopRunner` drains the staged drafts into a `CheckpointCommitPlan`
+//! `LoopRunner` drains the staged drafts into a `Checkpoint`
 //! at checkpoint cadence.
 //!
 //! This boundary is deliberately limited to runtime checkpoints:
@@ -31,6 +31,7 @@ use super::event_store::{AppendOptions, CanonicalEventDraft, EventStoreError};
 use super::message::Message;
 use super::outbox::OutboxError;
 use super::storage::{RunRecord, RuntimeCheckpointStore, StorageError};
+use crate::state::PersistedState;
 
 // ── transaction scope id ─────────────────────────────────────────────
 
@@ -171,62 +172,34 @@ pub trait DiagnosticEventPublisher: Send + Sync {
 
 // ── checkpoint commit plan ───────────────────────────────────────────
 
-/// How a plan's `messages` are written to the thread's committed log
-/// (ADR-0042 A).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MessageWriteMode {
-    /// Replace the thread's whole committed message list (last-writer-wins).
-    /// Retained for tombstone/rollback paths and pre-migration callers; not
-    /// multi-instance safe because it depends on a read-modify-write.
-    #[default]
-    Overwrite,
-    /// Append `messages` to the committed log, guarded by
-    /// `expected_message_version` (the committed message count the caller
-    /// observed). Append-only plus a version guard is the multi-instance-safe
-    /// write model (ADR-0042 D5).
-    Append,
-}
-
 /// One atomic checkpoint commit.
 ///
-/// `ThreadRunStore` checkpoint inputs (thread id, messages, run record) are
-/// committed together with `canonical_drafts` (each appended via the shared
-/// `EventStore` write) and any additional inline-writer outbox rows the
-/// caller wants atomic with the checkpoint.
+/// The committed message log is **append-only**: `messages` is always a delta
+/// appended to the thread's committed log, guarded by `expected_message_version`
+/// (the committed message count the caller observed, ADR-0042 D5). There is no
+/// whole-list overwrite on the commit path — compaction is itself an append of a
+/// summary message (see `MessageRecord::compaction`), never a rewrite.
 ///
-/// `message_mode` selects whether `messages` replaces the whole committed
-/// list ([`MessageWriteMode::Overwrite`]) or is a delta appended to it
-/// ([`MessageWriteMode::Append`]); in append mode `expected_message_version`
-/// is the version guard. Coordinators route the two modes to the matching
-/// `ThreadRunStore` write.
+/// `ThreadRunStore` checkpoint inputs (thread id, message delta, run record) are
+/// committed together with `canonical_drafts` (each appended via the shared
+/// `EventStore` write) and any additional inline-writer outbox rows the caller
+/// wants atomic with the checkpoint.
 #[derive(Debug, Clone)]
-pub struct CheckpointCommitPlan {
+pub struct Checkpoint {
     pub thread_id: String,
-    /// Overwrite: the whole committed list. Append: the delta to append.
+    /// The delta appended to the committed log.
     pub messages: Vec<Message>,
-    pub message_mode: MessageWriteMode,
-    /// Append-mode version guard: the committed message count the caller
-    /// observed. Required for append; ignored for overwrite.
+    /// Append version guard: the committed message count the caller observed.
     pub expected_message_version: Option<u64>,
     pub run: RunRecord,
+    /// Thread-scoped persisted state to write in the same transaction, if it
+    /// changed this checkpoint. `None` leaves the stored thread state untouched.
+    /// Run-scoped state stays on `run` ([`RunRecord::state`]); thread-scoped
+    /// state persists across runs (split by `KeyScope`).
+    pub thread_state: Option<PersistedState>,
 }
 
-impl CheckpointCommitPlan {
-    /// Build a whole-list overwrite checkpoint plan with no staged events.
-    pub fn checkpoint_only(
-        thread_id: impl Into<String>,
-        messages: Vec<Message>,
-        run: RunRecord,
-    ) -> Self {
-        Self {
-            thread_id: thread_id.into(),
-            messages,
-            message_mode: MessageWriteMode::Overwrite,
-            expected_message_version: None,
-            run,
-        }
-    }
-
+impl Checkpoint {
     /// Build an append-delta checkpoint plan: `messages` are appended to the
     /// thread's committed log, guarded by `expected_message_version` (the
     /// committed message count the caller observed). No staged events.
@@ -239,16 +212,27 @@ impl CheckpointCommitPlan {
         Self {
             thread_id: thread_id.into(),
             messages,
-            message_mode: MessageWriteMode::Append,
             expected_message_version,
             run,
+            thread_state: None,
         }
     }
 
-    /// Whether this plan appends a delta (vs. overwriting the whole list).
+    /// Attach thread-scoped state to persist atomically with this checkpoint.
     #[must_use]
-    pub fn is_append(&self) -> bool {
-        matches!(self.message_mode, MessageWriteMode::Append)
+    pub fn with_thread_state(mut self, thread_state: PersistedState) -> Self {
+        self.thread_state = Some(thread_state);
+        self
+    }
+
+    /// Build an unguarded checkpoint for **state/status-only** writes that add no
+    /// contended message delta. By construction this carries no `messages`: an
+    /// unguarded append of real message content could duplicate or reorder
+    /// committed messages under retry/concurrency, so the message delta is not
+    /// expressible here. To append a message delta, use [`Self::append`] with an
+    /// explicit `expected_message_version` guard.
+    pub fn checkpoint_only(thread_id: impl Into<String>, run: RunRecord) -> Self {
+        Self::append(thread_id, Vec::new(), None, run)
     }
 
     /// Pre-commit validation that mirrors the runtime invariants.
@@ -274,9 +258,16 @@ impl CheckpointCommitPlan {
                 "run.agent_id must be non-empty".to_string(),
             ));
         }
-        if self.is_append() && self.expected_message_version.is_none() {
+        // `expected_message_version` is the append version guard. `None` is only
+        // permitted when there is no message delta (seed/status/state writes):
+        // appending real message content without a version guard would let a
+        // retry or concurrent writer duplicate or reorder committed messages
+        // that `MessageVersionConflict` is meant to catch. A non-empty delta
+        // therefore requires `Some(version)`.
+        if !self.messages.is_empty() && self.expected_message_version.is_none() {
             return Err(CommitError::Validation(
-                "append checkpoints require expected_message_version".to_string(),
+                "append with a non-empty message delta requires an expected_message_version guard"
+                    .to_string(),
             ));
         }
         Ok(())
@@ -380,7 +371,7 @@ impl CommitError {
 /// Out of scope: configuration writes and mailbox dispatch lifecycle
 /// mutations. Those stores have their own concurrency contracts. When a
 /// workflow needs checkpoint durability, it must express the write through a
-/// [`CheckpointCommitPlan`]; otherwise it is intentionally outside this
+/// [`Checkpoint`]; otherwise it is intentionally outside this
 /// transaction boundary.
 #[async_trait]
 pub trait CommitCoordinator: Send + Sync {
@@ -400,7 +391,7 @@ pub trait CommitCoordinator: Send + Sync {
     /// ordering and failure semantics.
     async fn commit_checkpoint(
         &self,
-        plan: CheckpointCommitPlan,
+        plan: Checkpoint,
     ) -> Result<CheckpointCommitOutcome, CommitError>;
 }
 
@@ -457,7 +448,7 @@ mod tests {
 
     #[test]
     fn plan_checkpoint_only_validates() {
-        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), sample_run_record());
+        let plan = Checkpoint::checkpoint_only("t-1", sample_run_record());
         plan.validate().unwrap();
     }
 
@@ -465,7 +456,7 @@ mod tests {
     fn plan_rejects_blank_thread_id() {
         let mut run = sample_run_record();
         run.thread_id = String::new();
-        let plan = CheckpointCommitPlan::checkpoint_only("", Vec::new(), run);
+        let plan = Checkpoint::checkpoint_only("", run);
         let err = plan.validate().unwrap_err();
         assert!(matches!(err, CommitError::Validation(_)));
     }
@@ -474,7 +465,7 @@ mod tests {
     fn plan_rejects_thread_run_mismatch() {
         let mut run = sample_run_record();
         run.thread_id = "other-thread".to_string();
-        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), run);
+        let plan = Checkpoint::checkpoint_only("t-1", run);
         let err = plan.validate().unwrap_err();
         assert!(
             matches!(err, CommitError::Validation(message) if message.contains("run.thread_id"))
@@ -485,7 +476,7 @@ mod tests {
     fn plan_rejects_blank_run_id() {
         let mut run = sample_run_record();
         run.run_id = "   ".to_string();
-        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), run);
+        let plan = Checkpoint::checkpoint_only("t-1", run);
         let err = plan.validate().unwrap_err();
         assert!(matches!(err, CommitError::Validation(message) if message.contains("run.run_id")));
     }
@@ -494,59 +485,64 @@ mod tests {
     fn plan_rejects_blank_agent_id() {
         let mut run = sample_run_record();
         run.agent_id.clear();
-        let plan = CheckpointCommitPlan::checkpoint_only("t-1", Vec::new(), run);
+        let plan = Checkpoint::checkpoint_only("t-1", run);
         let err = plan.validate().unwrap_err();
         assert!(
             matches!(err, CommitError::Validation(message) if message.contains("run.agent_id"))
         );
     }
 
-    // ── ADR-0042 A: append-delta message-write mode ──────────────────
+    // ── ADR-0042 A: append-only checkpoint plan ──────────────────
 
     #[test]
-    fn checkpoint_only_is_overwrite() {
-        let plan = CheckpointCommitPlan::checkpoint_only(
-            "t-1",
-            vec![Message::user("a")],
-            sample_run_record(),
-        );
-        assert!(!plan.is_append());
-        assert_eq!(plan.message_mode, MessageWriteMode::Overwrite);
+    fn checkpoint_only_allows_empty_message_state_write() {
+        // No message delta + no version guard is the legitimate state/status write.
+        let plan = Checkpoint::checkpoint_only("t-1", sample_run_record());
         assert_eq!(plan.expected_message_version, None);
-        assert_eq!(plan.messages.len(), 1);
+        assert!(plan.messages.is_empty());
+        plan.validate().unwrap();
+    }
+
+    #[test]
+    fn unguarded_append_of_non_empty_messages_is_rejected() {
+        // A non-empty delta without a version guard must fail validation — it
+        // could duplicate/reorder committed messages under retry/concurrency.
+        // `checkpoint_only` cannot express this, so go through `append` directly.
+        let plan = Checkpoint::append("t-1", vec![Message::user("a")], None, sample_run_record());
+        let err = plan.validate().unwrap_err();
+        assert!(
+            matches!(&err, CommitError::Validation(message) if message.contains("version guard")),
+            "expected version-guard validation error, got {err:?}"
+        );
     }
 
     #[test]
     fn append_plan_carries_delta_and_expected_version() {
-        let plan = CheckpointCommitPlan::append(
+        let plan = Checkpoint::append(
             "t-1",
             vec![Message::user("hi")],
             Some(3),
             sample_run_record(),
         );
-        assert!(plan.is_append());
-        assert_eq!(plan.message_mode, MessageWriteMode::Append);
         assert_eq!(plan.expected_message_version, Some(3));
         assert_eq!(plan.messages.len(), 1);
         plan.validate().unwrap();
     }
 
     #[test]
-    fn append_plan_rejects_missing_expected_version() {
-        let plan = CheckpointCommitPlan::append("t-1", Vec::new(), None, sample_run_record());
-        assert!(plan.is_append());
+    fn state_only_checkpoint_accepts_none_version() {
+        // `None` is valid only for an EMPTY delta (seed/status/state-only write);
+        // a non-empty delta requires `Some(version)` (see the rejection test below).
+        let plan = Checkpoint::append("t-1", Vec::new(), None, sample_run_record());
         assert_eq!(plan.expected_message_version, None);
-        let err = plan.validate().unwrap_err();
-        assert!(
-            matches!(err, CommitError::Validation(message) if message.contains("expected_message_version"))
-        );
+        plan.validate().unwrap();
     }
 
     #[test]
     fn append_plan_still_validates_run_thread_match() {
         let mut run = sample_run_record();
         run.thread_id = "other-thread".to_string();
-        let plan = CheckpointCommitPlan::append("t-1", Vec::new(), Some(0), run);
+        let plan = Checkpoint::append("t-1", Vec::new(), Some(0), run);
         let err = plan.validate().unwrap_err();
         assert!(
             matches!(err, CommitError::Validation(message) if message.contains("run.thread_id"))

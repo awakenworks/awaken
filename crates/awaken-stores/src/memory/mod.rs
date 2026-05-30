@@ -44,6 +44,8 @@ pub struct InMemoryStore {
     profiles: RwLock<HashMap<ProfileOwner, HashMap<String, ProfileEntry>>>,
     /// Config entries keyed by namespace then ID.
     configs: RwLock<HashMap<String, HashMap<String, Value>>>,
+    /// Thread ID -> thread-scoped persisted state (cross-run).
+    pub(crate) thread_states: RwLock<HashMap<String, awaken_server_contract::PersistedState>>,
     /// Broadcast sender for config change notifications.
     config_change_tx: tokio::sync::broadcast::Sender<ConfigChangeEvent>,
 }
@@ -61,6 +63,7 @@ impl InMemoryStore {
             pending_messages: RwLock::new(HashMap::new()),
             profiles: RwLock::new(HashMap::new()),
             configs: RwLock::new(HashMap::new()),
+            thread_states: RwLock::new(HashMap::new()),
             config_change_tx,
         }
     }
@@ -165,7 +168,27 @@ impl ThreadStore for InMemoryStore {
         threads.remove(thread_id);
         messages.remove(thread_id);
         pending_messages.remove(thread_id);
+        self.thread_states.write().await.remove(thread_id);
         Ok(())
+    }
+
+    async fn save_thread_state(
+        &self,
+        thread_id: &str,
+        state: &awaken_server_contract::PersistedState,
+    ) -> Result<(), StorageError> {
+        self.thread_states
+            .write()
+            .await
+            .insert(thread_id.to_string(), state.clone());
+        Ok(())
+    }
+
+    async fn load_thread_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<awaken_server_contract::PersistedState>, StorageError> {
+        Ok(self.thread_states.read().await.get(thread_id).cloned())
     }
 
     async fn delete_thread_with_strategy(

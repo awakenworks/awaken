@@ -223,7 +223,7 @@ async fn interrupt_thread(
     let st = st.scoped(&scope);
     let interrupted = st
         .run
-.mailbox()
+        .mailbox()
         .interrupt(&st.run.scoped_id(&thread_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;

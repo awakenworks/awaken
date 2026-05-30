@@ -86,10 +86,9 @@ pub use contract::progress::{
 
 // ── commit coordinator ──
 pub use contract::commit_coordinator::{
-    CanonicalEventStager, CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator,
-    CommitError, DiagnosticEvent, DiagnosticEventPublisher, EventPublishError,
-    OutboxServerEventPublisher, ServerCanonicalEvent, ServerEventPublishOutcome,
-    StagedCanonicalEvent, TransactionScopeId,
+    CanonicalEventStager, Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError,
+    DiagnosticEvent, DiagnosticEventPublisher, EventPublishError, OutboxServerEventPublisher,
+    ServerCanonicalEvent, ServerEventPublishOutcome, StagedCanonicalEvent, TransactionScopeId,
 };
 
 // ── canonical event store (data vocabulary; store traits live in

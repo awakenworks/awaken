@@ -668,7 +668,7 @@ fn with_protocol_preserves_default_a2a_push_outbox_for_new_replay_buffers() {
 
 #[test]
 fn a2a_push_outbox_can_replace_default_local_outbox() {
-    use awaken_contract::contract::outbox::OutboxStore;
+    use awaken_server_contract::contract::outbox::OutboxStore;
     use awaken_stores::InMemoryOutboxStore;
 
     let state = local_component_state();
@@ -706,7 +706,7 @@ fn a2a_push_outbox_can_replace_default_local_outbox() {
 
 #[test]
 fn server_state_method_injects_a2a_push_outbox_dependency() {
-    use awaken_contract::contract::outbox::OutboxStore;
+    use awaken_server_contract::contract::outbox::OutboxStore;
     use awaken_stores::InMemoryOutboxStore;
 
     let replacement: Arc<dyn OutboxStore> = Arc::new(InMemoryOutboxStore::new());

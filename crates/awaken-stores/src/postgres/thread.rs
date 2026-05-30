@@ -190,11 +190,46 @@ impl PostgresStore {
         Ok(())
     }
 
+    pub(crate) async fn save_thread_state_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        thread_id: &str,
+        state: &awaken_server_contract::PersistedState,
+    ) -> Result<(), StorageError> {
+        let data =
+            serde_json::to_value(state).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let sql = format!(
+            "INSERT INTO {} (thread_id, data)
+             VALUES ($1, $2)
+             ON CONFLICT (thread_id) DO UPDATE SET
+                 data = $2,
+                 updated_at = now()",
+            self.thread_states_table()
+        );
+        sqlx::query(&sql)
+            .bind(thread_id)
+            .bind(&data)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        Ok(())
+    }
+
     pub(super) async fn delete_thread_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         thread_id: &str,
     ) -> Result<(), StorageError> {
+        let delete_state = format!(
+            "DELETE FROM {} WHERE thread_id = $1",
+            self.thread_states_table()
+        );
+        sqlx::query(&delete_state)
+            .bind(thread_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
         let delete_messages = format!("DELETE FROM {} WHERE thread_id = $1", self.messages_table);
         sqlx::query(&delete_messages)
             .bind(thread_id)
@@ -339,6 +374,43 @@ impl ThreadStore for PostgresStore {
         tx.commit()
             .await
             .map_err(|e| StorageError::Io(e.to_string()))
+    }
+
+    async fn save_thread_state(
+        &self,
+        thread_id: &str,
+        state: &awaken_server_contract::PersistedState,
+    ) -> Result<(), StorageError> {
+        self.ensure_schema().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        self.save_thread_state_tx(&mut tx, thread_id, state).await?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))
+    }
+
+    async fn load_thread_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<awaken_server_contract::PersistedState>, StorageError> {
+        self.ensure_schema().await?;
+        let sql = format!(
+            "SELECT data FROM {} WHERE thread_id = $1",
+            self.thread_states_table()
+        );
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
+            .bind(thread_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+        row.map(|(data,)| {
+            serde_json::from_value(data).map_err(|e| StorageError::Serialization(e.to_string()))
+        })
+        .transpose()
     }
 
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {

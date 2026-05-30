@@ -104,6 +104,7 @@ fn materialize_message_log_preserves_output_across_same_run_resume() {
         awaken_runtime_contract::contract::message::MessageMetadata {
             run_id: Some("run-1".into()),
             step_index: Some(0),
+            compaction: None,
         },
     );
     let mut new_output = Message::assistant("after resume");
@@ -318,6 +319,7 @@ fn materialize_checkpoint_append_does_not_duplicate_committed_message_updates() 
         awaken_runtime_contract::contract::message::MessageMetadata {
             run_id: Some("run-1".into()),
             step_index: Some(0),
+            compaction: None,
         },
     );
     let previous = RunRecord {
@@ -680,4 +682,248 @@ async fn persist_checkpoint_routes_through_commit_coordinator() {
         count, 0,
         "runtime no longer stages canonical events directly"
     );
+}
+
+// ── compaction mark stamping (ADR-0038 D11/C7) ───────────────────────
+
+#[test]
+fn stamp_compaction_marks_resolves_boundary_seq_at_commit_time() {
+    use crate::context::plugin::{CompactionBoundary, CompactionStateKey};
+    use crate::state::{MutationBatch, StateStore};
+
+    let store = StateStore::new();
+    store
+        .install_plugin(crate::context::plugin::CompactionPlugin::default())
+        .expect("compaction plugin installs");
+    // Record the boundary the background pass cut at: committed message "m3".
+    let mut batch = MutationBatch::new();
+    batch.update::<CompactionStateKey>(crate::context::record_compaction_boundary(
+        CompactionBoundary {
+            summary: "S".into(),
+            task_id: None,
+            boundary_message_id: Some("m3".into()),
+            pre_tokens: 0,
+            post_tokens: 0,
+            timestamp_ms: 0,
+        },
+    ));
+    store.commit(batch).expect("record boundary");
+
+    let committed = vec![
+        Message::user("m1").with_id("m1".into()),
+        Message::user("m2").with_id("m2".into()),
+        Message::user("m3").with_id("m3".into()),
+        Message::user("m4").with_id("m4".into()),
+    ];
+    let mut delta = vec![Message::internal_system(
+        "<conversation-summary>\nS\n</conversation-summary>",
+    )];
+
+    stamp_compaction_marks(&mut delta, &committed, &store);
+
+    let mark = delta[0]
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.compaction)
+        .expect("summary carries a resolved compaction mark");
+    assert_eq!(mark.from_seq, 1);
+    assert_eq!(mark.to_seq, 3, "to_seq is the committed seq of boundary m3");
+}
+
+#[test]
+fn stamp_compaction_marks_skips_when_boundary_absent_from_committed() {
+    use crate::context::plugin::{CompactionBoundary, CompactionStateKey};
+    use crate::state::{MutationBatch, StateStore};
+
+    let store = StateStore::new();
+    store
+        .install_plugin(crate::context::plugin::CompactionPlugin::default())
+        .expect("compaction plugin installs");
+    let mut batch = MutationBatch::new();
+    batch.update::<CompactionStateKey>(crate::context::record_compaction_boundary(
+        CompactionBoundary {
+            summary: "S".into(),
+            task_id: None,
+            boundary_message_id: Some("not-committed".into()),
+            pre_tokens: 0,
+            post_tokens: 0,
+            timestamp_ms: 0,
+        },
+    ));
+    store.commit(batch).expect("record boundary");
+
+    let committed = vec![Message::user("m1").with_id("m1".into())];
+    let mut delta = vec![Message::internal_system(
+        "<conversation-summary>\nS\n</conversation-summary>",
+    )];
+    stamp_compaction_marks(&mut delta, &committed, &store);
+    // Boundary not in committed log → no mark; read falls back to text trim.
+    assert!(
+        delta[0]
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.compaction)
+            .is_none()
+    );
+}
+
+// ── unified append-commit retry helper (ADR-0038 C6a) ────────────────
+
+mod commit_append_retry {
+    use super::*;
+    use awaken_runtime_contract::contract::commit_coordinator::{
+        CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
+    };
+    use awaken_runtime_contract::contract::storage::StorageError;
+    use awaken_runtime_contract::thread::Thread;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    /// Storage whose committed count is driven by a shared atomic so a
+    /// "concurrent" append can be simulated between retry attempts.
+    struct CountingStore {
+        committed: Arc<AtomicU64>,
+    }
+
+    #[async_trait::async_trait]
+    impl RuntimeCheckpointStore for CountingStore {
+        async fn load_thread(&self, _t: &str) -> Result<Option<Thread>, StorageError> {
+            Ok(None)
+        }
+        async fn load_messages(&self, t: &str) -> Result<Option<Vec<Message>>, StorageError> {
+            self.load_committed_messages(t).await
+        }
+        async fn load_committed_messages(
+            &self,
+            _t: &str,
+        ) -> Result<Option<Vec<Message>>, StorageError> {
+            let n = self.committed.load(Ordering::SeqCst) as usize;
+            Ok(Some(
+                (0..n).map(|i| Message::user(format!("m{i}"))).collect(),
+            ))
+        }
+        async fn load_run(&self, _r: &str) -> Result<Option<RunRecord>, StorageError> {
+            Ok(None)
+        }
+        async fn latest_run(&self, _t: &str) -> Result<Option<RunRecord>, StorageError> {
+            Ok(None)
+        }
+    }
+
+    /// Coordinator that rejects the first commit with a version conflict
+    /// (after bumping the shared committed count to simulate the racing
+    /// writer that won), then accepts subsequent commits.
+    struct ConflictOnceCoordinator {
+        committed: Arc<AtomicU64>,
+        calls: AtomicUsize,
+        seen_versions: parking_lot::Mutex<Vec<u64>>,
+    }
+
+    #[async_trait::async_trait]
+    impl CommitCoordinator for ConflictOnceCoordinator {
+        fn scope(&self) -> TransactionScopeId {
+            TransactionScopeId::new("test::conflict-once").unwrap()
+        }
+        fn reader(&self) -> Arc<dyn RuntimeCheckpointStore> {
+            Arc::new(CountingStore {
+                committed: Arc::clone(&self.committed),
+            })
+        }
+        async fn commit_checkpoint(
+            &self,
+            plan: Checkpoint,
+        ) -> Result<CheckpointCommitOutcome, CommitError> {
+            self.seen_versions
+                .lock()
+                .push(plan.expected_message_version.unwrap_or_default());
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                // The racing writer landed one extra committed message.
+                let actual = self.committed.fetch_add(1, Ordering::SeqCst) + 1;
+                return Err(CommitError::MessageVersionConflict {
+                    thread_id: plan.thread_id.clone(),
+                    expected: plan.expected_message_version.unwrap_or_default(),
+                    actual,
+                });
+            }
+            Ok(CheckpointCommitOutcome::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_with_refreshed_version_after_conflict() {
+        let committed = Arc::new(AtomicU64::new(1));
+        let coordinator = ConflictOnceCoordinator {
+            committed: Arc::clone(&committed),
+            calls: AtomicUsize::new(0),
+            seen_versions: parking_lot::Mutex::new(Vec::new()),
+        };
+        let storage = CountingStore {
+            committed: Arc::clone(&committed),
+        };
+
+        let outcome =
+            commit_checkpoint_appending(&coordinator, &storage, "t-1", |committed, ver| {
+                // Build a trivial append whose guard is the freshly-read version.
+                Checkpoint::append(
+                    "t-1".to_string(),
+                    vec![Message::user(format!("delta-after-{}", committed.len()))],
+                    Some(ver),
+                    RunRecord {
+                        run_id: "r-1".into(),
+                        thread_id: "t-1".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .await;
+
+        assert!(outcome.is_ok(), "commit should succeed after one retry");
+        // First attempt guards on version 1; after the simulated concurrent
+        // append the retry re-reads and guards on version 2.
+        assert_eq!(*coordinator.seen_versions.lock(), vec![1, 2]);
+        assert_eq!(coordinator.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn surfaces_exhausted_after_persistent_conflict() {
+        // A coordinator that always conflicts exhausts the retry budget.
+        struct AlwaysConflict;
+        #[async_trait::async_trait]
+        impl CommitCoordinator for AlwaysConflict {
+            fn scope(&self) -> TransactionScopeId {
+                TransactionScopeId::new("test::always").unwrap()
+            }
+            fn reader(&self) -> Arc<dyn RuntimeCheckpointStore> {
+                Arc::new(CountingStore {
+                    committed: Arc::new(AtomicU64::new(0)),
+                })
+            }
+            async fn commit_checkpoint(
+                &self,
+                plan: Checkpoint,
+            ) -> Result<CheckpointCommitOutcome, CommitError> {
+                Err(CommitError::MessageVersionConflict {
+                    thread_id: plan.thread_id.clone(),
+                    expected: 0,
+                    actual: 99,
+                })
+            }
+        }
+        let storage = CountingStore {
+            committed: Arc::new(AtomicU64::new(0)),
+        };
+        let result = commit_checkpoint_appending(&AlwaysConflict, &storage, "t-x", |_c, ver| {
+            Checkpoint::append(
+                "t-x".to_string(),
+                Vec::new(),
+                Some(ver),
+                RunRecord::default(),
+            )
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(CommitAppendError::Exhausted { attempts, .. }) if attempts == MAX_APPEND_ATTEMPTS
+        ));
+    }
 }

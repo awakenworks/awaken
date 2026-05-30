@@ -73,6 +73,7 @@ fn test_message_with_metadata_serialization() {
     let msg = Message::user("test").with_metadata(MessageMetadata {
         run_id: Some("run-1".to_string()),
         step_index: Some(3),
+        compaction: None,
     });
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("\"run_id\":\"run-1\""));
@@ -307,6 +308,7 @@ fn test_message_metadata_serde_roundtrip() {
     let meta = MessageMetadata {
         run_id: Some("run-1".into()),
         step_index: Some(5),
+        compaction: None,
     };
     let json = serde_json::to_string(&meta).unwrap();
     let parsed: MessageMetadata = serde_json::from_str(&json).unwrap();
@@ -328,6 +330,7 @@ fn message_record_projects_thread_sequence_and_producer() {
         .with_metadata(MessageMetadata {
             run_id: Some("run-1".to_string()),
             step_index: Some(3),
+            compaction: None,
         });
 
     let record = MessageRecord::from_message("thread-1", 7, msg);
@@ -394,6 +397,7 @@ fn mark_produced_by_preserves_existing_metadata() {
     let mut msg = Message::assistant("hello").with_metadata(MessageMetadata {
         run_id: Some("existing-run".to_string()),
         step_index: Some(1),
+        compaction: None,
     });
 
     msg.mark_produced_by("new-run", Some(2));
@@ -437,4 +441,133 @@ fn test_message_text_empty_content() {
         metadata: None,
     };
     assert_eq!(msg.text(), "");
+}
+
+// ── effective_messages: interval compaction folding ──
+
+fn rec(seq: u64, text: &str) -> MessageRecord {
+    MessageRecord::from_message("t1", seq, Message::user(text))
+}
+
+fn summary(seq: u64, text: &str, from: u64, to: u64) -> MessageRecord {
+    let mut r = MessageRecord::from_message("t1", seq, Message::system(text));
+    r.compaction = Some(CompactionMark {
+        from_seq: from,
+        to_seq: to,
+    });
+    r
+}
+
+#[test]
+fn effective_no_compaction_passes_through() {
+    let recs = vec![rec(1, "a"), rec(2, "b"), rec(3, "c")];
+    let out = effective_messages(&recs);
+    assert_eq!(out.len(), 3);
+    assert_eq!(out[0].text(), "a");
+    assert_eq!(out[2].text(), "c");
+}
+
+#[test]
+fn effective_single_interval_replaces_and_keeps_tail() {
+    // raw 1..=8, summary at seq 9 covering [1,6], then 7,8 kept.
+    let mut recs: Vec<MessageRecord> = (1..=8).map(|s| rec(s, &format!("m{s}"))).collect();
+    recs.push(summary(9, "S[1-6]", 1, 6));
+    let out = effective_messages(&recs);
+    // summary first, then m7, m8
+    assert_eq!(out.len(), 3);
+    assert_eq!(out[0].text(), "S[1-6]");
+    assert_eq!(out[1].text(), "m7");
+    assert_eq!(out[2].text(), "m8");
+}
+
+#[test]
+fn effective_multiple_non_adjacent_intervals_ordered() {
+    // raw 1..=10; summary covering [2,4] and another covering [7,8].
+    let mut recs: Vec<MessageRecord> = (1..=10).map(|s| rec(s, &format!("m{s}"))).collect();
+    recs.push(summary(11, "S[2-4]", 2, 4));
+    recs.push(summary(12, "S[7-8]", 7, 8));
+    let out = effective_messages(&recs);
+    let texts: Vec<String> = out.iter().map(|m| m.text()).collect();
+    assert_eq!(
+        texts,
+        ["m1", "S[2-4]", "m5", "m6", "S[7-8]", "m9", "m10"].map(String::from)
+    );
+}
+
+#[test]
+fn effective_interval_to_end_keeps_no_tail() {
+    let mut recs: Vec<MessageRecord> = (1..=5).map(|s| rec(s, &format!("m{s}"))).collect();
+    recs.push(summary(6, "S[1-5]", 1, 5));
+    let out = effective_messages(&recs);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].text(), "S[1-5]");
+}
+
+#[test]
+fn effective_cumulative_prefix_largest_summary_wins() {
+    // Two cumulative summaries share the prefix start: an earlier S[1-3] (at
+    // seq 4) and a later, wider S[1-6] (at seq 7), then raw m8 tail. The wider
+    // summary must win; the superseded summary and all raw [1,6] fold away.
+    let mut recs: Vec<MessageRecord> = vec![rec(1, "m1"), rec(2, "m2"), rec(3, "m3")];
+    recs.push(summary(4, "S[1-3]", 1, 3));
+    recs.push(rec(5, "m5"));
+    recs.push(rec(6, "m6"));
+    recs.push(summary(7, "S[1-6]", 1, 6));
+    recs.push(rec(8, "m8"));
+    let out = effective_messages(&recs);
+    let texts: Vec<String> = out.iter().map(|m| m.text()).collect();
+    assert_eq!(texts, ["S[1-6]", "m8"].map(String::from));
+}
+
+#[test]
+fn effective_committed_view_folds_metadata_marked_summary() {
+    // Raw committed log: m1, m2, m3, then a summary (metadata mark [1,3]), m4.
+    let mut summary =
+        Message::internal_system("<conversation-summary>\nS\n</conversation-summary>");
+    summary.metadata = Some(MessageMetadata {
+        compaction: Some(CompactionMark {
+            from_seq: 1,
+            to_seq: 3,
+        }),
+        ..Default::default()
+    });
+    let committed = vec![
+        Message::user("m1"),
+        Message::user("m2"),
+        Message::user("m3"),
+        summary,
+        Message::user("m4"),
+    ];
+    let view = effective_committed_view(committed, "t1");
+    let texts: Vec<String> = view.iter().map(|m| m.text()).collect();
+    assert_eq!(
+        texts,
+        [
+            "<conversation-summary>\nS\n</conversation-summary>".to_string(),
+            "m4".to_string()
+        ]
+    );
+}
+
+#[test]
+fn from_message_projects_metadata_compaction_mark() {
+    let mut summary = Message::system("S");
+    summary.metadata = Some(MessageMetadata {
+        compaction: Some(CompactionMark {
+            from_seq: 1,
+            to_seq: 4,
+        }),
+        ..Default::default()
+    });
+    let record = MessageRecord::from_message("t1", 5, summary);
+    assert_eq!(
+        record.compaction,
+        Some(CompactionMark {
+            from_seq: 1,
+            to_seq: 4
+        })
+    );
+    // A plain message carries no mark.
+    let plain = MessageRecord::from_message("t1", 1, Message::user("hi"));
+    assert!(plain.compaction.is_none());
 }

@@ -1,7 +1,7 @@
 //! Server-side staged checkpoint commit (ADR-0036 / ADR-0038).
 //!
 //! Canonical events and outbox rows committed atomically with a checkpoint are
-//! kept off the runtime-facing [`CheckpointCommitPlan`] so the runtime never
+//! kept off the runtime-facing [`Checkpoint`] so the runtime never
 //! names event/outbox vocabulary. They flow through [`CheckpointStagedWrites`]
 //! and [`StagedCommitCoordinator::commit_checkpoint_staged`], which store
 //! coordinators implement; the runtime-facing
@@ -11,8 +11,8 @@
 use crate::contract::outbox::OutboxMessageDraft;
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::commit_coordinator::{
-    CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
-    ServerCanonicalEvent, StagedCanonicalEvent,
+    Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError, ServerCanonicalEvent,
+    StagedCanonicalEvent,
 };
 use awaken_runtime_contract::contract::event_store::{CanonicalEventDraft, EventScope};
 
@@ -116,7 +116,7 @@ pub trait StagedCommitCoordinator: CommitCoordinator {
     /// and failure semantics.
     async fn commit_checkpoint_staged(
         &self,
-        plan: CheckpointCommitPlan,
+        plan: Checkpoint,
         staged: CheckpointStagedWrites,
     ) -> Result<CheckpointCommitOutcome, CommitError>;
 }

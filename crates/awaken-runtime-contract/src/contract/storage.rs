@@ -302,6 +302,31 @@ impl RunRecord {
     }
 }
 
+// ── consistent checkpoint snapshot ───────────────────────────────────
+
+/// A single consistent read of a thread's resume state.
+///
+/// Pairs the committed message view with the latest run record, the
+/// thread-scoped state, and the committed message version (record count) that
+/// the next append must guard against. Reading these together — under one
+/// transaction / lock per backend — avoids the torn reads a resume path would
+/// otherwise risk by stitching separate `load_messages`/`latest_run`/
+/// `load_thread_state` calls while a concurrent commit advances the thread.
+///
+/// This is the read-side counterpart to [`Checkpoint`](crate::contract::commit_coordinator::Checkpoint):
+/// `commit_checkpoint(checkpoint)` writes, `load_checkpoint(thread)` reads back.
+#[derive(Debug, Clone, Default)]
+pub struct CheckpointSnapshot {
+    /// Effective committed message view (read-time filters applied).
+    pub messages: Vec<Message>,
+    /// Committed message version — the count the next append guards against.
+    pub message_version: u64,
+    /// Latest run record for the thread, if any.
+    pub latest_run: Option<RunRecord>,
+    /// Thread-scoped persisted state, if any has been written.
+    pub thread_state: Option<PersistedState>,
+}
+
 // ── runtime read port ────────────────────────────────────────────────
 
 /// Narrow read port the runtime needs from durable storage during a run:
@@ -322,6 +347,48 @@ pub trait RuntimeCheckpointStore: Send + Sync {
     async fn load_run(&self, run_id: &str) -> Result<Option<RunRecord>, StorageError>;
 
     async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError>;
+
+    /// Thread-scoped persisted state for `thread_id`, if any has been written.
+    ///
+    /// Default returns `None` (stores that do not persist thread-scoped state).
+    /// Backends override this to return the last committed thread-scoped state,
+    /// which the runtime merges (by `KeyScope`) with the resumed run's state.
+    async fn load_thread_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<crate::state::PersistedState>, StorageError> {
+        let _ = thread_id;
+        Ok(None)
+    }
+
+    /// Read a consistent [`CheckpointSnapshot`] for resume.
+    ///
+    /// The default composes the individual resume reads and applies the
+    /// committed-history view filter. Backends that can read atomically
+    /// (a transaction or lock spanning messages + run + thread state) override
+    /// this to avoid torn reads against a concurrent commit; the default is
+    /// adequate for single-process stores whose reads are already serialized.
+    /// Returns `None` when the thread has no committed messages and no run.
+    async fn load_checkpoint(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CheckpointSnapshot>, StorageError> {
+        let committed = self.load_committed_messages(thread_id).await?;
+        let latest_run = self.latest_run(thread_id).await?;
+        if committed.is_none() && latest_run.is_none() {
+            return Ok(None);
+        }
+        let raw = committed.unwrap_or_default();
+        let message_version = raw.len() as u64;
+        let messages = super::message::effective_committed_view(raw, thread_id);
+        let thread_state = self.load_thread_state(thread_id).await?;
+        Ok(Some(CheckpointSnapshot {
+            messages,
+            message_version,
+            latest_run,
+            thread_state,
+        }))
+    }
 }
 
 #[cfg(test)]

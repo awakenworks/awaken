@@ -409,6 +409,7 @@ pub async fn list_message_records_query_filters_and_orders<S: ThreadRunStore>(st
     let run_metadata = MessageMetadata {
         run_id: Some("run-1".to_string()),
         step_index: Some(0),
+        compaction: None,
     };
     let messages = vec![
         Message::user("input"),

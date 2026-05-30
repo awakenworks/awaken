@@ -693,6 +693,7 @@ async fn resolve_delegate_uses_registered_backend_factory() {
                 run_id: None,
                 inbox: None,
                 state: None,
+                thread_state: None,
             },
             validate_count: validate_count.clone(),
             build_count: build_count.clone(),

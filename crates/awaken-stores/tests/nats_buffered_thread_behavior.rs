@@ -774,3 +774,39 @@ async fn same_run_coalescing_flush_preserves_materialized_parent_projection() {
 
     store.shutdown().await.unwrap();
 }
+
+/// Thread state is not buffered through the WAL; the buffered store must
+/// delegate `save_thread_state`/`load_thread_state` to the inner durable
+/// store so reads observe writes.
+#[tokio::test]
+async fn thread_state_delegates_to_inner_store() {
+    let fixture = NatsFixture::start().await;
+    let inner = Arc::new(InMemoryStore::new());
+    let inner_probe = Arc::clone(&inner);
+    let config = unique_config(&fixture);
+    let store = NatsBufferedThreadStore::connect(inner, config)
+        .await
+        .expect("connect");
+
+    let state = awaken_server_contract::PersistedState {
+        revision: 5,
+        extensions: Default::default(),
+    };
+    store
+        .save_thread_state("t-state", &state)
+        .await
+        .expect("save thread_state");
+
+    // Visible through the buffered store and persisted to the inner store.
+    assert_eq!(
+        store.load_thread_state("t-state").await.unwrap(),
+        Some(state.clone())
+    );
+    assert_eq!(
+        inner_probe.load_thread_state("t-state").await.unwrap(),
+        Some(state)
+    );
+    assert!(store.load_thread_state("absent").await.unwrap().is_none());
+
+    store.shutdown().await.unwrap();
+}

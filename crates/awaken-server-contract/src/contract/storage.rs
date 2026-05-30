@@ -9,8 +9,8 @@
 // Run-record data + checkpoint read port shared with the runtime; defined in
 // runtime-contract.
 pub use awaken_runtime_contract::contract::storage::{
-    MessageSeqRange, RunMessageInput, RunMessageOutput, RunOutcome, RunRecord, RunRequestOrigin,
-    RunRequestSnapshot, RunResumeDecision, RunWaitingState, RunWaitingTicket,
+    CheckpointSnapshot, MessageSeqRange, RunMessageInput, RunMessageOutput, RunOutcome, RunRecord,
+    RunRequestOrigin, RunRequestSnapshot, RunResumeDecision, RunWaitingState, RunWaitingTicket,
     RuntimeCheckpointStore, StorageError, WaitingReason, message_append,
 };
 // Thread/run store traits + checkpoint adapter (server/store concern).
@@ -638,6 +638,23 @@ impl ThreadStore for ScopedThreadRunStore {
         self.inner.delete_thread(&self.scoped(thread_id)).await
     }
 
+    async fn save_thread_state(
+        &self,
+        thread_id: &str,
+        state: &awaken_runtime_contract::state::PersistedState,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .save_thread_state(&self.scoped(thread_id), state)
+            .await
+    }
+
+    async fn load_thread_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<awaken_runtime_contract::state::PersistedState>, StorageError> {
+        self.inner.load_thread_state(&self.scoped(thread_id)).await
+    }
+
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
         const SCAN_LIMIT: usize = 200;
 
@@ -771,25 +788,72 @@ impl RunStore for ScopedThreadRunStore {
     }
 
     async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, StorageError> {
-        let inner_query = RunQuery {
-            offset: 0,
-            limit: usize::MAX,
-            thread_id: query.thread_id.as_deref().map(|id| self.scoped(id)),
-            status: query.status,
-        };
-        let inner_page = self.inner.list_runs(&inner_query).await?;
-        let mut items: Vec<RunRecord> = inner_page
-            .items
-            .into_iter()
-            .filter_map(|record| self.decode_run(record))
-            .collect();
-        let total = items.len();
-        let start = query.offset.min(total);
-        items = items.into_iter().skip(start).take(query.limit).collect();
-        let has_more = query.limit > 0 && start + items.len() < total;
+        // Single-thread queries are bounded to one (in-scope) thread, so push
+        // the caller's offset/limit straight to the backend — no over-fetch and
+        // no in-memory pagination. Every row of a scoped thread is in scope, so
+        // `decode_run` never drops one and the backend's page totals are exact.
+        if let Some(thread_id) = query.thread_id.as_deref() {
+            let inner_page = self
+                .inner
+                .list_runs(&RunQuery {
+                    offset: query.offset,
+                    limit: query.limit,
+                    thread_id: Some(self.scoped(thread_id)),
+                    status: query.status,
+                })
+                .await?;
+            let items = inner_page
+                .items
+                .into_iter()
+                .filter_map(|record| self.decode_run(record))
+                .collect();
+            return Ok(RunPage {
+                items,
+                total: inner_page.total,
+                has_more: inner_page.has_more,
+            });
+        }
+
+        // Cross-scope listing: the backend exposes no scope filter, so scan in
+        // bounded batches and keep only the requested window in memory. This
+        // avoids loading the entire shared run table at once (which coupled
+        // one scope's query latency/memory to every other scope's data volume).
+        const SCAN_LIMIT: usize = 200;
+        let window_end = query.offset.saturating_add(query.limit);
+        let mut inner_offset = 0;
+        let mut in_scope_seen = 0usize;
+        let mut items: Vec<RunRecord> = Vec::new();
+        loop {
+            let page = self
+                .inner
+                .list_runs(&RunQuery {
+                    offset: inner_offset,
+                    limit: SCAN_LIMIT,
+                    thread_id: None,
+                    status: query.status,
+                })
+                .await?;
+            let count = page.items.len();
+            if count == 0 {
+                break;
+            }
+            for record in page.items {
+                if let Some(decoded) = self.decode_run(record) {
+                    if in_scope_seen >= query.offset && in_scope_seen < window_end {
+                        items.push(decoded);
+                    }
+                    in_scope_seen += 1;
+                }
+            }
+            if count < SCAN_LIMIT {
+                break;
+            }
+            inner_offset += count;
+        }
+        let has_more = query.limit > 0 && query.offset.saturating_add(items.len()) < in_scope_seen;
         Ok(RunPage {
             items,
-            total,
+            total: in_scope_seen,
             has_more,
         })
     }

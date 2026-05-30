@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use awaken_runtime_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitError};
+use awaken_runtime_contract::contract::commit_coordinator::Checkpoint;
 use awaken_runtime_contract::contract::lifecycle::RunStatus;
 use awaken_runtime_contract::contract::storage::RunRecord;
 use awaken_runtime_contract::now_ms;
@@ -74,19 +74,17 @@ pub(super) async fn persist_accepted_checkpoint(
         output_tokens: 0,
         state: Some(state),
     };
-    if let Some(coordinator) = root.commit.commit_coordinator {
-        const MAX_APPEND_ATTEMPTS: usize = 8;
-        for _ in 0..MAX_APPEND_ATTEMPTS {
-            let committed_messages = storage
-                .load_messages(&root.run_identity.thread_id)
-                .await
-                .map_err(|error| {
-                    ExecutionBackendError::ExecutionFailed(format!(
-                        "failed to load thread '{}' before A2A checkpoint append: {error}",
-                        root.run_identity.thread_id
-                    ))
-                })?
-                .unwrap_or_default();
+    let Some(coordinator) = root.commit.commit_coordinator else {
+        return Err(ExecutionBackendError::ExecutionFailed(format!(
+            "failed to persist accepted A2A task handle for run '{}': missing CommitCoordinator",
+            root.run_identity.run_id
+        )));
+    };
+    crate::loop_runner::commit_checkpoint_appending(
+        coordinator,
+        storage,
+        &root.run_identity.thread_id,
+        |committed_messages, expected_version| {
             let committed_ids: HashSet<&str> = committed_messages
                 .iter()
                 .filter_map(|message| message.id.as_deref())
@@ -102,33 +100,35 @@ pub(super) async fn persist_accepted_checkpoint(
                 })
                 .cloned()
                 .collect();
-            let plan = CheckpointCommitPlan::append(
+            Checkpoint::append(
                 root.run_identity.thread_id.clone(),
                 delta,
-                Some(committed_messages.len() as u64),
+                Some(expected_version),
                 record.clone(),
-            );
-            match coordinator.commit_checkpoint(plan).await {
-                Ok(_) => return Ok(()),
-                Err(CommitError::MessageVersionConflict { .. }) => continue,
-                Err(error) => {
-                    return Err(ExecutionBackendError::ExecutionFailed(format!(
-                        "failed to persist accepted A2A task handle for run '{}': {error}",
-                        root.run_identity.run_id
-                    )));
-                }
-            }
+            )
+        },
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| match error {
+        crate::loop_runner::CommitAppendError::Read(message) => {
+            ExecutionBackendError::ExecutionFailed(format!(
+                "failed to load thread '{}' before A2A checkpoint append: {message}",
+                root.run_identity.thread_id
+            ))
         }
-        Err(ExecutionBackendError::ExecutionFailed(format!(
-            "accepted A2A checkpoint append exhausted {MAX_APPEND_ATTEMPTS} retries under version conflict for thread '{}'",
-            root.run_identity.thread_id
-        )))
-    } else {
-        Err(ExecutionBackendError::ExecutionFailed(format!(
-            "failed to persist accepted A2A task handle for run '{}': missing CommitCoordinator",
-            root.run_identity.run_id
-        )))
-    }
+        crate::loop_runner::CommitAppendError::Commit(error) => {
+            ExecutionBackendError::ExecutionFailed(format!(
+                "failed to persist accepted A2A task handle for run '{}': {error}",
+                root.run_identity.run_id
+            ))
+        }
+        crate::loop_runner::CommitAppendError::Exhausted { thread_id, attempts } => {
+            ExecutionBackendError::ExecutionFailed(format!(
+                "accepted A2A checkpoint append exhausted {attempts} retries under version conflict for thread '{thread_id}'"
+            ))
+        }
+    })
 }
 
 #[cfg(test)]

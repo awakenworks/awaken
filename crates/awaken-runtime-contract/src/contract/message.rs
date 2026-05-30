@@ -49,6 +49,13 @@ pub struct MessageMetadata {
     /// Step (round) index within the run (0-based).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_index: Option<u32>,
+    /// When set, this message is a compaction summary that logically replaces
+    /// the committed interval `[from_seq, to_seq]` (ADR-0038 D11/C7). The mark
+    /// rides in the message body so it persists through every store without a
+    /// schema change; [`MessageRecord::from_message`] projects it onto
+    /// [`MessageRecord::compaction`] for the [`effective_messages`] fold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionMark>,
 }
 
 /// A message persisted as part of a thread's append-only log.
@@ -78,6 +85,25 @@ pub struct MessageRecord {
     /// Unix timestamp (seconds) when the message was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<u64>,
+    /// When set, this record is a compaction summary that logically replaces the
+    /// committed message interval `[from_seq, to_seq]` in the effective view.
+    /// Originals are retained (append-only); see [`effective_messages`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionMark>,
+}
+
+/// Interval a compaction summary covers, on the summary record.
+///
+/// Compaction never deletes or overwrites: it appends a summary message whose
+/// `CompactionMark` says which committed interval it stands in for. The raw
+/// messages in `[from_seq, to_seq]` stay in the log; the effective (resume /
+/// context) view folds them away via [`effective_messages`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionMark {
+    /// First committed seq covered by this summary (inclusive).
+    pub from_seq: u64,
+    /// Last committed seq covered by this summary (inclusive).
+    pub to_seq: u64,
 }
 
 impl MessageRecord {
@@ -92,6 +118,10 @@ impl MessageRecord {
             .as_ref()
             .and_then(|metadata| metadata.step_index);
         let tool_call_id = message.tool_call_id.clone();
+        let compaction = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.compaction);
         Self {
             message_id: message.id.clone().unwrap_or_else(gen_message_id),
             thread_id: thread_id.into(),
@@ -101,8 +131,87 @@ impl MessageRecord {
             step_index,
             tool_call_id,
             created_at: None,
+            compaction,
         }
     }
+}
+
+/// Fold committed message records into the effective view, applying compaction.
+///
+/// Compaction is append-only and interval-based: a summary record carries a
+/// [`CompactionMark`] for the interval `[from_seq, to_seq]` it replaces. This
+/// produces the view the runtime resumes/builds context from:
+///
+/// - each compacted interval is replaced by its summary message, positioned at
+///   the interval's start (the summary's own append position is skipped);
+/// - records outside every interval pass through in seq order;
+/// - records inside an interval (other than the summary itself) are dropped.
+///
+/// Records must be sorted by `seq` ascending (the committed log order).
+///
+/// Compaction summaries are cumulative (each incremental summary subsumes the
+/// previous one), so two summaries can share the same prefix — e.g. `[1, a]`
+/// and `[1, b]` with `b > a`. The fold resolves this **cumulative-prefix-wins**
+/// (ADR-0038 D11, scheme A): an interval fully contained in another is dropped,
+/// so the largest covering summary wins and the superseded summary is folded
+/// away with the raw records it covered. Genuinely disjoint intervals are all
+/// kept and ordered by start.
+#[must_use]
+pub fn effective_messages(records: &[MessageRecord]) -> Vec<Message> {
+    // Every summary record is folded out of the raw stream, whether its
+    // interval wins or is superseded by a larger covering interval.
+    let summary_seqs: std::collections::HashSet<u64> = records
+        .iter()
+        .filter(|r| r.compaction.is_some())
+        .map(|r| r.seq)
+        .collect();
+
+    // Candidate intervals, then drop any contained in another (cumulative
+    // prefix): sort by start asc, end desc so the widest at each start is seen
+    // first, and keep an interval only when no already-kept one covers it.
+    let mut candidates: Vec<(u64, u64, &Message)> = records
+        .iter()
+        .filter_map(|r| r.compaction.map(|c| (c.from_seq, c.to_seq, &r.message)))
+        .collect();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    let mut intervals: Vec<(u64, u64, &Message)> = Vec::new();
+    for cand in candidates {
+        let dominated = intervals
+            .iter()
+            .any(|kept| kept.0 <= cand.0 && cand.1 <= kept.1);
+        if !dominated {
+            intervals.push(cand);
+        }
+    }
+    intervals.sort_by_key(|(from, _, _)| *from);
+
+    let covered = |seq: u64| {
+        intervals
+            .iter()
+            .any(|(from, to, _)| seq >= *from && seq <= *to)
+    };
+
+    let mut out = Vec::new();
+    let mut next_interval = intervals.iter().peekable();
+    for record in records.iter().filter(|r| !summary_seqs.contains(&r.seq)) {
+        // Emit any interval summaries whose interval starts at/before this seq.
+        while next_interval
+            .peek()
+            .is_some_and(|(from, _, _)| *from <= record.seq)
+        {
+            let (_, _, summary) = next_interval.next().unwrap();
+            out.push((*summary).clone());
+        }
+        if covered(record.seq) {
+            continue; // raw record folded away by its interval's summary
+        }
+        out.push(record.message.clone());
+    }
+    // Trailing intervals whose start is beyond the last raw record.
+    for (_, _, summary) in next_interval {
+        out.push((*summary).clone());
+    }
+    out
 }
 
 /// Build the read-time message view used for committed thread history.
@@ -167,6 +276,23 @@ pub fn strip_unpaired_tool_calls_from_view(messages: &mut Vec<Message>) {
 pub fn strip_unpaired_tool_calls_from_owned_view(mut messages: Vec<Message>) -> Vec<Message> {
     strip_unpaired_tool_calls_from_view(&mut messages);
     messages
+}
+
+/// Build the effective resume/context view from a raw committed message log
+/// (ADR-0038 D11/C7): project each message to a record (reading its compaction
+/// mark from metadata), fold compaction intervals via [`effective_messages`],
+/// then apply the unpaired-tool-call view filter. Messages without a mark pass
+/// through unchanged, so a thread that has never been compacted yields the same
+/// view as the plain strip. The committed `message_version` (the optimistic
+/// guard) is the raw length and is computed by the caller, not from this view.
+#[must_use]
+pub fn effective_committed_view(committed: Vec<Message>, thread_id: &str) -> Vec<Message> {
+    let records: Vec<MessageRecord> = committed
+        .into_iter()
+        .enumerate()
+        .map(|(index, message)| MessageRecord::from_message(thread_id, index as u64 + 1, message))
+        .collect();
+    strip_unpaired_tool_calls_from_owned_view(effective_messages(&records))
 }
 
 /// Generate a time-ordered UUID v7 message identifier.

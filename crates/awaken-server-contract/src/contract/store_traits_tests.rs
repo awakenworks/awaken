@@ -417,6 +417,7 @@ async fn thread_store_save_and_load_messages() {
         Message::assistant("hi").with_metadata(crate::contract::message::MessageMetadata {
             run_id: Some("run-1".to_string()),
             step_index: Some(0),
+            compaction: None,
         }),
     ];
     store.save_messages("t-1", &msgs).await.unwrap();
@@ -437,6 +438,7 @@ async fn thread_store_default_message_query_filters_and_orders() {
     let metadata = crate::contract::message::MessageMetadata {
         run_id: Some("run-1".to_string()),
         step_index: Some(0),
+        compaction: None,
     };
     let msgs = vec![
         Message::user("input"),

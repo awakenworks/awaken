@@ -7,7 +7,7 @@ use crate::checkpoint_store::RuntimeCheckpointStore;
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use awaken_runtime_contract::contract::commit_coordinator::{
-    CheckpointCommitPlan, CommitCoordinator, CommitError,
+    Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError,
 };
 use awaken_runtime_contract::contract::event::AgentEvent;
 use awaken_runtime_contract::contract::event_sink::EventSink;
@@ -50,6 +50,55 @@ impl<'a> CommitWiring<'a> {
         self.resolution_id_seed = seed;
         self
     }
+}
+
+/// Default optimistic-append attempts under version contention (ADR-0038 C6).
+pub const MAX_APPEND_ATTEMPTS: usize = 8;
+
+/// Error from the shared version-guarded append-commit loop (ADR-0038 C6a).
+#[derive(Debug)]
+pub enum CommitAppendError {
+    /// Reading the committed log for the version baseline failed.
+    Read(String),
+    /// The coordinator returned a non-conflict commit error.
+    Commit(CommitError),
+    /// Exhausted retries under repeated version conflicts.
+    Exhausted { thread_id: String, attempts: usize },
+}
+
+/// The single version-guarded append-commit entry point shared by every
+/// runtime checkpoint path (ADR-0038 C6a: loop-runner, remote-root backend,
+/// A2A). It reads the committed log, hands the caller the committed messages
+/// plus the expected version so the caller can build its delta + `Checkpoint`,
+/// commits, and retries on `MessageVersionConflict`. Callers supply only the
+/// delta/plan builder; the read + version-guard + retry policy lives here.
+pub(crate) async fn commit_checkpoint_appending<F>(
+    coordinator: &dyn CommitCoordinator,
+    storage: &dyn RuntimeCheckpointStore,
+    thread_id: &str,
+    mut build: F,
+) -> Result<CheckpointCommitOutcome, CommitAppendError>
+where
+    F: FnMut(&[Message], u64) -> Checkpoint,
+{
+    for _ in 0..MAX_APPEND_ATTEMPTS {
+        let committed = storage
+            .load_committed_messages(thread_id)
+            .await
+            .map_err(|error| CommitAppendError::Read(error.to_string()))?
+            .unwrap_or_default();
+        let expected_version = committed.len() as u64;
+        let plan = build(&committed, expected_version);
+        match coordinator.commit_checkpoint(plan).await {
+            Ok(outcome) => return Ok(outcome),
+            Err(CommitError::MessageVersionConflict { .. }) => continue,
+            Err(error) => return Err(CommitAppendError::Commit(error)),
+        }
+    }
+    Err(CommitAppendError::Exhausted {
+        thread_id: thread_id.to_string(),
+        attempts: MAX_APPEND_ATTEMPTS,
+    })
 }
 
 pub(super) struct StepCompletion<'a> {
@@ -163,8 +212,14 @@ pub(super) async fn persist_checkpoint(
     };
 
     let lifecycle = store.read::<RunLifecycle>().unwrap_or_default();
+    // Split persisted state by scope (ADR-0038 C4): run-scoped keys ride on
+    // the run record, thread-scoped keys land in `Checkpoint.thread_state`
+    // and are written in the same commit transaction.
     let state = store
-        .export_persisted()
+        .export_run_scoped()
+        .map_err(AgentLoopError::PhaseError)?;
+    let thread_state = store
+        .export_thread_scoped()
         .map_err(AgentLoopError::PhaseError)?;
     // The pre-warmed `ThreadContext` only seeds `run_cache` with whatever
     // `latest_run` returned at claim time, which is not necessarily the
@@ -265,45 +320,117 @@ pub(super) async fn persist_checkpoint(
                 .to_string(),
         )
     })?;
-    const MAX_APPEND_ATTEMPTS: usize = 8;
-    for _ in 0..MAX_APPEND_ATTEMPTS {
-        let committed_messages = storage
-            .load_committed_messages(&run_identity.thread_id)
-            .await
-            .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
-            .unwrap_or_default();
-        let expected_version = committed_messages.len() as u64;
-        let (delta, output) = materialize_checkpoint_append(
-            messages,
-            &committed_messages,
-            previous.as_ref(),
-            run_identity,
-            lifecycle.step_count,
-            input_message_count,
-        );
-        let mut record = base_record.clone();
-        record.output = output;
-        let plan = CheckpointCommitPlan::append(
-            run_identity.thread_id.clone(),
-            delta,
-            Some(expected_version),
-            record,
-        );
-        match coordinator.commit_checkpoint(plan).await {
-            Ok(_) => {
-                // `storage` is read at function start for `load_run`; the checkpoint
-                // write itself goes through the coordinator above.
-                let _ = storage;
-                return Ok(());
+    let result = commit_checkpoint_appending(
+        coordinator,
+        storage,
+        &run_identity.thread_id,
+        |committed_messages, expected_version| {
+            let (mut delta, output) = materialize_checkpoint_append(
+                messages,
+                committed_messages,
+                previous.as_ref(),
+                run_identity,
+                lifecycle.step_count,
+                input_message_count,
+            );
+            // ADR-0038 D11/C7: a freshly-appended compaction summary carries
+            // its CompactionMark, resolved here because committed seqs are only
+            // known at commit time. The fold (`effective_messages`) reads it.
+            stamp_compaction_marks(&mut delta, committed_messages, store);
+            let mut record = base_record.clone();
+            record.output = output;
+            let mut plan = Checkpoint::append(
+                run_identity.thread_id.clone(),
+                delta,
+                Some(expected_version),
+                record,
+            );
+            // Only attach thread_state when thread-scoped keys exist, so threads
+            // without thread-scoped state don't write empty rows on every commit.
+            if !thread_state.extensions.is_empty() {
+                plan = plan.with_thread_state(thread_state.clone());
             }
-            Err(CommitError::MessageVersionConflict { .. }) => continue,
-            Err(error) => return Err(AgentLoopError::StorageError(error.to_string())),
+            plan
+        },
+    )
+    .await;
+    result.map(|_| ()).map_err(map_commit_append_error)
+}
+
+/// Map the shared commit-append error to the loop runner's error type,
+/// preserving the historical version-conflict-exhausted message.
+fn map_commit_append_error(error: CommitAppendError) -> AgentLoopError {
+    match error {
+        CommitAppendError::Read(message) => AgentLoopError::StorageError(message),
+        CommitAppendError::Commit(error) => AgentLoopError::StorageError(error.to_string()),
+        CommitAppendError::Exhausted {
+            thread_id,
+            attempts,
+        } => AgentLoopError::StorageError(format!(
+            "committed append exhausted {attempts} retries under version conflict for thread '{thread_id}'"
+        )),
+    }
+}
+
+/// Is this message a background-compaction summary (the `<conversation-summary>`
+/// internal-system message produced by [`crate::context`])?
+fn is_compaction_summary(message: &Message) -> bool {
+    message.role == Role::System
+        && message.visibility == Visibility::Internal
+        && message.text().contains("<conversation-summary>")
+}
+
+/// Stamp the durable [`CompactionMark`] onto any freshly-appended compaction
+/// summary in `delta` (ADR-0038 D11). The covered interval is `[1, to_seq]`
+/// where `to_seq` is the committed seq of the latest recorded boundary message
+/// (cumulative summaries — scheme A). The committed seq is only knowable here,
+/// at commit time, against `committed`. If the boundary message is not in the
+/// committed log the summary is left unmarked and the read path falls back to
+/// the legacy text-marker trim.
+fn stamp_compaction_marks(
+    delta: &mut [Message],
+    committed: &[Message],
+    store: &crate::state::StateStore,
+) {
+    if !delta.iter().any(is_compaction_summary) {
+        return;
+    }
+    let Some(boundary_id) = store
+        .read::<crate::context::plugin::CompactionStateKey>()
+        .and_then(|state| {
+            state
+                .boundaries
+                .last()
+                .and_then(|boundary| boundary.boundary_message_id.clone())
+        })
+        .filter(|id| !id.is_empty())
+    else {
+        return;
+    };
+    let Some(to_seq) = committed
+        .iter()
+        .position(|message| message.id.as_deref() == Some(boundary_id.as_str()))
+        .map(|index| index as u64 + 1)
+    else {
+        return;
+    };
+    for message in delta.iter_mut() {
+        if is_compaction_summary(message)
+            && message
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.compaction)
+                .is_none()
+        {
+            message
+                .metadata
+                .get_or_insert_with(Default::default)
+                .compaction = Some(awaken_runtime_contract::contract::message::CompactionMark {
+                from_seq: 1,
+                to_seq,
+            });
         }
     }
-    Err(AgentLoopError::StorageError(format!(
-        "committed append exhausted {MAX_APPEND_ATTEMPTS} retries under version conflict for thread '{}'",
-        run_identity.thread_id
-    )))
 }
 
 fn materialize_input(

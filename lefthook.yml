@@ -6,14 +6,16 @@ pre-commit:
   commands:
     check-runtime-no-reverse-dep:
       run: |
-        # runtime 不可反向依赖 server-contract:只允许出现在 [dev-dependencies]。
+        # runtime 库依赖只允许 awaken-runtime-contract:既禁 server-contract,
+        # 也禁经由兼容 facade awaken-contract 绕过边界(server API 仍可达)。
+        # 两者只允许出现在 [dev-dependencies](测试用)。
         cargo_toml="crates/awaken-runtime/Cargo.toml"
-        lib_dep=$(awk '/^\[dependencies\]/{d=1;next} /^\[/{d=0} d && /awaken-server-contract/{print}' "$cargo_toml")
+        lib_dep=$(awk '/^\[dependencies\]/{d=1;next} /^\[/{d=0} d && ($0 ~ /awaken-server-contract/ || $0 ~ /awaken-contract[[:space:]]*=/){print}' "$cargo_toml")
         if [ -n "$lib_dep" ]; then
-          echo "ERROR: awaken-runtime 不可把 awaken-server-contract 作为库依赖(反向依赖)。"
+          echo "ERROR: awaken-runtime 库依赖不可包含 awaken-server-contract 或兼容 facade awaken-contract(反向依赖/绕过边界)。"
           echo "  $lib_dep"
-          echo "✅ 仅允许放在 [dev-dependencies](测试用)。"
-          echo "<system-reminder>→ Next: 把它移到 [dev-dependencies] 或改用 runtime-contract 端口</system-reminder>"
+          echo "✅ 运行时只依赖 awaken-runtime-contract;server/facade 仅允许放在 [dev-dependencies](测试用)。"
+          echo "<system-reminder>→ Next: 改用 awaken-runtime-contract 端口,或把依赖移到 [dev-dependencies]</system-reminder>"
           exit 1
         fi
     check-root-md-files:

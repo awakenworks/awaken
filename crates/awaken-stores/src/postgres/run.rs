@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::storage::{
-    RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore,
+    CheckpointSnapshot, RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore,
     checkpoint_parent_thread_id, message_append,
 };
 use awaken_server_contract::thread::Thread;
@@ -453,6 +453,69 @@ impl ThreadRunStore for PostgresStore {
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
         Ok(new_version)
+    }
+
+    /// Consistent resume read in one transaction (ADR-0038 C5): committed
+    /// messages, latest run, and thread state are read together so a
+    /// concurrent commit cannot tear the snapshot.
+    async fn load_checkpoint(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<CheckpointSnapshot>, StorageError> {
+        self.ensure_schema().await?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?;
+
+        let records = self
+            .load_committed_message_records_tx(&mut tx, thread_id)
+            .await?;
+
+        let latest_run_sql = format!(
+            "SELECT {RUN_COLUMNS} FROM {} WHERE thread_id = $1 ORDER BY updated_at DESC LIMIT 1",
+            self.runs_table
+        );
+        let latest_run = sqlx::query(&latest_run_sql)
+            .bind(thread_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?
+            .map(run_record_from_pg_row);
+
+        if records.is_empty() && latest_run.is_none() {
+            return Ok(None);
+        }
+
+        let message_version = records.len() as u64;
+        // Records carry compaction marks (projected from message metadata), so
+        // fold via the effective view before applying the unpaired filter.
+        let messages = awaken_server_contract::contract::message::effective_committed_view(
+            records.into_iter().map(|record| record.message).collect(),
+            thread_id,
+        );
+
+        let thread_state_sql = format!(
+            "SELECT data FROM {} WHERE thread_id = $1",
+            self.thread_states_table()
+        );
+        let thread_state = sqlx::query_as::<_, (serde_json::Value,)>(&thread_state_sql)
+            .bind(thread_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Io(e.to_string()))?
+            .map(|(data,)| serde_json::from_value(data))
+            .transpose()
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        // Read-only transaction; rollback (drop) is fine — nothing was written.
+        Ok(Some(CheckpointSnapshot {
+            messages,
+            message_version,
+            latest_run,
+            thread_state,
+        }))
     }
 }
 

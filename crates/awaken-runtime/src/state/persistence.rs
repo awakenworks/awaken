@@ -6,13 +6,32 @@ use awaken_runtime_contract::{StateError, UnknownKeyPolicy};
 use super::{PersistedState, StateMap, StateStore};
 
 impl StateStore {
+    /// Export all persistent keys (every scope) into one `PersistedState`.
     pub fn export_persisted(&self) -> Result<PersistedState, StateError> {
+        self.export_filtered(|_| true)
+    }
+
+    /// Export only thread-scoped persistent keys (for `Checkpoint.thread_state`).
+    pub fn export_thread_scoped(&self) -> Result<PersistedState, StateError> {
+        self.export_filtered(|scope| scope == KeyScope::Thread)
+    }
+
+    /// Export persistent keys NOT in the thread scope (run-scoped et al.) — the
+    /// portion that rides on the run record.
+    pub fn export_run_scoped(&self) -> Result<PersistedState, StateError> {
+        self.export_filtered(|scope| scope != KeyScope::Thread)
+    }
+
+    fn export_filtered(
+        &self,
+        include: impl Fn(KeyScope) -> bool,
+    ) -> Result<PersistedState, StateError> {
         let registry = self.registry.lock();
         let state = self.inner.read();
         let mut extensions = std::collections::HashMap::new();
 
         for reg in registry.keys_by_type.values() {
-            if !reg.options.persistent {
+            if !reg.options.persistent || !include(reg.scope) {
                 continue;
             }
 
@@ -186,6 +205,18 @@ mod tests {
         }
     }
 
+    struct ThreadCounter;
+
+    impl StateKey for ThreadCounter {
+        const KEY: &'static str = "test.thread_counter";
+        type Value = i64;
+        type Update = i64;
+
+        fn apply(value: &mut Self::Value, update: Self::Update) {
+            *value += update;
+        }
+    }
+
     struct PersistenceTestPlugin;
 
     impl Plugin for PersistenceTestPlugin {
@@ -205,6 +236,11 @@ mod tests {
             })?;
             registrar.register_key::<TransientFlag>(StateKeyOptions {
                 persistent: false,
+                ..Default::default()
+            })?;
+            registrar.register_key::<ThreadCounter>(StateKeyOptions {
+                persistent: true,
+                scope: crate::state::KeyScope::Thread,
                 ..Default::default()
             })?;
             Ok(())
@@ -231,6 +267,29 @@ mod tests {
 
         let val = store2.read::<PersistentCounter>().unwrap();
         assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn export_splits_thread_and_run_scoped_keys() {
+        let store = StateStore::new();
+        store.install_plugin(PersistenceTestPlugin).unwrap();
+
+        let mut batch = store.begin_mutation();
+        batch.update::<PersistentCounter>(5); // run-scoped
+        batch.update::<ThreadCounter>(9); // thread-scoped
+        store.commit(batch).unwrap();
+
+        let thread = store.export_thread_scoped().unwrap();
+        assert!(thread.extensions.contains_key(ThreadCounter::KEY));
+        assert!(!thread.extensions.contains_key(PersistentCounter::KEY));
+
+        let run = store.export_run_scoped().unwrap();
+        assert!(run.extensions.contains_key(PersistentCounter::KEY));
+        assert!(!run.extensions.contains_key(ThreadCounter::KEY));
+
+        let all = store.export_persisted().unwrap();
+        assert!(all.extensions.contains_key(PersistentCounter::KEY));
+        assert!(all.extensions.contains_key(ThreadCounter::KEY));
     }
 
     #[test]

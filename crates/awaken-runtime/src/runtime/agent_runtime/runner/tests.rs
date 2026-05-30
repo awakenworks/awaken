@@ -157,6 +157,7 @@ impl AgentBackend for StaticRemoteBackend {
             run_id: Some("child-remote-run".into()),
             inbox: None,
             state: None,
+            thread_state: None,
         })
     }
 }
@@ -2156,6 +2157,21 @@ async fn thread_scoped_state_restores_before_run_start_hooks() {
         .await
         .expect("second run should succeed");
 
+    // ADR-0038 C4: thread-scoped state is persisted to the per-thread
+    // `thread_state` store (not the run record). The second run must observe
+    // the first run's value via the resume merge, advancing the counter to 2.
+    let thread_state = ThreadStore::load_thread_state(&*store, "thread-counter")
+        .await
+        .expect("thread_state lookup")
+        .expect("thread-scoped state should be persisted");
+    let counter = thread_state
+        .extensions
+        .get(ThreadCounterKey::KEY)
+        .and_then(serde_json::Value::as_u64)
+        .expect("thread counter should be persisted in thread_state");
+    assert_eq!(counter, 2, "counter should continue across runs");
+
+    // Thread-scoped keys must NOT leak into the run record's state.
     let runs = store
         .list_runs(&RunQuery {
             thread_id: Some("thread-counter".into()),
@@ -2163,16 +2179,13 @@ async fn thread_scoped_state_restores_before_run_start_hooks() {
         })
         .await
         .expect("run list lookup");
-
-    let max_counter = runs
-        .items
-        .iter()
-        .filter_map(|record| record.state.as_ref())
-        .filter_map(|persisted| persisted.extensions.get(ThreadCounterKey::KEY))
-        .filter_map(serde_json::Value::as_u64)
-        .max()
-        .expect("thread counter should be persisted");
-    assert_eq!(max_counter, 2, "counter should continue across runs");
+    assert!(
+        runs.items
+            .iter()
+            .filter_map(|record| record.state.as_ref())
+            .all(|persisted| !persisted.extensions.contains_key(ThreadCounterKey::KEY)),
+        "thread-scoped keys must not be written to the run record state"
+    );
 }
 
 // -----------------------------------------------------------------------

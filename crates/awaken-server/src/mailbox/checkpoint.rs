@@ -1,4 +1,4 @@
-use awaken_server_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitError};
+use awaken_server_contract::contract::commit_coordinator::{Checkpoint, CommitError};
 use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::storage::RunRecord;
 
@@ -6,7 +6,7 @@ use super::{Mailbox, MailboxError};
 
 impl Mailbox {
     #[cfg(test)]
-    pub(super) async fn commit_run_checkpoint(
+    pub(super) async fn seed_fresh_thread_checkpoint(
         &self,
         thread_id: &str,
         messages: &[Message],
@@ -15,10 +15,13 @@ impl Mailbox {
         // ADR-0038 D7: the mailbox's coordinator and run_store are by
         // construction the same logical handle — no `Arc::ptr_eq` check is
         // needed, and there is no parallel coordinator-discovery code path
-        // for tests.
-        let plan = CheckpointCommitPlan::checkpoint_only(
+        // for tests. This helper seeds a fresh thread, so the message delta is
+        // a guarded append against version 0 (a non-empty delta must carry a
+        // version guard; ADR-0042 A).
+        let plan = Checkpoint::append(
             thread_id.to_string(),
             messages.to_vec(),
+            Some(0),
             run.clone(),
         );
         self.coordinator
@@ -41,7 +44,7 @@ impl Mailbox {
         expected_version: Option<u64>,
         run: &RunRecord,
     ) -> Result<bool, MailboxError> {
-        let plan = CheckpointCommitPlan::append(
+        let plan = Checkpoint::append(
             thread_id.to_string(),
             delta.to_vec(),
             expected_version,
@@ -114,7 +117,7 @@ mod tests {
 
         async fn commit_checkpoint(
             &self,
-            plan: CheckpointCommitPlan,
+            plan: Checkpoint,
         ) -> Result<CheckpointCommitOutcome, CommitError> {
             self.commits.fetch_add(1, Ordering::SeqCst);
             #[allow(deprecated)]
@@ -188,7 +191,7 @@ mod tests {
         };
 
         mailbox
-            .commit_run_checkpoint("thread-1", &[Message::user("hi")], &run)
+            .seed_fresh_thread_checkpoint("thread-1", &[Message::user("hi")], &run)
             .await
             .expect("checkpoint through coordinator");
 
@@ -380,7 +383,7 @@ mod tests {
         };
 
         let err = mailbox
-            .commit_run_checkpoint("thread-fail", &[Message::user("hi")], &run)
+            .seed_fresh_thread_checkpoint("thread-fail", &[Message::user("hi")], &run)
             .await
             .expect_err("FailingThreadRunStore must propagate an error");
 
@@ -469,7 +472,7 @@ mod tests {
             ..RunRecord::default()
         };
         mailbox
-            .commit_run_checkpoint("into-dyn-thread", &[Message::user("hi")], &run)
+            .seed_fresh_thread_checkpoint("into-dyn-thread", &[Message::user("hi")], &run)
             .await
             .expect("checkpoint via dyn-erased executor must succeed");
     }

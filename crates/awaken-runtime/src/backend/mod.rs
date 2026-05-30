@@ -182,7 +182,14 @@ pub struct BackendRunResult {
     pub steps: usize,
     pub run_id: Option<String>,
     pub inbox: Option<InboxSender>,
+    /// Run-scoped persisted state, written to the run record.
     pub state: Option<PersistedState>,
+    /// Thread-scoped persisted state (ADR-0038 C4), written to the per-thread
+    /// `thread_state` store in the same commit. Only set by backends that own a
+    /// live state registry (e.g. the in-process local backend) and can classify
+    /// keys by scope; opaque remote/A2A backends leave this `None` and carry all
+    /// keys on `state`.
+    pub thread_state: Option<PersistedState>,
 }
 
 /// Terminal status of a backend run.
@@ -508,6 +515,7 @@ pub async fn execute_remote_root_lifecycle(
                         String::new(),
                         BackendRunOutput::default(),
                         latest_state,
+                        None,
                         commit,
                         &sink,
                     )
@@ -557,6 +565,7 @@ pub async fn execute_remote_root_lifecycle(
                 String::new(),
                 BackendRunOutput::default(),
                 latest_state,
+                None,
                 commit,
                 &sink,
             )
@@ -575,6 +584,7 @@ pub async fn execute_remote_root_lifecycle(
     }
     let status = delegate_result.status;
     let steps = delegate_result.steps;
+    let thread_state = delegate_result.thread_state;
     let state = delegate_result.state.or(previous_state);
     if !response.is_empty() {
         sink.emit(AgentEvent::TextDelta {
@@ -613,6 +623,7 @@ pub async fn execute_remote_root_lifecycle(
         response,
         output,
         state,
+        thread_state,
         commit,
         &sink,
     )
@@ -655,6 +666,7 @@ async fn finish_remote_root_run(
     response: String,
     output: BackendRunOutput,
     state: Option<PersistedState>,
+    thread_state: Option<PersistedState>,
     commit: crate::loop_runner::CommitWiring<'_>,
     sink: &Arc<dyn EventSink>,
 ) -> Result<AgentRunResult, AgentLoopError> {
@@ -693,6 +705,7 @@ async fn finish_remote_root_run(
         run_identity,
         steps,
         state,
+        thread_state,
         commit,
     )
     .await?;

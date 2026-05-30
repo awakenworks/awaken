@@ -225,6 +225,7 @@ impl AgentBackend for StaticRemoteBackend {
             run_id: Some("remote-child-run".into()),
             inbox: None,
             state: None,
+            thread_state: None,
         })
     }
 }
@@ -399,7 +400,7 @@ fn make_test_app_with_local_components() -> TestApp {
 
     let mut state = ServerState::new_with_local_mailbox(
         runtime.clone(),
-        store.clone() as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
+        store.clone() as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>,
         runtime.resolver_arc(),
         ServerConfig::default(),
     );

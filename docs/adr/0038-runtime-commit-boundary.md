@@ -1,7 +1,7 @@
 # ADR-0038: Runtime Commit Boundary — Single Durable Write Entry
 
 - **Status**: Accepted
-- **Date**: 2026-05-22
+- **Date**: 2026-05-22 (D1–D7); extended 2026-05-31 (D8–D11)
 - **Depends on**: ADR-0034, ADR-0036
 - **Updates**: ADR-0034 D7/D9, ADR-0036 D8/D9
 - **Breaking**: yes (0.6.0)
@@ -252,6 +252,56 @@ primitive only through coordinator-owned internals.
 
 A CI grep may exist as a supplemental guard, but it is not the primary
 contract. Renaming files must not be able to bypass the boundary.
+
+### D8: Append-only checkpoint data model
+
+`commit_checkpoint` is append-only. The write payload is `Checkpoint`
+(formerly `CheckpointCommitPlan`): a message **delta**, an
+`expected_message_version` optimistic guard (the committed message count the
+delta is appended after), and the `RunRecord` to upsert. There is no
+overwrite mode — the committed message log is never rewritten in place, so a
+concurrent or stale writer cannot truncate history. A version mismatch
+returns `MessageVersionConflict`; the writer re-reads and rebuilds its delta.
+
+`ThreadRunStore::checkpoint` (full snapshot overwrite) is retained only as a
+store-internal primitive for backends that genuinely snapshot (the NATS
+buffered-thread flusher), never as a runtime/server write entry.
+
+### D9: Symmetric consistent read — `load_checkpoint`
+
+`commit_checkpoint(checkpoint)` (write) is paired with
+`load_checkpoint(thread) -> CheckpointSnapshot` (read). A `CheckpointSnapshot`
+bundles the effective committed message view, the committed `message_version`
+(the count the next append guards against), the latest `RunRecord`, and the
+thread-scoped state — read **together** so a resume cannot tear against a
+concurrent commit. The default composes the individual reads; backends that
+can read atomically override it (Postgres reads all of it in one read
+transaction; single-process stores serialize under their own locks). Point
+reads (`load_thread`/`load_run`/`latest_run`) remain for navigation.
+
+### D10: Thread-scoped state split by `KeyScope`
+
+Persisted state is partitioned by the `KeyScope` declared at key
+registration: run-scoped keys ride on `RunRecord.state`; thread-scoped keys
+are written to a per-thread `thread_state` store via
+`ThreadStore::save_thread_state`, **in the same commit transaction** as the
+message/run write. On resume, thread-scoped keys are restored authoritatively
+from `load_thread_state` (the latest, independent of which run last wrote
+them); a legacy path also restores thread-scoped keys from the previous run
+record for data written before the split. Opaque remote/A2A backends, which
+hold no local scope registry, carry all keys on `RunRecord.state`.
+
+### D11: Compaction is append-only and interval-based
+
+Compaction never deletes or rewrites committed messages. It appends a summary
+message carrying a `CompactionMark { from_seq, to_seq }` for the committed
+interval it stands in for. The raw messages remain in the log; the effective
+(resume / context) view folds each marked interval to its summary via
+`effective_messages` (summary positioned at the interval start, originals
+dropped from the view, uncovered records pass through in seq order). Because
+the summary is appended through the same `commit_checkpoint` entry (D8), it is
+subject to the same version guard, so a stale async compaction loses the race
+and retries rather than clobbering newer messages.
 
 ## Migration
 

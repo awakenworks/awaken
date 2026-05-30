@@ -237,6 +237,7 @@ impl LocalBackend {
             run_id: Some(run_id),
             inbox: None,
             state: None,
+            thread_state: None,
         })
     }
 
@@ -376,8 +377,14 @@ impl LocalBackend {
         .await
         .map_err(ExecutionBackendError::Loop)?;
 
-        let final_state = store
-            .export_persisted()
+        // ADR-0038 C4: split persisted state by scope so the consuming
+        // checkpoint path can route run-scoped keys to the run record and
+        // thread-scoped keys to the per-thread `thread_state` store.
+        let run_state = store
+            .export_run_scoped()
+            .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
+        let thread_state = store
+            .export_thread_scoped()
             .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
 
         let response = if result.response.is_empty() {
@@ -395,7 +402,8 @@ impl LocalBackend {
             steps: result.steps,
             run_id: Some(sub_run_id),
             inbox: owner_inbox,
-            state: Some(final_state),
+            state: Some(run_state),
+            thread_state: (!thread_state.extensions.is_empty()).then_some(thread_state),
         })
     }
 

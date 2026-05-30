@@ -970,6 +970,7 @@ async fn nats_buffered_store_thread_routes_round_trip_via_http() {
     let run_metadata = MessageMetadata {
         run_id: Some("nats-run-1".to_string()),
         step_index: Some(0),
+        compaction: None,
     };
     store
         .save_messages(

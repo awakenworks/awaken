@@ -77,6 +77,7 @@ impl crate::backend::ExecutionBackend for NoopRemoteBackend {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         })
     }
 }

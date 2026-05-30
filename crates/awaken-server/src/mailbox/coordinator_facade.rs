@@ -15,8 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_server_contract::contract::commit_coordinator::{
-    CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
-    MessageWriteMode, TransactionScopeId,
+    Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
 };
 use awaken_server_contract::contract::storage::{
     RuntimeCheckpointStore, ThreadRunCheckpointStore, ThreadRunStore,
@@ -76,31 +75,20 @@ impl CommitCoordinator for MailboxRunStoreCoordinator {
 
     async fn commit_checkpoint(
         &self,
-        plan: CheckpointCommitPlan,
+        plan: Checkpoint,
     ) -> Result<CheckpointCommitOutcome, CommitError> {
         plan.validate()?;
-        match plan.message_mode {
-            MessageWriteMode::Overwrite => {
-                #[allow(deprecated)]
-                self.store
-                    .checkpoint(&plan.thread_id, &plan.messages, &plan.run)
-                    .await
-                    .map_err(CommitError::StoreWrite)?;
-            }
-            MessageWriteMode::Append => {
-                self.store
-                    .checkpoint_append(
-                        &plan.thread_id,
-                        &plan.messages,
-                        plan.expected_message_version,
-                        &plan.run,
-                    )
-                    .await
-                    .map_err(|error| {
-                        CommitError::StoreWrite(error).reclassify_append_conflict(&plan.thread_id)
-                    })?;
-            }
-        }
+        self.store
+            .checkpoint_append(
+                &plan.thread_id,
+                &plan.messages,
+                plan.expected_message_version,
+                &plan.run,
+            )
+            .await
+            .map_err(|error| {
+                CommitError::StoreWrite(error).reclassify_append_conflict(&plan.thread_id)
+            })?;
         Ok(CheckpointCommitOutcome::default())
     }
 }

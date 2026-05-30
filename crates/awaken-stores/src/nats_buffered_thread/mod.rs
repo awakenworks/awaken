@@ -647,6 +647,24 @@ impl<T: ThreadRunStore + Send + Sync + 'static> ThreadStore for NatsBufferedThre
         self.force_flush(&thread.id).await?;
         self.inner.save_thread(thread).await
     }
+    async fn save_thread_state(
+        &self,
+        thread_id: &str,
+        state: &awaken_server_contract::PersistedState,
+    ) -> Result<(), StorageError> {
+        // Thread state is not buffered through the WAL; flush first so the
+        // durable store observes pending messages before the state write,
+        // then delegate to the inner store (mirrors `save_thread`).
+        self.force_flush(thread_id).await?;
+        self.inner.save_thread_state(thread_id, state).await
+    }
+    async fn load_thread_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<awaken_server_contract::PersistedState>, StorageError> {
+        // Thread state never enters the hot buffer, so read straight through.
+        self.inner.load_thread_state(thread_id).await
+    }
     async fn save_thread_validated(&self, thread: &Thread) -> Result<(), StorageError> {
         let _guard = self.hierarchy_write_lock.lock().await;
         self.force_flush_all_pending().await?;

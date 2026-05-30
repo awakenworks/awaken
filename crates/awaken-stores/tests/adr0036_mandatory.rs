@@ -9,8 +9,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use awaken_server_contract::contract::commit_coordinator::{
-    CanonicalEventStager, CheckpointCommitPlan, CommitCoordinator, CommitError,
-    StagedCanonicalEvent,
+    CanonicalEventStager, Checkpoint, CommitCoordinator, CommitError, StagedCanonicalEvent,
 };
 use awaken_server_contract::contract::durable_event_sink::{
     AgentEventNormalizationContext, DurableEventSink, RuntimeEventDurability,
@@ -218,11 +217,7 @@ async fn phase_crash_replay() {
     );
 
     // Sanity: a subsequent successful commit (post-replay) writes cleanly.
-    let plan = CheckpointCommitPlan::checkpoint_only(
-        "t-crash",
-        Vec::new(),
-        run_record("t-crash", "r-crash"),
-    );
+    let plan = Checkpoint::checkpoint_only("t-crash", run_record("t-crash", "r-crash"));
     coord.commit_checkpoint(plan).await.unwrap();
     assert!(thread_run.load_thread("t-crash").await.unwrap().is_some());
 }
@@ -285,8 +280,7 @@ async fn memory_commit_atomicity() {
     let mut conflicting = sample_draft("RunStarted", "t-ma", "r-ma", "k-collide");
     conflicting.draft.payload = json!({"kind": "RunStarted", "diverged": true});
 
-    let plan =
-        CheckpointCommitPlan::checkpoint_only("t-ma", Vec::new(), run_record("t-ma", "r-ma"));
+    let plan = Checkpoint::checkpoint_only("t-ma", run_record("t-ma", "r-ma"));
     let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![conflicting]);
 
     let result = coord.commit_checkpoint_staged(plan, staged).await;

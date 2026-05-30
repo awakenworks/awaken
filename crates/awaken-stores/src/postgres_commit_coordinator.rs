@@ -11,8 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_server_contract::contract::commit_coordinator::{
-    CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
-    MessageWriteMode, TransactionScopeId,
+    Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
 };
 use awaken_server_contract::contract::staged_commit::{
     CheckpointStagedWrites, StagedCommitCoordinator,
@@ -72,7 +71,7 @@ impl CommitCoordinator for PgCommitCoordinator {
 
     async fn commit_checkpoint(
         &self,
-        plan: CheckpointCommitPlan,
+        plan: Checkpoint,
     ) -> Result<CheckpointCommitOutcome, CommitError> {
         self.commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
             .await
@@ -83,7 +82,7 @@ impl CommitCoordinator for PgCommitCoordinator {
 impl StagedCommitCoordinator for PgCommitCoordinator {
     async fn commit_checkpoint_staged(
         &self,
-        plan: CheckpointCommitPlan,
+        plan: Checkpoint,
         staged: CheckpointStagedWrites,
     ) -> Result<CheckpointCommitOutcome, CommitError> {
         plan.validate()?;
@@ -128,33 +127,31 @@ impl StagedCommitCoordinator for PgCommitCoordinator {
             additional_outbox_ids.push(result.message.outbox_id);
         }
 
-        match plan.message_mode {
-            MessageWriteMode::Overwrite => {
-                self.store
-                    .checkpoint_in_tx(&mut tx, &plan.thread_id, &plan.messages, &plan.run)
-                    .await?;
-            }
-            MessageWriteMode::Append => {
-                self.store
-                    .checkpoint_append_in_tx(
-                        &mut tx,
-                        &plan.thread_id,
-                        &plan.messages,
-                        plan.expected_message_version,
-                        &plan.run,
-                    )
-                    .await
-                    .map_err(|error| match error {
-                        StorageError::VersionConflict { expected, actual } => {
-                            CommitError::MessageVersionConflict {
-                                thread_id: plan.thread_id.clone(),
-                                expected,
-                                actual,
-                            }
-                        }
-                        other => CommitError::StoreWrite(other),
-                    })?;
-            }
+        self.store
+            .checkpoint_append_in_tx(
+                &mut tx,
+                &plan.thread_id,
+                &plan.messages,
+                plan.expected_message_version,
+                &plan.run,
+            )
+            .await
+            .map_err(|error| match error {
+                StorageError::VersionConflict { expected, actual } => {
+                    CommitError::MessageVersionConflict {
+                        thread_id: plan.thread_id.clone(),
+                        expected,
+                        actual,
+                    }
+                }
+                other => CommitError::StoreWrite(other),
+            })?;
+
+        if let Some(thread_state) = &plan.thread_state {
+            self.store
+                .save_thread_state_tx(&mut tx, &plan.thread_id, thread_state)
+                .await
+                .map_err(CommitError::StoreWrite)?;
         }
 
         tx.commit()

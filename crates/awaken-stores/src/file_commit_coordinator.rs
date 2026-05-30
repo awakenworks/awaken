@@ -17,13 +17,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_server_contract::contract::commit_coordinator::{
-    CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
-    MessageWriteMode, TransactionScopeId,
+    Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
 };
 use awaken_server_contract::contract::staged_commit::{
     CheckpointStagedWrites, StagedCommitCoordinator,
 };
-use awaken_server_contract::contract::storage::ThreadRunStore;
+use awaken_server_contract::contract::storage::{ThreadRunStore, ThreadStore};
 use tokio::sync::Mutex;
 
 use crate::commit_batch::run_commit_batch;
@@ -111,7 +110,7 @@ impl CommitCoordinator for FileCommitCoordinator {
 
     async fn commit_checkpoint(
         &self,
-        plan: CheckpointCommitPlan,
+        plan: Checkpoint,
     ) -> Result<CheckpointCommitOutcome, CommitError> {
         self.commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
             .await
@@ -122,7 +121,7 @@ impl CommitCoordinator for FileCommitCoordinator {
 impl StagedCommitCoordinator for FileCommitCoordinator {
     async fn commit_checkpoint_staged(
         &self,
-        plan: CheckpointCommitPlan,
+        plan: Checkpoint,
         staged: CheckpointStagedWrites,
     ) -> Result<CheckpointCommitOutcome, CommitError> {
         plan.validate()?;
@@ -135,33 +134,25 @@ impl StagedCommitCoordinator for FileCommitCoordinator {
         let thread_run = self.thread_run.clone();
         let plan_ref = &plan;
         let write_thread_run = || async move {
-            match plan_ref.message_mode {
-                MessageWriteMode::Overwrite =>
-                {
-                    #[allow(deprecated)]
-                    thread_run
-                        .checkpoint(&plan_ref.thread_id, &plan_ref.messages, &plan_ref.run)
-                        .await
-                }
-                MessageWriteMode::Append => thread_run
-                    .checkpoint_append(
-                        &plan_ref.thread_id,
-                        &plan_ref.messages,
-                        plan_ref.expected_message_version,
-                        &plan_ref.run,
-                    )
-                    .await
-                    .map(|_| ()),
+            thread_run
+                .checkpoint_append(
+                    &plan_ref.thread_id,
+                    &plan_ref.messages,
+                    plan_ref.expected_message_version,
+                    &plan_ref.run,
+                )
+                .await
+                .map(|_| ())?;
+            if let Some(thread_state) = &plan_ref.thread_state {
+                thread_run
+                    .save_thread_state(&plan_ref.thread_id, thread_state)
+                    .await?;
             }
+            Ok(())
         };
 
         let outcome = run_commit_batch(&staged, &self.events, &self.outbox, write_thread_run).await;
-        match plan.message_mode {
-            MessageWriteMode::Append => {
-                outcome.map_err(|error| error.reclassify_append_conflict(&plan.thread_id))
-            }
-            MessageWriteMode::Overwrite => outcome,
-        }
+        outcome.map_err(|error| error.reclassify_append_conflict(&plan.thread_id))
     }
 }
 
@@ -194,7 +185,7 @@ mod tests {
     }
 
     use awaken_server_contract::contract::commit_coordinator::{
-        CheckpointCommitPlan, CommitError, StagedCanonicalEvent,
+        Checkpoint, CommitError, StagedCanonicalEvent,
     };
     use awaken_server_contract::contract::event_store::{
         AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope,
@@ -205,7 +196,7 @@ mod tests {
     use awaken_server_contract::contract::staged_commit::{
         CheckpointStagedWrites, StagedCommitCoordinator,
     };
-    use awaken_server_contract::contract::storage::{RunRecord, RunStore};
+    use awaken_server_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
 
     use super::{FileCommitCoordinator, file_coordinator_allowed};
     use crate::file::FileStore;
@@ -274,11 +265,7 @@ mod tests {
         let thread_id = unique("thread");
         let run_id = unique("run");
 
-        let plan = CheckpointCommitPlan::checkpoint_only(
-            thread_id.clone(),
-            Vec::new(),
-            run_record(&thread_id, &run_id),
-        );
+        let plan = Checkpoint::checkpoint_only(thread_id.clone(), run_record(&thread_id, &run_id));
         let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
             StagedCanonicalEvent::new(sample_draft("RunStarted", &thread_id, &run_id)),
         ]);
@@ -325,11 +312,7 @@ mod tests {
 
         let mut collide = sample_draft("RunStarted", &thread_id, &run_id);
         collide.payload = serde_json::json!({"kind": "RunStarted", "diff": true});
-        let plan = CheckpointCommitPlan::checkpoint_only(
-            thread_id.clone(),
-            Vec::new(),
-            run_record(&thread_id, &run_id),
-        );
+        let plan = Checkpoint::checkpoint_only(thread_id.clone(), run_record(&thread_id, &run_id));
         let staged = CheckpointStagedWrites::default()
             .with_canonical_drafts(vec![StagedCanonicalEvent::new(collide).with_options(opts)]);
 
@@ -373,11 +356,8 @@ mod tests {
             idempotency_key: Some("k-shared".into()),
             ..Default::default()
         };
-        let first_plan = CheckpointCommitPlan::checkpoint_only(
-            thread_id.clone(),
-            Vec::new(),
-            run_record(&thread_id, &first_run),
-        );
+        let first_plan =
+            Checkpoint::checkpoint_only(thread_id.clone(), run_record(&thread_id, &first_run));
         let first_staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
             StagedCanonicalEvent::new(sample_draft("RunStarted", &thread_id, &first_run))
                 .with_options(opts.clone()),
@@ -401,11 +381,8 @@ mod tests {
         // different payload — fails at the event-append step.
         let mut collide = sample_draft("RunStarted", &thread_id, &second_run);
         collide.payload = serde_json::json!({"kind": "RunStarted", "diff": true});
-        let second_plan = CheckpointCommitPlan::checkpoint_only(
-            thread_id.clone(),
-            Vec::new(),
-            run_record(&thread_id, &second_run),
-        );
+        let second_plan =
+            Checkpoint::checkpoint_only(thread_id.clone(), run_record(&thread_id, &second_run));
         let second_staged = CheckpointStagedWrites::default()
             .with_canonical_drafts(vec![StagedCanonicalEvent::new(collide).with_options(opts)]);
         let result = coord
@@ -436,11 +413,7 @@ mod tests {
         let mut bad = OutboxMessageDraft::new("lane", "target", serde_json::json!({})).unwrap();
         bad.lane.clear();
 
-        let plan = CheckpointCommitPlan::checkpoint_only(
-            thread_id.clone(),
-            Vec::new(),
-            run_record(&thread_id, &run_id),
-        );
+        let plan = Checkpoint::checkpoint_only(thread_id.clone(), run_record(&thread_id, &run_id));
         let staged = CheckpointStagedWrites::default()
             .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
                 "RunStarted",
@@ -470,6 +443,49 @@ mod tests {
         assert_eq!(
             event_count, 0,
             "events appended before outbox failure must rollback"
+        );
+    }
+
+    /// A commit carrying thread-scoped state persists it to the FileStore
+    /// in the same coordinator transaction, and a later commit without
+    /// thread_state leaves the persisted value untouched.
+    #[tokio::test]
+    async fn commit_persists_thread_state_and_leaves_it_untouched_when_absent() {
+        let (coord, store, _dir) = coordinator_with_store();
+        let thread_id = unique("thread");
+        let run_id = unique("run");
+        let state = awaken_server_contract::PersistedState {
+            revision: 9,
+            extensions: Default::default(),
+        };
+
+        let plan = Checkpoint::checkpoint_only(thread_id.clone(), run_record(&thread_id, &run_id))
+            .with_thread_state(state.clone());
+        coord
+            .commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
+            .await
+            .expect("commit with thread_state succeeds");
+        assert_eq!(
+            ThreadStore::load_thread_state(store.as_ref(), &thread_id)
+                .await
+                .expect("load thread_state"),
+            Some(state.clone())
+        );
+
+        // A subsequent commit without thread_state must not clear it.
+        let run_id2 = unique("run");
+        coord
+            .commit_checkpoint_staged(
+                Checkpoint::checkpoint_only(thread_id.clone(), run_record(&thread_id, &run_id2)),
+                CheckpointStagedWrites::default(),
+            )
+            .await
+            .expect("commit without thread_state succeeds");
+        assert_eq!(
+            ThreadStore::load_thread_state(store.as_ref(), &thread_id)
+                .await
+                .expect("reload thread_state"),
+            Some(state)
         );
     }
 }

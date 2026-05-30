@@ -85,6 +85,14 @@ impl PostgresStore {
                 "CREATE INDEX IF NOT EXISTS idx_{}_namespace_id ON {} (namespace, id)",
                 self.configs_table, self.configs_table
             ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} (
+                    thread_id TEXT PRIMARY KEY,
+                    data JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )",
+                self.thread_states_table()
+            ),
         ];
 
         for stmt in statements {

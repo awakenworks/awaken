@@ -227,6 +227,7 @@ async fn agent_tool_with_mock_backend_success() {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "A helper agent", backend);
@@ -258,6 +259,7 @@ async fn agent_tool_reports_progress_for_successful_delegate() {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -345,6 +347,7 @@ async fn agent_tool_with_mock_backend_failure() {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -624,6 +627,7 @@ impl AgentBackend for CapturingBackend {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         })
     }
 }
@@ -722,6 +726,7 @@ async fn agent_tool_propagates_child_run_id_in_metadata() {
             run_id: Some("child-run-123".into()),
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -759,6 +764,7 @@ async fn agent_tool_with_mock_backend_cancelled() {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -792,6 +798,7 @@ async fn agent_tool_with_mock_backend_timeout() {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -823,6 +830,7 @@ async fn agent_tool_with_mock_backend_waiting_input_is_pending() {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -874,6 +882,7 @@ async fn agent_tool_failed_status_contains_error_info() {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -943,6 +952,7 @@ async fn agent_tool_command_is_empty() {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);
@@ -994,6 +1004,7 @@ async fn agent_tool_result_data_has_all_fields() {
             run_id: Some("child-456".into()),
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("analyst", "Data analyst", backend);
@@ -1036,6 +1047,7 @@ fn agent_tool_descriptor_tool_id_follows_pattern() {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("my-special-agent", "desc", backend);
@@ -1089,6 +1101,7 @@ async fn agent_tool_omits_child_run_id_when_none() {
             run_id: None,
             inbox: None,
             state: None,
+            thread_state: None,
         },
     });
     let tool = AgentTool::with_backend("helper", "desc", backend);

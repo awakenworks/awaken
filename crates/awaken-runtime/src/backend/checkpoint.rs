@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use awaken_runtime_contract::contract::commit_coordinator::{CheckpointCommitPlan, CommitError};
+use awaken_runtime_contract::contract::commit_coordinator::Checkpoint;
 use awaken_runtime_contract::contract::identity::RunIdentity;
 use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_runtime_contract::contract::message::{Message, Role};
@@ -44,6 +44,7 @@ pub(super) async fn persist_remote_root_checkpoint(
     run_identity: &RunIdentity,
     steps: usize,
     state: Option<PersistedState>,
+    thread_state: Option<PersistedState>,
     commit: crate::loop_runner::CommitWiring<'_>,
 ) -> Result<(), AgentLoopError> {
     let Some(storage) = storage else {
@@ -125,39 +126,47 @@ pub(super) async fn persist_remote_root_checkpoint(
                 .to_string(),
         )
     })?;
-    const MAX_APPEND_ATTEMPTS: usize = 8;
-    for _ in 0..MAX_APPEND_ATTEMPTS {
-        let committed_messages = storage
-            .load_committed_messages(thread_id)
-            .await
-            .map_err(|error| AgentLoopError::StorageError(error.to_string()))?
-            .unwrap_or_default();
-        let expected_version = committed_messages.len() as u64;
-        let (delta, output) = materialize_remote_message_append(
-            messages,
-            &committed_messages,
-            previous.as_ref(),
-            run_identity,
-            steps,
-            input_message_count,
-        );
-        let mut record = base_record.clone();
-        record.output = output;
-        let plan = CheckpointCommitPlan::append(
-            thread_id.to_string(),
-            delta,
-            Some(expected_version),
-            record,
-        );
-        match coordinator.commit_checkpoint(plan).await {
-            Ok(_) => return Ok(()),
-            Err(CommitError::MessageVersionConflict { .. }) => continue,
-            Err(error) => return Err(AgentLoopError::StorageError(error.to_string())),
+    crate::loop_runner::commit_checkpoint_appending(
+        coordinator,
+        storage,
+        thread_id,
+        |committed_messages, expected_version| {
+            let (delta, output) = materialize_remote_message_append(
+                messages,
+                committed_messages,
+                previous.as_ref(),
+                run_identity,
+                steps,
+                input_message_count,
+            );
+            let mut record = base_record.clone();
+            record.output = output;
+            let mut plan =
+                Checkpoint::append(thread_id.to_string(), delta, Some(expected_version), record);
+            if let Some(thread_state) = thread_state
+                .as_ref()
+                .filter(|state| !state.extensions.is_empty())
+            {
+                plan = plan.with_thread_state(thread_state.clone());
+            }
+            plan
+        },
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| match error {
+        crate::loop_runner::CommitAppendError::Read(message) => {
+            AgentLoopError::StorageError(message)
         }
-    }
-    Err(AgentLoopError::StorageError(format!(
-        "remote checkpoint append exhausted {MAX_APPEND_ATTEMPTS} retries under version conflict for thread '{thread_id}'"
-    )))
+        crate::loop_runner::CommitAppendError::Commit(error) => {
+            AgentLoopError::StorageError(error.to_string())
+        }
+        crate::loop_runner::CommitAppendError::Exhausted { thread_id, attempts } => {
+            AgentLoopError::StorageError(format!(
+                "remote checkpoint append exhausted {attempts} retries under version conflict for thread '{thread_id}'"
+            ))
+        }
+    })
 }
 
 fn validate_remote_checkpoint_identity(
@@ -437,6 +446,7 @@ mod tests {
             None,
             &identity(),
             1,
+            None,
             None,
             crate::loop_runner::CommitWiring::new(Some(coordinator.as_ref())),
         )

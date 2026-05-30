@@ -53,6 +53,14 @@ impl FileStore {
         self.base_path.join("threads")
     }
 
+    fn thread_states_dir(&self) -> PathBuf {
+        self.base_path.join("thread_states")
+    }
+
+    fn thread_state_path(&self, thread_id: &str) -> PathBuf {
+        self.thread_states_dir().join(format!("{thread_id}.json"))
+    }
+
     fn messages_dir(&self) -> PathBuf {
         self.base_path.join("messages")
     }
@@ -1091,9 +1099,39 @@ impl ThreadStore for FileStore {
         self.save_thread(thread).await
     }
 
+    async fn save_thread_state(
+        &self,
+        thread_id: &str,
+        state: &awaken_server_contract::PersistedState,
+    ) -> Result<(), StorageError> {
+        validate_id(thread_id, "thread id")?;
+        let payload = serde_json::to_string_pretty(state)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        atomic_write(
+            &self.thread_states_dir(),
+            &format!("{thread_id}.json"),
+            &payload,
+        )
+        .await
+    }
+
+    async fn load_thread_state(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<awaken_server_contract::PersistedState>, StorageError> {
+        validate_id(thread_id, "thread id")?;
+        read_json(&self.thread_state_path(thread_id)).await
+    }
+
     async fn delete_thread(&self, thread_id: &str) -> Result<(), StorageError> {
         validate_id(thread_id, "thread id")?;
         let thread_path = self.threads_dir().join(format!("{thread_id}.json"));
+        let thread_state_path = self.thread_state_path(thread_id);
+        if thread_state_path.exists() {
+            tokio::fs::remove_file(&thread_state_path)
+                .await
+                .map_err(|e| StorageError::Io(e.to_string()))?;
+        }
         let messages_path = self.messages_dir().join(format!("{thread_id}.json"));
         let pending_messages_path = self
             .pending_messages_dir()

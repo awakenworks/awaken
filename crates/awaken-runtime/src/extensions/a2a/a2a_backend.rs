@@ -48,8 +48,7 @@ const WAIT_REASON_TIMEOUT: &str = "timeout";
 /// Configuration for a remote A2A agent endpoint.
 #[derive(Debug, Clone)]
 pub struct A2aConfig {
-    /// Base URL of the remote A2A HTTP+JSON interface
-    /// (for example `https://api.example.com/v1/a2a`).
+    /// Base URL of the remote A2A HTTP+JSON interface (e.g. `https://api.example.com/v1/a2a`).
     pub base_url: String,
     /// Optional bearer token for authentication.
     pub bearer_token: Option<String>,
@@ -750,6 +749,7 @@ impl A2aBackend {
                         &self.remote_target_key(),
                         &snapshot,
                     ),
+                    thread_state: None, // A2A state is opaque; all keys ride on `state` (C4).
                 })
             }
             SubmissionOutcome::Task(submitted_snapshot) => {
@@ -790,6 +790,7 @@ impl A2aBackend {
                         &self.remote_target_key(),
                         &snapshot,
                     ),
+                    thread_state: None,
                 })
             }
         }
@@ -2318,7 +2319,6 @@ mod tests {
             }),
             ..Default::default()
         });
-
         let content = task_progress_content(&snapshot);
         assert_eq!(content["schema"], "a2a-task-progress.v1");
         assert_eq!(content["task_id"], "task-1");

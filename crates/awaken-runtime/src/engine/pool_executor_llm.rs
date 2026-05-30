@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_contract::contract::executor::{
+use awaken_runtime_contract::contract::executor::{
     InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor,
 };
-use awaken_contract::contract::inference::StreamResult;
+use awaken_runtime_contract::contract::inference::StreamResult;
 
 use super::PoolExecutor;
 use super::pool_observed_stream::PoolObservedStream;

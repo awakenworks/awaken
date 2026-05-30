@@ -529,6 +529,7 @@ impl ExecutionBackend for CaptureMessagesBackend {
             run_id: Some("capture-run".into()),
             inbox: None,
             state: None,
+            thread_state: None,
         })
     }
 }
@@ -622,6 +623,7 @@ impl ExecutionBackend for FailedStatusBackend {
             run_id: Some("failed-run".into()),
             inbox: None,
             state: None,
+            thread_state: None,
         })
     }
 }
