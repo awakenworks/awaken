@@ -10,7 +10,6 @@ pub mod identity;
 pub mod inference;
 pub mod lifecycle;
 pub mod live_control;
-pub mod mailbox;
 pub mod message;
 pub mod outbox;
 pub mod profile_store;
