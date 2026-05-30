@@ -192,8 +192,8 @@ mod tests {
             .expect("concurrent append");
 
         let resolver = NoopResolver;
-        let reader = crate::checkpoint_store::ThreadRunCheckpointStore::new(
-            store.clone() as Arc<dyn ThreadRunStore>
+        let reader = awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+            store.clone() as Arc<dyn ThreadRunStore>,
         );
         let request = BackendRootRunRequest {
             agent_id: "agent-1",

@@ -8198,8 +8198,8 @@ async fn checkpoint_store_receives_data() {
         runtime: &runtime,
         sink: sink.clone(),
         checkpoint_store: Some(
-            &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
+            &awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>,
             ),
         ),
         messages: vec![Message::user("hi")],
@@ -8261,8 +8261,8 @@ async fn checkpoint_includes_correct_step_count() {
         runtime: &runtime,
         sink: sink.clone(),
         checkpoint_store: Some(
-            &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
+            &awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>,
             ),
         ),
         messages: vec![Message::user("go")],
@@ -8309,8 +8309,8 @@ async fn checkpoint_contains_state_blob() {
         runtime: &runtime,
         sink: sink.clone(),
         checkpoint_store: Some(
-            &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
+            &awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>,
             ),
         ),
         messages: vec![Message::user("hi")],
@@ -8360,8 +8360,8 @@ async fn checkpoint_stores_thread_messages() {
         runtime: &runtime,
         sink: sink.clone(),
         checkpoint_store: Some(
-            &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
+            &awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>,
             ),
         ),
         messages: vec![Message::user("hello")],
@@ -8451,8 +8451,8 @@ async fn checkpoint_output_supports_child_result_lookup_after_tool_messages() {
         runtime: &runtime,
         sink,
         checkpoint_store: Some(
-            &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
+            &awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>,
             ),
         ),
         messages: vec![Message::user("delegate with a tool")],
@@ -8551,8 +8551,8 @@ async fn checkpoint_stores_blocked_tool_batch_consistently() {
         runtime: &runtime,
         sink,
         checkpoint_store: Some(
-            &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
+            &awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>,
             ),
         ),
         messages: vec![Message::user("use tools")],
@@ -8625,8 +8625,8 @@ async fn checkpoint_stores_suspended_tool_batch_consistently() {
         runtime: &runtime,
         sink,
         checkpoint_store: Some(
-            &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
+            &awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>,
             ),
         ),
         messages: vec![Message::user("run dangerous tool")],
@@ -8701,8 +8701,8 @@ async fn checkpoint_records_agent_id() {
         runtime: &runtime,
         sink: sink.clone(),
         checkpoint_store: Some(
-            &awaken_runtime::checkpoint_store::ThreadRunCheckpointStore::new(
-                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>
+            &awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+                checkpoint.clone() as Arc<dyn awaken::server_contract::storage::ThreadRunStore>,
             ),
         ),
         messages: vec![Message::user("hi")],

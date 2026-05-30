@@ -12,8 +12,10 @@ use std::sync::Arc;
 
 fn checkpoint_reader(
     store: Arc<InMemoryStore>,
-) -> crate::checkpoint_store::ThreadRunCheckpointStore {
-    crate::checkpoint_store::ThreadRunCheckpointStore::new(store as Arc<dyn ThreadRunStore>)
+) -> awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore {
+    awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+        store as Arc<dyn ThreadRunStore>,
+    )
 }
 
 fn store_with_loop_state() -> crate::state::StateStore {

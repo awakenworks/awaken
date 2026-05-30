@@ -483,4 +483,81 @@ mod tests {
         let decoded: ProtocolReplayCursor = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.as_str(), "wirecur_opaque");
     }
+
+    // ── scope isolation regression (the scoped lookup must not leak across
+    //    scopes even when the durable id is known) ──
+
+    #[derive(Default)]
+    struct InMemReplay {
+        rows: std::sync::Mutex<Vec<ProtocolReplayRecord>>,
+    }
+
+    #[async_trait]
+    impl ProtocolReplayWriter for InMemReplay {
+        async fn append_replay(
+            &self,
+            draft: ProtocolReplayDraft,
+        ) -> Result<ProtocolReplayAppendResult, ProtocolReplayError> {
+            let mut rows = self.rows.lock().unwrap();
+            let n = rows.len() + 1;
+            let record = ProtocolReplayRecord::from_append(
+                ProtocolReplayId::new(format!("pr_{n}"))?,
+                ProtocolReplayCursor::new(format!("prcur_{n}"))?,
+                n as u64,
+                draft,
+            )?;
+            rows.push(record.clone());
+            Ok(ProtocolReplayAppendResult { record })
+        }
+    }
+
+    #[async_trait]
+    impl ProtocolReplayReader for InMemReplay {
+        async fn list_replay(
+            &self,
+            _stream: ProtocolStreamKey,
+            _from: Option<ProtocolReplayCursor>,
+            _limit: usize,
+        ) -> Result<ProtocolReplayPage, ProtocolReplayError> {
+            Ok(ProtocolReplayPage {
+                records: Vec::new(),
+                next_cursor: None,
+                has_more: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl ProtocolReplayLookup for InMemReplay {
+        async fn load_replay(
+            &self,
+            protocol_replay_id: &ProtocolReplayId,
+        ) -> Result<Option<ProtocolReplayRecord>, ProtocolReplayError> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.protocol_replay_id.as_str() == protocol_replay_id.as_str())
+                .cloned())
+        }
+    }
+
+    #[tokio::test]
+    async fn scoped_load_replay_rejects_cross_scope_id() {
+        use std::sync::Arc;
+        let inner = Arc::new(InMemReplay::default());
+        let scope_a = ScopedProtocolReplayLog::new(inner.clone(), ScopeId::new("scope-a").unwrap());
+        let appended = scope_a.append_replay(replay_draft()).await.unwrap();
+        let id = appended.record.protocol_replay_id.clone();
+
+        // Same scope resolves the record.
+        assert!(scope_a.load_replay(&id).await.unwrap().is_some());
+
+        // A different scope must NOT resolve it by id: the record's stream_id is
+        // scoped to `scope-a`, so `decode_record` (unscope) fails and the scoped
+        // lookup yields `None` — no cross-scope leak.
+        let scope_b = ScopedProtocolReplayLog::new(inner, ScopeId::new("scope-b").unwrap());
+        assert!(scope_b.load_replay(&id).await.unwrap().is_none());
+    }
 }

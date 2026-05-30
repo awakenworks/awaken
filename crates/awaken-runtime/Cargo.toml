@@ -33,10 +33,6 @@ parking_lot = { workspace = true }
 metrics = { workspace = true }
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
 awaken-stores = { workspace = true, optional = true }
-# Test-only: the `ThreadRunStore`-backed checkpoint-reader adapter lives in
-# server-contract (it names the full store). Runtime production code never
-# constructs it; only the runtime's own tests wire a store-backed reader.
-awaken-server-contract = { workspace = true, optional = true }
 
 [features]
 default = ["a2a", "handoff", "background", "credentials-google"]
@@ -44,7 +40,7 @@ a2a = []
 handoff = []
 background = []
 parallel-tools = []
-test-utils = ["dep:awaken-stores", "dep:awaken-server-contract"]
+test-utils = ["dep:awaken-stores"]
 # Compile the Google OAuth (service-account JWT-Bearer) credential signer.
 # When disabled, providers configured with credentials_kind="service_account_json"
 # will fail at first mint with a clear error.
@@ -52,6 +48,11 @@ credentials-google = ["dep:jsonwebtoken"]
 
 [dev-dependencies]
 awaken-runtime = { path = ".", features = ["test-utils"] }
+# Test-only: store traits + the ThreadRunStore-backed checkpoint reader adapter
+# live in server-contract. A dev-dependency keeps server-contract OUT of the
+# runtime library's dependency graph (no reverse dependency), while letting the
+# runtime's own integration-flavored unit tests wire a store-backed reader.
+awaken-server-contract = { workspace = true }
 tokio = { workspace = true }
 proptest = { workspace = true }
 metrics-util = "0.20"

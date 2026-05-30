@@ -417,9 +417,10 @@ mod tests {
             .await
             .expect("concurrent append");
 
-        let checkpoint_reader = crate::checkpoint_store::ThreadRunCheckpointStore::new(
-            store.clone() as Arc<dyn ThreadRunStore>,
-        );
+        let checkpoint_reader =
+            awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+                store.clone() as Arc<dyn ThreadRunStore>,
+            );
         persist_remote_root_checkpoint(
             Some(&checkpoint_reader),
             "thread-1",

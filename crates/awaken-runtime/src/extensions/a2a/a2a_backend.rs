@@ -2170,8 +2170,8 @@ mod tests {
             .await
             .expect("checkpoint newer run");
         let resolver = NoopResolver;
-        let reader = crate::checkpoint_store::ThreadRunCheckpointStore::new(
-            Arc::new(store) as Arc<dyn ThreadRunStore>
+        let reader = awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+            Arc::new(store) as Arc<dyn ThreadRunStore>,
         );
         let request = BackendRootRunRequest {
             agent_id: "remote-agent",

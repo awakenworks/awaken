@@ -4,6 +4,18 @@
 pre-commit:
   parallel: false
   commands:
+    check-runtime-no-reverse-dep:
+      run: |
+        # runtime 不可反向依赖 server-contract:只允许出现在 [dev-dependencies]。
+        cargo_toml="crates/awaken-runtime/Cargo.toml"
+        lib_dep=$(awk '/^\[dependencies\]/{d=1;next} /^\[/{d=0} d && /awaken-server-contract/{print}' "$cargo_toml")
+        if [ -n "$lib_dep" ]; then
+          echo "ERROR: awaken-runtime 不可把 awaken-server-contract 作为库依赖(反向依赖)。"
+          echo "  $lib_dep"
+          echo "✅ 仅允许放在 [dev-dependencies](测试用)。"
+          echo "<system-reminder>→ Next: 把它移到 [dev-dependencies] 或改用 runtime-contract 端口</system-reminder>"
+          exit 1
+        fi
     check-root-md-files:
       run: |
         ALLOWED_ROOT_MD="README.md|README\.zh-CN\.md|CHANGELOG.md|CONTRIBUTING.md|LICENSE.md|CLAUDE.md|AGENTS.md|DEVELOPMENT.md"
