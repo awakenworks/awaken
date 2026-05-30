@@ -23,8 +23,8 @@ use awaken_server_contract::contract::executor::{
 use awaken_server_contract::contract::inference::{StopReason, StreamResult};
 use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_server_contract::contract::mailbox::{
-    MailboxInterrupt, MailboxInterruptDetails, MailboxStore, RunDispatch, RunDispatchResult,
-    RunDispatchStatus,
+    MailboxInterrupt, MailboxInterruptDetails, MailboxLiveControlSource, MailboxStore, RunDispatch,
+    RunDispatchResult, RunDispatchStatus,
 };
 use awaken_server_contract::contract::message::{Message, ToolCall};
 use awaken_server_contract::contract::outbox::OutboxError;
@@ -6074,7 +6074,9 @@ async fn live_then_queue_steers_active_run_without_new_dispatch() {
     let runtime = Arc::new(
         AgentRuntime::new(resolver)
             .with_in_memory_thread_run_store(store.clone())
-            .with_live_control_source(mailbox_store.clone()),
+            .with_live_control_source(Arc::new(MailboxLiveControlSource::new(
+                mailbox_store.clone(),
+            ))),
     );
     let mailbox = make_mailbox_with_run_store(
         runtime,
