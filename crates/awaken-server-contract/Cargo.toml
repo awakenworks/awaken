@@ -13,6 +13,7 @@ categories = ["artificial-intelligence"]
 [dependencies]
 awaken-runtime-contract = { workspace = true }
 async-trait = { workspace = true }
+base64 = "0.22"
 futures = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }

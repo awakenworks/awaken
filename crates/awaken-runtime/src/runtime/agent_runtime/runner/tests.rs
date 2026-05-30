@@ -33,9 +33,7 @@ use awaken_runtime_contract::contract::executor::{
 use awaken_runtime_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
 use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_runtime_contract::contract::message::Message;
-use awaken_runtime_contract::contract::storage::{
-    RunQuery, RunRecord, RunWaitingState, WaitingReason,
-};
+use awaken_runtime_contract::contract::storage::{RunRecord, RunWaitingState, WaitingReason};
 use awaken_runtime_contract::contract::suspension::ResumeDecisionAction;
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
 use awaken_runtime_contract::contract::tool::{
@@ -48,6 +46,7 @@ use awaken_runtime_contract::contract::tool_intercept::{
 use awaken_runtime_contract::registry_spec::ModelSpec;
 #[cfg(feature = "a2a")]
 use awaken_runtime_contract::registry_spec::{AgentSpec, RemoteEndpoint};
+use awaken_server_contract::contract::storage::RunQuery;
 use awaken_server_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
 use awaken_stores::InMemoryStore;
 use serde_json::{Value, json};

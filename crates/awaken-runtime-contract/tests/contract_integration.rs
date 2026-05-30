@@ -11,8 +11,7 @@ use awaken_runtime_contract::contract::message::{
     Message, MessageMetadata, Role, ToolCall, Visibility,
 };
 use awaken_runtime_contract::contract::storage::{
-    MessageQuery, MessageSeqRange, RunMessageInput, RunMessageOutput, RunPage, RunQuery, RunRecord,
-    StorageError,
+    MessageSeqRange, RunMessageInput, RunMessageOutput, RunRecord, StorageError,
 };
 use awaken_runtime_contract::contract::suspension::ToolCallOutcome;
 use awaken_runtime_contract::contract::tool::{ToolDescriptor, ToolError, ToolResult};
@@ -271,93 +270,6 @@ fn run_record_roundtrip_preserves_all_fields() {
     assert_eq!(parsed.dispatch_id.as_deref(), Some("dispatch-1"));
     assert_eq!(parsed.session_id.as_deref(), Some("session-1"));
     assert_eq!(parsed.transport_request_id.as_deref(), Some("request-1"));
-}
-
-#[test]
-fn run_page_with_multiple_records_roundtrips() {
-    use awaken_runtime_contract::contract::lifecycle::RunStatus;
-
-    let page = RunPage {
-        items: vec![
-            RunRecord {
-                run_id: "r-1".into(),
-                thread_id: "t-1".into(),
-                agent_id: "a-1".into(),
-                parent_run_id: None,
-                resolution_id: None,
-                activation: None,
-                request: None,
-                input: None,
-                output: None,
-                status: RunStatus::Done,
-                termination_reason: None,
-                final_output: None,
-                error_payload: None,
-                dispatch_id: None,
-                session_id: None,
-                transport_request_id: None,
-                waiting: None,
-                outcome: None,
-                created_at: 100,
-                started_at: None,
-                finished_at: None,
-                updated_at: 200,
-                steps: 3,
-                input_tokens: 500,
-                output_tokens: 200,
-                state: None,
-            },
-            RunRecord {
-                run_id: "r-2".into(),
-                thread_id: "t-1".into(),
-                agent_id: "a-1".into(),
-                parent_run_id: Some("r-1".into()),
-                resolution_id: None,
-                activation: None,
-                request: None,
-                input: None,
-                output: None,
-                status: RunStatus::Running,
-                termination_reason: None,
-                final_output: None,
-                error_payload: None,
-                dispatch_id: None,
-                session_id: None,
-                transport_request_id: None,
-                waiting: None,
-                outcome: None,
-                created_at: 300,
-                started_at: None,
-                finished_at: None,
-                updated_at: 400,
-                steps: 1,
-                input_tokens: 200,
-                output_tokens: 100,
-                state: None,
-            },
-        ],
-        total: 5,
-        has_more: true,
-    };
-
-    let json = serde_json::to_string(&page).unwrap();
-    let parsed: RunPage = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.items.len(), 2);
-    assert_eq!(parsed.total, 5);
-    assert!(parsed.has_more);
-}
-
-#[test]
-fn query_defaults_are_sensible() {
-    let mq = MessageQuery::default();
-    assert_eq!(mq.offset, 0);
-    assert_eq!(mq.limit, 50);
-
-    let rq = RunQuery::default();
-    assert_eq!(rq.offset, 0);
-    assert_eq!(rq.limit, 50);
-    assert!(rq.thread_id.is_none());
-    assert!(rq.status.is_none());
 }
 
 // ── Error type conversions between modules ───────────────────────���─

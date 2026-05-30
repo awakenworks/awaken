@@ -7,9 +7,9 @@
 //! lives here. Storage data types, query/page types, and pagination helpers
 //! stay in runtime-contract and are pulled in via the glob below.
 
+use crate::contract::storage::*;
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::message::{Message, MessageRecord};
-use awaken_runtime_contract::contract::storage::*;
 use awaken_runtime_contract::thread::{Thread, normalize_lineage_id};
 
 // ── ThreadStore ─────────────────────────────────────────────────────

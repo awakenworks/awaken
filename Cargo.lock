@@ -621,6 +621,7 @@ version = "0.5.1-dev"
 dependencies = [
  "async-trait",
  "awaken-runtime-contract",
+ "base64 0.22.1",
  "futures",
  "parking_lot",
  "proptest",

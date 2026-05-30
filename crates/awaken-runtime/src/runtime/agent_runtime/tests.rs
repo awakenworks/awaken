@@ -377,7 +377,7 @@ mod live_forwarder {
             .unwrap();
         for _ in 0..50 {
             if outcome
-                == awaken_runtime_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber
+                == awaken_runtime_contract::contract::live_control::LiveDeliveryOutcome::NoSubscriber
             {
                 break;
             }
@@ -389,7 +389,7 @@ mod live_forwarder {
         }
         assert_eq!(
             outcome,
-            awaken_runtime_contract::contract::mailbox::LiveDeliveryOutcome::NoSubscriber,
+            awaken_runtime_contract::contract::live_control::LiveDeliveryOutcome::NoSubscriber,
             "unregister must stop the old live forwarder"
         );
     }
