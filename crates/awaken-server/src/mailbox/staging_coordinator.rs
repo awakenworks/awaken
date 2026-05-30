@@ -17,7 +17,7 @@ use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     StagedCanonicalEvent, TransactionScopeId,
 };
-use awaken_server_contract::contract::storage::ThreadRunStore;
+use awaken_server_contract::contract::storage::RuntimeCheckpointStore;
 use parking_lot::Mutex;
 
 /// Wraps a base [`CommitCoordinator`], draining a per-run [`EventBuffer`] into
@@ -47,8 +47,8 @@ impl CommitCoordinator for StagingCommitCoordinator {
         self.inner.scope()
     }
 
-    fn thread_run_store(&self) -> Arc<dyn ThreadRunStore> {
-        self.inner.thread_run_store()
+    fn reader(&self) -> Arc<dyn RuntimeCheckpointStore> {
+        self.inner.reader()
     }
 
     async fn commit_checkpoint(
@@ -125,7 +125,7 @@ mod tests {
         fn scope(&self) -> TransactionScopeId {
             TransactionScopeId::new("recording").unwrap()
         }
-        fn thread_run_store(&self) -> Arc<dyn ThreadRunStore> {
+        fn reader(&self) -> Arc<dyn RuntimeCheckpointStore> {
             unreachable!("test does not read the store")
         }
         async fn commit_checkpoint(

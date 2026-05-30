@@ -18,7 +18,9 @@ use awaken_server_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     MessageWriteMode, TransactionScopeId,
 };
-use awaken_server_contract::contract::storage::ThreadRunStore;
+use awaken_server_contract::contract::storage::{
+    RuntimeCheckpointStore, ThreadRunCheckpointStore, ThreadRunStore,
+};
 
 use super::RunDispatchExecutor;
 
@@ -68,8 +70,8 @@ impl CommitCoordinator for MailboxRunStoreCoordinator {
         self.scope.clone()
     }
 
-    fn thread_run_store(&self) -> Arc<dyn ThreadRunStore> {
-        Arc::clone(&self.store)
+    fn reader(&self) -> Arc<dyn RuntimeCheckpointStore> {
+        Arc::new(ThreadRunCheckpointStore::new(Arc::clone(&self.store)))
     }
 
     async fn commit_checkpoint(

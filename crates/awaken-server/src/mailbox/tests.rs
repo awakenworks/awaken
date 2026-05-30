@@ -1127,11 +1127,11 @@ struct CommittingEmittingMailboxRuntime {
 }
 
 impl CommittingEmittingMailboxRuntime {
-    fn new(event_store: Arc<InMemoryEventStore>) -> Self {
-        // Build a durable coordinator over the asserted event store so that the
-        // per-run staging coordinator (installed by the dispatch path and
-        // wrapping this one) drains buffered canonical drafts into it.
-        let run_store = Arc::new(InMemoryStore::new());
+    fn new(run_store: Arc<InMemoryStore>, event_store: Arc<InMemoryEventStore>) -> Self {
+        // Build a durable coordinator over the same thread/run store the
+        // mailbox is given and the asserted event store, so the mailbox reads
+        // exactly what the coordinator commits and the per-run staging
+        // coordinator drains buffered canonical drafts into the shared stores.
         let outbox = Arc::new(InMemoryOutboxStore::new());
         let coordinator = Arc::new(
             MemoryCommitCoordinator::new(run_store, event_store, outbox)
@@ -5410,9 +5410,10 @@ async fn runtime_event_capture_compacted_persists_committed_events_and_keeps_liv
     let event_store = Arc::new(InMemoryEventStore::new());
     let mailbox = Arc::new(
         Mailbox::new(
-            Arc::new(CommittingEmittingMailboxRuntime::new(Arc::clone(
-                &event_store,
-            ))),
+            Arc::new(CommittingEmittingMailboxRuntime::new(
+                Arc::clone(&run_store),
+                Arc::clone(&event_store),
+            )),
             mailbox_store,
             run_store,
             "test-consumer".to_string(),
@@ -5625,9 +5626,10 @@ async fn runtime_event_capture_maps_continue_run_start_to_run_resumed() {
     run_store.create_run(&waiting).await.unwrap();
     let mailbox = Arc::new(
         Mailbox::new(
-            Arc::new(CommittingEmittingMailboxRuntime::new(Arc::clone(
-                &event_store,
-            ))),
+            Arc::new(CommittingEmittingMailboxRuntime::new(
+                Arc::clone(&run_store),
+                Arc::clone(&event_store),
+            )),
             mailbox_store,
             run_store,
             "test-consumer".to_string(),
@@ -5671,9 +5673,10 @@ async fn runtime_event_capture_live_forwarding_is_not_gated_by_staging() {
     let event_store = Arc::new(InMemoryEventStore::new());
     let mailbox = Arc::new(
         Mailbox::new(
-            Arc::new(CommittingEmittingMailboxRuntime::new(Arc::clone(
-                &event_store,
-            ))),
+            Arc::new(CommittingEmittingMailboxRuntime::new(
+                Arc::clone(&run_store),
+                Arc::clone(&event_store),
+            )),
             mailbox_store,
             run_store,
             "test-consumer".to_string(),
@@ -5798,9 +5801,10 @@ async fn runtime_event_capture_records_mailbox_dispatch_lifecycle_events() {
     let event_store = Arc::new(InMemoryEventStore::new());
     let mailbox = Arc::new(
         Mailbox::new(
-            Arc::new(CommittingEmittingMailboxRuntime::new(Arc::clone(
-                &event_store,
-            ))),
+            Arc::new(CommittingEmittingMailboxRuntime::new(
+                Arc::clone(&run_store),
+                Arc::clone(&event_store),
+            )),
             mailbox_store,
             run_store,
             "test-consumer".to_string(),

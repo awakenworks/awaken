@@ -8210,7 +8210,7 @@ async fn checkpoint_store_receives_data() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord)),
         initial_state_seed: None,
     })
     .await
@@ -8273,7 +8273,7 @@ async fn checkpoint_includes_correct_step_count() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord)),
         initial_state_seed: None,
     })
     .await
@@ -8321,7 +8321,7 @@ async fn checkpoint_contains_state_blob() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord)),
         initial_state_seed: None,
     })
     .await
@@ -8372,7 +8372,7 @@ async fn checkpoint_stores_thread_messages() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord)),
         initial_state_seed: None,
     })
     .await
@@ -8463,7 +8463,7 @@ async fn checkpoint_output_supports_child_result_lookup_after_tool_messages() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord)),
         initial_state_seed: None,
     })
     .await
@@ -8563,7 +8563,7 @@ async fn checkpoint_stores_blocked_tool_batch_consistently() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord)),
         initial_state_seed: None,
     })
     .await
@@ -8637,7 +8637,7 @@ async fn checkpoint_stores_suspended_tool_batch_consistently() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord)),
         initial_state_seed: None,
     })
     .await
@@ -8713,7 +8713,7 @@ async fn checkpoint_records_agent_id() {
         frontend_tools: Vec::new(),
         inbox: None,
         is_continuation: false,
-        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord), None),
+        commit: awaken_runtime::loop_runner::CommitWiring::new(Some(&*__coord)),
         initial_state_seed: None,
     })
     .await

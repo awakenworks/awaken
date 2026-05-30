@@ -126,11 +126,13 @@ impl CommitCoordinator for MemoryCommitCoordinator {
         self.scope.clone()
     }
 
-    fn thread_run_store(
-        &self,
-    ) -> Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore> {
-        Arc::clone(&self.thread_run)
-            as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>
+    fn reader(&self) -> Arc<dyn awaken_server_contract::contract::storage::RuntimeCheckpointStore> {
+        Arc::new(
+            awaken_server_contract::contract::storage::ThreadRunCheckpointStore::new(Arc::clone(
+                &self.thread_run,
+            )
+                as Arc<dyn awaken_server_contract::contract::storage::ThreadRunStore>),
+        )
     }
 
     async fn commit_checkpoint(

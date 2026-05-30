@@ -393,9 +393,9 @@ mod tests {
             awaken_runtime_contract::contract::commit_coordinator::TransactionScopeId::new("test")
                 .unwrap()
         }
-        fn thread_run_store(
+        fn reader(
             &self,
-        ) -> Arc<dyn awaken_runtime_contract::contract::storage::ThreadRunStore> {
+        ) -> Arc<dyn awaken_runtime_contract::contract::storage::RuntimeCheckpointStore> {
             unreachable!("routing test does not commit")
         }
         async fn commit_checkpoint(
