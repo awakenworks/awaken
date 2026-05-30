@@ -329,10 +329,41 @@ impl FileStore {
         messages: &[Message],
         ops: &mut Vec<StagedFileOp>,
     ) -> Result<(), StorageError> {
-        self.stage_delete_message_records(thread_id, ops).await?;
+        // Write the replacement records first, then remove stale records only when the new
+        // message set is shorter than the existing set. This avoids staging duplicate
+        // delete+write operations on the same target path in one transaction.
         for (index, message) in messages.iter().enumerate() {
             self.stage_write_message_record(thread_id, index as u64 + 1, message, ops)
                 .await?;
+        }
+
+        let records_dir = self.thread_message_records_dir(thread_id);
+        let new_len = messages.len() as u64;
+        if new_len == 0 {
+            return self.stage_delete_message_records(thread_id, ops).await;
+        }
+
+        if !records_dir.exists() {
+            return Ok(());
+        }
+        let mut entries = tokio::fs::read_dir(&records_dir)
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|error| StorageError::Io(error.to_string()))?
+        {
+            let path = entry.path();
+            let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Ok(seq) = stem.parse::<u64>() else {
+                continue;
+            };
+            if seq > new_len && path.extension().is_some_and(|ext| ext == "json") {
+                ops.push(StagedFileOp::Delete(stage_delete(path)?));
+            }
         }
         Ok(())
     }

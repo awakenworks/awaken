@@ -539,6 +539,104 @@ async fn checkpoint_overwrites_messages() {
 }
 
 #[tokio::test]
+async fn checkpoint_replace_shorter_removes_stale_records() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store
+        .checkpoint(
+            "t-1",
+            &[
+                Message::user("m1"),
+                Message::user("m2"),
+                Message::user("m3"),
+            ],
+            &make_run("run-1", "t-1", 100),
+        )
+        .await
+        .unwrap();
+
+    // Replacing with a shorter set must delete the now-stale high-seq records
+    // (seq > new_len), not leave them dangling.
+    store
+        .checkpoint(
+            "t-1",
+            &[Message::user("only")],
+            &make_run("run-2", "t-1", 200),
+        )
+        .await
+        .unwrap();
+
+    let msgs = ThreadStore::load_messages(&store, "t-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(msgs.len(), 1, "stale records leaked: {msgs:?}");
+    assert_eq!(msgs[0].text(), "only");
+}
+
+#[tokio::test]
+async fn checkpoint_replace_longer_writes_all_records() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store
+        .checkpoint(
+            "t-1",
+            &[Message::user("a1")],
+            &make_run("run-1", "t-1", 100),
+        )
+        .await
+        .unwrap();
+
+    store
+        .checkpoint(
+            "t-1",
+            &[
+                Message::user("b1"),
+                Message::user("b2"),
+                Message::user("b3"),
+            ],
+            &make_run("run-2", "t-1", 200),
+        )
+        .await
+        .unwrap();
+
+    let msgs = ThreadStore::load_messages(&store, "t-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(
+        msgs.iter().map(Message::text).collect::<Vec<_>>(),
+        ["b1", "b2", "b3"]
+    );
+}
+
+#[tokio::test]
+async fn checkpoint_replace_empty_clears_records() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileStore::new(tmp.path());
+    store
+        .checkpoint(
+            "t-1",
+            &[Message::user("m1"), Message::user("m2")],
+            &make_run("run-1", "t-1", 100),
+        )
+        .await
+        .unwrap();
+
+    store
+        .checkpoint("t-1", &[], &make_run("run-2", "t-1", 200))
+        .await
+        .unwrap();
+
+    let msgs = ThreadStore::load_messages(&store, "t-1").await.unwrap();
+    assert!(
+        msgs.as_ref().is_none_or(Vec::is_empty),
+        "records not cleared: {msgs:?}"
+    );
+}
+
+#[tokio::test]
 async fn load_messages_nonexistent() {
     let tmp = TempDir::new().unwrap();
     let store = FileStore::new(tmp.path());
