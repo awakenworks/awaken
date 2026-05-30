@@ -27,3 +27,60 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --lib --bins --examples --locked -- -D clippy::correctness
+
+  dep-boundary:
+    name: Runtime Dependency Boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.93.0
+      # Enforce the runtime/server contract split in CI (not just via the
+      # bypassable pre-commit hook): runtime-layer crates must depend only on
+      # awaken-runtime-contract. The server contract and the compat facade
+      # awaken-contract are reachable only through [dev-dependencies] (tests).
+      #
+      # "Runtime-layer" is matched by name shape so new crates are covered
+      # automatically: any `awaken-runtime*` or `awaken-ext-*` crate, plus the
+      # shared runtime crates in the allowlist. The server-side crates
+      # (awaken, awaken-server, awaken-stores, and the contract crates) do not
+      # match and are intentionally allowed to depend on the server contract.
+      - name: Forbid runtime-layer normal deps on server-contract / facade
+        run: |
+          violations=$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '
+                ["awaken-tool-pattern","awaken-protocol-a2a","awaken-eval"] as $allow
+                | ["awaken-contract","awaken-server-contract"] as $forbidden
+                | .packages[]
+                | .name as $p
+                | select(($p|test("^awaken-runtime")) or ($p|test("^awaken-ext-")) or ($allow|index($p)))
+                | .dependencies[]
+                | select(.kind == null)
+                | select(.name as $n | $forbidden | index($n))
+                | "\($p) -> \(.name)"')
+          if [ -n "$violations" ]; then
+            echo "ERROR: runtime-layer crates may depend only on awaken-runtime-contract."
+            echo "Move the server contract / facade to [dev-dependencies], or use a runtime-contract port:"
+            echo "$violations"
+            exit 1
+          fi
+          echo "OK: runtime dependency boundary holds."
+
+  hidden-unicode:
+    name: Hidden Unicode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # Mirror the lefthook pre-commit check in CI so bidi / zero-width control
+      # characters cannot reach the default branch even if local hooks are
+      # bypassed. Matches the Trojan-Source set plus zero-width and BOM.
+      - name: Forbid hidden/bidirectional Unicode in source and manifests
+        run: |
+          hits=$(git grep -lnP \
+            '[\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2064}\x{2066}-\x{2069}\x{FEFF}\x{061C}]' \
+            -- '*.rs' '*.toml' '*.yml' '*.yaml' '*.md' '*.ts' '*.tsx' '*.js' '*.jsx' || true)
+          if [ -n "$hits" ]; then
+            echo "ERROR: hidden/bidirectional Unicode control characters found in:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: no hidden/bidirectional Unicode control characters."
