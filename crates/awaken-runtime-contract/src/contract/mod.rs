@@ -2,7 +2,6 @@ pub mod active_agent;
 pub mod commit_coordinator;
 pub mod content;
 pub mod context_message;
-pub mod durable_event_sink;
 pub mod event;
 pub mod event_sink;
 pub mod event_store;
