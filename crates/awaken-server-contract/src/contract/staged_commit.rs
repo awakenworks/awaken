@@ -8,13 +8,13 @@
 //! [`CommitCoordinator::commit_checkpoint`] is equivalent to a staged commit
 //! with no extra writes.
 
+use crate::contract::outbox::OutboxMessageDraft;
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::commit_coordinator::{
     CheckpointCommitOutcome, CheckpointCommitPlan, CommitCoordinator, CommitError,
     ServerCanonicalEvent, StagedCanonicalEvent,
 };
 use awaken_runtime_contract::contract::event_store::{CanonicalEventDraft, EventScope};
-use awaken_runtime_contract::contract::outbox::OutboxMessageDraft;
 
 /// Event/outbox writes committed atomically with a checkpoint, supplied by
 /// server-side writers: the runtime tee's canonical drafts (drained from the
