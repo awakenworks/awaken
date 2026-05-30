@@ -303,10 +303,12 @@ pub fn with_protocol_fanout_relay(
 }
 
 pub fn with_a2a_push_webhook_relay(
-    state: ServerState,
+    mut state: ServerState,
     outbox: Arc<dyn OutboxStore>,
     config: A2aPushWebhookRelayConfig,
 ) -> Result<ServerState, OutboxRelayError> {
+    state.protocol.a2a_push_outbox = outbox.clone();
+    state.protocol.a2a_push_relay_config = config.clone();
     register_a2a_push_webhook_relay_for_buffers(&state.protocol.replay_buffers, outbox, config)?;
     Ok(state)
 }
@@ -336,6 +338,27 @@ pub(crate) fn register_a2a_push_webhook_relay_for_buffers(
             a2a_push_relay: Some(A2aPushWebhookRelayAttachment { outbox, config }),
         });
     Ok(())
+}
+
+/// Move every relay attachment (log, projector, fanout, A2A push) from `old`
+/// replay buffers to `new`.
+///
+/// The registry is keyed by replay-buffer identity, so replacing a state's
+/// protocol module — which swaps in fresh `replay_buffers` — would otherwise
+/// orphan any attachment registered before the swap. `start_protocol_relays`
+/// looks attachments up by the current buffers, so an orphaned projector/fanout/
+/// log relay would silently never start.
+pub(crate) fn migrate_protocol_attachments(old: &ReplayBufferMap, new: &ReplayBufferMap) {
+    if Arc::ptr_eq(old, new) {
+        return;
+    }
+    let mut registry = registry().lock();
+    prune(&mut registry);
+    let Some(mut attachment) = registry.remove(&key(old)) else {
+        return;
+    };
+    attachment.replay_buffers = Arc::downgrade(new);
+    registry.insert(key(new), attachment);
 }
 
 pub fn a2a_push_webhook_outbox_for_buffers(

@@ -127,7 +127,7 @@ async fn send_message(
     }
 
     st.run
-        .mailbox
+        .mailbox()
         .submit_background(request)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
@@ -195,7 +195,7 @@ async fn stream_message(
     }
 
     st.run
-        .mailbox
+        .mailbox()
         .submit_background(request)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
@@ -515,7 +515,7 @@ async fn thread_has_prior_context(
 
     let pending = st
         .run
-        .mailbox
+        .mailbox()
         .list_dispatches(
             thread_id,
             Some(&[RunDispatchStatus::Queued, RunDispatchStatus::Claimed]),

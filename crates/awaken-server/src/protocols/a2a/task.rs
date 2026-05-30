@@ -17,6 +17,7 @@ use super::common::{
 };
 use super::conversion::{awaken_message_to_a2a_message, message_to_artifacts};
 use super::error::A2aError;
+
 use super::types::{
     BLOCKING_POLL_INTERVAL, BLOCKING_WAIT_TIMEOUT, DEFAULT_PAGE_SIZE, GetTaskQuery, ListTasksQuery,
     MAX_PAGE_SIZE, ResolvedTask, StoredTaskBinding, StoredTaskBindings, TASK_BINDINGS_METADATA_KEY,
@@ -80,9 +81,8 @@ pub(super) async fn cancel_task(
         ));
     }
 
-    let queued_dispatches = st
-        .run
-        .mailbox
+    let mailbox = st.run.mailbox();
+    let queued_dispatches = mailbox
         .list_dispatches(
             &existing.task.id,
             Some(&[RunDispatchStatus::Queued]),
@@ -94,16 +94,12 @@ pub(super) async fn cancel_task(
 
     let mut cancelled = false;
     for dispatch in queued_dispatches {
-        cancelled |= st
-            .run
-            .mailbox
+        cancelled |= mailbox
             .cancel(&dispatch.dispatch_id)
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?;
     }
-    cancelled |= st
-        .run
-        .mailbox
+    cancelled |= mailbox
         .cancel(&existing.task.id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?;
@@ -233,7 +229,7 @@ pub(super) async fn resolve_task(
     {
         let dispatch = st
             .run
-            .mailbox
+            .mailbox()
             .load_dispatch(task_id)
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?;
@@ -246,7 +242,7 @@ pub(super) async fn resolve_task(
 
     let Some(dispatch) = st
         .run
-        .mailbox
+        .mailbox()
         .load_dispatch(task_id)
         .await
         .map_err(|e| A2aError::Internal(e.to_string()))?
@@ -376,7 +372,7 @@ pub(super) async fn load_task_snapshot(
         Some(dispatch)
     } else {
         st.run
-            .mailbox
+            .mailbox()
             .list_dispatches(&thread_id, None, 100, 0)
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?
@@ -632,7 +628,7 @@ pub(super) async fn collect_task_ids(st: &ProtocolRoutesState) -> Result<Vec<Str
         for thread_id in batch {
             let dispatches = st
                 .run
-                .mailbox
+                .mailbox()
                 .list_dispatches(
                     &thread_id,
                     Some(&[RunDispatchStatus::Queued, RunDispatchStatus::Claimed]),

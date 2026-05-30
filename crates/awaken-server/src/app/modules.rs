@@ -1,8 +1,10 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::event_store::EventStore;
+use awaken_contract::contract::outbox::OutboxStore;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_ext_observability::trace_store::TraceStore;
@@ -14,6 +16,8 @@ use awaken_contract::RedactedString;
 use super::{AdminApiConfig, AuditLogConfig, ReplayBufferMap, ServerState, SkillCatalogProvider};
 use crate::eval_limits::EvalLimits;
 use crate::mailbox::Mailbox;
+use crate::outbox_relay::OutboxRelayError;
+use crate::protocol_replay_state::A2aPushWebhookRelayConfig;
 use crate::services::audit_log::AuditLogger;
 
 #[derive(Clone)]
@@ -41,6 +45,10 @@ impl RunModuleState {
             credential_broker: Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
             runtime_stats: None,
         }
+    }
+
+    pub fn mailbox(&self) -> Arc<Mailbox> {
+        self.mailbox.clone()
     }
 
     #[must_use]
@@ -115,6 +123,83 @@ pub struct TraceModuleState {
 pub struct ProtocolModuleState {
     pub replay_buffers: ReplayBufferMap,
     pub mcp_http: Arc<crate::protocols::mcp::http::McpHttpState>,
+    pub a2a_push_outbox: Arc<dyn OutboxStore>,
+    pub a2a_push_relay_config: A2aPushWebhookRelayConfig,
+    pub a2a_push_driver_keys: Arc<parking_lot::Mutex<HashSet<(Option<String>, String, String)>>>,
+}
+
+impl ProtocolModuleState {
+    /// Build protocol state with a process-local, in-memory A2A push outbox.
+    ///
+    /// The default outbox is best-effort and non-durable: queued webhook
+    /// deliveries are lost on restart and are not shared across replicas. Because
+    /// an outbox relay is registered, the A2A agent card advertises
+    /// `pushNotifications: true` for the default state. For durable or
+    /// multi-replica webhook delivery, inject an external outbox via
+    /// [`ServerState::with_a2a_push_webhook_outbox`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_a2a_push_outbox(
+            Arc::new(awaken_stores::InMemoryOutboxStore::new()),
+            A2aPushWebhookRelayConfig::default(),
+        )
+    }
+
+    #[must_use]
+    pub fn with_a2a_push_outbox(
+        outbox: Arc<dyn OutboxStore>,
+        relay_config: A2aPushWebhookRelayConfig,
+    ) -> Self {
+        Self {
+            replay_buffers: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+            mcp_http: Arc::new(crate::protocols::mcp::http::McpHttpState::new()),
+            a2a_push_outbox: outbox,
+            a2a_push_relay_config: relay_config,
+            a2a_push_driver_keys: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+        }
+    }
+
+    pub(crate) fn register_a2a_push_webhook_relay(&self) -> Result<(), OutboxRelayError> {
+        crate::protocol_replay_state::register_a2a_push_webhook_relay_for_buffers(
+            &self.replay_buffers,
+            self.a2a_push_outbox.clone(),
+            self.a2a_push_relay_config.clone(),
+        )
+    }
+
+    pub(crate) fn register_a2a_push_driver(
+        &self,
+        task_id: &str,
+        tenant: Option<&str>,
+        config_id: &str,
+    ) -> bool {
+        let key = (
+            tenant.map(ToOwned::to_owned),
+            task_id.to_string(),
+            config_id.to_string(),
+        );
+        self.a2a_push_driver_keys.lock().insert(key) // true if newly inserted
+    }
+
+    pub(crate) fn unregister_a2a_push_driver(
+        &self,
+        task_id: &str,
+        tenant: Option<&str>,
+        config_id: &str,
+    ) {
+        let key = (
+            tenant.map(ToOwned::to_owned),
+            task_id.to_string(),
+            config_id.to_string(),
+        );
+        self.a2a_push_driver_keys.lock().remove(&key);
+    }
+}
+
+impl Default for ProtocolModuleState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone)]
@@ -217,10 +302,7 @@ impl ServerState {
             events: None,
             eval: None,
             trace: None,
-            protocol: ProtocolModuleState {
-                replay_buffers: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
-                mcp_http: Arc::new(crate::protocols::mcp::http::McpHttpState::new()),
-            },
+            protocol: ProtocolModuleState::new(),
             admin: AdminModuleState {
                 admin_api_config: super::AdminApiConfig::default(),
                 audit_log_config: super::AuditLogConfig::default(),
@@ -228,12 +310,10 @@ impl ServerState {
             },
             server_config,
         };
-        crate::protocol_replay_state::register_a2a_push_webhook_relay_for_buffers(
-            &state.protocol.replay_buffers,
-            Arc::new(awaken_stores::InMemoryOutboxStore::new()),
-            crate::protocol_replay_state::A2aPushWebhookRelayConfig::default(),
-        )
-        .expect("default A2A push webhook relay config is valid");
+        state
+            .protocol
+            .register_a2a_push_webhook_relay()
+            .expect("default A2A push webhook relay config is valid");
         state
     }
 
@@ -263,7 +343,20 @@ impl ServerState {
 
     #[must_use]
     pub fn with_protocol(mut self, protocol: ProtocolModuleState) -> Self {
+        let previous_buffers = self.protocol.replay_buffers.clone();
         self.protocol = protocol;
+        // Replacing the protocol module swaps the replay-buffer identity used by
+        // the relay registry. Migrate attachments registered against the previous
+        // buffers (log/projector/fanout) so a relay configured before this call is
+        // not silently orphaned, then (re)register the replacement module's A2A
+        // push outbox instead of falling back to a hidden in-memory store.
+        crate::protocol_replay_state::migrate_protocol_attachments(
+            &previous_buffers,
+            &self.protocol.replay_buffers,
+        );
+        self.protocol
+            .register_a2a_push_webhook_relay()
+            .expect("default A2A push webhook relay config is valid");
         self
     }
 
@@ -386,5 +479,24 @@ impl ServerState {
             admin: self.admin_module(),
             trace: self.trace_module()?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_push_driver_registry_is_single_flight_per_task_tenant_config() {
+        let protocol = ProtocolModuleState::new();
+
+        assert!(protocol.register_a2a_push_driver("task-1", Some("tenant-1"), "cfg-1"));
+        assert!(!protocol.register_a2a_push_driver("task-1", Some("tenant-1"), "cfg-1"));
+
+        assert!(protocol.register_a2a_push_driver("task-1", Some("tenant-1"), "cfg-2"));
+        assert!(protocol.register_a2a_push_driver("task-2", Some("tenant-1"), "cfg-1"));
+
+        protocol.unregister_a2a_push_driver("task-1", Some("tenant-1"), "cfg-1");
+        assert!(protocol.register_a2a_push_driver("task-1", Some("tenant-1"), "cfg-1"));
     }
 }

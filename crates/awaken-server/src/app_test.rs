@@ -601,3 +601,145 @@ async fn config_module_state_reuses_preset_logger() {
         "ConfigModuleState must expose the pre-set AuditLogger instance"
     );
 }
+
+fn local_component_state() -> ServerState {
+    use awaken_stores::InMemoryStore;
+
+    struct StubResolver;
+    impl awaken_runtime::AgentResolver for StubResolver {
+        fn resolve(
+            &self,
+            agent_id: &str,
+        ) -> Result<awaken_runtime::ResolvedAgent, awaken_runtime::RuntimeError> {
+            Err(awaken_runtime::RuntimeError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })
+        }
+    }
+
+    let runtime = Arc::new(
+        awaken_runtime::builder::AgentRuntimeBuilder::new()
+            .build_unchecked()
+            .expect("build runtime"),
+    );
+    let store = Arc::new(InMemoryStore::new());
+    ServerState::new_with_local_mailbox(
+        runtime,
+        store as Arc<dyn ThreadRunStore>,
+        Arc::new(StubResolver),
+        ServerConfig::default(),
+    )
+}
+
+#[test]
+fn server_state_with_local_mailbox_uses_local_components() {
+    let state = local_component_state();
+
+    assert!(
+        crate::protocol_replay_state::a2a_push_webhook_outbox_for_buffers(
+            &state.protocol.replay_buffers
+        )
+        .is_some(),
+        "A2A push outbox should default to a local in-memory implementation"
+    );
+}
+
+#[test]
+fn with_protocol_preserves_default_a2a_push_outbox_for_new_replay_buffers() {
+    let state = local_component_state();
+    let protocol = ProtocolModuleState::new();
+
+    assert!(
+        crate::protocol_replay_state::a2a_push_webhook_outbox_for_buffers(&protocol.replay_buffers)
+            .is_none(),
+        "fresh protocol module should carry an outbox but not register its buffers until mounted"
+    );
+
+    let state = state.with_protocol(protocol);
+
+    assert!(
+        crate::protocol_replay_state::a2a_push_webhook_outbox_for_buffers(
+            &state.protocol.replay_buffers
+        )
+        .is_some(),
+        "with_protocol should attach the local A2A push outbox to the replacement buffers"
+    );
+}
+
+#[test]
+fn a2a_push_outbox_can_replace_default_local_outbox() {
+    use awaken_contract::contract::outbox::OutboxStore;
+    use awaken_stores::InMemoryOutboxStore;
+
+    let state = local_component_state();
+    let default_outbox = crate::protocol_replay_state::a2a_push_webhook_outbox_for_buffers(
+        &state.protocol.replay_buffers,
+    )
+    .expect("default A2A push outbox should be attached");
+
+    let replacement: Arc<dyn OutboxStore> = Arc::new(InMemoryOutboxStore::new());
+    assert!(
+        !Arc::ptr_eq(&default_outbox, &replacement),
+        "replacement should be a distinct outbox instance"
+    );
+
+    let state = crate::protocol_replay_state::with_a2a_push_webhook_relay(
+        state,
+        replacement.clone(),
+        crate::protocol_replay_state::A2aPushWebhookRelayConfig::default(),
+    )
+    .expect("replace A2A push outbox");
+
+    let attached = crate::protocol_replay_state::a2a_push_webhook_outbox_for_buffers(
+        &state.protocol.replay_buffers,
+    )
+    .expect("replacement A2A push outbox should be attached");
+    assert!(
+        Arc::ptr_eq(&attached, &replacement),
+        "explicit A2A push outbox should replace the local default"
+    );
+    assert!(
+        Arc::ptr_eq(&state.protocol.a2a_push_outbox, &replacement),
+        "server state should carry the explicit A2A push outbox as a module dependency"
+    );
+}
+
+#[test]
+fn server_state_method_injects_a2a_push_outbox_dependency() {
+    use awaken_contract::contract::outbox::OutboxStore;
+    use awaken_stores::InMemoryOutboxStore;
+
+    let replacement: Arc<dyn OutboxStore> = Arc::new(InMemoryOutboxStore::new());
+    let state = local_component_state()
+        .with_a2a_push_webhook_outbox(replacement.clone())
+        .expect("inject A2A push outbox");
+
+    let attached = crate::protocol_replay_state::a2a_push_webhook_outbox_for_buffers(
+        &state.protocol.replay_buffers,
+    )
+    .expect("injected A2A push outbox should be registered");
+    assert!(Arc::ptr_eq(&attached, &replacement));
+    assert!(Arc::ptr_eq(&state.protocol.a2a_push_outbox, &replacement));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mailbox_routes_remain_available_with_local_mailbox() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let state = local_component_state();
+    let app = crate::routes::build_router(&state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/threads/local-thread/mailbox")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+}

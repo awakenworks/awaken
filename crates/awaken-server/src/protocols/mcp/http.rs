@@ -73,9 +73,12 @@ struct McpHttpSession {
 impl McpHttpSession {
     fn new(
         runtime: &Arc<awaken_runtime::AgentRuntime>,
-        mailbox: Arc<crate::mailbox::Mailbox>,
+        mailbox: Option<Arc<crate::mailbox::Mailbox>>,
     ) -> Arc<Self> {
-        let (server, mut channels) = super::create_mcp_server_with_mailbox(runtime, mailbox);
+        let (server, mut channels) = match mailbox {
+            Some(mailbox) => super::create_mcp_server_with_mailbox(runtime, mailbox),
+            None => super::create_mcp_server(runtime),
+        };
         let session = Arc::new(Self {
             id: Uuid::new_v4().to_string(),
             server,
@@ -319,7 +322,7 @@ async fn handle_request_post(
             ));
         }
 
-        let session = McpHttpSession::new(&st.run.runtime, Arc::clone(&st.run.mailbox));
+        let session = McpHttpSession::new(&st.run.runtime, Some(st.run.mailbox()));
         let response = session.dispatch_json_request(request).await?;
         if response.is_success() {
             if let Some(version) = response_protocol_version(&response) {
@@ -824,7 +827,7 @@ mod tests {
     #[tokio::test]
     async fn sse_prime_frame_contains_empty_data_event() {
         let state = make_app_state();
-        let session = McpHttpSession::new(&state.run.runtime, Arc::clone(&state.run.mailbox));
+        let session = McpHttpSession::new(&state.run.runtime, Some(state.run.mailbox()));
         let frame = session.prime_sse_frame();
         let text = std::str::from_utf8(&frame).unwrap();
         assert!(text.contains("data:\n\n"));

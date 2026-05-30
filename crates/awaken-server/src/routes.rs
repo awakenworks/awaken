@@ -589,7 +589,7 @@ async fn push_mailbox(
 
     let result = st
         .run
-        .mailbox
+        .mailbox()
         .submit_background(RunActivation::new(id, messages))
         .await
         .map_err(map_mailbox_error)?;
@@ -614,7 +614,7 @@ async fn peek_mailbox(
     let limit = params.limit.clamp(1, 200);
     let dispatches = st
         .run
-        .mailbox
+        .mailbox()
         .list_dispatches(&id, None, limit, offset)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -663,7 +663,7 @@ async fn start_run(
     let request = RunActivation::new(thread_id, messages).with_agent_id(agent_id);
     let (_result, event_rx) = st
         .run
-        .mailbox
+        .mailbox()
         .submit(request)
         .await
         .map_err(map_mailbox_error)?;

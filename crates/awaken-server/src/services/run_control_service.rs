@@ -15,7 +15,8 @@ use awaken_contract::contract::suspension::ToolCallResume;
 use awaken_runtime::RunActivation;
 
 use crate::app::RunModuleState;
-use crate::mailbox::{MailboxError, MailboxSubmitResult};
+use crate::mailbox::{Mailbox, MailboxError, MailboxSubmitResult};
+use std::sync::Arc;
 
 /// How injected user input should interact with any active work.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +96,10 @@ pub struct RunControlService {
 impl RunControlService {
     pub fn new(state: RunModuleState) -> Self {
         Self { state }
+    }
+
+    fn mailbox(&self) -> Arc<Mailbox> {
+        self.state.mailbox()
     }
 
     /// Return the most recent running or waiting run for a thread.
@@ -181,9 +186,8 @@ impl RunControlService {
         tool_call_id: String,
         resume: ToolCallResume,
     ) -> Result<(), RunControlError> {
-        if self
-            .state
-            .mailbox
+        let mailbox = self.mailbox();
+        if mailbox
             .send_decision_live(id, tool_call_id.clone(), resume.clone())
             .await?
         {
@@ -223,9 +227,9 @@ impl RunControlService {
             .with_agent_id(run.agent_id.clone())
             .with_continue_run_id(run.run_id.clone())
             .with_decisions(vec![(tool_call_id.clone(), resume.clone())]);
-        self.state.mailbox.submit_background(request).await?;
-        self.state
-            .mailbox
+        let mailbox = self.mailbox();
+        mailbox.submit_background(request).await?;
+        mailbox
             .record_mailbox_decision_received_for_run(
                 &run,
                 &tool_call_id,
@@ -238,7 +242,7 @@ impl RunControlService {
 
     /// Cancel an active run or queued mailbox dispatch by run ID, dispatch ID, or thread ID.
     pub async fn cancel_run(&self, id: &str) -> Result<(), RunControlError> {
-        if self.state.mailbox.cancel(id).await? {
+        if self.mailbox().cancel(id).await? {
             Ok(())
         } else {
             Err(RunControlError::RunNotFound(id.to_string()))
@@ -251,7 +255,7 @@ impl RunControlService {
         thread_id: &str,
         _mode: InterruptMode,
     ) -> Result<MailboxInterrupt, RunControlError> {
-        let interrupted = self.state.mailbox.interrupt(thread_id).await?;
+        let interrupted = self.mailbox().interrupt(thread_id).await?;
         if interrupted.active_dispatch.is_some() || interrupted.superseded_count > 0 {
             Ok(interrupted)
         } else {
@@ -276,8 +280,7 @@ impl RunControlService {
 
         if mode == InputMode::InterruptThenQueue {
             let _ = self
-                .state
-                .mailbox
+                .mailbox()
                 .interrupt(thread_id)
                 .await
                 .map_err(RunControlError::Mailbox)?;
@@ -295,8 +298,7 @@ impl RunControlService {
             request = request.with_agent_id(agent_id);
         }
 
-        self.state
-            .mailbox
+        self.mailbox()
             .submit_background(request)
             .await
             .map_err(RunControlError::Mailbox)
@@ -321,8 +323,7 @@ impl RunControlService {
             request = request.with_agent_id(agent_id);
         }
 
-        self.state
-            .mailbox
+        self.mailbox()
             .submit_live_then_queue(request, None)
             .await
             .map_err(RunControlError::Mailbox)
@@ -353,8 +354,7 @@ impl RunControlService {
                 .with_agent_id(run.agent_id)
                 .with_continue_run_id(run.run_id);
             return self
-                .state
-                .mailbox
+                .mailbox()
                 .submit_background(request)
                 .await
                 .map_err(RunControlError::Mailbox);
@@ -379,8 +379,7 @@ impl RunControlService {
 
         let request =
             RunActivation::new(run.thread_id.clone(), messages).with_agent_id(run.agent_id.clone());
-        self.state
-            .mailbox
+        self.mailbox()
             .submit_live_then_queue(request, Some(&run.run_id))
             .await
             .map_err(RunControlError::Mailbox)

@@ -98,6 +98,18 @@ pub struct AdminModuleState {
 }
 ```
 
+`ServerState::new` requires a mailbox. Callers that do not provide an
+external mailbox backend use `ServerState::new_with_local_mailbox`, which
+installs an in-memory mailbox so run-control and protocol routes keep the same
+HTTP surface. This local mailbox is process-local and best-effort; durable and
+multi-replica deployments provide an externally backed `Mailbox`.
+
+Default protocol wiring also attaches an in-memory A2A push webhook outbox to
+the active `ProtocolModuleState` replay buffers. This preserves the public A2A
+capability surface for single-process servers. Deployments that require retry
+durability across restart or replicas replace it with a durable `OutboxStore`
+via `with_a2a_push_webhook_relay`.
+
 `APP_STATE_EXTRAS` is deleted. Its fields move as follows:
 
 | Existing source | New owner |

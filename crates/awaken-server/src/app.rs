@@ -7,6 +7,7 @@ use std::time::Instant;
 use awaken_contract::RedactedString;
 use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::event_store::EventStore;
+use awaken_contract::contract::outbox::OutboxStore;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_ext_observability::RuntimeStatsRegistry;
 use awaken_runtime::credentials::CredentialBroker;
@@ -332,6 +333,41 @@ impl ServerState {
         )
     }
 
+    /// Build server state with a process-local mailbox implementation.
+    ///
+    /// This keeps every run-control and protocol route available when an
+    /// external mailbox backend is not wired. The local mailbox is in-memory and
+    /// best-effort; use [`ServerState::new`] with an externally backed
+    /// [`Mailbox`] for durable or multi-replica deployments.
+    pub fn new_with_local_mailbox(
+        runtime: Arc<AgentRuntime>,
+        store: Arc<dyn ThreadRunStore>,
+        resolver: Arc<dyn AgentResolver>,
+        config: ServerConfig,
+    ) -> Self {
+        let mailbox = Arc::new(Mailbox::new(
+            runtime.clone(),
+            Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+            store.clone(),
+            "local".to_string(),
+            crate::mailbox::MailboxConfig::default(),
+        ));
+        Self::new(runtime, mailbox, store, resolver, config)
+    }
+
+    /// Build server state without an externally supplied mailbox backend.
+    ///
+    /// The server still installs a process-local mailbox so API behavior stays
+    /// consistent; only durability and cross-process delivery semantics differ.
+    pub fn new_without_external_mailbox(
+        runtime: Arc<AgentRuntime>,
+        store: Arc<dyn ThreadRunStore>,
+        resolver: Arc<dyn AgentResolver>,
+        config: ServerConfig,
+    ) -> Self {
+        Self::new_with_local_mailbox(runtime, store, resolver, config)
+    }
+
     #[must_use]
     pub fn with_credential_broker(mut self, broker: Arc<dyn CredentialBroker>) -> Self {
         self.run = self.run.with_credential_broker(broker);
@@ -350,6 +386,24 @@ impl ServerState {
 
     pub fn runtime_stats(&self) -> Option<Arc<RuntimeStatsRegistry>> {
         self.run.runtime_stats.clone()
+    }
+
+    pub fn with_a2a_push_webhook_outbox(
+        self,
+        outbox: Arc<dyn OutboxStore>,
+    ) -> Result<Self, crate::outbox_relay::OutboxRelayError> {
+        self.with_a2a_push_webhook_relay(
+            outbox,
+            crate::protocol_replay_state::A2aPushWebhookRelayConfig::default(),
+        )
+    }
+
+    pub fn with_a2a_push_webhook_relay(
+        self,
+        outbox: Arc<dyn OutboxStore>,
+        config: crate::protocol_replay_state::A2aPushWebhookRelayConfig,
+    ) -> Result<Self, crate::outbox_relay::OutboxRelayError> {
+        crate::protocol_replay_state::with_a2a_push_webhook_relay(self, outbox, config)
     }
 
     #[must_use]
@@ -658,6 +712,7 @@ pub async fn serve(state: ServerState) -> std::io::Result<()> {
                 state
                     .run
                     .mailbox
+                    .clone()
                     .start_lifecycle_ready(MailboxLifecycleConfig {
                         maintenance_callback: Some(Arc::new(move || {
                             cleanup_state

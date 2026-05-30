@@ -216,7 +216,7 @@ async fn interrupt_thread(
 ) -> Result<Response, ApiError> {
     let interrupted = st
         .run
-        .mailbox
+        .mailbox()
         .interrupt(&thread_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -304,7 +304,7 @@ async fn ag_ui_run_inner(
     }
     let (_result, event_rx) = st
         .run
-        .mailbox
+        .mailbox()
         .submit(request)
         .await
         .map_err(map_mailbox_error)?;

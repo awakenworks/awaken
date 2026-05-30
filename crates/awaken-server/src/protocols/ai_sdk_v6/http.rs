@@ -278,20 +278,13 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
     // decisions to resume the run on a fresh SSE stream.
     if !decisions.is_empty() {
         let (new_event_tx, new_event_rx) = tokio::sync::mpsc::channel(256);
-        let reconnected = st
-            .run
-            .mailbox
-            .reconnect_sink(&thread_id, new_event_tx)
-            .await;
+        let mailbox = st.run.mailbox();
+        let reconnected = mailbox.reconnect_sink(&thread_id, new_event_tx).await;
 
         if reconnected {
             let mut any_delivered = false;
             for (tool_call_id, resume) in &decisions {
-                if st
-                    .run
-                    .mailbox
-                    .send_decision(&thread_id, tool_call_id.clone(), resume.clone())
-                {
+                if mailbox.send_decision(&thread_id, tool_call_id.clone(), resume.clone()) {
                     any_delivered = true;
                 }
             }
@@ -350,7 +343,7 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
     }
     let (_result, event_rx) = st
         .run
-        .mailbox
+        .mailbox()
         .submit(request)
         .await
         .map_err(map_mailbox_error)?;
@@ -631,7 +624,7 @@ async fn cancel_thread(
 ) -> Result<Response, ApiError> {
     let cancelled = st
         .run
-        .mailbox
+        .mailbox()
         .cancel(&thread_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -656,7 +649,7 @@ async fn interrupt_thread(
 ) -> Result<Response, ApiError> {
     let interrupted = st
         .run
-        .mailbox
+        .mailbox()
         .interrupt(&thread_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;

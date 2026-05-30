@@ -114,7 +114,14 @@ fn build_agent_card(
         documentation_url: None,
         capabilities: AgentCapabilities {
             streaming: true,
-            push_notifications: true,
+            // Advertised whenever an A2A push outbox relay is registered. The
+            // default state registers a process-local, best-effort in-memory
+            // outbox, so this is `true` by default; durability/multi-replica
+            // semantics depend on the injected outbox (see `ProtocolModuleState`).
+            push_notifications: crate::protocol_replay_state::a2a_push_webhook_outbox_for_buffers(
+                &st.protocol.replay_buffers,
+            )
+            .is_some(),
             state_transition_history: false,
             extended_agent_card: supports_extended_card,
         },

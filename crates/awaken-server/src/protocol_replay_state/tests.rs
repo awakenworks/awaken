@@ -178,6 +178,40 @@ async fn protocol_projector_relay_projects_attached_outbox_in_background() {
 }
 
 #[tokio::test]
+async fn with_protocol_migrates_relay_attachments_to_new_buffers() {
+    use crate::app::ProtocolModuleState;
+
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let replay_log = Arc::new(InMemoryProtocolReplayLog::new());
+    let outbox = Arc::new(InMemoryOutboxStore::new());
+
+    // Configure a projector relay *before* replacing the protocol module.
+    let state = with_protocol_replay_log(make_state(), replay_log.clone());
+    let state = with_protocol_projector_relay(
+        state,
+        outbox,
+        event_store as Arc<dyn EventLookup>,
+        replay_log as Arc<dyn ProtocolReplayWriter>,
+        fast_config(),
+    )
+    .unwrap();
+
+    // Replacing the protocol module swaps replay-buffer identity. The projector
+    // attachment and replay log must migrate so the relay still starts instead
+    // of being silently orphaned under the previous buffers.
+    let state = state.with_protocol(ProtocolModuleState::new());
+
+    assert!(
+        protocol_replay_log(&state).is_some(),
+        "replay log configured before with_protocol must survive the swap"
+    );
+    let handle = start_protocol_projector_relay(&state)
+        .unwrap()
+        .expect("projector relay configured before with_protocol must survive the swap");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn protocol_fanout_relay_publishes_attached_outbox_in_background() {
     let replay_log = Arc::new(InMemoryProtocolReplayLog::new());
     let outbox = Arc::new(InMemoryOutboxStore::new());

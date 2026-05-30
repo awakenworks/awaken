@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use uuid::Uuid;
 
-use crate::app::ProtocolRoutesState;
+use crate::app::{ProtocolModuleState, ProtocolRoutesState};
 
 use super::common::{
     ensure_supported_version, load_thread_metadata_projection, parse_page_token,
@@ -173,9 +173,15 @@ async fn delete_push_config(
     ensure_supported_version(&headers)?;
     ensure_task_visible(&st, &task_id, tenant.as_deref()).await?;
 
-    let mut configs = load_push_notification_configs(&st, &task_id, tenant.as_deref()).await?;
+    // Load the full config set (all tenants) and remove only the matching
+    // (tenant, config id) entry. A tenant-scoped delete must not drop configs
+    // owned by other tenants when the whole task list is persisted back.
+    let mut configs = load_push_notification_configs(&st, &task_id, None).await?;
     let before = configs.len();
-    configs.retain(|config| config.id.as_deref() != Some(config_id.as_str()));
+    configs.retain(|config| {
+        !(config.id.as_deref() == Some(config_id.as_str())
+            && config.agent_id.as_deref() == tenant.as_deref())
+    });
     if configs.len() == before {
         return Err(A2aError::push_config_not_found(task_id, config_id));
     }
@@ -279,18 +285,34 @@ async fn save_push_notification_configs(
     save_thread_push_notification_configs(st, &thread_id, exists, thread, task_id, configs).await
 }
 
+/// Insert or replace `config` within the task's full config list, scoped to its
+/// owning tenant. Matching is keyed on `(tenant, config id)` so a write for one
+/// tenant never overwrites another tenant's config that shares a config id.
+fn upsert_into(
+    configs: &mut Vec<PushNotificationConfig>,
+    tenant: Option<&str>,
+    config: PushNotificationConfig,
+) {
+    if let Some(position) = configs
+        .iter()
+        .position(|existing| existing.id == config.id && existing.agent_id.as_deref() == tenant)
+    {
+        configs[position] = config;
+    } else {
+        configs.push(config);
+    }
+}
+
 async fn upsert_push_notification_config(
     st: &ProtocolRoutesState,
     task_id: &str,
     tenant: Option<&str>,
     config: PushNotificationConfig,
 ) -> Result<(), A2aError> {
-    let mut configs = load_push_notification_configs(st, task_id, tenant).await?;
-    if let Some(position) = configs.iter().position(|existing| existing.id == config.id) {
-        configs[position] = config;
-    } else {
-        configs.push(config);
-    }
+    // Load the full config set (all tenants) so a tenant-scoped write preserves
+    // configs owned by other tenants when the whole task list is persisted back.
+    let mut configs = load_push_notification_configs(st, task_id, None).await?;
+    upsert_into(&mut configs, tenant, config);
     save_push_notification_configs(st, task_id, configs).await
 }
 
@@ -302,15 +324,10 @@ pub(super) async fn upsert_push_notification_config_for_thread(
     config: PushNotificationConfig,
 ) -> Result<(), A2aError> {
     let (exists, thread) = load_thread_metadata_projection(st, thread_id).await?;
+    // Operate on the full config set; `upsert_into` scopes the replace to the
+    // owning tenant so other tenants' configs survive the whole-task write.
     let mut configs = load_thread_push_notification_configs(&thread, task_id)?;
-    if let Some(tenant) = tenant {
-        configs.retain(|existing| existing.agent_id.as_deref() == Some(tenant));
-    }
-    if let Some(position) = configs.iter().position(|existing| existing.id == config.id) {
-        configs[position] = config;
-    } else {
-        configs.push(config);
-    }
+    upsert_into(&mut configs, tenant, config);
     save_thread_push_notification_configs(st, thread_id, exists, thread, task_id, configs).await
 }
 
@@ -361,14 +378,49 @@ async fn save_thread_push_notification_configs(
     Ok(())
 }
 
+/// Releases the single-flight dedupe key for an A2A push driver when the driver
+/// task ends. Using `Drop` covers normal completion, early error returns, task
+/// panics, and task aborts — an explicit unregister at the end of the task body
+/// would be skipped on panic/abort and leak the key, blocking re-registration.
+struct PushDriverGuard {
+    protocol: ProtocolModuleState,
+    task_id: String,
+    tenant: Option<String>,
+    config_id: String,
+}
+
+impl Drop for PushDriverGuard {
+    fn drop(&mut self) {
+        self.protocol.unregister_a2a_push_driver(
+            &self.task_id,
+            self.tenant.as_deref(),
+            &self.config_id,
+        );
+    }
+}
+
 pub(super) fn spawn_push_notification_driver(
     st: ProtocolRoutesState,
     task_id: String,
     tenant: Option<String>,
     config: PushNotificationConfig,
 ) {
+    let config_id = config.id.clone().unwrap_or_default();
+    if !st
+        .protocol
+        .register_a2a_push_driver(&task_id, tenant.as_deref(), &config_id)
+    {
+        return;
+    }
+
     tokio::spawn(async move {
-        if let Err(err) = drive_push_notification(st, task_id, tenant, config).await {
+        let _guard = PushDriverGuard {
+            protocol: st.protocol.clone(),
+            task_id: task_id.clone(),
+            tenant: tenant.clone(),
+            config_id: config_id.clone(),
+        };
+        if let Err(err) = drive_push_notification(st, task_id, tenant, config_id).await {
             tracing::warn!(error = ?err, "A2A push notification driver stopped with error");
         }
     });
@@ -378,7 +430,7 @@ async fn drive_push_notification(
     st: ProtocolRoutesState,
     task_id: String,
     tenant: Option<String>,
-    config: PushNotificationConfig,
+    config_id: String,
 ) -> Result<(), A2aError> {
     let outbox = crate::protocol_replay_state::a2a_push_webhook_outbox_for_buffers(
         &st.protocol.replay_buffers,
@@ -386,16 +438,14 @@ async fn drive_push_notification(
     .ok_or_else(|| {
         A2aError::Internal("A2A push notification outbox relay is not configured".to_string())
     })?;
-    let config_id = config.id.clone().unwrap_or_default();
     let mut projector = TaskStreamProjector::new(InitialStreamEvent::StatusUpdate);
 
     loop {
-        if find_push_notification_config(&st, &task_id, tenant.as_deref(), &config_id)
-            .await?
-            .is_none()
-        {
+        let Some(config) =
+            find_push_notification_config(&st, &task_id, tenant.as_deref(), &config_id).await?
+        else {
             break;
-        }
+        };
 
         let snapshot = load_task_snapshot(&st, &task_id, tenant.as_deref(), usize::MAX, true)
             .await?
@@ -436,4 +486,76 @@ async fn drive_push_notification(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(id: &str, tenant: Option<&str>, url: &str) -> PushNotificationConfig {
+        PushNotificationConfig {
+            agent_id: tenant.map(ToOwned::to_owned),
+            id: Some(id.to_string()),
+            task_id: Some("task-1".to_string()),
+            url: url.to_string(),
+            token: None,
+            authentication: None,
+        }
+    }
+
+    #[test]
+    fn upsert_into_is_scoped_per_tenant() {
+        let mut configs = Vec::new();
+        // The same config id under two different tenants must coexist; a write
+        // for one tenant must not overwrite another tenant's entry.
+        upsert_into(
+            &mut configs,
+            Some("a"),
+            config("shared", Some("a"), "http://a/1"),
+        );
+        upsert_into(
+            &mut configs,
+            Some("b"),
+            config("shared", Some("b"), "http://b/1"),
+        );
+        assert_eq!(configs.len(), 2);
+
+        // Updating tenant "a" replaces only its entry and leaves "b" untouched.
+        upsert_into(
+            &mut configs,
+            Some("a"),
+            config("shared", Some("a"), "http://a/2"),
+        );
+        assert_eq!(configs.len(), 2);
+        let a = configs
+            .iter()
+            .find(|c| c.agent_id.as_deref() == Some("a"))
+            .unwrap();
+        assert_eq!(a.url, "http://a/2");
+        let b = configs
+            .iter()
+            .find(|c| c.agent_id.as_deref() == Some("b"))
+            .unwrap();
+        assert_eq!(b.url, "http://b/1");
+    }
+
+    #[test]
+    fn push_driver_guard_releases_key_on_drop() {
+        let protocol = ProtocolModuleState::new();
+        assert!(protocol.register_a2a_push_driver("task-1", Some("a"), "cfg-1"));
+        // A second registration is rejected while the driver is live.
+        assert!(!protocol.register_a2a_push_driver("task-1", Some("a"), "cfg-1"));
+
+        let guard = PushDriverGuard {
+            protocol: protocol.clone(),
+            task_id: "task-1".to_string(),
+            tenant: Some("a".to_string()),
+            config_id: "cfg-1".to_string(),
+        };
+        drop(guard);
+
+        // Once the guard drops (e.g. driver task panicked or was aborted) the key
+        // is released and re-registration succeeds.
+        assert!(protocol.register_a2a_push_driver("task-1", Some("a"), "cfg-1"));
+    }
 }

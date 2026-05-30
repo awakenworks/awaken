@@ -305,6 +305,40 @@ fn make_test_app_with_executor(
     make_test_app_with_runtime(runtime, store)
 }
 
+fn make_test_app_with_local_components() -> TestApp {
+    let store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
+            .with_provider("mock", Arc::new(ImmediateExecutor))
+            .with_agent_spec(AgentSpec {
+                id: "test-agent".into(),
+                model_id: "test-model".into(),
+                system_prompt: "test".into(),
+                max_rounds: 0,
+                ..Default::default()
+            })
+            .with_in_memory_thread_run_store(store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+    runtime.set_run_resolver(Arc::new(TestRunResolver {
+        inner: runtime.resolver_arc(),
+    }));
+
+    let mut state = ServerState::new_with_local_mailbox(
+        runtime.clone(),
+        store.clone() as Arc<dyn awaken_contract::contract::storage::ThreadRunStore>,
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    );
+    state.admin.admin_api_config.bearer_token = Some(TEST_ADMIN_TOKEN.into());
+    TestApp {
+        router: build_router(&state),
+        store,
+    }
+}
+
 fn make_test_app_with_remote_root_agent() -> TestApp {
     let store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
@@ -463,6 +497,54 @@ async fn start_run_streams_sse_with_run_lifecycle() {
 
     let run_finish = find_event(&events, "run_finish");
     assert!(run_finish.is_some(), "no run_finish event in SSE: {body}");
+}
+
+#[tokio::test]
+async fn start_run_streams_sse_with_local_mailbox_default() {
+    let test = make_test_app_with_local_components();
+    let (status, body) = post_json(
+        test.router.clone(),
+        "/v1/runs",
+        json!({
+            "agentId": "test-agent",
+            "threadId": "thread-local-components",
+            "messages": [{"role": "user", "content": "hello"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unexpected: {body}");
+
+    let events = extract_sse_events(&body);
+    assert!(
+        find_event(&events, "run_start").is_some(),
+        "no run_start event in SSE: {body}"
+    );
+    assert!(
+        find_event(&events, "run_finish").is_some(),
+        "no run_finish event in SSE: {body}"
+    );
+
+    let run = test
+        .store
+        .latest_run("thread-local-components")
+        .await
+        .expect("latest run lookup")
+        .expect("run should be persisted");
+    assert_eq!(run.status, RunStatus::Done);
+}
+
+#[tokio::test]
+async fn a2a_agent_card_advertises_push_notifications_with_local_outbox_default() {
+    let test = make_test_app_with_local_components();
+    let (status, body) = get_json(test.router, "/.well-known/agent-card.json").await;
+    assert_eq!(status, StatusCode::OK, "unexpected: {body}");
+
+    let body = serde_json::from_str::<Value>(&body).expect("agent card json");
+    assert_eq!(body["name"].as_str(), Some("test-agent"));
+    assert_eq!(
+        body["capabilities"]["pushNotifications"].as_bool(),
+        Some(true)
+    );
 }
 
 #[tokio::test]

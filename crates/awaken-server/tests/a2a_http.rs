@@ -205,6 +205,12 @@ where
         runtime.resolver_arc(),
         config,
     );
+    let state = awaken_server::protocol_replay_state::with_a2a_push_webhook_relay(
+        state,
+        Arc::new(awaken_stores::InMemoryOutboxStore::new()),
+        awaken_server::protocol_replay_state::A2aPushWebhookRelayConfig::default(),
+    )
+    .expect("test A2A push outbox relay config");
     (build_router(&state), store)
 }
 
@@ -494,6 +500,110 @@ async fn a2a_http_dispatch_matrix_handles_default_and_tenant_routes() {
     assert!(
         body.contains("\"task\""),
         "missing stream task body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn tenant_scoped_push_config_write_preserves_other_tenants() {
+    // A task bound to agent "alpha" is reachable via both the default route
+    // (no tenant) and the "alpha" tenant route, so a single task can hold push
+    // configs under different tenants. A tenant-scoped create/delete must not
+    // clobber configs owned by another tenant when persisting the whole task.
+    let app = make_test_app(&["alpha"]);
+
+    let (status, body) = request_json(
+        &app,
+        "POST",
+        "/v1/a2a/alpha/message:send",
+        &[("content-type", "application/json")],
+        Some(send_message_payload(
+            "task-multitenant",
+            "thread-multitenant",
+            "msg-multitenant",
+            "hello",
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "send failed: {body}");
+
+    let default_uri = "/v1/a2a/tasks/task-multitenant/pushNotificationConfigs";
+    let tenant_uri = "/v1/a2a/alpha/tasks/task-multitenant/pushNotificationConfigs";
+
+    // Create a config on the default (no-tenant) surface.
+    let (status, cfg) = request_json(
+        &app,
+        "POST",
+        default_uri,
+        &[("content-type", "application/json")],
+        Some(json!({ "id": "cfg-default", "url": "http://127.0.0.1:9/default" })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create default config failed: {cfg}"
+    );
+
+    // Create a config on the alpha tenant surface for the same task.
+    let (status, cfg) = request_json(
+        &app,
+        "POST",
+        tenant_uri,
+        &[("content-type", "application/json")],
+        Some(json!({ "id": "cfg-alpha", "url": "http://127.0.0.1:9/alpha" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create alpha config failed: {cfg}");
+
+    // The default route is unscoped, so it lists every config on the task.
+    let config_ids = |list: &Value| -> Vec<String> {
+        list["configs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|cfg| cfg["id"].as_str().map(str::to_string))
+            .collect()
+    };
+
+    // The tenant-scoped write must not have dropped the default config.
+    let (status, list) = request_json(&app, "GET", default_uri, &[], None).await;
+    assert_eq!(status, StatusCode::OK, "list default failed: {list}");
+    let ids = config_ids(&list);
+    assert!(
+        ids.iter().any(|id| id == "cfg-default"),
+        "default tenant config dropped by alpha write: {list}"
+    );
+    assert!(
+        ids.iter().any(|id| id == "cfg-alpha"),
+        "alpha config missing after alpha write: {list}"
+    );
+
+    // Deleting the alpha config must likewise leave the default config intact.
+    let (status, _ct, _body) = request_text(
+        &app,
+        "DELETE",
+        &format!("{tenant_uri}/cfg-alpha"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, list) = request_json(&app, "GET", default_uri, &[], None).await;
+    assert_eq!(status, StatusCode::OK, "list default after delete: {list}");
+    let ids = config_ids(&list);
+    assert_eq!(
+        ids,
+        vec!["cfg-default".to_string()],
+        "alpha delete must remove only the alpha config: {list}"
+    );
+
+    // And the alpha surface should now report no configs.
+    let (status, list) = request_json(&app, "GET", tenant_uri, &[], None).await;
+    assert_eq!(status, StatusCode::OK, "list alpha after delete: {list}");
+    assert!(
+        list["configs"].as_array().is_none_or(Vec::is_empty),
+        "alpha config should be deleted: {list}"
     );
 }
 
