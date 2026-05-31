@@ -1,5 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
+export const TEST_ADMIN_TOKEN = 'test-bearer-api-surface';
+
 export default defineConfig({
   testDir: './tests',
   testMatch: /api-surface\.spec\.ts/,
@@ -11,7 +13,7 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:38080',
   },
   webServer: {
-    command: 'cargo run -p ai-sdk-starter-agent',
+    command: `AWAKEN_ADMIN_API_BEARER_TOKEN=${TEST_ADMIN_TOKEN} cargo run -p ai-sdk-starter-agent`,
     cwd: '..',
     port: 38080,
     timeout: 120_000,

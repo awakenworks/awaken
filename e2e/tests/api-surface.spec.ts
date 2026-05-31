@@ -1,4 +1,5 @@
 import { expect, test, type APIResponse } from "@playwright/test";
+import { TEST_ADMIN_TOKEN } from "../playwright.api-surface.config";
 import { a2aSendMessagePayload } from "./a2a-test-utils";
 import { aiSdkTextMessages } from "./ai-sdk-test-utils";
 
@@ -47,6 +48,17 @@ async function expectJsonObject(label: string, response: APIResponse) {
 }
 
 test.describe("HTTP API surface coverage", () => {
+  test("admin routes require the configured bearer token", async ({ request }) => {
+    const unauthenticated = await request.get("/v1/system/info");
+    expect(unauthenticated.status()).toBe(401);
+
+    const authenticated = await request.get("/v1/system/info", {
+      headers: { authorization: `Bearer ${TEST_ADMIN_TOKEN}` },
+    });
+    expect(authenticated.ok()).toBeTruthy();
+    await expectJsonObject("GET /v1/system/info with bearer token", authenticated);
+  });
+
   test("covers public, runtime, protocol, and observability routes", async ({
     request,
   }) => {

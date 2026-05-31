@@ -60,6 +60,11 @@ impl ProviderExecutorFactory for TestProviderFactory {
     }
 }
 
+struct TestApp {
+    router: axum::Router,
+    manager: Arc<ConfigRuntimeManager>,
+}
+
 fn bootstrap_agent() -> AgentSpec {
     AgentSpec {
         id: "bootstrap".into(),
@@ -70,7 +75,7 @@ fn bootstrap_agent() -> AgentSpec {
     }
 }
 
-async fn build_test_app() -> axum::Router {
+async fn build_test_context() -> TestApp {
     let config_store = Arc::new(InMemoryStore::new());
     let thread_store = Arc::new(InMemoryStore::new());
     let runtime = Arc::new(
@@ -118,9 +123,17 @@ async fn build_test_app() -> axum::Router {
         ServerConfig::default(),
     );
     state.admin.admin_api_config.bearer_token = Some(ADMIN_TOKEN.into());
-    state.config = Some(ConfigModuleState::new(config_store, manager).with_audit_log(audit_logger));
+    state.config =
+        Some(ConfigModuleState::new(config_store, manager.clone()).with_audit_log(audit_logger));
 
-    build_router(&state)
+    TestApp {
+        router: build_router(&state),
+        manager,
+    }
+}
+
+async fn build_test_app() -> axum::Router {
+    build_test_context().await.router
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -571,6 +584,97 @@ async fn restore_does_not_validate_references_at_edit_time() {
     .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body["model_id"], "model-restore-test");
+}
+
+#[tokio::test]
+async fn apply_rejects_missing_references_after_restore_promotes_invalid_graph() {
+    let ctx = build_test_context().await;
+    let app = &ctx.router;
+
+    let (status, _) = post_json(
+        app,
+        "/v1/config/providers",
+        &json!({"id": "prov-restore-apply", "adapter": "stub"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = post_json(
+        app,
+        "/v1/config/models",
+        &json!({
+            "id": "model-restore-apply",
+            "provider_id": "prov-restore-apply",
+            "upstream_model": "gpt-4"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = post_json(
+        app,
+        "/v1/config/agents",
+        &json!({
+            "id": "agent-restore-apply",
+            "model_id": "model-restore-apply",
+            "system_prompt": "original",
+            "max_rounds": 1
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let audit = get_audit_log(app, "resource=agents/agent-restore-apply").await;
+    let create_event_id = audit["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|e| e["action"] == "create")
+        .and_then(|e| e["id"].as_str())
+        .expect("create event")
+        .to_string();
+
+    let (status, _) = put_json(
+        app,
+        "/v1/config/agents/agent-restore-apply",
+        &json!({
+            "id": "agent-restore-apply",
+            "model_id": "bootstrap",
+            "system_prompt": "safe",
+            "max_rounds": 1
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(
+        delete_resource(app, "/v1/config/models/model-restore-apply?force=true").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        delete_resource(app, "/v1/config/providers/prov-restore-apply?force=true").await,
+        StatusCode::NO_CONTENT
+    );
+
+    let (status, body) = post_json(
+        app,
+        "/v1/config/agents/agent-restore-apply/restore",
+        &json!({ "version": create_event_id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["model_id"], "model-restore-apply");
+
+    let err = ctx
+        .manager
+        .apply()
+        .await
+        .expect_err("explicit apply must reject the restored missing model reference");
+    let message = err.to_string();
+    assert!(
+        message.contains("agent-restore-apply") && message.contains("model-restore-apply"),
+        "apply error must name the missing reference, got: {message}"
+    );
 }
 
 /// The restore audit event has `restored_from` populated.

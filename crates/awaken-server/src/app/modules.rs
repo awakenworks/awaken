@@ -222,13 +222,30 @@ pub struct TraceModuleState {
     pub trace_store: Arc<dyn TraceStore>,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct A2aPushDriverKey {
+    tenant: Option<String>,
+    task_id: String,
+    config_id: String,
+}
+
+impl A2aPushDriverKey {
+    fn new(task_id: &str, tenant: Option<&str>, config_id: &str) -> Self {
+        Self {
+            tenant: tenant.map(ToOwned::to_owned),
+            task_id: task_id.to_string(),
+            config_id: config_id.to_string(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ProtocolModuleState {
     pub replay_buffers: ReplayBufferMap,
     pub mcp_http: Arc<crate::protocols::mcp::http::McpHttpState>,
     pub a2a_push_outbox: Arc<dyn OutboxStore>,
     pub a2a_push_relay_config: A2aPushWebhookRelayConfig,
-    pub a2a_push_driver_keys: Arc<parking_lot::Mutex<HashSet<(Option<String>, String, String)>>>,
+    a2a_push_driver_keys: Arc<parking_lot::Mutex<HashSet<A2aPushDriverKey>>>,
 }
 
 impl ProtocolModuleState {
@@ -276,11 +293,7 @@ impl ProtocolModuleState {
         tenant: Option<&str>,
         config_id: &str,
     ) -> bool {
-        let key = (
-            tenant.map(ToOwned::to_owned),
-            task_id.to_string(),
-            config_id.to_string(),
-        );
+        let key = A2aPushDriverKey::new(task_id, tenant, config_id);
         self.a2a_push_driver_keys.lock().insert(key) // true if newly inserted
     }
 
@@ -290,11 +303,7 @@ impl ProtocolModuleState {
         tenant: Option<&str>,
         config_id: &str,
     ) {
-        let key = (
-            tenant.map(ToOwned::to_owned),
-            task_id.to_string(),
-            config_id.to_string(),
-        );
+        let key = A2aPushDriverKey::new(task_id, tenant, config_id);
         self.a2a_push_driver_keys.lock().remove(&key);
     }
 }
