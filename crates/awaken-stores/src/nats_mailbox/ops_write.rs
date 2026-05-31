@@ -434,6 +434,107 @@ pub(crate) async fn append_thread_index_to_bucket(
     }
 }
 
+pub(crate) async fn replace_thread_index_bucket(
+    kv_thread_index: &async_nats::jetstream::kv::Store,
+    thread_id: &str,
+    dispatch_ids: &[String],
+) -> Result<(), StorageError> {
+    let key = keys::thread_index_key(thread_id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut backoff = std::time::Duration::from_micros(200);
+    let mut attempts = 0u32;
+    loop {
+        attempts += 1;
+        let entry = kv_thread_index
+            .entry(&key)
+            .await
+            .map_err(|e| StorageError::Io(format!("kv entry: {e}")))?;
+        match entry {
+            Some(entry) if kv_helpers::is_tombstone(&entry) => {
+                if dispatch_ids.is_empty() {
+                    return Ok(());
+                }
+                let bytes = codec::encode_thread_index(dispatch_ids)?;
+                let result = kv_thread_index
+                    .create(&key, bytes)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                match result {
+                    Ok(_) => return Ok(()),
+                    Err(e) => {
+                        if std::time::Instant::now() >= deadline {
+                            return Err(StorageError::Io(format!(
+                                "thread_index replace CAS timeout after {attempts} attempts"
+                            )));
+                        }
+                        tracing::debug!(error = %e, "thread_index replace CAS retry");
+                    }
+                }
+            }
+            Some(entry) => {
+                let ids = codec::decode_thread_index(&entry.value)?;
+                if ids == dispatch_ids {
+                    return Ok(());
+                }
+                let result = if dispatch_ids.is_empty() {
+                    kv_thread_index
+                        .purge_expect_revision(&key, Some(entry.revision))
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                } else {
+                    let bytes = codec::encode_thread_index(dispatch_ids)?;
+                    kv_thread_index
+                        .update(&key, bytes, entry.revision)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                };
+                match result {
+                    Ok(_) => return Ok(()),
+                    Err(e) => {
+                        if std::time::Instant::now() >= deadline {
+                            return Err(StorageError::Io(format!(
+                                "thread_index replace CAS timeout after {attempts} attempts"
+                            )));
+                        }
+                        tracing::debug!(error = %e, "thread_index replace CAS retry");
+                    }
+                }
+            }
+            None => {
+                if dispatch_ids.is_empty() {
+                    return Ok(());
+                }
+                let bytes = codec::encode_thread_index(dispatch_ids)?;
+                let result = kv_thread_index
+                    .create(&key, bytes)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                match result {
+                    Ok(_) => return Ok(()),
+                    Err(e) => {
+                        if std::time::Instant::now() >= deadline {
+                            return Err(StorageError::Io(format!(
+                                "thread_index replace CAS timeout after {attempts} attempts"
+                            )));
+                        }
+                        tracing::debug!(error = %e, "thread_index replace CAS retry");
+                    }
+                }
+            }
+        }
+
+        tokio::time::sleep(backoff).await;
+        backoff = std::cmp::min(
+            backoff.saturating_mul(2),
+            std::time::Duration::from_millis(20),
+        );
+    }
+}
+
 pub(super) async fn cleanup_thread_index(store: &NatsMailboxStore, dispatch: &RunDispatch) {
     if let Err(error) = remove_thread_index_from_bucket(
         &store.kv_thread_index,

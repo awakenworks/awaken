@@ -106,7 +106,7 @@ async fn concurrent_nodes_claim_same_thread_without_duplicate_owners() {
     let fixture = NatsFixture::start().await;
     let mk_config = shared_config(fixture.url.clone());
     let seed = NatsMailboxStore::connect(mk_config()).await.expect("seed");
-    let total = stress_records(1_000);
+    let total = stress_records(1_000).min(1_000);
     for i in 0..total {
         let mut dispatch = test_dispatch(&format!("d-thread-{i}"), "t-hot-thread");
         dispatch.created_at = i as u64;

@@ -116,6 +116,55 @@ async fn index_rebuilds_from_kv_on_restart() {
 }
 
 #[tokio::test]
+async fn index_rebuilds_hot_thread_from_kv_on_restart() {
+    let fixture = NatsFixture::start().await;
+
+    let stream_name = format!("DISPATCH_{}", uuid::Uuid::now_v7().simple());
+    let dispatch_bucket = format!("d_{}", uuid::Uuid::now_v7().simple());
+    let epoch_bucket = format!("e_{}", uuid::Uuid::now_v7().simple());
+    let ti_bucket = format!("ti_{}", uuid::Uuid::now_v7().simple());
+    let consumer_name = format!("c_{}", uuid::Uuid::now_v7().simple());
+    let mk_config = || {
+        let mut config = NatsMailboxConfig::new(fixture.url.clone());
+        config.stream_name = stream_name.clone();
+        config.consumer_name = consumer_name.clone();
+        config.dispatch_bucket = dispatch_bucket.clone();
+        config.epoch_bucket = epoch_bucket.clone();
+        config.thread_index_bucket = ti_bucket.clone();
+        config.watcher_initial_scan_timeout = Duration::from_secs(10);
+        config.sweeper_interval = Duration::from_secs(60);
+        config
+    };
+
+    let store1 = NatsMailboxStore::connect(mk_config())
+        .await
+        .expect("connect 1");
+    for i in 0..2_000 {
+        let mut dispatch = test_dispatch(&format!("d-hot-restart-{i}"), "t-hot-restart");
+        dispatch.created_at = i;
+        store1.enqueue(&dispatch).await.unwrap();
+    }
+    store1
+        .__test_purge_thread_index("t-hot-restart")
+        .await
+        .unwrap();
+    store1.shutdown().await.unwrap();
+    drop(store1);
+
+    let store2 = NatsMailboxStore::connect(mk_config())
+        .await
+        .expect("connect 2");
+    let claimed = store2
+        .claim("t-hot-restart", "c2", 30_000, 10_000, 25)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].dispatch_id, "d-hot-restart-0");
+
+    store2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn sweeper_republishes_available_dispatch() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;

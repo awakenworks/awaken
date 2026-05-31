@@ -102,6 +102,12 @@ impl DispatchIndex {
         self.by_id.get(dispatch_id).map(|indexed| &indexed.dispatch)
     }
 
+    pub fn get_cloned(&self, dispatch_id: &str) -> Option<RunDispatch> {
+        self.by_id
+            .get(dispatch_id)
+            .map(|indexed| indexed.dispatch.clone())
+    }
+
     pub fn list_by_thread(
         &self,
         thread_id: &str,
@@ -117,6 +123,38 @@ impl DispatchIndex {
                 None => true,
             })
             .collect()
+    }
+
+    pub fn best_queued_for_thread(
+        &self,
+        thread_id: &str,
+        now: u64,
+    ) -> (usize, Option<RunDispatch>) {
+        let Some(ids) = self.by_thread.get(thread_id) else {
+            return (0, None);
+        };
+        let mut eligible_count = 0usize;
+        let mut best: Option<&RunDispatch> = None;
+        for id in ids {
+            let Some(dispatch) = self.by_id.get(id).map(|indexed| &indexed.dispatch) else {
+                continue;
+            };
+            if dispatch.status != RunDispatchStatus::Queued || dispatch.available_at > now {
+                continue;
+            }
+            eligible_count += 1;
+            if best.is_none_or(|current| {
+                dispatch
+                    .priority
+                    .cmp(&current.priority)
+                    .then(dispatch.created_at.cmp(&current.created_at))
+                    .then(dispatch.dispatch_id.cmp(&current.dispatch_id))
+                    .is_lt()
+            }) {
+                best = Some(dispatch);
+            }
+        }
+        (eligible_count, best.cloned())
     }
 
     pub fn queued_thread_ids(&self) -> Vec<String> {
@@ -214,6 +252,8 @@ async fn initial_scan(
         .await
         .map_err(|e| StorageError::Io(format!("kv dispatch keys: {e}")))?;
     let mut key_count = 0usize;
+    let mut seen_threads: HashSet<String> = HashSet::new();
+    let mut active_by_thread: HashMap<String, Vec<String>> = HashMap::new();
     while let Some(key_result) = keys.next().await {
         let key = match key_result {
             Ok(k) => k,
@@ -224,13 +264,27 @@ async fn initial_scan(
             && !kv_helpers::is_tombstone(&entry)
             && let Ok(dispatch) = codec::decode(&entry.value)
         {
-            reconcile_thread_index(kv_thread_index, &dispatch).await?;
+            seen_threads.insert(dispatch.thread_id.clone());
+            if !is_terminal(dispatch.status) {
+                active_by_thread
+                    .entry(dispatch.thread_id.clone())
+                    .or_default()
+                    .push(dispatch.dispatch_id.clone());
+            }
             index
                 .write()
                 .await
                 .upsert_with_revision(dispatch, entry.revision);
         }
     }
+
+    for thread_id in seen_threads {
+        let mut active_ids = active_by_thread.remove(&thread_id).unwrap_or_default();
+        active_ids.sort();
+        active_ids.dedup();
+        ops_write::replace_thread_index_bucket(kv_thread_index, &thread_id, &active_ids).await?;
+    }
+
     metrics::record_watcher_initial_scan(key_count, started.elapsed());
     Ok(())
 }

@@ -13,6 +13,10 @@ enum AvailableAtPolicy {
     Respect,
 }
 
+// Small queues stay on the authoritative KV path so stale watcher indexes cannot
+// reorder low-volume claims; large hot queues use the local index as a read cache.
+const LOCAL_CLAIM_FAST_PATH_MIN_CANDIDATES: usize = 128;
+
 pub async fn claim_dispatch(
     store: &NatsMailboxStore,
     dispatch_id: &str,
@@ -167,7 +171,35 @@ pub async fn claim(
         return Ok(Vec::new());
     }
 
-    let mut candidates = match ops_query::load_thread_dispatches(store, thread_id).await {
+    if claim_guard::active_dispatch_id(store, thread_id, now)
+        .await?
+        .is_some()
+    {
+        metrics::inc_claim_attempt("blocked");
+        return Ok(Vec::new());
+    }
+
+    let (local_candidate_count, local_candidate) =
+        ops_query::best_local_claim_candidate(store, thread_id, now).await;
+    if local_candidate_count >= LOCAL_CLAIM_FAST_PATH_MIN_CANDIDATES
+        && let Some(candidate) = local_candidate
+    {
+        match claim_available_dispatch(store, &candidate.dispatch_id, consumer_id, lease_ms, now)
+            .await
+        {
+            Ok(Some(d)) => {
+                metrics::inc_claim_attempt("claimed");
+                return Ok(vec![d]);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                metrics::inc_claim_attempt("error");
+                return Err(error);
+            }
+        }
+    }
+
+    let mut candidates = match ops_query::load_claim_candidates(store, thread_id, now).await {
         Ok(dispatches) => dispatches,
         Err(error) => {
             metrics::inc_claim_attempt("error");
@@ -192,9 +224,7 @@ pub async fn claim(
         {
             Ok(Some(d)) => {
                 claimed.push(d);
-                if claimed.len() >= limit {
-                    break;
-                }
+                break;
             }
             Ok(None) => {}
             Err(error) => {

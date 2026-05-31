@@ -46,6 +46,54 @@ pub(crate) async fn load_thread_dispatches(
     Ok(dispatches)
 }
 
+pub(crate) async fn load_claim_candidates(
+    store: &NatsMailboxStore,
+    thread_id: &str,
+    now: u64,
+) -> Result<Vec<RunDispatch>, StorageError> {
+    let started = std::time::Instant::now();
+    let Some(ids) = load_thread_index_ids(store, thread_id).await? else {
+        metrics::record_claim_scan(0, started.elapsed());
+        return Ok(Vec::new());
+    };
+
+    let id_count = ids.len();
+    let mut dispatches = Vec::new();
+    for dispatch_id in ids {
+        let cached = store.index.read().await.get_cloned(&dispatch_id);
+        if let Some(dispatch) = cached
+            && dispatch.thread_id == thread_id
+            && dispatch.status == RunDispatchStatus::Queued
+            && dispatch.available_at <= now
+        {
+            dispatches.push(dispatch);
+            continue;
+        }
+
+        let Some(dispatch) = load_dispatch(store, &dispatch_id).await? else {
+            continue;
+        };
+        if dispatch.thread_id == thread_id {
+            store.index.write().await.upsert(dispatch.clone());
+            dispatches.push(dispatch);
+        }
+    }
+    metrics::record_claim_scan(id_count, started.elapsed());
+    Ok(dispatches)
+}
+
+pub(crate) async fn best_local_claim_candidate(
+    store: &NatsMailboxStore,
+    thread_id: &str,
+    now: u64,
+) -> (usize, Option<RunDispatch>) {
+    store
+        .index
+        .read()
+        .await
+        .best_queued_for_thread(thread_id, now)
+}
+
 async fn load_thread_index_ids(
     store: &NatsMailboxStore,
     thread_id: &str,
