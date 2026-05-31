@@ -25,9 +25,9 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 32 32" width="22" height="22" fill="none">
-              <path d="M10 22 L16 9 L22 22 M12.5 17.5 H19.5"
-                    stroke="currentColor" stroke-width="2.4"
-                    stroke-linecap="round" stroke-linejoin="round"></path>
+              <path d="M14.2 3.6 H17.8 L27.2 25.8 H24.4 L16 6 L7.6 25.8 H4.8 Z"
+                    fill="currentColor"></path>
+              <circle cx="16" cy="19.4" r="2.65" fill="var(--aw-tone-error, #cf4040)"></circle>
             </svg>
           </span>
           <span>Awaken</span>
@@ -111,13 +111,14 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
     font-weight: 600;
     letter-spacing: var(--aw-tracking-title-em);
     font-size: 17px;
-    color: var(--aw-text-strong);
+    color: var(--aw-text);
   }
   .site-footer .brand-mark {
     width: 28px; height: 28px; border-radius: 7px;
-    background: var(--aw-accent);
+    background: var(--aw-bg);
+    border: 1px solid var(--aw-border);
     display: grid; place-items: center;
-    color: var(--aw-accent-text);
+    color: var(--aw-text-strong);
   }
   .site-footer .brand-mark svg { display: block; }
   .site-footer h5 {

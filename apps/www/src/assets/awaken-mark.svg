@@ -1,4 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none">
-  <rect x="2" y="2" width="28" height="28" rx="7" fill="var(--aw-accent, #5550e9)"/>
-  <path d="M11 22 L16 9 L21 22 M13 17 H19" stroke="var(--aw-bg, #fff)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <title>Awaken</title>
+  <style>
+    :root {
+      --bg: #fafafa;
+      --edge: #0a0a0a;
+      --dot: #cf4040;
+      --border: #e6e6e6;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0a0a0a;
+        --edge: #ededed;
+        --dot: #fa6863;
+        --border: #232323;
+      }
+    }
+  </style>
+  <rect x="2" y="2" width="28" height="28" rx="7" fill="var(--bg)" stroke="var(--border)" stroke-width="1"/>
+  <path d="M14.2 3.6 H17.8 L27.2 25.8 H24.4 L16 6 L7.6 25.8 H4.8 Z" fill="var(--edge)"/>
+  <circle cx="16" cy="19.4" r="2.65" fill="var(--dot)"/>
 </svg>
