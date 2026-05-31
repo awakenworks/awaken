@@ -768,24 +768,20 @@ async fn freeze_retry_after_conflict_does_not_leave_phantom_trigger_ids() {
 struct FailingEventPublisher;
 
 #[async_trait]
-impl awaken_server_contract::contract::commit_coordinator::OutboxServerEventPublisher
-    for FailingEventPublisher
-{
+impl awaken_server_contract::OutboxServerEventPublisher for FailingEventPublisher {
     async fn publish(
         &self,
         _draft: awaken_server_contract::contract::event_store::CanonicalEventDraft,
         _options: awaken_server_contract::contract::event_store::AppendOptions,
     ) -> Result<
-        awaken_server_contract::contract::commit_coordinator::ServerEventPublishOutcome,
-        awaken_server_contract::contract::commit_coordinator::EventPublishError,
+        awaken_server_contract::ServerEventPublishOutcome,
+        awaken_server_contract::EventPublishError,
     > {
-        Err(
-            awaken_server_contract::contract::commit_coordinator::EventPublishError::Enqueue(
-                awaken_server_contract::contract::outbox::OutboxError::Io(
-                    "event publisher unavailable".to_string(),
-                ),
+        Err(awaken_server_contract::EventPublishError::Enqueue(
+            awaken_server_contract::contract::outbox::OutboxError::Io(
+                "event publisher unavailable".to_string(),
             ),
-        )
+        ))
     }
 }
 

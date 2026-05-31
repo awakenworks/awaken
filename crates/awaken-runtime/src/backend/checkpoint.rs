@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use awaken_runtime_contract::contract::commit_coordinator::Checkpoint;
+use awaken_runtime_contract::contract::commit_coordinator::ThreadCommit;
 use awaken_runtime_contract::contract::identity::RunIdentity;
 use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_runtime_contract::contract::message::{Message, Role};
@@ -142,12 +142,12 @@ pub(super) async fn persist_remote_root_checkpoint(
             let mut record = base_record.clone();
             record.output = output;
             let mut plan =
-                Checkpoint::append(thread_id.to_string(), delta, Some(expected_version), record);
+                ThreadCommit::append_messages(thread_id.to_string(), delta, Some(expected_version), record);
             if let Some(thread_state) = thread_state
                 .as_ref()
                 .filter(|state| !state.extensions.is_empty())
             {
-                plan = plan.with_thread_state(thread_state.clone());
+                plan = plan.with_thread_state_snapshot(thread_state.clone());
             }
             plan
         },

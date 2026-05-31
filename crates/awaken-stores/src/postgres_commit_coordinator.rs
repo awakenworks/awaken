@@ -11,10 +11,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_server_contract::contract::commit_coordinator::{
-    Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
+    CommitCoordinator, CommitError, ThreadCommit, ThreadCommitOutcome, TransactionScopeId,
 };
 use awaken_server_contract::contract::staged_commit::{
-    CheckpointStagedWrites, StagedCommitCoordinator,
+    StagedCommitCoordinator, ThreadCommitStagedOutcome, ThreadCommitStagedWrites,
 };
 use awaken_server_contract::contract::storage::StorageError;
 
@@ -71,10 +71,11 @@ impl CommitCoordinator for PgCommitCoordinator {
 
     async fn commit_checkpoint(
         &self,
-        plan: Checkpoint,
-    ) -> Result<CheckpointCommitOutcome, CommitError> {
-        self.commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
-            .await
+        plan: ThreadCommit,
+    ) -> Result<ThreadCommitOutcome, CommitError> {
+        self.commit_checkpoint_staged(plan, ThreadCommitStagedWrites::default())
+            .await?;
+        Ok(ThreadCommitOutcome)
     }
 }
 
@@ -82,11 +83,11 @@ impl CommitCoordinator for PgCommitCoordinator {
 impl StagedCommitCoordinator for PgCommitCoordinator {
     async fn commit_checkpoint_staged(
         &self,
-        plan: Checkpoint,
-        staged: CheckpointStagedWrites,
-    ) -> Result<CheckpointCommitOutcome, CommitError> {
+        plan: ThreadCommit,
+        staged: ThreadCommitStagedWrites,
+    ) -> Result<ThreadCommitStagedOutcome, CommitError> {
         plan.validate()?;
-        staged.validate(&plan.thread_id, &plan.run.run_id)?;
+        staged.validate(&plan.thread_id, &plan.run_projection.run_id)?;
         self.store
             .ensure_schema()
             .await
@@ -131,9 +132,9 @@ impl StagedCommitCoordinator for PgCommitCoordinator {
             .checkpoint_append_in_tx(
                 &mut tx,
                 &plan.thread_id,
-                &plan.messages,
-                plan.expected_message_version,
-                &plan.run,
+                &plan.message_delta,
+                plan.expected_message_count,
+                &plan.run_projection,
             )
             .await
             .map_err(|error| match error {
@@ -147,7 +148,7 @@ impl StagedCommitCoordinator for PgCommitCoordinator {
                 other => CommitError::StoreWrite(other),
             })?;
 
-        if let Some(thread_state) = &plan.thread_state {
+        if let Some(thread_state) = &plan.thread_state_snapshot {
             self.store
                 .save_thread_state_tx(&mut tx, &plan.thread_id, thread_state)
                 .await
@@ -158,7 +159,7 @@ impl StagedCommitCoordinator for PgCommitCoordinator {
             .await
             .map_err(|error| CommitError::Commit(error.to_string()))?;
 
-        Ok(CheckpointCommitOutcome {
+        Ok(ThreadCommitStagedOutcome {
             canonical_event_ids,
             server_event_ids,
             additional_outbox_ids,

@@ -9,10 +9,7 @@ use awaken_runtime::extensions::background::{
 use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult, build_agent_env};
 use awaken_runtime::{AgentRuntime, Plugin, ResolvedAgent};
 use awaken_server_contract::RuntimeEventDurability;
-use awaken_server_contract::contract::commit_coordinator::{
-    Checkpoint, CommitCoordinator, EventPublishError, OutboxServerEventPublisher,
-    ServerEventPublishOutcome,
-};
+use awaken_server_contract::contract::commit_coordinator::{CommitCoordinator, ThreadCommit};
 use awaken_server_contract::contract::content::ContentBlock;
 use awaken_server_contract::contract::event_store::{
     AppendOptions, CanonicalEventDraft, EventReader, EventScope, EventWriter,
@@ -37,6 +34,9 @@ use awaken_server_contract::contract::tool::{
 };
 use awaken_server_contract::now_ms;
 use awaken_server_contract::thread::Thread;
+use awaken_server_contract::{
+    EventPublishError, OutboxServerEventPublisher, ServerEventPublishOutcome,
+};
 use awaken_stores::{
     InMemoryEventStore, InMemoryMailboxStore, InMemoryOutboxStore, InMemoryStore,
     MemoryCommitCoordinator, PendingMessageStore,
@@ -1162,7 +1162,7 @@ impl CommittingEmittingMailboxRuntime {
                 .unwrap_or_else(|| "agent-1".to_string()),
             ..Default::default()
         };
-        let plan = Checkpoint::checkpoint_only(request.thread_id(), run);
+        let plan = ThreadCommit::run_projection_only(request.thread_id(), run);
         coordinator
             .commit_checkpoint(plan)
             .await

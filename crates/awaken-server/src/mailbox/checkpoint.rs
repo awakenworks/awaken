@@ -1,4 +1,4 @@
-use awaken_server_contract::contract::commit_coordinator::{Checkpoint, CommitError};
+use awaken_server_contract::contract::commit_coordinator::{CommitError, ThreadCommit};
 use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::storage::RunRecord;
 
@@ -18,7 +18,7 @@ impl Mailbox {
         // for tests. This helper seeds a fresh thread, so the message delta is
         // a guarded append against version 0 (a non-empty delta must carry a
         // version guard; ADR-0042 A).
-        let plan = Checkpoint::append(
+        let plan = ThreadCommit::append_messages(
             thread_id.to_string(),
             messages.to_vec(),
             Some(0),
@@ -44,7 +44,7 @@ impl Mailbox {
         expected_version: Option<u64>,
         run: &RunRecord,
     ) -> Result<bool, MailboxError> {
-        let plan = Checkpoint::append(
+        let plan = ThreadCommit::append_messages(
             thread_id.to_string(),
             delta.to_vec(),
             expected_version,
@@ -84,7 +84,7 @@ mod tests {
     use awaken_runtime::RunActivation;
     use awaken_runtime::loop_runner::{AgentLoopError, AgentRunResult};
     use awaken_server_contract::contract::commit_coordinator::{
-        CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
+        CommitCoordinator, CommitError, ThreadCommitOutcome, TransactionScopeId,
     };
     use awaken_server_contract::contract::event_sink::EventSink;
     use awaken_server_contract::contract::lifecycle::RunStatus;
@@ -117,14 +117,14 @@ mod tests {
 
         async fn commit_checkpoint(
             &self,
-            plan: Checkpoint,
-        ) -> Result<CheckpointCommitOutcome, CommitError> {
+            plan: ThreadCommit,
+        ) -> Result<ThreadCommitOutcome, CommitError> {
             self.commits.fetch_add(1, Ordering::SeqCst);
             #[allow(deprecated)]
             self.store
-                .checkpoint(&plan.thread_id, &plan.messages, &plan.run)
+                .checkpoint(&plan.thread_id, &plan.message_delta, &plan.run_projection)
                 .await?;
-            Ok(CheckpointCommitOutcome::default())
+            Ok(ThreadCommitOutcome)
         }
     }
 

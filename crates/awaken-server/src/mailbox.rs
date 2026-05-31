@@ -13,9 +13,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use awaken_runtime::RunActivation;
-use awaken_server_contract::contract::commit_coordinator::{
-    CommitCoordinator, OutboxServerEventPublisher,
-};
+use awaken_server_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_server_contract::contract::event::AgentEvent;
 use awaken_server_contract::contract::event_sink::EventSink;
 use awaken_server_contract::contract::mailbox::{MailboxStore, RunDispatchStatus};
@@ -23,7 +21,9 @@ use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::run::{
     RunActivationSnapshot, RunInputSnapshot, RunIntent, RunKind, RunOptions, RunTraceContext,
 };
-use awaken_server_contract::contract::staged_commit::StagedCommitCoordinator;
+use awaken_server_contract::contract::staged_commit::{
+    OutboxServerEventPublisher, StagedCommitCoordinator,
+};
 use awaken_server_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
 use awaken_server_contract::contract::suspension::{ToolCallOutcome, ToolCallResume};
 use awaken_server_contract::contract::tool_intercept::{AdapterKind, RunMode};

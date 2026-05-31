@@ -5,7 +5,7 @@ mod postgres_fixture;
 use std::sync::Arc;
 
 use awaken_server_contract::contract::commit_coordinator::{
-    Checkpoint, CommitCoordinator, CommitError, StagedCanonicalEvent,
+    CommitCoordinator, CommitError, StagedCanonicalEvent, ThreadCommit,
 };
 use awaken_server_contract::contract::event_store::{
     AppendOptions, CanonicalEventDraft, CanonicalEventKind, EventReader, EventScope,
@@ -13,7 +13,7 @@ use awaken_server_contract::contract::event_store::{
 };
 use awaken_server_contract::contract::lifecycle::RunStatus;
 use awaken_server_contract::contract::staged_commit::{
-    CheckpointStagedWrites, StagedCommitCoordinator,
+    StagedCommitCoordinator, ThreadCommitStagedWrites,
 };
 use awaken_server_contract::contract::storage::{RunRecord, ThreadRunStore, ThreadStore};
 use awaken_stores::{PgCommitCoordinator, PostgresStore};
@@ -22,11 +22,11 @@ use serde_json::json;
 use postgres_fixture::PostgresFixture;
 
 fn unique_prefix(name: &str) -> String {
-    // Postgres caps identifier length at 63 chars; the longest suffix added
-    // to a base prefix is `_event_scope_index` (18 chars), so the prefix
-    // budget is ~45. Use the first 8 chars of a v7 uuid for uniqueness.
+    // Postgres caps identifier length at 63 chars; keep the prefix compact
+    // and use UUID v7's random segment so concurrent tests in the same
+    // millisecond do not collide on timestamp-only prefixes.
     let uuid_short = uuid::Uuid::now_v7().simple().to_string();
-    format!("pgc_{}_{}", name, &uuid_short[..8])
+    format!("pgc_{}_{}", name, &uuid_short[12..28])
 }
 
 fn run_record(thread_id: &str, run_id: &str) -> RunRecord {
@@ -66,8 +66,8 @@ async fn pg_commit_atomicity_persists_checkpoint_and_events() {
     let fixture = PostgresFixture::start().await;
     let (coord, store) = build_coord(&fixture, &unique_prefix("happy")).await;
 
-    let plan = Checkpoint::checkpoint_only("t-1", run_record("t-1", "r-1"));
-    let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
+    let plan = ThreadCommit::run_projection_only("t-1", run_record("t-1", "r-1"));
+    let staged = ThreadCommitStagedWrites::default().with_canonical_drafts(vec![
         StagedCanonicalEvent::new(sample_draft("RunStarted", "t-1", "r-1")),
         StagedCanonicalEvent::new(sample_draft("RunCompleted", "t-1", "r-1")),
     ]);
@@ -105,8 +105,8 @@ async fn pg_commit_rolls_back_on_idempotency_conflict() {
     let mut conflicting_draft = sample_draft("RunStarted", "t-2", "r-2");
     conflicting_draft.payload = json!({"kind": "RunStarted", "different": true});
 
-    let plan = Checkpoint::checkpoint_only("t-2", run_record("t-2", "r-2"));
-    let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
+    let plan = ThreadCommit::run_projection_only("t-2", run_record("t-2", "r-2"));
+    let staged = ThreadCommitStagedWrites::default().with_canonical_drafts(vec![
         StagedCanonicalEvent::new(conflicting_draft).with_options(seed_opts),
     ]);
 
@@ -143,8 +143,8 @@ async fn pg_commit_rolls_back_partial_appends_when_later_draft_fails() {
     let mut conflicting_second = sample_draft("ToolCallReady", "t-3", "r-3");
     conflicting_second.payload = json!({"kind": "ToolCallReady", "diff": true});
 
-    let plan = Checkpoint::checkpoint_only("t-3", run_record("t-3", "r-3"));
-    let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
+    let plan = ThreadCommit::run_projection_only("t-3", run_record("t-3", "r-3"));
+    let staged = ThreadCommitStagedWrites::default().with_canonical_drafts(vec![
         // First draft would succeed in isolation.
         StagedCanonicalEvent::new(sample_draft("RunStarted", "t-3", "r-3")),
         // Second draft conflicts via idempotency.
@@ -184,10 +184,10 @@ async fn pg_commit_persists_thread_state_in_same_transaction() {
         revision: 11,
         extensions: Default::default(),
     };
-    let plan = Checkpoint::checkpoint_only("t-ts", run_record("t-ts", "r-ts"))
-        .with_thread_state(state.clone());
+    let plan = ThreadCommit::run_projection_only("t-ts", run_record("t-ts", "r-ts"))
+        .with_thread_state_snapshot(state.clone());
     coord
-        .commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
+        .commit_checkpoint_staged(plan, ThreadCommitStagedWrites::default())
         .await
         .unwrap();
     assert_eq!(
@@ -199,8 +199,8 @@ async fn pg_commit_persists_thread_state_in_same_transaction() {
     // A later commit without thread_state must not clear the stored value.
     coord
         .commit_checkpoint_staged(
-            Checkpoint::checkpoint_only("t-ts", run_record("t-ts", "r-ts2")),
-            CheckpointStagedWrites::default(),
+            ThreadCommit::run_projection_only("t-ts", run_record("t-ts", "r-ts2")),
+            ThreadCommitStagedWrites::default(),
         )
         .await
         .unwrap();
@@ -219,7 +219,7 @@ async fn pg_load_checkpoint_reads_messages_run_and_thread_state_together() {
         revision: 3,
         extensions: Default::default(),
     };
-    let plan = Checkpoint::append(
+    let plan = ThreadCommit::append_messages(
         "t-ck",
         vec![
             Message::user("hi").with_id("m-1".to_string()),
@@ -228,9 +228,9 @@ async fn pg_load_checkpoint_reads_messages_run_and_thread_state_together() {
         Some(0),
         run_record("t-ck", "r-ck"),
     )
-    .with_thread_state(state.clone());
+    .with_thread_state_snapshot(state.clone());
     coord
-        .commit_checkpoint_staged(plan, CheckpointStagedWrites::default())
+        .commit_checkpoint_staged(plan, ThreadCommitStagedWrites::default())
         .await
         .unwrap();
 

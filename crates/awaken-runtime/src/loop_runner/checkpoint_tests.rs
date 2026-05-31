@@ -772,7 +772,7 @@ fn stamp_compaction_marks_skips_when_boundary_absent_from_committed() {
 mod commit_append_retry {
     use super::*;
     use awaken_runtime_contract::contract::commit_coordinator::{
-        CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
+        CommitCoordinator, CommitError, ThreadCommitOutcome, TransactionScopeId,
     };
     use awaken_runtime_contract::contract::storage::StorageError;
     use awaken_runtime_contract::thread::Thread;
@@ -830,22 +830,22 @@ mod commit_append_retry {
         }
         async fn commit_checkpoint(
             &self,
-            plan: Checkpoint,
-        ) -> Result<CheckpointCommitOutcome, CommitError> {
+            plan: ThreadCommit,
+        ) -> Result<ThreadCommitOutcome, CommitError> {
             self.seen_versions
                 .lock()
-                .push(plan.expected_message_version.unwrap_or_default());
+                .push(plan.expected_message_count.unwrap_or_default());
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
                 // The racing writer landed one extra committed message.
                 let actual = self.committed.fetch_add(1, Ordering::SeqCst) + 1;
                 return Err(CommitError::MessageVersionConflict {
                     thread_id: plan.thread_id.clone(),
-                    expected: plan.expected_message_version.unwrap_or_default(),
+                    expected: plan.expected_message_count.unwrap_or_default(),
                     actual,
                 });
             }
-            Ok(CheckpointCommitOutcome::default())
+            Ok(ThreadCommitOutcome)
         }
     }
 
@@ -864,7 +864,7 @@ mod commit_append_retry {
         let outcome =
             commit_checkpoint_appending(&coordinator, &storage, "t-1", |committed, ver| {
                 // Build a trivial append whose guard is the freshly-read version.
-                Checkpoint::append(
+                ThreadCommit::append_messages(
                     "t-1".to_string(),
                     vec![Message::user(format!("delta-after-{}", committed.len()))],
                     Some(ver),
@@ -900,8 +900,8 @@ mod commit_append_retry {
             }
             async fn commit_checkpoint(
                 &self,
-                plan: Checkpoint,
-            ) -> Result<CheckpointCommitOutcome, CommitError> {
+                plan: ThreadCommit,
+            ) -> Result<ThreadCommitOutcome, CommitError> {
                 Err(CommitError::MessageVersionConflict {
                     thread_id: plan.thread_id.clone(),
                     expected: 0,
@@ -913,7 +913,7 @@ mod commit_append_retry {
             committed: Arc::new(AtomicU64::new(0)),
         };
         let result = commit_checkpoint_appending(&AlwaysConflict, &storage, "t-x", |_c, ver| {
-            Checkpoint::append(
+            ThreadCommit::append_messages(
                 "t-x".to_string(),
                 Vec::new(),
                 Some(ver),
