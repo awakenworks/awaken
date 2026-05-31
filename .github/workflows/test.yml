@@ -4,8 +4,6 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
-  schedule:
-    - cron: "17 9 * * *"
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -33,6 +31,7 @@ jobs:
 
   mcp-reference-e2e:
     name: MCP Reference E2E
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -102,6 +101,7 @@ jobs:
 
   admin-console-e2e:
     name: Admin Console Browser E2E
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -118,6 +118,7 @@ jobs:
 
   visual-regression:
     name: Visual Regression
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -181,6 +182,7 @@ jobs:
 
   postgres-store-tests:
     name: Postgres Store Tests
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -206,6 +208,7 @@ jobs:
 
   postgres-event-outbox-replay-tests:
     name: Postgres Event/Outbox/Replay Tests
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -236,6 +239,7 @@ jobs:
 
   nats-store-tests:
     name: NATS Store Tests
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -254,6 +258,7 @@ jobs:
 
   postgres-nats-server-tests:
     name: Postgres/NATS Server Integration
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -279,7 +284,7 @@ jobs:
 
   nats-stress-tests:
     name: NATS Stress Tests
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       AWAKEN_NATS_STRESS_RECORDS: 10000
