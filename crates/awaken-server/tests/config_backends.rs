@@ -634,7 +634,7 @@ async fn file_store_thread_hierarchy_management_round_trip_via_http() {
 
 fn unique_postgres_prefix(seed: &str) -> String {
     let uuid_short = uuid::Uuid::now_v7().simple().to_string();
-    format!("pgs_{}_{}", &uuid_short[..12], &seed[..seed.len().min(8)])
+    format!("pgs_{}_{}", &uuid_short[12..28], &seed[..seed.len().min(8)])
 }
 
 async fn make_postgres_store(seed: &str) -> (Arc<PostgresStore>, PgPool, String) {

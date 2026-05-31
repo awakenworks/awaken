@@ -49,7 +49,10 @@ const REMOTE_ENDPOINT: RemoteEndpoint = {
 
 function rustAgentSpecPatchFields(): string[] {
   const source = readFileSync(
-    new URL("../../../../crates/awaken-contract/src/agent_spec_patch.rs", import.meta.url),
+    new URL(
+      "../../../../crates/awaken-runtime-contract/src/agent_spec_patch.rs",
+      import.meta.url,
+    ),
     "utf8",
   );
   const structMatch = source.match(/pub struct AgentSpecPatch \{([\s\S]*?)\n\}/);

@@ -61,7 +61,7 @@ fn unique_prefix(prefix: &str) -> Option<String> {
     let uuid_short = uuid::Uuid::now_v7().simple().to_string();
     Some(format!(
         "pgs_{}_{}",
-        &uuid_short[..12],
+        &uuid_short[12..28],
         &prefix[..prefix.len().min(8)]
     ))
 }

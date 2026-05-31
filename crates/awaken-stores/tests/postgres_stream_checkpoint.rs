@@ -26,7 +26,7 @@ async fn postgres_stream_checkpoint_put_get_delete_roundtrip() {
         .unwrap_or_else(|_| "postgres://localhost/awaken_test".to_string());
     let pool = PgPool::connect(&url).await.unwrap();
     let uuid_short = uuid::Uuid::now_v7().simple().to_string();
-    let prefix = format!("pgsc_{}", &uuid_short[..12]);
+    let prefix = format!("pgsc_{}", &uuid_short[12..28]);
     let store = PostgresStore::with_prefix(pool, prefix);
     store.ensure_schema().await.unwrap();
 
