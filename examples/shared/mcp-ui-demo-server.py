@@ -67,6 +67,7 @@ for raw in sys.stdin:
             "jsonrpc": "2.0",
             "id": msg_id,
             "result": {
+                "protocolVersion": "2025-11-25",
                 "serverInfo": {"name": "mcp-ui-demo", "version": "0.1.0"},
                 "capabilities": {
                     "tools": {},

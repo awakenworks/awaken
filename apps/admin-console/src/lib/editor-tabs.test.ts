@@ -22,11 +22,14 @@ describe("AGENT_EDITOR_TABS", () => {
 describe("isAgentEditorTab", () => {
   it("accepts known tab ids", () => {
     expect(isAgentEditorTab("basics")).toBe(true);
+    expect(isAgentEditorTab("skills")).toBe(true);
+    expect(isAgentEditorTab("tools")).toBe(true);
     expect(isAgentEditorTab("advanced")).toBe(true);
     expect(isAgentEditorTab("history")).toBe(true);
   });
 
   it("rejects everything else", () => {
+    expect(isAgentEditorTab("mcp")).toBe(false);
     expect(isAgentEditorTab("foo")).toBe(false);
     expect(isAgentEditorTab(undefined)).toBe(false);
     expect(isAgentEditorTab(null)).toBe(false);
@@ -48,9 +51,7 @@ describe("readTabFromSearch", () => {
   });
 
   it("accepts URLSearchParams instances directly", () => {
-    expect(readTabFromSearch(new URLSearchParams({ tab: "delegates" }))).toBe(
-      "delegates",
-    );
+    expect(readTabFromSearch(new URLSearchParams({ tab: "delegates" }))).toBe("delegates");
   });
 });
 
@@ -60,7 +61,10 @@ describe("tab badges", () => {
     model_id: "m",
     system_prompt: "",
   } as const;
-  function badge(id: string, spec: Parameters<NonNullable<(typeof AGENT_EDITOR_TABS)[number]["badge"]>>[0]) {
+  function badge(
+    id: string,
+    spec: Parameters<NonNullable<(typeof AGENT_EDITOR_TABS)[number]["badge"]>>[0],
+  ) {
     const tab = AGENT_EDITOR_TABS.find((t) => t.id === id);
     return tab?.badge?.(spec) ?? null;
   }
@@ -74,14 +78,25 @@ describe("tab badges", () => {
   });
 
   it("Tools badge: includes excluded count when present", () => {
-    expect(
-      badge("tools", { ...empty, allowed_tools: ["a", "b"], excluded_tools: ["x"] }),
-    ).toBe("2·−1");
+    expect(badge("tools", { ...empty, allowed_tools: ["a", "b"], excluded_tools: ["x"] })).toBe(
+      "2·−1",
+    );
   });
 
   it("Plugins badge: count when set", () => {
     expect(badge("plugins", { ...empty, plugin_ids: ["p1", "p2"] })).toBe("2");
     expect(badge("plugins", { ...empty })).toBeNull();
+  });
+
+  it("Skills badge: count when allowlist is set", () => {
+    expect(badge("skills", { ...empty, sections: { skills: { allowlist: ["s1", "s2"] } } })).toBe(
+      "2",
+    );
+    expect(badge("skills", { ...empty })).toBeNull();
+  });
+
+  it("Tools badge: includes MCP server pattern count", () => {
+    expect(badge("tools", { ...empty, allowed_tool_patterns: ["mcp__github__*"] })).toBe("0·m1");
   });
 
   it("Delegates badge: count when set", () => {
@@ -98,9 +113,9 @@ describe("tab badges", () => {
 
 describe("writeTabToSearch", () => {
   it("removes the parameter when writing the default tab", () => {
-    expect(
-      writeTabToSearch("?tab=tools&other=keep", DEFAULT_AGENT_EDITOR_TAB).toString(),
-    ).toBe("other=keep");
+    expect(writeTabToSearch("?tab=tools&other=keep", DEFAULT_AGENT_EDITOR_TAB).toString()).toBe(
+      "other=keep",
+    );
   });
 
   it("sets the parameter when writing a non-default tab", () => {
@@ -108,8 +123,6 @@ describe("writeTabToSearch", () => {
   });
 
   it("preserves unrelated parameters", () => {
-    expect(
-      writeTabToSearch("?other=keep", "tools").toString(),
-    ).toBe("other=keep&tab=tools");
+    expect(writeTabToSearch("?other=keep", "tools").toString()).toBe("other=keep&tab=tools");
   });
 });

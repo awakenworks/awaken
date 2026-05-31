@@ -1,11 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
-import {
-  type ModelSpec,
-  type ProviderRecord,
-  configApi,
-} from "@/lib/config-api";
+import { type ModelSpec, type ProviderRecord, configApi } from "@/lib/config-api";
 import { adminRoutes } from "@/lib/routes";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field } from "@/components/form-components";
@@ -114,7 +110,13 @@ export function ModelsPage() {
     crud.cancelEdit();
   }
 
-  const { search, sort, pageSize, page, apply: applyListState } = useListUrlState<ModelSortKey>(LIST_OPTIONS);
+  const {
+    search,
+    sort,
+    pageSize,
+    page,
+    apply: applyListState,
+  } = useListUrlState<ModelSortKey>(LIST_OPTIONS);
 
   const providerIds = crud.auxiliaryData as string[];
   const providerOptions = useMemo(() => {
@@ -135,10 +137,7 @@ export function ModelsPage() {
     [crud.items, search],
   );
 
-  const sorted = useMemo(
-    () => sortItems(filtered, sort, SORT_CONFIG),
-    [filtered, sort],
-  );
+  const sorted = useMemo(() => sortItems(filtered, sort, SORT_CONFIG), [filtered, sort]);
 
   const view = useMemo(
     () =>
@@ -152,14 +151,16 @@ export function ModelsPage() {
 
   useEffect(() => {
     if (view.page !== page) applyListState({ page: view.page });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.page, page]);
 
   return (
     <div className="mx-auto w-full max-w-5xl 2xl:max-w-none p-6 md:p-8">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-baseline gap-3">
-          <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">{t("models.title")}</h1>
+          <h1 className="text-[22px] font-bold tracking-title-em text-fg-strong">
+            {t("models.title")}
+          </h1>
           <span aria-hidden className="font-mono text-sm text-fg-faint">
             {crud.items.length}
           </span>
@@ -196,9 +197,7 @@ export function ModelsPage() {
                 aria-invalid={Boolean(errors.id)}
                 onChange={(event) => {
                   const value = event.target.value;
-                  crud.setDraft((current) =>
-                    current ? { ...current, id: value } : current,
-                  );
+                  crud.setDraft((current) => (current ? { ...current, id: value } : current));
                   if (errors.id) setErrors((e) => ({ ...e, id: undefined }));
                 }}
                 className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg disabled:bg-muted disabled:text-fg-soft aria-[invalid=true]:border-tone-error"
@@ -234,7 +233,8 @@ export function ModelsPage() {
                   crud.setDraft((current) =>
                     current ? { ...current, upstream_model: value } : current,
                   );
-                  if (errors.upstream_model) setErrors((e) => ({ ...e, upstream_model: undefined }));
+                  if (errors.upstream_model)
+                    setErrors((e) => ({ ...e, upstream_model: undefined }));
                 }}
                 className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
               />
@@ -258,7 +258,8 @@ export function ModelsPage() {
                   crud.setDraft((current) =>
                     current ? { ...current, context_window: parsed } : current,
                   );
-                  if (errors.context_window) setErrors((e) => ({ ...e, context_window: undefined }));
+                  if (errors.context_window)
+                    setErrors((e) => ({ ...e, context_window: undefined }));
                 }}
                 className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
               />
@@ -276,7 +277,8 @@ export function ModelsPage() {
                   crud.setDraft((current) =>
                     current ? { ...current, max_output_tokens: parsed } : current,
                   );
-                  if (errors.max_output_tokens) setErrors((e) => ({ ...e, max_output_tokens: undefined }));
+                  if (errors.max_output_tokens)
+                    setErrors((e) => ({ ...e, max_output_tokens: undefined }));
                 }}
                 className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
               />
@@ -290,9 +292,12 @@ export function ModelsPage() {
                 onChange={(event) => {
                   const value = event.target.value;
                   crud.setDraft((current) =>
-                    current ? { ...current, knowledge_cutoff: value === "" ? undefined : value } : current,
+                    current
+                      ? { ...current, knowledge_cutoff: value === "" ? undefined : value }
+                      : current,
                   );
-                  if (errors.knowledge_cutoff) setErrors((e) => ({ ...e, knowledge_cutoff: undefined }));
+                  if (errors.knowledge_cutoff)
+                    setErrors((e) => ({ ...e, knowledge_cutoff: undefined }));
                 }}
                 className="w-full rounded-sm border border-line-strong px-3 py-2 text-sm text-fg outline-none transition focus:border-fg aria-[invalid=true]:border-tone-error"
               />
@@ -328,6 +333,7 @@ export function ModelsPage() {
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <ModalityChips
               label={t("models.fields.modalitiesInput")}
+              description={t("models.fields.modalitiesInputHint")}
               selected={crud.draft.modalities?.input ?? []}
               onToggle={(m) => {
                 crud.setDraft((current) => {
@@ -342,6 +348,7 @@ export function ModelsPage() {
             />
             <ModalityChips
               label={t("models.fields.modalitiesOutput")}
+              description={t("models.fields.modalitiesOutputHint")}
               selected={crud.draft.modalities?.output ?? []}
               onToggle={(m) => {
                 crud.setDraft((current) => {
@@ -409,63 +416,60 @@ export function ModelsPage() {
               <SortableHeader
                 columns={COLUMNS}
                 sort={sort}
-                onSort={(key) =>
-                  applyListState({ sort: toggleSort(sort, key), page: 1 })
-                }
+                onSort={(key) => applyListState({ sort: toggleSort(sort, key), page: 1 })}
               />
               <tbody>
                 {crud.loading && <SkeletonRows rows={4} cols={COLUMNS.length} />}
                 {!crud.loading && view.items.length === 0 && (
                   <tr>
-                    <td colSpan={COLUMNS.length} className="px-5 py-8 text-center text-sm text-fg-soft">
+                    <td
+                      colSpan={COLUMNS.length}
+                      className="px-5 py-8 text-center text-sm text-fg-soft"
+                    >
                       No models match the current filter.
                     </td>
                   </tr>
                 )}
-                {!crud.loading && view.items.map((model) => (
-                  <tr
-                    key={model.id}
-                    className="border-t border-line text-sm text-fg"
-                  >
-                    <td className="px-5 py-4 font-mono text-fg-strong">{model.id}</td>
-                    <td className="px-5 py-4">{model.provider_id}</td>
-                    <td className="px-5 py-4 text-fg-soft">
-                      {model.upstream_model}
-                    </td>
-                    <td className="px-5 py-4">
-                      <CapabilitySummary model={model} />
-                    </td>
-                    <td className="px-5 py-4 text-fg-soft">
-                      {formatRelativeTime(model.updated_at)}
-                    </td>
-                    <td className="px-5 py-4">
-                      <div className="flex gap-4">
-                        <button
-                          type="button"
-                          onClick={() => setTestModelId(model.id)}
-                          data-testid={`test-model-${model.id}`}
-                          className="font-medium text-link transition hover:text-link-hover"
-                        >
-                          {t("modelTest.trigger")}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => startEditModel(model)}
-                          className="font-medium text-fg transition hover:text-fg-strong"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void crud.handleDelete(model.id)}
-                          className="font-medium text-tone-error transition hover:text-tone-error"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {!crud.loading &&
+                  view.items.map((model) => (
+                    <tr key={model.id} className="border-t border-line text-sm text-fg">
+                      <td className="px-5 py-4 font-mono text-fg-strong">{model.id}</td>
+                      <td className="px-5 py-4">{model.provider_id}</td>
+                      <td className="px-5 py-4 text-fg-soft">{model.upstream_model}</td>
+                      <td className="px-5 py-4">
+                        <CapabilitySummary model={model} />
+                      </td>
+                      <td className="px-5 py-4 text-fg-soft">
+                        {formatRelativeTime(model.updated_at)}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex gap-4">
+                          <button
+                            type="button"
+                            onClick={() => setTestModelId(model.id)}
+                            data-testid={`test-model-${model.id}`}
+                            className="font-medium text-link transition hover:text-link-hover"
+                          >
+                            {t("modelTest.trigger")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => startEditModel(model)}
+                            className="font-medium text-fg transition hover:text-fg-strong"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void crud.handleDelete(model.id)}
+                            className="font-medium text-tone-error transition hover:text-tone-error"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
             {view.pageCount > 1 || view.totalItems > pageSize ? (
@@ -481,9 +485,7 @@ export function ModelsPage() {
           </>
         )}
       </div>
-      {testModelId && (
-        <ModelTestModal modelId={testModelId} onClose={() => setTestModelId(null)} />
-      )}
+      {testModelId && <ModelTestModal modelId={testModelId} onClose={() => setTestModelId(null)} />}
     </div>
   );
 }

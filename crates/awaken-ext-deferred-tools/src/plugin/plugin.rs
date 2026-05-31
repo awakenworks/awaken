@@ -101,7 +101,8 @@ impl Plugin for DeferredToolsPlugin {
             ConfigSchema::for_key::<DeferredToolsConfigKey>()
                 .with_display_name("Deferred Tools")
                 .with_description("Tool loading policy that defers low-probability tools.")
-                .with_category("tools"),
+                .with_category("tools")
+                .with_editor("deferred-tools"),
         ]
     }
 

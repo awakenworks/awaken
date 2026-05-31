@@ -1,8 +1,10 @@
 import type { AgentSpec } from "./config-api";
+import { readSkillAllowlist, selectedMcpServerIds } from "./agent-resource-references";
 
 export type AgentEditorTabId =
   | "basics"
   | "tools"
+  | "skills"
   | "plugins"
   | "delegates"
   | "advanced"
@@ -26,8 +28,19 @@ export const AGENT_EDITOR_TABS: readonly AgentEditorTab[] = [
     badge: (spec) => {
       const allowed = spec.allowed_tools?.length ?? 0;
       const excluded = spec.excluded_tools?.length ?? 0;
-      if (allowed === 0 && excluded === 0) return null;
-      return excluded > 0 ? `${allowed}·−${excluded}` : String(allowed);
+      const mcp = selectedMcpServerIds(spec).length;
+      if (allowed === 0 && excluded === 0 && mcp === 0) return null;
+      const base = excluded > 0 ? `${allowed}·−${excluded}` : String(allowed);
+      return mcp > 0 ? `${base}·m${mcp}` : base;
+    },
+  },
+  {
+    id: "skills",
+    label: "Skills",
+    description: "Skill catalog and skill runtime plugins.",
+    badge: (spec) => {
+      const allowlist = readSkillAllowlist(spec);
+      return allowlist ? String(allowlist.length) : null;
     },
   },
   {

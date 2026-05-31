@@ -34,6 +34,7 @@ export function ToolsPanel({
       <ToolSelector
         label="Allowed"
         registered={registered}
+        toolDetails={capabilities.tools}
         literals={spec.allowed_tools ?? []}
         patterns={spec.allowed_tool_patterns ?? []}
         onChange={(next) => {
@@ -44,6 +45,7 @@ export function ToolsPanel({
       <ToolSelector
         label="Excluded"
         registered={registered}
+        toolDetails={capabilities.tools}
         literals={spec.excluded_tools ?? []}
         patterns={spec.excluded_tool_patterns ?? []}
         onChange={(next) => {

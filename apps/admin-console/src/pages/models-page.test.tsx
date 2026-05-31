@@ -25,7 +25,9 @@ const pageState = vi.hoisted(() => ({
   },
   list: {
     search: "",
-    sort: { key: "id", direction: "asc" } as SortState<"id" | "provider_id" | "upstream_model" | "updated_at">,
+    sort: { key: "id", direction: "asc" } as SortState<
+      "id" | "provider_id" | "upstream_model" | "updated_at"
+    >,
     pageSize: 10,
     page: 1,
     apply: vi.fn(),
@@ -252,7 +254,13 @@ describe("ModelsPage", () => {
 
   it("rejects max_output_tokens > context_window with an inline error and blocks save", () => {
     resetCrud({
-      draft: model({ id: "m", provider_id: "openai", upstream_model: "u", context_window: 1000, max_output_tokens: 2000 }),
+      draft: model({
+        id: "m",
+        provider_id: "openai",
+        upstream_model: "u",
+        context_window: 1000,
+        max_output_tokens: 2000,
+      }),
     });
     renderModels();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -262,7 +270,12 @@ describe("ModelsPage", () => {
 
   it("rejects malformed knowledge_cutoff with an inline error", () => {
     resetCrud({
-      draft: model({ id: "m", provider_id: "openai", upstream_model: "u", knowledge_cutoff: "yesterday" }),
+      draft: model({
+        id: "m",
+        provider_id: "openai",
+        upstream_model: "u",
+        knowledge_cutoff: "yesterday",
+      }),
     });
     renderModels();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -307,6 +320,7 @@ describe("ModelsPage", () => {
 
     const textChip = screen.getAllByRole("switch", { name: "text" })[0];
     expect(textChip.getAttribute("aria-checked")).toBe("true");
+    expect(textChip.textContent ?? "").toContain("Supported");
     fireEvent.click(textChip);
     const updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
       current: ModelSpec | null,
@@ -318,8 +332,32 @@ describe("ModelsPage", () => {
       current: ModelSpec | null,
     ) => ModelSpec | null;
     // Adding "text" twice still produces a single entry — set semantics preserved.
-    const withDuplicateAttempt = addUpdater(model({ id: "m", provider_id: "openai", upstream_model: "u", modalities: { input: ["text"] } }));
+    const withDuplicateAttempt = addUpdater(
+      model({
+        id: "m",
+        provider_id: "openai",
+        upstream_model: "u",
+        modalities: { input: ["text"] },
+      }),
+    );
     expect(withDuplicateAttempt?.modalities?.input).toEqual([]);
+  });
+
+  it("renders explicit supported and unsupported modality labels", () => {
+    resetCrud({
+      draft: model({
+        id: "m",
+        provider_id: "openai",
+        upstream_model: "u",
+        modalities: { input: ["text", "image"], output: ["text"] },
+      }),
+    });
+    renderModels();
+
+    expect(screen.getByText("models.fields.modalitiesInputHint")).toBeTruthy();
+    expect(screen.getByText(/Supported: text, image/)).toBeTruthy();
+    expect(screen.getByText(/Not supported: audio, video, pdf/)).toBeTruthy();
+    expect(screen.getAllByText("Not supported").length).toBeGreaterThan(0);
   });
 
   it("renders capability summary chips for context window, output cap, and modalities", () => {
@@ -347,31 +385,41 @@ describe("ModelsPage", () => {
     resetCrud({ draft });
     renderModels();
 
-    fireEvent.change(screen.getByLabelText("models.fields.contextWindow"), { target: { value: "200000" } });
+    fireEvent.change(screen.getByLabelText("models.fields.contextWindow"), {
+      target: { value: "200000" },
+    });
     let updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
       current: ModelSpec | null,
     ) => ModelSpec | null;
     expect(updater(draft)?.context_window).toBe(200000);
 
-    fireEvent.change(screen.getByLabelText("models.fields.maxOutputTokens"), { target: { value: "16384" } });
+    fireEvent.change(screen.getByLabelText("models.fields.maxOutputTokens"), {
+      target: { value: "16384" },
+    });
     updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
       current: ModelSpec | null,
     ) => ModelSpec | null;
     expect(updater(draft)?.max_output_tokens).toBe(16384);
 
-    fireEvent.change(screen.getByLabelText("models.fields.knowledgeCutoff"), { target: { value: "2026-01" } });
+    fireEvent.change(screen.getByLabelText("models.fields.knowledgeCutoff"), {
+      target: { value: "2026-01" },
+    });
     updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
       current: ModelSpec | null,
     ) => ModelSpec | null;
     expect(updater(draft)?.knowledge_cutoff).toBe("2026-01");
 
-    fireEvent.change(screen.getByLabelText(/models\.fields\.inputPrice/), { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText(/models\.fields\.inputPrice/), {
+      target: { value: "3" },
+    });
     updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
       current: ModelSpec | null,
     ) => ModelSpec | null;
     expect(updater(draft)?.input_token_price_per_million_usd).toBe(3);
 
-    fireEvent.change(screen.getByLabelText(/models\.fields\.outputPrice/), { target: { value: "15" } });
+    fireEvent.change(screen.getByLabelText(/models\.fields\.outputPrice/), {
+      target: { value: "15" },
+    });
     updater = pageState.crud.setDraft.mock.calls.at(-1)?.[0] as (
       current: ModelSpec | null,
     ) => ModelSpec | null;

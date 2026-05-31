@@ -74,10 +74,10 @@ function findFetchCall(fetchSpy: ReturnType<typeof vi.fn>, pattern: string, meth
   });
 }
 
-function renderEditor() {
+function renderEditor(initialEntry = "/tools/echo") {
   return render(
     withQueryClient(
-      <MemoryRouter initialEntries={["/tools/echo"]}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/tools/:id" element={<ToolEditorPage />} />
         </Routes>
@@ -103,6 +103,15 @@ describe("ToolEditorPage", () => {
     const matches = screen.getAllByText("Stock description");
     expect(matches.length).toBeGreaterThanOrEqual(1);
     expect(matches.some((el) => el.tagName === "P")).toBe(true);
+  });
+
+  it("focuses the description override editor from ?edit=description", async () => {
+    renderEditor("/tools/echo?edit=description");
+    const textarea = await waitFor(() => screen.getByLabelText("Description override"));
+
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(screen.getByText("Editing the tool description override.")).toBeDefined();
+    expect(screen.getByText(/PATCH \/v1\/config\/tools\/:id\/overrides/)).toBeDefined();
   });
 
   it("save button patches only the changed description", async () => {

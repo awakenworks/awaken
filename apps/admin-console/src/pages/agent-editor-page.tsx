@@ -5,6 +5,8 @@ import {
   type AgentSpec,
   type Capabilities,
   type ConfigSourceState,
+  type ConfigMetaItem,
+  type McpServerRecord,
   type PermissionPreviewResponse,
   type RecordMeta,
   ConfigApiError,
@@ -15,9 +17,13 @@ import { type AuditEvent, formatActor, summarizeChange } from "@/lib/audit-log";
 import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
 import { ToolsPanel as ToolSelectorsPanel } from "./agent-editor/panels/tools-panel";
+import { VisibleToolDescriptors } from "./agent-editor/panels/tool-descriptors";
 import { CompactionSection } from "./agent-editor/panels/compaction-section";
 import { ContextPolicySection } from "./agent-editor/panels/context-policy-section";
+import { DelegatesPanel } from "./agent-editor/panels/delegates-panel";
+import { McpServersPanel } from "./agent-editor/panels/mcp-servers-panel";
 import { PluginsPanel } from "./agent-editor/panels/plugins-panel";
+import { SkillsPanel } from "./agent-editor/panels/skills-panel";
 import { useToast } from "@/components/toast-provider";
 import { useConfirmDialog } from "@/components/confirm-dialog";
 import { useUnsavedChangesGuard } from "@/components/unsaved-changes-guard";
@@ -36,7 +42,12 @@ import {
 } from "@/lib/reasoning-effort";
 import { adminRoutes } from "@/lib/routes";
 import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
-import { useConfigMetaQuery, useConfigRecordQuery } from "@/lib/query/hooks/config";
+import {
+  useConfigListQuery,
+  useConfigMetaListQuery,
+  useConfigMetaQuery,
+  useConfigRecordQuery,
+} from "@/lib/query/hooks/config";
 import { useAuditLogInfiniteQuery } from "@/lib/query/hooks/audit";
 import { qk } from "@/lib/query/keys";
 import { invalidateConfigMutation } from "@/lib/query/invalidation";
@@ -142,6 +153,12 @@ export function AgentEditorPage() {
   const toast = useToast();
   const confirmDialog = useConfirmDialog();
   const capabilitiesQuery = useCapabilitiesQuery();
+  const mcpServersQuery = useConfigListQuery<McpServerRecord>("mcp-servers", {
+    enabled: activeTab === "tools",
+  });
+  const toolMetaQuery = useConfigMetaListQuery("tools", {
+    enabled: activeTab === "tools",
+  });
   const agentQuery = useConfigRecordQuery<AgentSpec>("agents", id, {
     enabled: !isNew && Boolean(id),
   });
@@ -152,6 +169,8 @@ export function AgentEditorPage() {
   const capabilities = capabilitiesQuery.data ?? null;
   const loading = capabilitiesQuery.isPending || (!isNew && agentQuery.isPending);
   const agentError = !isNew && agentQuery.error ? safeErrorMessage(agentQuery.error) : null;
+  const mcpServersError = mcpServersQuery.error ? safeErrorMessage(mcpServersQuery.error) : null;
+  const toolMetaError = toolMetaQuery.error ? safeErrorMessage(toolMetaQuery.error) : null;
   const agentMetaError =
     !isNew && agentMetaQuery.error ? safeErrorMessage(agentMetaQuery.error) : null;
   const saveDisabled = saving || Boolean(agentMetaError || (!isNew && agentMetaQuery.isPending));
@@ -675,6 +694,24 @@ export function AgentEditorPage() {
                   updateField={updateField}
                   agentSaved={!isNew && savedSpec !== null}
                   savedSpec={savedSpec}
+                  mcpServers={mcpServersQuery.data?.items ?? null}
+                  mcpLoading={
+                    mcpServersQuery.isPending && mcpServersQuery.fetchStatus === "fetching"
+                  }
+                  mcpError={mcpServersError}
+                  toolMetaItems={toolMetaQuery.data ?? []}
+                  toolMetaLoading={
+                    toolMetaQuery.isPending && toolMetaQuery.fetchStatus === "fetching"
+                  }
+                  toolMetaError={toolMetaError}
+                />
+              )}
+              {tab.id === "skills" && (
+                <SkillsPanel
+                  spec={spec}
+                  capabilities={capabilities}
+                  updateField={updateField}
+                  onNavigate={setActiveTab}
                 />
               )}
               {tab.id === "plugins" && (
@@ -1409,12 +1446,24 @@ function ToolsPanel({
   updateField,
   agentSaved,
   savedSpec,
+  mcpServers,
+  mcpLoading,
+  mcpError,
+  toolMetaItems,
+  toolMetaLoading,
+  toolMetaError,
 }: {
   spec: AgentSpec;
   capabilities: Capabilities | null;
   updateField: <K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) => void;
   agentSaved: boolean;
   savedSpec: AgentSpec | null;
+  mcpServers: McpServerRecord[] | null;
+  mcpLoading: boolean;
+  mcpError: string | null;
+  toolMetaItems: ConfigMetaItem[];
+  toolMetaLoading: boolean;
+  toolMetaError: string | null;
 }) {
   // Loading-only gate (empty registry must still render pattern editors).
   if (!capabilities) {
@@ -1427,11 +1476,21 @@ function ToolsPanel({
   return (
     <div className="space-y-6">
       <ToolSelectorsPanel spec={spec} capabilities={capabilities} updateField={updateField} />
+      <McpServersPanel
+        spec={spec}
+        servers={mcpServers}
+        loading={mcpLoading}
+        error={mcpError}
+        updateField={updateField}
+      />
       <AllowedExcludedToolsSection
         spec={spec}
         capabilities={capabilities}
         agentSaved={agentSaved}
         savedSpec={savedSpec}
+        toolMetaItems={toolMetaItems}
+        toolMetaLoading={toolMetaLoading}
+        toolMetaError={toolMetaError}
       />
     </div>
   );
@@ -1455,6 +1514,9 @@ function AllowedExcludedToolsSection({
   capabilities,
   agentSaved,
   savedSpec,
+  toolMetaItems,
+  toolMetaLoading,
+  toolMetaError,
 }: {
   spec: AgentSpec;
   capabilities: Capabilities;
@@ -1465,11 +1527,21 @@ function AllowedExcludedToolsSection({
    *  reads this rather than the working draft so the UI never claims a
    *  preview is available based on an unsaved plugin toggle. */
   savedSpec: AgentSpec | null;
+  toolMetaItems: ConfigMetaItem[];
+  toolMetaLoading: boolean;
+  toolMetaError: string | null;
 }) {
   const visible = useMemo(
     () => computeAllowedTools(capabilities.tools, spec),
     [capabilities.tools, spec],
   );
+  const toolMetaById = useMemo(() => {
+    const map = new Map<string, RecordMeta>();
+    for (const item of toolMetaItems) {
+      map.set(item.id, item.meta);
+    }
+    return map;
+  }, [toolMetaItems]);
   const total = capabilities.tools.length;
   const excludedCount =
     (spec.excluded_tools ?? []).length + (spec.excluded_tool_patterns ?? []).length;
@@ -1571,18 +1643,12 @@ function AllowedExcludedToolsSection({
           model will see an empty tool set.
         </div>
       ) : (
-        <details className="mt-4 rounded-sm border border-line bg-soft">
-          <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-fg-soft">
-            Show {visible.length} tool{visible.length === 1 ? "" : "s"}
-          </summary>
-          <ul className="grid gap-1 px-3 py-3 md:grid-cols-2 xl:grid-cols-3">
-            {visible.map((tool) => (
-              <li key={tool.id} className="truncate font-mono text-[11px] text-fg-strong">
-                {tool.id}
-              </li>
-            ))}
-          </ul>
-        </details>
+        <VisibleToolDescriptors
+          tools={visible}
+          toolMetaById={toolMetaById}
+          metadataLoading={toolMetaLoading}
+          metadataError={toolMetaError}
+        />
       )}
 
       {permissionPluginEnabled ? (
@@ -1744,78 +1810,6 @@ function PermissionPreviewBlock({
         </details>
       ) : null}
     </div>
-  );
-}
-
-function DelegatesPanel({
-  spec,
-  capabilities,
-  toggleDelegate,
-}: {
-  spec: AgentSpec;
-  capabilities: Capabilities | null;
-  toggleDelegate: (delegateId: string, checked: boolean) => void;
-}) {
-  if (!capabilities || capabilities.agents.length === 0) {
-    return (
-      <div className="rounded-sm border border-dashed border-line bg-surface p-6 text-sm text-fg-soft">
-        No other agents are registered yet, so this agent cannot delegate.
-      </div>
-    );
-  }
-  const selected = spec.delegates ?? [];
-  return (
-    <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h3 className="text-lg font-semibold text-fg-strong">Delegates</h3>
-          <p className="mt-2 max-w-xl text-sm text-fg-soft">
-            Pick agents this one can hand work off to. Self-loops are blocked statically; longer
-            cycles (A → B → A) are detected at runtime by the scheduler.
-          </p>
-        </div>
-        {selected.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 text-xs text-fg-soft">
-            <span className="text-fg-faint">selected</span>
-            {selected.map((id) => (
-              <span
-                key={id}
-                className="inline-flex items-center gap-1 rounded-pill border border-agent-stripe/30 bg-agent-tint px-2 py-0.5 font-mono text-agent-fg"
-              >
-                {id}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {capabilities.agents
-          .filter((agentId) => agentId !== spec.id)
-          .map((agentId) => {
-            const checked = selected.includes(agentId);
-            return (
-              <label
-                key={agentId}
-                className={[
-                  "rounded-sm border px-4 py-3 text-sm transition-colors",
-                  checked
-                    ? "border-agent-stripe/40 bg-agent-tint text-agent-fg"
-                    : "border-line bg-soft text-fg hover:border-line-strong",
-                ].join(" ")}
-              >
-                <div className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(event) => toggleDelegate(agentId, event.target.checked)}
-                  />
-                  <span className="font-mono text-fg-strong">{agentId}</span>
-                </div>
-              </label>
-            );
-          })}
-      </div>
-    </section>
   );
 }
 

@@ -1,3 +1,5 @@
+import { normalizeToolPatternInput } from "@/lib/tool-pattern-guidance";
+
 export type PermissionBehavior = "allow" | "ask" | "deny";
 export type PermissionScope = "once" | "session" | "thread" | "project" | "user";
 
@@ -18,19 +20,39 @@ export interface GenerativeUiConfig {
   instructions: string;
 }
 
+export type ToolLoadMode = "eager" | "deferred";
+export type DeferredToolsEnabledMode = "auto" | "always" | "disabled";
+
+export interface DeferredToolsRuleConfig {
+  tool: string;
+  mode: ToolLoadMode;
+}
+
+export interface DiscBetaConfig {
+  omega: number;
+  n0: number;
+  defer_after: number;
+  thresh_mult: number;
+  gamma: number;
+}
+
+export interface AgentPriorConfig {
+  tool: string;
+  probability: number;
+}
+
+export interface DeferredToolsConfig {
+  enabled: DeferredToolsEnabledMode;
+  rules: DeferredToolsRuleConfig[];
+  default_mode: ToolLoadMode;
+  beta_overhead: number;
+  agent_priors: AgentPriorConfig[];
+  disc_beta: DiscBetaConfig;
+}
+
 export type ReminderStatus = "any" | "success" | "error" | "pending";
-export type ReminderFieldOp =
-  | "glob"
-  | "exact"
-  | "regex"
-  | "not_glob"
-  | "not_exact"
-  | "not_regex";
-export type ReminderTarget =
-  | "system"
-  | "suffix_system"
-  | "session"
-  | "conversation";
+export type ReminderFieldOp = "glob" | "exact" | "regex" | "not_glob" | "not_exact" | "not_regex";
+export type ReminderTarget = "system" | "suffix_system" | "session" | "conversation";
 export type ReminderMode =
   | "any"
   | "status"
@@ -90,10 +112,7 @@ export function pluginDisplayName(pluginId: string): string {
   }
 }
 
-export function pluginConfigDisplaySummary(
-  editorKey: string,
-  value: unknown,
-): string {
+export function pluginConfigDisplaySummary(editorKey: string, value: unknown): string {
   if (editorKey === "permission") {
     const config = normalizePermissionConfig(value);
     return `Default ${config.default_behavior} · ${config.rules.length} rule${config.rules.length === 1 ? "" : "s"}`;
@@ -121,6 +140,11 @@ export function pluginConfigDisplaySummary(
     return parts.length === 0 ? "Prompt defaults" : parts.join(" · ");
   }
 
+  if (editorKey === "deferred-tools") {
+    const config = normalizeDeferredToolsConfig(value);
+    return `${config.enabled} · ${config.rules.length} rule${config.rules.length === 1 ? "" : "s"} · default ${config.default_mode}`;
+  }
+
   if (hasMeaningfulConfig(value)) {
     return "Configured";
   }
@@ -133,19 +157,16 @@ export function pluginConfigDisplayName(
   schema: PluginConfigSchemaMetadata,
 ): string {
   return (
-    nonEmptyString(schema.display_name) ??
-    schemaTitle(schema.schema) ??
-    pluginDisplayName(pluginId)
+    nonEmptyString(schema.display_name) ?? schemaTitle(schema.schema) ?? pluginDisplayName(pluginId)
   );
 }
 
-export function pluginConfigDescription(
-  schema: PluginConfigSchemaMetadata,
-): string | null {
+export function pluginConfigDescription(schema: PluginConfigSchemaMetadata): string | null {
   return nonEmptyString(schema.description) ?? schemaDescription(schema.schema);
 }
 
 export function pluginConfigEditorKey(schema: PluginConfigSchemaMetadata): string {
+  if (schema.key === "deferred_tools") return nonEmptyString(schema.editor) ?? "deferred-tools";
   return nonEmptyString(schema.editor) ?? "schema";
 }
 
@@ -186,7 +207,7 @@ export function serializePermissionConfig(config: PermissionConfig): Record<stri
   return {
     default_behavior: config.default_behavior,
     rules: config.rules.map((rule) => ({
-      tool: rule.tool,
+      tool: normalizeToolPatternInput(rule.tool),
       behavior: rule.behavior,
       scope: rule.scope,
     })),
@@ -210,9 +231,7 @@ export function normalizeGenerativeUiConfig(value: unknown): GenerativeUiConfig 
   };
 }
 
-export function serializeGenerativeUiConfig(
-  config: GenerativeUiConfig,
-): Record<string, unknown> {
+export function serializeGenerativeUiConfig(config: GenerativeUiConfig): Record<string, unknown> {
   const next: Record<string, unknown> = {};
   if (config.catalog_id.trim()) {
     next.catalog_id = config.catalog_id.trim();
@@ -226,6 +245,76 @@ export function serializeGenerativeUiConfig(
   return next;
 }
 
+export function normalizeDeferredToolsConfig(value: unknown): DeferredToolsConfig {
+  const record = asRecord(value);
+  const discBeta = asRecord(record.disc_beta);
+  const rawPriors = asRecord(record.agent_priors);
+  return {
+    enabled: normalizeDeferredToolsEnabled(record.enabled),
+    rules: asArray(record.rules).map((rule) => {
+      const next = asRecord(rule);
+      return {
+        tool: asString(next.tool),
+        mode: isToolLoadMode(next.mode) ? next.mode : "deferred",
+      };
+    }),
+    default_mode: isToolLoadMode(record.default_mode) ? record.default_mode : "deferred",
+    beta_overhead: asNumber(record.beta_overhead, 1136),
+    agent_priors: Object.entries(rawPriors)
+      .filter(([, probability]) => typeof probability === "number" && Number.isFinite(probability))
+      .map(([tool, probability]) => ({ tool, probability: probability as number }))
+      .sort((left, right) => left.tool.localeCompare(right.tool)),
+    disc_beta: {
+      omega: asNumber(discBeta.omega, 0.95),
+      n0: asNumber(discBeta.n0, 5),
+      defer_after: asNumber(discBeta.defer_after, 5),
+      thresh_mult: asNumber(discBeta.thresh_mult, 0.5),
+      gamma: asNumber(discBeta.gamma, 2000),
+    },
+  };
+}
+
+export function serializeDeferredToolsConfig(config: DeferredToolsConfig): Record<string, unknown> {
+  const agentPriors: Record<string, number> = {};
+  for (const prior of config.agent_priors) {
+    const tool = normalizeToolPatternInput(prior.tool);
+    if (tool) {
+      agentPriors[tool] = prior.probability;
+    }
+  }
+  return {
+    enabled: config.enabled === "auto" ? null : config.enabled === "always",
+    rules: config.rules.map((rule) => ({
+      tool: normalizeToolPatternInput(rule.tool),
+      mode: rule.mode,
+    })),
+    default_mode: config.default_mode,
+    beta_overhead: config.beta_overhead,
+    agent_priors: agentPriors,
+    disc_beta: {
+      omega: config.disc_beta.omega,
+      n0: config.disc_beta.n0,
+      defer_after: config.disc_beta.defer_after,
+      thresh_mult: config.disc_beta.thresh_mult,
+      gamma: config.disc_beta.gamma,
+    },
+  };
+}
+
+export function createDeferredToolsRule(): DeferredToolsRuleConfig {
+  return {
+    tool: "",
+    mode: "deferred",
+  };
+}
+
+export function createAgentPrior(): AgentPriorConfig {
+  return {
+    tool: "",
+    probability: 0.01,
+  };
+}
+
 export function normalizeReminderConfig(value: unknown): ReminderConfigDraft {
   const record = asRecord(value);
   return {
@@ -233,13 +322,11 @@ export function normalizeReminderConfig(value: unknown): ReminderConfigDraft {
   };
 }
 
-export function serializeReminderConfig(
-  config: ReminderConfigDraft,
-): Record<string, unknown> {
+export function serializeReminderConfig(config: ReminderConfigDraft): Record<string, unknown> {
   return {
     rules: config.rules.map((rule) => ({
       name: rule.name.trim() ? rule.name.trim() : undefined,
-      tool: rule.tool,
+      tool: normalizeToolPatternInput(rule.tool),
       output: serializeReminderOutput(rule),
       message: {
         target: rule.target,
@@ -388,13 +475,18 @@ function isPermissionScope(value: unknown): value is PermissionScope {
   );
 }
 
+function isToolLoadMode(value: unknown): value is ToolLoadMode {
+  return value === "eager" || value === "deferred";
+}
+
+function normalizeDeferredToolsEnabled(value: unknown): DeferredToolsEnabledMode {
+  if (value === true) return "always";
+  if (value === false) return "disabled";
+  return "auto";
+}
+
 function isReminderStatus(value: unknown): value is ReminderStatus {
-  return (
-    value === "any" ||
-    value === "success" ||
-    value === "error" ||
-    value === "pending"
-  );
+  return value === "any" || value === "success" || value === "error" || value === "pending";
 }
 
 function isReminderFieldOp(value: unknown): value is ReminderFieldOp {

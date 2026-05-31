@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useParams, Link } from "react-router";
+import { useParams, Link, useSearchParams } from "react-router";
 import { useTranslation } from "react-i18next";
 import {
   ConfigApiError,
@@ -19,18 +19,32 @@ const SOFT_WARN_LEN = 400;
 export function ToolEditorPage() {
   const { t } = useTranslation();
   const { id = "" } = useParams();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
 
   const [draft, setDraft] = useState<string>("");
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const toolQuery = useConfigRecordQuery<ToolSpec>("tools", id);
   const metaQuery = useConfigMetaQuery("tools", id);
+  const editDescription = searchParams.get("edit") === "description";
 
   useEffect(() => {
     if (toolQuery.data) {
       setDraft(toolQuery.data.description);
     }
   }, [toolQuery.data]);
+
+  useEffect(() => {
+    if (!editDescription || !toolQuery.data || !metaQuery.data) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [editDescription, metaQuery.data, toolQuery.data]);
 
   const patchMutation = useMutation({
     mutationFn: async (description: string) => {
@@ -63,6 +77,7 @@ export function ToolEditorPage() {
   const builtin = toolQuery.data ?? null;
   const meta = metaQuery.data ?? null;
   const saving = patchMutation.isPending || clearMutation.isPending;
+  const sourceState = meta ? deriveSourceState(meta) : "builtin";
 
   if (toolQuery.error) {
     return (
@@ -119,15 +134,35 @@ export function ToolEditorPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="border border-line rounded p-3">
           <h2 className="text-xs font-medium uppercase text-fg-soft">
-            {t("tools.editor.builtin", { defaultValue: "Built-in" })}
+            {t("tools.editor.effectiveDescription", {
+              defaultValue: "Current effective description",
+            })}
           </h2>
           <p className="mt-2 whitespace-pre-wrap text-sm text-fg-soft">{builtin.description}</p>
         </div>
         <div className="border border-line rounded p-3">
-          <h2 className="text-xs font-medium uppercase text-fg-soft">
-            {t("tools.editor.userOverride", { defaultValue: "User override" })}
-          </h2>
+          <label
+            htmlFor="tool-description-override"
+            className="text-xs font-medium uppercase text-fg-soft"
+          >
+            {t("tools.editor.descriptionOverride", { defaultValue: "Description override" })}
+          </label>
+          <p className="mt-2 text-xs leading-5 text-fg-soft">
+            {t("tools.editor.descriptionOverrideHint", {
+              defaultValue:
+                "Edit the description the model sees. Saving writes PATCH /v1/config/tools/:id/overrides.",
+            })}
+          </p>
+          {editDescription ? (
+            <div className="mt-2 rounded-sm border border-accent/35 bg-accent/10 px-3 py-2 text-xs text-fg">
+              {t("tools.editor.editingDescription", {
+                defaultValue: "Editing the tool description override.",
+              })}
+            </div>
+          ) : null}
           <textarea
+            id="tool-description-override"
+            ref={textareaRef}
             className="mt-2 w-full min-h-[140px] rounded border border-line p-2 font-mono text-sm"
             value={draft}
             onChange={(e) => {
@@ -167,7 +202,7 @@ export function ToolEditorPage() {
           type="button"
           className="rounded border border-line px-3 py-1.5 text-sm disabled:opacity-50"
           onClick={() => void onRevert()}
-          disabled={saving || deriveSourceState(meta) !== "customized"}
+          disabled={saving || sourceState !== "customized"}
         >
           {t("tools.editor.revert", { defaultValue: "Revert to default" })}
         </button>

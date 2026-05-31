@@ -7,13 +7,7 @@
 import type { ModelSpec, Modality } from "@/lib/config-api";
 import { Field } from "@/components/form-components";
 
-export const MODALITY_OPTIONS: readonly Modality[] = [
-  "text",
-  "image",
-  "audio",
-  "video",
-  "pdf",
-];
+export const MODALITY_OPTIONS: readonly Modality[] = ["text", "image", "audio", "video", "pdf"];
 
 /** Client-side shape pre-filter for `knowledge_cutoff`: `YYYY-MM` or
  *  `YYYY-MM-DD` with month 01-12 and day 01-31. Cheap pre-check only — the
@@ -44,10 +38,7 @@ export function dedupModalities(list: Modality[]): Modality[] {
 }
 
 /** Toggle a single modality in `current` and return the next list. */
-export function toggleModality(
-  current: Modality[] | undefined,
-  m: Modality,
-): Modality[] {
+export function toggleModality(current: Modality[] | undefined, m: Modality): Modality[] {
   const set = new Set(current ?? []);
   if (set.has(m)) set.delete(m);
   else set.add(m);
@@ -87,17 +78,31 @@ export function PricingField({
 export function ModalityChips({
   label,
   selected,
+  description,
   onToggle,
 }: {
   label: string;
   selected: Modality[];
+  description?: string;
   onToggle: (m: Modality) => void;
 }) {
   const selectedSet = new Set(selected);
+  const supported = MODALITY_OPTIONS.filter((m) => selectedSet.has(m));
+  const unsupported = MODALITY_OPTIONS.filter((m) => !selectedSet.has(m));
   return (
-    <div className="block">
-      <span className="mb-1.5 block text-sm font-medium text-fg-soft">{label}</span>
-      <div role="group" aria-label={label} className="flex flex-wrap gap-2">
+    <div className="rounded-sm border border-line bg-surface p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <span className="block text-sm font-semibold text-fg-strong">{label}</span>
+          {description ? (
+            <p className="mt-1 text-xs leading-5 text-fg-soft">{description}</p>
+          ) : null}
+        </div>
+        <span className="rounded-pill bg-muted px-2 py-0.5 text-[11px] font-medium text-fg-soft">
+          {supported.length}/{MODALITY_OPTIONS.length} supported
+        </span>
+      </div>
+      <div role="group" aria-label={label} className="mt-3 grid gap-2 sm:grid-cols-2">
         {MODALITY_OPTIONS.map((m) => {
           const active = selectedSet.has(m);
           return (
@@ -105,19 +110,39 @@ export function ModalityChips({
               key={m}
               type="button"
               role="switch"
+              aria-label={m}
               aria-checked={active}
               onClick={() => onToggle(m)}
               className={[
-                "inline-flex h-7 items-center rounded-pill border px-3 text-xs font-medium transition",
+                "flex items-center justify-between gap-3 rounded-sm border px-3 py-2 text-left text-xs transition",
                 active
-                  ? "border-accent bg-accent text-accent-text"
-                  : "border-line-strong bg-surface text-fg-soft hover:border-fg",
+                  ? "border-accent bg-accent/10 text-fg-strong"
+                  : "border-line bg-soft text-fg-soft hover:border-line-strong hover:bg-muted",
               ].join(" ")}
             >
-              {m}
+              <span className="font-mono">{m}</span>
+              <span
+                aria-hidden="true"
+                className={[
+                  "rounded-pill px-2 py-0.5 text-[10px] font-semibold uppercase tracking-eyebrow",
+                  active
+                    ? "bg-accent text-accent-text"
+                    : "border border-line-strong bg-surface text-fg-faint",
+                ].join(" ")}
+              >
+                {active ? "Supported" : "Not supported"}
+              </span>
             </button>
           );
         })}
+      </div>
+      <div className="mt-3 grid gap-2 text-xs leading-5 text-fg-soft md:grid-cols-2">
+        <div className="text-fg-soft">
+          Supported: {supported.length > 0 ? supported.join(", ") : "none"}
+        </div>
+        <div className="text-fg-soft">
+          Not supported: {unsupported.length > 0 ? unsupported.join(", ") : "none"}
+        </div>
       </div>
     </div>
   );
@@ -176,10 +201,7 @@ export type ModelErrorKey =
 export type ModelFieldErrors = Partial<Record<ModelErrorKey, string>>;
 
 /** Mirror of the Rust `validate_model_spec` rules. Pure: no i18n or state. */
-export function validateModelSpec(
-  draft: ModelSpec,
-  t: (key: string) => string,
-): ModelFieldErrors {
+export function validateModelSpec(draft: ModelSpec, t: (key: string) => string): ModelFieldErrors {
   const next: ModelFieldErrors = {};
   if (!draft.id.trim()) next.id = t("validation.required");
   if (!draft.provider_id.trim()) next.provider_id = t("validation.required");

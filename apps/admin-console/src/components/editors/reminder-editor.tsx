@@ -9,13 +9,9 @@ import {
   normalizeReminderConfig,
   serializeReminderConfig,
 } from "@/lib/plugin-config";
-import {
-  ChoiceGrid,
-  EmptyState,
-  Field,
-  MetricCard,
-  SectionLabel,
-} from "@/components/form-components";
+import { ChoiceGrid, EmptyState, Field, SectionLabel } from "@/components/form-components";
+import { ToolPatternHelp } from "@/components/tool-pattern-help";
+import { TOOL_CALL_PATTERN_PLACEHOLDER } from "@/lib/tool-pattern-guidance";
 
 export function ReminderConfigEditor({
   value,
@@ -49,9 +45,7 @@ export function ReminderConfigEditor({
   function updateRule(index: number, nextRule: ReminderConfigDraft["rules"][number]) {
     update({
       ...config,
-      rules: config.rules.map((rule, currentIndex) =>
-        currentIndex === index ? nextRule : rule,
-      ),
+      rules: config.rules.map((rule, currentIndex) => (currentIndex === index ? nextRule : rule)),
     });
   }
 
@@ -90,51 +84,27 @@ export function ReminderConfigEditor({
     });
   }
 
-  const activeRule =
-    activeRuleIndex === null ? null : config.rules[activeRuleIndex] ?? null;
+  const activeRule = activeRuleIndex === null ? null : (config.rules[activeRuleIndex] ?? null);
 
   return (
     <div className="space-y-5">
-      <div className="grid gap-4 xl:grid-cols-[18rem,minmax(0,1fr)]">
-        <div className="rounded-sm border border-line bg-soft p-4">
-          <SectionLabel label="Reminder Summary" />
-          <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-            <MetricCard
-              label="Rules"
-              value={`${config.rules.length}`}
-              detail="Evaluated in order after tool execution."
-            />
-            <MetricCard
-              label="Targets"
-              value={summarizeReminderTargets(config)}
-              detail="Where matching reminders are injected."
-            />
+      <div className="rounded-sm border border-line bg-soft px-4 py-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <SectionLabel label="Reminder Rules" />
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-fg-soft">
+              Reminders inject contextual guidance after matching tool results. Use them to keep
+              safety rules, retry guidance, or domain-specific instructions close to the moment they
+              matter.
+            </p>
           </div>
-        </div>
-
-        <div className="rounded-sm border border-line bg-surface p-4">
-          <SectionLabel label="How Reminder Rules Work" />
-          <p className="mt-2 text-sm leading-6 text-fg-soft">
-            Each rule watches a tool result, then injects a contextual reminder
-            into the selected target. Use narrow tool patterns and specific
-            output matchers so reminders stay relevant.
-          </p>
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <MetricCard
-              label="Match source"
-              value="Tool output"
-              detail="Status, text, or structured fields."
-            />
-            <MetricCard
-              label="Injection"
-              value="Context message"
-              detail="System, suffix, session, or conversation."
-            />
-            <MetricCard
-              label="Cooldown"
-              value="Per rule"
-              detail="Avoid repeating the same reminder every turn."
-            />
+          <div className="flex flex-wrap gap-2 text-[11px] text-fg-soft">
+            <span className="rounded-pill bg-muted px-2 py-0.5">
+              {config.rules.length} rule{config.rules.length === 1 ? "" : "s"}
+            </span>
+            <span className="rounded-pill bg-muted px-2 py-0.5">
+              Targets: <span>{summarizeReminderTargets(config)}</span>
+            </span>
           </div>
         </div>
       </div>
@@ -145,8 +115,7 @@ export function ReminderConfigEditor({
             <div>
               <SectionLabel label="Reminder Rules" />
               <p className="mt-2 text-sm leading-6 text-fg-soft">
-                Each rule couples a tool-output matcher with the reminder that
-                should be injected.
+                Each rule couples a tool-output matcher with the reminder that should be injected.
               </p>
             </div>
             <button
@@ -190,10 +159,9 @@ export function ReminderConfigEditor({
                       </span>
                     </div>
                     <div
-                      className={[
-                        "mt-2 text-xs",
-                        isActive ? "text-fg-faint" : "text-fg-soft",
-                      ].join(" ")}
+                      className={["mt-2 text-xs", isActive ? "text-fg-faint" : "text-fg-soft"].join(
+                        " ",
+                      )}
                     >
                       {rule.tool.trim() ? `Tool: ${rule.tool}` : "Applies to any tool"}
                     </div>
@@ -220,8 +188,8 @@ export function ReminderConfigEditor({
                   {activeRule.name.trim() || `Reminder ${activeRuleIndex! + 1}`}
                 </h6>
                 <p className="mt-1 text-sm leading-6 text-fg-soft">
-                  Model the trigger first, then define the reminder payload and
-                  where it should be injected.
+                  Model the trigger first, then define the reminder payload and where it should be
+                  injected.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -251,43 +219,58 @@ export function ReminderConfigEditor({
               </div>
             </div>
 
-            <div className="mt-5 grid gap-4 lg:grid-cols-2">
-              <Field label="Rule name">
-                <input
-                  type="text"
-                  value={activeRule.name}
-                  onChange={(event) =>
-                    updateRule(activeRuleIndex!, {
-                      ...activeRule,
-                      name: event.target.value,
-                    })
-                  }
-                  placeholder="weather-travel-hint"
-                  className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
-                />
-              </Field>
-              <Field label="Tool pattern">
-                <input
-                  type="text"
-                  value={activeRule.tool}
-                  onChange={(event) =>
-                    updateRule(activeRuleIndex!, {
-                      ...activeRule,
-                      tool: event.target.value,
-                    })
-                  }
-                  placeholder="get_weather"
-                  className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
-                />
-              </Field>
-            </div>
-
             <div className="mt-5 rounded-sm border border-line bg-soft p-4">
-              <SectionLabel label="Trigger" />
+              <SectionLabel label="Trigger + Reminder" />
               <p className="mt-2 text-sm leading-6 text-fg-soft">
-                Decide which part of the tool result must match before the
-                reminder fires.
+                Tool pattern and output matcher form the trigger. Reminder content, target, and
+                cooldown are the trigger's delivery behavior.
               </p>
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr),minmax(0,1fr),14rem]">
+                <Field label="Rule name">
+                  <input
+                    type="text"
+                    value={activeRule.name}
+                    onChange={(event) =>
+                      updateRule(activeRuleIndex!, {
+                        ...activeRule,
+                        name: event.target.value,
+                      })
+                    }
+                    placeholder="weather-travel-hint"
+                    className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
+                  />
+                </Field>
+                <Field label="Tool pattern">
+                  <input
+                    type="text"
+                    value={activeRule.tool}
+                    onChange={(event) =>
+                      updateRule(activeRuleIndex!, {
+                        ...activeRule,
+                        tool: event.target.value,
+                      })
+                    }
+                    placeholder={TOOL_CALL_PATTERN_PLACEHOLDER}
+                    className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg outline-none transition focus:border-fg"
+                  />
+                </Field>
+                <Field label="Cooldown turns">
+                  <input
+                    type="number"
+                    min={0}
+                    value={activeRule.cooldown_turns}
+                    onChange={(event) =>
+                      updateRule(activeRuleIndex!, {
+                        ...activeRule,
+                        cooldown_turns: Number(event.target.value) || 0,
+                      })
+                    }
+                    className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
+                  />
+                </Field>
+              </div>
+              <ToolPatternHelp kind="tool-call" />
 
               <div className="mt-4">
                 <ChoiceGrid
@@ -376,8 +359,7 @@ export function ReminderConfigEditor({
                 </div>
               ) : null}
 
-              {activeRule.mode === "content_text" ||
-              activeRule.mode === "status_and_text" ? (
+              {activeRule.mode === "content_text" || activeRule.mode === "status_and_text" ? (
                 <div className="mt-4">
                   <Field label="Content text matcher">
                     <input
@@ -396,8 +378,7 @@ export function ReminderConfigEditor({
                 </div>
               ) : null}
 
-              {activeRule.mode === "content_fields" ||
-              activeRule.mode === "status_and_fields" ? (
+              {activeRule.mode === "content_fields" || activeRule.mode === "status_and_fields" ? (
                 <div className="mt-4">
                   <div className="mb-2 flex items-center justify-between gap-4">
                     <SectionLabel label="Field Matchers" />
@@ -507,18 +488,12 @@ export function ReminderConfigEditor({
                   )}
                 </div>
               ) : null}
-            </div>
 
-            <div className="mt-5 rounded-sm border border-line bg-surface">
-              <div className="border-b border-line px-4 py-4">
-                <SectionLabel label="Injected Reminder" />
+              <div className="mt-5 border-t border-line pt-4">
+                <SectionLabel label="Reminder Delivery" />
                 <p className="mt-2 text-sm leading-6 text-fg-soft">
-                  Configure where the reminder goes and what message should be
-                  added when this rule matches.
+                  These fields define what the trigger injects and where the message is placed.
                 </p>
-              </div>
-
-              <div className="px-4 py-4">
                 <ChoiceGrid
                   value={activeRule.target}
                   onChange={(nextValue) =>
@@ -552,7 +527,7 @@ export function ReminderConfigEditor({
                   ]}
                 />
 
-                <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr),14rem]">
+                <div className="mt-4">
                   <Field label="Reminder content">
                     <textarea
                       value={activeRule.content}
@@ -563,20 +538,6 @@ export function ReminderConfigEditor({
                         })
                       }
                       rows={5}
-                      className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
-                    />
-                  </Field>
-                  <Field label="Cooldown turns">
-                    <input
-                      type="number"
-                      min={0}
-                      value={activeRule.cooldown_turns}
-                      onChange={(event) =>
-                        updateRule(activeRuleIndex!, {
-                          ...activeRule,
-                          cooldown_turns: Number(event.target.value) || 0,
-                        })
-                      }
                       className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
                     />
                   </Field>

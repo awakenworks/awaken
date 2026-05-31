@@ -131,7 +131,7 @@ describe("agent editor tab ARIA semantics", () => {
     await waitForBasicsPanel();
 
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.length).toBe(6);
+    expect(tabs.length).toBe(7);
 
     // "basics" is the default active tab
     const basicsTab = screen.getByRole("tab", { name: "Basics" });
@@ -617,7 +617,7 @@ describe("agent editor save API flows", () => {
     });
   });
 
-  it("saves tool allow-list, plugin selection, and delegates from their tabs", async () => {
+  it("saves tool, skill, MCP, plugin, and sub-agent selections from their tabs", async () => {
     let createdAgent: unknown = null;
     const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const href = fetchHref(input);
@@ -638,12 +638,65 @@ describe("agent editor save API flows", () => {
               description: "Beta tool",
               source: { kind: "plugin", id: "files" },
             },
+            {
+              id: "skill",
+              name: "Skill",
+              description: "Activate skills",
+              source: { kind: "plugin", id: "skills-discovery" },
+            },
+            {
+              id: "load_skill_resource",
+              name: "Load Skill Resource",
+              description: "Load skill resources",
+              source: { kind: "plugin", id: "skills-discovery" },
+            },
           ],
-          plugins: [{ id: "logger-plugin", config_schemas: [] }],
-          skills: [],
+          plugins: [
+            { id: "logger-plugin", config_schemas: [] },
+            { id: "skills-discovery", config_schemas: [] },
+            { id: "skills-active-instructions", config_schemas: [] },
+          ],
+          skills: [
+            {
+              id: "writer",
+              name: "Writer",
+              description: "Draft clear prose",
+              allowed_tools: [],
+              arguments: [],
+              user_invocable: true,
+              model_invocable: true,
+              context: "inline",
+              paths: [],
+            },
+          ],
           models: [{ id: "model-a", upstream_model: "gpt-test" }],
           providers: [],
           namespaces: [],
+        });
+      }
+      if (method === "GET" && href.includes("/v1/config/mcp-servers")) {
+        return jsonResponse({
+          namespace: "mcp-servers",
+          items: [
+            {
+              id: "github",
+              transport: "http",
+              url: "http://mcp.test",
+              timeout_secs: 30,
+              config: {},
+            },
+          ],
+          offset: 0,
+          limit: 100,
+        });
+      }
+      if (method === "GET" && href.endsWith("/v1/mcp-servers/github/status")) {
+        return jsonResponse({
+          connected: true,
+          tools: [{ name: "create_issue", description: "Create issue" }],
+          consecutive_failures: 0,
+          reconnecting: false,
+          permanently_failed: false,
         });
       }
       if (method === "POST" && href.endsWith("/v1/config/agents")) {
@@ -667,10 +720,11 @@ describe("agent editor save API flows", () => {
             system_prompt: "",
             max_rounds: 16,
             max_continuation_retries: 2,
-            plugin_ids: ["logger-plugin"],
-            allowed_tools: ["tool-alpha"],
+            plugin_ids: ["logger-plugin", "skills-discovery", "skills-active-instructions"],
+            allowed_tools: ["tool-alpha", "skill", "load_skill_resource"],
+            allowed_tool_patterns: ["mcp__github__*"],
             delegates: ["helper-agent"],
-            sections: {},
+            sections: { skills: { allowlist: ["writer"] } },
           },
         );
       }
@@ -700,6 +754,18 @@ describe("agent editor save API flows", () => {
     )!;
     fireEvent.click(alphaCheckbox);
 
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "Enable discovery" }));
+    fireEvent.click(screen.getByRole("button", { name: "Enable instructions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Allow `skill`" }));
+    fireEvent.click(screen.getByRole("button", { name: "Allow resources" }));
+    fireEvent.click(screen.getByText("Selected skills").closest("label")!);
+    fireEvent.click(screen.getByLabelText(/writer/i));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
+    await screen.findByText("create_issue");
+    fireEvent.click(screen.getByLabelText("MCP server github"));
+
     fireEvent.click(screen.getByRole("tab", { name: "Plugins" }));
     fireEvent.click(screen.getByLabelText(/logger-plugin/i));
 
@@ -723,8 +789,10 @@ describe("agent editor save API flows", () => {
     expect(JSON.parse(String(createInit?.body))).toMatchObject({
       id: "new-agent",
       model_id: "model-a",
-      allowed_tools: ["tool-alpha"],
-      plugin_ids: ["logger-plugin"],
+      allowed_tools: ["tool-alpha", "skill", "load_skill_resource"],
+      allowed_tool_patterns: ["mcp__github__*"],
+      plugin_ids: ["skills-discovery", "skills-active-instructions", "logger-plugin"],
+      sections: { skills: { allowlist: ["writer"] } },
       delegates: ["helper-agent"],
     });
   });

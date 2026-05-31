@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 
 import { ToolsPanel } from "./tools-panel";
 import type { AgentSpec, Capabilities } from "@/lib/config-api";
+import { TOOL_ID_PATTERN_PLACEHOLDER } from "@/lib/tool-pattern-guidance";
 
 afterEach(() => {
   cleanup();
@@ -48,6 +49,8 @@ describe("ToolsPanel", () => {
     expect(screen.getByTestId("tool-selector-allowed")).toBeTruthy();
     expect(screen.getByTestId("tool-selector-excluded")).toBeTruthy();
     // Pattern inputs are present so users can add forward-config patterns.
-    expect(screen.getAllByPlaceholderText("e.g. mcp:*").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByPlaceholderText(`e.g. ${TOOL_ID_PATTERN_PLACEHOLDER}`).length,
+    ).toBeGreaterThan(0);
   });
 });

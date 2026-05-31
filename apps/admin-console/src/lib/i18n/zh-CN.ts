@@ -555,7 +555,9 @@ export const zhCN: Dict = {
       inputPrice: "输入价格",
       outputPrice: "输出价格",
       modalitiesInput: "输入模态",
+      modalitiesInputHint: "标记该模型可以接收的用户、工具或适配器输入类型。",
       modalitiesOutput: "输出模态",
+      modalitiesOutputHint: "标记该模型可以由 runtime 生成并返回的输出类型。",
     },
     validation: {
       positiveInt: "需为 ≥ 1 的整数",
@@ -636,6 +638,11 @@ export const zhCN: Dict = {
     editor: {
       builtin: "内置",
       userOverride: "用户覆盖",
+      effectiveDescription: "当前生效描述",
+      descriptionOverride: "描述覆盖",
+      descriptionOverrideHint:
+        "编辑模型实际看到的工具描述。保存会写入 PATCH /v1/config/tools/:id/overrides。",
+      editingDescription: "正在编辑工具描述覆盖。",
       effective: "生效",
       revert: "恢复默认",
       lengthWarning: "过长的描述会稀释模型注意力，复杂规则建议放在 Agent 的 system prompt 中。",

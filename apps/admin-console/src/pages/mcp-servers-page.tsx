@@ -214,6 +214,7 @@ export function McpServersPage() {
   });
   const statusIds = useMemo(() => crud.items.map((server) => server.id), [crud.items]);
   const statusQueries = useMcpStatusQueries(statusIds);
+  const statusQueryById = new Map(statusIds.map((id, index) => [id, statusQueries[index]]));
   const statuses: Record<string, McpServerStatus | null | undefined> = {};
   const statusErrors: Record<string, unknown> = {};
   for (let i = 0; i < statusIds.length; i += 1) {
@@ -262,6 +263,18 @@ export function McpServersPage() {
     });
     if (!ok) return;
     restartMutation.mutate(id);
+  }
+
+  async function handleVerifyTools(id: string) {
+    const query = statusQueryById.get(id);
+    if (!query) return;
+    const result = await query.refetch();
+    if (result.error) {
+      toast.push({ message: `MCP verify failed: ${statusErrorMessage(result.error)}`, tone: "error" });
+      return;
+    }
+    const toolCount = result.data?.tools.length ?? 0;
+    toast.push({ message: `MCP verify read ${toolCount} tool${toolCount === 1 ? "" : "s"} from "${id}".`, tone: "success" });
   }
 
   const filtered = useMemo(
@@ -674,6 +687,8 @@ export function McpServersPage() {
               error={statusErrors[crud.draft.id]}
               restarting={restartingId === crud.draft.id}
               onRestart={() => void handleRestart(crud.draft!.id)}
+              verifying={Boolean(statusQueryById.get(crud.draft.id)?.isFetching)}
+              onVerifyTools={() => void handleVerifyTools(crud.draft!.id)}
             />
           ) : null}
 
@@ -809,13 +824,17 @@ function LiveStatusSection({
   status,
   error,
   restarting,
+  verifying,
   onRestart,
+  onVerifyTools,
 }: {
   draft: McpServerRecord;
   status: McpServerStatus | null | undefined;
   error?: unknown;
   restarting: boolean;
+  verifying: boolean;
   onRestart: () => void;
+  onVerifyTools: () => void;
 }) {
   const stateLabel = error
     ? "Error"
@@ -851,14 +870,24 @@ function LiveStatusSection({
           <StatusBadge status={status} error={error} />
           <h4 className="text-sm font-semibold text-fg-strong">Live Status</h4>
         </div>
-        <button
-          type="button"
-          disabled={restarting}
-          onClick={onRestart}
-          className="rounded-sm border border-line-strong px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {restarting ? "Restarting…" : "Restart"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={verifying}
+            onClick={onVerifyTools}
+            className="rounded-sm border border-line-strong px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {verifying ? "Verifying…" : "Verify tools"}
+          </button>
+          <button
+            type="button"
+            disabled={restarting}
+            onClick={onRestart}
+            className="rounded-sm border border-line-strong px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {restarting ? "Restarting…" : "Restart"}
+          </button>
+        </div>
       </div>
 
       <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">

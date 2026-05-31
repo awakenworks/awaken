@@ -14,6 +14,7 @@ import {
 import { PermissionConfigEditor } from "@/components/editors/permission-editor";
 import { ReminderConfigEditor } from "@/components/editors/reminder-editor";
 import { GenerativeUiConfigEditor } from "@/components/editors/generative-ui-editor";
+import { DeferredToolsConfigEditor } from "@/components/editors/deferred-tools-editor";
 
 type ConfigSchema = PluginInfo["config_schemas"][number];
 
@@ -209,6 +210,7 @@ const SPECIALIZED_PLUGIN_CONFIG_EDITORS: Record<
   permission: PermissionConfigEditor,
   reminder: ReminderConfigEditor,
   "generative-ui": GenerativeUiConfigEditor,
+  "deferred-tools": DeferredToolsConfigEditor,
 };
 
 function asFormData(value: unknown): Record<string, unknown> {

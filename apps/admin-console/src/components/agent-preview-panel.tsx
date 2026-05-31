@@ -15,6 +15,8 @@ interface AgentPreviewPanelProps {
   traceAgentId?: string;
 }
 
+type PreviewDisplayMode = "readable" | "json";
+
 export function AgentPreviewPanel({
   draft,
   traceAgentId: rawTraceAgentId,
@@ -23,6 +25,7 @@ export function AgentPreviewPanel({
   const [input, setInput] = useState("");
   const [lastLatencyMs, setLastLatencyMs] = useState<number | null>(null);
   const [tracesOpen, setTracesOpen] = useState(false);
+  const [displayMode, setDisplayMode] = useState<PreviewDisplayMode>("readable");
   const sendStartedAtRef = useRef<number | null>(null);
   const previewDraft = normalizePreviewAgent(draft);
   const traceAgentId = rawTraceAgentId?.trim() ?? "";
@@ -134,6 +137,42 @@ export function AgentPreviewPanel({
 
       <PreviewStatsBar messages={messages} latencyMs={lastLatencyMs} busy={busy} />
 
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <div className="text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
+          Response view
+        </div>
+        <div
+          role="group"
+          aria-label="Sandbox response display"
+          className="inline-flex overflow-hidden rounded-sm border border-line bg-surface text-xs"
+        >
+          <button
+            type="button"
+            onClick={() => setDisplayMode("readable")}
+            className={[
+              "px-3 py-1.5 transition",
+              displayMode === "readable"
+                ? "bg-accent text-accent-text"
+                : "text-fg-soft hover:bg-soft hover:text-fg",
+            ].join(" ")}
+          >
+            Readable
+          </button>
+          <button
+            type="button"
+            onClick={() => setDisplayMode("json")}
+            className={[
+              "border-l border-line px-3 py-1.5 transition",
+              displayMode === "json"
+                ? "bg-accent text-accent-text"
+                : "text-fg-soft hover:bg-soft hover:text-fg",
+            ].join(" ")}
+          >
+            JSON
+          </button>
+        </div>
+      </div>
+
       {blockedReason ? (
         <div className="mt-4 rounded-sm border border-tone-warn/35 bg-tone-warn/10 px-4 py-3 text-sm text-tone-warn">
           {blockedReason}
@@ -146,7 +185,7 @@ export function AgentPreviewPanel({
         </div>
       ) : null}
 
-      <div className="mt-4 flex min-h-[26rem] flex-col overflow-hidden rounded-lg border border-line bg-soft">
+      <div className="mt-2 flex min-h-[26rem] flex-col overflow-hidden rounded-lg border border-line bg-soft">
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {messages.length === 0 ? (
             <div className="flex h-full items-center justify-center text-center text-xs text-fg-faint">
@@ -155,7 +194,7 @@ export function AgentPreviewPanel({
           ) : (
             <div className="space-y-3">
               {messages.map((message) => {
-                if (!hasRenderableContent(message)) {
+                if (displayMode === "readable" && !hasRenderableContent(message)) {
                   return null;
                 }
                 const isUser = message.role === "user";
@@ -175,7 +214,7 @@ export function AgentPreviewPanel({
                     >
                       {isUser ? "You" : "Agent"}
                     </div>
-                    <MessageParts message={message} />
+                    <MessageBody message={message} mode={displayMode} />
                   </div>
                 );
               })}
@@ -212,6 +251,24 @@ export function AgentPreviewPanel({
         </form>
       </div>
     </aside>
+  );
+}
+
+function MessageBody({ message, mode }: { message: UIMessage; mode: PreviewDisplayMode }) {
+  if (mode === "json") {
+    return <MessageJson message={message} />;
+  }
+  return <MessageParts message={message} />;
+}
+
+function MessageJson({ message }: { message: UIMessage }) {
+  return (
+    <pre
+      data-testid="preview-message-json"
+      className="max-h-96 overflow-auto rounded-sm bg-code-bg p-3 font-mono text-[11px] leading-5 text-code-fg"
+    >
+      {formatJson(message)}
+    </pre>
   );
 }
 
@@ -259,6 +316,7 @@ function StatCell({ label, value, title }: { label: string; value: string; title
 export function MessageParts({ message }: { message: UIMessage }) {
   const rendered: ReactNode[] = [];
   const unknownTypes: string[] = [];
+  const runtimeParts: RuntimeDataPart[] = [];
   for (const [index, part] of message.parts.entries()) {
     if (!part || typeof part !== "object" || !("type" in part)) continue;
     if (part.type === "step-start") {
@@ -268,9 +326,7 @@ export function MessageParts({ message }: { message: UIMessage }) {
     if (part.type === "text") {
       if (typeof part.text === "string" && part.text.length > 0) {
         rendered.push(
-          <div key={index} className="whitespace-pre-wrap break-words">
-            {redactSecretString(part.text)}
-          </div>,
+          <ReadableText key={index} text={part.text} />,
         );
       }
       continue;
@@ -297,10 +353,17 @@ export function MessageParts({ message }: { message: UIMessage }) {
       rendered.push(<ToolInvocation key={index} part={part as ToolPart} />);
       continue;
     }
+    if (isRuntimeDataPart(part)) {
+      runtimeParts.push(part);
+      continue;
+    }
     // Anything we don't render directly — metadata, source, file, future
     // SDK additions — gets collected into a single collapsible debug
     // fallback rather than producing an empty bubble.
     unknownTypes.push(part.type);
+  }
+  if (runtimeParts.length > 0) {
+    rendered.push(<RuntimeMetadataParts key="__runtime_metadata" parts={runtimeParts} />);
   }
   if (unknownTypes.length > 0) {
     rendered.push(
@@ -329,6 +392,90 @@ export function MessageParts({ message }: { message: UIMessage }) {
     );
   }
   return <div className="space-y-2">{rendered}</div>;
+}
+
+function ReadableText({ text }: { text: string }) {
+  const parsed = parseStructuredText(text);
+  if (parsed.ok) {
+    return <StructuredPayload value={parsed.value} title="Structured response" />;
+  }
+  const renderedText = redactSecretString(text);
+  return (
+    <div className="space-y-2">
+      {isScriptedResponseText(text) ? (
+        <div
+          data-testid="scripted-provider-warning"
+          className="rounded-sm border border-tone-warn/35 bg-tone-warn/10 px-3 py-2 text-xs leading-5 text-tone-warn"
+        >
+          This reply came from the starter scripted provider. Select a model backed by a real
+          provider before using Sandbox to judge prompt quality.
+        </div>
+      ) : null}
+      <div className="whitespace-pre-wrap break-words">{renderedText}</div>
+    </div>
+  );
+}
+
+type RuntimeDataPartType = "data-run-info" | "data-inference-complete" | "data-state-snapshot";
+
+interface RuntimeDataPart {
+  type: RuntimeDataPartType;
+  data?: unknown;
+}
+
+function RuntimeMetadataParts({ parts }: { parts: RuntimeDataPart[] }) {
+  const runInfo = parts.find((part) => part.type === "data-run-info");
+  const inference = [...parts].reverse().find((part) => part.type === "data-inference-complete");
+  const stateSnapshots = parts.filter((part) => part.type === "data-state-snapshot");
+  const latestState = stateSnapshots.at(-1);
+  const inferenceData = asRecord(inference?.data);
+  const lifecycle = asRecord(
+    asRecord(asRecord(latestState?.data).extensions)?.["__runtime.run_lifecycle"],
+  );
+  const usage = asRecord(inferenceData.usage);
+  const summary = [
+    typeof lifecycle.status === "string" ? lifecycle.status : null,
+    typeof inferenceData.model === "string" ? inferenceData.model : null,
+    typeof usage.total_tokens === "number" ? `${usage.total_tokens} tokens` : null,
+    typeof inferenceData.durationMs === "number" ? formatDuration(inferenceData.durationMs) : null,
+  ].filter(Boolean);
+
+  return (
+    <details
+      data-testid="preview-runtime-metadata"
+      className="rounded-sm border border-line bg-soft px-3 py-2 text-xs text-fg-soft"
+    >
+      <summary className="cursor-pointer text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
+        Runtime metadata{summary.length > 0 ? ` · ${summary.join(" · ")}` : ""}
+      </summary>
+      <dl className="mt-2 grid gap-1.5">
+        <MetadataRow label="Run" value={asRecord(runInfo?.data).runId} />
+        <MetadataRow label="Thread" value={asRecord(runInfo?.data).threadId} />
+        <MetadataRow label="Model" value={inferenceData.model} />
+        <MetadataRow label="Duration" value={summaryValue(inferenceData.durationMs, formatDuration)} />
+        <MetadataRow label="Usage" value={formatUsage(usage)} />
+        <MetadataRow label="State snapshots" value={stateSnapshots.length} />
+      </dl>
+      <details className="mt-2 rounded-sm border border-line bg-code-bg">
+        <summary className="cursor-pointer px-2 py-1 text-[10px] font-medium uppercase tracking-eyebrow text-code-fg/70">
+          JSON data
+        </summary>
+        <pre className="max-h-48 overflow-auto border-t border-line p-2 font-mono text-[11px] leading-5 text-code-fg">
+          {formatJson(parts)}
+        </pre>
+      </details>
+    </details>
+  );
+}
+
+function MetadataRow({ label, value }: { label: string; value: unknown }) {
+  if (value === undefined || value === null || value === "") return null;
+  return (
+    <div className="grid grid-cols-[6rem_1fr] gap-2">
+      <dt className="text-fg-soft">{label}</dt>
+      <dd className="min-w-0 break-all font-mono text-[11px] text-fg-strong">{String(value)}</dd>
+    </div>
+  );
 }
 
 interface ToolPart {
@@ -365,9 +512,7 @@ function ToolInvocation({ part }: { part: ToolPart }) {
       </summary>
       <div className="border-t border-line px-3 py-2">
         <div className="text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">Input</div>
-        <pre className="mt-1 max-h-48 overflow-auto rounded-sm bg-code-bg p-2 font-mono text-[11px] text-code-fg">
-          {formatJson(part.input)}
-        </pre>
+        <StructuredPayload value={part.input} emptyLabel="(no input)" />
         {part.errorText ? (
           <>
             <div className="mt-2 text-[10px] font-medium uppercase tracking-eyebrow text-tone-error">
@@ -385,14 +530,200 @@ function ToolInvocation({ part }: { part: ToolPart }) {
             <div className="mt-2 text-[10px] font-medium uppercase tracking-eyebrow text-fg-soft">
               Output
             </div>
-            <pre className="mt-1 max-h-48 overflow-auto rounded-sm bg-code-bg p-2 font-mono text-[11px] text-code-fg">
-              {formatJson(part.output)}
-            </pre>
+            <StructuredPayload value={part.output} emptyLabel="(no output)" />
           </>
         ) : null}
       </div>
     </details>
   );
+}
+
+function StructuredPayload({
+  value,
+  title,
+  emptyLabel = "(no value)",
+}: {
+  value: unknown;
+  title?: string;
+  emptyLabel?: string;
+}) {
+  if (value === undefined) {
+    return <div className="mt-1 text-xs italic text-fg-faint">{emptyLabel}</div>;
+  }
+  const displayValue = redactSecretsForDisplay(value);
+  const summary = renderValueSummary(displayValue);
+  const raw = formatJson(displayValue);
+  const isStructured =
+    displayValue !== null && typeof displayValue === "object" && !isDateLike(displayValue);
+
+  if (!isStructured) {
+    return (
+      <div className="mt-1 rounded-sm bg-soft px-2 py-1.5 text-xs text-fg">
+        {summary}
+      </div>
+    );
+  }
+
+  const entries = Array.isArray(displayValue)
+    ? displayValue.slice(0, 6).map((item, index) => [String(index), item] as const)
+    : Object.entries(displayValue as Record<string, unknown>).slice(0, 8);
+  const total = Array.isArray(displayValue)
+    ? displayValue.length
+    : Object.keys(displayValue as Record<string, unknown>).length;
+  const headline = Array.isArray(displayValue)
+    ? `${total} item${total === 1 ? "" : "s"}`
+    : `${total} field${total === 1 ? "" : "s"}`;
+
+  return (
+    <div
+      data-testid={title === "Structured response" ? "structured-json-text" : undefined}
+      className="mt-1 rounded-sm border border-line bg-surface p-2 text-xs text-fg"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="font-medium text-fg-strong">{title ?? "Payload"}</div>
+        <div className="font-mono text-[10px] text-fg-faint">{headline}</div>
+      </div>
+      {entries.length > 0 ? (
+        <dl className="mt-2 grid gap-1.5">
+          {entries.map(([key, item]) => (
+            <div key={key} className="grid grid-cols-[minmax(5rem,0.38fr)_1fr] gap-2">
+              <dt className="min-w-0 truncate font-mono text-[11px] text-fg-soft">{key}</dt>
+              <dd className="min-w-0 break-words">{renderValueSummary(item)}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <div className="mt-2 text-fg-faint">Empty</div>
+      )}
+      {total > entries.length ? (
+        <div className="mt-2 text-[11px] text-fg-faint">
+          {total - entries.length} more {Array.isArray(displayValue) ? "items" : "fields"}
+        </div>
+      ) : null}
+      <details className="mt-2 rounded-sm border border-line bg-code-bg">
+        <summary className="cursor-pointer px-2 py-1 text-[10px] font-medium uppercase tracking-eyebrow text-code-fg/70">
+          JSON data
+        </summary>
+        <pre className="max-h-48 overflow-auto border-t border-line p-2 font-mono text-[11px] leading-5 text-code-fg">
+          {raw}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
+function renderValueSummary(value: unknown): ReactNode {
+  if (value === null) return <span className="font-mono text-fg-soft">null</span>;
+  if (value === undefined) return <span className="font-mono text-fg-soft">undefined</span>;
+  if (typeof value === "string") {
+    return <span className="whitespace-pre-wrap">{truncateText(redactSecretString(value), 500)}</span>;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return <span className="font-mono text-fg-strong">{String(value)}</span>;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="text-fg-faint">Empty list</span>;
+    if (value.every((item) => item === null || ["string", "number", "boolean"].includes(typeof item))) {
+      return (
+        <span>
+          {value
+            .slice(0, 5)
+            .map((item) => (item === null ? "null" : redactSecretString(String(item))))
+            .join(", ")}
+          {value.length > 5 ? `, +${value.length - 5} more` : ""}
+        </span>
+      );
+    }
+    return (
+      <span className="text-fg-soft">
+        List · {value.length} item{value.length === 1 ? "" : "s"}
+      </span>
+    );
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const readable = findReadableField(record);
+    if (typeof readable === "string" && readable.length > 0) {
+      return <span className="whitespace-pre-wrap">{truncateText(redactSecretString(readable), 500)}</span>;
+    }
+    const keys = Object.keys(record);
+    return (
+      <span className="text-fg-soft">
+        Object · {keys.length} field{keys.length === 1 ? "" : "s"}
+      </span>
+    );
+  }
+  return <span>{String(value)}</span>;
+}
+
+function findReadableField(record: Record<string, unknown>): string | null {
+  for (const key of ["answer", "final", "response", "content", "message", "text", "summary", "result", "output"]) {
+    const value = record[key];
+    if (typeof value === "string") return value;
+  }
+  return null;
+}
+
+function parseStructuredText(text: string): { ok: true; value: unknown } | { ok: false } {
+  const trimmed = text.trim();
+  if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) {
+    return { ok: false };
+  }
+  try {
+    return { ok: true, value: JSON.parse(trimmed) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function truncateText(value: string, max: number): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}...`;
+}
+
+function isDateLike(value: object): boolean {
+  return value instanceof Date;
+}
+
+function isRuntimeDataPart(part: { type: string; data?: unknown }): part is RuntimeDataPart {
+  return (
+    part.type === "data-run-info" ||
+    part.type === "data-inference-complete" ||
+    part.type === "data-state-snapshot"
+  );
+}
+
+function isScriptedResponseText(text: string): boolean {
+  return /^Scripted response to:/i.test(text.trim());
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function summaryValue<T>(value: unknown, formatter: (value: T) => string): string | undefined {
+  return value === undefined || value === null ? undefined : formatter(value as T);
+}
+
+function formatDuration(value: unknown): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  if (value >= 1000) return `${(value / 1000).toFixed(2)}s`;
+  return `${Math.round(value)}ms`;
+}
+
+function formatUsage(usage: Record<string, unknown>): string | undefined {
+  const total = usage.total_tokens;
+  const prompt = usage.prompt_tokens;
+  const completion = usage.completion_tokens;
+  if (typeof total === "number") {
+    const pieces = [`${total} total`];
+    if (typeof prompt === "number") pieces.push(`${prompt} prompt`);
+    if (typeof completion === "number") pieces.push(`${completion} completion`);
+    return pieces.join(" · ");
+  }
+  return undefined;
 }
 
 const TOOL_STATE_LABEL: Record<string, string> = {
@@ -437,6 +768,9 @@ function isDisplayablePart(part: unknown): boolean {
     return typeof typed.text === "string" && typed.text.length > 0;
   }
   if (typed.type === "dynamic-tool" || typed.type.startsWith("tool-")) {
+    return true;
+  }
+  if (isRuntimeDataPart(typed)) {
     return true;
   }
   // Anything else lands in the unrecognized-parts debug fallback —

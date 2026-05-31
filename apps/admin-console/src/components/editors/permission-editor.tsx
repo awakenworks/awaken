@@ -16,6 +16,8 @@ import {
   MetricCard,
   SectionLabel,
 } from "@/components/form-components";
+import { ToolPatternReference } from "@/components/tool-pattern-help";
+import { TOOL_CALL_PATTERN_PLACEHOLDER } from "@/lib/tool-pattern-guidance";
 
 export function PermissionConfigEditor({
   value,
@@ -49,9 +51,7 @@ export function PermissionConfigEditor({
   function updateRule(index: number, nextRule: PermissionRuleConfig) {
     update({
       ...config,
-      rules: config.rules.map((rule, currentIndex) =>
-        currentIndex === index ? nextRule : rule,
-      ),
+      rules: config.rules.map((rule, currentIndex) => (currentIndex === index ? nextRule : rule)),
     });
   }
 
@@ -90,8 +90,7 @@ export function PermissionConfigEditor({
     });
   }
 
-  const activeRule =
-    activeRuleIndex === null ? null : config.rules[activeRuleIndex] ?? null;
+  const activeRule = activeRuleIndex === null ? null : (config.rules[activeRuleIndex] ?? null);
 
   return (
     <div className="space-y-5">
@@ -115,8 +114,8 @@ export function PermissionConfigEditor({
         <div className="rounded-sm border border-line bg-surface p-4">
           <SectionLabel label="Default Decision" />
           <p className="mt-2 text-sm leading-6 text-fg-soft">
-            This becomes the fallback policy when none of the explicit rules
-            below match the tool call.
+            This becomes the fallback policy when none of the explicit rules below match the tool
+            call.
           </p>
           <div className="mt-4">
             <ChoiceGrid
@@ -148,8 +147,8 @@ export function PermissionConfigEditor({
             />
           </div>
           <Hint>
-            Runtime evaluation is top-to-bottom. Keep broad catch-all rules lower
-            than specific exceptions.
+            Runtime evaluation is top-to-bottom. Keep broad catch-all rules lower than specific
+            exceptions.
           </Hint>
         </div>
       </div>
@@ -160,8 +159,8 @@ export function PermissionConfigEditor({
             <div>
               <SectionLabel label="Permission Rules" />
               <p className="mt-2 text-sm leading-6 text-fg-soft">
-                Match tool names or patterns like `Bash(npm *)` or
-                `mcp__github__*`.
+                Permission rules decide whether matching tool calls run, pause for approval, or get
+                blocked.
               </p>
             </div>
             <button
@@ -219,9 +218,7 @@ export function PermissionConfigEditor({
                         <span
                           className={[
                             "shrink-0 rounded-pill px-2 py-0.5 text-[10px] font-medium uppercase tracking-eyebrow",
-                            isActive
-                              ? "bg-fg text-bg"
-                              : permissionBehaviorPill(rule.behavior),
+                            isActive ? "bg-fg text-bg" : permissionBehaviorPill(rule.behavior),
                           ].join(" ")}
                         >
                           {permissionBehaviorLabel(rule.behavior)}
@@ -251,8 +248,8 @@ export function PermissionConfigEditor({
                   {activeRule.tool.trim() || `Rule ${activeRuleIndex! + 1}`}
                 </h6>
                 <p className="mt-1 text-sm leading-6 text-fg-soft">
-                  Reorder rules to make precedence explicit. The first matching
-                  rule decides what happens.
+                  Reorder rules to make precedence explicit. The first matching rule decides what
+                  happens.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -293,21 +290,19 @@ export function PermissionConfigEditor({
                       tool: event.target.value,
                     })
                   }
-                  placeholder="Bash(npm *)"
-                  className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 text-sm text-fg outline-none transition focus:border-fg"
+                  placeholder={TOOL_CALL_PATTERN_PLACEHOLDER}
+                  className="w-full rounded-sm border border-line-strong bg-surface px-3 py-2 font-mono text-sm text-fg outline-none transition focus:border-fg"
                 />
               </Field>
-              <div className="rounded-sm border border-line bg-soft p-4">
+              <div className="space-y-3">
                 <SectionLabel label="Match Preview" />
-                <div className="mt-3 text-sm text-fg">
-                  {activeRule.tool.trim()
-                    ? activeRule.tool
-                    : "Any tool that reaches this rule"}
+                <div className="rounded-sm border border-line bg-soft p-4 text-sm text-fg">
+                  {activeRule.tool.trim() ? activeRule.tool : "Any tool that reaches this rule"}
                 </div>
-                <div className="mt-2 text-xs leading-6 text-fg-soft">
-                  Common examples: `Bash(npm *)`, `Edit(src/**)`,
-                  `mcp__github__*`.
-                </div>
+                <ToolPatternReference
+                  kind="tool-call"
+                  className="rounded-sm border border-line bg-soft p-4"
+                />
               </div>
             </div>
 

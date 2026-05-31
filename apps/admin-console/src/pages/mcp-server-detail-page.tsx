@@ -11,6 +11,7 @@ import { adminRoutes } from "@/lib/routes";
 import { formatRelativeTime } from "@/lib/format-time";
 import { useConfigListQuery, useConfigRecordQuery } from "@/lib/query/hooks/config";
 import { useMcpStatusQuery } from "@/lib/query/hooks/mcp";
+import { agentMentionsMcpServer } from "@/lib/agent-resource-references";
 
 const EMPTY_AGENTS: AgentSpec[] = [];
 
@@ -61,7 +62,7 @@ export function McpServerDetailPage() {
 
   const usedByAgents = useMemo(() => {
     if (!id) return [] as AgentSpec[];
-    return agents.filter((a) => mentionsMcp(a, id));
+    return agents.filter((a) => agentMentionsMcpServer(a, id));
   }, [agents, id]);
 
   async function handleRestart() {
@@ -384,24 +385,6 @@ function formatCommand(server: McpServerRecord): string {
 
 function toStatusErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Heuristic: an agent "uses" an MCP server when its sections.mcp.servers
- * list (or its plugin_ids) references the server id. Different deployments
- * shape the section differently; we look in two common places.
- */
-function mentionsMcp(agent: AgentSpec, mcpId: string): boolean {
-  const sections = (agent as { sections?: Record<string, unknown> }).sections ?? {};
-  const mcpSection = sections.mcp as { servers?: Array<{ id?: string } | string> } | undefined;
-  if (mcpSection?.servers) {
-    for (const s of mcpSection.servers) {
-      if (typeof s === "string" && s === mcpId) return true;
-      if (typeof s === "object" && s !== null && s.id === mcpId) return true;
-    }
-  }
-  if ((agent.plugin_ids ?? []).includes(mcpId)) return true;
-  return false;
 }
 
 // silence unused-import lints for the optional Sparkline (kept for a follow-up

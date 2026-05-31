@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { RouterProvider, createMemoryRouter, createRoutesFromElements } from "react-router";
 import { appRoutes } from "../app";
 import { AuthProvider } from "../components/auth-provider";
@@ -234,5 +234,29 @@ describe("MCP servers page — status badge", () => {
       },
       { timeout: 5_000 },
     );
+  });
+
+  it("Verify tools refetches server status and shows the discovered tool list", async () => {
+    const tools = [{ name: "create_issue", description: "Create issue" }];
+    const fetchMock = buildFetchMock({ statusConnected: true, statusTools: tools });
+    vi.stubGlobal("fetch", fetchMock);
+    renderMcpPage();
+
+    await screen.findByText("my-server", undefined, { timeout: 5_000 });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }, { timeout: 5_000 }));
+    await screen.findByText("create_issue", undefined, { timeout: 5_000 });
+
+    const statusCallsBefore = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/v1/mcp-servers/my-server/status"),
+    ).length;
+    fireEvent.click(screen.getByRole("button", { name: "Verify tools" }));
+
+    await waitFor(() => {
+      const statusCallsAfter = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes("/v1/mcp-servers/my-server/status"),
+      ).length;
+      expect(statusCallsAfter).toBeGreaterThan(statusCallsBefore);
+    });
+    expect(screen.getByText("Create issue")).toBeDefined();
   });
 });

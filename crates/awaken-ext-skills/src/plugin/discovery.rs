@@ -2,13 +2,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
-use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
+use awaken_runtime::plugins::{ConfigSchema, Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::StateKeyOptions;
 use awaken_runtime::{PhaseContext, PhaseHook, StateCommand};
-use awaken_runtime_contract::StateError;
 use awaken_runtime_contract::contract::context_message::ContextMessage;
 use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::{PluginConfigKey, StateError};
 
 use crate::SKILLS_DISCOVERY_PLUGIN_ID;
 use crate::registry::SkillRegistry;
@@ -17,6 +18,40 @@ use crate::state::SkillState;
 use crate::visibility::{
     SkillVisibility, SkillVisibilityStateKey, SkillVisibilityStateValue, effective_visibility,
 };
+
+struct CatalogSkill {
+    meta: SkillMeta,
+    has_resources: bool,
+    has_scripts: bool,
+}
+
+/// Agent-level skill catalog filter.
+///
+/// Stored in `AgentSpec.sections["skills"]`. A missing `allowlist` means the
+/// agent follows the full published skill registry. An empty list means no
+/// skills are shown to the model.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct SkillDiscoveryConfig {
+    #[serde(alias = "ids", skip_serializing_if = "Option::is_none")]
+    pub allowlist: Option<Vec<String>>,
+}
+
+impl SkillDiscoveryConfig {
+    fn allows(&self, skill_id: &str) -> bool {
+        match &self.allowlist {
+            Some(ids) => ids.iter().any(|id| id == skill_id),
+            None => true,
+        }
+    }
+}
+
+pub struct SkillDiscoveryConfigKey;
+
+impl PluginConfigKey for SkillDiscoveryConfigKey {
+    const KEY: &'static str = "skills";
+    type Config = SkillDiscoveryConfig;
+}
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 #[derive(Clone)]
@@ -56,12 +91,22 @@ impl SkillDiscoveryPlugin {
             .replace('>', "&gt;")
     }
 
+    #[cfg(test)]
     pub(crate) fn render_catalog(
         &self,
         _active: &HashSet<String>,
         visibility: Option<&SkillVisibilityStateValue>,
     ) -> String {
-        let mut metas: Vec<SkillMeta> = self
+        self.render_catalog_with_config(_active, visibility, &SkillDiscoveryConfig::default())
+    }
+
+    pub(crate) fn render_catalog_with_config(
+        &self,
+        _active: &HashSet<String>,
+        visibility: Option<&SkillVisibilityStateValue>,
+        config: &SkillDiscoveryConfig,
+    ) -> String {
+        let mut entries: Vec<CatalogSkill> = self
             .registry
             .snapshot()
             .values()
@@ -71,36 +116,39 @@ impl SkillDiscoveryPlugin {
                 // declarative metadata policy — never failing open. This keeps
                 // `model_invocable=false` skills out of the catalog even when the
                 // seed missed them or the state is absent.
-                effective_visibility(s.meta(), visibility) != SkillVisibility::Hidden
+                config.allows(&s.meta().id)
+                    && effective_visibility(s.meta(), visibility) != SkillVisibility::Hidden
             })
-            .map(|s| s.meta().clone())
+            .map(|s| CatalogSkill {
+                meta: s.meta().clone(),
+                has_resources: !s.materialized_resource_paths().is_empty(),
+                has_scripts: !s.materialized_script_paths().is_empty(),
+            })
             .collect();
 
-        if metas.is_empty() {
+        if entries.is_empty() {
             return String::new();
         }
 
-        metas.sort_by(|a, b| a.id.cmp(&b.id));
+        entries.sort_by(|a, b| a.meta.id.cmp(&b.meta.id));
 
-        let total = metas.len();
-        const USAGE: &str = concat!(
-            "<skills_usage>\n",
-            "If a listed skill is relevant, call tool \"skill\" with {\"skill\": \"<id or name>\"} before answering.\n",
-            "Skill resources are not auto-loaded: use \"load_skill_resource\" with {\"skill\": \"<id>\", \"path\": \"references/<file>|assets/<file>\"}.\n",
-            "To run skill scripts: use \"skill_script\" with {\"skill\": \"<id>\", \"script\": \"scripts/<file>\", \"args\": [..]}.\n",
-            "</skills_usage>",
+        let total = entries.len();
+        let usage = skill_usage_block(
+            entries.iter().any(|entry| entry.has_resources),
+            entries.iter().any(|entry| entry.has_scripts),
         );
         const CLOSE: &str = "</available_skills>\n";
         // Budget reserved so the closing tag, an optional truncation note, and the
         // usage block always fit — this keeps the emitted structure well-formed
         // rather than hard-cutting through a tag mid-render.
-        let reserve = CLOSE.len() + USAGE.len() + 96;
+        let reserve = CLOSE.len() + usage.len() + 96;
 
         let mut out = String::new();
         out.push_str("<available_skills>\n");
 
         let mut shown = 0usize;
-        for m in metas.into_iter().take(self.max_entries) {
+        for entry in entries.into_iter().take(self.max_entries) {
+            let m = entry.meta;
             let id = Self::escape_text(&m.id);
             let mut desc = m.description.clone();
             if m.name != m.id && !m.name.trim().is_empty() {
@@ -148,7 +196,7 @@ impl SkillDiscoveryPlugin {
             ));
         }
 
-        out.push_str(USAGE);
+        out.push_str(&usage);
 
         // Last-resort cap for a pathologically small budget (smaller than the
         // structural overhead): walk back to a char boundary so `truncate` never
@@ -165,6 +213,25 @@ impl SkillDiscoveryPlugin {
     }
 }
 
+fn skill_usage_block(has_resources: bool, has_scripts: bool) -> String {
+    let mut out = String::from("<skills_usage>\n");
+    out.push_str(
+        "If a listed skill is relevant, call tool \"skill\" with {\"skill\": \"<id or name>\"} before answering.\n",
+    );
+    if has_resources {
+        out.push_str(
+            "Skill resources are not auto-loaded: use \"load_skill_resource\" with {\"skill\": \"<id>\", \"path\": \"references/<file>|assets/<file>\"}.\n",
+        );
+    }
+    if has_scripts {
+        out.push_str(
+            "Only skills that list scripts can run them: use \"skill_script\" with {\"skill\": \"<id>\", \"script\": \"scripts/<file>\", \"args\": [..]}.\n",
+        );
+    }
+    out.push_str("</skills_usage>");
+    out
+}
+
 struct SkillDiscoveryHook {
     plugin: SkillDiscoveryPlugin,
 }
@@ -178,7 +245,10 @@ impl PhaseHook for SkillDiscoveryHook {
             .unwrap_or_default();
 
         let visibility = ctx.state::<SkillVisibilityStateKey>();
-        let rendered = self.plugin.render_catalog(&active, visibility);
+        let config = ctx.config::<SkillDiscoveryConfigKey>()?;
+        let rendered = self
+            .plugin
+            .render_catalog_with_config(&active, visibility, &config);
         if rendered.is_empty() {
             return Ok(StateCommand::new());
         }
@@ -197,6 +267,15 @@ impl Plugin for SkillDiscoveryPlugin {
         PluginDescriptor {
             name: SKILLS_DISCOVERY_PLUGIN_ID,
         }
+    }
+
+    fn config_schemas(&self) -> Vec<ConfigSchema> {
+        vec![
+            ConfigSchema::for_key::<SkillDiscoveryConfigKey>()
+                .with_display_name("Skills")
+                .with_description("Restrict the skill catalog visible to this agent.")
+                .with_category("context"),
+        ]
     }
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
@@ -347,6 +426,32 @@ mod tests {
         let s = plugin.render_catalog(&active, None);
         assert!(s.contains("<name>s1</name>"));
         assert!(!s.contains("<description>"));
+    }
+
+    #[test]
+    fn render_catalog_with_config_filters_to_skill_allowlist() {
+        let skills: Vec<Arc<dyn Skill>> = vec![
+            Arc::new(MockSkill(mock_meta("s1"))),
+            Arc::new(MockSkill(mock_meta("s2"))),
+        ];
+        let plugin = SkillDiscoveryPlugin::new(make_registry(skills));
+        let catalog = plugin.render_catalog_with_config(
+            &HashSet::new(),
+            None,
+            &SkillDiscoveryConfig {
+                allowlist: Some(vec!["s2".into()]),
+            },
+        );
+
+        assert!(!catalog.contains("<name>s1</name>"));
+        assert!(catalog.contains("<name>s2</name>"));
+    }
+
+    #[test]
+    fn skill_discovery_config_accepts_legacy_ids_alias() {
+        let config: SkillDiscoveryConfig =
+            serde_json::from_value(serde_json::json!({"ids": ["s1"]})).unwrap();
+        assert_eq!(config.allowlist, Some(vec!["s1".to_string()]));
     }
 
     #[test]

@@ -149,7 +149,7 @@ describe("MessageParts — AI SDK part states (R3 #5)", () => {
     );
     expect(screen.getByText("get_weather")).toBeTruthy();
     expect(screen.getByText(/Calling/)).toBeTruthy();
-    expect(screen.getByText(/SF/)).toBeTruthy();
+    expect(screen.getAllByText(/SF/).length).toBeGreaterThan(0);
   });
 
   it("renders a typed `tool-<name>` part identical to dynamic-tool", () => {
@@ -165,7 +165,7 @@ describe("MessageParts — AI SDK part states (R3 #5)", () => {
       />,
     );
     expect(screen.getByText("get_weather")).toBeTruthy();
-    expect(screen.getByText(/NYC/)).toBeTruthy();
+    expect(screen.getAllByText(/NYC/).length).toBeGreaterThan(0);
   });
 
   it("renders `output-available` with the Done badge and an Output block", () => {
@@ -182,7 +182,7 @@ describe("MessageParts — AI SDK part states (R3 #5)", () => {
       />,
     );
     expect(screen.getByText(/Done/)).toBeTruthy();
-    expect(screen.getByText(/temp_c/)).toBeTruthy();
+    expect(screen.getAllByText(/temp_c/).length).toBeGreaterThan(0);
   });
 
   it("renders `output-error` with the Error badge and errorText (not output)", () => {
@@ -335,6 +335,49 @@ describe("MessageParts — AI SDK part states (R3 #5)", () => {
     expect(fallback.textContent ?? "").toContain("metadata");
   });
 
+  it("renders runtime data parts as metadata instead of unknown parts", () => {
+    render(
+      <MessageParts
+        message={uiMessage([
+          { type: "text", text: "Hello" },
+          { type: "data-run-info", data: { runId: "run-1", threadId: "thread-1" } },
+          {
+            type: "data-inference-complete",
+            data: {
+              model: "gemini-2.5-flash",
+              durationMs: 1250,
+              usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 },
+            },
+          },
+          {
+            type: "data-state-snapshot",
+            data: {
+              extensions: {
+                "__runtime.run_lifecycle": { status: "done" },
+              },
+            },
+          },
+        ])}
+      />,
+    );
+
+    expect(screen.getByText("Hello")).toBeTruthy();
+    const metadata = screen.getByTestId("preview-runtime-metadata");
+    expect(metadata.textContent ?? "").toContain("Runtime metadata");
+    expect(metadata.textContent ?? "").toContain("done");
+    expect(metadata.textContent ?? "").toContain("gemini-2.5-flash");
+    expect(screen.queryByTestId("message-unknown-parts")).toBeNull();
+  });
+
+  it("warns when a readable text response comes from the scripted provider", () => {
+    render(
+      <MessageParts message={uiMessage([{ type: "text", text: "Scripted response to: hi" }])} />,
+    );
+
+    expect(screen.getByTestId("scripted-provider-warning")).toBeTruthy();
+    expect(screen.getByText("Scripted response to: hi")).toBeTruthy();
+  });
+
   it("mixes text + tool + unknown without losing any of them", () => {
     render(
       <MessageParts
@@ -393,6 +436,36 @@ describe("AgentPreviewPanel — redaction and trace gating", () => {
     fireEvent.click(screen.getByTestId("open-recent-traces"));
     const drawer = screen.getByTestId("recent-traces-drawer");
     expect(drawer.getAttribute("data-agent-id")).toBe("saved-agent");
+  });
+
+  it("renders JSON text responses as readable structured payloads by default", () => {
+    previewHarness.messages = [uiMessage([{ type: "text", text: '{"answer":"ok","count":2}' }])];
+    render(<AgentPreviewPanel draft={agentDraft()} />);
+
+    expect(screen.getByTestId("structured-json-text")).toBeTruthy();
+    expect(screen.getByText("Structured response")).toBeTruthy();
+    expect(screen.getByText("answer")).toBeTruthy();
+    expect(screen.getByText("ok")).toBeTruthy();
+    expect(screen.getByText("JSON data")).toBeTruthy();
+  });
+
+  it("can switch sandbox responses to redacted raw JSON", () => {
+    previewHarness.messages = [
+      uiMessage([
+        {
+          type: "text",
+          text: "called with Authorization: Bearer sk-real-secret-value",
+        },
+      ]),
+    ];
+    const { container } = render(<AgentPreviewPanel draft={agentDraft()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "JSON" }));
+
+    const json = screen.getByTestId("preview-message-json");
+    expect(json.textContent ?? "").toContain('"parts"');
+    expect(container.textContent ?? "").not.toContain("sk-real-secret-value");
+    expect(container.textContent ?? "").toContain("Authorization: ***");
   });
 });
 

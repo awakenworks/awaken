@@ -18,6 +18,7 @@ awaken-ext-mcp = { workspace = true, optional = true }
 awaken-ext-deferred-tools = { workspace = true }
 awaken-ext-permission = { workspace = true }
 serde = { workspace = true }
+schemars = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }

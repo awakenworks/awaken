@@ -566,7 +566,9 @@ export const en = {
       inputPrice: "Input price",
       outputPrice: "Output price",
       modalitiesInput: "Input modalities",
+      modalitiesInputHint: "Mark what this model can receive from users, tools, or adapters.",
       modalitiesOutput: "Output modalities",
+      modalitiesOutputHint: "Mark what this model can generate back to the runtime.",
     },
     validation: {
       positiveInt: "Must be an integer ≥ 1",
@@ -650,6 +652,11 @@ export const en = {
     editor: {
       builtin: "Built-in",
       userOverride: "User override",
+      effectiveDescription: "Current effective description",
+      descriptionOverride: "Description override",
+      descriptionOverrideHint:
+        "Edit the description the model sees. Saving writes PATCH /v1/config/tools/:id/overrides.",
+      editingDescription: "Editing the tool description override.",
       effective: "Effective",
       revert: "Revert to default",
       lengthWarning:

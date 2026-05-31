@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createReminderField,
   createReminderRule,
+  normalizeDeferredToolsConfig,
   moveItem,
   normalizeGenerativeUiConfig,
   normalizeReminderConfig,
@@ -14,6 +15,7 @@ import {
   schemaDescription,
   schemaTitle,
   serializeGenerativeUiConfig,
+  serializeDeferredToolsConfig,
   serializePermissionConfig,
   serializeReminderConfig,
 } from "./plugin-config";
@@ -102,12 +104,8 @@ describe("plugin config helpers", () => {
   });
 
   it("summarizes generic and generative-ui config states", () => {
-    expect(pluginConfigDisplaySummary("reminder", { rules: [] })).toBe(
-      "No reminder rules",
-    );
-    expect(pluginConfigDisplaySummary("generative-ui", {})).toBe(
-      "Prompt defaults",
-    );
+    expect(pluginConfigDisplaySummary("reminder", { rules: [] })).toBe("No reminder rules");
+    expect(pluginConfigDisplaySummary("generative-ui", {})).toBe("Prompt defaults");
     expect(
       pluginConfigDisplaySummary("generative-ui", {
         instructions: "Use cards",
@@ -115,12 +113,8 @@ describe("plugin config helpers", () => {
         examples: "Example",
       }),
     ).toBe("instruction override · catalog override · examples");
-    expect(pluginConfigDisplaySummary("schema", { enabled: true })).toBe(
-      "Configured",
-    );
-    expect(pluginConfigDisplaySummary("schema", { empty: "" })).toBe(
-      "Schema form",
-    );
+    expect(pluginConfigDisplaySummary("schema", { enabled: true })).toBe("Configured");
+    expect(pluginConfigDisplaySummary("schema", { empty: "" })).toBe("Schema form");
   });
 
   it("prefers plugin schema metadata for display names and descriptions", () => {
@@ -135,9 +129,7 @@ describe("plugin config helpers", () => {
       },
     };
 
-    expect(pluginConfigDisplayName("custom-gateway", schema)).toBe(
-      "Gateway Settings",
-    );
+    expect(pluginConfigDisplayName("custom-gateway", schema)).toBe("Gateway Settings");
     expect(pluginConfigDescription(schema)).toBe("Configures a gateway plugin.");
     expect(
       pluginConfigDisplayName("custom-gateway", {
@@ -209,7 +201,7 @@ describe("plugin config helpers", () => {
     expect(
       serializePermissionConfig({
         default_behavior: "allow",
-        rules: [{ tool: "Bash(*)", behavior: "deny", scope: "thread" }],
+        rules: [{ tool: " Bash(*) ", behavior: "deny", scope: "thread" }],
       }),
     ).toEqual({
       default_behavior: "allow",
@@ -217,28 +209,30 @@ describe("plugin config helpers", () => {
     });
 
     const base = createReminderRule();
-    expect(serializeReminderConfig({ rules: [{ ...base, mode: "status", status: "pending" }] }))
-      .toEqual({
-        rules: [
-          {
-            name: undefined,
-            tool: "",
-            output: { status: "pending" },
-            message: { target: "system", content: "", cooldown_turns: 0 },
-          },
-        ],
-      });
-    expect(serializeReminderConfig({ rules: [{ ...base, mode: "content_text", text: "*ok*" }] }))
-      .toEqual({
-        rules: [
-          {
-            name: undefined,
-            tool: "",
-            output: { content: "*ok*" },
-            message: { target: "system", content: "", cooldown_turns: 0 },
-          },
-        ],
-      });
+    expect(
+      serializeReminderConfig({ rules: [{ ...base, mode: "status", status: "pending" }] }),
+    ).toEqual({
+      rules: [
+        {
+          name: undefined,
+          tool: "",
+          output: { status: "pending" },
+          message: { target: "system", content: "", cooldown_turns: 0 },
+        },
+      ],
+    });
+    expect(
+      serializeReminderConfig({ rules: [{ ...base, mode: "content_text", text: "*ok*" }] }),
+    ).toEqual({
+      rules: [
+        {
+          name: undefined,
+          tool: "",
+          output: { content: "*ok*" },
+          message: { target: "system", content: "", cooldown_turns: 0 },
+        },
+      ],
+    });
     expect(
       serializeReminderConfig({
         rules: [
@@ -258,6 +252,24 @@ describe("plugin config helpers", () => {
           message: { target: "system", content: "", cooldown_turns: 0 },
         },
       ],
+    });
+  });
+
+  it("normalizes deferred tools config and trims tool pattern fields on serialize", () => {
+    const config = normalizeDeferredToolsConfig({
+      enabled: true,
+      default_mode: "eager",
+      rules: [{ tool: " mcp__github__* ", mode: "deferred" }],
+      agent_priors: { " get_weather ": 0.25 },
+    });
+
+    expect(config.enabled).toBe("always");
+    expect(config.rules[0]).toEqual({ tool: " mcp__github__* ", mode: "deferred" });
+    expect(serializeDeferredToolsConfig(config)).toMatchObject({
+      enabled: true,
+      default_mode: "eager",
+      rules: [{ tool: "mcp__github__*", mode: "deferred" }],
+      agent_priors: { get_weather: 0.25 },
     });
   });
 

@@ -94,7 +94,7 @@ export function AdminSidebar({
               title={`uptime ${Math.floor(sysInfo.uptime_seconds / 60)}m`}
             />
           )}
-          <span>
+          <span title="Scope is resolved by the server for this admin request and is read-only in the console.">
             v{sysInfo?.version ?? "—"} · scope {sysInfo?.scope_id ?? "—"}
           </span>
         </div>

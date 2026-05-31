@@ -21,7 +21,7 @@ export function DelegatesPanel({
     <section className="rounded-sm border border-line bg-surface p-5 shadow-sm">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h3 className="text-lg font-semibold text-fg-strong">Delegates</h3>
+          <h3 className="text-lg font-semibold text-fg-strong">Delegates (Sub-Agents)</h3>
           <p className="mt-2 max-w-xl text-sm text-fg-soft">
             Pick agents this one can hand work off to. Self-loops are blocked statically; longer
             cycles (A → B → A) are detected at runtime by the scheduler.
@@ -36,6 +36,9 @@ export function DelegatesPanel({
                 className="inline-flex items-center gap-1 rounded-pill border border-agent-stripe/30 bg-agent-tint px-2 py-0.5 font-mono text-agent-fg"
               >
                 {id}
+                <span className="font-sans text-[10px] uppercase tracking-eyebrow text-agent-fg/70">
+                  Sub-Agent
+                </span>
               </span>
             ))}
           </div>
@@ -60,9 +63,13 @@ export function DelegatesPanel({
                   <input
                     type="checkbox"
                     checked={checked}
+                    aria-label={agentId}
                     onChange={(event) => toggleDelegate(agentId, event.target.checked)}
                   />
                   <span className="font-mono text-fg-strong">{agentId}</span>
+                  <span className="rounded-pill bg-agent-tint px-2 py-0.5 text-[10px] font-medium uppercase tracking-eyebrow text-agent-fg">
+                    Sub-Agent
+                  </span>
                 </div>
               </label>
             );

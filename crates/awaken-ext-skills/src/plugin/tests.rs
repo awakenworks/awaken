@@ -42,9 +42,39 @@ fn render_catalog_contains_available_skills_and_usage() {
     let s = p.render_catalog(&active, None);
     assert!(s.contains("<available_skills>"));
     assert!(s.contains("<skills_usage>"));
+    assert!(!s.contains("skill_script"));
+    assert!(!s.contains("load_skill_resource"));
     assert!(s.contains("&amp;"));
     assert!(s.contains("&lt;"));
     assert!(s.contains("&gt;"));
+}
+
+#[test]
+fn render_catalog_mentions_resource_and_script_tools_only_when_materialized() {
+    let td = TempDir::new().unwrap();
+    let root = td.path().join("skills");
+    let skill_dir = root.join("scripted");
+    fs::create_dir_all(skill_dir.join("references")).unwrap();
+    fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: scripted\ndescription: ok\n---\nBody\n",
+    )
+    .unwrap();
+    fs::write(skill_dir.join("references").join("guide.md"), "guide").unwrap();
+    fs::write(
+        skill_dir.join("scripts").join("run.sh"),
+        "#!/bin/sh\ntrue\n",
+    )
+    .unwrap();
+
+    let result = FsSkill::discover(root).unwrap();
+    let skills = FsSkill::into_arc_skills(result.skills);
+    let p = SkillDiscoveryPlugin::new(make_registry(skills));
+    let s = p.render_catalog(&HashSet::new(), None);
+
+    assert!(s.contains("load_skill_resource"));
+    assert!(s.contains("skill_script"));
 }
 
 #[test]
