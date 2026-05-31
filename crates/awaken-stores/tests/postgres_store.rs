@@ -155,6 +155,7 @@ async fn list_threads_query_filters_lineage() {
             limit: 10,
             resource_id: Some("resource-a".to_string()),
             parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
+            id_prefix: None,
         })
         .await
         .unwrap();
@@ -192,6 +193,7 @@ async fn list_threads_query_filters_root_threads() {
             limit: 10,
             resource_id: Some("resource-a".to_string()),
             parent_filter: ThreadParentFilter::Root,
+            id_prefix: None,
         })
         .await
         .unwrap();
@@ -500,6 +502,7 @@ async fn ensure_schema_normalizes_legacy_thread_lineage_columns_from_json() {
             limit: 10,
             resource_id: Some("resource-a".to_string()),
             parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
+            id_prefix: None,
         })
         .await
         .unwrap();
@@ -845,4 +848,63 @@ async fn deleting_missing_config_does_not_emit_notify_event() {
         result.is_err(),
         "deleting a missing config entry should not emit a notify event"
     );
+}
+
+#[tokio::test]
+#[ignore]
+async fn list_runs_filters_by_id_prefix() {
+    let Some(store) = make_prefixed_store("pg_runs_prefix").await else {
+        return;
+    };
+    store
+        .checkpoint("sa-t1", &[], &make_run("sa-r1", "sa-t1", 1))
+        .await
+        .unwrap();
+    store
+        .checkpoint("sa-t2", &[], &make_run("sa-r2", "sa-t2", 2))
+        .await
+        .unwrap();
+    store
+        .checkpoint("sb-t1", &[], &make_run("sb-r1", "sb-t1", 3))
+        .await
+        .unwrap();
+
+    let page = store
+        .list_runs(&RunQuery {
+            offset: 0,
+            limit: 50,
+            thread_id: None,
+            status: None,
+            id_prefix: Some("sa-".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(page.total, 2);
+    assert!(page.items.iter().all(|r| r.thread_id.starts_with("sa-")));
+}
+
+#[tokio::test]
+#[ignore]
+async fn list_threads_query_filters_by_id_prefix() {
+    let Some(store) = make_prefixed_store("pg_threads_prefix").await else {
+        return;
+    };
+    store.save_thread(&Thread::with_id("sa-t1")).await.unwrap();
+    store.save_thread(&Thread::with_id("sa-t2")).await.unwrap();
+    store.save_thread(&Thread::with_id("sb-t1")).await.unwrap();
+
+    let page = store
+        .list_threads_query(&ThreadQuery {
+            offset: 0,
+            limit: 50,
+            resource_id: None,
+            parent_filter: ThreadParentFilter::Any,
+            id_prefix: Some("sa-".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(page.total, 2);
+    assert!(page.items.iter().all(|id| id.starts_with("sa-")));
 }

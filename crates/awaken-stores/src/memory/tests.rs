@@ -795,6 +795,7 @@ async fn run_list_filters_by_thread_and_status() {
         status: Some(RunStatus::Running),
         offset: 0,
         limit: 100,
+        id_prefix: None,
     };
     let page = store.list_runs(&query).await.unwrap();
     assert_eq!(page.items.len(), 1);
@@ -842,6 +843,7 @@ async fn concurrent_run_mutations_are_safe() {
             status: None,
             offset: 0,
             limit: 200,
+            id_prefix: None,
         })
         .await
         .unwrap();

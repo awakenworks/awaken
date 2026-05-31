@@ -108,6 +108,7 @@ async fn list_threads_query_filters_lineage() {
             limit: 10,
             resource_id: Some("resource-a".to_string()),
             parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
+            id_prefix: None,
         })
         .await
         .unwrap();

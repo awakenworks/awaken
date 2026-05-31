@@ -4,8 +4,8 @@
 use awaken_server_contract::contract::lifecycle::RunStatus;
 use awaken_server_contract::contract::message::{Message, MessageMetadata};
 use awaken_server_contract::contract::storage::{
-    ChildThreadDeleteStrategy, MessageOrder, MessageQuery, MessageVisibilityFilter, RunRecord,
-    RunRequestSnapshot, StorageError, ThreadParentFilter, ThreadQuery, ThreadRunStore,
+    ChildThreadDeleteStrategy, MessageOrder, MessageQuery, MessageVisibilityFilter, RunQuery,
+    RunRecord, RunRequestSnapshot, StorageError, ThreadParentFilter, ThreadQuery, ThreadRunStore,
 };
 use awaken_server_contract::thread::Thread;
 
@@ -243,12 +243,72 @@ pub async fn list_threads_query_filters_lineage<S: ThreadRunStore>(store: &S) {
             limit: 10,
             resource_id: Some("resource-a".to_string()),
             parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
+            id_prefix: None,
         })
         .await
         .unwrap();
 
     assert_eq!(page.items, vec!["t-filter-match"]);
     assert_eq!(page.total, 1);
+    assert!(!page.has_more);
+}
+
+/// ADR-0042 scope boundary: `RunQuery::id_prefix` must filter at the backend so
+/// a scoped listing returns only its own runs (and exact totals), never the full
+/// shared run table.
+pub async fn list_runs_filters_by_id_prefix<S: ThreadRunStore>(store: &S) {
+    store
+        .checkpoint("sa-t1", &[], &make_run("sa-r1", "sa-t1", RunStatus::Done))
+        .await
+        .unwrap();
+    store
+        .checkpoint("sa-t2", &[], &make_run("sa-r2", "sa-t2", RunStatus::Done))
+        .await
+        .unwrap();
+    store
+        .checkpoint("sb-t1", &[], &make_run("sb-r1", "sb-t1", RunStatus::Done))
+        .await
+        .unwrap();
+
+    let page = store
+        .list_runs(&RunQuery {
+            offset: 0,
+            limit: 50,
+            thread_id: None,
+            status: None,
+            id_prefix: Some("sa-".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(page.total, 2, "only the two sa- runs are in scope");
+    assert!(page.items.iter().all(|r| r.thread_id.starts_with("sa-")));
+    assert!(page.items.iter().any(|r| r.run_id == "sa-r1"));
+    assert!(page.items.iter().any(|r| r.run_id == "sa-r2"));
+    assert!(!page.has_more);
+}
+
+/// ADR-0042 scope boundary: `ThreadQuery::id_prefix` must filter at the backend.
+pub async fn list_threads_query_filters_by_id_prefix<S: ThreadRunStore>(store: &S) {
+    store.save_thread(&Thread::with_id("sa-t1")).await.unwrap();
+    store.save_thread(&Thread::with_id("sa-t2")).await.unwrap();
+    store.save_thread(&Thread::with_id("sb-t1")).await.unwrap();
+
+    let page = store
+        .list_threads_query(&ThreadQuery {
+            offset: 0,
+            limit: 50,
+            resource_id: None,
+            parent_filter: ThreadParentFilter::Any,
+            id_prefix: Some("sa-".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let mut items = page.items.clone();
+    items.sort();
+    assert_eq!(items, vec!["sa-t1".to_string(), "sa-t2".to_string()]);
+    assert_eq!(page.total, 2);
     assert!(!page.has_more);
 }
 
@@ -272,6 +332,7 @@ pub async fn list_threads_query_filters_root_threads<S: ThreadRunStore>(store: &
             limit: 10,
             resource_id: Some("resource-a".to_string()),
             parent_filter: ThreadParentFilter::Root,
+            id_prefix: None,
         })
         .await
         .unwrap();

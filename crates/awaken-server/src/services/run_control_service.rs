@@ -166,6 +166,7 @@ impl RunControlService {
                     limit: 200,
                     thread_id: Some(thread_id.to_string()),
                     status: Some(status),
+                    id_prefix: None,
                 })
                 .await?;
             candidates.extend(page.items);

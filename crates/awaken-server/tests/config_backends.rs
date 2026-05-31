@@ -900,6 +900,7 @@ async fn postgres_nats_two_server_instances_share_runtime_mailbox_without_duplic
             limit: 20,
             thread_id: Some("pg-nats-background-thread".to_string()),
             status: Some(RunStatus::Done),
+            id_prefix: None,
         },
     )
     .await

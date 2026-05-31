@@ -138,15 +138,24 @@ impl RunStore for PostgresStore {
     async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, StorageError> {
         self.ensure_schema().await?;
 
-        // Build count query
+        // Build WHERE conditions with positional binds in a stable order:
+        // thread_id, status, id_prefix. The scope prefix is pushed down as an
+        // indexed `LIKE 'prefix%'` so a scoped listing never scans other scopes.
         let mut conditions = Vec::new();
+        let mut idx = 1;
         if query.thread_id.is_some() {
-            conditions.push("thread_id = $1".to_string());
+            conditions.push(format!("thread_id = ${idx}"));
+            idx += 1;
         }
         if query.status.is_some() {
-            let idx = if query.thread_id.is_some() { 2 } else { 1 };
             conditions.push(format!("status = ${idx}"));
+            idx += 1;
         }
+        if query.id_prefix.is_some() {
+            conditions.push(format!("thread_id LIKE ${idx} ESCAPE '\\'"));
+            idx += 1;
+        }
+        let _ = idx;
 
         let where_clause = if conditions.is_empty() {
             String::new()
@@ -163,6 +172,8 @@ impl RunStore for PostgresStore {
             query.offset
         );
 
+        let like_pattern = query.id_prefix.as_deref().map(like_prefix_pattern);
+
         // This is simplified — in production you'd use a proper query builder.
         // For the feature-gated postgres backend, we use raw string queries.
         let (total,): (i64,) = {
@@ -172,6 +183,9 @@ impl RunStore for PostgresStore {
             }
             if let Some(status) = query.status {
                 q = q.bind(format!("{status:?}").to_lowercase());
+            }
+            if let Some(ref pattern) = like_pattern {
+                q = q.bind(pattern);
             }
             q.fetch_one(&self.pool)
                 .await
@@ -185,6 +199,9 @@ impl RunStore for PostgresStore {
             }
             if let Some(status) = query.status {
                 q = q.bind(format!("{status:?}").to_lowercase());
+            }
+            if let Some(ref pattern) = like_pattern {
+                q = q.bind(pattern);
             }
             q.fetch_all(&self.pool)
                 .await
@@ -517,6 +534,21 @@ impl ThreadRunStore for PostgresStore {
             thread_state,
         }))
     }
+}
+
+/// Build a SQL `LIKE` pattern matching ids that start with `prefix`. The LIKE
+/// wildcards `%`, `_` and the escape char `\` are escaped so a scope id with
+/// those characters cannot widen the match (used with `ESCAPE '\'`).
+pub(super) fn like_prefix_pattern(prefix: &str) -> String {
+    let mut pattern = String::with_capacity(prefix.len() + 1);
+    for ch in prefix.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            pattern.push('\\');
+        }
+        pattern.push(ch);
+    }
+    pattern.push('%');
+    pattern
 }
 
 fn run_record_from_pg_row(row: PgRow) -> RunRecord {

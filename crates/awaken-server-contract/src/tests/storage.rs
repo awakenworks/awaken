@@ -135,6 +135,7 @@ impl RunStore for MockThreadRunStore {
                     .is_none_or(|id| record.thread_id == id)
             })
             .filter(|record| query.status.is_none_or(|status| record.status == status))
+            .filter(|record| query.matches_id_prefix(&record.thread_id))
             .cloned()
             .collect();
         items.sort_by_key(|record| record.created_at);
@@ -250,6 +251,7 @@ async fn scoped_list_runs_isolates_and_paginates_across_scopes() {
         limit,
         thread_id: thread_id.map(str::to_owned),
         status: None,
+        id_prefix: None,
     };
 
     // Cross-scope list (no thread_id): scope-a sees only its own 5 runs.

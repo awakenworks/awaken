@@ -242,6 +242,7 @@ impl ThreadQueryParams {
                     .map(ThreadParentFilter::Parent)
                     .unwrap_or(ThreadParentFilter::Any)
             },
+            id_prefix: None,
         })
     }
 }
@@ -532,6 +533,7 @@ mod tests {
             limit: 20,
             resource_id: Some("resource-a".to_string()),
             parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
+            id_prefix: None,
         }
         .encode_cursor(4);
         let params: ThreadQueryParams = serde_json::from_value(serde_json::json!({
@@ -551,6 +553,7 @@ mod tests {
                 limit: 20,
                 resource_id: Some("resource-a".to_string()),
                 parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
+                id_prefix: None,
             }
         );
     }
@@ -574,6 +577,7 @@ mod tests {
             limit: 20,
             resource_id: Some("resource-a".to_string()),
             parent_filter: ThreadParentFilter::Root,
+            id_prefix: None,
         }
         .encode_cursor(4);
         let params: ThreadQueryParams = serde_json::from_value(serde_json::json!({
@@ -610,6 +614,7 @@ mod tests {
             limit: 20,
             resource_id: Some("resource-a".to_string()),
             parent_filter: ThreadParentFilter::Parent("parent-1".to_string()),
+            id_prefix: None,
         }
         .encode_cursor(4);
         let params: ThreadQueryParams = serde_json::from_value(serde_json::json!({

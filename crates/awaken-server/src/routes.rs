@@ -749,6 +749,7 @@ async fn list_runs(
         limit: params.limit.clamp(1, 200),
         thread_id: None,
         status,
+        id_prefix: None,
     };
     let page = crate::services::run_service::list_runs(st.run.store().as_ref(), &query)
         .await
@@ -995,6 +996,7 @@ async fn list_thread_runs(
         limit: params.limit.clamp(1, 200),
         thread_id: Some(id),
         status,
+        id_prefix: None,
     };
     let page = crate::services::run_service::list_runs(st.run.store().as_ref(), &query)
         .await

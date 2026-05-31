@@ -182,6 +182,7 @@ pub trait ThreadStore: Send + Sync {
                 limit: PAGE_LIMIT,
                 resource_id: None,
                 parent_filter: ThreadParentFilter::Parent(parent_thread_id.to_owned()),
+                id_prefix: None,
             };
             let page = self.list_threads_query(&query).await?;
             let count = page.items.len();

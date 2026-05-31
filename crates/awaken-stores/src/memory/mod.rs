@@ -427,6 +427,7 @@ impl RunStore for InMemoryStore {
             .values()
             .filter(|r| query.thread_id.as_deref().is_none_or(|t| r.thread_id == t))
             .filter(|r| query.status.is_none_or(|s| r.status == s))
+            .filter(|r| query.matches_id_prefix(&r.thread_id))
             .cloned()
             .collect();
         filtered.sort_by_key(|r| r.created_at);

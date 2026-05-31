@@ -257,6 +257,11 @@ pub struct ThreadQuery {
     /// Filter by parent/root lineage.
     #[serde(default, skip_serializing_if = "ThreadParentFilter::is_any")]
     pub parent_filter: ThreadParentFilter,
+    /// Backend-level scope filter: keep only thread IDs that start with this
+    /// prefix. Pushed down so a scoped listing never scans the full thread set
+    /// of a shared backend (ADR-0042 scope boundary). `None` means no filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_prefix: Option<String>,
 }
 
 impl Default for ThreadQuery {
@@ -266,6 +271,7 @@ impl Default for ThreadQuery {
             limit: 50,
             resource_id: None,
             parent_filter: ThreadParentFilter::Any,
+            id_prefix: None,
         }
     }
 }
@@ -274,7 +280,9 @@ impl ThreadQuery {
     /// Return true when the query carries any non-pagination filter.
     #[must_use]
     pub fn has_filters(&self) -> bool {
-        normalize_lineage_id(self.resource_id.as_deref()).is_some() || !self.parent_filter.is_any()
+        normalize_lineage_id(self.resource_id.as_deref()).is_some()
+            || !self.parent_filter.is_any()
+            || self.id_prefix.is_some()
     }
 
     /// Return a copy with normalized lineage filters.
@@ -285,6 +293,7 @@ impl ThreadQuery {
             limit: self.limit.min(200),
             resource_id: normalize_lineage_id(self.resource_id.as_deref()),
             parent_filter: self.parent_filter.normalized(),
+            id_prefix: self.id_prefix.clone(),
         }
     }
 
@@ -322,6 +331,13 @@ impl ThreadQuery {
     #[must_use]
     pub fn matches_thread(&self, thread: &Thread) -> bool {
         let normalized = self.normalized();
+        if normalized
+            .id_prefix
+            .as_deref()
+            .is_some_and(|prefix| !thread.id.starts_with(prefix))
+        {
+            return false;
+        }
         if normalized
             .resource_id
             .as_deref()
@@ -497,6 +513,21 @@ pub struct RunQuery {
     pub thread_id: Option<String>,
     /// Filter by run status.
     pub status: Option<RunStatus>,
+    /// Backend-level scope filter: keep only runs whose `thread_id` starts with
+    /// this prefix. Pushed down so a scoped listing never scans the full run
+    /// table of a shared backend (ADR-0042 scope boundary). `None` means no
+    /// prefix filter.
+    pub id_prefix: Option<String>,
+}
+
+impl RunQuery {
+    /// True when `thread_id` passes the optional `id_prefix` filter.
+    #[must_use]
+    pub fn matches_id_prefix(&self, thread_id: &str) -> bool {
+        self.id_prefix
+            .as_deref()
+            .is_none_or(|prefix| thread_id.starts_with(prefix))
+    }
 }
 
 impl Default for RunQuery {
@@ -506,6 +537,7 @@ impl Default for RunQuery {
             limit: 50,
             thread_id: None,
             status: None,
+            id_prefix: None,
         }
     }
 }
@@ -539,6 +571,12 @@ impl ScopedThreadRunStore {
 
     fn scoped(&self, id: &str) -> String {
         scoped_key(&self.scope_id, id)
+    }
+
+    /// Prefix shared by every key in this scope (`scope:<len>:<scope>:`). Pushed
+    /// to the backend as a filter so scoped listings never scan other scopes.
+    fn scope_prefix(&self) -> String {
+        scoped_key(&self.scope_id, "")
     }
 
     fn unscoped<'a>(&self, id: &'a str) -> Option<&'a str> {
@@ -656,27 +694,23 @@ impl ThreadStore for ScopedThreadRunStore {
     }
 
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
-        const SCAN_LIMIT: usize = 200;
-
-        let mut inner_offset = 0;
-        let mut scoped_ids = Vec::new();
-        loop {
-            let ids = self.inner.list_threads(inner_offset, SCAN_LIMIT).await?;
-            if ids.is_empty() {
-                break;
-            }
-            let count = ids.len();
-            scoped_ids.extend(
-                ids.into_iter()
-                    .filter_map(|id| self.unscoped(&id).map(str::to_string)),
-            );
-            if count < SCAN_LIMIT {
-                break;
-            }
-            inner_offset += count;
-        }
-
-        Ok(scoped_ids.into_iter().skip(offset).take(limit).collect())
+        // Push the scope prefix to the backend so it filters and paginates at
+        // the source instead of streaming every scope's threads into memory.
+        let page = self
+            .inner
+            .list_threads_query(&ThreadQuery {
+                offset,
+                limit,
+                resource_id: None,
+                parent_filter: ThreadParentFilter::Any,
+                id_prefix: Some(self.scope_prefix()),
+            })
+            .await?;
+        Ok(page
+            .items
+            .into_iter()
+            .filter_map(|id| self.unscoped(&id).map(str::to_string))
+            .collect())
     }
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
@@ -800,6 +834,7 @@ impl RunStore for ScopedThreadRunStore {
                     limit: query.limit,
                     thread_id: Some(self.scoped(thread_id)),
                     status: query.status,
+                    id_prefix: None,
                 })
                 .await?;
             let items = inner_page
@@ -814,47 +849,29 @@ impl RunStore for ScopedThreadRunStore {
             });
         }
 
-        // Cross-scope listing: the backend exposes no scope filter, so scan in
-        // bounded batches and keep only the requested window in memory. This
-        // avoids loading the entire shared run table at once (which coupled
-        // one scope's query latency/memory to every other scope's data volume).
-        const SCAN_LIMIT: usize = 200;
-        let window_end = query.offset.saturating_add(query.limit);
-        let mut inner_offset = 0;
-        let mut in_scope_seen = 0usize;
-        let mut items: Vec<RunRecord> = Vec::new();
-        loop {
-            let page = self
-                .inner
-                .list_runs(&RunQuery {
-                    offset: inner_offset,
-                    limit: SCAN_LIMIT,
-                    thread_id: None,
-                    status: query.status,
-                })
-                .await?;
-            let count = page.items.len();
-            if count == 0 {
-                break;
-            }
-            for record in page.items {
-                if let Some(decoded) = self.decode_run(record) {
-                    if in_scope_seen >= query.offset && in_scope_seen < window_end {
-                        items.push(decoded);
-                    }
-                    in_scope_seen += 1;
-                }
-            }
-            if count < SCAN_LIMIT {
-                break;
-            }
-            inner_offset += count;
-        }
-        let has_more = query.limit > 0 && query.offset.saturating_add(items.len()) < in_scope_seen;
+        // Cross-scope listing: push the scope prefix to the backend so it
+        // filters and paginates at the source. Every returned row is in scope,
+        // so `decode_run` never drops one and the page totals are exact — no
+        // full-table scan, no in-memory windowing.
+        let inner_page = self
+            .inner
+            .list_runs(&RunQuery {
+                offset: query.offset,
+                limit: query.limit,
+                thread_id: None,
+                status: query.status,
+                id_prefix: Some(self.scope_prefix()),
+            })
+            .await?;
+        let items = inner_page
+            .items
+            .into_iter()
+            .filter_map(|record| self.decode_run(record))
+            .collect();
         Ok(RunPage {
             items,
-            total: in_scope_seen,
-            has_more,
+            total: inner_page.total,
+            has_more: inner_page.has_more,
         })
     }
 }

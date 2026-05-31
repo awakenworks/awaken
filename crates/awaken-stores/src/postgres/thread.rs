@@ -536,17 +536,25 @@ impl ThreadStore for PostgresStore {
         };
         let limit = query.limit.min(i64::MAX as usize) as i64;
         let offset = query.offset.min(i64::MAX as usize) as i64;
+        // Scope prefix pushed down as an indexed `LIKE 'prefix%'` so a scoped
+        // listing filters at the source instead of scanning every scope.
+        let like_pattern = query
+            .id_prefix
+            .as_deref()
+            .map(super::run::like_prefix_pattern);
         let count_sql = format!(
             "SELECT COUNT(*)::BIGINT FROM {}
              WHERE ($1::text IS NULL OR resource_id = $1)
                AND (($3::bool AND parent_thread_id IS NULL)
-                    OR (NOT $3::bool AND ($2::text IS NULL OR parent_thread_id = $2)))",
+                    OR (NOT $3::bool AND ($2::text IS NULL OR parent_thread_id = $2)))
+               AND ($4::text IS NULL OR id LIKE $4 ESCAPE '\\')",
             self.threads_table
         );
         let total: (i64,) = sqlx::query_as(&count_sql)
             .bind(query.resource_id.as_deref())
             .bind(parent_thread_id)
             .bind(root_only)
+            .bind(like_pattern.as_deref())
             .fetch_one(&self.pool)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
@@ -556,6 +564,7 @@ impl ThreadStore for PostgresStore {
              WHERE ($1::text IS NULL OR resource_id = $1)
                AND (($3::bool AND parent_thread_id IS NULL)
                     OR (NOT $3::bool AND ($2::text IS NULL OR parent_thread_id = $2)))
+               AND ($6::text IS NULL OR id LIKE $6 ESCAPE '\\')
              ORDER BY updated_at DESC, id ASC
              LIMIT $4 OFFSET $5",
             self.threads_table
@@ -566,6 +575,7 @@ impl ThreadStore for PostgresStore {
             .bind(root_only)
             .bind(limit)
             .bind(offset)
+            .bind(like_pattern.as_deref())
             .fetch_all(&self.pool)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;

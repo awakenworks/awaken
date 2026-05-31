@@ -339,6 +339,7 @@ impl Mailbox {
                     limit,
                     thread_id: None,
                     status: None,
+                    id_prefix: None,
                 })
                 .await?;
             for run in &page.items {

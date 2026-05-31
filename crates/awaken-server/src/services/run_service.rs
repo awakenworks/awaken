@@ -27,6 +27,7 @@ pub async fn runs_summary(store: &dyn RunStore) -> Result<RunsSummary, StorageEr
             limit: 1,
             thread_id: None,
             status: Some(status),
+            id_prefix: None,
         };
         store.list_runs(&q).await.map(|page| page.total as u64)
     }

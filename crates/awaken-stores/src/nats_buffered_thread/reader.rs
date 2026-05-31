@@ -263,6 +263,9 @@ pub async fn list_runs<T: ThreadRunStore + Send + Sync + 'static>(
         if query.status.is_some_and(|status| run.status != status) {
             continue;
         }
+        if !query.matches_id_prefix(&run.thread_id) {
+            continue;
+        }
         by_id.insert(run.run_id.clone(), run);
     }
 
