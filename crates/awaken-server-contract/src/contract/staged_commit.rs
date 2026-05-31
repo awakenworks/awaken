@@ -179,12 +179,12 @@ fn validate_event_scope_membership(
                 thread_id: scope_thread,
             } if scope_thread != thread_id => {
                 return Err(CommitError::Validation(format!(
-                    "event thread scope '{scope_thread}' must match checkpoint thread_id '{thread_id}'"
+                    "event thread scope '{scope_thread}' must match thread commit thread_id '{thread_id}'"
                 )));
             }
             EventScope::Run { run_id: scope_run } if scope_run != run_id => {
                 return Err(CommitError::Validation(format!(
-                    "event run scope '{scope_run}' must match checkpoint run_id '{run_id}'"
+                    "event run scope '{scope_run}' must match thread commit run_projection.run_id '{run_id}'"
                 )));
             }
             _ => {}
@@ -194,12 +194,12 @@ fn validate_event_scope_membership(
 }
 
 /// A [`CommitCoordinator`] that can additionally commit staged event/outbox
-/// writes atomically with the checkpoint. Store coordinators implement this;
+/// writes atomically with the thread commit. Store coordinators implement this;
 /// the runtime-facing [`CommitCoordinator::commit_checkpoint`] is equivalent to
 /// a staged commit with [`ThreadCommitStagedWrites::default`].
 #[async_trait]
 pub trait StagedCommitCoordinator: CommitCoordinator {
-    /// Commit a checkpoint together with staged event/outbox writes in one
+    /// Commit a thread commit together with staged event/outbox writes in one
     /// transaction. See [`CommitCoordinator::commit_checkpoint`] for ordering
     /// and failure semantics.
     async fn commit_checkpoint_staged(

@@ -2,8 +2,7 @@
 //!
 //! `CommitCoordinator` is the runtime-facing write boundary for one atomic
 //! logical mutation: append-only message delta + latest run projection + optional
-//! thread-scoped state. It is the only place that observes both the message and
-//! event persistence stores at once; concrete backends remain backend-agnostic.
+//! thread-scoped state. Concrete backends remain backend-agnostic.
 //!
 //! Server-side staging of canonical drafts and outbox rows is composed through
 //! `awaken-server-contract`, so this contract stays focused on the runtime
@@ -102,10 +101,10 @@ impl StagedCanonicalEvent {
 /// whole-list overwrite on the commit path — compaction is itself an append of a
 /// summary message (see `MessageRecord::compaction`), never a rewrite.
 ///
-/// `ThreadRunStore` checkpoint inputs (thread id, message delta, run record) are
-/// committed together with `canonical_drafts` (each appended via the shared
-/// `EventStore` write) and any additional inline-writer outbox rows the caller
-/// wants atomic with the checkpoint.
+/// Runtime-facing commits carry only thread durability data: thread id, message
+/// delta, latest run projection, and an optional thread-state snapshot.
+/// Server-side staged event/outbox writes are supplied through
+/// `awaken-server-contract`.
 #[derive(Debug, Clone)]
 pub struct ThreadCommit {
     pub thread_id: String,
@@ -199,18 +198,18 @@ impl ThreadCommit {
         }
         if self.run_projection.thread_id != self.thread_id {
             return Err(CommitError::Validation(format!(
-                "run.thread_id '{}' must match checkpoint thread_id '{}'",
+                "run_projection.thread_id '{}' must match thread commit thread_id '{}'",
                 self.run_projection.thread_id, self.thread_id
             )));
         }
         if self.run_projection.run_id.trim().is_empty() {
             return Err(CommitError::Validation(
-                "run.run_id must be non-empty".to_string(),
+                "run_projection.run_id must be non-empty".to_string(),
             ));
         }
         if self.run_projection.agent_id.trim().is_empty() {
             return Err(CommitError::Validation(
-                "run.agent_id must be non-empty".to_string(),
+                "run_projection.agent_id must be non-empty".to_string(),
             ));
         }
         // `expected_message_count` is the append version guard. `None` is only
@@ -307,12 +306,10 @@ impl CommitError {
 
 /// Cross-store atomic commit boundary (ADR-0036 D2).
 ///
-/// Implementations open a backend transaction, drive the
-/// `ThreadRunStore` checkpoint write, append each staged canonical
-/// draft (which transitively inserts the canonical outbox row in the
-/// same transaction per ADR-0034 D9), insert any inline-writer outbox
-/// rows from `additional_outbox`, and commit. Any failure rolls the
-/// transaction back and surfaces `CommitError`.
+/// Implementations open a backend transaction, drive the runtime thread commit
+/// write, and commit. Server coordinators that also need staged event/outbox
+/// writes expose that wider surface through `awaken-server-contract`. Any
+/// failure rolls the transaction back and surfaces `CommitError`.
 ///
 /// Coordinator construction is the place where scope compatibility is
 /// validated: a coordinator that pairs stores from mismatched backends
@@ -419,9 +416,10 @@ mod tests {
         run.thread_id = "other-thread".to_string();
         let plan = ThreadCommit::run_projection_only("t-1", run);
         let err = plan.validate().unwrap_err();
-        assert!(
-            matches!(err, CommitError::Validation(message) if message.contains("run.thread_id"))
-        );
+        assert!(matches!(
+            err,
+            CommitError::Validation(message) if message.contains("run_projection.thread_id")
+        ));
     }
 
     #[test]
@@ -430,7 +428,10 @@ mod tests {
         run.run_id = "   ".to_string();
         let plan = ThreadCommit::run_projection_only("t-1", run);
         let err = plan.validate().unwrap_err();
-        assert!(matches!(err, CommitError::Validation(message) if message.contains("run.run_id")));
+        assert!(matches!(
+            err,
+            CommitError::Validation(message) if message.contains("run_projection.run_id")
+        ));
     }
 
     #[test]
@@ -439,9 +440,10 @@ mod tests {
         run.agent_id.clear();
         let plan = ThreadCommit::run_projection_only("t-1", run);
         let err = plan.validate().unwrap_err();
-        assert!(
-            matches!(err, CommitError::Validation(message) if message.contains("run.agent_id"))
-        );
+        assert!(matches!(
+            err,
+            CommitError::Validation(message) if message.contains("run_projection.agent_id")
+        ));
     }
 
     // ── ADR-0042 A: append-only checkpoint plan ──────────────────
@@ -501,9 +503,10 @@ mod tests {
         run.thread_id = "other-thread".to_string();
         let plan = ThreadCommit::append_messages("t-1", Vec::new(), Some(0), run);
         let err = plan.validate().unwrap_err();
-        assert!(
-            matches!(err, CommitError::Validation(message) if message.contains("run.thread_id"))
-        );
+        assert!(matches!(
+            err,
+            CommitError::Validation(message) if message.contains("run_projection.thread_id")
+        ));
     }
 
     #[test]
