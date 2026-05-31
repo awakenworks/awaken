@@ -1050,13 +1050,19 @@ Deterministic compatibility directives:\n\
     let audit_logger = Arc::new(awaken_server::services::audit_log::AuditLogger::new(
         config_store.clone(),
     ));
+    // Versioned registry store: enables replayable (durable, resumable) run
+    // resolution against pinned publication snapshots, including the one-off
+    // ephemeral publications the admin sandbox uses to run unsaved draft agents
+    // with full HITL suspend/approve/resume. In-memory: resets on restart.
+    let versioned_registry_store = Arc::new(awaken_stores::InMemoryVersionedRegistryStore::new());
     let config_runtime_manager = Arc::new(
         ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
             .expect("failed to initialize config runtime manager")
             .with_provider_factory(provider_factory)
             .with_skill_spec_sink(starter_skills.spec_sink())
             .with_mcp_refresh_interval(Duration::from_secs(5))
-            .with_audit_log(audit_logger.clone()),
+            .with_audit_log(audit_logger.clone())
+            .with_versioned_registry_store("default", versioned_registry_store.clone()),
     );
 
     let seed = {
