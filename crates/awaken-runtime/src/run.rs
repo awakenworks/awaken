@@ -400,9 +400,9 @@ mod tests {
         }
         async fn commit_checkpoint(
             &self,
-            _plan: awaken_runtime_contract::contract::commit_coordinator::Checkpoint,
+            _plan: awaken_runtime_contract::contract::commit_coordinator::ThreadCommit,
         ) -> Result<
-            awaken_runtime_contract::contract::commit_coordinator::CheckpointCommitOutcome,
+            awaken_runtime_contract::contract::commit_coordinator::ThreadCommitOutcome,
             awaken_runtime_contract::contract::commit_coordinator::CommitError,
         > {
             unreachable!("routing test does not commit")

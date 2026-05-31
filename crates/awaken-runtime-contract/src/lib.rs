@@ -86,10 +86,11 @@ pub use contract::progress::{
 
 // ── commit coordinator ──
 pub use contract::commit_coordinator::{
-    CanonicalEventStager, Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError,
-    DiagnosticEvent, DiagnosticEventPublisher, EventPublishError, OutboxServerEventPublisher,
-    ServerCanonicalEvent, ServerEventPublishOutcome, StagedCanonicalEvent, TransactionScopeId,
+    CanonicalEventStager, CommitCoordinator, CommitError, StagedCanonicalEvent, ThreadCommit,
+    ThreadCommitOutcome, TransactionScopeId,
 };
+#[allow(deprecated)]
+pub use contract::commit_coordinator::{Checkpoint, CheckpointCommitOutcome};
 
 // ── canonical event store (data vocabulary; store traits live in
 // awaken-server-contract) ──

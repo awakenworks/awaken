@@ -7,7 +7,7 @@ use crate::checkpoint_store::RuntimeCheckpointStore;
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
 use awaken_runtime_contract::contract::commit_coordinator::{
-    Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError,
+    CommitCoordinator, CommitError, ThreadCommit, ThreadCommitOutcome,
 };
 use awaken_runtime_contract::contract::event::AgentEvent;
 use awaken_runtime_contract::contract::event_sink::EventSink;
@@ -69,7 +69,7 @@ pub enum CommitAppendError {
 /// The single version-guarded append-commit entry point shared by every
 /// runtime checkpoint path (ADR-0038 C6a: loop-runner, remote-root backend,
 /// A2A). It reads the committed log, hands the caller the committed messages
-/// plus the expected version so the caller can build its delta + `Checkpoint`,
+/// plus the expected version so the caller can build its delta + `ThreadCommit`,
 /// commits, and retries on `MessageVersionConflict`. Callers supply only the
 /// delta/plan builder; the read + version-guard + retry policy lives here.
 pub(crate) async fn commit_checkpoint_appending<F>(
@@ -77,9 +77,9 @@ pub(crate) async fn commit_checkpoint_appending<F>(
     storage: &dyn RuntimeCheckpointStore,
     thread_id: &str,
     mut build: F,
-) -> Result<CheckpointCommitOutcome, CommitAppendError>
+) -> Result<ThreadCommitOutcome, CommitAppendError>
 where
-    F: FnMut(&[Message], u64) -> Checkpoint,
+    F: FnMut(&[Message], u64) -> ThreadCommit,
 {
     for _ in 0..MAX_APPEND_ATTEMPTS {
         let committed = storage
@@ -213,7 +213,7 @@ pub(super) async fn persist_checkpoint(
 
     let lifecycle = store.read::<RunLifecycle>().unwrap_or_default();
     // Split persisted state by scope (ADR-0038 C4): run-scoped keys ride on
-    // the run record, thread-scoped keys land in `Checkpoint.thread_state`
+    // the run record, thread-scoped keys land in `ThreadCommit.thread_state_snapshot`
     // and are written in the same commit transaction.
     let state = store
         .export_run_scoped()
@@ -339,7 +339,7 @@ pub(super) async fn persist_checkpoint(
             stamp_compaction_marks(&mut delta, committed_messages, store);
             let mut record = base_record.clone();
             record.output = output;
-            let mut plan = Checkpoint::append(
+            let mut plan = ThreadCommit::append_messages(
                 run_identity.thread_id.clone(),
                 delta,
                 Some(expected_version),
@@ -348,7 +348,7 @@ pub(super) async fn persist_checkpoint(
             // Only attach thread_state when thread-scoped keys exist, so threads
             // without thread-scoped state don't write empty rows on every commit.
             if !thread_state.extensions.is_empty() {
-                plan = plan.with_thread_state(thread_state.clone());
+                plan = plan.with_thread_state_snapshot(thread_state.clone());
             }
             plan
         },

@@ -313,7 +313,7 @@ impl RunRecord {
 /// otherwise risk by stitching separate `load_messages`/`latest_run`/
 /// `load_thread_state` calls while a concurrent commit advances the thread.
 ///
-/// This is the read-side counterpart to [`Checkpoint`](crate::contract::commit_coordinator::Checkpoint):
+/// This is the read-side counterpart to [`ThreadCommit`](crate::contract::commit_coordinator::ThreadCommit):
 /// `commit_checkpoint(checkpoint)` writes, `load_checkpoint(thread)` reads back.
 #[derive(Debug, Clone, Default)]
 pub struct CheckpointSnapshot {

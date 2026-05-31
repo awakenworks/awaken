@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime_contract::contract::commit_coordinator::{
-    Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
+    CommitCoordinator, CommitError, ThreadCommit, ThreadCommitOutcome, TransactionScopeId,
 };
 use awaken_runtime_contract::contract::storage::RuntimeCheckpointStore;
 use awaken_server_contract::contract::storage::{ThreadRunCheckpointStore, ThreadRunStore};
@@ -37,9 +37,9 @@ impl CommitCoordinator for NoopCoord {
 
     async fn commit_checkpoint(
         &self,
-        _plan: Checkpoint,
-    ) -> Result<CheckpointCommitOutcome, CommitError> {
-        Ok(CheckpointCommitOutcome::default())
+        _plan: ThreadCommit,
+    ) -> Result<ThreadCommitOutcome, CommitError> {
+        Ok(ThreadCommitOutcome)
     }
 }
 

@@ -29,7 +29,13 @@ pub use contract::registry_graph::*;
 pub use contract::scope::{
     DEFAULT_SCOPE_ID, RequestSurface, ScopeContext, ScopeError, ScopeId, scoped_key, unscoped_key,
 };
-pub use contract::staged_commit::{CheckpointStagedWrites, StagedCommitCoordinator};
+#[allow(deprecated)]
+pub use contract::staged_commit::CheckpointStagedWrites;
+pub use contract::staged_commit::{
+    DiagnosticEvent, DiagnosticEventPublisher, EventPublishError, OutboxServerEventPublisher,
+    ServerCanonicalEvent, ServerEventPublishOutcome, StagedCommitCoordinator,
+    ThreadCommitStagedOutcome, ThreadCommitStagedWrites,
+};
 pub use contract::storage::ScopedThreadRunStore;
 pub use contract::versioned_registry::*;
 

@@ -11,7 +11,7 @@ impl StateStore {
         self.export_filtered(|_| true)
     }
 
-    /// Export only thread-scoped persistent keys (for `Checkpoint.thread_state`).
+    /// Export only thread-scoped persistent keys (for `ThreadCommit.thread_state`).
     pub fn export_thread_scoped(&self) -> Result<PersistedState, StateError> {
         self.export_filtered(|scope| scope == KeyScope::Thread)
     }

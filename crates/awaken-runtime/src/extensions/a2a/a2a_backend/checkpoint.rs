@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use awaken_runtime_contract::contract::commit_coordinator::Checkpoint;
+use awaken_runtime_contract::contract::commit_coordinator::ThreadCommit;
 use awaken_runtime_contract::contract::lifecycle::RunStatus;
 use awaken_runtime_contract::contract::storage::RunRecord;
 use awaken_runtime_contract::now_ms;
@@ -100,7 +100,7 @@ pub(super) async fn persist_accepted_checkpoint(
                 })
                 .cloned()
                 .collect();
-            Checkpoint::append(
+            ThreadCommit::append_messages(
                 root.run_identity.thread_id.clone(),
                 delta,
                 Some(expected_version),

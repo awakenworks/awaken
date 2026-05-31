@@ -9,10 +9,12 @@
 
 use std::future::Future;
 
-use awaken_server_contract::contract::commit_coordinator::{CheckpointCommitOutcome, CommitError};
+use awaken_server_contract::contract::commit_coordinator::CommitError;
 use awaken_server_contract::contract::event_store::EventWriter;
 use awaken_server_contract::contract::outbox::OutboxStore;
-use awaken_server_contract::contract::staged_commit::CheckpointStagedWrites;
+use awaken_server_contract::contract::staged_commit::{
+    ThreadCommitStagedOutcome, ThreadCommitStagedWrites,
+};
 use awaken_server_contract::contract::storage::StorageError;
 
 use crate::memory_event_store::InMemoryEventStore;
@@ -30,11 +32,11 @@ use crate::memory_outbox::InMemoryOutboxStore;
 /// `write_thread_run` may also perform backend-specific snapshot/restore for
 /// the thread-run store; this helper does not touch that state.
 pub(crate) async fn run_commit_batch<W, Fut>(
-    staged: &CheckpointStagedWrites,
+    staged: &ThreadCommitStagedWrites,
     events: &InMemoryEventStore,
     outbox: &InMemoryOutboxStore,
     write_thread_run: W,
-) -> Result<CheckpointCommitOutcome, CommitError>
+) -> Result<ThreadCommitStagedOutcome, CommitError>
 where
     W: FnOnce() -> Fut,
     Fut: Future<Output = Result<(), StorageError>>,
@@ -94,7 +96,7 @@ where
         return Err(CommitError::StoreWrite(error));
     }
 
-    Ok(CheckpointCommitOutcome {
+    Ok(ThreadCommitStagedOutcome {
         canonical_event_ids,
         server_event_ids,
         additional_outbox_ids,
@@ -122,7 +124,7 @@ mod tests {
         EventVisibility, EventWriter,
     };
     use awaken_server_contract::contract::outbox::{OutboxMessageDraft, OutboxStatus, OutboxStore};
-    use awaken_server_contract::contract::staged_commit::CheckpointStagedWrites;
+    use awaken_server_contract::contract::staged_commit::ThreadCommitStagedWrites;
     use awaken_server_contract::contract::storage::StorageError;
 
     use super::run_commit_batch;
@@ -170,7 +172,7 @@ mod tests {
         // Build a plan whose canonical_drafts collide with the seeded draft.
         let mut colliding = sample_draft("RunStarted", "t-1", "r-1");
         colliding.payload = serde_json::json!({"kind": "RunStarted", "diff": true});
-        let staged = CheckpointStagedWrites::default().with_canonical_drafts(vec![
+        let staged = ThreadCommitStagedWrites::default().with_canonical_drafts(vec![
             StagedCanonicalEvent::new(colliding).with_options(opts),
         ]);
 
@@ -211,7 +213,7 @@ mod tests {
         let mut bad = OutboxMessageDraft::new("lane", "target", serde_json::json!({})).unwrap();
         bad.lane.clear();
 
-        let staged = CheckpointStagedWrites::default()
+        let staged = ThreadCommitStagedWrites::default()
             .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
                 "RunStarted",
                 "t-2",
@@ -252,7 +254,7 @@ mod tests {
     async fn write_thread_run_failure_rolls_back_events_and_outbox() {
         let (events, outbox) = fresh().await;
 
-        let staged = CheckpointStagedWrites::default()
+        let staged = ThreadCommitStagedWrites::default()
             .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
                 "RunStarted",
                 "t-3",
@@ -292,7 +294,7 @@ mod tests {
     #[tokio::test]
     async fn happy_path_returns_ids_and_runs_write() {
         let (events, outbox) = fresh().await;
-        let staged = CheckpointStagedWrites::default()
+        let staged = ThreadCommitStagedWrites::default()
             .with_canonical_drafts(vec![StagedCanonicalEvent::new(sample_draft(
                 "RunStarted",
                 "t-ok",

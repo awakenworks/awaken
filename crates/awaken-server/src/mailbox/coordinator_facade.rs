@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_server_contract::contract::commit_coordinator::{
-    Checkpoint, CheckpointCommitOutcome, CommitCoordinator, CommitError, TransactionScopeId,
+    CommitCoordinator, CommitError, ThreadCommit, ThreadCommitOutcome, TransactionScopeId,
 };
 use awaken_server_contract::contract::storage::{
     RuntimeCheckpointStore, ThreadRunCheckpointStore, ThreadRunStore,
@@ -75,20 +75,20 @@ impl CommitCoordinator for MailboxRunStoreCoordinator {
 
     async fn commit_checkpoint(
         &self,
-        plan: Checkpoint,
-    ) -> Result<CheckpointCommitOutcome, CommitError> {
+        plan: ThreadCommit,
+    ) -> Result<ThreadCommitOutcome, CommitError> {
         plan.validate()?;
         self.store
             .checkpoint_append(
                 &plan.thread_id,
-                &plan.messages,
-                plan.expected_message_version,
-                &plan.run,
+                &plan.message_delta,
+                plan.expected_message_count,
+                &plan.run_projection,
             )
             .await
             .map_err(|error| {
                 CommitError::StoreWrite(error).reclassify_append_conflict(&plan.thread_id)
             })?;
-        Ok(CheckpointCommitOutcome::default())
+        Ok(ThreadCommitOutcome)
     }
 }
