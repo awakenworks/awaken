@@ -11,10 +11,6 @@ export const EMPTY_CAPABILITIES: Capabilities = {
   namespaces: [],
 };
 
-export function capabilitiesFromResult(result?: CapabilitiesResult | null): Capabilities | null {
-  return result?.kind === "ok" ? result.capabilities : null;
-}
-
 function normalizeCapabilities(capabilities: Capabilities): Capabilities {
   return {
     ...capabilities,
@@ -32,6 +28,16 @@ function normalizeCapabilities(capabilities: Capabilities): Capabilities {
   };
 }
 
+export function capabilitiesFromResult(
+  result?: CapabilitiesResult | Capabilities | null,
+): Capabilities | null {
+  if (!result) return null;
+  if ("kind" in result) {
+    return result.kind === "ok" ? result.capabilities : null;
+  }
+  return result;
+}
+
 export const capabilitiesApi = {
   capabilities: async (): Promise<CapabilitiesResult> => {
     try {
@@ -46,7 +52,7 @@ export const capabilitiesApi = {
         return { kind: "route_absent" };
       }
       if (err instanceof ConfigApiError && err.status === 503) {
-        return { kind: "store_unavailable", message: err.message };
+        return { kind: "registry_unavailable", message: err.message };
       }
       throw err;
     }
