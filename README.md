@@ -4,13 +4,34 @@
 
 [![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-current-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
-Build agent capabilities once in Rust, tune behavior live, and serve every client from the same runtime. Awaken is a production AI agent backend where tools, state, and plugins stay in code; agents, models, and prompts move through online config; and server mode adds protocols, durable orchestration, trace/eval, and the admin console. Use runtime mode when your application owns I/O; use server mode when the agent surface must be shared.
+Stop shipping AI agents as fragile scripts. Awaken is an open-source Rust runtime and server control plane for durable, managed agents: write tools/state/plugins once, tune agents/models/prompts online, serve AI SDK/AG-UI/A2A/MCP/ACP clients from one backend, and keep long-running work approvable, observable, and replayable.
 
 Docs: [Awaken docs](https://awakenworks.github.io/awaken) · [中文文档](https://awakenworks.github.io/awaken/zh-cn) · [Changelog](./CHANGELOG.md). MSRV: Rust 1.93. The published crate is `awaken`; `awaken-agent` is a compatibility republish from when the project shipped under that name (same import path either way).
 
 <p align="center">
-  <img src="./docs/assets/demo.svg" alt="Awaken demo — tool call + LLM streaming" width="800">
+  <img src="./docs/assets/demo.svg" alt="Awaken demo — managed agent run with tool calls, approval, and trace" width="800">
 </p>
+
+## 30-second version
+
+Run the local server and console:
+
+```sh
+AWAKEN_HTTP_ADDR=127.0.0.1:38080 \
+AWAKEN_ADMIN_API_BEARER_TOKEN=dev-token \
+AWAKEN_STORAGE_DIR=./target/awaken-dev \
+cargo run -p ai-sdk-starter-agent
+
+pnpm --filter awaken-admin-console dev
+```
+
+Open the Admin Console, configure a provider-backed model, and ask the built-in Admin Assistant to create an agent. The result is not another one-off script: it is a managed runtime object that can run tasks, pause for human approval, resume, stream to frontend protocols, and leave traces/replay/eval data behind.
+
+The core loop is:
+
+```text
+Create agent -> Run task -> Approve tool call -> Complete -> Inspect trace
+```
 
 ## Choose your programming mode
 

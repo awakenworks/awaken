@@ -4,13 +4,34 @@
 
 [![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-current-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
-用 Rust 写一次 Agent 能力，把行为调优交给在线配置，并让同一个 runtime 服务本地开发、生产 API、多协议前端和管理控制台。Awaken 是面向生产的 Rust AI Agent 后端：tools、state、plugins 留在代码里，agents、models、prompts 通过 server 控制面验证、发布和热调优。应用自己处理 I/O 时用 runtime 模式；需要协议适配、持久编排、Trace/Eval 和控制台时用 server 模式。
+不要再把 AI Agent 做成脆弱的一次性脚本。Awaken 是开源 Rust runtime + server 控制面，用来构建 durable、可管理的 Agent：tools/state/plugins 写在代码里，agents/models/prompts 在线调优，同一个后端服务 AI SDK/AG-UI/A2A/MCP/ACP 客户端，并让长任务可以审批、恢复、观测和回放。
 
 在线文档：[Awaken docs（英文）](https://awakenworks.github.io/awaken) · [中文文档](https://awakenworks.github.io/awaken/zh-cn) · [Changelog](./CHANGELOG.md)。MSRV：Rust 1.93。发布的 crate 是 `awaken`；`awaken-agent` 是早期同名发布期的兼容包，导入名都是 `awaken`。
 
 <p align="center">
-  <img src="./docs/assets/demo.svg" alt="Awaken 演示 — 工具调用 + LLM 流式输出" width="800">
+  <img src="./docs/assets/demo.svg" alt="Awaken 演示 — 托管 Agent run、工具调用、审批与 trace" width="800">
 </p>
+
+## 30 秒看懂
+
+启动本地 server 和控制台：
+
+```sh
+AWAKEN_HTTP_ADDR=127.0.0.1:38080 \
+AWAKEN_ADMIN_API_BEARER_TOKEN=dev-token \
+AWAKEN_STORAGE_DIR=./target/awaken-dev \
+cargo run -p ai-sdk-starter-agent
+
+pnpm --filter awaken-admin-console dev
+```
+
+打开 Admin Console，配置一个真实 provider-backed 模型，然后让内置 Admin Assistant 创建 Agent。最终得到的不是另一个临时脚本，而是一个可管理的 runtime 对象：可以执行任务、暂停等待人工审批、恢复执行、流式接入前端协议，并留下 trace/replay/eval 数据。
+
+核心体验是：
+
+```text
+创建 Agent -> 执行任务 -> 审批工具调用 -> 完成 -> 查看 Trace
+```
 
 ## 选择开发模式
 
