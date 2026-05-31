@@ -79,19 +79,23 @@ curl -sS -X POST http://localhost:3000/v1/runs \
 | 旋钮 | 位置 | 效果 |
 |---|---|---|
 | `system_prompt` | `AgentSpec.system_prompt` | Agent 人设 / 指令 |
+| 工具描述 | `ToolSpecPatch.description` | 覆盖已有工具展示给模型的描述 |
 | `allowed_tools` / `excluded_tools` | `AgentSpec.*_tools` | 工具白 / 黑名单 |
+| Delegates | `AgentSpec.delegates` | 解析时暴露的显式 sub-agent tools |
 | `max_rounds`、`reasoning_effort` | `AgentSpec.*` | 循环上界 |
 | `context_policy` | `AgentSpec.context_policy` | 上下文窗口裁剪 + 压缩 |
 | 权限规则 | `sections.permission.rules` | 按工具名 + 参数的 allow/ask/deny |
 | Reminder 规则 | `sections.reminder.rules` | 工具模式匹配时注入系统/会话消息 |
 | 重试 / 回退模型 | `sections.retry` | 同 provider 内模型回退 |
-| 延迟工具门控 | `sections.deferred_tools` | 哪些工具保持 eager / 按需加载 |
+| 延迟工具门控 | `sections.deferred_tools` | 哪些工具保持 eager、通过 `ToolSearch` 加载或重新延迟 |
 | Compaction 总结器 | `sections.compaction` | 总结 prompt + 模型 + 阈值 |
 | 生成式 UI 目录 | `sections.generative-ui` | A2UI catalog id + 示例 |
-| 磁盘上的 Skill | `~/.awaken/skills/`(或你的 skill root) | 启动时调用了 `start_periodic_refresh()` 则自动重载 |
+| Skill catalog | `/v1/config/skills` 或你的 skill root | 指令、允许工具、参数与激活元数据 |
 | MCP server 工具 | 远端 MCP server | 收到 `tools/list_changed` 自动刷新 |
 
-不在这张表里的都是代码:工具、插件、provider factory、自定义 `PluginConfigKey` 类型、`Tool` trait 实现。
+不在这张表里的都是代码:新增工具、插件、provider factory、自定义 `PluginConfigKey`
+类型和 `Tool` trait 实现。ToolSearch 由 deferred-tools 提供；Skill 使用 catalog 注入加
+`skill` 激活工具；delegates 是显式声明，不是 AgentSearch 自动发现。
 
 ## 用 trace 比对
 

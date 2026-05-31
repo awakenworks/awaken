@@ -63,6 +63,10 @@ Awaken 把**写一次的代码**和**持续调优的配置**分开。
 
 工具一次写好就基本稳定；模型、agent、skill 通过 `/v1/config/*` 或[管理控制台](https://awakenworks.github.io/awaken/zh-cn/reference/admin-console/)**在运行时**调优 —— Validate → Save → 预览对话 → 调整。这套反馈环本身**就是**优化流程。
 
+高价值的调优面包括系统提示词、工具描述覆盖、system reminder、ToolSearch / deferred-tool 策略、Skill 目录与激活元数据、插件 section，以及显式 sub-agent delegates。这些都是行为配置，不是任意代码执行：ToolSearch 由 `awaken-ext-deferred-tools` 实现；Skill 通过 catalog 注入并由 `skill` 工具激活；sub-agent 通过 `AgentSpec.delegates` 显式声明并暴露为 delegate tools。当前没有单独发布 SkillSearch 或 AgentSearch 工具。
+
+当 server 挂接 audit store 与 versioned-registry store 后，配置写入可以通过 record revision 与 audit restore 追溯；已发布 runtime registry snapshot 是不可变的；durable run 会携带 `resolution_id`，让 resume/replay 重新选择同一个已发布 graph。手动把任意配置版本 pin 为生产版本属于 server/versioned-registry 能力边界，不是通用 runtime API。
+
 runtime 每轮跑 9 个类型化 phase，其中包含一个纯判定的 `ToolGate`；状态变更在每轮结束时批量原子提交。
 
 ## 上手：runtime 模式
@@ -197,9 +201,11 @@ serve(state).await?;
 | ACP | stdio via `serve_stdio` | Agent Client Protocol 宿主 |
 
 可选的 admin console 读取 `/v1/capabilities`、写入 `/v1/config/*`，在浏览器里
-管理 agents、models、providers、MCP servers 和插件配置 section。插件通过同一
-套 `PluginConfigKey` 暴露 schema，因此保存 `permission`、`reminder`、
-`generative-ui`、`deferred_tools` 等 section 后会发布新的 registry snapshot，
+管理 agents、models、providers、MCP servers 和插件配置 section。它还提供
+server-managed Admin Assistant（`/v1/admin/assistant/runs`）：该助手可以读取平台能力、
+生成 AgentSpec 草稿并校验配置，但绑定的是锁定的 admin-only 工具，不会进入普通 tool
+registry。配置第一个 provider-backed model 后它会自动启用。插件通过同一套 `PluginConfigKey` 暴露 schema，因此保存 `permission`、
+`reminder`、`generative-ui`、`deferred_tools` 等 section 后会发布新的 registry snapshot，
 对下一次 `/v1/runs` 立即生效。BigModel 等 OpenAI 兼容服务使用 `openai`
 adapter + 对应 `base_url`；非密的扩展项放到 `ProviderSpec.adapter_options`。
 
@@ -228,7 +234,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 #### 管理控制台
 
-把 `ConfigStore` 接入 `ServerState` 后，[`apps/admin-console`](./apps/admin-console/) 就变成同一套配置 API 上的浏览器控制面（通过 `VITE_BACKEND_URL` 读服务端地址）。运维可以校验草稿、发布 registry snapshot、测试 provider、查看 runtime 健康、在保存前预览 agent 修改，并从 audit log 恢复历史配置。首页优先展示真实运维信号：等待 HITL 决策、运行/排队负载、provider/MCP 健康、滚动窗口推理/错误/token 统计，以及最近审计事件。
+把 `ConfigStore` 接入 `ServerState` 后，[`apps/admin-console`](./apps/admin-console/) 就变成同一套配置 API 上的浏览器控制面（通过 `VITE_BACKEND_URL` 读服务端地址）。运维可以校验草稿，调优 prompt、工具描述、reminder、deferred-tool 策略、skills 和 delegates，发布 registry snapshot，测试 provider，查看 runtime 健康，在保存前预览 agent 修改，并从 audit log 恢复历史配置。首页优先展示真实运维信号：等待 HITL 决策、运行/排队负载、provider/MCP 健康、滚动窗口推理/错误/token 统计，以及最近审计事件。
 
 下面的截图是使用 sample API data 生成的静态文档图。实际运行中的管理控制台会从配置的后端 API 读取这些值。
 
@@ -316,6 +322,8 @@ pnpm install && pnpm --filter awaken-ai-sdk-starter dev
 
 # 终端 1：admin console 使用的 starter backend
 AWAKEN_STORAGE_DIR=./target/admin-sessions cargo run -p ai-sdk-starter-agent
+# 可选：为演示 seed 示例 agent / tool
+AWAKEN_SEED_PROFILE=demo AWAKEN_STORAGE_DIR=./target/admin-sessions cargo run -p ai-sdk-starter-agent
 
 # 终端 2：admin console
 pnpm install

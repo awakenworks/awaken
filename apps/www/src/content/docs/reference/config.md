@@ -65,22 +65,36 @@ its JSON Schema from `Plugin::config_schemas()`, and read it during resolution o
 phase hooks with `agent_spec.config::<K>()`.
 
 This is the intended control plane for agent optimization features. Model and
-provider selection, base prompts, reminder rules, generated-UI prompt guidance,
-permissions, context-window behavior, retry policy, and deferred-tool policy are
-data that can be validated and changed at runtime.
+provider selection, prompts, tool descriptions, reminders, skill catalog
+metadata, delegates, generated-UI prompt guidance, permissions, context-window
+behavior, retry policy, and deferred-tool policy are data that can be validated
+and changed at runtime.
 
 | Tuning surface | Implemented config surface |
 |---|---|
 | Base prompt | `AgentSpec.system_prompt` in the `agents` config namespace |
+| Admin Assistant policy prompt | `/v1/admin/assistant/config.policy_prompt` |
 | Model selection | `AgentSpec.model_id`, resolved through `/v1/config/models` |
 | Provider endpoint and OpenAI-compatible routing | `/v1/config/providers` (`adapter`, `base_url`, auth, timeout) |
+| Tool descriptions | `ToolSpecPatch.description` through `/v1/config/tools/:id/overrides` |
+| Tool availability and MCP tool selection | `AgentSpec.allowed_tools`, `allowed_tool_patterns`, `excluded_tools`, `excluded_tool_patterns` |
 | Context budget and prompt caching | `AgentSpec.context_policy` |
 | Reasoning effort | `AgentSpec.reasoning_effort` |
 | Retry policy | `AgentSpec.sections["retry"]` |
 | System reminders and prompt context injection | `AgentSpec.sections["reminder"]`, read through `ReminderConfigKey` |
 | Generative UI prompt guidance | `AgentSpec.sections["generative-ui"]`, read through `A2uiPromptConfigKey` |
 | Permission policy | `AgentSpec.sections["permission"]` |
-| Deferred tool loading | `AgentSpec.sections["deferred_tools"]` |
+| Deferred tool loading and ToolSearch policy | `AgentSpec.sections["deferred_tools"]`, read through `DeferredToolsConfigKey` |
+| Skill catalog, activation instructions, arguments, and allowed tools | `SkillSpec` records in `/v1/config/skills`; `SkillSpecPatch` supports field-level overrides |
+| Skill visibility / activation scope | `AgentSpec.sections["skills"]` allowlist plus the skills plugin's `skill` activation tool |
+| Explicit sub-agent delegation | `AgentSpec.delegates`, resolved into delegate tools during agent resolution |
+
+ToolSearch is shipped by `awaken-ext-deferred-tools` and is the current
+deferred-tool search mechanism. Skills are not loaded through a separate
+`SkillSearch` tool today: the skills plugin injects the visible skill catalog
+and exposes the `skill` activation tool. Sub-agents are not loaded through a
+separate `AgentSearch` tool today: an agent must declare explicit
+`AgentSpec.delegates`, which resolution turns into delegate tools.
 
 Prompt semantic hooks are not a built-in plugin yet. When added, they should use
 the same path: declare a typed config key, expose schema, render in the admin
@@ -97,6 +111,14 @@ publishes a new registry snapshot. If the plugin is not listed in `plugin_ids`,
 the section remains stored but the plugin is not loaded, so its hooks, tools,
 and request transforms do not run.
 
+Config records carry `RecordMeta.revision`, and deployments with an
+`AuditLogStore` can restore prior snapshots through the config restore route.
+When the server is also wired with a `VersionedRegistryStore`, published runtime
+registry snapshots are immutable and durable runs carry a `resolution_id` so
+resume and replay can reselect the same published graph. This pinning is for
+published runtime snapshots; the generic runtime crate does not expose a manual
+"pin arbitrary config version" API.
+
 The admin surface also exposes read-only preflight endpoints for integrations:
 
 | Endpoint | Purpose |
@@ -112,6 +134,32 @@ Current configurable plugin sections exposed by the starter runtime:
 | `reminder` | `reminder` | Dedicated reminder rules editor |
 | `generative-ui` | `generative-ui` | Dedicated A2UI prompt/catalog editor |
 | `ext-deferred-tools` | `deferred_tools` | Generic JSON Schema form |
+
+### Starter seed profile
+
+The starter backend defaults to a minimal seed:
+
+```bash
+AWAKEN_SEED_PROFILE=minimal cargo run -p ai-sdk-starter-agent
+```
+
+`minimal` seeds the default agent and production control-plane resources only.
+It does not publish the demo agent catalog or demo tools into normal agent
+editing. Use `AWAKEN_SEED_PROFILE=demo` when you want the sample agents and
+demo frontend tools used by the example applications.
+
+### Provider and MCP credentials
+
+`ProviderSpec` owns model-provider credentials: static bearer keys, optional
+service-account JSON for Vertex, adapter-specific headers, and OAuth scopes.
+These credentials are consumed only by model executors.
+
+`McpServerSpec` owns MCP transport credentials. Stdio servers receive a redacted
+`env` map; HTTP servers use their URL plus server-specific `config`. MCP does
+not currently reuse `ProviderSpec` or the provider credential broker. Agent
+access to MCP is controlled by tool catalog fields (`allowed_tools`,
+`allowed_tool_patterns`, `excluded_*`) and, when the `permission` plugin is
+enabled, by its ask/allow/deny rules.
 
 ## Tool catalog
 

@@ -29,6 +29,7 @@ should be protected by the embedder's deployment boundary.
 |---|---|---|
 | Health, threads, runs | Always present on `ServerState` | Agent-invocation scope except health |
 | Protocol routes (AI SDK, AG-UI, A2A, MCP HTTP) | Always present on `ServerState` | Agent-invocation scope |
+| Admin assistant stream | Protocol module plus config module wiring | Admin bearer + admin scope |
 | Canonical event routes | `EventModuleState` is wired | Event-store availability controls behavior |
 | System routes | Always mounted | Admin bearer + admin scope |
 | Config and capabilities | `AdminApiConfig.expose_config_routes` and `ConfigStore` wiring | Admin bearer + admin scope |
@@ -186,7 +187,7 @@ with `config management API not enabled`.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/v1/capabilities` | List registered agents, tools, plugins, models, providers, and config namespaces |
+| `GET` | `/v1/capabilities` | List registered agents, tools, plugins, models, providers, config namespaces, and admin-assistant status/tool metadata |
 | `GET` | `/v1/config/:namespace` | List entries in a config namespace |
 | `POST` | `/v1/config/:namespace` | Create an entry; the body must contain `"id"` |
 | `POST` | `/v1/config/:namespace/validate?id=` | Dry-run validate. Runs the same `prepare_body` + schema check as `create`/`update` but does **not** persist or apply. Returns `{"ok":true,"normalized":{...}}` on success, the same `400`/`409` errors as a real save on failure. The optional `?id=` query lets callers validate an update without going through `:id` in the path. |
@@ -213,6 +214,9 @@ with `config management API not enabled`.
 | `GET` | `/v1/mcp-servers/:id/status` | See [MCP server status](#mcp-server-status) below |
 | `POST` | `/v1/mcp-servers/:id/restart` | Reconnect a managed MCP server. `202` on success; emits an audit `restart` event |
 | `GET` | `/v1/audit-log?…` | Query admin audit events. Returns `{"items": AuditEvent[], "next_cursor": string?}`. `503 {"error":"audit log is not configured"}` when audit logging is off. See [Admin audit log](#admin-audit-log) |
+| `GET` | `/v1/admin/assistant/config` | Read the server-managed Admin Assistant policy prompt and optional model override |
+| `PUT` | `/v1/admin/assistant/config` | Save the editable Admin Assistant policy prompt. The system prompt, bound tools, auth, redaction, and confirmation rules remain server-owned |
+| `POST` | `/v1/admin/assistant/runs` | Admin-only AI SDK stream for the server-managed Admin Assistant. This is not `/v1/ai-sdk/agents/:id/runs` and is not exposed as a user Agent |
 
 `GET /v1/capabilities` includes each registered plugin's `config_schemas`.
 The admin console uses this field to render agent-level plugin config forms and
@@ -225,6 +229,14 @@ use the updated agents, models, providers, MCP servers, and plugin sections.
 Restore is the exception: it writes the recovered payload to `ConfigStore` only,
 so operators can review rollback state before promoting it through a normal
 config write.
+
+`capabilities.admin_assistant.bound_tools` lists the assistant's locked
+admin-only tools for UI comparison. Those tools are directly bound by
+`/v1/admin/assistant/runs`, are not returned in `capabilities.tools`, and cannot
+be assigned to normal AgentSpecs. The assistant itself is not stored as a
+normal registry agent; when `admin_assistant.config.model_id` is unset, the
+server selects the first configured model and reports that selection as
+`capabilities.admin_assistant.model_id`.
 
 Current built-in namespaces:
 

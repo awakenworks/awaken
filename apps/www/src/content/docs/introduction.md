@@ -42,10 +42,11 @@ Current IO/runtime boundary:
 
 In both modes, Rust code supplies executable capabilities: `Tool`
 implementations, plugins, provider factories, stores, and backend factories.
-Managed config supplies agent behavior: prompts, `model_id`, model pools,
-allowed/excluded tools, plugin sections, MCP servers, skills, and permission
-rules. The admin console is the browser UI over the server mode; it does not
-replace the runtime.
+Managed config supplies agent behavior: prompts, tool description overrides,
+system reminders, `model_id`, model pools, allowed/excluded tools, plugin
+sections, MCP servers, skills, delegates, and permission rules. The admin
+console is the browser UI over the server mode; it does not replace the
+runtime.
 
 Server mode adds the pieces that a direct runtime caller otherwise has to
 build: HTTP/SSE, protocol adapters, mailbox dispatch, resumable background runs,
@@ -57,9 +58,16 @@ Three design rules drive everything else:
 
 ## 1 — Tools live in code, prompts live in config
 
-Code defines tools (typed schemas, state writes, deferred loading). Spec/config holds agent system prompts, tool descriptions, reminders, skill catalogs, permission rules.
+Code defines tools (typed schemas, state writes, deferred loading). Spec/config
+holds agent system prompts, tool descriptions, reminders, ToolSearch policy,
+skill catalogs, explicit delegates, and permission rules.
 
 Editing config takes effect on the **next run**. No restart, no redeploy, no schema migration. MCP servers refresh automatically via the `tools/list_changed` notification; on-disk skill packages refresh via a `PeriodicRefresher` you start once at bootstrap. The runtime re-resolves from the latest published config snapshot on each new run.
+
+With audit and versioned-registry stores enabled, those edits are traceable
+through record revisions and audit restore; published runtime snapshots are
+immutable, and durable runs carry a `resolution_id` to reselect the same graph
+for resume or replay.
 
 ## 2 — One config API, one admin console
 

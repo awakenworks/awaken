@@ -63,6 +63,10 @@ Awaken separates **code you write once** from **config you tune continuously**.
 
 Tools are written once and stay stable. Models, agents, and skills are tuned **at runtime** through `/v1/config/*` or the [Admin Console](https://awakenworks.github.io/awaken/reference/admin-console/) — Validate → Save → preview-chat → adjust. That feedback loop *is* the optimization workflow.
 
+The high-leverage tuning surface includes system prompts, tool description overrides, system reminders, ToolSearch/deferred-tool policy, skill catalog and activation metadata, plugin sections, and explicit sub-agent delegates. These are behavior/config changes, not arbitrary code execution: ToolSearch is implemented by `awaken-ext-deferred-tools`; skills are catalog-injected and activated through the `skill` tool; sub-agents are explicit `AgentSpec.delegates` exposed as delegate tools. A separate SkillSearch or AgentSearch tool is not currently shipped.
+
+When the server is wired with audit and versioned-registry stores, config writes are traceable through record revisions and audit restore, published runtime registry snapshots are immutable, and durable runs carry a `resolution_id` so resume and replay can reselect the same published graph. Manual "pin this arbitrary config version as production" is a server/versioned-registry concern, not a generic runtime API.
+
 The runtime drives 9 typed phases per round, including a pure `ToolGate` before tool execution. State mutations are batched and committed atomically.
 
 ## Quickstart: runtime mode
@@ -204,7 +208,7 @@ serve(state).await?;
 | MCP | `POST /v1/mcp` | JSON-RPC 2.0 clients |
 | ACP | stdio via `serve_stdio` | Agent Client Protocol hosts |
 
-The optional admin console reads `/v1/capabilities` and writes through `/v1/config/*` to manage agents, models, providers, MCP servers, and plugin config sections. Saved changes publish a new registry snapshot that takes effect on the next `/v1/runs` request. OpenAI-compatible providers (including BigModel) use the `openai` adapter with their own `base_url`; non-secret extras go in `ProviderSpec.adapter_options`.
+The optional admin console reads `/v1/capabilities` and writes through `/v1/config/*` to manage agents, models, providers, MCP servers, and plugin config sections. It also includes a server-managed Admin Assistant on `/v1/admin/assistant/runs`: the assistant can read platform capabilities, draft AgentSpecs, and validate them with locked admin-only tools that never appear in the normal tool registry. It unlocks automatically when the first provider-backed model is configured. Saved config changes publish a new registry snapshot that takes effect on the next `/v1/runs` request. OpenAI-compatible providers (including BigModel) use the `openai` adapter with their own `base_url`; non-secret extras go in `ProviderSpec.adapter_options`.
 
 **React + AI SDK v6:**
 
@@ -231,7 +235,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 #### Admin Console
 
-Wire a `ConfigStore` into `ServerState` and the SPA in [`apps/admin-console`](./apps/admin-console/) becomes a browser control plane over the same config API (reads `VITE_BACKEND_URL` for the server base URL). Operators can validate drafts, publish registry snapshots, test providers, inspect runtime health, preview agent changes before saving, and restore prior config versions from the audit log. The dashboard emphasizes live operational signals — awaiting HITL decisions, running/queued workload, provider/MCP health, rolling-window inference/error/token stats, and recent audit activity.
+Wire a `ConfigStore` into `ServerState` and the SPA in [`apps/admin-console`](./apps/admin-console/) becomes a browser control plane over the same config API (reads `VITE_BACKEND_URL` for the server base URL). Operators can validate drafts, tune prompts/tool descriptions/reminders/deferred-tool policy/skills/delegates, publish registry snapshots, test providers, inspect runtime health, preview agent changes before saving, and restore prior config versions from the audit log. The dashboard emphasizes live operational signals — awaiting HITL decisions, running/queued workload, provider/MCP health, rolling-window inference/error/token stats, and recent audit activity.
 
 The screenshots below are static documentation captures made with sample API data. A running admin console reads its values from the configured backend APIs.
 
@@ -319,6 +323,8 @@ pnpm install && pnpm --filter awaken-ai-sdk-starter dev
 
 # Terminal 1: starter backend for admin console
 AWAKEN_STORAGE_DIR=./target/admin-sessions cargo run -p ai-sdk-starter-agent
+# Optional: seed sample agents/tools for demos
+AWAKEN_SEED_PROFILE=demo AWAKEN_STORAGE_DIR=./target/admin-sessions cargo run -p ai-sdk-starter-agent
 
 # Terminal 2: admin console
 pnpm install

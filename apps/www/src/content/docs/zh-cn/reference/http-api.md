@@ -26,6 +26,7 @@ Server 启动时也会校验暴露的 admin surface。只要 config、eval 或 t
 |---|---|---|
 | Health、threads、runs | `ServerState` 始终提供 | health 之外使用 agent-invocation scope |
 | 协议路由（AI SDK、AG-UI、A2A、MCP HTTP） | `ServerState` 始终提供 | agent-invocation scope |
+| Admin assistant stream | protocol module 与 config module 已接入 | admin bearer + admin scope |
 | Canonical event 路由 | 接入 `EventModuleState` | 由 event store 可用性决定行为 |
 | System 路由 | 始终挂载 | admin bearer + admin scope |
 | Config 与 capabilities | `AdminApiConfig.expose_config_routes` 且接入 `ConfigStore` | admin bearer + admin scope |
@@ -162,7 +163,7 @@ SSE frame 使用 canonical cursor 作为 SSE `id`，并在 `data` 中序列化
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/v1/capabilities` | 列出 agents、tools、plugins、models、providers 和 config namespaces |
+| `GET` | `/v1/capabilities` | 列出 agents、tools、plugins、models、providers、config namespaces，以及 Admin Assistant 状态与工具元数据 |
 | `GET` | `/v1/config/:namespace` | 列出某个 namespace 下的配置项 |
 | `POST` | `/v1/config/:namespace` | 创建配置项；body 必须含 `"id"` |
 | `POST` | `/v1/config/:namespace/validate?id=` | 干跑校验。执行和 create/update 相同的 `prepare_body` + schema check，但不持久化、不 apply。成功返回 `{"ok":true,"normalized":{...}}`，失败返回和真实保存相同的 `400`/`409`。可选 `?id=` 允许调用方在不使用 `:id` path 的情况下校验一次 update |
@@ -189,8 +190,18 @@ SSE frame 使用 canonical cursor 作为 SSE `id`，并在 `data` 中序列化
 | `GET` | `/v1/mcp-servers/:id/status` | 见下方 [MCP server status](#mcp-server-status) |
 | `POST` | `/v1/mcp-servers/:id/restart` | 重新连接托管 MCP server。成功返回 `202`，并写入 `restart` 审计事件 |
 | `GET` | `/v1/audit-log?…` | 查询 admin audit events。返回 `{"items": AuditEvent[], "next_cursor": string?}`。未配置审计日志时返回 `503 {"error":"audit log is not configured"}`。见下方 [Admin audit log](#admin-audit-log) |
+| `GET` | `/v1/admin/assistant/config` | 读取 server-managed Admin Assistant 的 policy prompt 和可选模型覆盖 |
+| `PUT` | `/v1/admin/assistant/config` | 保存可编辑的 Admin Assistant policy prompt。system prompt、绑定工具、auth、redaction 和确认规则仍由 server 控制 |
+| `POST` | `/v1/admin/assistant/runs` | server-managed Admin Assistant 的 admin-only AI SDK stream。它不是 `/v1/ai-sdk/agents/:id/runs`，也不会作为普通用户 Agent 暴露 |
 
 `GET /v1/capabilities` 会包含每个已注册插件的 `config_schemas`。管理控制台用它渲染 agent 级插件配置表单，并把值保存到 `AgentSpec.sections`。每个条目包含 section key、JSON Schema、可选展示 metadata、默认值、UI schema hints 和可选 editor hint；客户端不认识 editor 时回退到 JSON Schema 表单。create/update/delete 或 override 修改成功后，runtime manager 会发布新的 registry snapshot，因此后续 `/v1/runs` 会使用更新后的 agents、models、providers、MCP servers 与 plugin sections。Restore 是例外：它只把恢复出的 payload 写入 `ConfigStore`，让操作者先审查回滚状态，再通过一次普通配置写入发布。
+
+`capabilities.admin_assistant.bound_tools` 会列出该助手锁定的 admin-only
+工具，供 UI 做对比展示。这些工具由 `/v1/admin/assistant/runs` 直接绑定，
+不会出现在 `capabilities.tools` 中，也不能分配给普通 `AgentSpec`。该助手
+不会保存为普通 registry agent；当 `admin_assistant.config.model_id` 未设置时，
+server 会选择第一个已配置模型，并通过 `capabilities.admin_assistant.model_id`
+返回实际选择。
 
 当前内置 namespace：
 

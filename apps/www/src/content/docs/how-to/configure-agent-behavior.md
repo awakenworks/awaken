@@ -11,12 +11,13 @@ Awaken is built around a **two-layer split**:
   MCP servers, skills, and typed `AgentSpec.sections`.
 
 This guide is the canonical "tune at runtime" reference. Once your tools are
-written and the runtime is up, *almost every behavioural change you make to
-an agent is a config edit* — system prompt wording, model choice, allowed
-tools, reasoning effort, context policy, reminder cadence. The same server
-binary hosts many agent profiles; switching profiles is a `PUT /v1/config/agents/:id`
-(or a Save in the [Admin Console](/awaken/reference/admin-console/)), not a
-redeploy.
+written and the runtime is up, *almost every behavioural change you make to an
+agent is a config edit* — system prompt wording, model choice, tool description
+overrides, allowed tools, reasoning effort, context policy, reminder cadence,
+ToolSearch/deferred-tool policy, skill activation metadata, and delegates. The
+same server binary hosts many agent profiles; switching profiles is a
+`PUT /v1/config/agents/:id` (or a Save in the
+[Admin Console](/awaken/reference/admin-console/)), not a redeploy.
 
 **Treat configuration as the optimization surface.** The loop is: edit spec →
 Validate → Save → run a preview chat → measure → adjust. The runtime
@@ -33,6 +34,7 @@ the referenced plugins have been registered in the runtime plugin registry.
 | Model config | `/v1/config/models/{id}` | Stable model id -> `ModelSpec` with provider id, upstream model name, capabilities, and pricing |
 | Model pool | `/v1/config/model-pools/{id}` | Stable pool id -> ordered `ModelSpec` members with sticky routing and failover policy |
 | Agent | `/v1/config/agents/{id}` | Prompt, stable `model_id`, rounds, tools, plugins, context policy |
+| Tool override | `/v1/config/tools/{id}/overrides` | Runtime-safe tool description override |
 | MCP server | `/v1/config/mcp-servers/{id}` | External MCP server connections |
 | Skill | `/v1/config/skills/{id}` | Reusable instructions, arguments, and allowed tools |
 | Plugin section | `AgentSpec.sections` | Per-agent typed config keyed by `PluginConfigKey::KEY` |
@@ -64,6 +66,12 @@ then published. New runs use the latest published snapshot. Runs that already
 started keep the snapshot they started with. Audit-log restore is the exception:
 it writes the recovered payload to the editing store only; publish that payload
 with a normal config save/PUT when it should become active for new runs.
+
+If the deployment uses a `VersionedRegistryStore`, published runtime snapshots
+are immutable and durable runs carry a `resolution_id` that reselects the same
+published graph for resume/replay. Record revisions and audit restore make
+config history traceable; they are separate from manually pinning an arbitrary
+editing-store version as production.
 
 Endpoint-backed agents skip the local provider, model, plugin, and tool
 resolution chain. Their `endpoint` config is executed by the selected remote
@@ -220,7 +228,8 @@ Common keys:
 | `permission` | Permission plugin | Default allow/ask/deny behavior plus ordered tool rules. |
 | `reminder` | Reminder plugin | Tool/output matching rules that inject system or conversation context. |
 | `generative-ui` | Generative UI plugin | A2UI catalog id, examples, or full prompt instructions. |
-| `deferred_tools` | Deferred tools plugin | Decide which tool schemas stay eager and which are loaded on demand. |
+| `deferred_tools` | Deferred tools plugin | Decide which schemas stay eager, which are found through `ToolSearch`, and when promoted tools are re-deferred. |
+| `skills` | Skills discovery plugin | Optional skill allowlist for the injected skill catalog. Skill content and activation metadata live in `SkillSpec`. |
 | `compaction` | Context compaction plugin | Summarizer prompts, summary model, and accepted savings threshold. |
 
 `context_policy` is a top-level `AgentSpec` field, not a section. Setting it
@@ -239,6 +248,11 @@ Some plugins also accept constructor defaults. For example,
 per-agent `reminder` section is validated through `ReminderConfigKey` and
 appended at runtime. Use constructor defaults for baseline behavior and
 `AgentSpec.sections` for agent-specific tuning.
+
+Today, ToolSearch is implemented only by the deferred-tools plugin. Skills are
+catalog-injected and activated through the `skill` tool; there is no separate
+`SkillSearch` tool. Sub-agents are explicit `AgentSpec.delegates`; there is no
+separate `AgentSearch` tool.
 
 Leave `active_hook_filter` empty for normal agents. A non-empty filter disables
 hooks, plugin tools, and request transforms from plugins whose descriptor names

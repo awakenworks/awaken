@@ -59,22 +59,34 @@ fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), St
 `PluginConfigKey` 声明类型化 section，通过 `Plugin::config_schemas()` 暴露
 JSON Schema，并在解析或 phase hook 中通过 `agent_spec.config::<K>()` 读取。
 
-这是 agent 优化能力的统一控制面。model 与 provider 选择、基础 prompt、
-reminder 规则、生成式 UI prompt 指令、permission、上下文窗口、重试策略以及
-deferred-tool 策略都应是可校验、可运行时变更的数据。
+这是 agent 优化能力的统一控制面。model 与 provider 选择、prompt、工具描述、
+reminder、Skill 目录元数据、delegates、生成式 UI prompt 指令、permission、
+上下文窗口、重试策略以及 deferred-tool 策略都应是可校验、可运行时变更的数据。
 
 | 调优面 | 已实现的配置入口 |
 |---|---|
 | 基础 prompt | `agents` 配置命名空间中的 `AgentSpec.system_prompt` |
+| Admin Assistant policy prompt | `/v1/admin/assistant/config.policy_prompt` |
 | model 选择 | `AgentSpec.model_id`，通过 `/v1/config/models` 解析 |
 | provider 端点与 OpenAI 兼容路由 | `/v1/config/providers`（`adapter`、`base_url`、认证、超时） |
+| 工具描述 | 通过 `/v1/config/tools/:id/overrides` 写入 `ToolSpecPatch.description` |
+| 工具可用性与 MCP 工具选择 | `AgentSpec.allowed_tools`、`allowed_tool_patterns`、`excluded_tools`、`excluded_tool_patterns` |
 | 上下文预算与 prompt cache | `AgentSpec.context_policy` |
 | reasoning effort | `AgentSpec.reasoning_effort` |
 | 重试策略 | `AgentSpec.sections["retry"]` |
 | system reminder 与 prompt 上下文注入 | `AgentSpec.sections["reminder"]`，通过 `ReminderConfigKey` 读取 |
 | Generative UI prompt 指令 | `AgentSpec.sections["generative-ui"]`，通过 `A2uiPromptConfigKey` 读取 |
 | permission 策略 | `AgentSpec.sections["permission"]` |
-| deferred tool loading | `AgentSpec.sections["deferred_tools"]` |
+| deferred tool loading 与 ToolSearch 策略 | `AgentSpec.sections["deferred_tools"]`，通过 `DeferredToolsConfigKey` 读取 |
+| Skill 目录、激活说明、参数和 allowed tools | `/v1/config/skills` 中的 `SkillSpec`；`SkillSpecPatch` 支持字段级覆盖 |
+| Skill 可见性 / 激活范围 | `AgentSpec.sections["skills"]` allowlist 加上 skills 插件的 `skill` 激活工具 |
+| 显式 sub-agent delegation | `AgentSpec.delegates`，在 agent resolution 时转换为 delegate tools |
+
+ToolSearch 已由 `awaken-ext-deferred-tools` 提供，是当前的 deferred-tool search
+机制。Skill 目前不是通过单独的 `SkillSearch` 工具加载：skills 插件会注入可见
+Skill catalog，并暴露 `skill` 激活工具。Sub-agent 目前也不是通过单独的
+`AgentSearch` 工具加载：agent 必须在 `AgentSpec.delegates` 中显式声明，解析后
+才会生成 delegate tools。
 
 prompt 语义 hook 当前还不是内置插件。后续加入时应沿用同一路径：声明类型化
 config key、暴露 schema、在 admin console 中渲染，并在 hook 中读取 resolved
@@ -88,6 +100,13 @@ config。
 并发布新的 registry snapshot 后，会对新的 run 生效。如果插件未列在
 `plugin_ids` 中，section 会继续保存，但插件不会被加载，因此对应 hook、tool
 和 request transform 都不会运行。
+
+配置记录携带 `RecordMeta.revision`；部署挂接 `AuditLogStore` 后，可以通过
+config restore route 恢复历史 snapshot。当 server 同时挂接
+`VersionedRegistryStore` 时，已发布 runtime registry snapshot 是不可变的；
+durable run 会携带 `resolution_id`，让 resume/replay 重新选择同一个已发布
+graph。这里的 pinning 面向已发布 runtime snapshot；通用 runtime crate 不提供
+“把任意配置版本手动 pin 为生产版本”的 API。
 
 admin surface 还提供只读预检端点，方便集成方在执行破坏性操作前解释影响面：
 
@@ -104,6 +123,30 @@ starter runtime 当前暴露的可配置插件 section：
 | `reminder` | `reminder` | 专用 reminder 规则编辑器 |
 | `generative-ui` | `generative-ui` | 专用 A2UI prompt/catalog 编辑器 |
 | `ext-deferred-tools` | `deferred_tools` | 通用 JSON Schema 表单 |
+
+### Starter seed profile
+
+starter backend 默认使用最小 seed：
+
+```bash
+AWAKEN_SEED_PROFILE=minimal cargo run -p ai-sdk-starter-agent
+```
+
+`minimal` 只 seed 默认 agent 和生产控制面资源，不会把演示 agent catalog
+或演示工具发布到普通 agent 编辑流程。需要示例应用里的 sample agent 和 demo
+frontend tools 时，使用 `AWAKEN_SEED_PROFILE=demo`。
+
+### Provider 与 MCP credentials
+
+`ProviderSpec` 管理模型 provider credentials：静态 bearer key、Vertex 可选的
+service-account JSON、adapter-specific headers 与 OAuth scopes。这些凭据只给 model
+executor 使用。
+
+`McpServerSpec` 管理 MCP transport credentials。stdio server 使用会被脱敏保存的
+`env` map；HTTP server 使用 URL 和 server-specific `config`。MCP 当前不复用
+`ProviderSpec` 或 provider credential broker。Agent 对 MCP 的访问由 tool catalog
+字段（`allowed_tools`、`allowed_tool_patterns`、`excluded_*`）控制；启用
+`permission` 插件后，还可以叠加 ask/allow/deny 规则。
 
 ## 工具目录（Tool catalog）
 

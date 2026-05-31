@@ -79,19 +79,21 @@ Everything below lives in config and reloads on the next run:
 | Knob | Where | Effect |
 |---|---|---|
 | `system_prompt` | `AgentSpec.system_prompt` | Agent persona / instructions |
+| Tool descriptions | `ToolSpecPatch.description` | Override how existing tools are described to the model |
 | `allowed_tools` / `excluded_tools` | `AgentSpec.*_tools` | Tool whitelist / blacklist |
+| Delegates | `AgentSpec.delegates` | Explicit sub-agent tools exposed during resolution |
 | `max_rounds`, `reasoning_effort` | `AgentSpec.*` | Loop bounds |
 | `context_policy` | `AgentSpec.context_policy` | Context window shaping + compaction |
 | Permission rules | `sections.permission.rules` | Per-tool allow/ask/deny on name + args |
 | Reminder rules | `sections.reminder.rules` | Inject system/conversation messages on tool patterns |
 | Retry policy | `sections.retry` | Backoff and retry limits |
-| Deferred tool gating | `sections.deferred_tools` | Which tools stay eager vs load on demand |
+| Deferred tool gating | `sections.deferred_tools` | Which tools stay eager, load through `ToolSearch`, or re-defer |
 | Compaction summarizer | `sections.compaction` | Summarizer prompt + model + threshold |
 | Generative UI catalog | `sections.generative-ui` | A2UI catalog id + examples |
-| Skills on disk | `~/.awaken/skills/` (or your skill root) | Auto-reloaded if `start_periodic_refresh()` was called at boot |
+| Skill catalog | `/v1/config/skills` or your skill root | Instructions, allowed tools, arguments, and activation metadata |
 | MCP server tools | Remote MCP server | Auto-refreshed on `tools/list_changed` |
 
-Anything not in this list is code: tools, plugins, provider factories, custom `PluginConfigKey` types, `Tool` trait implementations.
+Anything not in this list is code: new tools, plugins, provider factories, custom `PluginConfigKey` types, and `Tool` trait implementations. ToolSearch is shipped by deferred-tools; skills use catalog injection plus the `skill` activation tool; delegates are explicit, not AgentSearch-discovered.
 
 ## Trace-driven comparison
 
