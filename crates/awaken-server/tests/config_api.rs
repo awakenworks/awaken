@@ -1955,6 +1955,7 @@ async fn capabilities_expose_admin_assistant_without_registry_tools() {
         .as_array()
         .expect("admin assistant bound tools should be listed");
     assert!(contains_id(bound_tools, "admin_get_platform_capabilities"));
+    assert!(contains_id(bound_tools, "admin_create_agent"));
     assert!(contains_id(bound_tools, "admin_create_agent_draft"));
     assert!(contains_id(bound_tools, "admin_validate_agent"));
     assert!(
@@ -1971,6 +1972,7 @@ async fn capabilities_expose_admin_assistant_without_registry_tools() {
         registry_tools,
         "admin_get_platform_capabilities"
     ));
+    assert!(!contains_id(registry_tools, "admin_create_agent"));
     assert!(!contains_id(registry_tools, "admin_create_agent_draft"));
     assert!(!contains_id(registry_tools, "admin_validate_agent"));
 }
@@ -1995,10 +1997,23 @@ async fn admin_assistant_config_is_admin_only_and_persisted() {
     assert_eq!(config["id"], "default");
     assert_eq!(config["policy_prompt"], "");
 
+    let (status, created_model) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/models",
+        Some(json!({
+            "id": "assistant-model",
+            "provider_id": "bootstrap",
+            "upstream_model": "assistant-upstream"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {created_model}");
+
     let body = json!({
         "id": "ignored",
         "policy_prompt": "Prefer compact, production-ready agent drafts.",
-        "model_id": "bootstrap"
+        "model_id": "assistant-model"
     });
     let (status, updated) = request_json(
         &app.router,
@@ -2013,12 +2028,20 @@ async fn admin_assistant_config_is_admin_only_and_persisted() {
         updated["policy_prompt"],
         "Prefer compact, production-ready agent drafts."
     );
-    assert_eq!(updated["model_id"], "bootstrap");
+    assert_eq!(updated["model_id"], "assistant-model");
 
     let (status, loaded) =
         request_json(&app.router, Method::GET, "/v1/admin/assistant/config", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(loaded, updated);
+
+    let (status, capabilities) =
+        request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        capabilities["admin_assistant"]["model_id"],
+        "assistant-model"
+    );
 }
 
 #[tokio::test]

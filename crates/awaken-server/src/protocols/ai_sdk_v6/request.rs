@@ -734,6 +734,56 @@ mod tests {
         assert_eq!(processed.messages[1].text(), "reply");
     }
 
+    #[test]
+    fn process_preview_chat_request_keeps_multimodal_multi_turn_context() {
+        let processed = process_preview_chat_request(
+            vec![
+                UIMessage {
+                    id: Some("u1".into()),
+                    role: "user".into(),
+                    parts: vec![
+                        raw_part(json!({"type": "text", "text": "Describe this image"})),
+                        raw_part(json!({
+                            "type": "file",
+                            "url": "data:image/png;base64,iVBOR",
+                            "mediaType": "image/png",
+                            "filename": "chart.png"
+                        })),
+                    ],
+                },
+                UIMessage {
+                    id: Some("a1".into()),
+                    role: "assistant".into(),
+                    parts: vec![raw_part(json!({"type": "text", "text": "It is a chart."}))],
+                },
+                UIMessage {
+                    id: Some("u2".into()),
+                    role: "user".into(),
+                    parts: vec![raw_part(
+                        json!({"type": "text", "text": "What is the trend?"}),
+                    )],
+                },
+            ],
+            Some("preview-thread".into()),
+            None,
+        )
+        .expect("preview request should parse");
+
+        assert_eq!(processed.thread_id, "preview-thread");
+        assert_eq!(processed.messages.len(), 3);
+        assert_eq!(processed.messages[0].content.len(), 2);
+        assert_eq!(
+            processed.messages[0].content[0],
+            ContentBlock::text("Describe this image")
+        );
+        assert_eq!(
+            processed.messages[0].content[1],
+            ContentBlock::image_base64("image/png", "iVBOR")
+        );
+        assert_eq!(processed.messages[1].text(), "It is a chart.");
+        assert_eq!(processed.messages[2].text(), "What is the trend?");
+    }
+
     // ── extract_tool_call_decisions ──
 
     #[test]

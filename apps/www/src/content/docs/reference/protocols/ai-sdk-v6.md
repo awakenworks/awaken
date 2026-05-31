@@ -3,7 +3,7 @@ title: "AI SDK v6 Protocol"
 description: "The AI SDK v6 adapter translates Awaken's internal AgentEvent stream into the Vercel AI SDK v6 UI Message Stream format. This allows any AI SDK-compatible frontend (useChat, useAssistant) to consume…"
 ---
 
-The AI SDK v6 adapter translates Awaken's internal `AgentEvent` stream into the [Vercel AI SDK v6 UI Message Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol) format. This allows any AI SDK-compatible frontend (`useChat`, `useAssistant`) to consume agent output without custom parsing.
+The AI SDK v6 adapter translates Awaken's internal `AgentEvent` stream into the [Vercel AI SDK v6 UI Message Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol) format. This allows any AI SDK-compatible frontend (`useChat`, `useAssistant`) to consume agent output without custom parsing or a custom frontend transport adapter. Awaken-specific `data-*` parts are optional metadata for richer consoles; ordinary chat UIs may ignore them.
 
 ## Endpoint
 
@@ -15,7 +15,13 @@ POST /v1/ai-sdk/chat
 
 ```json
 {
-  "messages": [{ "role": "user", "content": "Hello" }],
+  "messages": [
+    {
+      "id": "msg-1",
+      "role": "user",
+      "parts": [{ "type": "text", "text": "Hello" }]
+    }
+  ],
   "threadId": "optional-thread-id",
   "agentId": "optional-agent-id"
 }
@@ -23,9 +29,13 @@ POST /v1/ai-sdk/chat
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `messages` | `AiSdkMessage[]` | yes | Chat messages. Content may be a string or an array of content parts. |
+| `messages` | `UIMessage[]` | yes | AI SDK v6 UI messages. `text` and `file` parts become runtime content; tool/data/source parts are UI state and are not sent to the model. |
 | `threadId` | `string` | no | Existing thread to continue. Omit to create a new thread. |
 | `agentId` | `string` | no | Target agent. Uses the default agent when omitted. |
+
+`file` parts may use hosted URLs or Data URLs. Images, audio, video, PDFs, and
+text-like documents are converted to runtime `ContentBlock`s. The selected
+model must advertise compatible input modalities when modalities are enforced.
 
 ### Response
 

@@ -89,6 +89,7 @@ async fn main() {
 The server automatically registers AI SDK v6 routes at:
 
 - `POST /v1/ai-sdk/chat` -- create a new run and stream events
+- `POST /v1/ai-sdk/agents/:agent_id/runs` -- create a run pinned to one saved agent
 - `GET /v1/ai-sdk/chat/:thread_id/stream` -- resume an existing stream by thread ID
 - `GET /v1/ai-sdk/threads/:thread_id/stream` -- alias for thread-based resume
 - `GET /v1/ai-sdk/threads/:thread_id/replay` -- replay durable protocol frames when a `ProtocolReplayLog` is wired
@@ -109,6 +110,10 @@ npm install ai @ai-sdk/react
 Use the `useChat` hook pointed at your awaken server. AI SDK v6 returns
 `{ messages, sendMessage, status, ... }` and reads requests from a transport,
 so the awaken endpoint goes inside `DefaultChatTransport`:
+No custom frontend protocol adapter is required for normal chat. Awaken emits
+standard AI SDK stream parts; `data-*` parts carry optional platform metadata
+such as run status and traces, and can be ignored unless your UI wants to show
+those details.
 
 ```tsx
 import { useState } from "react";
@@ -149,6 +154,20 @@ export default function Chat() {
   );
 }
 ```
+
+When the Admin Console sandbox passes for a saved agent, copy the agent-scoped
+route from the **Frontend integration** card:
+
+```tsx
+transport: new DefaultChatTransport({
+  api: "http://localhost:3000/v1/ai-sdk/agents/support-agent/runs",
+})
+```
+
+Multimodal turns use the standard AI SDK `file` part shape. Configure the model
+with matching input modalities, then call `sendMessage({ text, files })` with a
+`FileList` or `FileUIPart[]`; Awaken converts image/audio/video/PDF/text parts
+into runtime `ContentBlock`s before inference.
 
 For the full pattern with custom transport headers, automatic resubmission, and
 typed tool parts, see the working example in

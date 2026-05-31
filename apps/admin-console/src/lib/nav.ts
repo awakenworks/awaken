@@ -21,8 +21,8 @@ export interface NavGroup {
 
 /**
  * IA v2.4 — sidebar grouped by topology layer, not by verb.
- *   Agents (consumer) → Resources (deps: models · mcp · skills) →
- *   Infrastructure (providers, set once) → Observe (lenses).
+ *   Agents (consumer) → Resources (runtime deps: mcp · skills · tools) →
+ *   Infrastructure (providers · models) → Observe (lenses).
  *
  * `label` and `groupKey` are i18n translation keys, not literal display text.
  * Render-side resolves them via t().
@@ -47,7 +47,6 @@ export const navGroups: (NavGroup & { groupKey: string })[] = [
     groupKey: "nav.resources",
     label: "Resources",
     items: [
-      { id: "models", path: adminRoutes.models, label: "Models", labelKey: "nav.items.models" } as NavItemKeyed,
       { id: "mcp-servers", path: adminRoutes.mcpServers, label: "MCP Servers", healthSource: "mcp", labelKey: "nav.items.mcp" } as NavItemKeyed,
       { id: "skills", path: adminRoutes.skills, label: "Skills", badge: "ro", labelKey: "nav.items.skills" } as NavItemKeyed,
       { id: "tools", path: adminRoutes.tools, label: "Tools", labelKey: "nav.items.tools" } as NavItemKeyed,
@@ -58,6 +57,7 @@ export const navGroups: (NavGroup & { groupKey: string })[] = [
     label: "Infrastructure",
     items: [
       { id: "providers", path: adminRoutes.providers, label: "Providers", healthSource: "providers", labelKey: "nav.items.providers" } as NavItemKeyed,
+      { id: "models", path: adminRoutes.models, label: "Models", labelKey: "nav.items.models" } as NavItemKeyed,
     ] as NavItem[],
   },
   {
@@ -70,11 +70,6 @@ export const navGroups: (NavGroup & { groupKey: string })[] = [
       { id: "eval-runs", path: adminRoutes.evalRuns, label: "Eval Runs", labelKey: "nav.items.evalRuns" } as NavItemKeyed,
       { id: "eval-reports", path: adminRoutes.evalReports, label: "Eval Reports", labelKey: "nav.items.evals" } as NavItemKeyed,
     ] as NavItem[],
-  },
-  {
-    groupKey: "nav.assistant",
-    label: "Assistant",
-    items: [{ id: "assistant", path: adminRoutes.assistant, label: "AI Assistant", labelKey: "nav.items.chat" } as NavItemKeyed] as NavItem[],
   },
 ];
 
@@ -110,6 +105,12 @@ export function resolveBreadcrumbs(pathname: string): BreadcrumbCrumb[] {
     return [
       { label: "Agents", labelKey: "nav.items.agents", path: adminRoutes.agents },
       { label: "New", labelKey: "common.new" },
+    ];
+  }
+  if (pathname === adminRoutes.assistant) {
+    return [
+      { label: "Assistant", labelKey: "nav.assistant" },
+      { label: "AI Assistant", labelKey: "nav.items.chat" },
     ];
   }
   const agentMatch = pathname.match(/^\/agents\/([^/]+)(?:\/(dashboard))?$/);

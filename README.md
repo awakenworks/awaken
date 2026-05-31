@@ -208,7 +208,7 @@ serve(state).await?;
 | MCP | `POST /v1/mcp` | JSON-RPC 2.0 clients |
 | ACP | stdio via `serve_stdio` | Agent Client Protocol hosts |
 
-The optional admin console reads `/v1/capabilities` and writes through `/v1/config/*` to manage agents, models, providers, MCP servers, and plugin config sections. It also includes a server-managed Admin Assistant on `/v1/admin/assistant/runs`: the assistant can read platform capabilities, draft AgentSpecs, and validate them with locked admin-only tools that never appear in the normal tool registry. It unlocks automatically when the first provider-backed model is configured. Saved config changes publish a new registry snapshot that takes effect on the next `/v1/runs` request. OpenAI-compatible providers (including BigModel) use the `openai` adapter with their own `base_url`; non-secret extras go in `ProviderSpec.adapter_options`.
+The optional admin console reads `/v1/capabilities` and writes through `/v1/config/*` to manage agents, models, providers, MCP servers, and plugin config sections. It also includes a server-managed Admin Assistant on `/v1/admin/assistant/runs`: the assistant can read platform capabilities, create/publish AgentSpecs, draft without publishing, and validate drafts with locked admin-only tools that never appear in the normal tool registry. It unlocks automatically when the first provider-backed model is configured. Saved config changes publish a new registry snapshot that takes effect on the next `/v1/runs` request. OpenAI-compatible providers (including BigModel) use the `openai` adapter with their own `base_url`; non-secret extras go in `ProviderSpec.adapter_options`.
 
 **React + AI SDK v6:**
 

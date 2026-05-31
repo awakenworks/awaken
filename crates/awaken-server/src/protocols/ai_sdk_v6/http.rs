@@ -151,22 +151,16 @@ async fn ai_sdk_admin_assistant(
     let assistant_config = crate::admin_assistant::load_config(&config_state.config)
         .await
         .map_err(|error| ApiError::Internal(error.to_string()))?;
-    let model_id = assistant_config
-        .model_id
-        .as_deref()
-        .filter(|model_id| {
-            current.models.get_model(model_id).is_some()
-                || current.models.get_pool(model_id).is_some()
-        })
-        .map(ToOwned::to_owned)
-        .or_else(|| {
-            crate::admin_assistant::select_admin_assistant_model_id(current.models.as_ref())
-        })
-        .ok_or_else(|| {
-            ApiError::Conflict(
-                "configure and publish the first model before using the admin assistant".into(),
-            )
-        })?;
+    let model_id = crate::admin_assistant::resolve_admin_assistant_model_id(
+        current.models.as_ref(),
+        current.providers.as_ref(),
+        assistant_config.model_id.as_deref(),
+    )
+    .ok_or_else(|| {
+        ApiError::Conflict(
+            "configure and publish the first model before using the admin assistant".into(),
+        )
+    })?;
     let agent = crate::admin_assistant::admin_assistant_agent(
         model_id,
         Some(assistant_config.policy_prompt),

@@ -114,6 +114,33 @@ describe("viewMessage", () => {
     ]);
   });
 
+  it("collects runtime data parts without treating them as unrendered content", () => {
+    const view = viewMessage({
+      parts: [
+        { type: "data-run-info", data: { runId: "run-1" } },
+        { type: "text", text: "Done" },
+        {
+          type: "data-inference-complete",
+          data: { model: "vertex::gemini-2.5-flash" },
+        },
+      ],
+    });
+    expect(view.blocks).toEqual([
+      { kind: "text", id: "1", text: "Done" },
+      {
+        kind: "runtime-metadata",
+        id: "runtime-metadata",
+        parts: [
+          { type: "data-run-info", data: { runId: "run-1" } },
+          {
+            type: "data-inference-complete",
+            data: { model: "vertex::gemini-2.5-flash" },
+          },
+        ],
+      },
+    ]);
+  });
+
   it("ignores garbage entries without crashing", () => {
     const view = viewMessage({ parts: [null, undefined, 42, "string"] });
     // None of these have a valid `type` string, so they all turn into

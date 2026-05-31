@@ -233,9 +233,11 @@ config write.
 `capabilities.admin_assistant.bound_tools` lists the assistant's locked
 admin-only tools for UI comparison. Those tools are directly bound by
 `/v1/admin/assistant/runs`, are not returned in `capabilities.tools`, and cannot
-be assigned to normal AgentSpecs. The assistant itself is not stored as a
-normal registry agent; when `admin_assistant.config.model_id` is unset, the
-server selects the first configured model and reports that selection as
+be assigned to normal AgentSpecs. The built-in tool set can read platform
+capabilities, create/publish an AgentSpec, create a draft without publishing,
+and validate a draft. The assistant itself is not stored as a normal registry
+agent; when `admin_assistant.config.model_id` is unset, the server selects the
+first provider-backed configured model and reports that selection as
 `capabilities.admin_assistant.model_id`.
 
 Current built-in namespaces:

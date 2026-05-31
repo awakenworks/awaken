@@ -14,6 +14,7 @@ import {
   viewMessage,
   type AssistantBlock,
   type AssistantBlockTone,
+  type RuntimeDataPart,
 } from "@/lib/assistant-message";
 
 const suggestions = [
@@ -27,7 +28,7 @@ export function AssistantPage() {
   return <AssistantChatPanel variant="page" />;
 }
 
-export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "drawer" }) {
+export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "floating" }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState("");
   const transport = useMemo(
@@ -74,7 +75,7 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "d
     // the input is always anchored at the visible bottom — `h-full`
     // collapses to `auto` whenever an ancestor stops propagating a
     // definite height, hiding the input below the fold.
-    <div className={variant === "drawer" ? "flex h-full flex-col" : "flex h-[calc(100dvh-3rem)] flex-col"}>
+    <div className={variant === "floating" ? "flex h-full flex-col" : "flex h-[calc(100dvh-3rem)] flex-col"}>
       <header className="border-b border-line bg-surface px-6 py-4">
         <h2 className="text-lg font-semibold text-fg-strong">
           Admin Assistant
@@ -84,7 +85,7 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "d
           platform capabilities, drafts AgentSpecs, and validates settings with
           locked admin-only tools.
         </p>
-        {variant === "page" ? <AssistantSettingsPanel /> : null}
+        <AssistantSettingsPanel compact={variant === "floating"} />
       </header>
 
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-auto p-6">
@@ -176,7 +177,7 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "d
   );
 }
 
-function AssistantSettingsPanel() {
+function AssistantSettingsPanel({ compact = false }: { compact?: boolean }) {
   const capabilitiesQuery = useCapabilitiesQuery();
   const [config, setConfig] = useState<AdminAssistantConfig | null>(null);
   const [draft, setDraft] = useState<AdminAssistantConfig | null>(null);
@@ -234,7 +235,7 @@ function AssistantSettingsPanel() {
         Prompt policy and locked tools
       </summary>
       <div className="space-y-3 border-t border-line px-3 py-3">
-        <div className="grid gap-3 md:grid-cols-[16rem,1fr]">
+        <div className={compact ? "grid gap-3" : "grid gap-3 md:grid-cols-[16rem,1fr]"}>
           <label className="text-xs font-medium text-fg-soft">
             Assistant model
             <select
@@ -270,7 +271,7 @@ function AssistantSettingsPanel() {
                 )
               }
               disabled={!draft || loading || saving}
-              rows={5}
+              rows={compact ? 3 : 5}
               placeholder="Organization-specific preferences for how the Admin Assistant should draft agents."
               className="mt-1 w-full rounded-sm border border-line-strong bg-surface px-3 py-2 font-mono text-xs text-fg outline-none focus:border-fg"
             />
@@ -324,6 +325,8 @@ function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }
           ── new step ──
         </div>
       );
+    case "runtime-metadata":
+      return <RuntimeMetadataView parts={block.parts} />;
     case "tool-call":
       return <ToolCallView block={block} />;
     case "unknown":
@@ -338,6 +341,87 @@ function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }
         </div>
       );
   }
+}
+
+function RuntimeMetadataView({ parts }: { parts: RuntimeDataPart[] }) {
+  const runInfo = parts.find((part) => part.type === "data-run-info");
+  const inference = [...parts].reverse().find((part) => part.type === "data-inference-complete");
+  const snapshots = parts.filter((part) => part.type === "data-state-snapshot");
+  const latestState = snapshots.at(-1);
+  const inferenceData = asRecord(inference?.data);
+  const usage = asRecord(inferenceData.usage);
+  const lifecycle = asRecord(
+    asRecord(asRecord(latestState?.data).extensions)?.["__runtime.run_lifecycle"],
+  );
+  const summary = [
+    typeof lifecycle.status === "string" ? lifecycle.status : null,
+    typeof inferenceData.model === "string" ? inferenceData.model : null,
+    typeof usage.total_tokens === "number" ? `${usage.total_tokens} tokens` : null,
+    typeof inferenceData.durationMs === "number" ? formatDuration(inferenceData.durationMs) : null,
+  ].filter(Boolean);
+
+  return (
+    <details className="rounded-sm border border-line bg-soft px-3 py-2 text-xs text-fg-soft">
+      <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-fg-soft">
+        Runtime metadata{summary.length > 0 ? ` · ${summary.join(" · ")}` : ""}
+      </summary>
+      <dl className="mt-2 grid gap-1.5">
+        <MetadataRow label="Run" value={asRecord(runInfo?.data).runId} />
+        <MetadataRow label="Thread" value={asRecord(runInfo?.data).threadId} />
+        <MetadataRow label="Model" value={inferenceData.model} />
+        <MetadataRow label="Duration" value={summaryValue(inferenceData.durationMs, formatDuration)} />
+        <MetadataRow label="Usage" value={formatUsage(usage)} />
+        <MetadataRow label="State snapshots" value={snapshots.length} />
+      </dl>
+      <details className="mt-2 rounded-sm border border-line bg-code-bg">
+        <summary className="cursor-pointer px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-code-fg/70">
+          JSON data
+        </summary>
+        <pre className="max-h-48 overflow-auto border-t border-line p-2 font-mono text-[11px] leading-5 text-code-fg">
+          {previewPayload(parts)}
+        </pre>
+      </details>
+    </details>
+  );
+}
+
+function MetadataRow({ label, value }: { label: string; value: unknown }) {
+  if (value === undefined || value === null || value === "") return null;
+  return (
+    <div className="grid grid-cols-[5rem_1fr] gap-2">
+      <dt className="text-fg-soft">{label}</dt>
+      <dd className="min-w-0 break-all font-mono text-[11px] text-fg-strong">{String(value)}</dd>
+    </div>
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function summaryValue<T>(value: unknown, formatter: (value: T) => string): string | undefined {
+  return value === undefined || value === null ? undefined : formatter(value as T);
+}
+
+function formatDuration(value: unknown): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  if (value >= 1000) return `${(value / 1000).toFixed(2)}s`;
+  return `${Math.round(value)}ms`;
+}
+
+function formatUsage(usage: Record<string, unknown>): string | undefined {
+  const total = usage.total_tokens;
+  const prompt = usage.prompt_tokens;
+  const completion = usage.completion_tokens;
+  if (typeof total === "number") {
+    const pieces = [`${total} total`];
+    if (typeof prompt === "number") pieces.push(`${prompt} prompt`);
+    if (typeof completion === "number") pieces.push(`${completion} completion`);
+    return pieces.join(" · ");
+  }
+  return undefined;
 }
 
 const TONE_CLASS: Record<AssistantBlockTone, string> = {

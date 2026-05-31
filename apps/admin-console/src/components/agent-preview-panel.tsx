@@ -1,6 +1,14 @@
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, type FileUIPart } from "ai";
 import { useChat, type UIMessage } from "@ai-sdk/react";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { agentPreviewRunUrl, type AgentSpec } from "@/lib/config-api";
 import { adminAuthHeaders } from "@/lib/api/http";
 import {
@@ -17,16 +25,25 @@ interface AgentPreviewPanelProps {
 
 type PreviewDisplayMode = "readable" | "json";
 
+const SANDBOX_ACCEPTED_MEDIA =
+  "image/*,audio/*,video/*,application/pdf,text/plain,text/markdown,application/json";
+const MAX_SANDBOX_FILES = 4;
+const MAX_SANDBOX_TOTAL_BYTES = 8 * 1024 * 1024;
+
 export function AgentPreviewPanel({
   draft,
   traceAgentId: rawTraceAgentId,
 }: AgentPreviewPanelProps) {
   const [sessionId, setSessionId] = useState(() => makePreviewSessionId());
   const [input, setInput] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [preparingFiles, setPreparingFiles] = useState(false);
   const [lastLatencyMs, setLastLatencyMs] = useState<number | null>(null);
   const [tracesOpen, setTracesOpen] = useState(false);
   const [displayMode, setDisplayMode] = useState<PreviewDisplayMode>("readable");
   const sendStartedAtRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const previewDraft = normalizePreviewAgent(draft);
   const traceAgentId = rawTraceAgentId?.trim() ?? "";
   const canShowRecentRuns = traceAgentId.length > 0;
@@ -67,7 +84,8 @@ export function AgentPreviewPanel({
   const blockedReason = previewDraft.model_id.trim()
     ? null
     : "Select a model before starting a preview conversation.";
-  const busy = status === "submitted" || status === "streaming";
+  const busy = preparingFiles || status === "submitted" || status === "streaming";
+  const hasDraftInput = input.trim().length > 0 || selectedFiles.length > 0;
 
   useEffect(() => {
     if (!busy && sendStartedAtRef.current !== null) {
@@ -76,24 +94,63 @@ export function AgentPreviewPanel({
     }
   }, [busy]);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = input.trim();
-    if (!text || busy || blockedReason) {
+    if ((!text && selectedFiles.length === 0) || busy || blockedReason) {
       return;
     }
     sendStartedAtRef.current = Date.now();
     setLastLatencyMs(null);
-    sendMessage({ text });
-    setInput("");
+    setUploadError(null);
+    setPreparingFiles(true);
+    try {
+      const files = await filesToFileParts(selectedFiles);
+      const payload =
+        files.length > 0
+          ? text
+            ? { text, files }
+            : { files }
+          : { text };
+      setInput("");
+      clearSelectedFiles();
+      await sendMessage(payload);
+    } catch (error) {
+      sendStartedAtRef.current = null;
+      setUploadError(safeErrorMessage(error));
+    } finally {
+      setPreparingFiles(false);
+    }
   }
 
   function handleReset() {
     setSessionId(makePreviewSessionId());
     setMessages([]);
     setInput("");
+    clearSelectedFiles();
+    setUploadError(null);
     sendStartedAtRef.current = null;
     setLastLatencyMs(null);
+  }
+
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    const validationError = validateSandboxFiles(files);
+    if (validationError) {
+      setUploadError(validationError);
+      setSelectedFiles([]);
+      event.target.value = "";
+      return;
+    }
+    setUploadError(null);
+    setSelectedFiles(files);
+  }
+
+  function clearSelectedFiles() {
+    setSelectedFiles([]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   }
 
   return (
@@ -185,6 +242,12 @@ export function AgentPreviewPanel({
         </div>
       ) : null}
 
+      {uploadError ? (
+        <div className="mt-4 rounded-sm border border-tone-error/30 bg-tone-error/10 px-4 py-3 text-sm text-tone-error">
+          {uploadError}
+        </div>
+      ) : null}
+
       <div className="mt-2 flex min-h-[26rem] flex-col overflow-hidden rounded-lg border border-line bg-soft">
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {messages.length === 0 ? (
@@ -236,13 +299,51 @@ export function AgentPreviewPanel({
             placeholder="Type a message…"
             className="w-full rounded-sm border border-line-strong bg-surface px-4 py-3 text-sm text-fg outline-none transition focus:border-fg disabled:bg-muted disabled:text-fg-soft"
           />
+          {selectedFiles.length > 0 ? (
+            <div
+              data-testid="sandbox-selected-files"
+              className="mt-3 flex flex-wrap items-center gap-2 rounded-sm border border-line bg-soft px-3 py-2 text-xs text-fg-soft"
+            >
+              {selectedFiles.map((file) => (
+                <span
+                  key={`${file.name}:${file.size}:${file.lastModified}`}
+                  className="max-w-full truncate rounded-pill border border-line bg-surface px-2 py-1"
+                  title={`${file.name} · ${file.type || "application/octet-stream"} · ${formatBytes(file.size)}`}
+                >
+                  {file.name || "attachment"} · {formatBytes(file.size)}
+                </span>
+              ))}
+              <button
+                type="button"
+                onClick={clearSelectedFiles}
+                disabled={busy}
+                className="ml-auto text-xs font-medium text-fg-soft transition hover:text-fg-strong disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Clear
+              </button>
+            </div>
+          ) : null}
           <div className="mt-3 flex items-center justify-between gap-3">
-            <div title={`Session ID: ${sessionId}`} className="font-mono text-[10px] text-fg-faint">
-              session · {sessionId.slice(-8)}
+            <div className="flex min-w-0 items-center gap-3">
+              <label className="cursor-pointer rounded-sm border border-line bg-soft px-3 py-2 text-xs font-medium text-fg-soft transition hover:border-line-strong hover:text-fg-strong">
+                Attach
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={SANDBOX_ACCEPTED_MEDIA}
+                  multiple
+                  disabled={Boolean(blockedReason) || busy}
+                  onChange={handleFileChange}
+                  className="sr-only"
+                />
+              </label>
+              <div title={`Session ID: ${sessionId}`} className="font-mono text-[10px] text-fg-faint">
+                session · {sessionId.slice(-8)}
+              </div>
             </div>
             <button
               type="submit"
-              disabled={Boolean(blockedReason) || busy || input.trim().length === 0}
+              disabled={Boolean(blockedReason) || busy || !hasDraftInput}
               className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-text transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "Running..." : "Send"}
@@ -329,6 +430,10 @@ export function MessageParts({ message }: { message: UIMessage }) {
           <ReadableText key={index} text={part.text} />,
         );
       }
+      continue;
+    }
+    if (part.type === "file") {
+      rendered.push(<FileAttachment key={index} part={part as FilePart} />);
       continue;
     }
     if (part.type === "reasoning") {
@@ -488,6 +593,55 @@ interface ToolPart {
   errorText?: string;
 }
 
+interface FilePart {
+  type: "file";
+  url?: string;
+  mediaType?: string;
+  filename?: string;
+}
+
+function FileAttachment({ part }: { part: FilePart }) {
+  const mediaType = part.mediaType ?? inferMediaTypeFromDataUrl(part.url) ?? "application/octet-stream";
+  const filename = part.filename?.trim() || mediaType;
+  const url = typeof part.url === "string" ? part.url : "";
+  const canRender = url.length > 0;
+  const isImage = mediaType.startsWith("image/");
+  const isAudio = mediaType.startsWith("audio/");
+  const isVideo = mediaType.startsWith("video/");
+
+  return (
+    <div
+      data-testid="preview-file-part"
+      className="rounded-sm border border-line bg-soft p-2 text-xs text-fg-soft"
+    >
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate font-medium text-fg-strong">{filename}</div>
+          <div className="font-mono text-[10px] text-fg-faint">{mediaType}</div>
+        </div>
+        <span className="rounded-pill bg-muted px-2 py-0.5 font-mono text-[10px] text-fg-soft">
+          {fileKindLabel(mediaType)}
+        </span>
+      </div>
+      {canRender && isImage ? (
+        <img
+          src={url}
+          alt={filename}
+          className="mt-2 max-h-64 max-w-full rounded-sm border border-line object-contain"
+        />
+      ) : canRender && isAudio ? (
+        <audio src={url} controls className="mt-2 w-full" />
+      ) : canRender && isVideo ? (
+        <video src={url} controls className="mt-2 max-h-64 w-full rounded-sm border border-line" />
+      ) : (
+        <div className="mt-2 break-all font-mono text-[11px] text-fg-faint">
+          {url ? compactDataUrl(url) : "(no file URL)"}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolInvocation({ part }: { part: ToolPart }) {
   const name = part.toolName ?? part.type.replace(/^tool-/, "") ?? "tool";
   const state = part.state ?? "input-streaming";
@@ -550,7 +704,7 @@ function StructuredPayload({
   if (value === undefined) {
     return <div className="mt-1 text-xs italic text-fg-faint">{emptyLabel}</div>;
   }
-  const displayValue = redactSecretsForDisplay(value);
+  const displayValue = sanitizePreviewValue(value);
   const summary = renderValueSummary(displayValue);
   const raw = formatJson(displayValue);
   const isStructured =
@@ -693,6 +847,22 @@ function isRuntimeDataPart(part: { type: string; data?: unknown }): part is Runt
   );
 }
 
+function inferMediaTypeFromDataUrl(url: string | undefined): string | undefined {
+  if (!url?.startsWith("data:")) return undefined;
+  const marker = url.indexOf(";base64,");
+  if (marker < 5) return undefined;
+  return url.slice(5, marker);
+}
+
+function fileKindLabel(mediaType: string): string {
+  if (mediaType.startsWith("image/")) return "image";
+  if (mediaType.startsWith("audio/")) return "audio";
+  if (mediaType.startsWith("video/")) return "video";
+  if (mediaType === "application/pdf") return "pdf";
+  if (mediaType.startsWith("text/")) return "text";
+  return "file";
+}
+
 function isScriptedResponseText(text: string): boolean {
   return /^Scripted response to:/i.test(text.trim());
 }
@@ -724,6 +894,80 @@ function formatUsage(usage: Record<string, unknown>): string | undefined {
     return pieces.join(" · ");
   }
   return undefined;
+}
+
+function validateSandboxFiles(files: File[]): string | null {
+  if (files.length > MAX_SANDBOX_FILES) {
+    return `Attach at most ${MAX_SANDBOX_FILES} files in one sandbox turn.`;
+  }
+  const total = files.reduce((sum, file) => sum + file.size, 0);
+  if (total > MAX_SANDBOX_TOTAL_BYTES) {
+    return `Attachments are limited to ${formatBytes(MAX_SANDBOX_TOTAL_BYTES)} per sandbox turn.`;
+  }
+  return null;
+}
+
+async function filesToFileParts(files: File[]): Promise<FileUIPart[]> {
+  return Promise.all(
+    files.map(async (file) => ({
+      type: "file" as const,
+      mediaType: file.type || "application/octet-stream",
+      filename: file.name || undefined,
+      url: await fileToDataUrl(file),
+    })),
+  );
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (event) => resolve(String(event.target?.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read attachment."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function sanitizePreviewValue(value: unknown): unknown {
+  return compactDataUrls(redactSecretsForDisplay(value));
+}
+
+function compactDataUrls(value: unknown): unknown {
+  if (typeof value === "string") {
+    return compactDataUrl(redactSecretString(value));
+  }
+  if (Array.isArray(value)) {
+    return value.map(compactDataUrls);
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        compactDataUrls(item),
+      ]),
+    );
+  }
+  return value;
+}
+
+function compactDataUrl(value: string): string {
+  if (!value.startsWith("data:") || value.length <= 160) {
+    return value;
+  }
+  const comma = value.indexOf(",");
+  const prefix = comma > 0 ? value.slice(0, comma + 1) : "data:...,";
+  return `${prefix}[base64 ${formatBytes(estimateBase64Bytes(value.slice(comma + 1)))}]`;
+}
+
+function estimateBase64Bytes(data: string): number {
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((data.length * 3) / 4) - padding);
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 const TOOL_STATE_LABEL: Record<string, string> = {
@@ -767,6 +1011,9 @@ function isDisplayablePart(part: unknown): boolean {
   if (typed.type === "text" || typed.type === "reasoning") {
     return typeof typed.text === "string" && typed.text.length > 0;
   }
+  if (typed.type === "file") {
+    return true;
+  }
   if (typed.type === "dynamic-tool" || typed.type.startsWith("tool-")) {
     return true;
   }
@@ -793,11 +1040,11 @@ function formatJson(value: unknown): string {
   // scrubbing. A tool can return a plain-string payload (`"Authorization:
   // Bearer sk-..."`) or a structured object; without this branch the
   // object case was redacted by key but the string case rendered raw.
-  if (typeof value === "string") return redactSecretString(value);
+  if (typeof value === "string") return compactDataUrl(redactSecretString(value));
   // R10 #5 — tool inputs/outputs can carry API keys, authorization
   // headers, cookies, JWTs etc. Same redaction pipeline used by audit /
   // trace / diff so a credential never lands in the preview DOM.
-  const redacted = redactSecretsForDisplay(value);
+  const redacted = sanitizePreviewValue(value);
   try {
     return JSON.stringify(redacted, null, 2);
   } catch {

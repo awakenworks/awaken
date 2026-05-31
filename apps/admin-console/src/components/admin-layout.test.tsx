@@ -22,8 +22,8 @@ vi.mock("./command-palette", () => ({
   CommandPaletteProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-vi.mock("./admin-assistant-drawer", () => ({
-  AdminAssistantDrawer: () => <div data-testid="admin-assistant-drawer" />,
+vi.mock("./admin-assistant-bubble", () => ({
+  AdminAssistantBubble: () => <button type="button">assistant bubble</button>,
 }));
 
 function renderLayout(initialEntry = "/") {
@@ -74,5 +74,11 @@ describe("AdminLayout", () => {
     fireEvent.click(screen.getByRole("link", { name: "go next" }));
     expect(await screen.findByText("next page")).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("complementary").getAttribute("data-open")).toBe("false"));
+  });
+
+  it("renders the global assistant bubble outside the sidebar", () => {
+    renderLayout();
+
+    expect(screen.getByRole("button", { name: "assistant bubble" })).toBeTruthy();
   });
 });

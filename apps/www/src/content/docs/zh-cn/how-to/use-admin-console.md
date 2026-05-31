@@ -58,8 +58,8 @@ data 生成的静态文档图；实际控制台会从你的后端读取相同接
 | 分组 | 内容 |
 |---|---|
 | **Agents** | Agents：创建/编辑 agent specs，并进入 per-agent dashboard |
-| **Resources** | Models、MCP Servers、Skills、Tools：runtime 依赖与发现出来的能力 |
-| **Infrastructure** | Providers：凭据与上游模型连接 |
+| **Resources** | MCP Servers、Skills、Tools：runtime 依赖与发现出来的能力 |
+| **Infrastructure** | Providers 和 Models：上游连接、稳定 model id 与能力 metadata |
 | **Observe** | Dashboard、Audit Log、Datasets、Eval Runs、Eval Reports：运行视图与评测记录 |
 | **Assistant** | AI Assistant：基于 live config 运行真实 agent 的聊天界面 |
 
@@ -83,7 +83,8 @@ data 生成的静态文档图；实际控制台会从你的后端读取相同接
 5. 修改后底部 save bar 会出现：
    - **Validate** 调用 `POST /v1/config/agents/validate`，只校验不保存。
    - **Save** / **Save & Publish** 持久化并 apply；下一次请求使用新 spec。
-6. 右侧 preview chat 调用 `POST /v1/ai-sdk/agent-previews/runs`，可以在保存前运行草稿。
+6. 右侧 preview chat 调用 `POST /v1/ai-sdk/agent-previews/runs`，可以在保存前运行草稿；文本和上传的 image/audio/video/PDF/text 文件会作为 AI SDK message parts 发送给未保存 spec。
+7. 保存后，sandbox 下方会出现 **Frontend integration** 卡片，展示 agent-scoped AI SDK / AG-UI routes，并链接到前端集成、协议和 HTTP API 文档。
 
 ## 测试 Provider
 

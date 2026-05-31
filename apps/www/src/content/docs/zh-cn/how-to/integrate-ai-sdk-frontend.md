@@ -86,6 +86,7 @@ async fn main() {
 AI SDK v6 相关路由：
 
 - `POST /v1/ai-sdk/chat`
+- `POST /v1/ai-sdk/agents/:agent_id/runs`
 - `GET /v1/ai-sdk/chat/:thread_id/stream`
 - `GET /v1/ai-sdk/threads/:thread_id/stream`
 - `GET /v1/ai-sdk/threads/:thread_id/replay`
@@ -104,6 +105,9 @@ npm install ai @ai-sdk/react
 3. 在前端里使用 `useChat`。AI SDK v6 的 `useChat` 返回
    `{ messages, sendMessage, status, ... }`，请求通过 transport 发出，因此
    awaken 后端 URL 写在 `DefaultChatTransport` 里：
+普通聊天前端不需要额外协议适配或自定义 transport adapter。Awaken 输出标准
+AI SDK stream parts；`data-*` parts 只承载 run status、trace 等可选平台
+metadata，界面不展示这些细节时可以忽略。
 
 ```tsx
 import { useState } from "react";
@@ -144,6 +148,20 @@ export default function Chat() {
   );
 }
 ```
+
+如果保存后的 Agent 已经通过 Admin Console 的 sandbox 验证，可以直接复制
+**Frontend integration** 卡片里的 agent-scoped route：
+
+```tsx
+transport: new DefaultChatTransport({
+  api: "http://localhost:3000/v1/ai-sdk/agents/support-agent/runs",
+})
+```
+
+多模态输入使用标准 AI SDK `file` part。先在模型配置里标记对应 input
+modalities，再用 `sendMessage({ text, files })` 传 `FileList` 或
+`FileUIPart[]`；Awaken 会在推理前把 image/audio/video/PDF/text parts 转成
+runtime `ContentBlock`。
 
 完整模式（自定义 transport header、自动续发、带类型的 tool parts）见
 [`examples/ai-sdk-starter/src/hooks/use-chat-session.ts`](../../../../examples/ai-sdk-starter/src/hooks/use-chat-session.ts)。

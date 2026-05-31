@@ -3,7 +3,7 @@ title: "AI SDK v6 协议"
 description: "AI SDK v6 适配层会把 Awaken 的 AgentEvent 流转换成 Vercel AI SDK v6 UI Message Stream 格式。这样 useChat、useAssistant 等前端无需自定义解析器就能直接消费 Awaken 的输出。"
 ---
 
-AI SDK v6 适配层会把 Awaken 的 `AgentEvent` 流转换成 [Vercel AI SDK v6 UI Message Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol) 格式。这样 `useChat`、`useAssistant` 等前端无需自定义解析器就能直接消费 Awaken 的输出。
+AI SDK v6 适配层会把 Awaken 的 `AgentEvent` 流转换成 [Vercel AI SDK v6 UI Message Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol) 格式。这样 `useChat`、`useAssistant` 等前端无需自定义解析器或自定义 transport adapter 就能直接消费 Awaken 的输出。Awaken 自带的 `data-*` parts 是增强控制台使用的可选 metadata；普通聊天 UI 可以忽略。
 
 ## 入口
 
@@ -15,7 +15,13 @@ POST /v1/ai-sdk/chat
 
 ```json
 {
-  "messages": [{ "role": "user", "content": "Hello" }],
+  "messages": [
+    {
+      "id": "msg-1",
+      "role": "user",
+      "parts": [{ "type": "text", "text": "Hello" }]
+    }
+  ],
   "threadId": "optional-thread-id",
   "agentId": "optional-agent-id"
 }
@@ -23,9 +29,13 @@ POST /v1/ai-sdk/chat
 
 | 字段 | 类型 | 必填 | 说明 |
 |-------|------|------|------|
-| `messages` | `AiSdkMessage[]` | 是 | 输入消息。内容可以是字符串或 content parts 数组。 |
+| `messages` | `UIMessage[]` | 是 | AI SDK v6 UI messages。`text` 和 `file` parts 会转成 runtime content；tool/data/source parts 是 UI 状态，不会发给模型。 |
 | `threadId` | `string` | 否 | 继续已有 thread。省略时会创建新 thread。 |
 | `agentId` | `string` | 否 | 指定 agent。省略时使用默认 agent。 |
+
+`file` parts 可以使用 hosted URL 或 Data URL。Image、audio、video、PDF 和
+text-like document 会转成 runtime `ContentBlock`。如果启用了 modalities
+校验，所选模型必须声明兼容的 input modalities。
 
 ### 响应
 

@@ -14,6 +14,7 @@ const STATUS_DOT: Record<"ok" | "warn" | "error" | "neutral", string> = {
   error: "bg-state-blocked",
   neutral: "bg-fg-faint",
 };
+const GITHUB_URL = "https://github.com/AwakenWorks/awaken";
 
 export function AdminTopbar({
   onOpenDrawer,
@@ -107,6 +108,17 @@ export function AdminTopbar({
         <LocaleToggle />
 
         <ThemeToggle />
+
+        <a
+          href={GITHUB_URL}
+          target="_blank"
+          rel="noreferrer"
+          aria-label="Open Awaken on GitHub"
+          title="Open Awaken on GitHub"
+          className="hidden h-9 items-center rounded-sm border border-line bg-soft px-2.5 text-xs font-medium text-fg-soft transition-colors hover:border-line-strong hover:text-fg md:inline-flex"
+        >
+          GitHub
+        </a>
 
         <button
           type="button"

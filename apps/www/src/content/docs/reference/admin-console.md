@@ -71,9 +71,13 @@ wired, the corresponding surface shows a disabled or unavailable notice.
    timeout, and provider-specific options. Use **Test** before relying on it.
 3. **Configure a model.** Models give agents a stable `model_id` and describe
    the upstream model, modalities, context limits, pricing, and capabilities.
+   Use model pools through the config API when you need weighted routing,
+   sticky selection, or fallback across multiple models.
 4. **Unlock Admin Assistant.** The built-in Admin Assistant becomes available
    after the first provider-backed model is configured. Its tools are locked by
-   the server and do not appear in the normal tool registry.
+   the server and do not appear in the normal tool registry. It can read
+   platform capabilities, create/publish an AgentSpec, draft without publishing,
+   and validate a draft.
 5. **MCP-only setups are full configuration mode.** You can configure MCP
    servers and assign their tools to agents, but chat and preview surfaces still
    need a model executor.
@@ -139,6 +143,7 @@ per request with `agent_id`. Use the agent-scoped route when a UI is bound to
 one saved agent. See [AI SDK frontend integration](/awaken/how-to/integrate-ai-sdk-frontend/),
 [AI SDK v6 reference](/awaken/reference/protocols/ai-sdk-v6/), and
 [CopilotKit / AG-UI integration](/awaken/how-to/integrate-copilotkit-ag-ui/).
+For route-level details, use the [HTTP API reference](/awaken/reference/http-api/).
 
 ## Operate, Trace, And Evaluate
 

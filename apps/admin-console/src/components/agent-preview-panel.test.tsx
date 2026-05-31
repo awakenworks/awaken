@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UIMessage } from "@ai-sdk/react";
 import {
   AgentPreviewPanel,
@@ -369,6 +369,26 @@ describe("MessageParts — AI SDK part states (R3 #5)", () => {
     expect(screen.queryByTestId("message-unknown-parts")).toBeNull();
   });
 
+  it("renders file parts as readable multimodal attachments", () => {
+    render(
+      <MessageParts
+        message={uiMessage([
+          {
+            type: "file",
+            mediaType: "image/png",
+            filename: "chart.png",
+            url: "data:image/png;base64,iVBORw0KGgo=",
+          },
+        ])}
+      />,
+    );
+
+    const filePart = screen.getByTestId("preview-file-part");
+    expect(filePart.textContent ?? "").toContain("chart.png");
+    expect(filePart.textContent ?? "").toContain("image/png");
+    expect(screen.queryByTestId("message-unknown-parts")).toBeNull();
+  });
+
   it("warns when a readable text response comes from the scripted provider", () => {
     render(
       <MessageParts message={uiMessage([{ type: "text", text: "Scripted response to: hi" }])} />,
@@ -467,6 +487,50 @@ describe("AgentPreviewPanel — redaction and trace gating", () => {
     expect(container.textContent ?? "").not.toContain("sk-real-secret-value");
     expect(container.textContent ?? "").toContain("Authorization: ***");
   });
+
+  it("sends selected sandbox files as AI SDK file parts", async () => {
+    render(<AgentPreviewPanel draft={agentDraft()} />);
+
+    const file = new File(["hello"], "note.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByLabelText("Attach"), {
+      target: { files: [file] },
+    });
+    expect(screen.getByTestId("sandbox-selected-files").textContent ?? "").toContain("note.txt");
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "summarize this" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(previewHarness.sendMessage).toHaveBeenCalledTimes(1));
+    const payload = previewHarness.sendMessage.mock.calls[0][0] as {
+      text?: string;
+      files?: Array<{ type: string; mediaType: string; filename?: string; url: string }>;
+    };
+    expect(payload.text).toBe("summarize this");
+    expect(payload.files?.[0]).toMatchObject({
+      type: "file",
+      mediaType: "text/plain",
+      filename: "note.txt",
+    });
+    expect(payload.files?.[0]?.url).toMatch(/^data:text\/plain;base64,/);
+  });
+
+  it("allows a file-only sandbox turn", async () => {
+    render(<AgentPreviewPanel draft={agentDraft()} />);
+
+    fireEvent.change(screen.getByLabelText("Attach"), {
+      target: { files: [new File(["img"], "image.png", { type: "image/png" })] },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(previewHarness.sendMessage).toHaveBeenCalledTimes(1));
+    const payload = previewHarness.sendMessage.mock.calls[0][0] as {
+      text?: string;
+      files?: Array<{ mediaType: string; filename?: string }>;
+    };
+    expect(payload.text).toBeUndefined();
+    expect(payload.files?.[0]).toMatchObject({ mediaType: "image/png", filename: "image.png" });
+  });
 });
 
 describe("hasRenderableContent (R3 #6)", () => {
@@ -513,6 +577,14 @@ describe("hasRenderableContent (R3 #6)", () => {
 
   it("returns true for a real text part", () => {
     expect(hasRenderableContent(uiMessage([{ type: "text", text: "hi" }]))).toBe(true);
+  });
+
+  it("returns true for a file part", () => {
+    expect(
+      hasRenderableContent(
+        uiMessage([{ type: "file", mediaType: "image/png", url: "data:image/png;base64,AA==" }]),
+      ),
+    ).toBe(true);
   });
 });
 

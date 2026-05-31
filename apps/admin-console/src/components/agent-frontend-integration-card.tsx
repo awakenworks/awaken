@@ -18,8 +18,8 @@ export function AgentFrontendIntegrationCard({ agentId }: { agentId: string | un
       </div>
       <h2 className="mt-2 text-base font-semibold text-fg-strong">Connect this agent</h2>
       <p className="mt-2 text-sm leading-6 text-fg-soft">
-        Saved agents can be called from frontend tools through protocol-specific run routes. Use
-        the agent-scoped route when this UI should always talk to{" "}
+        After the sandbox conversation behaves as expected, call the saved agent through these
+        protocol routes. Use the agent-scoped route when the UI or API client should always talk to{" "}
         <span className="font-mono text-fg">{id}</span>.
       </p>
       <div className="mt-3 space-y-2">
@@ -50,6 +50,14 @@ export function AgentFrontendIntegrationCard({ agentId }: { agentId: string | un
           className="rounded-sm border border-line bg-soft px-3 py-1.5 text-xs font-medium text-fg hover:bg-muted"
         >
           Endpoint reference
+        </a>
+        <a
+          href={`${DOCS_BASE}/reference/http-api/`}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded-sm border border-line bg-soft px-3 py-1.5 text-xs font-medium text-fg hover:bg-muted"
+        >
+          HTTP API
         </a>
       </div>
     </section>

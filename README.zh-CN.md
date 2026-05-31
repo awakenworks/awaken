@@ -203,8 +203,8 @@ serve(state).await?;
 可选的 admin console 读取 `/v1/capabilities`、写入 `/v1/config/*`，在浏览器里
 管理 agents、models、providers、MCP servers 和插件配置 section。它还提供
 server-managed Admin Assistant（`/v1/admin/assistant/runs`）：该助手可以读取平台能力、
-生成 AgentSpec 草稿并校验配置，但绑定的是锁定的 admin-only 工具，不会进入普通 tool
-registry。配置第一个 provider-backed model 后它会自动启用。插件通过同一套 `PluginConfigKey` 暴露 schema，因此保存 `permission`、
+创建并发布 AgentSpec、只生成草稿、校验配置，但绑定的是锁定的 admin-only 工具，不会进入普通
+tool registry。配置第一个 provider-backed model 后它会自动启用。插件通过同一套 `PluginConfigKey` 暴露 schema，因此保存 `permission`、
 `reminder`、`generative-ui`、`deferred_tools` 等 section 后会发布新的 registry snapshot，
 对下一次 `/v1/runs` 立即生效。BigModel 等 OpenAI 兼容服务使用 `openai`
 adapter + 对应 `base_url`；非密的扩展项放到 `ProviderSpec.adapter_options`。

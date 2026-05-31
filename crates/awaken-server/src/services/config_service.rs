@@ -301,8 +301,14 @@ impl ConfigService {
             .map_err(|error| {
                 ConfigServiceError::Apply(format!("failed to serialize model spec: {error}"))
             })?;
-        let admin_assistant_model_id =
-            crate::admin_assistant::select_admin_assistant_model_id(registries.models.as_ref());
+        let admin_assistant_config = crate::admin_assistant::load_config(&self.state.config)
+            .await
+            .map_err(|error| ConfigServiceError::Apply(error.to_string()))?;
+        let admin_assistant_model_id = crate::admin_assistant::resolve_admin_assistant_model_id(
+            registries.models.as_ref(),
+            registries.providers.as_ref(),
+            admin_assistant_config.model_id.as_deref(),
+        );
 
         let providers = registries
             .providers

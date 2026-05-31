@@ -18,6 +18,12 @@ describe("AgentFrontendIntegrationCard", () => {
     expect(screen.getByRole("link", { name: "AI SDK guide" }).getAttribute("href")).toBe(
       "https://awakenworks.github.io/awaken/how-to/integrate-ai-sdk-frontend/",
     );
+    expect(screen.getByRole("link", { name: "HTTP API" }).getAttribute("href")).toBe(
+      "https://awakenworks.github.io/awaken/reference/http-api/",
+    );
+    expect(screen.getByTestId("agent-frontend-integration-card").textContent).toContain(
+      "After the sandbox conversation behaves as expected",
+    );
   });
 
   it("stays hidden until an agent has been saved", () => {

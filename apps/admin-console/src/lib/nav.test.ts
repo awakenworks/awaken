@@ -22,13 +22,12 @@ describe("navGroups (IA v2.4 — topology layers)", () => {
     }
   });
 
-  it("groups follow the agents → resources → infrastructure → observe → assistant order", () => {
+  it("groups follow the agents → resources → infrastructure → observe order", () => {
     expect(navGroups.map((g) => g.label)).toEqual([
       "Agents",
       "Resources",
       "Infrastructure",
       "Observe",
-      "Assistant",
     ]);
   });
 
@@ -38,6 +37,10 @@ describe("navGroups (IA v2.4 — topology layers)", () => {
 
   it("Providers sits in Infrastructure, not Resources", () => {
     expect(navIndex["/providers"].group).toBe("Infrastructure");
+  });
+
+  it("Models sits in Infrastructure with Providers", () => {
+    expect(navIndex["/models"].group).toBe("Infrastructure");
   });
 });
 
@@ -100,6 +103,20 @@ describe("resolveBreadcrumbs", () => {
     expect(plain(resolveBreadcrumbs("/providers"))).toEqual([
       { label: "Infrastructure" },
       { label: "Providers" },
+    ]);
+  });
+
+  it("models → Infrastructure / Models", () => {
+    expect(plain(resolveBreadcrumbs("/models"))).toEqual([
+      { label: "Infrastructure" },
+      { label: "Models" },
+    ]);
+  });
+
+  it("assistant route keeps breadcrumbs without a sidebar nav item", () => {
+    expect(plain(resolveBreadcrumbs("/assistant"))).toEqual([
+      { label: "Assistant" },
+      { label: "AI Assistant" },
     ]);
   });
 

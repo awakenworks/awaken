@@ -68,9 +68,11 @@ API 读取数据；如果某个子系统没有接入，对应界面会显示 dis
 2. **配置 Provider。** Provider 保存 endpoint、adapter、credentials、timeout 和
    provider-specific options。正式使用前先点 **Test**。
 3. **配置 Model。** Model 给 Agent 一个稳定 `model_id`，并描述 upstream model、
-   modalities、context limits、pricing 和 capabilities。
+   modalities、context limits、pricing 和 capabilities。需要多模型加权路由、
+   sticky 选择或 fallback 时，通过 config API 配置 model pool。
 4. **解锁 Admin Assistant。** 配置第一个 provider-backed model 后，内置 Admin
-   Assistant 才可用。它的工具由 server 锁定，不会出现在普通 tool registry。
+   Assistant 才可用。它的工具由 server 锁定，不会出现在普通 tool registry。它可以
+   读取平台能力、创建并发布 AgentSpec、只生成 draft，以及校验 draft。
 5. **MCP-only 是 full configuration mode。** 你可以配置 MCP servers，并把 MCP 工具
    分给 Agent；但 chat 和 preview 仍然需要 model executor。
 
@@ -128,6 +130,7 @@ const { messages, sendMessage } = useChat({
 [AI SDK 前端集成](/awaken/zh-cn/how-to/integrate-ai-sdk-frontend/)、
 [AI SDK v6 参考](/awaken/zh-cn/reference/protocols/ai-sdk-v6/) 和
 [CopilotKit / AG-UI 集成](/awaken/zh-cn/how-to/integrate-copilotkit-ag-ui/)。
+路由级细节见 [HTTP API 参考](/awaken/zh-cn/reference/http-api/)。
 
 ## 运维、Trace 与 Eval
 

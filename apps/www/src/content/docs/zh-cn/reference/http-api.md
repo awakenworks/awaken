@@ -199,9 +199,10 @@ SSE frame 使用 canonical cursor 作为 SSE `id`，并在 `data` 中序列化
 `capabilities.admin_assistant.bound_tools` 会列出该助手锁定的 admin-only
 工具，供 UI 做对比展示。这些工具由 `/v1/admin/assistant/runs` 直接绑定，
 不会出现在 `capabilities.tools` 中，也不能分配给普通 `AgentSpec`。该助手
-不会保存为普通 registry agent；当 `admin_assistant.config.model_id` 未设置时，
-server 会选择第一个已配置模型，并通过 `capabilities.admin_assistant.model_id`
-返回实际选择。
+内置工具可以读取平台能力、创建并发布 AgentSpec、只生成 draft，以及校验 draft。
+该助手不会保存为普通 registry agent；当 `admin_assistant.config.model_id` 未设置时，
+server 会选择第一个 provider-backed 已配置模型，并通过
+`capabilities.admin_assistant.model_id` 返回实际选择。
 
 当前内置 namespace：
 

@@ -70,8 +70,8 @@ The left sidebar groups every screen by intent:
 | Group | What lives here |
 |---|---|
 | **Agents** | Agents — create/edit agent specs and open per-agent dashboards. |
-| **Resources** | Models, MCP Servers, Skills, Tools — runtime dependencies and discovered capabilities. |
-| **Infrastructure** | Providers — credentials and upstream model connectivity. |
+| **Resources** | MCP Servers, Skills, Tools — runtime dependencies and discovered capabilities. |
+| **Infrastructure** | Providers and Models — upstream connectivity plus stable model ids and capability metadata. |
 | **Observe** | Dashboard, Audit Log, Datasets, Eval Runs, Eval Reports — operational views and evaluation records. |
 | **Assistant** | AI Assistant — chat interface that runs a real agent against your live config. |
 
@@ -129,7 +129,11 @@ Open the **Dashboard** (it's the default landing page). Key panels:
      applies. The runtime swaps to the new spec on the next request.
 6. The **right column** is a draft-preview chat backed by
    `POST /v1/ai-sdk/agent-previews/runs`. You can talk to your draft
-   *before* saving it; messages run against the unsaved spec.
+   *before* saving it; text and attached image/audio/video/PDF/text files are
+   sent as AI SDK message parts against the unsaved spec.
+7. After saving, the **Frontend integration** card appears below the sandbox.
+   It shows the agent-scoped AI SDK and AG-UI routes and links to the frontend,
+   protocol, and HTTP API docs.
 
 ## Test a provider
 

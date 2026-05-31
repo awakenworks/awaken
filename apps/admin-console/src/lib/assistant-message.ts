@@ -12,6 +12,7 @@ export type AssistantBlock =
   | { kind: "text"; id: string; text: string }
   | { kind: "reasoning"; id: string; text: string }
   | { kind: "step-start"; id: string }
+  | { kind: "runtime-metadata"; id: string; parts: RuntimeDataPart[] }
   | {
       kind: "tool-call";
       id: string;
@@ -22,6 +23,16 @@ export type AssistantBlock =
       errorText?: string;
     }
   | { kind: "unknown"; id: string; type: string };
+
+export type RuntimeDataPartType =
+  | "data-run-info"
+  | "data-inference-complete"
+  | "data-state-snapshot";
+
+export interface RuntimeDataPart {
+  type: RuntimeDataPartType;
+  data?: unknown;
+}
 
 export type ToolCallState =
   | "input-streaming"
@@ -46,11 +57,13 @@ interface RawPart {
   output?: unknown;
   state?: unknown;
   errorText?: unknown;
+  data?: unknown;
 }
 
 export function viewMessage(message: { parts?: unknown }): AssistantMessageView {
   const parts = Array.isArray(message.parts) ? message.parts : [];
   const blocks: AssistantBlock[] = [];
+  const runtimeParts: RuntimeDataPart[] = [];
 
   parts.forEach((rawPart, index) => {
     const part = (rawPart ?? {}) as RawPart;
@@ -98,10 +111,31 @@ export function viewMessage(message: { parts?: unknown }): AssistantMessageView 
       return;
     }
 
+    if (isRuntimeDataPart(type)) {
+      runtimeParts.push({ type, data: part.data });
+      return;
+    }
+
     blocks.push({ kind: "unknown", id, type });
   });
 
+  if (runtimeParts.length > 0) {
+    blocks.push({
+      kind: "runtime-metadata",
+      id: "runtime-metadata",
+      parts: runtimeParts,
+    });
+  }
+
   return { blocks };
+}
+
+function isRuntimeDataPart(type: string): type is RuntimeDataPartType {
+  return (
+    type === "data-run-info" ||
+    type === "data-inference-complete" ||
+    type === "data-state-snapshot"
+  );
 }
 
 function classifyToolState(value: unknown): ToolCallState {
