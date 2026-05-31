@@ -4,4 +4,4 @@
 //! package exists so existing `awaken-agent` users can move to the new release
 //! line without changing import paths.
 
-pub use awaken::*;
+pub use awaken_core::*;
