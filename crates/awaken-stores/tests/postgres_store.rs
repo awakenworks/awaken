@@ -908,3 +908,73 @@ async fn list_threads_query_filters_by_id_prefix() {
     assert_eq!(page.total, 2);
     assert!(page.items.iter().all(|id| id.starts_with("sa-")));
 }
+
+#[tokio::test]
+#[ignore]
+async fn list_threads_query_id_prefix_paginates_and_binds_cursor() {
+    let Some(store) = make_prefixed_store("pg_threads_prefix_escape").await else {
+        return;
+    };
+    let prefix = "scope:5:a%_\\:";
+    store
+        .save_thread(&Thread::with_id(format!("{prefix}thread-1")))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id(format!("{prefix}thread-2")))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("scope:6:a%_\\:thread-3"))
+        .await
+        .unwrap();
+    store
+        .save_thread(&Thread::with_id("scope:5:aXY\\:thread-4"))
+        .await
+        .unwrap();
+
+    let query = ThreadQuery {
+        offset: 0,
+        limit: 1,
+        resource_id: None,
+        parent_filter: ThreadParentFilter::Any,
+        id_prefix: Some(prefix.to_string()),
+    };
+    let page = store.list_threads_query(&query).await.unwrap();
+
+    assert_eq!(page.total, 2);
+    assert_eq!(page.items.len(), 1);
+    assert!(page.items.iter().all(|id| id.starts_with(prefix)));
+    assert!(page.has_more);
+    let cursor = page.next_cursor.expect("prefix page should expose cursor");
+    let next_offset = query.decode_cursor(&cursor).unwrap();
+    assert_eq!(next_offset, 1);
+    assert!(
+        ThreadQuery {
+            id_prefix: Some("scope:6:a%_\\:".to_string()),
+            ..query.clone()
+        }
+        .decode_cursor(&cursor)
+        .is_err()
+    );
+    assert!(
+        ThreadQuery {
+            id_prefix: None,
+            ..query.clone()
+        }
+        .decode_cursor(&cursor)
+        .is_err()
+    );
+
+    let page = store
+        .list_threads_query(&ThreadQuery {
+            offset: next_offset,
+            ..query
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.total, 2);
+    assert_eq!(page.items.len(), 1);
+    assert!(page.items.iter().all(|id| id.starts_with(prefix)));
+    assert!(!page.has_more);
+}

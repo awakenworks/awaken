@@ -27,6 +27,7 @@ conformance_test!(list_threads_query_filters_lineage);
 conformance_test!(list_threads_query_filters_root_threads);
 conformance_test!(list_runs_filters_by_id_prefix);
 conformance_test!(list_threads_query_filters_by_id_prefix);
+conformance_test!(list_threads_query_id_prefix_paginates_and_binds_cursor);
 conformance_test!(checkpoint_rejects_missing_parent_thread);
 conformance_test!(checkpoint_rejects_cycle_parent_assignment);
 conformance_test!(delete_thread_with_detach_preserves_children);

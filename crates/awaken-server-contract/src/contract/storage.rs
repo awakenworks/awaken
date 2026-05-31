@@ -242,6 +242,7 @@ struct ThreadCursorToken {
     offset: usize,
     resource_id: Option<String>,
     parent_filter: ThreadParentFilter,
+    id_prefix: Option<String>,
 }
 
 /// Pagination/filter query for listing threads.
@@ -307,20 +308,26 @@ impl ThreadQuery {
                 offset,
                 resource_id: normalized.resource_id,
                 parent_filter: normalized.parent_filter,
+                id_prefix: normalized.id_prefix,
             },
         )
     }
 
     /// Decode a cursor and verify it belongs to this exact query shape.
     pub fn decode_cursor(&self, cursor: &str) -> Result<usize, String> {
+        let normalized = self.normalized();
         if let Ok(offset) = cursor.parse::<usize>() {
-            return Ok(offset);
+            return if normalized.has_filters() {
+                Err("cursor does not match thread query filters".to_string())
+            } else {
+                Ok(offset)
+            };
         }
 
-        let normalized = self.normalized();
         let token: ThreadCursorToken = decode_cursor_token(THREAD_CURSOR_PREFIX, cursor)?;
         if token.resource_id != normalized.resource_id
             || token.parent_filter != normalized.parent_filter
+            || token.id_prefix != normalized.id_prefix
         {
             return Err("cursor does not match thread query filters".to_string());
         }
@@ -694,23 +701,41 @@ impl ThreadStore for ScopedThreadRunStore {
     }
 
     async fn list_threads(&self, offset: usize, limit: usize) -> Result<Vec<String>, StorageError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         // Push the scope prefix to the backend so it filters and paginates at
         // the source instead of streaming every scope's threads into memory.
-        let page = self
-            .inner
-            .list_threads_query(&ThreadQuery {
-                offset,
-                limit,
-                resource_id: None,
-                parent_filter: ThreadParentFilter::Any,
-                id_prefix: Some(self.scope_prefix()),
-            })
-            .await?;
-        Ok(page
-            .items
-            .into_iter()
-            .filter_map(|id| self.unscoped(&id).map(str::to_string))
-            .collect())
+        // ThreadQuery caps one page at 200; loop internally so this legacy
+        // vector API preserves the caller-requested `limit`.
+        let scope_prefix = self.scope_prefix();
+        let mut next_offset = offset;
+        let mut items = Vec::with_capacity(limit.min(200));
+        while items.len() < limit {
+            let page_limit = (limit - items.len()).min(200);
+            let page = self
+                .inner
+                .list_threads_query(&ThreadQuery {
+                    offset: next_offset,
+                    limit: page_limit,
+                    resource_id: None,
+                    parent_filter: ThreadParentFilter::Any,
+                    id_prefix: Some(scope_prefix.clone()),
+                })
+                .await?;
+            let page_len = page.items.len();
+            items.extend(
+                page.items
+                    .into_iter()
+                    .filter_map(|id| self.unscoped(&id).map(str::to_string)),
+            );
+            if !page.has_more || page_len == 0 {
+                break;
+            }
+            next_offset = next_offset.saturating_add(page_len);
+        }
+        Ok(items)
     }
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {

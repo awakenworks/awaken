@@ -536,8 +536,8 @@ impl ThreadStore for PostgresStore {
         };
         let limit = query.limit.min(i64::MAX as usize) as i64;
         let offset = query.offset.min(i64::MAX as usize) as i64;
-        // Scope prefix pushed down as an indexed `LIKE 'prefix%'` so a scoped
-        // listing filters at the source instead of scanning every scope.
+        // Scope prefix pushed down as a `LIKE 'prefix%'` filter so a scoped
+        // listing filters at the source instead of returning every scope.
         let like_pattern = query
             .id_prefix
             .as_deref()
@@ -586,9 +586,9 @@ impl ThreadStore for PostgresStore {
             items,
             total,
             has_more: next_offset < total,
-            next_cursor: (next_offset < total).then(|| next_offset.to_string()),
+            next_cursor: (next_offset < total).then(|| query.encode_cursor(next_offset)),
             prev_cursor: (query.offset > 0)
-                .then(|| query.offset.saturating_sub(query.limit).to_string()),
+                .then(|| query.encode_cursor(query.offset.saturating_sub(query.limit))),
         })
     }
 

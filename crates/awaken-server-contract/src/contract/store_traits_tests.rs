@@ -227,6 +227,38 @@ async fn thread_store_query_zero_limit_returns_empty_terminated_page() {
     assert!(page.next_cursor.is_none());
 }
 
+#[test]
+fn thread_query_cursor_binds_id_prefix_filter() {
+    let query = ThreadQuery {
+        offset: 0,
+        limit: 1,
+        resource_id: None,
+        parent_filter: ThreadParentFilter::Any,
+        id_prefix: Some("scope:5:a%_\\:".to_string()),
+    };
+    let cursor = query.encode_cursor(1);
+
+    assert_eq!(query.decode_cursor(&cursor).unwrap(), 1);
+    assert!(
+        ThreadQuery {
+            id_prefix: Some("scope:6:a%_\\:".to_string()),
+            ..query.clone()
+        }
+        .decode_cursor(&cursor)
+        .is_err()
+    );
+    assert!(
+        ThreadQuery {
+            id_prefix: None,
+            ..query.clone()
+        }
+        .decode_cursor(&cursor)
+        .is_err()
+    );
+    assert!(query.decode_cursor("1").is_err());
+    assert_eq!(ThreadQuery::default().decode_cursor("1").unwrap(), 1);
+}
+
 #[tokio::test]
 async fn thread_store_query_filters_root_threads() {
     let store = MockThreadStore::default();

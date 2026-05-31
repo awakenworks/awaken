@@ -28,3 +28,4 @@ conformance_test!(checkpoint_append_rejects_stale_version);
 conformance_test!(checkpoint_append_rejects_existing_message_id);
 conformance_test!(list_runs_filters_by_id_prefix);
 conformance_test!(list_threads_query_filters_by_id_prefix);
+conformance_test!(list_threads_query_id_prefix_paginates_and_binds_cursor);

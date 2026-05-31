@@ -142,3 +142,11 @@ async fn nats_list_threads_query_filters_by_id_prefix() {
     thread_store_conformance::list_threads_query_filters_by_id_prefix(&store).await;
     store.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn nats_list_threads_query_id_prefix_paginates_and_binds_cursor() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+    thread_store_conformance::list_threads_query_id_prefix_paginates_and_binds_cursor(&store).await;
+    store.shutdown().await.unwrap();
+}

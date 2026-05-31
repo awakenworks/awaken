@@ -139,8 +139,8 @@ impl RunStore for PostgresStore {
         self.ensure_schema().await?;
 
         // Build WHERE conditions with positional binds in a stable order:
-        // thread_id, status, id_prefix. The scope prefix is pushed down as an
-        // indexed `LIKE 'prefix%'` so a scoped listing never scans other scopes.
+        // thread_id, status, id_prefix. The scope prefix is pushed down as a
+        // `LIKE 'prefix%'` filter so a scoped listing never returns other scopes.
         let mut conditions = Vec::new();
         let mut idx = 1;
         if query.thread_id.is_some() {
