@@ -17,6 +17,36 @@ enum AvailableAtPolicy {
 // reorder low-volume claims; large hot queues use the local index as a read cache.
 const LOCAL_CLAIM_FAST_PATH_MIN_CANDIDATES: usize = 128;
 
+async fn active_local_claim_blocks(
+    store: &NatsMailboxStore,
+    thread_id: &str,
+    except_dispatch_id: Option<&str>,
+    now: u64,
+) -> Result<bool, StorageError> {
+    let Some(local_active) = store
+        .index
+        .read()
+        .await
+        .active_claimed_for_thread(thread_id, now)
+    else {
+        return Ok(false);
+    };
+    if except_dispatch_id == Some(local_active.dispatch_id.as_str()) {
+        return Ok(false);
+    }
+
+    let Some(authoritative) = ops_query::load_dispatch(store, &local_active.dispatch_id).await?
+    else {
+        store.index.write().await.remove(&local_active.dispatch_id);
+        return Ok(false);
+    };
+    store.index.write().await.upsert(authoritative.clone());
+    Ok(authoritative.status == RunDispatchStatus::Claimed
+        && authoritative
+            .lease_until
+            .is_some_and(|lease_until| lease_until >= now))
+}
+
 pub async fn claim_dispatch(
     store: &NatsMailboxStore,
     dispatch_id: &str,
@@ -117,6 +147,10 @@ async fn claim_dispatch_inner(
             continue;
         }
 
+        if active_local_claim_blocks(store, &dispatch.thread_id, Some(dispatch_id), now).await? {
+            return Ok(None);
+        }
+
         let Some(thread_claim) =
             claim_guard::acquire(store, &dispatch.thread_id, dispatch_id, lease_ms, now).await?
         else {
@@ -175,6 +209,10 @@ pub async fn claim(
         .await?
         .is_some()
     {
+        metrics::inc_claim_attempt("blocked");
+        return Ok(Vec::new());
+    }
+    if active_local_claim_blocks(store, thread_id, None, now).await? {
         metrics::inc_claim_attempt("blocked");
         return Ok(Vec::new());
     }

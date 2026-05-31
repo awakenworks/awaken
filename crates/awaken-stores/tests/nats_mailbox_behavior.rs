@@ -1025,6 +1025,110 @@ async fn thread_claim_tombstone_does_not_block_next_claim() {
 }
 
 #[tokio::test]
+async fn purged_active_thread_claim_does_not_allow_second_active_claim() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+
+    let mut first = test_dispatch("d-active-before-purge", "t-active-claim-purged");
+    first.created_at = 1;
+    let mut second = test_dispatch("d-queued-after-purge", "t-active-claim-purged");
+    second.created_at = 2;
+    store.enqueue(&first).await.unwrap();
+    store.enqueue(&second).await.unwrap();
+
+    let claimed = store
+        .claim("t-active-claim-purged", "consumer-1", 60_000, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].dispatch_id, "d-active-before-purge");
+
+    store
+        .__test_purge_thread_claim("t-active-claim-purged")
+        .await
+        .unwrap();
+
+    let second_claim = store
+        .claim("t-active-claim-purged", "consumer-2", 60_000, 2_000, 1)
+        .await
+        .unwrap();
+    assert!(
+        second_claim.is_empty(),
+        "losing the thread-claim KV record must not permit two active dispatches on one thread"
+    );
+
+    let by_id_claim = store
+        .claim_dispatch("d-queued-after-purge", "inline-consumer", 60_000, 2_000)
+        .await
+        .unwrap();
+    assert!(
+        by_id_claim.is_none(),
+        "by-id claims must also respect the authoritative active dispatch after claim KV loss"
+    );
+
+    let active = store
+        .load_dispatch("d-active-before-purge")
+        .await
+        .unwrap()
+        .expect("active dispatch remains recorded");
+    assert_eq!(active.status, RunDispatchStatus::Claimed);
+    let queued = store
+        .load_dispatch("d-queued-after-purge")
+        .await
+        .unwrap()
+        .expect("queued dispatch remains recorded");
+    assert_eq!(queued.status, RunDispatchStatus::Queued);
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn purged_expired_thread_claim_is_reclaimed_from_dispatch_index() {
+    let fixture = NatsFixture::start().await;
+    let store = make_store(&fixture).await;
+
+    store
+        .enqueue(&test_dispatch(
+            "d-expired-claim-purged",
+            "t-expired-claim-purged",
+        ))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("t-expired-claim-purged", "consumer-1", 100, 1_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+
+    store
+        .__test_purge_thread_claim("t-expired-claim-purged")
+        .await
+        .unwrap();
+
+    let reclaimed = store.reclaim_expired_leases(2_000, 10).await.unwrap();
+    assert_eq!(
+        reclaimed.len(),
+        1,
+        "expired claimed dispatches must be recoverable even when the thread-claim KV record is lost"
+    );
+    assert_eq!(reclaimed[0].dispatch_id, "d-expired-claim-purged");
+    assert_eq!(reclaimed[0].status, RunDispatchStatus::Queued);
+    assert_eq!(reclaimed[0].attempt_count, 1);
+    assert!(reclaimed[0].claim_token.is_none());
+    assert!(reclaimed[0].claimed_by.is_none());
+    assert!(reclaimed[0].lease_until.is_none());
+
+    let claimed_again = store
+        .claim("t-expired-claim-purged", "consumer-2", 60_000, 3_000, 1)
+        .await
+        .unwrap();
+    assert_eq!(claimed_again.len(), 1);
+    assert_eq!(claimed_again[0].dispatch_id, "d-expired-claim-purged");
+
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn dedupe_lock_tombstone_is_treated_as_absent() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;

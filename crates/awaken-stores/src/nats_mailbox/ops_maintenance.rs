@@ -1,5 +1,7 @@
 //! Maintenance operations: lease reclaim, terminal GC.
 
+use std::collections::HashSet;
+
 use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
 use awaken_server_contract::contract::storage::StorageError;
 
@@ -13,7 +15,7 @@ pub async fn reclaim_expired_leases(
     now: u64,
     limit: usize,
 ) -> Result<Vec<RunDispatch>, StorageError> {
-    let candidates = match tokio::time::timeout(
+    let mut candidates = match tokio::time::timeout(
         store.authoritative_scan_timeout,
         claim_guard::expired_dispatch_ids(store, now, limit),
     )
@@ -27,6 +29,20 @@ pub async fn reclaim_expired_leases(
             )));
         }
     };
+    if candidates.len() < limit {
+        let mut seen = candidates.iter().cloned().collect::<HashSet<_>>();
+        let remaining = limit - candidates.len();
+        for dispatch_id in store
+            .index
+            .read()
+            .await
+            .expired_claimed_dispatch_ids(now, remaining)
+        {
+            if seen.insert(dispatch_id.clone()) {
+                candidates.push(dispatch_id);
+            }
+        }
+    }
     let mut reclaimed = Vec::new();
     for dispatch_id in candidates {
         if let Some(d) = reclaim_one(store, &dispatch_id, now).await? {

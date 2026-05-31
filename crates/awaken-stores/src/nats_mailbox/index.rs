@@ -157,6 +157,54 @@ impl DispatchIndex {
         (eligible_count, best.cloned())
     }
 
+    pub fn active_claimed_for_thread(&self, thread_id: &str, now: u64) -> Option<RunDispatch> {
+        let ids = self.by_thread.get(thread_id)?;
+        ids.iter()
+            .filter_map(|id| self.by_id.get(id).map(|indexed| &indexed.dispatch))
+            .filter(|dispatch| {
+                dispatch.status == RunDispatchStatus::Claimed
+                    && dispatch
+                        .lease_until
+                        .is_some_and(|lease_until| lease_until >= now)
+            })
+            .min_by(|left, right| {
+                left.lease_until
+                    .cmp(&right.lease_until)
+                    .then(left.dispatch_id.cmp(&right.dispatch_id))
+            })
+            .cloned()
+    }
+
+    pub fn expired_claimed_dispatch_ids(&self, now: u64, limit: usize) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let Some(claimed_ids) = self.by_status.get(&status_key(RunDispatchStatus::Claimed)) else {
+            return Vec::new();
+        };
+        let mut expired = claimed_ids
+            .iter()
+            .filter_map(|id| self.by_id.get(id).map(|indexed| &indexed.dispatch))
+            .filter(|dispatch| {
+                dispatch
+                    .lease_until
+                    .is_some_and(|lease_until| lease_until < now)
+            })
+            .map(|dispatch| {
+                (
+                    dispatch.lease_until.unwrap_or(0),
+                    dispatch.dispatch_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        expired.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        expired
+            .into_iter()
+            .take(limit)
+            .map(|(_, dispatch_id)| dispatch_id)
+            .collect()
+    }
+
     pub fn queued_thread_ids(&self) -> Vec<String> {
         let Some(queued_ids) = self.by_status.get(&status_key(RunDispatchStatus::Queued)) else {
             return Vec::new();
