@@ -55,14 +55,10 @@ export function AdminSidebar({
             <span className="text-fg-soft">{t("app.connectedBackend")}</span>
             <span className="flex items-center gap-1.5 text-fg-soft">
               <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-pill ${dotClass}`} />
-              <span className="text-[10px] tracking-normal normal-case">
-                {description.label}
-              </span>
+              <span className="text-[10px] tracking-normal normal-case">{description.label}</span>
             </span>
           </div>
-          <div className="mt-1.5 break-all font-mono text-[11px] text-fg">
-            {BACKEND_URL}
-          </div>
+          <div className="mt-1.5 break-all font-mono text-[11px] text-fg">{BACKEND_URL}</div>
         </button>
       </div>
 
@@ -98,7 +94,9 @@ export function AdminSidebar({
               title={`uptime ${Math.floor(sysInfo.uptime_seconds / 60)}m`}
             />
           )}
-          <span>v{sysInfo?.version ?? "—"} · 9-phase loop</span>
+          <span>
+            v{sysInfo?.version ?? "—"} · scope {sysInfo?.scope_id ?? "—"}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
           <span className="inline-flex items-center gap-1">

@@ -78,7 +78,8 @@ export const en = {
       noProviders: "No providers configured.",
       noMcp: "No MCP servers configured.",
       degraded: "list unavailable",
-      degradedHint: "The list endpoint returned a server error. Counts are not authoritative; retry or check server logs.",
+      degradedHint:
+        "The list endpoint returned a server error. Counts are not authoritative; retry or check server logs.",
     },
     workload: {
       title: "Live workload",
@@ -113,7 +114,8 @@ export const en = {
       coordination: "coordination",
       coordinationBreakdown: "{{suspensions}} susp · {{handoffs}} hand · {{delegations}} deleg",
       mixedWindows: "mixed windows",
-      mixedWindowsHint: "Snapshots returned different window_seconds; aggregates may not be comparable.",
+      mixedWindowsHint:
+        "Snapshots returned different window_seconds; aggregates may not be comparable.",
       mixedWindowsDegraded:
         "Numeric totals and top-N lists are hidden until every snapshot reports the same window.",
       units: {
@@ -134,6 +136,7 @@ export const en = {
       title: "System",
       version: "Version",
       uptime: "Uptime",
+      scope: "Scope",
       configStore: "Config store",
       auditLog: "Audit log",
       runtimeStats: "Runtime stats",
@@ -205,7 +208,7 @@ export const en = {
     resetOverrides: "Reset to defaults",
     resetOverridesConfirm: "Reset all customizations on this agent?",
     resetOverrideField: "Reset to default",
-    resetOverrideFieldDone: "Reset \"{{field}}\" to default",
+    resetOverrideFieldDone: 'Reset "{{field}}" to default',
   },
   audit: {
     title: "Audit Log",
@@ -291,7 +294,8 @@ export const en = {
       validateFailed: "Validation failed: {{message}}",
       noPatchableChanges: "No patchable changes to validate.",
       advancedFull: "This is the full agent spec that will be sent to the config API.",
-      advancedPatch: "This is the PATCH /overrides body that will be sent for built-in or customized agents.",
+      advancedPatch:
+        "This is the PATCH /overrides body that will be sent for built-in or customized agents.",
     },
     sandbox: {
       title: "Sandbox",
@@ -393,8 +397,7 @@ export const en = {
     storeUnreachableHint:
       "the server returned 503 — the eval-run store may be unwired or the runtime is unhealthy. Retry after checking the backend logs.",
     notFoundTitle: 'Eval run "{{id}}" not found',
-    notFoundHint:
-      "It may have been pruned, or the id in the URL is wrong. Pick one from the list.",
+    notFoundHint: "It may have been pruned, or the id in the URL is wrong. Pick one from the list.",
     columns: {
       runId: "Run",
       dataset: "Dataset",
@@ -417,8 +420,7 @@ export const en = {
     existingDataset: "Append to existing dataset",
     newDataset: "Create a new dataset",
     newDatasetIdLabel: "New dataset id (required)",
-    newDatasetIdHint:
-      "Lowercase letters, digits, dot, hyphen, underscore. Used as the URL slug.",
+    newDatasetIdHint: "Lowercase letters, digits, dot, hyphen, underscore. Used as the URL slug.",
     newDatasetDescriptionLabel: "New dataset description (optional)",
     noDatasets: "(no datasets — create one below)",
     choose: "Choose a dataset…",
@@ -436,8 +438,7 @@ export const en = {
     scriptRequire: "require — fail if the trace can't be scripted",
     scriptSkip: "skip — always create a live-only fixture",
     save: "Save fixture",
-    disabledHint:
-      "Eval surface is not enabled on this server (AdminApiConfig.expose_eval_routes).",
+    disabledHint: "Eval surface is not enabled on this server (AdminApiConfig.expose_eval_routes).",
   },
   jsonInspector: {
     title: "Raw JSON",
@@ -452,14 +453,12 @@ export const en = {
     label: "Privacy",
     compact:
       "Eval runs and traces persist prompts and assistant responses; anyone with admin access can read them.",
-    full:
-      "Eval runs and traces persist user prompts, tool arguments, and assistant responses verbatim. Anyone with admin access to this console can read them. There is no field-level redaction yet — avoid putting secrets in prompts, and audit who has the admin bearer token before sharing this UI.",
+    full: "Eval runs and traces persist user prompts, tool arguments, and assistant responses verbatim. Anyone with admin access to this console can read them. There is no field-level redaction yet — avoid putting secrets in prompts, and audit who has the admin bearer token before sharing this UI.",
   },
   modelTest: {
     title: "Test model",
     trigger: "Test",
-    description:
-      "Send a one-shot prompt directly to this model binding and view the response.",
+    description: "Send a one-shot prompt directly to this model binding and view the response.",
     costLabel: "Live provider call",
     costHint:
       "This calls the real upstream model and is billed per the provider's pricing. The wall-time and token caps below bound how long / how much one click can spend.",
@@ -479,7 +478,8 @@ export const en = {
   loadError: {
     title: "Failed to load",
     genericHint: "The server returned an error. Retry after the issue is resolved.",
-    networkHint: "The admin backend isn't reachable. Check that the runtime is up and the bearer token is correct.",
+    networkHint:
+      "The admin backend isn't reachable. Check that the runtime is up and the bearer token is correct.",
     retry: "Retry",
   },
   common: {
@@ -532,7 +532,8 @@ export const en = {
       credentialsKind: "Credentials type",
       saJson: "Service account JSON",
       saJsonPh: "Paste the full JSON downloaded from GCP IAM",
-      saJsonHint: "Awaken signs JWTs and refreshes OAuth tokens automatically. Redacted in the UI and audit payloads.",
+      saJsonHint:
+        "Awaken signs JWTs and refreshes OAuth tokens automatically. Redacted in the UI and audit payloads.",
     },
     credentialsKind: {
       bearer: "Static bearer / API key",
@@ -578,7 +579,10 @@ export const en = {
   mcp: {
     title: "MCP Servers",
     new: "New MCP Server",
-    empty: { title: "0 MCP servers", desc: "External tool sources (databases, APIs, files) for agents." },
+    empty: {
+      title: "0 MCP servers",
+      desc: "External tool sources (databases, APIs, files) for agents.",
+    },
     columns: {
       id: "ID",
       transport: "Transport",
@@ -612,7 +616,10 @@ export const en = {
   },
   skills: {
     title: "Skill Registry",
-    empty: { title: "0 skills", desc: "Register via SkillRegistry trait or AgentRuntimeBuilder::with_skill()." },
+    empty: {
+      title: "0 skills",
+      desc: "Register via SkillRegistry trait or AgentRuntimeBuilder::with_skill().",
+    },
     noMatches: { title: "No matches", desc: "Clear filters to see all skills." },
     searchPh: "Search by id, name, description, tool, path…",
     caller: "Caller",
@@ -645,7 +652,8 @@ export const en = {
       userOverride: "User override",
       effective: "Effective",
       revert: "Revert to default",
-      lengthWarning: "Long descriptions dilute model attention. Consider moving rules into the agent's system prompt.",
+      lengthWarning:
+        "Long descriptions dilute model attention. Consider moving rules into the agent's system prompt.",
     },
   },
   evals: {

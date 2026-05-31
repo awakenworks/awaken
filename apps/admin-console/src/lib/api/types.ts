@@ -284,6 +284,8 @@ export interface McpServerStatusResponse {
 /** Wire-format mirror of `GET /v1/system/info` response. */
 export interface SystemInfo {
   version: string;
+  /** Server-resolved tenant/workspace scope for the current admin request. */
+  scope_id?: string;
   uptime_seconds: number;
   config_store_enabled: boolean;
   audit_log_enabled: boolean;

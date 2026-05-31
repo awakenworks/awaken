@@ -7,6 +7,7 @@ import { useSystemInfoQuery } from "./query/hooks/system";
 
 const fakeInfo = {
   version: "0.4.1-test",
+  scope_id: "default",
   uptime_seconds: 42,
   config_store_enabled: true,
   audit_log_enabled: true,

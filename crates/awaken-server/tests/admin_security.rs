@@ -293,6 +293,7 @@ async fn admin_http_contract_snapshot_covers_frontend_route_shapes() {
                 "audit_log_enabled": "<bool>",
                 "config_store_enabled": "<bool>",
                 "runtime_stats_enabled": "<bool>",
+                "scope_id": "<string>",
                 "uptime_seconds": "<u64>",
                 "version": "<string>",
             }),

@@ -610,6 +610,7 @@ mod health_integration {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(json["scope_id"], "default");
         assert!(json["uptime_seconds"].is_u64());
         // make_app_state() does not wire any optional subsystem.
         assert_eq!(json["config_store_enabled"], false);

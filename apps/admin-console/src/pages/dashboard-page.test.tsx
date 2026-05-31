@@ -167,6 +167,7 @@ function dashboardData(overrides: Partial<DashboardData> = {}): DashboardData {
     auditDisabled: false,
     systemInfo: {
       version: "1.2.3-test",
+      scope_id: "workspace-a",
       uptime_seconds: 90_000,
       config_store_enabled: true,
       audit_log_enabled: true,
@@ -317,7 +318,9 @@ describe("DashboardPage", () => {
     expect(screen.getByText("dashboard.agentActivity.title")).toBeTruthy();
     expect(screen.getByText("100")).toBeTruthy();
     expect(screen.getByText(/dashboard\.agentActivity\.errorRate pct=2\.0/)).toBeTruthy();
-    expect(screen.getByText(/dashboard\.agentActivity\.tokensInOut input=15,000 output=6,000/)).toBeTruthy();
+    expect(
+      screen.getByText(/dashboard\.agentActivity\.tokensInOut input=15,000 output=6,000/),
+    ).toBeTruthy();
     expect(screen.getByText("dashboard.agentActivity.topAgents")).toBeTruthy();
     expect(screen.getByText("agent-0")).toBeTruthy();
     expect(screen.getByText("dashboard.agentActivity.topTools")).toBeTruthy();
@@ -334,6 +337,7 @@ describe("DashboardPage", () => {
     expect(screen.getByText("dashboard.health.manual")).toBeTruthy();
 
     expect(screen.getByText("1.2.3-test")).toBeTruthy();
+    expect(screen.getByText("workspace-a")).toBeTruthy();
     expect(screen.getByText("1d 1h")).toBeTruthy();
     expect(screen.getAllByText("dashboard.system.on").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("dashboard.system.off")).toBeTruthy();
@@ -409,9 +413,9 @@ describe("DashboardPage", () => {
     expect(screen.getByLabelText("dashboard.workload.loading").getAttribute("aria-busy")).toBe(
       "true",
     );
-    expect(
-      screen.getByLabelText("dashboard.agentActivity.loading").getAttribute("aria-busy"),
-    ).toBe("true");
+    expect(screen.getByLabelText("dashboard.agentActivity.loading").getAttribute("aria-busy")).toBe(
+      "true",
+    );
     // Loading must not be confused with the disabled notice.
     expect(screen.queryByText("dashboard.workload.unavailableTitle")).toBeNull();
     expect(screen.queryByText("dashboard.agentActivity.disabledTitle")).toBeNull();

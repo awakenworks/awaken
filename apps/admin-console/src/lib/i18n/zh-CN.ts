@@ -113,8 +113,7 @@ export const zhCN: Dict = {
       coordinationBreakdown: "挂起 {{suspensions}} · 移交 {{handoffs}} · 委派 {{delegations}}",
       mixedWindows: "窗口不一致",
       mixedWindowsHint: "各 snapshot 的 window_seconds 不一致，聚合结果不可直接比较。",
-      mixedWindowsDegraded:
-        "在所有 snapshot 上报相同窗口前，不展示总数与 Top-N 列表。",
+      mixedWindowsDegraded: "在所有 snapshot 上报相同窗口前，不展示总数与 Top-N 列表。",
       units: {
         s: "{{value}} 秒",
         m: "{{value}} 分",
@@ -133,6 +132,7 @@ export const zhCN: Dict = {
       title: "系统",
       version: "版本",
       uptime: "运行时长",
+      scope: "作用域",
       configStore: "配置存储",
       auditLog: "审计日志",
       runtimeStats: "运行指标",
@@ -204,7 +204,7 @@ export const zhCN: Dict = {
     resetOverrides: "重置为默认",
     resetOverridesConfirm: "重置此 Agent 的所有定制?",
     resetOverrideField: "重置为默认",
-    resetOverrideFieldDone: "已重置 \"{{field}}\" 为默认",
+    resetOverrideFieldDone: '已重置 "{{field}}" 为默认',
   },
   audit: {
     title: "审计日志",
@@ -350,7 +350,7 @@ export const zhCN: Dict = {
     storeUnreachableTitle: "评测存储不可达",
     storeUnreachableHint:
       "服务器返回 503——eval-run 存储可能未接入或运行时异常,请重试并检查后端日志。",
-    notFoundTitle: "未找到数据集 \"{{id}}\"",
+    notFoundTitle: '未找到数据集 "{{id}}"',
     notFoundHint: "可能已被删除,或 URL 中的 id 拼写有误。请从列表中重新选择。",
     fixturesEmptyTitle: "尚无 fixture",
     fixturesEmptyDesc: "在 run trace 抽屉中将运行保存为 fixture 即可添加。",
@@ -388,7 +388,7 @@ export const zhCN: Dict = {
     storeUnreachableTitle: "评测存储不可达",
     storeUnreachableHint:
       "服务器返回 503——eval-run 存储可能未接入或运行时异常,请重试并检查后端日志。",
-    notFoundTitle: "未找到运行 \"{{id}}\"",
+    notFoundTitle: '未找到运行 "{{id}}"',
     notFoundHint: "可能已被清理,或 URL 中的 id 拼写有误。请从列表中重新选择。",
     columns: {
       runId: "运行 ID",
@@ -444,8 +444,7 @@ export const zhCN: Dict = {
   privacyNotice: {
     label: "隐私提示",
     compact: "评测运行与 trace 会保留用户提示和模型回复;具备 admin 权限的人都可读取。",
-    full:
-      "评测运行与 trace 会原样保留用户提示、工具参数和模型回复。所有具备 admin 控制台访问权限的用户都可以读取这些内容。当前版本尚未实现字段级 redaction——请不要把密钥放进提示词,并审计 admin bearer token 的发放范围。",
+    full: "评测运行与 trace 会原样保留用户提示、工具参数和模型回复。所有具备 admin 控制台访问权限的用户都可以读取这些内容。当前版本尚未实现字段级 redaction——请不要把密钥放进提示词,并审计 admin bearer token 的发放范围。",
   },
   modelTest: {
     title: "测试模型",
@@ -603,7 +602,10 @@ export const zhCN: Dict = {
   },
   skills: {
     title: "技能注册表",
-    empty: { title: "0 个技能", desc: "通过 SkillRegistry trait 或 AgentRuntimeBuilder::with_skill() 注册。" },
+    empty: {
+      title: "0 个技能",
+      desc: "通过 SkillRegistry trait 或 AgentRuntimeBuilder::with_skill() 注册。",
+    },
     noMatches: { title: "无匹配", desc: "清除筛选条件以查看全部技能。" },
     searchPh: "按 ID、名称、描述、工具、路径搜索…",
     caller: "调用者",

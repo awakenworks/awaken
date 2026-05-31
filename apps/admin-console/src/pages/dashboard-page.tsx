@@ -1,11 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
-import {
-  type McpServerRecord,
-  type ProviderRecord,
-  type SystemInfo,
-} from "@/lib/config-api";
+import { type McpServerRecord, type ProviderRecord, type SystemInfo } from "@/lib/config-api";
 import { formatActor, isAgentActor, type AuditEvent, type AuditPage } from "@/lib/audit-log";
 import { adminRoutes } from "@/lib/routes";
 import { formatRelativeTime } from "@/lib/format-time";
@@ -94,11 +90,35 @@ export function DashboardPage() {
         actions={
           <CountRibbon
             stats={[
-              { label: t("dashboard.counters.agents"), count: agents.length, to: adminRoutes.agents, degraded: degraded.agents },
-              { label: t("dashboard.counters.skills"), count: capabilities.skills.length, to: adminRoutes.skills },
-              { label: t("dashboard.counters.models"), count: models.length, to: adminRoutes.models, degraded: degraded.models },
-              { label: t("dashboard.counters.providers"), count: providers.length, to: adminRoutes.providers, degraded: degraded.providers },
-              { label: t("dashboard.counters.mcp"), count: mcpServers.length, to: adminRoutes.mcpServers, degraded: degraded.mcpServers },
+              {
+                label: t("dashboard.counters.agents"),
+                count: agents.length,
+                to: adminRoutes.agents,
+                degraded: degraded.agents,
+              },
+              {
+                label: t("dashboard.counters.skills"),
+                count: capabilities.skills.length,
+                to: adminRoutes.skills,
+              },
+              {
+                label: t("dashboard.counters.models"),
+                count: models.length,
+                to: adminRoutes.models,
+                degraded: degraded.models,
+              },
+              {
+                label: t("dashboard.counters.providers"),
+                count: providers.length,
+                to: adminRoutes.providers,
+                degraded: degraded.providers,
+              },
+              {
+                label: t("dashboard.counters.mcp"),
+                count: mcpServers.length,
+                to: adminRoutes.mcpServers,
+                degraded: degraded.mcpServers,
+              },
               { label: t("dashboard.counters.tools"), count: capabilities.tools.length },
             ]}
           />
@@ -253,6 +273,14 @@ function SystemCard({ info }: { info: SystemInfo }) {
           value={formatUptime(info.uptime_seconds)}
           mono={false}
         />
+        {info.scope_id && (
+          <StatCard
+            layout="compact"
+            label={t("dashboard.system.scope")}
+            value={info.scope_id}
+            mono
+          />
+        )}
         <StatCard
           layout="compact"
           label={t("dashboard.system.configStore")}
@@ -413,10 +441,7 @@ function CountRibbon({
         // misleading 0 — operator should distinguish "no providers" from
         // "providers list 5xx'd".
         const inner = s.degraded ? (
-          <span
-            className="tabular-nums"
-            title={t("dashboard.health.degradedHint")}
-          >
+          <span className="tabular-nums" title={t("dashboard.health.degradedHint")}>
             <span className="font-semibold text-tone-warn">?</span>{" "}
             <span className="text-fg-soft">{s.label}</span>
           </span>
@@ -485,4 +510,3 @@ function SkeletonTile({ height = "h-14" }: { height?: string }) {
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
-
