@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-current-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
-Stop shipping AI agents as fragile scripts. Awaken is an open-source Rust runtime and server control plane for durable, managed agents: write tools/state/plugins once, tune agents/models/prompts online, serve AI SDK/AG-UI/A2A/MCP/ACP clients from one backend, and keep long-running work approvable, observable, and replayable.
+Stop shipping AI agents as fragile scripts. Awaken is an open-source Rust runtime and server control plane for durable, managed agents: write tools/state/plugins once, tune every behavior knob online, serve AI SDK/AG-UI/A2A/MCP/ACP clients from one backend, and keep long-running work approvable, observable, and replayable.
 
 Docs: [Awaken docs](https://awakenworks.github.io/awaken) · [中文文档](https://awakenworks.github.io/awaken/zh-cn) · [Changelog](./CHANGELOG.md). MSRV: Rust 1.93. The published crate is `awaken`; `awaken-agent` is a compatibility republish from when the project shipped under that name (same import path either way).
 
@@ -32,6 +32,17 @@ The core loop is:
 ```text
 Create agent -> Run task -> Approve tool call -> Complete -> Inspect trace
 ```
+
+## Everything is tunable because everything is managed
+
+Awaken treats agent behavior as managed resources, not scattered code edits. Changes are validated, published as registry snapshots, and auditable when server stores are wired.
+
+| Layer | Tune online | Managed by Awaken |
+|---|---|---|
+| Agent behavior | Prompts, model bindings, tool allow/exclude rules, delegates | Validation, preview chat, revisions, published registry snapshots |
+| Tooling | Tool descriptions, permission rules, reminders, deferred-tool policy | Typed schemas, locked admin tools, policy gates, safe tool catalogs |
+| Capabilities | Providers, models, model pools, MCP servers, skills | Capability metadata, provider checks, failover pools, MCP/skill registries |
+| Operations | Human approval, traces, replay, datasets, eval runs | Durable run state, audit restore, protocol replay, evaluation records |
 
 ## Choose your programming mode
 

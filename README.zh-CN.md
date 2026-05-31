@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-current-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
-不要再把 AI Agent 做成脆弱的一次性脚本。Awaken 是开源 Rust runtime + server 控制面，用来构建 durable、可管理的 Agent：tools/state/plugins 写在代码里，agents/models/prompts 在线调优，同一个后端服务 AI SDK/AG-UI/A2A/MCP/ACP 客户端，并让长任务可以审批、恢复、观测和回放。
+不要再把 AI Agent 做成脆弱的一次性脚本。Awaken 是开源 Rust runtime + server 控制面，用来构建 durable、可管理的 Agent：tools/state/plugins 写在代码里，所有影响行为的配置都能在线调优，同一个后端服务 AI SDK/AG-UI/A2A/MCP/ACP 客户端，并让长任务可以审批、恢复、观测和回放。
 
 在线文档：[Awaken docs（英文）](https://awakenworks.github.io/awaken) · [中文文档](https://awakenworks.github.io/awaken/zh-cn) · [Changelog](./CHANGELOG.md)。MSRV：Rust 1.93。发布的 crate 是 `awaken`；`awaken-agent` 是早期同名发布期的兼容包，导入名都是 `awaken`。
 
@@ -32,6 +32,17 @@ pnpm --filter awaken-admin-console dev
 ```text
 创建 Agent -> 执行任务 -> 审批工具调用 -> 完成 -> 查看 Trace
 ```
+
+## 全部可调优，因为全部受管理
+
+Awaken 把 Agent 行为变成受管理资源，而不是散落在代码里的临时改动。变更会经过校验，发布成 registry snapshot；挂接 server stores 后，还能通过审计记录追溯和恢复。
+
+| 层面 | 在线调优什么 | Awaken 管理什么 |
+|---|---|---|
+| Agent 行为 | 提示词、模型绑定、工具允许/排除规则、delegates | 校验、预览对话、版本记录、已发布 registry snapshot |
+| 工具体系 | 工具描述、权限规则、reminder、deferred-tool 策略 | 类型化 schema、锁定的 admin tools、policy gates、安全工具目录 |
+| 能力资源 | Provider、Model、model pool、MCP server、Skill | 能力 metadata、provider 检查、故障切换池、MCP/Skill registry |
+| 运行运维 | 人工审批、trace、replay、dataset、eval run | durable run 状态、audit restore、protocol replay、评估记录 |
 
 ## 选择开发模式
 
