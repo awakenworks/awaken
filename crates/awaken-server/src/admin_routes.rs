@@ -22,10 +22,44 @@ pub(crate) fn config_admin_routes() -> Router<ConfigRoutesState> {
     // permission-preview is always registered so the handler returns 503
     // when the `permission` feature is absent (a 404 would be ambiguous
     // with "agent not found"). Matches `runtime-stats` / trace conventions.
-    Router::new().route(
-        "/v1/agents/:id/permission-preview",
-        get(get_agent_permission_preview),
-    )
+    Router::new()
+        .route(
+            "/v1/agents/:id/permission-preview",
+            get(get_agent_permission_preview),
+        )
+        .route(
+            "/v1/admin/assistant/config",
+            get(get_admin_assistant_config).put(put_admin_assistant_config),
+        )
+}
+
+#[tracing::instrument(skip(state))]
+async fn get_admin_assistant_config(
+    State(state): State<ConfigRoutesState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(err) = crate::config_routes::ensure_admin_auth(&state.admin, &headers) {
+        return err.into_response();
+    }
+    match crate::admin_assistant::load_config(&state.config).await {
+        Ok(config) => Json(config).into_response(),
+        Err(err) => ApiError::Internal(err.to_string()).into_response(),
+    }
+}
+
+#[tracing::instrument(skip(state, body))]
+async fn put_admin_assistant_config(
+    State(state): State<ConfigRoutesState>,
+    headers: HeaderMap,
+    Json(body): Json<crate::admin_assistant::AdminAssistantConfig>,
+) -> Response {
+    if let Err(err) = crate::config_routes::ensure_admin_auth(&state.admin, &headers) {
+        return err.into_response();
+    }
+    match crate::admin_assistant::save_config(&state.config, body).await {
+        Ok(config) => Json(config).into_response(),
+        Err(err) => ApiError::BadRequest(err.to_string()).into_response(),
+    }
 }
 
 #[tracing::instrument(skip(state))]

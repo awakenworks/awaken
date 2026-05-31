@@ -87,6 +87,15 @@ pub fn ai_sdk_routes() -> Router<S> {
         )
         .merge(super::replay::ai_sdk_replay_routes())
 }
+
+/// Admin-only AI SDK stream routes.
+///
+/// These are deliberately separate from `/v1/ai-sdk/agents/:id/runs`: the
+/// admin assistant is a server-managed system assistant with locked admin
+/// tools, not a configurable/public AgentSpec.
+pub(crate) fn ai_sdk_admin_routes() -> Router<S> {
+    Router::new().route("/v1/admin/assistant/runs", post(ai_sdk_admin_assistant))
+}
 // ── Route handlers ──────────────────────────────────────────────────
 
 async fn ai_sdk_chat(
@@ -117,6 +126,85 @@ async fn ai_sdk_chat_agent_scoped(
 ) -> Result<Response, ApiError> {
     payload.agent_id = Some(agent_id);
     ai_sdk_chat_inner(st.scoped(&scope), payload).await
+}
+
+async fn ai_sdk_admin_assistant(
+    State(st): State<S>,
+    Extension(scope): Extension<ScopeContext>,
+    Json(payload): Json<AiSdkChatRequest>,
+) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
+    let config_state = st.config.as_ref().cloned().ok_or_else(|| {
+        ApiError::ServiceUnavailable("admin assistant requires config routes".into())
+    })?;
+    let config_state = crate::app::ConfigRoutesState {
+        admin: st.admin.clone(),
+        config: config_state,
+        run: st.run.clone(),
+        scope_provider: st.scope_provider.clone(),
+    };
+
+    let current =
+        st.run.runtime.registry_set().ok_or_else(|| {
+            ApiError::Internal("runtime does not expose a registry snapshot".into())
+        })?;
+    let assistant_config = crate::admin_assistant::load_config(&config_state.config)
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    let model_id = assistant_config
+        .model_id
+        .as_deref()
+        .filter(|model_id| {
+            current.models.get_model(model_id).is_some()
+                || current.models.get_pool(model_id).is_some()
+        })
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            crate::admin_assistant::select_admin_assistant_model_id(current.models.as_ref())
+        })
+        .ok_or_else(|| {
+            ApiError::Conflict(
+                "configure and publish the first model before using the admin assistant".into(),
+            )
+        })?;
+    let agent = crate::admin_assistant::admin_assistant_agent(
+        model_id,
+        Some(assistant_config.policy_prompt),
+    );
+
+    let processed = super::request::process_preview_chat_request(
+        payload.messages,
+        payload.thread_id,
+        payload.state,
+    )
+    .map_err(ApiError::BadRequest)?;
+    let candidate = build_admin_assistant_registry_set(&current, &agent, config_state)?;
+    let preview_runtime = Arc::new(
+        AgentRuntime::new_with_execution_resolver(Arc::new(RegistrySetResolver::new(
+            candidate.clone(),
+        )))
+        .with_registry_handle(RegistryHandle::new(candidate)),
+    );
+
+    let mut request = RunActivation::new(
+        processed.thread_id,
+        crate::request::inject_frontend_context(processed.messages, processed.state),
+    )
+    .with_agent_id(agent.id)
+    .with_adapter(awaken_server_contract::contract::tool_intercept::AdapterKind::AiSdk);
+    if !processed.decisions.is_empty() {
+        request = request.with_decisions(processed.decisions);
+    }
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(st.sse_buffer_size.max(32));
+    let sink: Arc<dyn EventSink> = Arc::new(BoundedChannelEventSink::new(event_tx));
+    tokio::spawn(async move {
+        let _ = preview_runtime.run(request, sink).await;
+    });
+
+    let encoder = AiSdkEncoder::new();
+    let sse_rx = wire_sse_relay(event_rx, encoder, st.sse_buffer_size, None);
+    Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)))
 }
 
 /// Draft-agent preview route:
@@ -258,6 +346,35 @@ fn build_preview_registry_set(st: &S, agent: &AgentSpec) -> Result<RegistrySet, 
                 ApiError::BadRequest(format!("invalid preview agent '{}': {error}", agent.id))
             })?;
     }
+
+    Ok(candidate)
+}
+
+fn build_admin_assistant_registry_set(
+    current: &RegistrySet,
+    agent: &AgentSpec,
+    config_state: crate::app::ConfigRoutesState,
+) -> Result<RegistrySet, ApiError> {
+    let candidate = RegistrySet {
+        agents: Arc::new(PreviewAgentRegistry::new(
+            agent.clone(),
+            current.agents.clone(),
+        )),
+        tools: crate::admin_assistant::admin_tool_overlay(current.tools.clone(), config_state),
+        models: current.models.clone(),
+        providers: current.providers.clone(),
+        plugins: current.plugins.clone(),
+        backends: current.backends.clone(),
+    };
+
+    RegistrySetResolver::new(candidate.clone())
+        .resolve(&agent.id)
+        .map_err(|error| {
+            ApiError::Internal(format!(
+                "invalid admin assistant agent '{}': {error}",
+                agent.id
+            ))
+        })?;
 
     Ok(candidate)
 }

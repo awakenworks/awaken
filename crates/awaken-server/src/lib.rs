@@ -7,6 +7,7 @@
 
 #![allow(missing_docs)]
 
+pub(crate) mod admin_assistant;
 pub(crate) mod admin_routes;
 pub mod app;
 pub(crate) mod auth;

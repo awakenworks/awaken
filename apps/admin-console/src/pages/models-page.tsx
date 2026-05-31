@@ -6,6 +6,7 @@ import { adminRoutes } from "@/lib/routes";
 import { useCrudPage } from "@/lib/use-crud-page";
 import { Field } from "@/components/form-components";
 import { ModelTestModal } from "@/components/model-test-modal";
+import { ModelProviderSetupBanner } from "@/components/model-provider-setup-banner";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import {
@@ -173,6 +174,12 @@ export function ModelsPage() {
           {t("models.new")}
         </button>
       </div>
+
+      <ModelProviderSetupBanner
+        providerCount={providerIds.length}
+        modelCount={crud.items.length}
+        onCreateModel={providerIds.length > 0 ? startNewModel : undefined}
+      />
 
       {crud.draft ? (
         <section className="mb-6 rounded-sm border border-line bg-surface p-5 shadow-sm">

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use tower_http::cors::{Any, CorsLayer};
 
 use awaken_contract::MailboxStore;
@@ -70,6 +70,21 @@ use crate::travel::tools::{
     AddTripTool, DeleteTripTool, SearchPlacesTool, SelectTripTool, UpdateTripTool,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum StarterSeedProfile {
+    /// Minimal production-like seed: default model/provider and one default agent.
+    Minimal,
+    /// Full example seed with demo agents, demo tools, and showcase plugins.
+    Demo,
+}
+
+impl StarterSeedProfile {
+    fn includes_demo(self) -> bool {
+        matches!(self, Self::Demo)
+    }
+}
+
 #[derive(Debug, Clone, Parser)]
 pub struct StarterBackendArgs {
     #[arg(long, env = "AWAKEN_HTTP_ADDR", default_value = "127.0.0.1:38080")]
@@ -99,6 +114,14 @@ pub struct StarterBackendArgs {
 
     #[arg(long, env = "MCP_SERVER_CMD")]
     pub mcp_server_cmd: Option<String>,
+
+    #[arg(
+        long,
+        env = "AWAKEN_SEED_PROFILE",
+        value_enum,
+        default_value = "minimal"
+    )]
+    pub seed_profile: StarterSeedProfile,
 
     #[arg(long, env = "A2A_REMOTE_URL")]
     pub a2a_remote_url: Option<String>,
@@ -360,8 +383,10 @@ pub async fn serve_starter_backend(args: StarterBackendArgs, config: StarterBack
         })
         .unwrap_or_default();
 
-    let base_prompt = format!(
-        "{}\n\
+    let demo_seed = args.seed_profile.includes_demo();
+    let base_prompt = if demo_seed {
+        format!(
+            "{}\n\
 Tool routing contract for this demo:\n\
 - When user explicitly asks for a tool by name, call that exact tool name (do not substitute).\n\
 - Frontend tools are askUserQuestion and set_background_color. If requested, call them directly.\n\
@@ -377,8 +402,11 @@ Deterministic compatibility directives:\n\
 - If message contains RUN_ASK_USER_TOOL, call askUserQuestion with a short question.\n\
 - If message contains RUN_BG_TOOL, call set_background_color with colors ['#dbeafe','#dcfce7'].\n\
 - If message contains RUN_FINISH_TOOL, call finish with summary and then stop.",
-        args.system_prompt
-    );
+            args.system_prompt
+        )
+    } else {
+        args.system_prompt.clone()
+    };
 
     // Parse reasoning effort from CLI/env
     let reasoning_effort = args.reasoning_effort.as_deref().and_then(|s| {
@@ -435,7 +463,11 @@ Deterministic compatibility directives:\n\
             system_prompt: base_prompt.clone(),
             max_rounds: 3,
             reasoning_effort: reasoning_effort.clone(),
-            plugin_ids: vec!["frontend_tools".into(), "observability".into()],
+            plugin_ids: if demo_seed {
+                vec!["frontend_tools".into(), "observability".into()]
+            } else {
+                vec!["observability".into()]
+            },
             ..Default::default()
         },
         &prompt_overrides,
@@ -756,74 +788,80 @@ Deterministic compatibility directives:\n\
         &prompt_overrides,
     );
 
-    let config_assistant_agent = config_assistant::config_assistant_agent(&prompt_overrides);
     let mut managed_agents = vec![default_agent.clone()];
-    let optional_agents: &[(&str, &AgentSpec)] = &[
-        ("permission", &permission_agent),
-        ("travel", &travel_agent),
-        ("research", &research_agent),
-        ("skills", &skills_agent),
-        ("limited", &limited_agent),
-        ("thinking", &thinking_agent),
-        ("a2a", &a2a_agent),
-        ("phases", &phases_agent),
-        ("genui", &genui_agent),
-        ("a2ui", &a2ui_agent),
-        ("json-render", &json_render_agent),
-        ("openui", &openui_agent),
-        ("json-render-ui", &json_render_ui_agent),
-        ("openui-ui", &openui_ui_agent),
-        ("profile", &profile_agent),
-        ("creative", &creative_agent),
-        ("compact", &compact_agent),
-        ("budget", &budget_agent),
-        ("config-assistant", &config_assistant_agent),
-    ];
-    for (id, agent) in optional_agents {
-        if default_id != *id {
-            managed_agents.push((*agent).clone());
+    if demo_seed {
+        let config_assistant_agent = config_assistant::config_assistant_agent(&prompt_overrides);
+        let optional_agents: &[(&str, &AgentSpec)] = &[
+            ("permission", &permission_agent),
+            ("travel", &travel_agent),
+            ("research", &research_agent),
+            ("skills", &skills_agent),
+            ("limited", &limited_agent),
+            ("thinking", &thinking_agent),
+            ("a2a", &a2a_agent),
+            ("phases", &phases_agent),
+            ("genui", &genui_agent),
+            ("a2ui", &a2ui_agent),
+            ("json-render", &json_render_agent),
+            ("openui", &openui_agent),
+            ("json-render-ui", &json_render_ui_agent),
+            ("openui-ui", &openui_ui_agent),
+            ("profile", &profile_agent),
+            ("creative", &creative_agent),
+            ("compact", &compact_agent),
+            ("budget", &budget_agent),
+            ("config-assistant", &config_assistant_agent),
+        ];
+        for (id, agent) in optional_agents {
+            if default_id != *id {
+                managed_agents.push((*agent).clone());
+            }
         }
     }
 
     // -- Tools --
 
     let generative_ui_resolver = SharedAgentResolver::default();
-    let tools: Vec<(&str, Arc<dyn Tool>)> = vec![
-        (
-            "render_json_ui",
-            Arc::new(StreamingGenerativeUiTool::json_render(
-                generative_ui_resolver.clone(),
-            )),
-        ),
-        (
-            "render_openui_ui",
-            Arc::new(StreamingGenerativeUiTool::openui(
-                generative_ui_resolver.clone(),
-            )),
-        ),
-        ("get_weather", Arc::new(GetWeatherTool)),
-        ("get_stock_price", Arc::new(GetStockPriceTool)),
-        ("append_note", Arc::new(AppendNoteTool)),
-        (
-            "serverInfo",
-            Arc::new(ServerInfoTool::new(&config.service_name)),
-        ),
-        ("failingTool", Arc::new(FailingTool)),
-        ("finish", Arc::new(FinishTool)),
-        ("progress_demo", Arc::new(ProgressDemoTool)),
-        ("askUserQuestion", Arc::new(AskUserQuestionTool)),
-        ("set_background_color", Arc::new(SetBackgroundColorTool)),
-        ("add_trips", Arc::new(AddTripTool)),
-        ("update_trips", Arc::new(UpdateTripTool)),
-        ("delete_trips", Arc::new(DeleteTripTool)),
-        ("select_trip", Arc::new(SelectTripTool)),
-        ("search_for_places", Arc::new(SearchPlacesTool)),
-        ("search", Arc::new(SearchTool)),
-        ("write_report", Arc::new(WriteReportTool)),
-        ("set_research_question", Arc::new(SetQuestionTool)),
-        ("delete_resources", Arc::new(DeleteResourcesTool)),
-        ("extract_resources", Arc::new(ExtractResourcesTool)),
-    ];
+    let tools: Vec<(&str, Arc<dyn Tool>)> = if demo_seed {
+        vec![
+            (
+                "render_json_ui",
+                Arc::new(StreamingGenerativeUiTool::json_render(
+                    generative_ui_resolver.clone(),
+                )),
+            ),
+            (
+                "render_openui_ui",
+                Arc::new(StreamingGenerativeUiTool::openui(
+                    generative_ui_resolver.clone(),
+                )),
+            ),
+            ("get_weather", Arc::new(GetWeatherTool)),
+            ("get_stock_price", Arc::new(GetStockPriceTool)),
+            ("append_note", Arc::new(AppendNoteTool)),
+            (
+                "serverInfo",
+                Arc::new(ServerInfoTool::new(&config.service_name)),
+            ),
+            ("failingTool", Arc::new(FailingTool)),
+            ("finish", Arc::new(FinishTool)),
+            ("progress_demo", Arc::new(ProgressDemoTool)),
+            ("askUserQuestion", Arc::new(AskUserQuestionTool)),
+            ("set_background_color", Arc::new(SetBackgroundColorTool)),
+            ("add_trips", Arc::new(AddTripTool)),
+            ("update_trips", Arc::new(UpdateTripTool)),
+            ("delete_trips", Arc::new(DeleteTripTool)),
+            ("select_trip", Arc::new(SelectTripTool)),
+            ("search_for_places", Arc::new(SearchPlacesTool)),
+            ("search", Arc::new(SearchTool)),
+            ("write_report", Arc::new(WriteReportTool)),
+            ("set_research_question", Arc::new(SetQuestionTool)),
+            ("delete_resources", Arc::new(DeleteResourcesTool)),
+            ("extract_resources", Arc::new(ExtractResourcesTool)),
+        ]
+    } else {
+        Vec::new()
+    };
 
     // -- Managed defaults --
 
@@ -1295,6 +1333,7 @@ mod build_genai_client_tests {
             args.leader_seed,
             "default must be true for single-replica back-compat"
         );
+        assert_eq!(args.seed_profile, super::StarterSeedProfile::Minimal);
     }
 
     #[test]
@@ -1304,5 +1343,12 @@ mod build_genai_client_tests {
         // in parallel tests.
         let args = super::StarterBackendArgs::parse_from(["binary", "--leader-seed=false"]);
         assert!(!args.leader_seed);
+    }
+
+    #[test]
+    fn seed_profile_accepts_demo_flag() {
+        use clap::Parser as _;
+        let args = super::StarterBackendArgs::parse_from(["binary", "--seed-profile=demo"]);
+        assert_eq!(args.seed_profile, super::StarterSeedProfile::Demo);
     }
 }

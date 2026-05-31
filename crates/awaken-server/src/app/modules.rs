@@ -375,6 +375,7 @@ pub struct EvalRoutesState {
 pub struct ProtocolRoutesState {
     pub admin: AdminModuleState,
     pub run: RunModuleState,
+    pub config: Option<ConfigModuleState>,
     pub protocol: ProtocolModuleState,
     pub sse_buffer_size: usize,
     pub replay_buffer_capacity: usize,
@@ -606,6 +607,7 @@ impl ServerState {
         ProtocolRoutesState {
             admin: self.admin_module(),
             run: self.run_module(),
+            config: self.config_module(),
             protocol: self.protocol_module(),
             sse_buffer_size: self.server_config.sse_buffer_size,
             replay_buffer_capacity: self.server_config.replay_buffer_capacity,

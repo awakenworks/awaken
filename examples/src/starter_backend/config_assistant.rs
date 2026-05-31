@@ -1,19 +1,18 @@
-//! `config-assistant` agent factory.
+//! Legacy demo-only `config-assistant` agent factory.
 //!
-//! The admin console's `/assistant` page sends every chat turn to
-//! `POST /v1/ai-sdk/agents/config-assistant/runs`. Without a seeded
-//! agent the dispatcher returns "agent not found" and the page sits
-//! silently. Seed a default-model, text-only agent here so the page
-//! is usable on a fresh starter boot.
+//! The production admin console uses the server-managed Admin Assistant at
+//! `POST /v1/admin/assistant/runs`. This seeded agent is kept for
+//! `AWAKEN_SEED_PROFILE=demo` scenarios that need the older chat-through-agent
+//! example flow.
 
 use awaken_contract::AgentSpec;
 
 use crate::starter_backend::generative_ui_config::StarterPromptOverrides;
 
-/// Build the default `config-assistant` agent. Bound to the `default`
-/// model so it inherits whatever provider/key the operator already
-/// configured. No special tools — the assistant guides config changes
-/// by suggestion, the operator applies them via the admin UI.
+/// Build the legacy demo `config-assistant` agent. Bound to the `default`
+/// model so it inherits whatever provider/key the operator already configured.
+/// No special tools: the assistant guides config changes by suggestion, and the
+/// operator applies them through the admin UI.
 pub fn config_assistant_agent(prompt_overrides: &StarterPromptOverrides) -> AgentSpec {
     super::apply_agent_prompt_override(
         AgentSpec {
