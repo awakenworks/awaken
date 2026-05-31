@@ -167,7 +167,7 @@ When the LLM stops due to `MaxTokens` after producing partial text or incomplete
 
 ## Key Files
 
-- `crates/awaken-contract/src/contract/inference.rs` -- `ContextWindowPolicy`, `ContextCompactionMode`
+- `crates/awaken-runtime-contract/src/contract/inference.rs` -- `ContextWindowPolicy`, `ContextCompactionMode`
 - `crates/awaken-runtime/src/context/transform/mod.rs` -- `ContextTransform` (truncation)
 - `crates/awaken-runtime/src/context/transform/compaction.rs` -- artifact compaction
 - `crates/awaken-runtime/src/context/compaction.rs` -- boundary finding, load-time trimming

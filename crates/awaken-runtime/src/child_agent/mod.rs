@@ -13,13 +13,13 @@
 //! - **Outbound**: read `BackendRunResult.state` after the call, then publish
 //!   to parent state via `ToolOutput.command`.
 //!
-//! Backend capabilities still apply. Parent → child state seeding is
-//! supported only by backends whose
-//! The in-process Local backend applies the seed before the child's first
-//! step. A2A and custom remote backends have no agreed seed-passing wire
-//! protocol; `run_child_agent` rejects seeded delegate requests against
-//! non-local execution plans rather than silently dropping the seed. If you
-//! need to ship data to a remote child, encode it into the prompt yourself.
+//! Backend capabilities still apply, but parent → child state seeding is a
+//! local-execution rule rather than a `BackendProfile` dimension. The
+//! in-process Local backend applies the seed before the child's first step.
+//! A2A and custom remote backends have no agreed seed-passing wire protocol;
+//! `run_child_agent` rejects seeded delegate requests against non-local
+//! execution plans rather than silently dropping the seed. If you need to ship
+//! data to a remote child, encode it into the prompt yourself.
 //!
 //! For tools that want to stream the child's tokens into their own output,
 //! wrap the activity sink with [`StreamingPassthroughSink`].

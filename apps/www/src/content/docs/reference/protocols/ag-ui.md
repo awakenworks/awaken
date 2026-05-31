@@ -37,7 +37,18 @@ SSE stream (`text/event-stream`). Each frame is a JSON-encoded AG-UI `Event`.
 
 | Route | Method | Description |
 |-------|--------|-------------|
+| `/v1/ag-ui/run` | POST | Start a run and stream AG-UI events. |
+| `/v1/ag-ui/threads/:thread_id/runs` | POST | Start a thread-scoped run. |
+| `/v1/ag-ui/agents/:agent_id/runs` | POST | Start an agent-scoped run. |
+| `/v1/ag-ui/threads/:thread_id/interrupt` | POST | Interrupt the thread and supersede queued work. |
+| `/v1/ag-ui/threads/:thread_id/replay` | GET | Replay durable protocol frames for a thread. |
 | `/v1/ag-ui/threads/:id/messages` | GET | Retrieve thread message history. |
+
+Replay requires a configured `ProtocolReplayLog`. It accepts `?cursor=` or
+`Last-Event-ID`, plus `?limit=` (default `100`, max `500`), and returns SSE
+frames with the protocol replay cursor as the SSE `id`. Missing replay storage
+returns `503`; malformed cursors return `400`; expired cursors return
+`410 Gone`.
 
 ## Event Mapping
 

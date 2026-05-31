@@ -9,6 +9,121 @@ Development work lands here before the next versioned release.
 
 ### Changed
 
+- **BREAKING — contract crates split into runtime and server/store surfaces.**
+  `awaken-runtime-contract` now owns runtime-facing contracts such as
+  `ThreadCommit`, `ThreadCommitOutcome`, `CommitCoordinator`, runtime storage
+  read ports, tool/event/inference types, state, and registry specs.
+  `awaken-server-contract` re-exports the runtime vocabulary and owns
+  server/store-facing contracts such as `ThreadQuery`, store traits, scoped
+  store wrappers, audit/config stores, outbox, protocol replay, versioned
+  registry, and staged commit outcomes.
+
+  The historical `awaken-contract` crate remains as a transition facade, but it
+  does not preserve every 0.5 module path. Treat this split as breaking and
+  import directly from the narrower crate you implement against. The `awaken`
+  facade keeps `awaken::contract::*` for runtime-facing contracts and exposes
+  server/store-owned contracts under `awaken::server_contract::*`.
+  `awaken::prelude::*` remains a convenience layer for common agent-building
+  types, but it is not a guarantee that every 0.5 storage/commit symbol is
+  imported unchanged. See the 0.5 -> 0.6 migration guide in the docs.
+
+- **BREAKING — checkpoint commit vocabulary renamed and narrowed.** `Checkpoint`
+  is now the deprecated type-name alias for `ThreadCommit`; the alias does not
+  preserve 0.5 public struct fields or field access. Update struct literals and
+  reads as follows:
+
+  | 0.5 field | 0.6 field |
+  |---|---|
+  | `messages` | `message_delta` |
+  | `expected_message_version` | `expected_message_count` |
+  | `run` | `run_projection` |
+  | `thread_state` | `thread_state_snapshot` |
+
+  Legacy constructors remain as deprecated helpers where their semantics still
+  map cleanly: `append(...)`, `checkpoint_only(...)`, and
+  `with_thread_state(...)`.
+
+- **BREAKING — runtime commit outcomes no longer return event/outbox ids.**
+  `CheckpointCommitOutcome` is now the deprecated type-name alias for
+  `ThreadCommitOutcome`, which intentionally carries only runtime commit
+  success/failure. The old id fields moved to the server/store staged commit
+  surface:
+
+  | 0.5 outcome field | 0.6 location |
+  |---|---|
+  | `canonical_event_ids` | `awaken_server_contract::ThreadCommitStagedOutcome::canonical_event_ids` |
+  | `server_event_ids` | `awaken_server_contract::ThreadCommitStagedOutcome::server_event_ids` |
+  | `additional_outbox_ids` | `awaken_server_contract::ThreadCommitStagedOutcome::additional_outbox_ids` |
+
+  `CommitCoordinator::commit_checkpoint` remains the runtime-only durability
+  boundary. Store implementations that need event/outbox ids should implement
+  `awaken_server_contract::StagedCommitCoordinator::commit_checkpoint_staged`.
+
+- **BREAKING — runtime persistence wiring now uses commit coordinators.** The
+  0.5 `with_thread_run_store(...)` builder/runtime setters no longer define the
+  durable write boundary. Wire `AgentRuntimeBuilder::with_commit_coordinator`
+  or `AgentRuntime::with_commit_coordinator` with `MemoryCommitCoordinator`,
+  `FileCommitCoordinator`, or `PgCommitCoordinator`. The coordinator's
+  `reader()` supplies the runtime checkpoint read port, keeping reads and
+  writes on the same storage boundary. `FileCommitCoordinator` is dev/local
+  only and requires `AWAKEN_ALLOW_DEV_FILE_COORDINATOR=true` in release builds;
+  use `PgCommitCoordinator` for strict cross-store transactionality.
+
+- **BREAKING — root run input is now `RunActivation`.** `RunRequest` is
+  replaced by an owned activation boundary split into `intent`, `input`,
+  `options`, `trace`, `control`, `capture`, `persistence`, and `inherited`.
+  Most direct callers should construct `RunActivation::new(thread_id, messages)`
+  and then apply builder helpers such as `with_agent_id`. Server/mailbox paths
+  use the lower-level fields for idempotent submit, HITL resume, inbox,
+  pending-boundary, and inherited resolver wiring.
+
+- **BREAKING — resolution and backend capability APIs are typed.**
+  `ResolvedExecution` is now `ExecutionPlan` / `ResolvedRunPlan`; root
+  execution resolves through the async `Resolver::resolve(ResolutionRequest)`
+  boundary. `BackendCapabilities` is replaced by `BackendProfile` with typed
+  capability dimensions for cancellation, continuation, decisions, overrides,
+  frontend tools, persistence, waits, transcript, and output. Backend requests
+  now carry additional runtime/server wiring such as commit coordination,
+  pending-boundary control, state seed input, and thread-state output.
+
+- **BREAKING — server embedding uses `ServerState`.** `AppState` remains a
+  deprecated alias, but new public docs and examples use `ServerState`.
+  `build_router` borrows `&ServerState`; `build_service_router` validates and
+  wraps an owned `ServerState`. Server internals that used to be reached
+  through public fields should be reached through module accessors such as
+  `run_routes_state()`, `config_routes_state()`, and `admin_api_config()`.
+
+- **Admin exposure and eval limits are explicit server config.**
+  `AdminApiConfig` adds `expose_trace_routes` and `expose_eval_routes`.
+  `ServerConfig` adds `eval_limits` for `/v1/eval/*` concurrency and request
+  caps. Server startup refuses exposed config, trace, or eval admin surfaces
+  without `AdminApiConfig.bearer_token` or `AWAKEN_ADMIN_API_BEARER_TOKEN`.
+  `expose_config_routes=false` hides config/admin-run routes only; eval routes
+  default to exposed and trace routes default to hidden.
+
+- **Managed config restore is editing-store only.** Restore copies an audit
+  snapshot back into the config store and records a fresh `restore` audit event,
+  but it does not hot-swap the live runtime registry. Publish the restored
+  payload with a normal config write after review when it should affect later
+  runs.
+
+- **Mailbox status is delivery lifecycle, not run outcome.** A dispatch marked
+  `Acked` was accepted/consumed by the mailbox path. Execution success/failure
+  is represented by the associated run status, termination reason, and
+  canonical events.
+
+- **Thread listing cursors are now query-shape checked.** Bare numeric cursors
+  remain accepted only for unfiltered thread listings. Filtered listings must
+  continue with the opaque cursor returned for the same resource/lineage/backend
+  scope query. This can reject 0.5-era numeric cursors after a server upgrade
+  when the original listing used filters; the stricter check prevents wrong
+  pages and cross-scope pagination leaks.
+
+- **`ThreadQuery.id_prefix` is backend-internal.** Scoped stores use it to push
+  tenant/scope filtering into the backend before pagination. HTTP routes do not
+  expose it as a user-controlled filter; external callers should use the
+  documented resource/lineage filters and server-owned scope boundaries.
+
 - **BREAKING — `ModelBindingSpec` merged into unified `ModelSpec`** carrying
   addressing, intrinsic capabilities, and pricing. The two-step
   `AgentSpec.model_id -> ModelBindingSpec -> runtime ModelBinding` chain
@@ -118,6 +233,18 @@ Development work lands here before the next versioned release.
   entries, and orphan permission rules each emit a `tracing` warning. The
   orphan-rule check is scoped to literal tool ids; glob/regex permission
   rules (`mcp:*`, `/B.*/`) are skipped to avoid false positives.
+
+- Server route surfaces for current admin/runtime operations: `/v1/system/modules`,
+  `/v1/runs/summary`, canonical thread/run event list and SSE stream routes,
+  `/v1/traces*`, `/v1/eval/*`, provider removal preview, and agent override
+  validation. These routes are documented with their exposure gates in the HTTP
+  API reference.
+
+- Server/store durability vocabulary for canonical events, protocol replay,
+  staged outbox ids, mailbox dispatch lifecycle, config versioning, profile
+  state, and shared state. Runtime-facing commits stay on the narrower
+  `ThreadCommitOutcome` boundary; server/store commit implementations return
+  `ThreadCommitStagedOutcome` when event/outbox ids are needed.
 
 ## [0.5.0] - 2026-05-10
 

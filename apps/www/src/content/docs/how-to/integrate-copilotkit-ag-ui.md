@@ -13,7 +13,7 @@ Use this when you have a CopilotKit React frontend and need to connect it to an 
 
 ```toml
 [dependencies]
-awaken = { version = "0.5", features = ["server"] }
+awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["server"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -33,7 +33,7 @@ use awaken::registry_spec::ModelSpec;
 use awaken::registry_spec::AgentSpec;
 use awaken::stores::{InMemoryMailboxStore, InMemoryStore};
 use awaken::AgentRuntimeBuilder;
-use awaken::server::app::{AppState, ServerConfig};
+use awaken::server::app::{ServerState, ServerConfig};
 use awaken::server::mailbox::{Mailbox, MailboxConfig};
 use awaken::server::routes::build_router;
 
@@ -69,7 +69,7 @@ async fn main() {
         MailboxConfig::default(),
     ));
 
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         store as Arc<dyn ThreadRunStore>,
@@ -95,6 +95,7 @@ The server automatically registers AG-UI routes at:
 - `POST /v1/ag-ui/threads/:thread_id/runs` -- start a thread-scoped run
 - `POST /v1/ag-ui/agents/:agent_id/runs` -- start an agent-scoped run
 - `POST /v1/ag-ui/threads/:thread_id/interrupt` -- interrupt a running thread
+- `GET /v1/ag-ui/threads/:thread_id/replay` -- replay durable protocol frames when a `ProtocolReplayLog` is wired
 - `GET /v1/ag-ui/threads/:id/messages` -- retrieve thread messages
 
 2. Connect the CopilotKit frontend.
@@ -160,7 +161,7 @@ npm run dev
 | `crates/awaken-server/src/protocols/ag_ui/http.rs` | AG-UI route handlers |
 | `crates/awaken-server/src/protocols/ag_ui/encoder.rs` | AG-UI SSE event encoder |
 | `crates/awaken-server/src/routes.rs` | Unified router builder |
-| `crates/awaken-server/src/app.rs` | `AppState` and `ServerConfig` |
+| `crates/awaken-server/src/app.rs` | `ServerState` and `ServerConfig` |
 | `examples/copilotkit-starter/agent/src/main.rs` | Backend entry for the CopilotKit starter |
 
 ## Related

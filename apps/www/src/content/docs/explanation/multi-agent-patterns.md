@@ -20,7 +20,7 @@ An agent can declare sub-agents it is allowed to delegate to:
 
 Each ID in `delegates` must be a registered agent in the `AgentSpecRegistry`. During resolution, the runtime creates an `AgentTool` for each delegate. From the LLM's perspective, each sub-agent appears as a regular tool named `agent_run_{delegate_id}`.
 
-The `AgentTool` holds an `Arc<dyn ExecutionResolver>` (`crates/awaken-runtime/src/extensions/a2a/agent_tool.rs:38`), **not** a pre-selected backend. When the LLM calls the tool, `execute()` invokes `resolver.resolve_execution(&agent_id)` **at call time** (agent_tool.rs:169), and the resolver decides per call:
+The `AgentTool` holds an `Arc<dyn AgentResolver>`, **not** a pre-selected backend. When the LLM calls the tool, `execute()` invokes `resolver.resolve_execution(&agent_id)` **at call time**, and the resolver decides per call:
 
 - **Local agents** (no `endpoint` field) resolve to a local `ResolvedAgent` and execute inline within the same runtime.
 - **Remote agents** (with `endpoint` field) resolve to `ResolvedBackendAgent` and execute through the configured `ExecutionBackend` (today: A2A) — `message:send` request, then poll the resulting task for completion.
@@ -64,9 +64,17 @@ When you are writing a custom `Tool` that needs to delegate to another agent —
 
 `run_child_agent` accepts `initial_state_seed: Option<PersistedState>` for parent → child seeding and returns the child's `BackendRunResult.state` (a `PersistedState`) for the parent tool to decode and surface as a `StateCommand` on its `ToolOutput`. State flows back through the same `ToolOutput.command` channel any other tool uses — there is no separate "sub-agent export" mechanism.
 
-State seeding is **Local-backend only** and gated by `BackendCapabilities::delegate_state_seed`. Non-local backends (A2A and any future backend that lacks a seed-passing wire protocol) reject seeded delegate requests with `ExecutionBackendError`; the child's `BackendRunResult.state` is still returned for read-back.
+State seeding is **Local-backend only**. It is not a `BackendProfile`
+capability flag: `validate_delegate_execution_request` rejects
+`BackendDelegateRunRequest.state_seed` whenever the resolved `ExecutionPlan` is
+non-local. A2A and custom remote backends have no seed-passing wire protocol,
+so seeded delegate requests fail with `ExecutionBackendError` instead of
+silently dropping the seed. The child's `BackendRunResult.state` is still
+available for read-back when the backend returns a result.
 
-Backend implementors should construct `BackendCapabilities` via its constructors and set `delegate_state_seed = true` only when the backend actually applies `BackendDelegateRunRequest.state_seed`; otherwise seeded delegate requests are rejected instead of silently dropping the seed.
+Backend implementors should use `BackendProfile` for typed capabilities such as
+continuation, persistence, waits, transcript shape, and output shape. Parent →
+child state seed remains a local-execution rule outside that profile.
 
 ## Sub-Agent Patterns
 
@@ -130,7 +138,7 @@ Root execution and delegation both use the canonical `ExecutionBackend` trait:
 
 ```rust
 pub trait ExecutionBackend: Send + Sync {
-    fn capabilities(&self) -> BackendCapabilities;
+    fn capabilities(&self) -> BackendProfile;
 
     async fn abort(&self, request: BackendAbortRequest<'_>)
         -> Result<(), ExecutionBackendError>;
@@ -147,7 +155,7 @@ pub trait ExecutionBackend: Send + Sync {
 }
 ```
 
-`BackendRunResult` carries the agent ID, status, termination reason, optional response text, structured output, run ID, inbox, and persisted state. `BackendRunStatus` variants include `Completed`, `WaitingInput`, `WaitingAuth`, `Suspended`, `Failed`, `Cancelled`, and `Timeout`.
+`BackendRunResult` carries the agent ID, status, termination reason, optional response text, structured output, run ID, inbox, run-scoped persisted state, and optional thread-scoped persisted state. `BackendRunStatus` variants include `Completed`, `WaitingInput`, `WaitingAuth`, `Suspended`, `Failed`, `Cancelled`, and `Timeout`.
 
 This trait is the extension point for custom local or remote execution backends beyond the built-in local and A2A implementations. `awaken_runtime::extensions::a2a` still re-exports `AgentBackend`, `AgentBackendFactory`, and `DelegateRunResult` as compatibility aliases, but new code should use the `ExecutionBackend` names.
 

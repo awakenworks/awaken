@@ -20,7 +20,7 @@ the tool can persist values across calls within a run.
 
 ```toml
 [dependencies]
-awaken = { version = "0.5" }
+awaken = { git = "https://github.com/AwakenWorks/awaken" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

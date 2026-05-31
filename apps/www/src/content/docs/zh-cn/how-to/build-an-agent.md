@@ -48,10 +48,12 @@ let builder = builder
 4. 挂接持久化：
 
 ```rust
-use awaken::stores::InMemoryStore;
+use awaken::contract::commit_coordinator::CommitCoordinator;
+use awaken::stores::{InMemoryStore, MemoryCommitCoordinator};
 
 let store = Arc::new(InMemoryStore::new());
-let builder = builder.with_thread_run_store(store);
+let coordinator = MemoryCommitCoordinator::wrap(store) as Arc<dyn CommitCoordinator>;
+let builder = builder.with_commit_coordinator(coordinator);
 ```
 
 5. 构建并校验：
@@ -123,7 +125,7 @@ let result = runtime.run_to_completion(request).await?;
 ## 关键文件
 
 - `crates/awaken-runtime/src/builder.rs`
-- `crates/awaken-contract/src/registry_spec.rs`
+- `crates/awaken-runtime-contract/src/registry_spec.rs`
 - `crates/awaken-runtime/src/runtime/agent_runtime/mod.rs`
 
 ## 相关

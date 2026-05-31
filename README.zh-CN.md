@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-current-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
-Awaken 是面向生产的 Rust AI Agent runtime：执行核心、协议适配、状态模型和运行时配置都在同一个后端里。它适合需要类型化工具与状态、热更新 agent/model 配置、持久 run 控制、多协议复用，而不是为每个前端重复实现 agent 逻辑的团队。
+用 Rust 写一次 Agent 能力，把行为调优交给在线配置，并让同一个 runtime 服务本地开发、生产 API、多协议前端和管理控制台。Awaken 是面向生产的 Rust AI Agent 后端：tools、state、plugins 留在代码里，agents、models、prompts 通过 server 控制面验证、发布和热调优。应用自己处理 I/O 时用 runtime 模式；需要协议适配、持久编排、Trace/Eval 和控制台时用 server 模式。
 
 在线文档：[Awaken docs（英文）](https://awakenworks.github.io/awaken) · [中文文档](https://awakenworks.github.io/awaken/zh-cn) · [Changelog](./CHANGELOG.md)。MSRV：Rust 1.93。发布的 crate 是 `awaken`；`awaken-agent` 是早期同名发布期的兼容包，导入名都是 `awaken`。
 
@@ -12,10 +12,34 @@ Awaken 是面向生产的 Rust AI Agent runtime：执行核心、协议适配、
   <img src="./docs/assets/demo.svg" alt="Awaken 演示 — 工具调用 + LLM 流式输出" width="800">
 </p>
 
+## 选择开发模式
+
+Awaken 把 **agent 执行 loop** 和 **服务控制面**分开。runtime 负责 agent 推理、工具选择、类型化 phase、状态提交和直接 run API；server 负责服务侧编排：HTTP/SSE、协议适配、mailbox 派发、托管配置、审计/恢复和管理控制台工作流。
+
+| 模式 | 从这里开始 | 你负责 | Awaken 提供 |
+|---|---|---|---|
+| **runtime 开发** | `awaken` / `awaken-runtime` | HTTP/UI/job scheduling、auth、配置存储、具体 tools/providers/stores | 直接 run API、流式事件、9 phase loop、类型化 tools/state、取消与 HITL primitives |
+| **server 开发** | `awaken-server` + `awaken-stores` | 部署、租户/auth 策略、已注册 tools/providers、store 选择 | HTTP resources、SSE replay、AI SDK/AG-UI/A2A/MCP/ACP adapters、mailbox 编排、`/v1/config/*`、registry snapshots、管理控制台 |
+
+构建 Rust 应用或测试 harness，并且要自己掌控 I/O 时，从 runtime 模式开始；当多个客户端、运维人员或后台 worker 需要共享同一个 agent surface，并且要求持久 run 与在线配置时，使用 server 模式。
+
+这里的 runtime 模式指标准 Rust 程序里的进程内 library 使用，不是 `no_std` 或无 Tokio 的嵌入式设备目标：`awaken-runtime` 当前依赖 Tokio 来处理 timer、timeout、异步协调和 HTTP/provider 执行。
+
+当前 IO/runtime 边界：
+
+| 组件 | Tokio / IO 画像 |
+|---|---|
+| `awaken-runtime` | 需要 Tokio。phase loop 是进程内执行，但 crate 内包含 `genai` / `reqwest` provider 路径，以及基于 Tokio 的 timeout、retry、后台任务机制。 |
+| `awaken-runtime-contract` / `awaken-server-contract` | 主要是 contract/type surface，适合作 API 边界；但目标仍然是 `std` Rust crate，不是 `no_std` 嵌入式目标。 |
+| Permission、Reminder、Deferred Tools、Generative UI | 主要是进程内 policy/state/event 逻辑，但依赖 runtime contract/runtime 栈，因此继承 Tokio/std 假设。 |
+| MCP 与 Skills | 具备 IO 能力：MCP 使用 network/stdio/process transport；Skills 可以从磁盘读取 skill package、启动配置命令，并可选注册 MCP tools。 |
+| Observability | 内存记录是本地逻辑；OTLP/file/metrics exporter 会引入外部 IO。 |
+| Stores 与 Server | 明确的 IO 层：memory/file/PostgreSQL/SQLite/NATS stores、HTTP routes、SSE、mailbox workers 和 protocol replay。 |
+
 ## Awaken 的独特价值
 
 - **一个 agent 后端，多种客户端。** AI SDK v6、AG-UI / CopilotKit、A2A、MCP、ACP 都是同一条 runtime event stream 和 run model 上的适配层，不需要为每个协议重写 agent。
-- **运行时配置就是控制面。** Provider、`ModelSpec`、model pool、agent、tool、插件 section、MCP server 都可以在服务运行中校验并发布成新的 registry snapshot。
+- **托管配置就是控制面。** Provider、`ModelSpec`、model pool、agent、tool、插件 section、MCP server 都可以在服务运行中校验并发布成新的 registry snapshot。
 - **模型与 provider 运维是内建能力。** `ModelSpec` 同时承载寻址、capability bounds、modalities、knowledge cutoff 与定价；model pool 负责故障切换；provider discovery 只在安全边界内补全能力字段，custom adapter 默认不会被当成可信 discovery 来源。
 - **流式输出按生产 I/O 处理。** mid-stream 中断与 idle stall 触发类型化恢复方案，尊重 `Retry-After`，并可通过 `StreamCheckpointStore` 跨进程恢复。([详情](https://awakenworks.github.io/awaken/zh-cn/how-to/recover-streaming-llms))
 - **状态与工具执行可类型化、可回放。** 类型化 `StateKey` + 合并策略，`TypedTool` 自动生成 JSON Schema，纯 `ToolGate` 拦截，phase 级原子提交，让并发工具调用有审计边界而不是隐藏副作用。
@@ -41,24 +65,20 @@ Awaken 把**写一次的代码**和**持续调优的配置**分开。
 
 runtime 每轮跑 9 个类型化 phase，其中包含一个纯判定的 `ToolGate`；状态变更在每轮结束时批量原子提交。
 
-## 上手
+## 上手：runtime 模式
 
 **前置条件：** Rust 1.93+ 和一个 OpenAI 兼容的 API Key。
 
 ```toml
 [dependencies]
-awaken = "0.5"
+awaken = { git = "https://github.com/AwakenWorks/awaken" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
 ```
 
-示例默认面向已发布的 `0.5` 版本线。如果你跟随 main 分支上的未发布 API，
-请改用仓库依赖：
-
-```toml
-awaken = { git = "https://github.com/AwakenWorks/awaken" }
-```
+这些示例跟随当前 main 分支 API。从已发布 `0.5` 版本线升级时，请阅读
+[0.5 到 0.6 迁移指南](https://awakenworks.github.io/awaken/zh-cn/how-to/migrate-to-0-6/)。
 
 ```bash
 export OPENAI_API_KEY=<your-key>
@@ -71,6 +91,7 @@ use awaken::engine::GenaiExecutor;
 use awaken::prelude::*;
 use async_trait::async_trait;
 use serde_json::json;
+use std::sync::Arc;
 
 struct EchoTool;
 
@@ -124,9 +145,17 @@ cargo test -p awaken --test readme_quickstart        # 离线（脚本化 provid
 OPENAI_API_KEY=<key> cargo test -p awaken --test readme_live_provider -- --ignored  # 真实 provider
 ```
 
-## 通过任意协议提供服务
+## server 模式：通过任意协议提供服务
 
-把 runtime 包成 HTTP/stdio 之后，同一个 agent 同时服务 React、Next.js、A2A 对端、MCP 客户端与 ACP 宿主，无需改动 agent 代码。三个组件夹在 runtime 与 wire 之间：
+把 runtime 包成 HTTP/stdio 之后，同一个 agent 同时服务 React、Next.js、A2A 对端、MCP 客户端与 ACP 宿主，无需改动 agent 代码。server 模式在 runtime 外增加服务层能力：
+
+- thread、run、config、capabilities、health 的 HTTP resources。
+- SSE stream/replay，以及 AI SDK v6、AG-UI、A2A、MCP、ACP 协议适配。
+- 持久 mailbox 派发，支持可恢复、可取消、可中断和 HITL 阻塞的 run。
+- 托管配置 API 和管理控制台工作流，用于校验、预览、发布、恢复、审计 agent/model/provider/plugin 配置。
+- 可选 server 模块：canonical events、trace persistence、eval datasets/runs、system discovery、runtime stats 与 run summaries。
+
+三个组件夹在 runtime 与 wire 之间：
 
 - `ThreadRunStore` — 持久化 thread 消息与 run 记录（memory / file / PostgreSQL 在 `awaken-stores` 里）。
 - `Mailbox` — 持久 run 队列，把 HTTP 请求与 agent 执行解耦（memory / SQLite / NATS 可插拔）。
@@ -201,6 +230,23 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 把 `ConfigStore` 接入 `ServerState` 后，[`apps/admin-console`](./apps/admin-console/) 就变成同一套配置 API 上的浏览器控制面（通过 `VITE_BACKEND_URL` 读服务端地址）。运维可以校验草稿、发布 registry snapshot、测试 provider、查看 runtime 健康、在保存前预览 agent 修改，并从 audit log 恢复历史配置。首页优先展示真实运维信号：等待 HITL 决策、运行/排队负载、provider/MCP 健康、滚动窗口推理/错误/token 统计，以及最近审计事件。
 
+下面的截图是使用 sample API data 生成的静态文档图。实际运行中的管理控制台会从配置的后端 API 读取这些值。
+
+<table>
+  <tr>
+    <td width="33%"><a href="./docs/assets/admin-console/01-dashboard.png"><img src="./docs/assets/admin-console/01-dashboard.png" alt="管理控制台 Dashboard：实时负载、Agent 活动、最近审计事件、健康状态和系统元数据" /></a></td>
+    <td width="33%"><a href="./docs/assets/admin-console/02-agent-editor.png"><img src="./docs/assets/admin-console/02-agent-editor.png" alt="Agent 编辑器：模型、系统提示词、草稿预览和保存控制" /></a></td>
+    <td width="33%"><a href="./docs/assets/admin-console/03-agents-list.png"><img src="./docs/assets/admin-console/03-agents-list.png" alt="Agents 列表：筛选、插件元数据和推理统计" /></a></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Dashboard</b><br/>负载 · 健康 · 最近审计</sub></td>
+    <td align="center"><sub><b>Agent Editor</b><br/>校验 · 预览 · 保存</sub></td>
+    <td align="center"><sub><b>Agents</b><br/>筛选 · 插件 · Runtime stats</sub></td>
+  </tr>
+</table>
+
+完整界面说明：[管理控制台参考](https://awakenworks.github.io/awaken/zh-cn/reference/admin-console) · 操作手册：[使用管理控制台](https://awakenworks.github.io/awaken/zh-cn/how-to/use-admin-console)。
+
 ## 内置插件
 
 门面 crate 的 `full` feature 默认启用以下插件。`default-features = false` 可
@@ -238,7 +284,8 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 ```text
 awaken                   门面 crate，管理 feature flag
-├─ awaken-contract       共享契约：spec、tool、event、transport、state model
+├─ awaken-runtime-contract runtime 契约：spec、tool、event、state、commit coordinator
+├─ awaken-server-contract  server/store 契约：query、scoped store、mailbox/outbox、staged commit
 ├─ awaken-runtime        resolver、phase 引擎、loop runner、runtime 控制
 ├─ awaken-server         HTTP 路由、SSE 回放、mailbox 派发、协议适配器
 ├─ awaken-stores         thread + run + config + mailbox + profile 存储（memory / file / PostgreSQL / SQLite / NATS）
@@ -246,7 +293,7 @@ awaken                   门面 crate，管理 feature flag
 └─ awaken-ext-*          可选插件（permission、reminder、observability、mcp、skills、generative-ui、deferred-tools）
 ```
 
-`awaken-runtime` 把 `AgentSpec` 解析成 `ResolvedExecution`，跑 9 段 phase loop，并管理 cancel + HITL 决策。`awaken-server` 把同一个 runtime 包成 HTTP 路由，以及 AI SDK、AG-UI、A2A、MCP、ACP 协议适配器。
+`awaken-server` 是服务编排和控制面层：HTTP、SSE replay、mailbox 后台 run、协议适配器、托管配置 API 和管理控制台工作流都在这里。它调用 `awaken-runtime` 这个进程内执行核心；runtime 把 `AgentSpec` 解析成本地 `ResolvedAgent` 或 backend-backed 执行计划，跑 9 段 phase loop，并管理 cancel + HITL 决策。
 
 ## 示例与学习路径
 

@@ -18,8 +18,8 @@ editing-time compare-and-set value, not a runtime version. The
 `RegistrySnapshot::version` field is a whole-snapshot cache key, not a stable
 per-resource version. Audit-log restore can reapply an older payload, but it is
 not a versioned registry with current pointers, content hashes, archived
-runtime-config resources, atomic publication records, or run-pinned registry
-manifests.
+runtime-config resources, atomic publication records, or run-pinned resolution
+ids.
 
 Production runtime behavior needs four separate concepts:
 
@@ -72,7 +72,7 @@ current pointers.
 `RegistrySet` plus a monotonic runtime cache version. It is not a persistence
 layer and does not replace per-resource versions or publication records.
 
-### D2: Add a generic store plus typed wrappers in `awaken-contract`
+### D2: Add a generic store plus typed wrappers in `awaken-server-contract`
 
 The published registry applies to published runtime configuration resources,
 not only agents:
@@ -261,7 +261,8 @@ from already-published version references and validates that each referenced
 version exists in the same `scope_id`; higher-level server publish orchestration
 uses this store operation after publishing the selected resource versions.
 The default pinned-manifest helpers load the publication entries and attach the
-stored content hashes needed by `RunRecord.registry_manifest`.
+stored content hashes needed by the server-owned pinned manifest referenced by
+`RunRecord.resolution_id`.
 
 `awaken-runtime` must not depend on these traits for run execution. Runtime uses
 a materialized synchronous registry snapshot.
@@ -288,16 +289,16 @@ For Awaken-owned published types such as `AgentSpec`, `SkillSpec`,
 This rule is required because pinned runs may resume from historical published
 bytes long after the process binary has been upgraded.
 
-### D2b: Published registries and registry manifests are not secret stores
+### D2b: Published registries and pinned manifests are not secret stores
 
-Published runtime configuration values and `RunRecord.registry_manifest` must not
-contain plaintext credentials or resolved secret material. `RedactedString` is
-safe for logs and debug output, but its JSON representation is still plaintext;
-it is not sufficient for immutable published registry storage.
+Published runtime configuration values and server-owned pinned manifests must
+not contain plaintext credentials or resolved secret material. `RedactedString`
+is safe for logs and debug output, but its JSON representation is still
+plaintext; it is not sufficient for immutable published registry storage.
 
 This ADR does not introduce a generic `SecretRef`, `SecretResolver`, vault,
 credential broker, or secret-lint subsystem. Awaken's contract-level invariant
-is narrower: published registry values, publication metadata, registry manifests,
+is narrower: published registry values, publication metadata, pinned manifests,
 EventStore rows, and ProtocolReplayLog rows must not persist resolved plaintext
 secrets.
 
@@ -318,7 +319,7 @@ sharing model, rotation workflow, hosted credential ACL, or audit UI. Resolving
 the reference into secret material belongs to the downstream provider factory,
 protocol adapter, deployment integration, or hosted product layer. Resolved
 secret values must not be written back into `VersionedRegistryStore`,
-`RegistryPublication`, `RunRecord.registry_manifest`, EventStore, or
+`RegistryPublication`, pinned manifests, EventStore, or
 ProtocolReplayLog.
 
 Tool credentials, MCP OAuth tokens, GitHub clone tokens, file fetch tokens,
@@ -403,7 +404,7 @@ Default lifecycle semantics are:
 
 - latest-publication and current-version materialization reject archived
   resources;
-- explicit version and pinned registry manifest materialization may load archived
+- explicit version and pinned-manifest materialization may load archived
   historical versions;
 - `publish_resource` rejects an archived resource and must not implicitly
   unarchive it;
@@ -416,7 +417,7 @@ Default lifecycle semantics are:
   the unarchive step explicit in audit metadata.
 
 Archive never physically deletes version rows and never invalidates a retained
-`RegistryPublication` or retained `RunRecord.registry_manifest` reference.
+`RegistryPublication` or retained `RunRecord.resolution_id` reference.
 
 ### D6: Store implementations live in `awaken-stores`
 
@@ -538,41 +539,47 @@ The output is both:
 - a typed `PinnedRegistryManifest`, and
 - a frozen `RegistrySet` backed by synchronous registries.
 
-Server code persists the typed manifest in `RunRecord.registry_manifest` before
-runtime execution starts; `awaken-runtime` receives only the frozen
-`RegistrySet`.
+Server code persists an opaque `resolution_id` on `RunRecord` and
+`RunActivationSnapshot` before runtime execution starts. The server owns the
+manifest content behind that id; `awaken-runtime` receives only the frozen
+`RegistrySet` and carries `RegistryResolutionScope::Pinned(String)` for
+re-resolution.
 
 The materializer accepts one of these policies:
 
 - latest publication in a scope,
 - an explicit version for the root resource,
 - an explicit publication snapshot version,
-- an existing `RunRecord.registry_manifest` value.
+- an existing `RunRecord.resolution_id` value that the server resolves to a
+  pinned registry graph.
 
 For latest-publication policy, the materializer resolves the latest
 `RegistryPublication` and uses that publication's entries as the candidate graph.
 It must not read independent per-resource current pointers in a way that can mix
 versions from different publish transactions. For explicit root-version policy,
 the materializer validates and freezes the reachable graph from that exact root.
-For existing-manifest policy, it reloads exactly the manifest entries.
+For existing-resolution policy, it reloads exactly the manifest entries
+referenced by the stored id.
 
 Before producing a frozen registry set, the materializer invokes the standard
 registry graph validator described in D11a. A materializer must not silently skip
 missing, archived, cross-scope, or cyclic references.
 
-### D9: `RunRecord.registry_manifest` persists registry pinning and verifies hashes on resume
+### D9: `RunRecord.resolution_id` references server-owned registry pins
 
-Registry pinning is stored as a concrete typed field on `RunRecord`, not as a
-multi-kind manifest envelope. This keeps the contract simple because Awaken has
-one run-level pinned registry payload here: `PinnedRegistryManifest`. This ADR
-must not introduce a generic `RunManifest { kind, payload }` or
-`RunManifestStore`.
+Registry pinning is stored on durable run records as an opaque
+`resolution_id`, not as a serialized manifest payload. This keeps runtime and
+store contracts simple: Awaken has one server-owned pinned registry payload
+shape (`PinnedRegistryManifest`), but the runtime/store path references it by
+id. This ADR must not introduce a generic
+`RunManifest { kind, payload }` or `RunManifestStore`.
 
 ```rust
 pub struct RunRecord {
-    pub registry_manifest: Option<PinnedRegistryManifest>,
+    pub resolution_id: Option<String>,
 }
 
+/// Server-owned payload referenced by `resolution_id`.
 pub struct PinnedRegistryManifest {
     pub publication_id: Option<String>,
     pub registry_snapshot_version: Option<u64>,
@@ -610,19 +617,19 @@ runtime tiers, workspace quota, billing data, or hosted tenancy policy. Those ar
 downstream/session-manifest or hosted-layer concerns.
 
 The default storage shape follows the `ThreadRunStore` backend's `RunRecord`
-persistence. PostgreSQL backends may store `registry_manifest` as typed JSON on
-the run row or in a backend-specific run-record table, but they must not expose a
-generic `(run_id, kind, payload)` manifest table for this ADR. Backends that can
-transactionally create runs must persist the `RunRecord` and
-`registry_manifest` together or expose an equivalent all-or-nothing server
+persistence. Backends persist `resolution_id` with the run row. The server owns
+the storage and lookup of the manifest payload behind that id; it must not
+expose a generic `(run_id, kind, payload)` manifest table for this ADR. Backends
+that can transactionally create runs must persist the `RunRecord` and
+`resolution_id` together or expose an equivalent all-or-nothing server
 operation.
 
-Run start writes `RunRecord.registry_manifest` before execution starts. Resume
-reads that field, materializes from the exact versions recorded there, and never
-falls back to the current published version. Delegate and handoff resolution must
-resolve only runtime-config resources present in the decoded registry manifest
-value. If a delegate or handoff target was not frozen into the manifest, resolution fails
-instead of reading the current published version.
+Run start writes `RunRecord.resolution_id` before execution starts. Resume reads
+that field, materializes from the exact versions referenced by the id, and never
+falls back to the current published version. Delegate and handoff resolution
+must resolve only runtime-config resources present in the decoded pinned registry
+graph; missing entries fail resolution instead of reading the current published
+version.
 
 `PinnedRegistryEntry.content_hash` is an integrity check, not only audit
 metadata. Resume and manifest-based materialization reload each version's stored
@@ -631,9 +638,9 @@ if the stored hash differs from the manifest entry. This requires stores to keep
 the canonical bytes written by publish and not rely on serde round-tripping as
 the hash source.
 
-Existing stored runs with `registry_manifest = None` are treated as legacy
-records. New server-created runs must write `RunRecord.registry_manifest` before
-execution starts.
+Existing stored runs with `resolution_id = None` are treated as legacy records.
+New server-created runs must write `RunRecord.resolution_id` before execution
+starts.
 
 ### D10: Agent IDs remain stable and version-free
 
@@ -668,8 +675,8 @@ entry in a previous publication into a new published version/publication.
 `RegistryHandle::replace` is a hot-swap for future resolution only. It affects
 new runs, admin previews, and unpinned current-version materialization. It does
 not mutate an active run's `PinnedAgentSpecRegistry`, stored
-`RunRecord.registry_manifest`, or already-resolved tool/delegate set. Resume
-materializes from the stored registry manifest, not from the latest current
+`RunRecord.resolution_id`, or already-resolved tool/delegate set. Resume
+materializes from the stored resolution id, not from the latest current
 registry. This prevents admin publish from changing a run mid-flight.
 
 ### D11a: Registry graph validation is a shared contract
@@ -685,7 +692,7 @@ pub enum VersionSelector {
     LatestPublication { scope_id: String },
     Publication { scope_id: String, snapshot_version: u64 },
     Exact { scope_id: String, kind: String, id: String, version: u64 },
-    // A decoded `RunRecord.registry_manifest` value.
+    // A server-owned manifest referenced by `RunRecord.resolution_id`.
     Manifest { scope_id: String, manifest: PinnedRegistryManifest },
 }
 
@@ -760,7 +767,8 @@ Awaken keeps the current delegation architecture:
 - parent run, thread, and tool-call lineage.
 
 No `MultiagentCoordinator` is introduced by this ADR. The added requirement is
-version enforcement through the decoded `RunRecord.registry_manifest`.
+version enforcement through the pinned manifest referenced by
+`RunRecord.resolution_id`.
 
 ### D13: Permission hard-deny is independent of registry pinning
 
@@ -768,7 +776,7 @@ Regex and glob permission matching are already part of the permission rule
 model and remain outside the registry-versioning problem.
 
 This ADR does not require a new permission behavior to implement published
-registry versions, publications, registry manifests, or materialization. If
+registry versions, publications, pinned manifests, or materialization. If
 Awaken needs a system-level hard prohibition that cannot be overridden by later
 rules, that change should land as a separate permission decision covering
 evaluator precedence, tool-list filtering, preview APIs, rule serialization,
@@ -780,7 +788,7 @@ evaluator. A server-side resolver may map principal context to a
 
 ### D14: PostgreSQL checkpoint and mailbox stores are `awaken-stores` concerns
 
-`StreamCheckpointStore` already belongs to `awaken-contract`; PostgreSQL
+`StreamCheckpointStore` belongs to `awaken-runtime-contract`; PostgreSQL
 persistence belongs in `awaken-stores`. The PostgreSQL implementation uses a
 run-keyed upsert table:
 
@@ -823,7 +831,7 @@ webhook semantics.
 
 Sandbox execution, lifecycle, resource mounts, image selection, runtime tier,
 warm pools, and deployment drivers are outside this ADR. They are not part of
-`awaken-runtime` and are not encoded in `PinnedRegistryManifest`.
+`awaken-runtime` and are not encoded in server-owned pinned manifests.
 
 Awaken keeps only the generic `Tool` / `ToolRegistry` invocation boundary. A
 concrete tool implementation may call a downstream sandbox service, but sandbox
@@ -843,7 +851,7 @@ version fields, beta headers, public event names, or public error schema.
 Protocol adapters may also map protocol permission policy payloads to
 `PermissionRuleset` and protocol outcome fields to generic Awaken eval/outcome
 metadata. Those fields do not enter `AgentSpec`, `VersionedRegistryStore`,
-`RegistrySnapshot`, `PinnedRegistryManifest`, or runtime loop code.
+`RegistrySnapshot`, server-owned pinned manifests, or runtime loop code.
 
 ### D18: Hosted tenancy stays above runtime
 
@@ -856,22 +864,22 @@ metadata, and event metadata, but it does not enforce tenant policy.
 Server and store layers enforce hosted isolation by applying the principal's
 scope to every hosted query, using `scope_id` or an equivalent partition key.
 
-### D19: Registry retention preserves registry manifests and publications
+### D19: Registry retention preserves pinned manifests and publications
 
 Version rows are immutable and retained by default. Store implementations may
 support physical purge, but purge is subject to registry retention policy and
 must never delete a version referenced by any retained
-`RunRecord.registry_manifest` or retained `RegistryPublication`.
+`RunRecord.resolution_id` or retained `RegistryPublication`.
 
 A retention policy is evaluated per scope and kind. It may combine rules such as:
 
 - keep the current version of every resource,
 - keep every version referenced by retained publications,
-- keep every version referenced by retained registry manifests,
+- keep every version referenced by retained pinned manifests,
 - keep the last `N` historical versions per resource, and
 - keep versions newer than a configured age.
 
-`awaken-contract` should expose a purge planning surface rather than deleting
+`awaken-server-contract` should expose a purge planning surface rather than deleting
 blindly:
 
 ```rust
@@ -890,9 +898,9 @@ pub trait VersionedRegistryRetention {
 }
 ```
 
-Registry manifest retention follows `RunRecord` and thread retention. Registry
-stores use retained `RunRecord.registry_manifest` values as protection roots
-while planning version purge. Archive is not a purge operation and leaves history
+Pinned-manifest retention follows `RunRecord` and thread retention. Registry
+stores use retained `RunRecord.resolution_id` values as protection roots while
+planning version purge. Archive is not a purge operation and leaves history
 intact.
 
 ### D20: Downstream products own protocol, hosted, workflow, and data-plane semantics
@@ -911,21 +919,21 @@ concerns, but it must not encode their product semantics:
 | Protocol APIs | `VersionRef`, `PinnedRegistryManifest`, `ProtocolReplayLog`, generic projector/fanout substrate | Anthropic or Managed Agents DTOs, routes, beta headers, public event names, public IDs, `Last-Event-ID` contract, and public error schema |
 | Hosted tenancy | `scope_id`, optional principal/auth hooks, metadata, same-scope defaults, access hook interfaces | workspace, organization, user, team, quota, billing, rate limit, tenant entitlement, sharing policy, and hosted administration UI |
 | ACL and policy resolution | `RegistryReferencePolicy`, `RegistryReferenceAccessHook`, pure permission evaluator inputs | role inheritance, team membership, public/private resource policy, cross-workspace sharing rules, approval UX, and policy editor behavior |
-| Secrets | the invariant that published registry values and registry manifests contain no plaintext secrets; optional schema-owned opaque credential references for model/provider backend construction | secret resolvers, vault schema, KMS policy, OAuth grant/refresh, GitHub tokens, MCP credentials, tool credentials, sandbox credential injection, rotation workflow, sharing policy, product-specific linting, and credential audit UI |
+| Secrets | the invariant that published registry values and pinned manifests contain no plaintext secrets; optional schema-owned opaque credential references for model/provider backend construction | secret resolvers, vault schema, KMS policy, OAuth grant/refresh, GitHub tokens, MCP credentials, tool credentials, sandbox credential injection, rotation workflow, sharing policy, product-specific linting, and credential audit UI |
 | Resource data plane | optional opaque runtime-config references only when needed by runtime tools | memory-store contents, file blobs, git checkout contents, datasets, vector indexes, object storage, resource binding, and artifact lifecycle |
 | Sandbox/resource execution | `Tool` / `ToolRegistry` invocation boundary only; no sandbox or resource binding data in `PinnedRegistryManifest` | sandbox lifecycle, resource mounts, credential injection, Kubernetes fleets, warm pools, Cilium policy, Karpenter/autoscaling, image warmers, runtime classes, tenant network isolation, mount plans, runtime tiers, and hosted sandbox quota |
 | Publication workflow | `RegistryPublication`, `source_config_revisions`, `created_by`, and `metadata` | draft review, approval chains, staging or production promotion, release notes, rollout policy, and change-request workflow |
 | Resource kinds | standard runtime config kinds: agent, skill, tool, model, provider, plugin_config; extension kinds must remain runtime config | product-specific schemas such as environments, memory stores, vault credentials, dreams, outcome evaluations, sessions, workspace files, sandbox bindings, or git credential products |
 | Provider routing | model/provider profiles and optional server hooks | cost routing by plan, regional compliance routing, tenant provider quotas, vendor contract policy, and billing-tier fallback strategy |
 | Observability | trace hooks, generic span attributes, content hashes, and correlation IDs | hosted dashboards, billing analytics, usage reports, service-level reports, and tenant audit reports |
-| Retention | purge planning APIs and protection of retained publications/registry manifests | exact retention duration, legal hold, plan-based limits, billing-driven purge, and per-tenant version quotas |
+| Retention | purge planning APIs and protection of retained publications/pinned manifests | exact retention duration, legal hold, plan-based limits, billing-driven purge, and per-tenant version quotas |
 | Outcome and evaluation | generic run outcomes, eval hooks, or optional evaluator traits | Anthropic outcome evaluation fields, dream resources, official evaluation product schemas, and managed-agent completion criteria |
 
 When a downstream product needs an extension registry object to participate in
 Awaken's generic machinery, that object must still be runtime configuration.
 Product data-plane, session, resource binding, and sandbox payloads stay outside
-`PinnedRegistryManifest` and are interpreted only by the owning adapter or hosted
-layer.
+server-owned pinned manifests and are interpreted only by the owning adapter or
+hosted layer.
 
 ## Consequences
 
@@ -944,7 +952,7 @@ layer.
   embedding workspace semantics into runtime crates.
 - Product-specific API, tenant, workflow, credential, and data-plane behavior
   remains outside Awaken framework code while still being able to use generic
-  hooks and registry manifests.
+  hooks and pinned manifests.
 
 ## Rejected alternatives
 
@@ -966,7 +974,7 @@ state, atomic publications, and monotonic rollback-by-copy semantics.
 
 Rejected. Runtime ids should remain logical resource ids. Encoding versions in
 ids makes handoff, delegation, permissions, tracing, and UI references depend on
-string parsing instead of an explicit registry manifest value.
+string parsing instead of an explicit server-owned pin.
 
 ### Materializing current runs from independent resource pointers
 

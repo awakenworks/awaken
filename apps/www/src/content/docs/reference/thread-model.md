@@ -38,7 +38,7 @@ pub struct Thread {
 }
 ```
 
-**Crate path:** `awaken::contract::thread::Thread` (re-exported from `awaken-contract`)
+**Crate path:** `awaken_runtime_contract::Thread`
 
 `parent_thread_id` is normalized on assignment: leading/trailing whitespace is
 trimmed and empty strings deserialize to `None`. The same trimming is applied
@@ -177,18 +177,30 @@ non-tool assistant message in that range.
 
 ## ThreadRunStore
 
-Extends `ThreadStore` + `RunStore` with an atomic checkpoint operation.
+Extends `ThreadStore` + `RunStore` with checkpoint helpers. In 0.6, production
+writes should go through `CommitCoordinator::commit_checkpoint`; the legacy
+`checkpoint` method remains for conformance tests and coordinator-internal use.
+`checkpoint_append` appends a message delta with an optional expected message
+count guard and returns the new committed message count.
 
 ```rust
 #[async_trait]
 pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
-    /// Persist thread messages and run record atomically.
+    #[deprecated(since = "0.6.0", note = "use CommitCoordinator")]
     async fn checkpoint(
         &self,
         thread_id: &str,
         messages: &[Message],
         run: &RunRecord,
     ) -> Result<(), StorageError>;
+
+    async fn checkpoint_append(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+        expected_version: Option<u64>,
+        run: &RunRecord,
+    ) -> Result<u64, StorageError>;
 }
 ```
 
@@ -214,7 +226,7 @@ pub struct RunRecord {
     pub thread_id: String,
     pub agent_id: String,
     pub parent_run_id: Option<String>,
-    pub registry_manifest: Option<PinnedRegistryManifest>,
+    pub resolution_id: Option<String>,
     pub activation: Option<RunActivationSnapshot>,
     pub request: Option<RunRequestSnapshot>,
     pub input: Option<RunMessageInput>,
@@ -241,7 +253,9 @@ pub struct RunRecord {
 
 `RunRecord` is the source of truth for one user intent. It stores request
 metadata, lifecycle state, waiting state, output/error outcome, and trace IDs.
-It does not own message bodies.
+When the run is bound to a published registry snapshot, `resolution_id` is the
+opaque server-owned binding id; the runtime does not embed the registry
+manifest into the run record. `RunRecord` does not own message bodies.
 
 ### RunActivationSnapshot and RunRequestSnapshot
 
@@ -254,7 +268,7 @@ pub struct RunActivationSnapshot {
     pub options: RunOptions,
     pub trace: RunTraceContext,
     pub seeded_decisions: Vec<(String, ToolCallResume)>,
-    pub resolution_scope: PinnedRegistryManifest,
+    pub resolution_id: Option<String>,
 }
 ```
 

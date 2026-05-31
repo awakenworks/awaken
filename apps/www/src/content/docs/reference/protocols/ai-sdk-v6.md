@@ -40,9 +40,17 @@ SSE stream (`text/event-stream`). Each line is a JSON-encoded `UIStreamEvent`.
 | `/v1/ai-sdk/agent-previews/runs` | POST | Run a draft `AgentSpec` against the current registries without persisting it. |
 | `/v1/ai-sdk/chat/:thread_id/stream` | GET | Reconnect to an active SSE stream by thread ID. |
 | `/v1/ai-sdk/threads/:thread_id/stream` | GET | Alias for thread stream reconnect. |
+| `/v1/ai-sdk/threads/:thread_id/replay` | GET | Replay durable protocol frames for a thread. |
+| `/v1/ai-sdk/chat/:thread_id/replay` | GET | Alias for durable protocol replay. |
 | `/v1/ai-sdk/threads/:thread_id/messages` | GET | Retrieve thread message history. |
 | `/v1/ai-sdk/threads/:thread_id/cancel` | POST | Cancel the active or queued run on a thread. |
 | `/v1/ai-sdk/threads/:thread_id/interrupt` | POST | Interrupt a thread, supersede queued work, and cancel the active run. |
+
+Replay routes require a configured `ProtocolReplayLog`. They accept
+`?cursor=` or `Last-Event-ID`, plus `?limit=` (default `100`, max `500`), and
+return SSE frames with the protocol replay cursor as the SSE `id`. Missing
+replay storage returns `503`; malformed cursors return `400`; expired cursors
+return `410 Gone`.
 
 ## Event Mapping
 

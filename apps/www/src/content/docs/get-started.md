@@ -1,9 +1,11 @@
 ---
 title: "Get Started"
-description: "Use this path if you are new to Awaken and want a working mental model before wiring production features."
+description: "Start with the in-process runtime, then add the server control plane when you need shared protocols, managed config, and operations."
 ---
 
-Use this path if you are new to Awaken and want a working mental model before wiring production features.
+Use this path if you are new to Awaken and want the core design first: tools
+and state live in Rust code, behavior moves through config, and server mode is
+added when the same agent needs shared protocols or operator control.
 
 ## Read in order
 

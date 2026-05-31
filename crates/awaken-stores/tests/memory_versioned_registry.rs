@@ -164,7 +164,7 @@ async fn retention_plan_protects_current_publications_pinned_and_young_versions(
         )
         .await
         .unwrap();
-    // Externally pin v2 via protected_versions (mimics RunRecord.registry_manifest protection).
+    // Externally pin v2 via protected_versions (mimics run resolution protection).
     let policy = RegistryRetentionPolicy {
         keep_last_versions: Some(1),
         keep_younger_than_ms: None,

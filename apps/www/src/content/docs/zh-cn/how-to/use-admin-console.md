@@ -24,14 +24,43 @@ pnpm --filter awaken-admin-console dev
 
 首次打开控制台时，右上角 topbar pill 会显示 **Token missing**。点击它，粘贴 token 并保存；连通后会显示 **Connected**。
 
+## 界面概览
+
+控制台是运行中 server 上的一层浏览器控制面。下面几张截图是使用 sample API
+data 生成的静态文档图；实际控制台会从你的后端读取相同接口。它们对应当前最核心的
+工作流：检查系统状态、编辑 agent、在运行流量前查看 agent catalog 与统计。
+
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/01-dashboard.png">
+      <img src="/awaken/assets/admin-console/01-dashboard.png" alt="管理控制台 Dashboard，展示 live workload、agent activity、最近审计事件、health 状态与当前 scope 元数据。" loading="lazy" />
+    </a>
+    <figcaption>Dashboard：计数、当前 scope 与健康状态来自 `/v1/capabilities`、`/v1/system/info`、`/v1/audit-log` 和 runtime stats。</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/02-agent-editor.png">
+      <img src="/awaken/assets/admin-console/02-agent-editor.png" alt="Agent 编辑器，包含模型选择、系统提示、tabs、保存控制和草稿预览聊天。" loading="lazy" />
+    </a>
+    <figcaption>Agent editor：Validate 只校验不写入；Save 通过 `/v1/config/agents` 发布。</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/03-agents-list.png">
+      <img src="/awaken/assets/admin-console/03-agents-list.png" alt="Agents 列表，展示筛选器、模型与插件元数据，以及 runtime inference 统计。" loading="lazy" />
+    </a>
+    <figcaption>Agents list：按 model / plugin 过滤；启用 observability 后显示 rolling inference / error / p95 统计。</figcaption>
+  </figure>
+</div>
+
 ## 浏览工作区
 
 左侧 sidebar 按意图分组：
 
 | 分组 | 内容 |
 |---|---|
-| **Configure** | Agents、Models、Providers、MCP Servers：可编辑的 runtime catalog |
-| **Observe** | Dashboard、Audit Log、Eval Reports、Skill Registry：runtime 状态只读视图 |
+| **Agents** | Agents：创建/编辑 agent specs，并进入 per-agent dashboard |
+| **Resources** | Models、MCP Servers、Skills、Tools：runtime 依赖与发现出来的能力 |
+| **Infrastructure** | Providers：凭据与上游模型连接 |
+| **Observe** | Dashboard、Audit Log、Datasets、Eval Runs、Eval Reports：运行视图与评测记录 |
 | **Assistant** | AI Assistant：基于 live config 运行真实 agent 的聊天界面 |
 
 使用 topbar breadcrumb 确认当前位置并返回上级页面。
@@ -43,7 +72,7 @@ pnpm --filter awaken-admin-console dev
 - **Stat cards**：agents、skills、models、providers、MCP servers、tools 的计数，来自 `/v1/capabilities`。
 - **Health**：provider 是否配置 key，MCP server 是自动重启还是手动。
 - **Recent activity**：audit log 启用时显示最近 8 条事件；未启用时显示黄色提示。
-- **System**：server version、uptime，以及 config store / audit log / runtime stats 是否接入。
+- **System**：server version、当前 `scope_id`、uptime，以及 config store / audit log / runtime stats 是否接入。
 
 ## 编辑 Agent
 
@@ -81,7 +110,8 @@ Audit log 也是版本历史：
 2. 切到 **History** tab。
 3. 展开事件查看 before/after diff。
 4. 点击 **Restore this version**。
-5. 确认后，控制台调用 `POST /v1/config/:ns/:id/restore`，server 会走正常 validate + apply pipeline，并写入新的 `restore` audit event。
+5. 确认后，控制台调用 `POST /v1/config/:ns/:id/restore`。Restore 是 editing-store 操作：server 会校验恢复出的 payload 并写入 `ConfigStore`，但不会热替换 runtime registry。这样可以把回滚审查和 runtime 生效分开。
+6. 如果要让恢复后的 payload 对新 run 生效，请在确认后再走一次普通配置写入，例如用恢复后的 body 调用 `PUT /v1/config/:ns/:id`。这次写入会走标准 validate + apply pipeline，并写入自己的审计事件。`restore` 事件仍会记录 `restored_from = <event-id>`，保留回滚来源。
 
 ## 浏览 Audit Log
 
@@ -100,7 +130,7 @@ Audit log 也是版本历史：
 
 ### Audit log
 
-在 `AppState` 上接入 audit logger：
+在 `ServerState` 上接入 audit logger：
 
 ```rust
 use awaken_server::app::AuditLogConfig;
@@ -126,7 +156,7 @@ let registry = Arc::new(RuntimeStatsRegistry::new());
 let observability = ObservabilityPlugin::new()
     .with_sink(SharedRegistrySink(Arc::clone(&registry)));
 
-let state = AppState::new(/* ... */)
+let state = ServerState::new(/* ... */)
     .with_runtime_stats(registry);
 
 let runtime = AgentRuntimeBuilder::default()
@@ -150,9 +180,10 @@ let runtime = AgentRuntimeBuilder::default()
 
 请使用相同 admin bearer token 通过 `curl` 或脚本调用。端点清单见[管理控制台参考中的 REST-only 表](/awaken/zh-cn/reference/admin-console/#rest-only-功能)，请求格式见 [HTTP API](/awaken/zh-cn/reference/http-api/)。
 
-## 深色模式
+## 切换主题
 
-给 `<html>`（或任意子树）加 `data-theme="dark"`，`--aw-*` tokens 会自动切换。控制台 chrome 目前没有内置切换按钮；`tokens-auto-dark.css` 支持 `prefers-color-scheme: dark`。
+使用 topbar 里的 theme control 选择 light、dark 或 system。选择会持久化到本地，
+并映射到 `data-theme`，因此控制台和文档共用同一套 `--aw-*` design tokens。
 
 ## 排查
 
@@ -161,7 +192,7 @@ let runtime = AgentRuntimeBuilder::default()
 | Topbar pill 显示 **Token missing** 或 **Token rejected** | bearer token 缺失或错误 | 点击 pill，粘贴 server 配置的 token |
 | Topbar pill 显示 **Backend unreachable** | server 未监听或 URL 错误 | 确认 server 正在 `BACKEND_URL` 上运行；默认 `http://127.0.0.1:38080`，构建时可用 `VITE_BACKEND_URL` 覆盖 |
 | 页面出现 `503` 但仍可加载 | audit / runtime stats 等可选子系统未启用 | 见[启用可选子系统](#启用可选子系统) |
-| Save 失败并提示 “config management API not enabled” | server 没接入 `ConfigStore` | 嵌入方需要调用 `AppState::with_config_store(...)` |
+| Save 失败并提示 “config management API not enabled” | server 没接入 `ConfigStore` | 嵌入方需要调用 `ServerState::with_config_store(...)` |
 | Provider Test 一直返回 “unsupported adapter” | provider 使用 `scripted` adapter | 符合预期；只有真实 adapter 才有有意义的 test path |
 | Sidebar nav health dot 一直 neutral | health badge 只来自 list payload，不会每页都完整 probe | 打开资源详情查看 live `/status` |
 

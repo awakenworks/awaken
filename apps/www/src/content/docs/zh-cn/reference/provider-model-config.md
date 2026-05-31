@@ -14,7 +14,7 @@ AgentSpec.model_id
   -> InferenceRequest.upstream_model = upstream_model
 ```
 
-Endpoint-backed agent 会跳过这条本地 provider/model 链路。它们会被解析成非本地 `ResolvedExecution`，并交给配置的 `ExecutionBackend` 执行。
+Endpoint-backed agent 会跳过这条本地 provider/model 链路。它们会被解析成 backend-backed execution plan，并交给配置的 `ExecutionBackend` 执行。
 
 ## 术语
 

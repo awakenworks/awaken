@@ -59,7 +59,7 @@ assignment on the trace stream.
 A new `awaken-contract::identity` module exposes derived identity helpers:
 
 ```rust
-// crates/awaken-contract/src/identity.rs
+// crates/awaken-runtime-contract/src/identity.rs
 pub fn agent_prompt_id(agent_id: &str, role: &str, content: &str) -> String;
 pub fn tool_desc_id(tool_name: &str, description: &str, schema_json: &str) -> String;
 pub fn skill_content_id(skill_name: &str, content: &str) -> String;

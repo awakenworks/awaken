@@ -12,7 +12,7 @@ Use this when you want agents to discover and activate skill packages at runtime
 
 ```toml
 [dependencies]
-awaken = { version = "0.5", features = ["skills"] }
+awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["skills"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

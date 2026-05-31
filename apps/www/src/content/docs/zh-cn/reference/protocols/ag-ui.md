@@ -37,10 +37,17 @@ SSE 流（`text/event-stream`），每个 frame 是一个 JSON 编码的 AG-UI `
 
 | 路由 | 方法 | 说明 |
 |-------|--------|------|
+| `/v1/ag-ui/run` | `POST` | 启动 run 并流式返回 AG-UI events |
 | `/v1/ag-ui/threads/:thread_id/runs` | `POST` | 在指定 thread 上启动 run |
 | `/v1/ag-ui/agents/:agent_id/runs` | `POST` | 在指定 agent 上启动 run |
 | `/v1/ag-ui/threads/:thread_id/interrupt` | `POST` | 中断指定 thread |
+| `/v1/ag-ui/threads/:thread_id/replay` | `GET` | 回放指定 thread 的持久协议 frame |
 | `/v1/ag-ui/threads/:id/messages` | `GET` | 读取 thread 消息历史 |
+
+Replay 要求配置 `ProtocolReplayLog`。请求可带 `?cursor=` 或
+`Last-Event-ID`，以及 `?limit=`（默认 `100`，最大 `500`）；响应是 SSE，
+并使用 protocol replay cursor 作为 SSE `id`。未配置 replay 存储返回 `503`，
+非法 cursor 返回 `400`，过期 cursor 返回 `410 Gone`。
 
 ## 事件映射
 

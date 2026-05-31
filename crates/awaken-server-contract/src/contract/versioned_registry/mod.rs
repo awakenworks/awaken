@@ -198,8 +198,8 @@ pub struct RegistryRetentionPolicy {
     /// of `now_ms`. `None` disables the age floor.
     pub keep_younger_than_ms: Option<u64>,
     /// Additional pinned versions the caller wants to protect — typically
-    /// derived from retained `RunRecord.registry_manifest` values that the
-    /// registry store cannot enumerate on its own.
+    /// derived from retained run resolution metadata that the registry store
+    /// cannot enumerate on its own.
     pub protected_versions: Vec<VersionRef>,
 }
 

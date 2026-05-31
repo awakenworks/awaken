@@ -258,9 +258,11 @@ pub struct ThreadQuery {
     /// Filter by parent/root lineage.
     #[serde(default, skip_serializing_if = "ThreadParentFilter::is_any")]
     pub parent_filter: ThreadParentFilter,
-    /// Backend-level scope filter: keep only thread IDs that start with this
+    /// Backend-internal scope filter: keep only thread IDs that start with this
     /// prefix. Pushed down so a scoped listing never scans the full thread set
-    /// of a shared backend (ADR-0042 scope boundary). `None` means no filter.
+    /// of a shared backend (ADR-0042 scope boundary). Server routes must not
+    /// expose this as a user-controlled HTTP filter; scoped wrappers inject it
+    /// from trusted `ScopeContext`. `None` means no backend scope filter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id_prefix: Option<String>,
 }

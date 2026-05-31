@@ -114,13 +114,22 @@ EXECUTE — convergence loop (max 16 rounds)
 
 ### GATHER: parallel hooks with conflict auto-fallback
 
-All hooks in a phase run concurrently against the same frozen snapshot. Each returns a `StateCommand` — pure data (state patch + scheduled actions + effects), no side effects. Results are merged via `MergeStrategy`:
+All hooks in a phase are async and run concurrently against the same frozen
+snapshot. Each returns a `StateCommand` containing state patches, scheduled
+actions, and effects. Hooks may perform allowed persistence I/O through
+registered services, but they must be replay-safe and idempotent: re-running a
+hook for conflict fallback must not duplicate irreversible external effects.
+Non-idempotent external work belongs in EXECUTE action handlers or effects
+after commit. Results are merged via `MergeStrategy`:
 
 - **Disjoint keys**: always merged.
 - **Overlapping keys, `Commutative`**: merged (order irrelevant).
 - **Overlapping keys, `Exclusive`**: conflict.
 
-On Exclusive conflict, the runtime automatically falls back: the conflicting hooks are re-executed serially against fresh snapshots while non-conflicting results are preserved. This is safe because `PhaseHook::run` is a pure function — it reads a frozen snapshot and returns a `StateCommand` with no external side effects, so re-execution is always safe.
+On Exclusive conflict, the runtime automatically falls back: the conflicting
+hooks are re-executed serially against fresh snapshots while non-conflicting
+results are preserved. This relies on the replay-safe/idempotent hook contract;
+hooks that cannot satisfy it must schedule work for EXECUTE instead.
 
 This means plugin authors never need to think about scheduling. Marking a `StateKey` as `Exclusive` does not sacrifice parallelism — it only means the runtime will serialize if contention actually occurs (which is rare in practice when hooks target different keys).
 
@@ -140,7 +149,7 @@ Both GATHER and EXECUTE produce effects via `StateCommand`. Effects are dispatch
 
 `ScheduledAction` carries a `phase` field. EXECUTE only dequeues actions matching the current phase (and having handlers); others remain queued. Cross-phase communication prefers state keys over cross-phase action scheduling.
 
-### ToolGate: pure interception outside the scheduled-action queue
+### ToolGate: replay-safe interception outside the scheduled-action queue
 
 Tool interception is no longer modeled as a scheduled action. The runtime runs `ToolGateHook`s directly during the `ToolGate` phase and resolves their `ToolInterceptPayload`s in memory using the same priority rules (`Block > Suspend > SetResult`). This keeps interception replay-safe and avoids reusing `BeforeToolExecute` for both decision making and execution-time side effects.
 

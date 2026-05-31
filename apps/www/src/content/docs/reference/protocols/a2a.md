@@ -130,7 +130,7 @@ Awaken currently enables these A2A capabilities by default:
 
 ## Remote Agent Execution
 
-Awaken agents can run or delegate to remote A2A agents through the built-in `A2aBackend`, an `ExecutionBackend` implementation. For delegation, the parent LLM sees a regular tool call. For root execution, `AgentRuntime` resolves the endpoint-backed agent as `ResolvedExecution::NonLocal`.
+Awaken agents can run or delegate to remote A2A agents through the built-in `A2aBackend`, an `ExecutionBackend` implementation. For delegation, the parent LLM sees a regular tool call. For root execution, `AgentRuntime` resolves the endpoint-backed agent into a backend-backed execution plan.
 
 The backend sends a `message:send` request to the remote endpoint, reads the returned `task.id`, and then streams or polls `/tasks/:task_id` until the task reaches a terminal or interrupted state. It preserves remote lifecycle state for continuation, waiting input/auth, cancellation, and artifacts.
 

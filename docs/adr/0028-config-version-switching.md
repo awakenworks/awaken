@@ -12,9 +12,11 @@ asked for a one-click rollback: given a version ULID from the audit log,
 restore the resource to that exact state.
 
 The existing `/v1/config/:namespace/:id` CRUD surface already covers
-create/update/delete with full validate-and-apply semantics. A restore is
-simply a re-application of a historical spec through the same pipeline — no
-special bypass is needed.
+create/update/delete with full validate-and-apply semantics. Restore keeps a
+separate editing-store boundary: it reconstructs the historical spec and writes
+it back to `ConfigStore`, but it does not publish a new runtime registry
+snapshot. Operators promote the restored payload with a normal config write
+after review.
 
 ## Decisions
 
@@ -50,12 +52,13 @@ current time.
 If `event.resource` does not equal `<namespace>/<id>` from the URL, the
 request is rejected with 422. Cross-resource restores are not permitted.
 
-### D6: Normal validate+apply chain
+### D6: Editing-store restore, explicit publish
 
-Restore goes through `ConfigService::create` or `ConfigService::update`
-(depending on whether the resource currently exists). There is no bypass of
-validation or the runtime apply step. A restore that references a deleted
-dependency returns 422 with the resolver error.
+Restore validates and persists the reconstructed payload, then records the
+restore audit event. It deliberately does not call the runtime apply path or
+replace the active registry snapshot. A restore that should become visible to
+new runs must be promoted through a normal create/update/override write, which
+uses the standard validate-and-apply path and records its own audit event.
 
 ### D7: Version-not-found response
 

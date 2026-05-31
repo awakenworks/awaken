@@ -24,7 +24,7 @@ pub struct AgentSpec {
     pub tool_execution_mode: ToolExecutionMode,
     pub allowed_tools: Option<Vec<String>>,     // ToolRegistry IDs (None = all)
     pub excluded_tools: Option<Vec<String>>,
-    pub plugin_ids: Vec<String>,               // PluginRegistry IDs
+    pub plugin_ids: Vec<String>,               // PluginSource IDs
     pub permission_rules: Vec<PermissionRuleSpec>,
     pub stop_condition_specs: Vec<StopConditionSpec>,
     // Plugin-specific sections (opaque JSON per plugin)
@@ -42,7 +42,7 @@ No `Arc<dyn T>`, no trait objects. Pure data. Can be saved to JSON, loaded from 
 | `ModelRegistry` | model_id | `ModelSpec` | Provider id, upstream model name, capability, pricing |
 | `ProviderRegistry` | provider_id | `Arc<dyn LlmExecutor>` | LLM API clients |
 | `AgentRegistry` | agent_id | `AgentSpec` | Agent definitions |
-| `PluginRegistry` | plugin_id | `Arc<dyn Plugin>` | All extensions: hooks, permissions, MCP, skills |
+| `PluginSource` | plugin_id | `Arc<dyn Plugin>` | All extensions: hooks, permissions, MCP, skills |
 
 ```rust
 pub struct RegistrySet {
@@ -50,13 +50,24 @@ pub struct RegistrySet {
     pub tools: Arc<dyn ToolRegistry>,
     pub models: Arc<dyn ModelRegistry>,
     pub providers: Arc<dyn ProviderRegistry>,
-    pub plugins: Arc<dyn PluginRegistry>,
+    pub plugins: Arc<dyn PluginSource>,
 }
 ```
 
-Each registry is a trait with `get(id) -> Option<&T>` and `ids() -> Vec<String>`. Default implementation: `MapXxxRegistry` backed by `HashMap`.
+Each registry is a trait with named lookup methods. Serializable specs are
+returned as owned values so resolution can cross async and task boundaries
+without borrowing registry internals:
 
-**No separate BehaviorRegistry or ExtensionRegistry.** Behaviors, extensions, MCP bridges, skill runtimes, permission checkers — all are `Plugin`. A Plugin that contributes tools registers them in `ToolRegistry` during build. A Plugin that contributes hooks does so via its `register()` method. The `PluginRegistry` is the single source of all pluggable functionality.
+- `ModelRegistry::get_model(&str) -> Option<ModelSpec>`
+- `AgentSpecRegistry::get_agent(&str) -> Option<AgentSpec>`
+- `ToolRegistry::get_tool(&str) -> Option<Arc<dyn Tool>>`
+- `ProviderRegistry::get_provider(&str) -> Option<Arc<dyn LlmExecutor>>`
+- `PluginSource::get_plugin(&str) -> Option<Arc<dyn Plugin>>`
+
+List methods use matching plural names such as `model_ids()` and
+`agent_ids()`. Default implementations are map-backed registries.
+
+**No separate BehaviorRegistry or ExtensionRegistry.** Behaviors, extensions, MCP bridges, skill runtimes, permission checkers — all are `Plugin`. A Plugin that contributes tools registers them in `ToolRegistry` during build. A Plugin that contributes hooks does so via its `register()` method. `PluginSource` is the lookup source for pluggable functionality.
 
 ### D3: ModelSpec and provider resolution
 
@@ -87,11 +98,11 @@ pub struct ProviderSpec {
 
 Resolution: `model_id → ModelSpec → provider_id → Arc<dyn LlmExecutor>`.
 
-`ModelRegistry::get(id)` returns `ModelSpec` directly. Earlier revisions
-of this ADR split addressing (`provider_id`, `upstream_model`) into a
-separate runtime mirror type; that mirror is removed. Addressing,
-capability, and pricing now travel together through the same struct from
-config persistence to resolution.
+`ModelRegistry::get_model(&str) -> Option<ModelSpec>` returns an owned
+`ModelSpec`. Earlier revisions of this ADR split addressing (`provider_id`,
+`upstream_model`) into a separate runtime mirror type; that mirror is removed.
+Addressing, capability, and pricing now travel together through the same struct
+from config persistence to resolution.
 
 **Duplicate-id rejection.** A `RegistrySpec` carrying two `ModelSpec`
 entries with the same `id` is rejected by `validate_registry_spec` (in
@@ -134,9 +145,9 @@ pub fn resolve(
     registries: &RegistrySet,
     agent_id: &str,
 ) -> Result<ResolvedRun, ResolveError> {
-    let spec = registries.agents.get(agent_id)?;
-    let model = registries.models.get(&spec.model_id)?;
-    let executor = registries.providers.get(&model.provider_id)?;
+    let spec = registries.agents.get_agent(agent_id)?;
+    let model = registries.models.get_model(&spec.model_id)?;
+    let executor = registries.providers.get_provider(&model.provider_id)?;
 
     // Resolve tools: snapshot + allow/exclude filter
     let tools = resolve_tools(registries, spec)?;
@@ -174,7 +185,7 @@ fn resolve_tools(
     registries: &RegistrySet,
     spec: &AgentSpec,
 ) -> Result<HashMap<String, Arc<dyn Tool>>, ResolveError> {
-    let all_ids = registries.tools.ids();
+    let all_ids = registries.tools.tool_ids();
 
     let included: HashSet<&str> = match &spec.allowed_tools {
         Some(allow) => allow.iter().map(|s| s.as_str()).collect(),
@@ -189,8 +200,8 @@ fn resolve_tools(
     let mut tools = HashMap::new();
     for id in included {
         if !excluded.contains(id) {
-            if let Some(tool) = registries.tools.get(id) {
-                tools.insert(id.to_string(), Arc::clone(tool));
+            if let Some(tool) = registries.tools.get_tool(id) {
+                tools.insert(id.to_string(), tool);
             }
         }
     }
@@ -215,8 +226,8 @@ fn resolve_plugins(
     spec: &AgentSpec,
 ) -> Result<Vec<Arc<dyn Plugin>>, ResolveError> {
     spec.plugin_ids.iter().map(|id| {
-        registries.plugins.get(id)
-            .cloned()
+        registries.plugins
+            .get_plugin(id)
             .ok_or(ResolveError::PluginNotFound(id.clone()))
     }).collect()
 }
@@ -279,7 +290,7 @@ attribution.
 - `AgentConfig` (struct with Arc<dyn T>) → `AgentSpec` (serializable) + `ResolvedRun` (runtime)
 - `AgentProfile.active_plugins` → `AgentSpec.plugin_ids` (resolved at build time)
 - Ad-hoc tool HashMap on agent → `ToolRegistry` + allow/exclude filtering
-- Separate Behavior/Extension registries → unified `PluginRegistry`
+- Separate Behavior/Extension registries → unified `PluginSource`
 
 ### Implemented
 - Registry traits (5): implemented

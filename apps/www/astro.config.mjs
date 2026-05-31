@@ -129,7 +129,7 @@ export default defineConfig({
     }),
     starlight({
       title: "Awaken",
-      description: "Production AI agent runtime for Rust.",
+      description: "Build agent capabilities once in Rust, tune behavior live, and serve every client from one runtime.",
       logo: { src: "./src/assets/awaken-mark.svg", replacesTitle: false },
       social: [
         { icon: "github", label: "GitHub", href: "https://github.com/AwakenWorks/awaken" },

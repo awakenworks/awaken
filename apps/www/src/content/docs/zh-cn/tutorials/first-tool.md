@@ -15,7 +15,7 @@ title: "第一个 Tool"
 
 ```toml
 [dependencies]
-awaken = { version = "0.5" }
+awaken = { git = "https://github.com/AwakenWorks/awaken" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

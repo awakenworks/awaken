@@ -105,7 +105,7 @@ The key is a plain `&str` -- fully extensible without code changes. `StateScope`
 ### Example
 
 ```rust
-use awaken_contract::ProfileKey;
+use awaken_runtime_contract::ProfileKey;
 
 struct TeamContextKey;
 impl ProfileKey for TeamContextKey {

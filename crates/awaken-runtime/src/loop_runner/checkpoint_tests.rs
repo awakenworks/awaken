@@ -369,7 +369,7 @@ fn materialize_checkpoint_append_does_not_duplicate_committed_message_updates() 
 }
 
 #[tokio::test]
-async fn persist_checkpoint_preserves_existing_registry_manifest() {
+async fn persist_checkpoint_preserves_existing_resolution_id() {
     let state_store = store_with_loop_state();
     commit_update::<RunLifecycle>(
         &state_store,

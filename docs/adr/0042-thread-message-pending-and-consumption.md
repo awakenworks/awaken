@@ -10,8 +10,9 @@
 Thread messages are persisted as a whole-list value per thread and written
 with last-writer-wins overwrite. `Mailbox::prepare_run_for_dispatch` performs a
 non-atomic read-modify-write (`load_messages → append → checkpoint`), and run
-finalization commits the whole in-memory list through `CommitCoordinator::commit_checkpoint`
-(`CheckpointCommitPlan.messages` is the entire list). Two consequences:
+finalization commits through `CommitCoordinator::commit_checkpoint`
+(`ThreadCommit.message_delta` is the append payload and
+`expected_message_count` is the optimistic guard). Two consequences:
 
 - **Lost-update race**: concurrent same-thread writers overwrite each other.
   Two confirmed triggers — concurrent submits (auto-repair reusing a thread) and

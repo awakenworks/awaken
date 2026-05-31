@@ -27,7 +27,7 @@ pub trait EffectSpec: 'static + Send + Sync {
 }
 ```
 
-**Crate path:** `awaken::model::EffectSpec` (re-exported from `awaken-contract`)
+**Crate path:** `awaken::model::EffectSpec` (re-exported from `awaken-runtime-contract`)
 
 `KEY` must be globally unique across all registered effects. Convention:
 `"<plugin>.<effect_name>"`, e.g. `"audit.record"`.

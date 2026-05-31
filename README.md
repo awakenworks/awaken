@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml/badge.svg)](https://github.com/AwakenWorks/awaken/actions/workflows/test.yml) [![crates.io awaken](https://img.shields.io/crates/v/awaken.svg?label=awaken)](https://crates.io/crates/awaken) [![crates.io awaken-agent](https://img.shields.io/crates/v/awaken-agent.svg?label=awaken-agent)](https://crates.io/crates/awaken-agent) [![Changelog](https://img.shields.io/badge/changelog-current-informational)](./CHANGELOG.md) ![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue) ![MSRV](https://img.shields.io/badge/MSRV-1.93-orange)
 
-Awaken is a production Rust runtime for AI agents that keeps the execution core, protocol adapters, state model, and runtime configuration in one backend. It is built for teams that need typed tools and state, hot-swappable agent/model config, durable run control, and protocol interoperability without duplicating agent logic per frontend.
+Build agent capabilities once in Rust, tune behavior live, and serve every client from the same runtime. Awaken is a production AI agent backend where tools, state, and plugins stay in code; agents, models, and prompts move through online config; and server mode adds protocols, durable orchestration, trace/eval, and the admin console. Use runtime mode when your application owns I/O; use server mode when the agent surface must be shared.
 
 Docs: [Awaken docs](https://awakenworks.github.io/awaken) · [中文文档](https://awakenworks.github.io/awaken/zh-cn) · [Changelog](./CHANGELOG.md). MSRV: Rust 1.93. The published crate is `awaken`; `awaken-agent` is a compatibility republish from when the project shipped under that name (same import path either way).
 
@@ -12,10 +12,34 @@ Docs: [Awaken docs](https://awakenworks.github.io/awaken) · [中文文档](http
   <img src="./docs/assets/demo.svg" alt="Awaken demo — tool call + LLM streaming" width="800">
 </p>
 
+## Choose your programming mode
+
+Awaken separates the **agent execution loop** from the **service control plane**. The runtime owns agent reasoning, tool selection, typed phases, state commits, and direct run APIs. The server owns service orchestration: HTTP/SSE, protocol adapters, mailbox dispatch, managed config, audit/restore, and the admin-console workflow.
+
+| Mode | Start with | You own | Awaken provides |
+|---|---|---|---|
+| **Runtime development** | `awaken` / `awaken-runtime` | HTTP/UI/job scheduling, auth, config storage, concrete tools/providers/stores | Direct run APIs, streaming events, 9-phase loop, typed tools/state, cancellation and HITL primitives |
+| **Server development** | `awaken-server` + `awaken-stores` | Deployment, tenant/auth policy, registered tools/providers, store selection | HTTP resources, SSE replay, AI SDK/AG-UI/A2A/MCP/ACP adapters, mailbox orchestration, `/v1/config/*`, registry snapshots, admin console |
+
+Start with runtime mode when you are building a Rust application or test harness and want direct control over I/O. Use server mode when multiple clients, operators, or background workers need the same agent surface with durable runs and online configuration.
+
+Runtime mode means in-process library use inside a standard Rust program. It is not a `no_std` or Tokio-free embedded-device target: `awaken-runtime` currently depends on Tokio for timers, timeouts, async coordination, and HTTP/provider execution.
+
+Current IO/runtime boundary:
+
+| Component | Tokio / IO profile |
+|---|---|
+| `awaken-runtime` | Requires Tokio. The phase loop is in-process, but the crate includes `genai` / `reqwest` provider paths and Tokio-based timeout/retry/background-task machinery. |
+| `awaken-runtime-contract` / `awaken-server-contract` | Contract/type surfaces only; useful for API boundaries, but still target `std` Rust crates, not `no_std` embedded targets. |
+| Permission, Reminder, Deferred Tools, Generative UI | Mostly in-process policy/state/event logic, but they depend on the runtime contract/runtime stack and therefore inherit the Tokio/std assumption. |
+| MCP and Skills | IO-capable: MCP uses network/stdio/process transports; Skills can read skill packages from disk, spawn configured commands, and optionally register MCP tools. |
+| Observability | In-memory recording is local; OTLP/file/metrics exporters introduce external IO. |
+| Stores and Server | Explicit IO layers: memory/file/PostgreSQL/SQLite/NATS stores, HTTP routes, SSE, mailbox workers, and protocol replay. |
+
 ## Why Awaken is different
 
 - **One agent backend, many clients.** AI SDK v6, AG-UI / CopilotKit, A2A, MCP, and ACP are adapters over the same runtime event stream and run model instead of separate agent implementations per protocol.
-- **Runtime config is the control plane.** Providers, `ModelSpec` entries, model pools, agents, tools, plugin sections, and MCP servers can be validated and published as registry snapshots while the server stays up.
+- **Managed config is the control plane.** Providers, `ModelSpec` entries, model pools, agents, tools, plugin sections, and MCP servers can be validated and published as registry snapshots while the server stays up.
 - **Provider and model operations are first-class.** `ModelSpec` carries addressing, capability bounds, modalities, knowledge cutoff, and pricing; model pools add failover; provider discovery can fill safe capability fields without trusting arbitrary custom adapters by default.
 - **Streaming is treated as production I/O.** Mid-stream interruptions and idle stalls trigger typed recovery plans, honor `Retry-After`, and can use `StreamCheckpointStore` for recovery across process restarts. ([details](https://awakenworks.github.io/awaken/how-to/recover-streaming-llms))
 - **State and tool execution are typed and replayable.** Typed `StateKey`s with merge strategies, generated JSON Schema for `TypedTool`, pure `ToolGate` interception, and atomic phase commits make concurrent tools auditable instead of hidden side effects.
@@ -41,24 +65,21 @@ Tools are written once and stay stable. Models, agents, and skills are tuned **a
 
 The runtime drives 9 typed phases per round, including a pure `ToolGate` before tool execution. State mutations are batched and committed atomically.
 
-## Quickstart
+## Quickstart: runtime mode
 
 Prerequisites: Rust 1.93+ and an OpenAI-compatible API key.
 
 ```toml
 [dependencies]
-awaken = "0.5"
+awaken = { git = "https://github.com/AwakenWorks/awaken" }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
 ```
 
-The examples target the published `0.5` line. When following unreleased main-branch
-APIs, depend on the repository instead:
-
-```toml
-awaken = { git = "https://github.com/AwakenWorks/awaken" }
-```
+These snippets follow the current main-branch API. Use the
+[0.5 to 0.6 migration guide](https://awakenworks.github.io/awaken/how-to/migrate-to-0-6/)
+when upgrading from the published `0.5` line.
 
 ```bash
 export OPENAI_API_KEY=<your-key>
@@ -71,6 +92,7 @@ use awaken::engine::GenaiExecutor;
 use awaken::prelude::*;
 use async_trait::async_trait;
 use serde_json::json;
+use std::sync::Arc;
 
 struct EchoTool;
 
@@ -125,11 +147,23 @@ cargo test -p awaken --test readme_quickstart        # offline (scripted provide
 OPENAI_API_KEY=<key> cargo test -p awaken --test readme_live_provider -- --ignored  # live
 ```
 
-## Serve over any protocol
+## Server mode: serve over any protocol
 
 Put the runtime behind server transports and the same agent serves React, Next.js,
-A2A peers, MCP clients, and ACP hosts — no agent-code changes. Three pieces
-sit between the runtime and the wire:
+A2A peers, MCP clients, and ACP hosts — no agent-code changes. Server mode adds
+the service layer around the runtime:
+
+- HTTP resources for threads, runs, config, capabilities, and health.
+- Streaming and replay over SSE plus protocol adapters for AI SDK v6, AG-UI,
+  A2A, MCP, and ACP.
+- Durable mailbox dispatch for resumable, cancellable, interruptible, and
+  HITL-blocked runs.
+- Managed config APIs and admin-console workflows for validating, previewing,
+  publishing, restoring, and auditing agent/model/provider/plugin config.
+- Optional server modules for canonical events, trace persistence, eval
+  datasets/runs, system discovery, runtime stats, and run summaries.
+
+Three pieces sit between the runtime and the wire:
 
 - `ThreadRunStore` — persists thread messages + run records (memory / file /
   PostgreSQL implementations ship in `awaken-stores`).
@@ -199,6 +233,8 @@ import { CopilotKit } from "@copilotkit/react-core";
 
 Wire a `ConfigStore` into `ServerState` and the SPA in [`apps/admin-console`](./apps/admin-console/) becomes a browser control plane over the same config API (reads `VITE_BACKEND_URL` for the server base URL). Operators can validate drafts, publish registry snapshots, test providers, inspect runtime health, preview agent changes before saving, and restore prior config versions from the audit log. The dashboard emphasizes live operational signals — awaiting HITL decisions, running/queued workload, provider/MCP health, rolling-window inference/error/token stats, and recent audit activity.
 
+The screenshots below are static documentation captures made with sample API data. A running admin console reads its values from the configured backend APIs.
+
 <table>
   <tr>
     <td width="33%"><a href="./docs/assets/admin-console/01-dashboard.png"><img src="./docs/assets/admin-console/01-dashboard.png" alt="Dashboard — Live workload, Agent activity, Recent activity timeline, Health card, System metadata" /></a></td>
@@ -252,7 +288,8 @@ Three core layers sit under the facade, with stores and extensions branching off
 
 ```text
 awaken                   Facade crate with feature flags
-├─ awaken-contract       Shared contracts: specs, tools, events, transport, state model
+├─ awaken-runtime-contract Runtime contracts: specs, tools, events, state, commit coordinator
+├─ awaken-server-contract  Server/store contracts: queries, scoped stores, mailbox/outbox, staged commits
 ├─ awaken-runtime        Resolver, phase engine, loop runner, runtime control
 ├─ awaken-server         HTTP routes, SSE replay, mailbox dispatch, protocol adapters
 ├─ awaken-stores         Thread + run + config + mailbox + profile stores (memory / file / PostgreSQL / SQLite / NATS)
@@ -260,7 +297,7 @@ awaken                   Facade crate with feature flags
 └─ awaken-ext-*          Optional plugins (permission, reminder, observability, mcp, skills, generative-ui, deferred-tools)
 ```
 
-`awaken-runtime` resolves an `AgentSpec` into a `ResolvedExecution`, drives the 9-phase loop, and manages cancellation + HITL decisions. `awaken-server` wraps that runtime in HTTP routes plus AI SDK, AG-UI, A2A, MCP, and ACP adapters.
+`awaken-server` is the service orchestration and control-plane layer: HTTP, SSE replay, mailbox background runs, protocol adapters, managed config APIs, and the admin-console workflow. It calls `awaken-runtime`, the in-process execution core that resolves an `AgentSpec` into a local `ResolvedAgent` or backend-backed execution plan, drives the 9-phase loop, and manages cancellation + HITL decisions.
 
 ## Examples and learning paths
 

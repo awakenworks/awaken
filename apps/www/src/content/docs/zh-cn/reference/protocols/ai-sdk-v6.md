@@ -40,9 +40,16 @@ SSE 流（`text/event-stream`），每一行是一个 JSON 编码的 `UIStreamEv
 | `/v1/ai-sdk/agent-previews/runs` | `POST` | 使用当前 registries 运行草稿 `AgentSpec`，不会持久化该 agent |
 | `/v1/ai-sdk/chat/:thread_id/stream` | `GET` | 按 thread ID 续接 SSE |
 | `/v1/ai-sdk/threads/:thread_id/stream` | `GET` | 同上，thread 路由别名 |
+| `/v1/ai-sdk/threads/:thread_id/replay` | `GET` | 回放指定 thread 的持久协议 frame |
+| `/v1/ai-sdk/chat/:thread_id/replay` | `GET` | 持久协议回放别名 |
 | `/v1/ai-sdk/threads/:thread_id/messages` | `GET` | 读取 thread 消息历史 |
 | `/v1/ai-sdk/threads/:thread_id/cancel` | `POST` | 取消 thread |
 | `/v1/ai-sdk/threads/:thread_id/interrupt` | `POST` | 中断 thread |
+
+Replay 路由要求配置 `ProtocolReplayLog`。请求可带 `?cursor=` 或
+`Last-Event-ID`，以及 `?limit=`（默认 `100`，最大 `500`）；响应是 SSE，
+并使用 protocol replay cursor 作为 SSE `id`。未配置 replay 存储返回 `503`，
+非法 cursor 返回 `400`，过期 cursor 返回 `410 Gone`。
 
 ## 事件映射
 

@@ -227,7 +227,7 @@ pub(super) async fn persist_checkpoint(
     // where the previous run already completed). Treat the cache as a
     // hot-path optimisation only and fall back to a durable read on miss
     // — otherwise the new record loses carry-forward fields like
-    // `activation`, `request`, `registry_manifest`.
+    // `activation`, `request`, and `resolution_id`.
     let previous = match thread_ctx.and_then(|ctx| ctx.run_cache.get(&run_identity.run_id).cloned())
     {
         Some(record) => Some(record),

@@ -91,7 +91,7 @@ plugins when you need additional policy types.
 The `policies_from_specs` function converts declarative specs into policy instances. This is useful when loading configuration from JSON or YAML.
 
 ```rust
-use awaken_contract::contract::lifecycle::StopConditionSpec;
+use awaken::contract::lifecycle::StopConditionSpec;
 use awaken::policies::{policies_from_specs, StopConditionPlugin};
 
 let specs = vec![
@@ -202,7 +202,7 @@ A policy with `max` or `max_total` set to `0` is treated as disabled and always 
 - `crates/awaken-runtime/src/policies/plugin.rs` -- `StopConditionPlugin` and `MaxRoundsPlugin`
 - `crates/awaken-runtime/src/policies/state.rs` -- `StopConditionStatsState` and its state key
 - `crates/awaken-runtime/src/policies/hook.rs` -- internal `StopConditionHook` that drives evaluation
-- `crates/awaken-contract/src/contract/lifecycle.rs` -- `StopConditionSpec` enum
+- `crates/awaken-runtime-contract/src/contract/lifecycle.rs` -- `StopConditionSpec` enum
 
 ## Related
 

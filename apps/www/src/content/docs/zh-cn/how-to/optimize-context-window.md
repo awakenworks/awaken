@@ -150,7 +150,7 @@ let config = CompactionConfig {
 
 ## 关键文件
 
-- `crates/awaken-contract/src/contract/inference.rs`
+- `crates/awaken-runtime-contract/src/contract/inference.rs`
 - `crates/awaken-runtime/src/context/transform/mod.rs`
 - `crates/awaken-runtime/src/context/transform/compaction.rs`
 - `crates/awaken-runtime/src/context/compaction.rs`

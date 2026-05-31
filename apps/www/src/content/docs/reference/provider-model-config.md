@@ -14,7 +14,7 @@ AgentSpec.model_id
   -> InferenceRequest.upstream_model = upstream_model
 ```
 
-Endpoint-backed agents skip this local provider/model chain. They are resolved as non-local `ResolvedExecution` values and executed by the configured `ExecutionBackend`.
+Endpoint-backed agents skip this local provider/model chain. They are resolved as backend-backed execution plans and executed by the configured `ExecutionBackend`.
 
 ## Terms
 

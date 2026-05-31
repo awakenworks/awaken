@@ -41,17 +41,58 @@ producing-run filters.
 2. [State Keys](/awaken/reference/state-keys/) and [Thread Model](/awaken/reference/thread-model/) to understand state layout and lifecycle.
 3. [Optimize Context Window](/awaken/how-to/optimize-context-window/) when context size starts to matter.
 
-Current built-in stores cover memory, file, and PostgreSQL for thread/run data;
-memory, file, and PostgreSQL for config; memory and file for profile/shared
-state; and memory, SQLite, or NATS JetStream for mailbox jobs. A
-`NatsBufferedThreadStore` decorator can also wrap any thread/run backend to
-coalesce checkpoint writes through a JetStream WAL.
+Current built-in stores cover memory, file, PostgreSQL, SQLite mailbox, and
+NATS JetStream. Use the smallest backend that covers the durability boundary
+you need:
+
+| Capability | Memory | File | PostgreSQL | SQLite | NATS |
+|---|---|---|---|---|---|
+| Thread/run projections | yes | yes | yes | no | via `NatsBufferedThreadStore` decorator |
+| Managed config | yes | yes | yes | no | no |
+| Profile/shared state | yes | yes | no | no | no |
+| Canonical events | yes | no | yes | no | no |
+| Protocol replay log | yes | no | yes | no | no |
+| Outbox/checkpoint repair | yes | no | yes | no | no |
+| Stream checkpoints | yes | no | yes | no | no |
+| Versioned registry | yes | yes | yes | no | no |
+| Mailbox jobs | yes | no | no | single-node durable | distributed durable |
+
+`NatsBufferedThreadStore` can wrap any thread/run backend to coalesce
+checkpoint writes through a JetStream WAL.
+
+## Storage boundaries
+
+Awaken separates runtime execution state from the server control plane. Runtime
+development can use the in-process `AgentRuntime` with a commit coordinator and
+profile/shared state stores. Server development adds mailbox dispatch, canonical
+events, protocol replay, config versioning, audit, and eval/trace persistence
+around that runtime.
+
+| Data | Contract | Runtime-only use | Server use |
+|---|---|---|---|
+| Thread and run projections | `ThreadRunStore` plus `CommitCoordinator` | Checkpoint read/write boundary for `AgentRuntime` | Same projections, usually committed through a server staged coordinator |
+| Pending user input and dispatch lifecycle | `MailboxStore` | Not required unless the app builds its own queue | Durable background runs, resume, cancel, interrupt, HITL, protocol delivery |
+| Canonical events | `EventStore` | Not required for basic in-process runs | Durable event list/SSE resume and protocol replay |
+| Outbox/staged ids | `StagedCommitCoordinator` / `ThreadCommitStagedOutcome` | Runtime does not observe event/outbox ids | Server/store implementations publish event and outbox ids after commit |
+| Managed registry config | `ConfigStore`, `ConfigRuntimeManager` | Optional; code can build registries directly | `/v1/config/*`, admin console edits, audit restore, hot publication |
+| Admin audit | `AuditLogStore` | Optional | Required for version history, restore, and operator accountability |
+| Profile/shared state | `ProfileStore`, shared-state store | Cross-run memory and learned priors | Same stores, usually shared by all served runs |
+| Trace/eval data | trace store, eval stores | Optional test/operator tooling | Admin trace views, trace-to-fixture curation, eval datasets/runs |
+
+The runtime commit outcome is intentionally narrow: `ThreadCommitOutcome`
+represents runtime commit success/failure only. Server-side implementations
+that need canonical event ids, server event ids, or outbox ids should use the
+server-contract staged outcome.
 
 ## Mailbox backend choice
 
 Mailbox jobs are run-dispatch control-plane records. They are separate from
 the thread/run checkpoint store, so a deployment can combine, for example,
 PostgreSQL thread storage with a NATS mailbox.
+
+Mailbox dispatch status is a delivery lifecycle. `Acked` means the dispatch was
+accepted or consumed; execution success is represented by the related
+`RunRecord.status`, termination reason, and canonical events.
 
 | Backend | Use when | Boundary |
 | --- | --- | --- |

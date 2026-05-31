@@ -475,8 +475,8 @@ See `crates/awaken/examples/live_test.rs` and `crates/awaken/examples/tool_call_
 
 ## Key Files
 
-- `crates/awaken-contract/src/contract/tool.rs` -- `Tool` trait, `ToolCallContext::test_default()`, `ToolResult`, `ToolOutput`
-- `crates/awaken-contract/src/contract/event_sink.rs` -- `VecEventSink`
+- `crates/awaken-runtime-contract/src/contract/tool.rs` -- `Tool` trait, `ToolCallContext::test_default()`, `ToolResult`, `ToolOutput`
+- `crates/awaken-runtime-contract/src/contract/event_sink.rs` -- `VecEventSink`
 - `crates/awaken-runtime/src/engine/mock.rs` -- `MockLlmExecutor`
 - `crates/awaken-runtime/src/state/mod.rs` -- `StateStore`, `StateCommand`
 - `crates/awaken-runtime/src/loop_runner/mod.rs` -- `run_agent_loop`, `AgentLoopParams`, `AgentRunResult`

@@ -16,9 +16,9 @@ concerns:
 | User intent | `messages`, `agent_id`, `thread_id`, `overrides`, `frontend_tools` |
 | Dispatch / transport | `origin`, `adapter`, `dispatch_id`, `session_id`, `transport_request_id` |
 | Run identity hints | `continue_run_id`, `run_id_hint`, `dispatch_id_hint` |
-| Runtime wiring | `event_buffer`, `registry_manifest`, `pinned_registry_set` |
+| Runtime wiring | `pending_boundary`, `commit_coordinator_override`, `pinned_registry_set`, `run_resolver` |
 
-`RunRequestSnapshot` lives in `awaken-contract`, while executable
+`RunRequestSnapshot` lives in the contract layer, while executable
 `RunRequest` lives in `awaken-runtime`. Runtime-only handles leak into a
 public request object, and the persisted projection is defined by fields
 that were omitted rather than by fields that are safe to replay.
@@ -32,7 +32,7 @@ between tasks without borrowing stack-local context.
 
 ### D1: Contract-layer types
 
-In `awaken-contract::contract::run`:
+In `awaken-runtime-contract::contract::run`:
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +94,16 @@ pub struct RunOptions {
 `MessageSeqRange` is the existing thread-log watermark. ADR-0039 does not
 introduce a new `MessageWatermark` type.
 
+Runtime resolution scope lives in `awaken-runtime` and names server-owned
+resolved registry snapshots by opaque id:
+
+```rust
+pub enum RegistryResolutionScope {
+    Live,
+    Pinned(String),
+}
+```
+
 ```rust
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunTraceContext {
@@ -109,23 +119,21 @@ pub struct RunTraceContext {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RegistryResolutionScope {
-    Live,
-    Pinned(PinnedRegistryManifest),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunActivationSnapshot {
     pub intent: RunIntent,
     pub input: RunInputSnapshot,
     pub options: RunOptions,
     pub trace: RunTraceContext,
-    pub resolution_scope: PinnedRegistryManifest,
+    pub seeded_decisions: Vec<(String, ToolCallResume)>,
+    pub resolution_id: Option<String>,
 }
 ```
 
 A persisted snapshot is replay-safe by construction: its
-`resolution_scope` is the exact pinned manifest, not `Live`.
+`resolution_id` is an opaque reference to the server-owned resolved registry
+snapshot. `awaken-server-contract` re-exports these runtime-facing types for
+server/store crates. `awaken-contract` is only the compatibility re-export
+facade for older import paths.
 
 ### D2: Runtime-layer type is owned
 
@@ -137,12 +145,8 @@ pub struct RunActivation {
     pub input: RunInput,
     pub options: RunOptions,
     pub trace: RunTraceContext,
-    /// Requested scope. Persistent snapshots use the resolved pinned manifest
-    /// supplied by ADR-0040, not this field directly.
-    pub resolution_scope: RegistryResolutionScope,
     pub control: RunControl,
-    /// Event capture + thread-context fast-path. Orthogonal to user
-    /// intent and trace metadata.
+    /// Thread-context fast-path. Orthogonal to user intent and trace metadata.
     pub capture: CaptureWiring,
     /// Submit-side persistence facts the runtime must honour for
     /// idempotency and id stability.
@@ -159,7 +163,12 @@ pub struct RunControl {
     /// background tasks and extensions can deliver messages into this
     /// run; a bare `InboxReceiver` is not enough.
     pub inbox: Option<RunInbox>,
+    pub pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
     pub seeded_decisions: Vec<(String, ToolCallResume)>,
+    /// Optional per-run commit coordinator override. Server dispatch supplies a
+    /// staging coordinator that folds canonical event drafts into checkpoint
+    /// commits, so the runtime never observes the event buffer.
+    pub commit_coordinator_override: Option<Arc<dyn CommitCoordinator>>,
 }
 
 pub struct RunInbox {
@@ -168,9 +177,6 @@ pub struct RunInbox {
 }
 
 pub struct CaptureWiring {
-    /// Canonical event capture buffer. `None` means capture is disabled
-    /// for this activation; persistent runs always carry `Some`.
-    pub event_buffer: Option<Arc<EventBuffer>>,
     /// Optional caller-side fast path; absent means the runtime loads
     /// thread context from the store.
     pub thread_context_cache: Option<Arc<ThreadContextSnapshot>>,
@@ -193,6 +199,7 @@ pub struct ResolverInheritance {
     /// use this to resolve against the same registry the parent ran under,
     /// independent of the live registry snapshot.
     pub pinned_registry_set: Option<RegistrySet>,
+    pub run_resolver: Option<Arc<dyn Resolver>>,
 }
 ```
 
@@ -200,49 +207,47 @@ No lifetime parameter appears on `RunActivation`. The mailbox can enqueue
 and later dispatch the activation without extending stack borrows.
 `ThreadContextSnapshot` is either absent or owned through `Arc`.
 
-`capture.event_buffer == None` means canonical runtime capture is
-disabled for this activation. It does not mean the runtime lacks a
-coordinator; ADR-0038 requires persistent runtime execution to be wired
-through `CommitCoordinator`.
+Canonical runtime capture is not represented in `CaptureWiring`. ADR-0038
+wires capture by wrapping the live sink with `DurableEventSink` and installing
+a per-run `StagingCommitCoordinator` through
+`control.commit_coordinator_override`.
 
 The three split structs each represent a distinct boundary participation
-— **event capture**, **persistence idempotency / id injection**, and
+— **runtime control**, **persistence idempotency / id injection**, and
 **sub-run resolver inheritance** — instead of a single
 `RunExecutionWiring` god-struct with seven mixed-intent fields. Each
-consumer can take the sub-struct it cares about (capture sinks see
-`CaptureWiring`; mailbox submit sees `PersistenceHints`; nested
-resolution sees `ResolverInheritance`) so the type signature reveals
-which boundary is participating.
+consumer can take the sub-struct it cares about (runtime control sees
+`RunControl`; mailbox submit sees `PersistenceHints`; nested resolution sees
+`ResolverInheritance`) so the type signature reveals which boundary is
+participating.
 
 ### D3: Snapshot creation happens after message persistence
 
-`RunActivation::snapshot` does not infer durable input references from
-message bodies and does not mutate `RunActivation::resolution_scope`. The
-caller must first append `RunInput::NewMessages` to the thread message log,
-resolve a replayable run plan through ADR-0040, and pass both durable
-results explicitly:
+Snapshot construction does not infer durable input references from message
+bodies and does not mutate runtime resolution scope. The caller must first
+append `RunInput::NewMessages` to the thread message log, resolve a replayable
+run plan through ADR-0040, and pass both durable results explicitly:
 
 ```rust
-impl RunActivation {
-    pub fn snapshot(
-        &self,
-        persisted_input: RunInputSnapshot,
-        pinned_manifest: PinnedRegistryManifest,
-    ) -> RunActivationSnapshot {
-        RunActivationSnapshot {
-            intent: self.intent.clone(),
-            input: persisted_input,
-            options: self.options.clone(),
-            trace: self.trace.clone(),
-            resolution_scope: pinned_manifest,
-        }
+pub fn run_activation_snapshot(
+    activation: &RunActivation,
+    persisted_input: RunInputSnapshot,
+    resolution_id: Option<String>,
+) -> RunActivationSnapshot {
+    RunActivationSnapshot {
+        intent: activation.intent.clone(),
+        input: persisted_input,
+        options: activation.options.clone(),
+        trace: activation.trace.clone(),
+        seeded_decisions: activation.control.seeded_decisions.clone(),
+        resolution_id,
     }
 }
 ```
 
-Runtime may provide a convenience helper that extracts the manifest from
-`ResolvedRun<ReplayableScope>`, but the snapshot API itself takes the
-manifest directly so the Live → Pinned transition is explicit.
+The snapshot stores the opaque `resolution_id` from
+`ReplayableResolvedRun::artifact`. Dispatch later resolves with
+`RegistryResolutionScope::Pinned(resolution_id)`.
 
 Mailbox/server submit paths own the order:
 
@@ -252,14 +257,14 @@ Mailbox/server submit paths own the order:
 3. resolve `RunActivation` through ADR-0040 with
    `ResolutionPolicy::PersistentServer` and require
    `ResolvedRun<ReplayableScope>`;
-4. pass `plan.artifact.registry_manifest` into `snapshot(...)`;
-5. persist `RunActivationSnapshot` on the `RunRecord`;
+4. pass `plan.artifact.resolution_id` into the snapshot;
+5. persist `RunActivationSnapshot` and `RunRecord.resolution_id`;
 6. discard the live execution handles from this pre-dispatch resolution
    unless the run is executed immediately in the same task.
 
 Embedded non-persistent callers may run with `RegistryResolutionScope::Live`,
 but they cannot produce a replay-safe snapshot because they do not have a
-`PinnedRegistryManifest`.
+`resolution_id`.
 
 ### D4: Runtime execution receives a resolved plan
 
@@ -267,14 +272,15 @@ but they cannot produce a replay-safe snapshot because they do not have a
 implicitly inside `run_*`. A resolved plan contains live handles
 (`LlmExecutor`, backend instances, plugin environment) and is not durable
 queue data. Durable queues store only `RunActivationSnapshot`, including
-the pinned manifest from D3, never `ResolvedRunPlan`.
+the opaque `resolution_id` from D3, never `ResolvedRunPlan`.
 
 Persistent server/mailbox flows therefore have two resolution moments:
 
 1. submit-time resolution pins the registry scope so the run record is
-   replay-safe; only `plan.artifact.registry_manifest` is persisted;
-2. dispatch-time resolution rebuilds live execution handles from that
-   pinned scope, and the resulting plan is passed to `run_replayable`.
+   replay-safe; only `plan.artifact.resolution_id` is persisted;
+2. dispatch-time resolution rebuilds live execution handles from
+   `RegistryResolutionScope::Pinned(resolution_id)`, and the resulting plan is
+   passed to `run_replayable`.
 
 Immediate non-queued execution may reuse the fresh plan from submit-time
 resolution if no durable queue boundary is crossed. The execution entry
@@ -291,7 +297,7 @@ impl AgentRuntime {
     pub async fn run_replayable(
         &self,
         activation: RunActivation,
-        plan: ResolvedRun<ReplayableScope>,
+        plan: ReplayableResolvedRun,
         live_sink: Arc<dyn EventSink>,
     ) -> Result<RunOutcome, RuntimeError>;
 
@@ -317,17 +323,17 @@ contract: persistent paths still reject `LiveOnly` plans at every resolution
 moment, root or nested, by the same type boundary.
 
 `live_sink` is the live emission destination. If canonical runtime capture
-is enabled, the composition root wraps `live_sink` in ADR-0038's
-`DurableEventSink` before execution. The wrapped sink and
-`activation.wiring.event_buffer` must reference the same concrete
-`EventBuffer` allocation.
+is enabled, server dispatch wraps `live_sink` in ADR-0038's
+`DurableEventSink` before execution and installs `StagingCommitCoordinator`
+through `activation.control.commit_coordinator_override`. The runtime does not
+receive the event buffer.
 
 ### D5: `RunRequestExtras` is deleted
 
 `RunRequestExtras` was a JSON escape hatch for fields that did not fit the
 snapshot schema. With typed `RunIntent`, `RunInputSnapshot`, `RunOptions`,
-`RunTraceContext`, and `RegistryResolutionScope`, every field has an explicit
-home. `RunRequestExtras` is removed in 0.6.0.
+`RunTraceContext`, `seeded_decisions`, and `resolution_id`, every persisted
+field has an explicit home. `RunRequestExtras` is removed in 0.6.0.
 
 ### D6: `RunRequest` is deleted
 
@@ -340,7 +346,7 @@ than maintaining a wrapper that delegates straight into the new boundary.
 `RunRequestSnapshot` remains as a legacy serde struct for one release. It
 keeps the old wire fields, including `request_extras`, and implements
 `TryFrom<RunRequestSnapshot> for RunActivationSnapshot` once the caller has
-provided persisted input and pinned registry data. It is **not** a type alias
+provided persisted input and a `resolution_id`. It is **not** a type alias
 to `RunActivationSnapshot`, because old JSON would not match the new field
 shape. New writes use `RunActivationSnapshot`.
 
@@ -348,7 +354,7 @@ shape. New writes use `RunActivationSnapshot`.
 
 | 0.5.x | 0.6.0 |
 |---|---|
-| `RunRequest::new(thread_id, messages).with_agent_id(a).with_dispatch_id(d)` | construct `RunActivation { intent, input, options, trace, resolution_scope, control, wiring }` |
+| `RunRequest::new(thread_id, messages).with_agent_id(a).with_dispatch_id(d)` | construct `RunActivation { intent, input, options, trace, control, capture, persistence, inherited }` |
 | `continue_run_id` for HITL resume | `RunKind::HitlResume { run_id }` |
 | `continue_run_id` for continuation context | `RunKind::ContinuationFromRun { run_id }` |
 | `RunRequestExtras` | typed fields on `RunActivationSnapshot` |
@@ -366,15 +372,15 @@ shape. New writes use `RunActivationSnapshot`.
 
 1. `RunActivation` can be moved across async tasks without lifetime bounds.
 2. Snapshot creation requires caller-supplied `RunInputSnapshot` and
-   `PinnedRegistryManifest`; attempting to snapshot raw `NewMessages` or
-   `Live` scope without a manifest is impossible through the API.
+   `resolution_id`; attempting to snapshot raw `NewMessages` into a replayable
+   record without a resolved id is impossible through server APIs.
 3. Persistent dispatch rejects `ResolvedRunPlan::LiveOnly` before execution.
 4. Old `RunRequestSnapshot` fixtures deserialize through the legacy struct
-   and convert to `RunActivationSnapshot` only after pinned manifest input is
+   and convert to `RunActivationSnapshot` only after a `resolution_id` is
    provided.
-5. The sink wrapper and activation wiring share the same `EventBuffer` when
-   runtime capture is enabled.
-6. Durable mailbox records persist the pinned manifest but never serialize or
+5. The sink wrapper and `StagingCommitCoordinator` share the same
+   `EventBuffer` when runtime capture is enabled.
+6. Durable mailbox records persist the `resolution_id` but never serialize or
    cache `ResolvedRunPlan` live handles.
 
 ## Non-Goals

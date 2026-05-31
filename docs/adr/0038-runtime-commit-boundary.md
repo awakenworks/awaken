@@ -9,12 +9,11 @@
 ## Context
 
 ADR-0036 introduced `CommitCoordinator` as the cross-store atomic write
-boundary for `ThreadRunStore + EventStore + OutboxStore`. The rollout
-landed the coordinator and event buffer, but left a legacy inline append
-branch in `runtime_event_capture`:
+boundary for `ThreadRunStore + EventStore + OutboxStore`. The legacy shape
+allowed an inline append branch in `runtime_event_capture`:
 
 ```rust
-// runtime_event_capture.rs (current)
+// legacy shape
 if let Some(buffer) = event_buffer {
     Arc::new(BufferedDurableEventSink::new(/* coordinator-bound */))
 } else {
@@ -92,51 +91,51 @@ no durable runtime wrapper is constructed.
 
 ### D2: `CanonicalEventStager` is a narrow crate-boundary port
 
-`DurableEventSink` stays in `awaken-contract` because it owns the
-contract-level mapping from `AgentEvent` to `CanonicalEventDraft`. The
-concrete `EventBuffer` stays in `awaken-runtime` because it owns runtime
-checkpoint lifecycle (`drain`, buffer disposal, and per-dispatch sharing).
-That split avoids both unwanted dependencies:
+`DurableEventSink` stays in `awaken-server-contract` because it owns the
+server/store-side durable mapping from `AgentEvent` to `CanonicalEventDraft`.
+The per-run buffer is owned by the server dispatch path. The runtime-contract
+boundary exposes only `CanonicalEventStager`; the runtime activation never
+contains the buffer. That split avoids both unwanted dependencies:
 
-- `awaken-contract` must not depend on `awaken-runtime` to name
+- contract crates must not depend on `awaken-runtime` to name
   `EventBuffer`.
-- The runtime checkpoint code must not expose `drain` through a public
-  contract trait that arbitrary emitters can call.
+- Runtime code must not expose `drain` through a public contract trait that
+  arbitrary emitters can call.
 
 The contract-facing port is intentionally stage-only:
 
 ```rust
-/// Crate-boundary port for runtime event staging. A single runtime
+/// Crate-boundary port for runtime event staging. A single
 /// implementation is expected; this trait exists to keep contract types
-/// from depending on the runtime-owned EventBuffer.
+/// from depending on the concrete EventBuffer.
 pub trait CanonicalEventStager: Send + Sync {
     fn stage(&self, draft: CanonicalEventDraft);
 }
 ```
 
-`EventBuffer` is the expected runtime implementation, but the trait is not
-introduced for substitutability. It is a one-method boundary that lets a
-contract-level sink write into runtime-owned staging without making the
-buffer type part of the contract crate.
+`EventBuffer` is the expected implementation, but the trait is not introduced
+for substitutability. It is a one-method boundary that lets a contract-level
+sink write into server-owned staging without making the buffer type part of
+the contract crate.
 
 ### D3: Explicit buffer sharing and drain ownership
 
-The composition root constructs one concrete `Arc<EventBuffer>` per run
-activation when runtime event capture is enabled. That same allocation is
-passed through two different views:
+Server dispatch constructs one concrete `Arc<EventBuffer>` per run when
+runtime event capture is enabled. That same allocation is passed through two
+different views:
 
 ```rust
 let buffer: Arc<EventBuffer> = Arc::new(EventBuffer::new());
 let stager: Arc<dyn CanonicalEventStager> = buffer.clone();
 let sink = Arc::new(DurableEventSink::new(live_sink, stager, normalizer, mode));
-let activation = activation.with_event_buffer(buffer);
+let staging = StagingCommitCoordinator::new(staged_coordinator, buffer);
+let activation = activation.with_commit_coordinator_override(staging);
 ```
 
-Only runtime checkpoint code receives the concrete `Arc<EventBuffer>` and
+Only `StagingCommitCoordinator` receives the concrete `Arc<EventBuffer>` and
 therefore can call `drain()`. The sink receives only
-`Arc<dyn CanonicalEventStager>` and can only call `stage(...)`. A runtime
-activation with capture enabled is invalid unless both views reference the
-same `Arc<EventBuffer>`.
+`Arc<dyn CanonicalEventStager>` and can only call `stage(...)`. The runtime
+receives only the coordinator override, so it never sees the event buffer.
 
 ### D4: Server canonical events are not runtime tee sinks
 
@@ -149,7 +148,7 @@ pub struct ServerCanonicalEvent {
     pub options: AppendOptions,
 }
 
-impl CheckpointCommitPlan {
+impl ThreadCommitStagedWrites {
     pub fn with_server_events(
         self,
         events: Vec<ServerCanonicalEvent>,
@@ -221,12 +220,16 @@ fn wrap_runtime_event_sink(
 `Mailbox::with_runtime_event_capture(writer, mode, origin)` is deleted.
 The replacement `with_runtime_event_capture(mode, origin)` only records
 capture policy and origin. At dispatch time, if capture is enabled, the
-mailbox/runtime mints the per-run `EventBuffer` described in D3.
+mailbox mints the per-run `EventBuffer` described in D3.
 
 `executor.has_commit_coordinator()` is a construction precondition for
 enabled runtime event capture. A mailbox or server state that enables
 capture with an executor that lacks a coordinator is rejected at build time.
-There is no runtime fallback to inline append.
+There is no runtime fallback to inline append. Release mailbox construction
+also fails closed when the executor provides no `CommitCoordinator`;
+debug/test builds may use the checkpoint-only `MailboxRunStoreCoordinator`.
+`FileCommitCoordinator` is dev/local only and requires an explicit release
+opt-in through `AWAKEN_ALLOW_DEV_FILE_COORDINATOR=true`.
 
 ### D7: Checkpoint writes become coordinator-owned
 
@@ -255,13 +258,13 @@ contract. Renaming files must not be able to bypass the boundary.
 
 ### D8: Append-only checkpoint data model
 
-`commit_checkpoint` is append-only. The write payload is `Checkpoint`
-(formerly `CheckpointCommitPlan`): a message **delta**, an
-`expected_message_version` optimistic guard (the committed message count the
-delta is appended after), and the `RunRecord` to upsert. There is no
-overwrite mode — the committed message log is never rewritten in place, so a
-concurrent or stale writer cannot truncate history. A version mismatch
-returns `MessageVersionConflict`; the writer re-reads and rebuilds its delta.
+`commit_checkpoint` is append-only. The write payload is `ThreadCommit`: a
+message **delta**, an `expected_message_count` optimistic guard (the committed
+message count the delta is appended after), the `RunRecord` projection to
+upsert, and an optional thread-scoped state snapshot. There is no overwrite
+mode — the committed message log is never rewritten in place, so a concurrent
+or stale writer cannot truncate history. A version mismatch returns
+`MessageVersionConflict`; the writer re-reads and rebuilds its delta.
 
 `ThreadRunStore::checkpoint` (full snapshot overwrite) is retained only as a
 store-internal primitive for backends that genuinely snapshot (the NATS
@@ -269,7 +272,7 @@ buffered-thread flusher), never as a runtime/server write entry.
 
 ### D9: Symmetric consistent read — `load_checkpoint`
 
-`commit_checkpoint(checkpoint)` (write) is paired with
+`commit_checkpoint(thread_commit)` (write) is paired with
 `load_checkpoint(thread) -> CheckpointSnapshot` (read). A `CheckpointSnapshot`
 bundles the effective committed message view, the committed `message_version`
 (the count the next append guards against), the latest `RunRecord`, and the
@@ -312,9 +315,9 @@ and retries rather than clobbering newer messages.
   - `Mailbox::with_runtime_event_capture(writer, mode, origin)`.
 - Add:
   - `DurableEventSink::new(inner, stager, normalizer, mode)`.
-  - runtime-owned `EventBuffer` with `drain()` not exposed by
-    `CanonicalEventStager`.
-  - `CheckpointCommitPlan::with_server_events(...)` for committed server facts.
+  - server-owned `EventBuffer` drained by `StagingCommitCoordinator`, with
+    `drain()` not exposed by `CanonicalEventStager`.
+  - `ThreadCommitStagedWrites::with_server_events(...)` for committed server facts.
   - `OutboxServerEventPublisher` and `DiagnosticEventPublisher`.
   - `Mailbox::with_runtime_event_capture(mode, origin)`.
 - Migrate mailbox/thread-run state transitions that currently call
@@ -339,8 +342,8 @@ and retries rather than clobbering newer messages.
 2. A staged runtime event is not visible from `EventStore::list` if the
    checkpoint commit fails.
 3. The same `Arc<EventBuffer>` is shared between `DurableEventSink` staging
-   and runtime checkpoint draining.
-4. Server canonical facts attached through `CheckpointCommitPlan` roll back
+   and `StagingCommitCoordinator` draining.
+4. Server canonical facts attached through `ThreadCommitStagedWrites` roll back
    with the checkpoint; advisory outbox publication reports `Enqueued` or an
    `EventPublishError`.
 5. Runtime/server production crates do not call the checkpoint write

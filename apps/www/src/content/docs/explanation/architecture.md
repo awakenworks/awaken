@@ -6,27 +6,40 @@ description: "Awaken is organized around one runtime core plus three surrounding
 Awaken is organized around one runtime core plus three surrounding surfaces: contract types, server/storage adapters, and optional extensions. The important distinction is not just crate boundaries, but where decisions are made.
 
 ```text
-Application assembly
-  register tools / models / providers / plugins / AgentSpec
+In-process caller or Server integration plane
+  HTTP routes / mailbox / protocol adapters / managed config
         |
         v
-AgentRuntime
-  resolve AgentSpec -> ResolvedExecution
+AgentRuntime execution core
+  resolve AgentSpec -> resolved run plan
   build ExecutionEnv from plugins
   run the phase loop
   expose cancel / decision control for active runs
         |
         v
-Server + storage surfaces
-  HTTP routes, mailbox, SSE replay, protocol adapters,
-  thread/run persistence, profile storage
+Stores + contract surfaces
+  thread/run persistence, events, mailbox, profile/config storage
 ```
 
-**Contract layer** -- `awaken-contract` defines the shared types used everywhere: `AgentSpec`, `ModelSpec`, `ProviderSpec`, `Tool`, `AgentEvent`, transport traits, and the typed state model. This is the vocabulary that the rest of the system speaks.
+**Contract layer** -- `awaken-runtime-contract` defines runtime-facing vocabulary such as `AgentSpec`, `ModelSpec`, `ProviderSpec`, `Tool`, `AgentEvent`, `ThreadCommit`, and the typed state model. `awaken-server-contract` owns server/store vocabulary such as storage queries, scoped stores, mailbox/outbox contracts, and staged commit outcomes.
 
-**Runtime core** -- `awaken-runtime` is the orchestration layer. It resolves agent IDs to `ResolvedExecution`, which is either a local `ResolvedAgent` or a non-local `ResolvedBackendAgent` backed by an `ExecutionBackend`. Local runs build an `ExecutionEnv` from plugins and execute through the loop runner plus phase engine; non-local runs delegate execution to the backend.
+**Runtime core** -- `awaken-runtime` is the in-process execution core. It resolves agent IDs into a run plan backed by a local `ResolvedAgent` or a non-local `ResolvedBackendAgent` with an `ExecutionBackend`. Local runs build an `ExecutionEnv` from plugins and execute through the loop runner plus phase engine; non-local runs delegate execution to the backend. It currently targets standard Rust async applications with Tokio available; it is not a `no_std` or Tokio-free embedded-device runtime.
 
-**Server and persistence surfaces** -- `awaken-server` turns the runtime into HTTP and SSE endpoints, mailbox-backed background execution, config management, and protocol adapters. `awaken-stores` provides concrete persistence backends for thread/run data, runtime config, profile/shared state, and mailbox jobs. `awaken-ext-*` crates extend the runtime at phase and tool boundaries without changing the core loop.
+**Server and persistence surfaces** -- `awaken-server` is the service orchestration and control-plane layer. It owns HTTP routing, SSE replay, mailbox-backed background execution, protocol adapters, managed config APIs, and admin-console workflows, then invokes the runtime execution core. `awaken-stores` provides concrete persistence backends for thread/run data, runtime config, profile/shared state, and mailbox jobs. `awaken-ext-*` crates extend the runtime at phase and tool boundaries without changing the core loop.
+
+## Runtime vs Server Responsibilities
+
+| Area | Runtime development | Server development |
+|---|---|---|
+| Entry point | Rust calls into `AgentRuntime` directly. | HTTP, SSE, protocol adapters, mailbox workers, and admin routes call into `AgentRuntime`. |
+| IO ownership | The calling application owns CLI/worker/web transport and request scheduling. | `awaken-server` owns request routing, streaming, mailbox dispatch, cancellation, resume, and protocol replay. |
+| Configuration | Code builds registries or loads config before constructing the runtime. | `/v1/config/*` validates, persists, compiles, and publishes registry snapshots while the service stays up. |
+| Agent creation | Code constructs `AgentSpec` or loads it from an app-owned source. | Online config publishes `AgentSpec` plus models/providers/plugin sections; the agent is callable by `agent_id` on the next run. |
+| Operator surface | Application-specific. | Admin console, audit log, version restore, capabilities, and config validation routes. |
+
+Server mode does not invent executable Rust code. It orchestrates configured
+agents over the tools, plugins, providers, stores, and backend factories that
+were registered in the runtime/server process.
 
 ## Request Sequence
 
@@ -42,7 +55,7 @@ sequenceDiagram
 
     Client->>Server: POST /v1/ai-sdk/chat
     Server->>Runtime: RunActivation (agent_id, thread_id, messages)
-    Runtime->>Runtime: Resolve agent (AgentSpec -> ResolvedExecution)
+    Runtime->>Runtime: Resolve agent (AgentSpec -> run plan)
     Runtime->>Runtime: Load thread history
     Runtime->>Runtime: RunStart phase
     loop Step loop
@@ -92,10 +105,14 @@ At each phase boundary, the loop checks the cancellation token and the run lifec
 
 ```text
 awaken
-├─ awaken-contract
-│  ├─ registry specs
-│  ├─ tool / executor / event / transport contracts
-│  └─ state model
+├─ awaken-runtime-contract
+│  ├─ registry specs + typed state model
+│  ├─ tool / executor / event / lifecycle contracts
+│  └─ runtime commit coordinator
+├─ awaken-server-contract
+│  ├─ storage query/page/filter contracts
+│  ├─ scoped store + mailbox/outbox contracts
+│  └─ staged commit outcomes
 ├─ awaken-runtime
 │  ├─ builder + registries + resolve pipeline
 │  ├─ AgentRuntime control plane

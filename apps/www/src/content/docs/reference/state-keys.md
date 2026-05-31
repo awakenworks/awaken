@@ -199,7 +199,7 @@ The two dimensions for both shared and profile state are:
 
 For shared state, the key is typically a `StateScope` string; for profile state, it is an agent name or `"system"`.
 
-**Crate path:** `awaken_contract::ProfileKey` (re-exported from `awaken_contract::contract::profile_store`)
+**Crate path:** `awaken_runtime_contract::ProfileKey` (re-exported from `awaken_runtime_contract::contract::profile_store`)
 
 ### StateScope
 

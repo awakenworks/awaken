@@ -1,9 +1,11 @@
 ---
 title: "Build Agents"
-description: "This path is for composing agent behavior after you understand the basics."
+description: "Compose agent behavior by keeping executable capability in Rust and moving prompts, models, skills, and policy into managed config."
 ---
 
-This path is for composing agent behavior after you understand the basics.
+This path is for composing agent behavior after you understand the basics. The
+design goal is stable code and tunable behavior: tools/plugins stay compiled,
+while prompts, models, skills, and policy move through config.
 
 ## Recommended order
 

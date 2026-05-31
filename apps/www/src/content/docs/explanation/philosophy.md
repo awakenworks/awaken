@@ -76,7 +76,7 @@ The common alternative is pick-one-protocol-and-port. That binds agent code to a
 
 ### Permission gates as runtime primitives
 
-Permission is not a UI prompt or a middleware hook. It runs in the typed `ToolGate` phase (a `Phase` enum variant in `awaken-contract/src/model/phase.rs`) between tool decision and execution — the runtime always enters that phase before any tool runs.
+Permission is not a UI prompt or a middleware hook. It runs in the typed `ToolGate` phase (a `Phase` enum variant in `awaken-runtime-contract/src/model/phase.rs`) between tool decision and execution — the runtime always enters that phase before any tool runs.
 
 `awaken-ext-permission` matches each call against rules:
 

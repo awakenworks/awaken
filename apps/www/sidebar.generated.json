@@ -13,6 +13,13 @@
         }
       },
       {
+        "label": "Migrate From 0.5 to 0.6",
+        "slug": "how-to/migrate-to-0-6",
+        "translations": {
+          "zh-CN": "从 0.5 迁移到 0.6"
+        }
+      },
+      {
         "label": "First Agent",
         "slug": "tutorials/first-agent",
         "translations": {
@@ -355,6 +362,13 @@
         "slug": "reference/protocols/a2a",
         "translations": {
           "zh-CN": "A2A 协议"
+        }
+      },
+      {
+        "label": "MCP HTTP Protocol",
+        "slug": "reference/protocols/mcp",
+        "translations": {
+          "zh-CN": "MCP HTTP 协议"
         }
       },
       {
