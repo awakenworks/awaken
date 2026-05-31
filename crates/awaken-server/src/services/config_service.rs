@@ -295,7 +295,7 @@ impl ConfigService {
         model_ids.sort();
         let models = model_ids
             .iter()
-            .filter_map(|id| registries.models.get_model(&id))
+            .filter_map(|id| registries.models.get_model(id))
             .map(|model| serde_json::to_value(&model))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| {
