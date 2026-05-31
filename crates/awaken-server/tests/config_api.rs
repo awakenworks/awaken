@@ -1937,6 +1937,91 @@ async fn capabilities_report_runtime_supported_adapters_without_scripted() {
 }
 
 #[tokio::test]
+async fn capabilities_expose_admin_assistant_without_registry_tools() {
+    let app = make_app().await;
+
+    let (status, capabilities) =
+        request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let assistant = &capabilities["admin_assistant"];
+    assert_eq!(assistant["id"], "__admin_assistant");
+    assert_eq!(assistant["enabled"], true);
+    assert_eq!(assistant["visibility"], "admin_only");
+    assert_eq!(assistant["tools_locked"], true);
+    assert_eq!(assistant["endpoint"], "/v1/admin/assistant/runs");
+
+    let bound_tools = assistant["bound_tools"]
+        .as_array()
+        .expect("admin assistant bound tools should be listed");
+    assert!(contains_id(bound_tools, "admin_get_platform_capabilities"));
+    assert!(contains_id(bound_tools, "admin_create_agent_draft"));
+    assert!(contains_id(bound_tools, "admin_validate_agent"));
+    assert!(
+        bound_tools
+            .iter()
+            .all(|tool| tool["selectable_by_agents"] == false),
+        "admin assistant tools must not be assignable to user agents: {bound_tools:?}"
+    );
+
+    let registry_tools = capabilities["tools"]
+        .as_array()
+        .expect("tools should be an array");
+    assert!(!contains_id(
+        registry_tools,
+        "admin_get_platform_capabilities"
+    ));
+    assert!(!contains_id(registry_tools, "admin_create_agent_draft"));
+    assert!(!contains_id(registry_tools, "admin_validate_agent"));
+}
+
+#[tokio::test]
+async fn admin_assistant_config_is_admin_only_and_persisted() {
+    let app = make_app().await;
+
+    let (status, _) = request_json_with_headers(
+        &app.router,
+        Method::GET,
+        "/v1/admin/assistant/config",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, config) =
+        request_json(&app.router, Method::GET, "/v1/admin/assistant/config", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(config["id"], "default");
+    assert_eq!(config["policy_prompt"], "");
+
+    let body = json!({
+        "id": "ignored",
+        "policy_prompt": "Prefer compact, production-ready agent drafts.",
+        "model_id": "bootstrap"
+    });
+    let (status, updated) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/admin/assistant/config",
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {updated}");
+    assert_eq!(updated["id"], "default");
+    assert_eq!(
+        updated["policy_prompt"],
+        "Prefer compact, production-ready agent drafts."
+    );
+    assert_eq!(updated["model_id"], "bootstrap");
+
+    let (status, loaded) =
+        request_json(&app.router, Method::GET, "/v1/admin/assistant/config", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(loaded, updated);
+}
+
+#[tokio::test]
 async fn periodic_refresh_publishes_external_store_changes() {
     let app = make_app().await;
     app.manager

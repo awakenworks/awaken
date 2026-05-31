@@ -1,7 +1,13 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useRef, useEffect, useState, type FormEvent } from "react";
-import { BACKEND_URL } from "@/lib/config-api";
+import { useMemo, useRef, useEffect, useState, type FormEvent } from "react";
+import {
+  adminAssistantApi,
+  adminAssistantRunUrl,
+  type AdminAssistantConfig,
+} from "@/lib/config-api";
+import { adminAuthHeaders } from "@/lib/api/http";
+import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
 import {
   describeToolCallState,
   previewPayload,
@@ -17,20 +23,27 @@ const suggestions = [
   "Show me all available plugins and their options",
 ];
 
-/**
- * AI Config Assistant — chat interface for AI-driven agent configuration.
- *
- * Uses a dedicated "config-assistant" agent that has tools to list, create,
- * update agents/models/providers, read capabilities, and validate configs.
- */
 export function AssistantPage() {
+  return <AssistantChatPanel variant="page" />;
+}
+
+export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "drawer" }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState("");
+  const transport = useMemo(
+    () =>
+      new DefaultChatTransport({
+        api: adminAssistantRunUrl(),
+        prepareSendMessagesRequest: ({ messages }) => ({
+          headers: adminAuthHeaders(),
+          body: { messages },
+        }),
+      }),
+    [],
+  );
 
   const { messages, sendMessage, status, error } = useChat({
-    transport: new DefaultChatTransport({
-      api: `${BACKEND_URL}/v1/ai-sdk/agents/config-assistant/runs`,
-    }),
+    transport,
   });
 
   useEffect(() => {
@@ -61,15 +74,17 @@ export function AssistantPage() {
     // the input is always anchored at the visible bottom — `h-full`
     // collapses to `auto` whenever an ancestor stops propagating a
     // definite height, hiding the input below the fold.
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
+    <div className={variant === "drawer" ? "flex h-full flex-col" : "flex h-[calc(100dvh-3rem)] flex-col"}>
       <header className="border-b border-line bg-surface px-6 py-4">
         <h2 className="text-lg font-semibold text-fg-strong">
-          AI Config Assistant
+          Admin Assistant
         </h2>
         <p className="mt-1 text-sm text-fg-soft">
-          Describe the agent you want to create or modify. The assistant will
-          generate configurations, suggest plugins, and validate settings.
+          Describe the agent you want to create or modify. The assistant reads
+          platform capabilities, drafts AgentSpecs, and validates settings with
+          locked admin-only tools.
         </p>
+        {variant === "page" ? <AssistantSettingsPanel /> : null}
       </header>
 
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-auto p-6">
@@ -133,7 +148,7 @@ export function AssistantPage() {
             <div className="font-medium">Assistant call failed</div>
             <div className="mt-1 text-xs text-fg-soft">
               {error?.message ||
-                "The config-assistant agent isn't responding. The starter seed doesn't include it — create an agent with id 'config-assistant' on the Agents page, then retry."}
+                "The admin assistant is unavailable. Configure a model and ensure the admin assistant endpoint is enabled."}
             </div>
           </div>
         )}
@@ -159,6 +174,130 @@ export function AssistantPage() {
       </form>
     </div>
   );
+}
+
+function AssistantSettingsPanel() {
+  const capabilitiesQuery = useCapabilitiesQuery();
+  const [config, setConfig] = useState<AdminAssistantConfig | null>(null);
+  const [draft, setDraft] = useState<AdminAssistantConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    adminAssistantApi
+      .getConfig()
+      .then((next) => {
+        if (!alive) return;
+        setConfig(next);
+        setDraft(next);
+        setError(null);
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setError(errorMessage(err));
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  async function save() {
+    if (!draft) return;
+    setSaving(true);
+    setSaved(false);
+    try {
+      const next = await adminAssistantApi.updateConfig(draft);
+      setConfig(next);
+      setDraft(next);
+      setError(null);
+      setSaved(true);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const dirty = JSON.stringify(config) !== JSON.stringify(draft);
+  const models = capabilitiesQuery.data?.models ?? [];
+
+  return (
+    <details className="mt-4 rounded-sm border border-line bg-soft">
+      <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-fg-soft">
+        Prompt policy and locked tools
+      </summary>
+      <div className="space-y-3 border-t border-line px-3 py-3">
+        <div className="grid gap-3 md:grid-cols-[16rem,1fr]">
+          <label className="text-xs font-medium text-fg-soft">
+            Assistant model
+            <select
+              value={draft?.model_id ?? ""}
+              onChange={(event) =>
+                setDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        model_id: event.target.value.trim() || null,
+                      }
+                    : current,
+                )
+              }
+              disabled={!draft || loading || saving}
+              className="mt-1 w-full rounded-sm border border-line-strong bg-surface px-2 py-1.5 text-sm text-fg outline-none focus:border-fg"
+            >
+              <option value="">Auto-select first configured model</option>
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.id}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs font-medium text-fg-soft">
+            Editable policy prompt
+            <textarea
+              value={draft?.policy_prompt ?? ""}
+              onChange={(event) =>
+                setDraft((current) =>
+                  current ? { ...current, policy_prompt: event.target.value } : current,
+                )
+              }
+              disabled={!draft || loading || saving}
+              rows={5}
+              placeholder="Organization-specific preferences for how the Admin Assistant should draft agents."
+              className="mt-1 w-full rounded-sm border border-line-strong bg-surface px-3 py-2 font-mono text-xs text-fg outline-none focus:border-fg"
+            />
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-fg-soft">
+          <span className="rounded-pill bg-muted px-2 py-0.5">system prompt locked</span>
+          <span className="rounded-pill bg-muted px-2 py-0.5">tools locked</span>
+          <span className="rounded-pill bg-muted px-2 py-0.5">admin only</span>
+          {error ? <span className="text-tone-error">{error}</span> : null}
+          {saved ? <span className="text-tone-success">Saved</span> : null}
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={!dirty || saving || loading || !draft}
+            className="ml-auto rounded-sm border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saving ? "Saving..." : "Save policy"}
+          </button>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }) {

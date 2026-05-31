@@ -98,10 +98,25 @@ impl RouteModule for ProtocolRoutesState {
             },
             require_scope_middleware,
         );
+        let admin_scope = middleware::from_fn_with_state(
+            ScopeMiddlewareState {
+                provider: self.scope_provider.clone(),
+                surface: RequestSurface::Admin,
+            },
+            require_scope_middleware,
+        );
+        let auth =
+            middleware::from_fn_with_state(self.admin.clone(), require_admin_auth_middleware);
         router
             .merge(
                 crate::protocols::ai_sdk_v6::http::ai_sdk_routes()
                     .route_layer(scope.clone())
+                    .with_state(self.clone()),
+            )
+            .merge(
+                crate::protocols::ai_sdk_v6::http::ai_sdk_admin_routes()
+                    .route_layer(admin_scope)
+                    .route_layer(auth)
                     .with_state(self.clone()),
             )
             .merge(

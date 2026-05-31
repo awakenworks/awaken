@@ -291,16 +291,18 @@ impl ConfigService {
         //
         // Serialization failure surfaces as an error rather than silently
         // dropping the model — a partial catalog would hide the problem.
-        let models = registries
-            .models
-            .model_ids()
-            .into_iter()
+        let mut model_ids = registries.models.model_ids();
+        model_ids.sort();
+        let models = model_ids
+            .iter()
             .filter_map(|id| registries.models.get_model(&id))
             .map(|model| serde_json::to_value(&model))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| {
                 ConfigServiceError::Apply(format!("failed to serialize model spec: {error}"))
             })?;
+        let admin_assistant_model_id =
+            crate::admin_assistant::select_admin_assistant_model_id(registries.models.as_ref());
 
         let providers = registries
             .providers
@@ -324,6 +326,10 @@ impl ConfigService {
             "skills": skills,
             "models": models,
             "providers": providers,
+            "admin_assistant": crate::admin_assistant::admin_assistant_capability(
+                &model_ids,
+                admin_assistant_model_id,
+            ),
             "supported_adapters": super::config_runtime::supported_adapters(),
             "namespaces": [
                 { "namespace": "agents", "schema": ConfigNamespace::Agents.schema_json()? },

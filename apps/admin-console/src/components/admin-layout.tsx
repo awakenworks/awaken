@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router";
 import { AdminSidebar } from "./admin-sidebar";
 import { AdminTopbar } from "./admin-topbar";
+import { AdminAssistantDrawer } from "./admin-assistant-drawer";
 import { CommandPaletteProvider } from "./command-palette";
 
 export function AdminLayout() {
@@ -48,6 +49,7 @@ export function AdminLayout() {
             <Outlet />
           </main>
         </div>
+        <AdminAssistantDrawer />
       </div>
     </CommandPaletteProvider>
   );

@@ -247,6 +247,38 @@ export interface ToolInfo {
   source?: { kind: "builtin" | "plugin" | "mcp"; id?: string };
 }
 
+export interface AdminAssistantToolInfo {
+  id: string;
+  label: string;
+  description: string;
+  visibility: "admin_assistant_only";
+  selectable_by_agents: false;
+  exposable_to_protocols: false;
+  requires_confirmation: boolean;
+}
+
+export interface AdminAssistantCapability {
+  id: string;
+  enabled: boolean;
+  disabled_reason?: string | null;
+  model_id?: string | null;
+  visibility: "admin_only";
+  endpoint: string;
+  prompt: {
+    editable: boolean;
+    storage: string;
+    system_prompt_locked: boolean;
+  };
+  tools_locked: boolean;
+  bound_tools: AdminAssistantToolInfo[];
+}
+
+export interface AdminAssistantConfig {
+  id: string;
+  policy_prompt: string;
+  model_id?: string | null;
+}
+
 export interface Capabilities {
   agents: string[];
   tools: ToolInfo[];
@@ -254,6 +286,7 @@ export interface Capabilities {
   skills: SkillInfo[];
   models: ModelSpec[];
   providers: Array<{ id: string }>;
+  admin_assistant?: AdminAssistantCapability;
   supported_adapters?: string[];
   namespaces: Array<{
     namespace: string;

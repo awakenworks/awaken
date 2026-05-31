@@ -5,6 +5,7 @@ import {
   capabilitiesApi,
   ConfigApiError,
   providersApi,
+  type ModelSpec,
   type ProviderRecord,
   type ProviderSpec,
   type ProviderTestResponse,
@@ -35,6 +36,7 @@ import {
 } from "@/lib/list-view";
 import { useListUrlState } from "@/lib/list-url-state";
 import { formatRelativeTime } from "@/lib/format-time";
+import { ModelProviderSetupBanner } from "@/components/model-provider-setup-banner";
 
 type ProviderSortKey = "id" | "adapter" | "base_url" | "has_api_key" | "updated_at";
 
@@ -178,10 +180,13 @@ export function ProvidersPage() {
     prepareSave,
     auxiliaryQueryKey: PROVIDER_AUXILIARY_QUERY_KEY,
     auxiliaryLoaders: () =>
-      capabilitiesApi.capabilities().then((caps) => [caps.supported_adapters ?? FALLBACK_ADAPTERS]),
+      capabilitiesApi
+        .capabilities()
+        .then((caps) => [caps.supported_adapters ?? FALLBACK_ADAPTERS, caps.models ?? []]),
   });
 
   const serverAdapters = crud.auxiliaryData[0] as string[] | undefined;
+  const serverModels = crud.auxiliaryData[1] as ModelSpec[] | undefined;
 
   // Derived from the draft so it stays in sync when admin switches adapters
   // or pastes credentials_kind directly into adapter_options.
@@ -356,6 +361,12 @@ export function ProvidersPage() {
           {t("providers.new")}
         </button>
       </div>
+
+      <ModelProviderSetupBanner
+        providerCount={crud.items.length}
+        modelCount={serverModels?.length ?? 0}
+        onCreateProvider={startCreate}
+      />
 
       {crud.draft ? (
         <section className="mb-6 rounded-sm border border-line bg-surface p-5 shadow-sm">

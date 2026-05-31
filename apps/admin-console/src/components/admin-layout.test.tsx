@@ -22,6 +22,10 @@ vi.mock("./command-palette", () => ({
   CommandPaletteProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+vi.mock("./admin-assistant-drawer", () => ({
+  AdminAssistantDrawer: () => <div data-testid="admin-assistant-drawer" />,
+}));
+
 function renderLayout(initialEntry = "/") {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>

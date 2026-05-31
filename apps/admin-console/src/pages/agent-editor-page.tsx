@@ -16,6 +16,8 @@ import {
 import { type AuditEvent, formatActor, summarizeChange } from "@/lib/audit-log";
 import { Field } from "@/components/form-components";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
+import { AdminAssistantLockedToolsSection } from "@/components/admin-assistant-locked-tools-section";
+import { AgentFrontendIntegrationCard } from "@/components/agent-frontend-integration-card";
 import { ToolsPanel as ToolSelectorsPanel } from "./agent-editor/panels/tools-panel";
 import { VisibleToolDescriptors } from "./agent-editor/panels/tool-descriptors";
 import { CompactionSection } from "./agent-editor/panels/compaction-section";
@@ -72,7 +74,6 @@ import {
 } from "@/lib/agent-editor-helpers";
 import { deriveAllowedMode, isToolAllowed, type AgentSpecCatalog } from "@/lib/tool-catalog";
 import { safeErrorMessage } from "@/lib/safe-error-message";
-
 const EMPTY_AGENT: AgentSpec = {
   id: "",
   model_id: "",
@@ -83,7 +84,6 @@ const EMPTY_AGENT: AgentSpec = {
   sections: {},
   delegates: [],
 };
-
 function pluginConfigWarnings(
   pluginId: string,
   selected: boolean,
@@ -108,7 +108,6 @@ function pluginConfigWarnings(
   }
   return warnings;
 }
-
 async function getOptionalAgentMeta(id: string): Promise<RecordMeta | null> {
   try {
     return await configApi.getMeta("agents", id);
@@ -119,7 +118,6 @@ async function getOptionalAgentMeta(id: string): Promise<RecordMeta | null> {
     throw error;
   }
 }
-
 function hydrateAgentSpec(spec: AgentSpec): AgentSpec {
   return {
     sections: {},
@@ -128,13 +126,11 @@ function hydrateAgentSpec(spec: AgentSpec): AgentSpec {
     ...spec,
   };
 }
-
 export function AgentEditorPage() {
   const navigate = useNavigate();
   const { id } = useParams();
   const isNew = id === "new";
   const queryClient = useQueryClient();
-
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = readTabFromSearch(searchParams);
   const setActiveTab = (next: AgentEditorTabId) => {
@@ -762,7 +758,10 @@ export function AgentEditorPage() {
           ))}
         </div>
 
-        <AgentPreviewPanel draft={spec} traceAgentId={isNew ? undefined : savedSpec?.id} />
+        <aside className="space-y-4">
+          <AgentPreviewPanel draft={spec} traceAgentId={isNew ? undefined : savedSpec?.id} />
+          <AgentFrontendIntegrationCard agentId={savedSpec?.id} />
+        </aside>
       </div>
 
       <EditorSaveBar
@@ -1476,6 +1475,7 @@ function ToolsPanel({
   return (
     <div className="space-y-6">
       <ToolSelectorsPanel spec={spec} capabilities={capabilities} updateField={updateField} />
+      <AdminAssistantLockedToolsSection capabilities={capabilities} />
       <McpServersPanel
         spec={spec}
         servers={mcpServers}

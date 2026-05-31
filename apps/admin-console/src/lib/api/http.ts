@@ -144,3 +144,7 @@ export function configUrl(namespace: string, id?: string): string {
 export function agentPreviewRunUrl(): string {
   return `${BACKEND_URL}/v1/ai-sdk/agent-previews/runs`;
 }
+
+export function adminAssistantRunUrl(): string {
+  return `${BACKEND_URL}/v1/admin/assistant/runs`;
+}

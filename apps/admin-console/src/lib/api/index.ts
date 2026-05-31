@@ -1,9 +1,16 @@
 export { agentsApi } from "./agents";
+export { adminAssistantApi } from "./admin-assistant";
 export { auditApi } from "./audit";
 export { capabilitiesApi } from "./capabilities";
 export { configApi } from "./config";
 export { configResourceApi } from "./config-resource";
-export { ADMIN_TOKEN_STORAGE_KEY, BACKEND_URL, ConfigApiError, agentPreviewRunUrl } from "./http";
+export {
+  ADMIN_TOKEN_STORAGE_KEY,
+  BACKEND_URL,
+  ConfigApiError,
+  adminAssistantRunUrl,
+  agentPreviewRunUrl,
+} from "./http";
 export { mcpApi } from "./mcp";
 export { providersApi } from "./providers";
 export { runsApi, type ListRunsPage, type ListRunsParams, type RunStatus } from "./runs";
