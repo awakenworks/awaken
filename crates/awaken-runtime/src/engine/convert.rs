@@ -51,10 +51,7 @@ pub fn to_chat_message(msg: &Message) -> ChatMessage {
         }
         Role::Tool => {
             let call_id = msg.tool_call_id.as_deref().unwrap_or("");
-            let response = ToolResponse {
-                call_id: call_id.to_string(),
-                content: msg.text(),
-            };
+            let response = ToolResponse::new(call_id, msg.text());
             ChatMessage::from(response)
         }
     }
