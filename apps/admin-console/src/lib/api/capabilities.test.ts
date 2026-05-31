@@ -63,14 +63,14 @@ describe("capabilitiesApi", () => {
     await expect(capabilitiesApi.capabilities()).resolves.toEqual({ kind: "route_absent" });
   });
 
-  it("reports store_unavailable on 503 instead of returning empty capabilities", async () => {
+  it("reports registry_unavailable on 503 instead of returning empty capabilities", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(jsonResponse({ error: "registry unavailable" }, 503)),
     );
 
     await expect(capabilitiesApi.capabilities()).resolves.toEqual({
-      kind: "store_unavailable",
+      kind: "registry_unavailable",
       message: "registry unavailable",
     });
   });

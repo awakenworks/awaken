@@ -367,7 +367,7 @@ describe("configApi", () => {
     );
 
     await expect(configApi.capabilities()).resolves.toMatchObject({
-      kind: "store_unavailable",
+      kind: "registry_unavailable",
       message: "unavailable",
     });
   });

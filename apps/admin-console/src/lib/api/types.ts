@@ -308,7 +308,7 @@ export interface Capabilities {
 export type CapabilitiesResult =
   | { kind: "ok"; capabilities: Capabilities }
   | { kind: "route_absent" }
-  | { kind: "store_unavailable"; message?: string };
+  | { kind: "registry_unavailable"; message?: string };
 
 /** Wire-format mirror of `GET /v1/mcp-servers/:id/status` response. */
 export interface McpServerStatusResponse {
