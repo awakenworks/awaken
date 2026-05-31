@@ -118,7 +118,8 @@ The above three rules combine to give four properties most agent frameworks lack
 ## Reading path
 
 1. [Get Started](/awaken/get-started/) → [First Agent](/awaken/tutorials/first-agent/).
-2. [Build Agents](/awaken/build-agents/) — tools, MCP, skills, reminders, HITL, UI.
-3. [Serve & Integrate](/awaken/serve-and-integrate/) — AI SDK / CopilotKit / A2A / MCP / ACP clients.
-4. [State & Storage](/awaken/state-and-storage/), [Operate](/awaken/operate/) — production hardening.
-5. [Design Philosophy](/awaken/explanation/philosophy/) — the "why" behind the three rules.
+2. [Develop Agents](/awaken/build-agents/) — implement tools, plugins, state, sub-agent calls, and UI streams in Rust.
+3. [Tune & Operate](/awaken/operate/) — use the Admin Console or config API to manage prompts, models, MCP, skills, policies, traces, datasets, and evals.
+4. [Serve & Integrate](/awaken/serve-and-integrate/) — AI SDK / CopilotKit / A2A / MCP / ACP clients.
+5. [State & Storage](/awaken/state-and-storage/) — persistence and durable state.
+6. [Design Philosophy](/awaken/explanation/philosophy/) — the "why" behind the three rules.

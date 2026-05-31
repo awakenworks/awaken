@@ -50,8 +50,8 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
         </h1>
         <p class="hero-sub">
           {t(
-            "Build agent capabilities once in Rust, tune behavior live, and serve every client from the same runtime. Use direct runtime for in-process app flows or server mode for protocols, durable runs, and the admin console.",
-            "用 Rust 写一次 Agent 能力，把行为调优交给在线配置，并让同一个 runtime 服务本地开发、生产 API、多协议前端和管理控制台。",
+            "Build agent capabilities once in Rust, tune and operate them live, and serve every client from the same runtime. Use direct runtime for in-process app flows or server mode for protocols, durable runs, and the admin console.",
+            "用 Rust 写一次 Agent 能力，通过在线配置调优运营，并让同一个 runtime 服务本地开发、生产 API、多协议前端和管理控制台。",
           )}
         </p>
         <div class="hero-actions">
@@ -126,7 +126,7 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
           )} />
         </div>
         <div class="right">
-          <a href={`${docsBase}/how-to/configure-agent-behavior/`}>{t("Tuning guide →", "调优指南 →")}</a>
+          <a href={`${docsBase}/operate/`}>{t("Tune & Operate →", "调优与运营 →")}</a>
         </div>
       </div>
       <div class="decisions-grid">
@@ -234,7 +234,7 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
           )} />
         </div>
         <div class="right">
-          <a href={`${docsBase}/reference/admin-console/`}>{t("Full surface tour →", "完整界面导览 →")}</a>
+          <a href={`${docsBase}/how-to/use-admin-console/`}>{t("Open console guide →", "打开控制台指南 →")}</a>
         </div>
       </div>
       <div class="console-grid">
@@ -247,8 +247,10 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
             <aside class="console-side">
               <div class="eb">{t("Agents", "智能体")}</div>
               <div class="item act">Agents <span class="dot"></span></div>
-              <div class="eb" style="margin-top: 8px">{t("Resources", "资源")}</div>
+              <div class="eb" style="margin-top: 8px">{t("Infrastructure", "基础设施")}</div>
               <div class="item">Models <span class="dot"></span></div>
+              <div class="item">Providers <span class="dot"></span></div>
+              <div class="eb" style="margin-top: 8px">{t("Resources", "资源")}</div>
               <div class="item">MCP Servers <span class="dot w"></span></div>
               <div class="item">Skills</div>
               <div class="item">Tools</div>

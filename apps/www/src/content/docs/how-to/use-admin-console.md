@@ -1,13 +1,16 @@
 ---
 title: "Use the Admin Console"
-description: "The admin console is the operator UI for an Awaken runtime. This guide walks through the workflows that operators most often run from the browser."
+description: "The Admin Console is the main tuning and operations UI for an Awaken server. This guide walks through the browser workflows operators run most often."
 ---
 
-The admin console is the operator UI for an Awaken runtime. This guide walks
-through the workflows that operators most often run from the browser.
+The Admin Console is the main tuning and operations UI for an Awaken server.
+Use it after the runtime capabilities exist in code: configure providers and
+models, create agents, tune prompts and tool descriptions, assign MCP tools,
+activate skills and delegates, inspect traces, capture datasets, and run evals
+from the browser.
 
-For the technical inventory of every screen and widget, see
-[Admin Console reference](/awaken/reference/admin-console/).
+For the technical inventory of every screen and widget, see the
+[Admin Console surface inventory](/awaken/reference/admin-console/).
 
 ## Prerequisites
 
@@ -37,10 +40,8 @@ When you first open the console, the topbar pill on the right shows
 ## Visual tour
 
 The console is a thin browser control plane over the running server. The
-screenshots below are static captures made with sample API data; a running
-console reads the same surfaces from your backend. They show the current
-high-value workflow: inspect live system state, edit an agent, and compare
-agent catalog health before running traffic.
+screenshots below show the current high-value workflow: inspect system state,
+edit an agent, and compare agent catalog health before running traffic.
 
 <div class="screenshot-grid">
   <figure class="screenshot">
@@ -73,11 +74,14 @@ The left sidebar groups every screen by intent:
 | **Resources** | MCP Servers, Skills, Tools — runtime dependencies and discovered capabilities. |
 | **Infrastructure** | Providers and Models — upstream connectivity plus stable model ids and capability metadata. |
 | **Observe** | Dashboard, Audit Log, Datasets, Eval Runs, Eval Reports — operational views and evaluation records. |
-| **Assistant** | AI Assistant — chat interface that runs a real agent against your live config. |
 
 Use the **breadcrumb** in the topbar to confirm which group you are in
 and to move back up to the parent page. The core workflows below are all
 available through the visible navigation and editor controls.
+
+The Admin Assistant is a global floating bubble, not a sidebar destination. It
+activates after at least one provider-backed model is configured; until then it
+opens with setup links for Providers and Models.
 
 ## Inspect the system
 
@@ -288,6 +292,6 @@ tokens drive the console and docs.
 
 ## Related
 
-- [Admin Console reference](/awaken/reference/admin-console/)
+- [Admin Console surface inventory](/awaken/reference/admin-console/)
 - [HTTP API](/awaken/reference/http-api/)
 - [Enable Observability](/awaken/how-to/enable-observability/)

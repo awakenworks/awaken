@@ -129,7 +129,7 @@ export default defineConfig({
     }),
     starlight({
       title: "Awaken",
-      description: "Build agent capabilities once in Rust, tune behavior live, and serve every client from one runtime.",
+      description: "Build agent capabilities once in Rust, tune and operate them live, and serve every client from one runtime.",
       logo: { src: "./src/assets/awaken-mark.svg", replacesTitle: false },
       social: [
         { icon: "github", label: "GitHub", href: "https://github.com/AwakenWorks/awaken" },

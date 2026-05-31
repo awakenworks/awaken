@@ -17,7 +17,7 @@ overrides, allowed tools, reasoning effort, context policy, reminder cadence,
 ToolSearch/deferred-tool policy, skill activation metadata, and delegates. The
 same server binary hosts many agent profiles; switching profiles is a
 `PUT /v1/config/agents/:id` (or a Save in the
-[Admin Console](/awaken/reference/admin-console/)), not a redeploy.
+[Admin Console](/awaken/how-to/use-admin-console/)), not a redeploy.
 
 **Treat configuration as the optimization surface.** The loop is: edit spec →
 Validate → Save → run a preview chat → measure → adjust. The runtime

@@ -1,19 +1,22 @@
 ---
-title: "Build Agents"
-description: "Compose agent behavior by keeping executable capability in Rust and moving prompts, models, skills, and policy into managed config."
+title: "Develop Agents"
+description: "Implement executable agent capability in Rust: runtime setup, tools, plugins, state, and controlled sub-agent calls."
 ---
 
-This path is for composing agent behavior after you understand the basics. The
-design goal is stable code and tunable behavior: tools/plugins stay compiled,
-while prompts, models, skills, and policy move through config.
+This path is for the developer side of Awaken: implement the executable
+capability that a runtime can safely run. Keep code focused on tools, plugins,
+state, providers, stores, and explicit execution boundaries. Move behavior that
+operators should change later into managed config, then use
+[Tune & Operate](/awaken/operate/) for the browser and REST workflows.
 
 ## Recommended order
 
 1. [Build an Agent](/awaken/how-to/build-an-agent/) to define the runtime, model registry, and agent spec.
-2. [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) to tune providers, `ModelSpec` entries, tools, and plugin sections through managed config.
-3. [Add a Tool](/awaken/how-to/add-a-tool/) and [Add a Plugin](/awaken/how-to/add-a-plugin/) to extend behavior safely.
-4. Add discovery and delegation layers with [Use Skills Subsystem](/awaken/how-to/use-skills-subsystem/), [Use MCP Tools](/awaken/how-to/use-mcp-tools/), and [Use Agent Handoff](/awaken/how-to/use-agent-handoff/).
-5. Add specialized behavior with [Use Reminder Plugin](/awaken/how-to/use-reminder-plugin/), [Use Generative UI](/awaken/how-to/use-generative-ui/), and [Use Deferred Tools](/awaken/how-to/use-deferred-tools/).
+2. [Add a Tool](/awaken/how-to/add-a-tool/) and [Add a Plugin](/awaken/how-to/add-a-plugin/) to extend behavior safely.
+3. [Use Agent Handoff](/awaken/how-to/use-agent-handoff/) when one agent should take over the current thread.
+4. [Invoke a Sub-Agent from a Tool](/awaken/how-to/invoke-sub-agent-from-tool/) when custom tool code needs a controlled child run.
+5. [Use Generative UI](/awaken/how-to/use-generative-ui/) when an agent should stream UI documents alongside text.
+6. [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) marks the boundary between code-owned capability and operator-owned tuning.
 
 ## Keep nearby
 

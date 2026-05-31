@@ -60,7 +60,8 @@ export OPENAI_ADAPTER=openai
 
 ## 推荐顺序
 
-1. 阅读 [管理控制台](/awaken/zh-cn/reference/admin-console/)，理解浏览器工作流。
+1. 阅读 [使用管理控制台](/awaken/zh-cn/how-to/use-admin-console/)，理解浏览器工作流：
+   配置模型、创建 Agent、预览草稿，并发布下一版 runtime snapshot。
 2. 需要 React 前端时，阅读 [AI SDK 前端集成](/awaken/zh-cn/how-to/integrate-ai-sdk-frontend/)。
 3. 阅读 [第一个 Agent](/awaken/zh-cn/tutorials/first-agent/)，理解最小进程内 runtime。
 4. 阅读 [第一个 Tool](/awaken/zh-cn/tutorials/first-tool/)，理解 tool schema、执行流程和状态写入。
@@ -68,6 +69,7 @@ export OPENAI_ADAPTER=openai
 
 ## 何时离开这条路径
 
-- 需要更多 Agent 能力时，进入 [构建 Agent 路径](/awaken/zh-cn/build-agents/)。
+- 需要实现新的 runtime 能力时，进入 [开发 Agent 路径](/awaken/zh-cn/build-agents/)。
+- 需要调优或运营已保存的 Agent 时，进入 [调优与运营](/awaken/zh-cn/operate/)。
 - 需要 HTTP 或前端集成时，进入 [服务与集成](/awaken/zh-cn/serve-and-integrate/)。
-- 需要持久化和运行控制时，进入 [状态与存储](/awaken/zh-cn/state-and-storage/) 或 [运行与运维](/awaken/zh-cn/operate/)。
+- 需要持久化时，进入 [状态与存储](/awaken/zh-cn/state-and-storage/)。

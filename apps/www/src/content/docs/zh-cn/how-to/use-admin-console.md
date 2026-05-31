@@ -1,9 +1,12 @@
 ---
 title: "使用管理控制台"
-description: "管理控制台是 Awaken runtime 的操作界面。本文说明操作者最常用的浏览器工作流。"
+description: "管理控制台是 Awaken server 的主要调优和运营 UI。本文说明操作者最常用的浏览器工作流。"
 ---
 
-管理控制台是 Awaken runtime 的操作界面。本文说明操作者最常用的浏览器工作流。完整界面清单见[管理控制台参考](/awaken/zh-cn/reference/admin-console/)。
+管理控制台是 Awaken server 的主要调优和运营 UI。runtime 能力已经在代码里实现后，
+可以在这里配置 provider 和 model、创建 Agent、调优 prompt 和工具描述、分配 MCP
+工具、激活 Skill 与 delegate、检查 trace、沉淀 dataset，并在浏览器中运行 eval。
+完整界面清单见[管理控制台界面清单](/awaken/zh-cn/reference/admin-console/)。
 
 ## 前置条件
 
@@ -26,8 +29,7 @@ pnpm --filter awaken-admin-console dev
 
 ## 界面概览
 
-控制台是运行中 server 上的一层浏览器控制面。下面几张截图是使用 sample API
-data 生成的静态文档图；实际控制台会从你的后端读取相同接口。它们对应当前最核心的
+控制台是运行中 server 上的一层浏览器控制面。下面几张截图对应当前最核心的
 工作流：检查系统状态、编辑 agent、在运行流量前查看 agent catalog 与统计。
 
 <div class="screenshot-grid">
@@ -61,9 +63,11 @@ data 生成的静态文档图；实际控制台会从你的后端读取相同接
 | **Resources** | MCP Servers、Skills、Tools：runtime 依赖与发现出来的能力 |
 | **Infrastructure** | Providers 和 Models：上游连接、稳定 model id 与能力 metadata |
 | **Observe** | Dashboard、Audit Log、Datasets、Eval Runs、Eval Reports：运行视图与评测记录 |
-| **Assistant** | AI Assistant：基于 live config 运行真实 agent 的聊天界面 |
 
 使用 topbar breadcrumb 确认当前位置并返回上级页面。
+
+Admin Assistant 是全局浮动气泡，不是 sidebar 页面。至少配置一个 provider-backed
+model 后才会启用；未启用时会显示跳转到 Providers 和 Models 的设置入口。
 
 ## 检查系统状态
 
@@ -179,7 +183,7 @@ let runtime = AgentRuntimeBuilder::default()
 - Skill CRUD：控制台列出 skills，但不编辑。
 - Config diagnostics：`GET /v1/config/diagnostics` 返回 registry-wide validation report。
 
-请使用相同 admin bearer token 通过 `curl` 或脚本调用。端点清单见[管理控制台参考中的 REST-only 表](/awaken/zh-cn/reference/admin-console/#rest-only-功能)，请求格式见 [HTTP API](/awaken/zh-cn/reference/http-api/)。
+请使用相同 admin bearer token 通过 `curl` 或脚本调用。端点清单见[管理控制台界面清单中的 REST-only 表](/awaken/zh-cn/reference/admin-console/#rest-only-功能)，请求格式见 [HTTP API](/awaken/zh-cn/reference/http-api/)。
 
 ## 切换主题
 
@@ -199,6 +203,6 @@ let runtime = AgentRuntimeBuilder::default()
 
 ## 相关
 
-- [管理控制台参考](/awaken/zh-cn/reference/admin-console/)
+- [管理控制台界面清单](/awaken/zh-cn/reference/admin-console/)
 - [HTTP API](/awaken/zh-cn/reference/http-api/)
 - [启用可观测性](/awaken/zh-cn/how-to/enable-observability/)

@@ -1,17 +1,38 @@
 ---
-title: "Operate"
-description: "This path is for hardening an agent service once the happy path already works."
+title: "Tune & Operate"
+description: "Use the Admin Console and config plane to tune saved agents, inspect runs, curate traces, and harden production behavior."
 ---
 
-This path is for hardening an agent service once the happy path already works.
+This path is for the product surface around a running Awaken server. Developers
+still implement executable capability in Rust, but operators tune the managed
+parts online: prompts, tool descriptions, models, model pools, MCP servers,
+skills, delegates, reminders, deferred-tool policy, permission rules, traces,
+datasets, and evals.
+
+The Admin Console is the primary UI for this path. The REST config API is the
+same control plane for CI or internal tooling.
 
 ## Recommended order
 
-1. [Enable Observability](/awaken/how-to/enable-observability/) to make runs, tools, and providers visible.
-2. [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) to add approval control over tool execution.
-3. [Configure Stop Policies](/awaken/how-to/configure-stop-policies/) to keep agent loops bounded and predictable.
-4. [Report Tool Progress](/awaken/how-to/report-tool-progress/) and [Testing Strategy](/awaken/how-to/testing-strategy/) to improve operator visibility and confidence.
-5. [Recover Streaming LLMs](/awaken/how-to/recover-streaming-llms/) when transient provider failures must not surface as run errors.
+1. [Use the Admin Console](/awaken/how-to/use-admin-console/) to connect a
+   running server, configure provider-backed models, create agents, preview
+   drafts, and publish the next registry snapshot.
+2. [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) and
+   [Hot-Tune Prompts](/awaken/how-to/hot-tune-prompts/) for the full editable
+   surface.
+3. [Use MCP Tools](/awaken/how-to/use-mcp-tools/), [Use Skills Subsystem](/awaken/how-to/use-skills-subsystem/),
+   [Use Reminder Plugin](/awaken/how-to/use-reminder-plugin/), and
+   [Use Deferred Tools](/awaken/how-to/use-deferred-tools/) when the agent needs
+   discoverable or delayed capabilities.
+4. [Enable Observability](/awaken/how-to/enable-observability/) and
+   [Report Tool Progress](/awaken/how-to/report-tool-progress/) to make runs,
+   tools, and providers visible.
+5. [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) and
+   [Configure Stop Policies](/awaken/how-to/configure-stop-policies/) to keep
+   agent behavior bounded and reviewable.
+6. [Testing Strategy](/awaken/how-to/testing-strategy/) and
+   [Recover Streaming LLMs](/awaken/how-to/recover-streaming-llms/) cover
+   regression confidence and provider failure handling.
 
 ## Replay and eval loop
 

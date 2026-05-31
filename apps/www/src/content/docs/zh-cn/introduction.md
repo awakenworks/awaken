@@ -106,7 +106,8 @@ run 会携带 `resolution_id`，用于 resume/replay 时重新选择同一个 gr
 ## 阅读路径
 
 1. [快速上手](/awaken/zh-cn/get-started/) → [第一个 Agent](/awaken/zh-cn/tutorials/first-agent/)。
-2. [构建 Agent](/awaken/zh-cn/build-agents/) —— 工具、MCP、Skill、Reminder、HITL、UI。
-3. [服务与集成](/awaken/zh-cn/serve-and-integrate/) —— AI SDK / CopilotKit / A2A / MCP / ACP 客户端。
-4. [状态与存储](/awaken/zh-cn/state-and-storage/)、[运行与运维](/awaken/zh-cn/operate/) —— 生产加固。
-5. [设计哲学](/awaken/zh-cn/explanation/philosophy/) —— 三条准则背后的"为什么"。
+2. [开发 Agent](/awaken/zh-cn/build-agents/) —— 在 Rust 中实现 tool、plugin、state、sub-agent 调用和 UI stream。
+3. [调优与运营](/awaken/zh-cn/operate/) —— 用管理控制台或配置 API 管理 prompt、model、MCP、Skill、策略、trace、dataset 和 eval。
+4. [服务与集成](/awaken/zh-cn/serve-and-integrate/) —— AI SDK / CopilotKit / A2A / MCP / ACP 客户端。
+5. [状态与存储](/awaken/zh-cn/state-and-storage/) —— 持久化与 durable state。
+6. [设计哲学](/awaken/zh-cn/explanation/philosophy/) —— 三条准则背后的"为什么"。

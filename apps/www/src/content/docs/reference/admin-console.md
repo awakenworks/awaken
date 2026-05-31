@@ -1,13 +1,17 @@
 ---
-title: "Admin Console"
-description: "Use the Awaken admin console to configure providers, models, agents, tools, MCP servers, traces, datasets, evals, and the built-in Admin Assistant."
+title: "Admin Console Surface"
+description: "Technical inventory of the Awaken Admin Console screens, widgets, and server APIs."
 ---
 
-The Admin Console is the browser control plane for a running `awaken-server`.
-Use it when you want to create and tune agents online instead of rebuilding the
-Rust binary: configure providers and models, edit prompts and tool descriptions,
-assign MCP tools, tune reminders and deferred-tool policy, preview a draft, then
-publish the next registry snapshot.
+This page is the technical inventory for the Admin Console surface. Start with
+[Use the Admin Console](/awaken/how-to/use-admin-console/) for the operator
+workflow; use this page when you need screen coverage, endpoint mapping, and
+lower-level behavior details.
+
+The Admin Console is the browser control plane for a running `awaken-server`:
+configure providers and models, edit prompts and tool descriptions, assign MCP
+tools, tune reminders and deferred-tool policy, preview a draft, then publish
+the next registry snapshot.
 
 ## Start It
 
@@ -38,9 +42,9 @@ provider from boot, set `OPENAI_API_KEY` and optionally `OPENAI_BASE_URL`,
 
 ## Screenshots
 
-These screenshots are static documentation captures made with sample API data.
-A running console reads values from your backend APIs; if a subsystem is not
-wired, the corresponding surface shows a disabled or unavailable notice.
+The screenshots show representative console states. A running console reads
+values from your backend APIs; if a subsystem is not wired, the corresponding
+surface shows a disabled or unavailable notice.
 
 <div class="screenshot-grid">
   <figure class="screenshot">

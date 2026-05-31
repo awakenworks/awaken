@@ -1,17 +1,30 @@
 ---
-title: "运行与运维"
-description: "当 happy path 已经跑通，这条路径用于把 Agent 服务加固到可运维状态。"
+title: "调优与运营"
+description: "通过管理控制台和配置面调优已保存 Agent、检查 run、沉淀 trace、运行 eval，并加固生产行为。"
 ---
 
-当 happy path 已经跑通，这条路径用于把 Agent 服务加固到可运维状态。
+这条路径面向运行中的 Awaken server。开发者仍然在 Rust 中实现可执行能力；运营者
+在线调优托管部分：prompt、工具描述、model、model pool、MCP server、Skill、
+delegate、reminder、deferred-tool 策略、权限规则、trace、dataset 和 eval。
+
+管理控制台是这条路径的主要 UI。REST 配置 API 是同一个控制面，可用于 CI 或内部工具。
 
 ## 推荐顺序
 
-1. 先启用 [可观测性](/awaken/zh-cn/how-to/enable-observability/)，把 run、tool 和 provider 变得可见。
-2. 再启用 [工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/)，为工具执行增加审批控制。
-3. 通过 [配置停止策略](/awaken/zh-cn/how-to/configure-stop-policies/) 把 agent loop 约束在可预测范围内。
-4. 用 [上报 Tool 进度](/awaken/zh-cn/how-to/report-tool-progress/) 和 [测试策略](/awaken/zh-cn/how-to/testing-strategy/) 提升可观测性和上线信心。
-5. 当瞬时 provider 故障不应该浮现为 run 错误时，参考 [流式 LLM 错误恢复](/awaken/zh-cn/how-to/recover-streaming-llms/)。
+1. 先用 [管理控制台](/awaken/zh-cn/how-to/use-admin-console/) 连接运行中的 server，
+   配置 provider-backed model，创建 Agent，预览草稿，并发布下一版 registry snapshot。
+2. 用 [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/) 和
+   [在线调优 Prompt](/awaken/zh-cn/how-to/hot-tune-prompts/) 理解完整可编辑表面。
+3. 当 Agent 需要可发现或延迟加载能力时，接入 [MCP Tools](/awaken/zh-cn/how-to/use-mcp-tools/)、
+   [Skills 子系统](/awaken/zh-cn/how-to/use-skills-subsystem/)、
+   [Reminder 插件](/awaken/zh-cn/how-to/use-reminder-plugin/) 和
+   [延迟加载工具](/awaken/zh-cn/how-to/use-deferred-tools/)。
+4. 通过 [可观测性](/awaken/zh-cn/how-to/enable-observability/) 和
+   [上报 Tool 进度](/awaken/zh-cn/how-to/report-tool-progress/) 把 run、tool 和 provider 变得可见。
+5. 用 [工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/) 和
+   [停止策略](/awaken/zh-cn/how-to/configure-stop-policies/) 约束行为并引入人工审核。
+6. [测试策略](/awaken/zh-cn/how-to/testing-strategy/) 和
+   [流式 LLM 错误恢复](/awaken/zh-cn/how-to/recover-streaming-llms/) 覆盖回归信心与 provider 故障处理。
 
 ## 重放与 Eval 循环
 

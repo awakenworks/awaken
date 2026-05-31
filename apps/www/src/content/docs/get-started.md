@@ -66,7 +66,9 @@ default `minimal` profile keeps the console focused on the resources you create.
 
 ## Read in order
 
-1. [Admin Console](/awaken/reference/admin-console/) for the browser workflow.
+1. [Use the Admin Console](/awaken/how-to/use-admin-console/) for the browser
+   workflow: configure models, create agents, preview drafts, and publish the
+   next runtime snapshot.
 2. [AI SDK frontend integration](/awaken/how-to/integrate-ai-sdk-frontend/) when
    wiring a React UI to a saved agent.
 3. [First Agent](/awaken/tutorials/first-agent/) for the smallest in-process
@@ -78,6 +80,7 @@ default `minimal` profile keeps the console focused on the resources you create.
 
 ## Leave this path when
 
-- You need more agent capabilities: go to [Build Agents](/awaken/build-agents/).
+- You need to implement new runtime capabilities: go to [Develop Agents](/awaken/build-agents/).
+- You need to tune or operate saved agents: go to [Tune & Operate](/awaken/operate/).
 - You need HTTP or frontend integration: go to [Serve & Integrate](/awaken/serve-and-integrate/).
-- You need persistence or operational controls: go to [State & Storage](/awaken/state-and-storage/) or [Operate](/awaken/operate/).
+- You need persistence: go to [State & Storage](/awaken/state-and-storage/).

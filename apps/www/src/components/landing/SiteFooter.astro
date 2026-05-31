@@ -34,8 +34,8 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
         </div>
         <p class="blurb">
           {t(
-            "Build agent capabilities once in Rust, tune behavior live, and serve every client from the same runtime.",
-            "用 Rust 写一次 Agent 能力，把行为调优交给在线配置，并让同一个 runtime 服务所有客户端。",
+            "Build agent capabilities once in Rust, tune and operate them live, and serve every client from the same runtime.",
+            "用 Rust 写一次 Agent 能力，通过在线配置调优运营，并让同一个 runtime 服务所有客户端。",
           )}
         </p>
         <div class="badges">
@@ -48,16 +48,16 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
         <h5>{t("Learn", "学习")}</h5>
         <ul>
           <li><a href={`${docsBase}/get-started/`}>{t("Get started", "快速开始")}</a></li>
-          <li><a href={`${docsBase}/build-agents/`}>{t("Build agents", "构建 Agent")}</a></li>
+          <li><a href={`${docsBase}/build-agents/`}>{t("Develop agents", "开发 Agent")}</a></li>
+          <li><a href={`${docsBase}/how-to/use-admin-console/`}>{t("Admin Console", "管理控制台")}</a></li>
           <li><a href={`${docsBase}/serve-and-integrate/`}>{t("Serve & integrate", "服务与集成")}</a></li>
-          <li><a href={`${docsBase}/operate/`}>{t("Operate", "运行与运维")}</a></li>
+          <li><a href={`${docsBase}/operate/`}>{t("Tune & operate", "调优与运营")}</a></li>
         </ul>
       </div>
       <div>
         <h5>{t("Reference", "参考")}</h5>
         <ul>
           <li><a href={`${docsBase}/reference/overview/`}>{t("API overview", "API 概览")}</a></li>
-          <li><a href={`${docsBase}/reference/admin-console/`}>{t("Admin Console", "管理控制台")}</a></li>
           <li><a href={`${docsBase}/explanation/architecture/`}>{t("Architecture", "架构")}</a></li>
           <li><a href={`${docsBase}/appendix/faq/`}>{t("FAQ", "常见问题")}</a></li>
         </ul>
