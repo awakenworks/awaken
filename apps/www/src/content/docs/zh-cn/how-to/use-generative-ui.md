@@ -18,7 +18,7 @@ Awaken 当前支持两种集成方式：
 
 ```toml
 [dependencies]
-awaken = { version = "0.5" }
+awaken = { git = "https://github.com/AwakenWorks/awaken" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

@@ -13,7 +13,7 @@ Use this when you want to connect to external Model Context Protocol (MCP) serve
 
 ```toml
 [dependencies]
-awaken = { version = "0.5", features = ["mcp"] }
+awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["mcp"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

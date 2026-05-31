@@ -17,7 +17,7 @@ Use this when you need durable, multi-instance persistence backed by PostgreSQL.
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.5", features = ["postgres"] }
+awaken-stores = { git = "https://github.com/AwakenWorks/awaken", features = ["postgres"] }
 ```
 
 2. Create a connection pool.
@@ -37,7 +37,9 @@ use awaken::stores::PostgresStore;
 let store = Arc::new(PostgresStore::new(pool));
 ```
 
-This uses default table names: `awaken_threads`, `awaken_runs`, `awaken_messages`.
+This uses default table names for the runtime projections:
+`awaken_threads`, `awaken_runs`, `awaken_messages`, `awaken_configs`, and
+`awaken_threads_state`.
 
 4. Use a custom table prefix.
 
@@ -45,18 +47,23 @@ This uses default table names: `awaken_threads`, `awaken_runs`, `awaken_messages
 let store = Arc::new(PostgresStore::with_prefix(pool, "myapp"));
 ```
 
-This creates tables named `myapp_threads`, `myapp_runs`, `myapp_messages`.
+This creates tables named `myapp_threads`, `myapp_runs`, `myapp_messages`,
+`myapp_configs`, and `myapp_threads_state`.
 
 5. Wire it into the runtime.
 
 ```rust
 use std::sync::Arc;
+use awaken::contract::commit_coordinator::CommitCoordinator;
 use awaken::AgentRuntimeBuilder;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::ModelSpec;
+use awaken::stores::PgCommitCoordinator;
 
+let coordinator =
+    Arc::new(PgCommitCoordinator::new(store.clone())?) as Arc<dyn CommitCoordinator>;
 let runtime = AgentRuntimeBuilder::new()
-    .with_thread_run_store(store)
+    .with_commit_coordinator(coordinator)
     .with_agent_spec(spec)
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
     .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
@@ -65,11 +72,15 @@ let runtime = AgentRuntimeBuilder::new()
 
 6. Schema creation.
 
-   Tables are auto-created on first access via `ensure_schema()`. Each table uses:
+   Tables and indexes are auto-created on first access via `ensure_schema()`.
+   The thread/run/message/config tables store JSONB payloads plus indexed
+   columns needed for list and cursor queries. The store also installs schemas
+   for event storage, protocol replay, outbox, checkpoint repair, and versioned
+   registry state when those server control-plane stores are used.
 
-- `id TEXT PRIMARY KEY`
-- `data JSONB NOT NULL`
-- `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`
+- runtime projections: threads, runs, messages, thread state
+- managed config: namespace/id config rows and notify channel
+- server control plane: events, replay, outbox, checkpoints, registry versions
 
 No manual migration is required for initial setup.
 

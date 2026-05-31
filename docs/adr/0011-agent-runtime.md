@@ -39,6 +39,7 @@ Single entry point for active in-memory run execution operations: start, cancel,
 ```rust
 pub trait AgentResolver: Send + Sync {
     fn resolve(&self, agent_id: &str) -> Result<ResolvedAgent, ResolveError>;
+    fn resolve_execution(&self, agent_id: &str) -> Result<ExecutionPlan, ResolveError>;
 }
 
 pub struct ResolvedAgent {
@@ -59,7 +60,6 @@ pub struct RunActivation {
     pub input: RunInput,
     pub options: RunOptions,
     pub trace: RunTraceContext,
-    pub resolution_scope: RegistryResolutionScope,
     pub control: RunControl,
     pub capture: CaptureWiring,
     pub persistence: PersistenceHints,
@@ -70,7 +70,10 @@ pub struct RunActivation {
 - `intent`: target agent, thread id, and run kind.
 - `input`: new messages or an already-persisted submission.
 - `options`: inference overrides and frontend-provided tools.
-- `control`: seeded resume decisions for suspended tool calls.
+- `control`: cancellation, inbox, pending-boundary, seeded decisions, and
+  optional per-run commit coordinator override.
+- `capture`: thread-context cache only; runtime event buffering is wired by
+  the server through `commit_coordinator_override`.
 
 No separate "resume" request type. The runtime detects resume from decisions + thread state.
 

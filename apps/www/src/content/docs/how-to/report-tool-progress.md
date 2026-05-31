@@ -140,8 +140,8 @@ and that the `status` field transitions from `"running"` to `"done"`.
 
 ## Key Files
 
-- `crates/awaken-contract/src/contract/progress.rs` -- `ToolCallProgressState`, `ProgressStatus`, `TOOL_CALL_PROGRESS_ACTIVITY_TYPE`
-- `crates/awaken-contract/src/contract/tool.rs` -- `ToolCallContext::report_progress`, `report_activity`, `report_activity_delta`
+- `crates/awaken-runtime-contract/src/contract/progress.rs` -- `ToolCallProgressState`, `ProgressStatus`, `TOOL_CALL_PROGRESS_ACTIVITY_TYPE`
+- `crates/awaken-runtime-contract/src/contract/tool.rs` -- `ToolCallContext::report_progress`, `report_activity`, `report_activity_delta`
 
 ## Related
 

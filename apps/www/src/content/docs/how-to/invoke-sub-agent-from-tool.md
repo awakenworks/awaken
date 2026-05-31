@@ -15,8 +15,7 @@ Awaken exposes this through one helper function plus the normal `Tool::execute` 
 
 ```toml
 [dependencies]
-awaken = { version = "0.5" }
-awaken-contract = "0.5"
+awaken = { git = "https://github.com/AwakenWorks/awaken" }
 awaken-runtime = "0.5"
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
@@ -31,9 +30,8 @@ The helper and its companion types live in `awaken_runtime::child_agent`; the `a
 1. Declare a `StateKey` that both parent and child agree on.
 
 ```rust
-use awaken_contract::state::{StateKey, StateKeyOptions};
+use awaken::{StateError, StateKey, StateKeyOptions};
 use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
-use awaken_contract::StateError;
 
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResearchConfig {
@@ -118,20 +116,20 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use awaken_contract::contract::event_sink::NullEventSink;
-use awaken_contract::contract::message::Message;
-use awaken_contract::contract::tool::{
+use awaken::contract::event_sink::NullEventSink;
+use awaken::contract::message::Message;
+use awaken::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
-use awaken_contract::state::PersistedState;
+use awaken::PersistedState;
 
 use awaken_runtime::backend::{BackendParentContext, BackendRunResult, BackendRunStatus};
 use awaken_runtime::child_agent::{ChildAgentParams, run_child_agent};
-use awaken_runtime::registry::ExecutionResolver;
+use awaken_runtime::registry::AgentResolver;
 use awaken_runtime::{MutationBatch, StateCommand, StateStore};
 
 pub struct ResearchTool {
-    pub resolver: Arc<dyn ExecutionResolver>,
+    pub resolver: Arc<dyn AgentResolver>,
 }
 
 #[async_trait]
@@ -198,7 +196,7 @@ impl Tool for ResearchTool {
 3. Build the seed (parent → child) using a temporary store as a typed encoder.
 
 ```rust
-fn build_seed(topic: &str, max_sources: u32) -> Result<PersistedState, awaken_contract::StateError> {
+fn build_seed(topic: &str, max_sources: u32) -> Result<PersistedState, awaken::StateError> {
     let scratch = StateStore::new();
     scratch.install_plugin(ResearchPlugin)?;
     let mut batch = MutationBatch::new();
@@ -273,7 +271,7 @@ if !matches!(outcome.status, BackendRunStatus::Completed) {
 When the parent tool wants the child's tokens to appear inside its own streaming output (typical for generative-UI tools), wrap the activity sink with `StreamingPassthroughSink` before passing it to `run_child_agent_checked` or `run_child_agent`:
 
 ```rust
-use awaken_contract::contract::message::Message;
+use awaken::contract::message::Message;
 use awaken_runtime::backend::BackendParentContext;
 use awaken_runtime::{
     ChildAgentParams, StreamingPassthroughSink, run_child_agent_checked,
@@ -307,16 +305,22 @@ Child `AgentEvent::TextDelta` events become `AgentEvent::ToolCallStreamDelta` on
 
 ## Backend implementor migration note
 
-`BackendCapabilities` is `#[non_exhaustive]`; construct it with `BackendCapabilities::full()` or `BackendCapabilities::remote_stateless_text()` and then mutate fields. Seeded delegate requests are now capability-gated:
+`ExecutionBackend::capabilities()` now returns `BackendProfile`, with typed
+dimensions such as continuation, persistence, waits, transcript shape, and
+output shape. Construct profiles with `BackendProfile::full_local()` or
+`BackendProfile::remote_stateless_text()` and override fields only when your
+backend really supports that behavior.
 
-- If your backend actually applies `BackendDelegateRunRequest.state_seed` before running the child, set `capabilities.delegate_state_seed = true`.
-- If it does not, leave the flag `false`; seeded delegate calls will be rejected with `ExecutionBackendError` instead of silently ignoring the seed.
+Seeded delegate requests are handled separately from `BackendProfile`.
+`BackendDelegateRunRequest.state_seed` is accepted only for local execution
+plans; non-local backends reject seeded delegate calls with
+`ExecutionBackendError` instead of silently ignoring the seed.
 
 ## What to avoid
 
 - **Do not seed keys the child agent has not registered.** The child runs `apply_seed` with `UnknownKeyPolicy::Error` — an unregistered key aborts the child before its first step. This is by design: it surfaces contract drift at startup rather than runtime.
 - **Do pass parent cancellation through.** When invoking a child from inside a tool, call `.with_cancellation_token(ctx.cancellation_token.clone())` so cancelling the parent run also cancels the child run.
-- **`initial_state_seed` is Local-backend only.** State seeding is gated by `BackendCapabilities::delegate_state_seed`; only the in-process Local backend currently advertises support. A2A and any other non-local backend that does not implement a seed-passing wire protocol reject seeded delegate requests with `ExecutionBackendError` — they will not silently succeed. If you need to ship data to a remote child, encode it in the prompt yourself.
+- **`initial_state_seed` is Local-backend only.** It is accepted only when the resolved `ExecutionPlan` is local. A2A and any other non-local backend that does not implement a seed-passing wire protocol reject seeded delegate requests with `ExecutionBackendError` — they will not silently succeed. If you need to ship data to a remote child, encode it in the prompt yourself.
 - **Do not blindly export child state on non-`Completed` status.** The child result is a semantic message for the parent to interpret; decide separately whether the parent tool should fail, return a semantic success payload, or selectively export diagnostic state. For terminal `BackendRunResult` statuses such as `Failed` or `Cancelled`, `outcome.state` may be available depending on the backend and where the failure occurred. Backend dispatch or loop setup errors return `Err` and do not provide `BackendRunResult.state`.
 - **Do not assume non-persistent keys cross the run boundary.** `BackendRunResult.state` is built via `export_persisted` and only includes keys registered with `persistent: true`.
 - **Do not pass `ctx.activity_sink` directly to a streaming sub-agent.** Without `StreamingPassthroughSink`, the child's `TextDelta` events would surface as the parent's text — leaking the child's tokens into the parent's primary message stream. Wrap or pass `NullEventSink`.

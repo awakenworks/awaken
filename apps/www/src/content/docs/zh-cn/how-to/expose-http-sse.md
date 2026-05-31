@@ -17,7 +17,7 @@ description: "当你需要通过 HTTP + Server-Sent Events 对外提供 agent �
 
 ```toml
 [dependencies]
-awaken = { version = "0.5", features = ["server"] }
+awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["server"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 ```
 
@@ -28,9 +28,11 @@ use std::sync::Arc;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::ModelSpec;
 use awaken::{AgentRuntimeBuilder, AgentSpec};
-use awaken::stores::InMemoryStore;
+use awaken::contract::commit_coordinator::CommitCoordinator;
+use awaken::stores::{InMemoryStore, MemoryCommitCoordinator};
 
 let store = Arc::new(InMemoryStore::new());
+let coordinator = MemoryCommitCoordinator::wrap(store.clone()) as Arc<dyn CommitCoordinator>;
 
 let runtime = AgentRuntimeBuilder::new()
     .with_agent_spec(
@@ -41,7 +43,7 @@ let runtime = AgentRuntimeBuilder::new()
     .with_tool("search", Arc::new(SearchTool))
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
     .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
-    .with_thread_run_store(store.clone())
+    .with_commit_coordinator(coordinator)
     .build()?;
 
 let runtime = Arc::new(runtime);
@@ -50,7 +52,7 @@ let runtime = Arc::new(runtime);
 3. 创建应用状态：
 
 ```rust
-use awaken::server::app::{AppState, ServerConfig};
+use awaken::server::app::{ServerState, ServerConfig};
 use awaken::server::mailbox::{Mailbox, MailboxConfig};
 use awaken::stores::InMemoryMailboxStore;
 
@@ -63,7 +65,7 @@ let mailbox = Arc::new(Mailbox::new(
     MailboxConfig::default(),
 ));
 
-let state = AppState::new(
+let state = ServerState::new(
     runtime.clone(),
     mailbox,
     store,

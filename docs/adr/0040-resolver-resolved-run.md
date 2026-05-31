@@ -8,12 +8,12 @@
 
 ## Context
 
-Three resolver-shaped concepts overlap today:
+Three resolver-shaped concepts were collapsed by this ADR:
 
 ```text
 AgentResolver::resolve(id) -> ResolvedAgent
-ExecutionResolver::resolve_execution(id) -> ResolvedExecution::{Local | NonLocal}
-RunRegistryManifestResolver::manifest_for_run(agent_id) -> PinnedRegistryManifest
+standalone ExecutionResolver::resolve_execution(id)
+RunRegistryManifestResolver::manifest_for_run(agent_id)
 ```
 
 Backend capability reporting is also mixed. Some dimensions are typed
@@ -37,8 +37,11 @@ by runtime code, not supplied manually by external callers.
 
 `Resolver`, `ResolutionRequest`, `ResolvedRunPlan`, `ResolvedRun`, and
 `BackendProfile` live in `awaken-runtime`. Server code already depends on
-runtime and calls this surface at dispatch time; `awaken-contract` only owns
-the serializable run and event contract types.
+runtime and calls this surface at dispatch time. `awaken-runtime-contract`
+owns the runtime-facing serializable run and event contract types;
+`awaken-server-contract` owns server/store contracts and re-exports the
+runtime vocabulary for server/store callers. `awaken-contract` is only the
+compatibility re-export facade.
 
 ```rust
 #[async_trait]
@@ -178,9 +181,10 @@ before execution. A mismatch is reported as a resolve/capability error and
 no execution side effect has started.
 
 For persistent submits, `RegistryResolutionScope::Live` means "materialize a
-pinned registry snapshot now"; `RegistryResolutionScope::Pinned(manifest)` means
-"resolve against this exact pinned snapshot." The durable queue stores only
-that pinned snapshot. Dispatch resolves again from the pinned scope to
+pinned registry snapshot now and return its opaque id";
+`RegistryResolutionScope::Pinned(String)` means "resolve against the
+server-owned snapshot referenced by this id." The durable queue stores only
+that `resolution_id`. Dispatch resolves again from the pinned scope to
 recreate live handles.
 
 ### D3: Replayability is encoded in the returned plan
@@ -199,7 +203,7 @@ pub struct ReplayableResolvedRun {
 }
 
 pub struct ResolutionArtifact {
-    pub registry_manifest: PinnedRegistryManifest,
+    pub resolution_id: String,
 }
 
 pub struct ReplayableScope;
@@ -231,19 +235,8 @@ runtime needs to dispatch:
 
 ```rust
 pub enum ExecutionPlan {
-    Local {
-        env: ExecutionEnv,
-        llm_executor: Arc<dyn LlmExecutor>,
-        tool_executor: Arc<dyn ToolExecutor>,
-        context_summarizer: Option<Arc<dyn ContextSummarizer>>,
-        background_manager: Option<Arc<BackgroundTaskManager>>,
-        stream_checkpoint_store: Option<Arc<dyn StreamCheckpointStore>>,
-    },
-    Remote {
-        backend_id: String,
-        endpoint: RemoteEndpoint,
-        backend: Arc<dyn ExecutionBackend>,
-    },
+    Local(Box<ResolvedAgent>),
+    Remote(ResolvedBackendAgent),
 }
 ```
 
@@ -320,8 +313,10 @@ mismatches in one result.
 - `BackendCapabilities` bool fields `decisions`, `overrides`, and
   `frontend_tools`.
 
-`ExecutionResolver` cannot remain source-compatible because its return type
-is deleted. It is removed with `ResolvedExecution`.
+The standalone `ExecutionResolver` trait is removed with
+`ResolvedExecution`. Compatibility method names such as
+`AgentResolver::resolve_execution` remain and return the current
+`ExecutionPlan`.
 
 `AgentResolver` is user-facing enough to get a narrow adapter for embedded
 or test code:
@@ -383,9 +378,9 @@ The scope of a sub-run is constrained by the root's scope:
 | `LiveOnlyScope` | either | accept and continue |
 
 The runtime constructs the nested `ResolutionRequest` with
-`resolution_scope` inherited from the root (the root resolution artifact's
-`PinnedRegistryManifest` for replayable runs, `Live` for live-only) and the
-appropriate `ResolutionTarget::{Delegate, Handoff}`. Sub-run
+`resolution_scope` inherited from the root
+(`RegistryResolutionScope::Pinned(resolution_id)` for replayable runs, `Live`
+for live-only) and the appropriate `ResolutionTarget::{Delegate, Handoff}`. Sub-run
 `RunFeatureSet` is derived from the sub-run's own `RunActivation` (not the
 root's), via the same `RunFeatureSet::from_activation` function.
 
@@ -404,9 +399,9 @@ enforces it for the root, using the same type boundary.
 | 0.5.x | 0.6.0 |
 |---|---|
 | `impl AgentResolver for MyResolver` | implement `Resolver`, or wrap with `LocalRegistryResolver` for live-only embedded use |
-| `impl ExecutionResolver for MyResolver` | implement `Resolver` directly |
+| `impl ExecutionResolver for MyResolver` | implement `Resolver` directly; compatibility `resolve_execution` methods live on `AgentResolver` |
 | `LocalExecutionResolver::new(agent_resolver)` | `LocalRegistryResolver::new(agent_resolver)` for live-only root runs |
-| `RunRegistryManifestResolver` | manifest materialization inside `Resolver::resolve` |
+| `RunRegistryManifestResolver` | resolution-id materialization inside `Resolver::resolve` |
 | `resolver.resolve_execution("agent")?` | `resolver.resolve(activation.resolution_request()).await?` |
 | `caps.unsupported_root_features(req)` | derive `BackendRequirements`, then `profile.check(&requirements)` |
 | `caps.decisions = true` | `profile.decisions = DecisionCapability::LiveAndDurable` |
@@ -436,9 +431,10 @@ enforces it for the root, using the same type boundary.
    and remote execution without a second registry lookup.
 7. Runtime validation fails before execution side effects when a resolver
    returns a plan whose profile does not satisfy derived requirements.
-8. Persistent submit with `RegistryResolutionScope::Live` materializes a pinned
-   registry snapshot, and dispatch with `RegistryResolutionScope::Pinned`
-   resolves against exactly that pinned snapshot.
+8. Persistent submit with `RegistryResolutionScope::Live` materializes a
+   server-owned snapshot id, and dispatch with
+   `RegistryResolutionScope::Pinned(String)` resolves against exactly that
+   pinned snapshot.
 9. A delegate/handoff spawned from a `ReplayableScope` parent run that
    resolves to `LiveOnly` fails the parent run with
    `ResolveError::NestedScopeMismatch`; the same spawn from a `LiveOnly`

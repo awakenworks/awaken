@@ -12,7 +12,7 @@ Use this when you need to control which tools an agent can invoke, with human-in
 
 ```toml
 [dependencies]
-awaken = { version = "0.5", features = ["permission"] }
+awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["permission"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

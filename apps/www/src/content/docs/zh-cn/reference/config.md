@@ -6,7 +6,7 @@ title: "配置"
 
 `AgentSpec` 是可序列化的 agent 定义。它既可以从 JSON / YAML 加载，也可以用 builder 方法在代码里构造。
 
-```rust,ignore
+```rust
 pub struct AgentSpec {
     pub id: String,
     pub model_id: String,                            // model registry id
@@ -32,7 +32,7 @@ pub struct AgentSpec {
 
 ### Builder 方法
 
-```rust,ignore
+```rust
 AgentSpec::new(id) -> Self
     .with_model_id(model_id) -> Self
     .with_system_prompt(prompt) -> Self
@@ -47,7 +47,7 @@ AgentSpec::new(id) -> Self
 
 ### 类型化配置访问
 
-```rust,ignore
+```rust
 fn config<K: PluginConfigKey>(&self) -> Result<K::Config, StateError>
 fn set_config<K: PluginConfigKey>(&mut self, config: K::Config) -> Result<(), StateError>
 ```
@@ -219,7 +219,7 @@ surface 使用 `validate_provider_spec(value)` 拒绝会被静默忽略的字段
 
 控制上下文窗口和自动压缩行为。
 
-```rust,ignore
+```rust
 pub struct ContextWindowPolicy {
     pub max_context_tokens: usize,
     pub max_output_tokens: usize,
@@ -233,7 +233,7 @@ pub struct ContextWindowPolicy {
 
 ### ContextCompactionMode
 
-```rust,ignore
+```rust
 pub enum ContextCompactionMode {
     KeepRecentRawSuffix,
     CompactToSafeFrontier,
@@ -245,7 +245,7 @@ pub enum ContextCompactionMode {
 保存在 `AgentSpec.sections["compaction"]`。`context_policy` 负责窗口和触发条
 件；这个 section 负责摘要器。
 
-```rust,ignore
+```rust
 pub enum CompactionExecutionMode {
     Off,
     Background,
@@ -282,7 +282,7 @@ agent 模型使用同一个 provider，resolver 会把它规范化为对应 upst
 `AgentSpec.model_id`，也不会切换 provider。需要模型故障切换时，通过 `ModelPoolSpec`
 配置。
 
-```rust,ignore
+```rust
 pub struct InferenceOverride {
     pub upstream_model: Option<String>,      // 上游模型名
     pub temperature: Option<f64>,
@@ -294,14 +294,14 @@ pub struct InferenceOverride {
 
 ### 方法
 
-```rust,ignore
+```rust
 fn is_empty(&self) -> bool
 fn merge(&mut self, other: InferenceOverride)
 ```
 
 ### ReasoningEffort
 
-```rust,ignore
+```rust
 pub enum ReasoningEffort {
     None,
     Low,
@@ -316,7 +316,7 @@ pub enum ReasoningEffort {
 
 把配置 section 名称和 Rust 配置结构绑定在一起：
 
-```rust,ignore
+```rust
 pub trait PluginConfigKey: 'static + Send + Sync {
     const KEY: &'static str;
     type Config: Default + Clone + Serialize + DeserializeOwned
@@ -328,7 +328,7 @@ pub trait PluginConfigKey: 'static + Send + Sync {
 
 远程 backend agent 的配置。当前内置的是 `"a2a"` backend，backend 专有参数放在 `options` 中：
 
-```rust,ignore
+```rust
 pub struct RemoteEndpoint {
     pub backend: String,
     pub base_url: String,
@@ -351,7 +351,7 @@ pub struct RemoteAuth {
 
 HTTP server 配置。需启用 `server` feature。
 
-```rust,ignore
+```rust
 use awaken::RedactedString;
 
 pub struct ServerConfig {
@@ -362,10 +362,21 @@ pub struct ServerConfig {
     pub max_concurrent_requests: usize,               // default: 100
     pub a2a_extended_card_bearer_token: Option<RedactedString>,
     pub mailbox_lifecycle: MailboxLifecycleMode,      // default: Auto
+    pub eval_limits: EvalLimits,
 }
 
 pub struct ShutdownConfig {
     pub timeout_secs: u64,                            // default: 30
+}
+
+pub struct EvalLimits {
+    pub max_cells_per_sync_run: usize,                // default: 100
+    pub max_concurrent_matrix_cells: usize,           // default: 5
+    pub max_cells_per_sync_online: usize,             // default: 10
+    pub max_concurrent_online_cells: usize,           // default: 5
+    pub max_samples_per_cell: u32,                    // default: 20
+    pub max_judge_revisions: u32,                     // default: 3
+    pub default_import_traces_max: usize,             // default: 50
 }
 ```
 
@@ -379,31 +390,48 @@ pub struct ShutdownConfig {
 | `max_concurrent_requests` | `usize` | `100` | 最大并发请求数；超出时返回 503 |
 | `a2a_extended_card_bearer_token` | `Option<RedactedString>` | `None` | 设置后启用带认证的 `GET /v1/a2a/extendedAgentCard`。`Debug`/`Display` 自动遮蔽，需要明文请调用 `expose_secret()`；JSON 序列化保持普通字符串 |
 | `mailbox_lifecycle` | `MailboxLifecycleMode` | `Auto` | `Auto` 由框架启停 mailbox；`Manual` 把生命周期交给嵌入应用 |
+| `eval_limits.max_cells_per_sync_run` | `usize` | `100` | 同步 dataset eval 的最大 cell 数（`fixtures × matrix × samples`），超出会拒绝请求 |
+| `eval_limits.max_concurrent_matrix_cells` | `usize` | `5` | dataset matrix eval 并发 cell 数；必须大于零 |
+| `eval_limits.max_cells_per_sync_online` | `usize` | `10` | 同步 online eval 的最大 cell 数 |
+| `eval_limits.max_concurrent_online_cells` | `usize` | `5` | online eval 并发 cell 数；必须大于零 |
+| `eval_limits.max_samples_per_cell` | `u32` | `20` | dataset 与 online eval 的每 cell sample 上限 |
+| `eval_limits.max_judge_revisions` | `u32` | `3` | judge 失败后最多自动修订次数 |
+| `eval_limits.default_import_traces_max` | `usize` | `50` | `POST /v1/eval/datasets/:id/import-traces` 省略 `max_count` 时的默认导入上限 |
 | `shutdown.timeout_secs` | `u64` | `30` | 强制退出前等待飞行中请求排空的秒数 |
 
 ## AdminApiConfig
 
 admin/configuration API 安全配置。通过
-`AppState::with_admin_api_config` 挂到 `AppState` 上；只需要 bearer
-认证时可使用 `AppState::with_admin_api_bearer_token`。
+`ServerState::with_admin_api_config` 挂到 `ServerState` 上；只需要 bearer
+认证时可使用 `ServerState::with_admin_api_bearer_token`。`AppState` 仍是
+`ServerState` 的 deprecated alias。
 
-```rust,ignore
+```rust
 use awaken::RedactedString;
 
 pub struct AdminApiConfig {
     pub bearer_token: Option<RedactedString>,
     pub cors_allowed_origins: Vec<String>,
     pub expose_config_routes: bool,                   // default: true
+    pub expose_trace_routes: bool,                    // default: false
+    pub expose_eval_routes: bool,                     // default: true
 }
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `bearer_token` | `Option<RedactedString>` | `None` | 设置后，admin surface 要求 `Authorization: Bearer ...`：`/v1/capabilities`、`/v1/config/*`、`/v1/agents*`、`/v1/system/info`、`/v1/audit-log` 和 runtime-stats 端点。`Debug`/`Display` 自动遮蔽，需要明文请调用 `expose_secret()`；JSON 序列化保持普通字符串 |
+| `bearer_token` | `Option<RedactedString>` | `None` | 已挂载的 admin/system/config/eval/trace surface 要求 `Authorization: Bearer ...`。`Debug`/`Display` 自动遮蔽，需要明文请调用 `expose_secret()`；JSON 序列化保持普通字符串 |
 | `cors_allowed_origins` | `Vec<String>` | `["http://127.0.0.1:3002", "http://localhost:3002"]` | admin CORS layer 允许的浏览器来源 |
-| `expose_config_routes` | `bool` | `true` | 是否挂载 admin/configuration HTTP surface。当配置由外部 RBAC/审计流水线管理时设为 `false`，可以彻底隐藏这部分 HTTP 表面 |
+| `expose_config_routes` | `bool` | `true` | 是否挂载 config/capabilities、audit-log、MCP admin、provider test、permission preview、admin run summary 与 runtime-stats HTTP 路由 |
+| `expose_trace_routes` | `bool` | `false` | 是否挂载 `/v1/traces*`。Trace payload 可能包含 prompt、tool arguments 和模型回复，所以默认关闭 |
+| `expose_eval_routes` | `bool` | `true` | 是否挂载 `/v1/eval/*` dataset、run 与 online eval 路由 |
 
-环境变量会覆盖 `AppState` 上的 admin 配置：
+只要 `expose_config_routes`、`expose_trace_routes` 或 `expose_eval_routes`
+任一为 `true`，启动时就要求配置 admin bearer token。`expose_config_routes = false`
+不会隐藏 system routes、protocol routes、canonical event routes、eval routes 或 trace
+routes；这些 surface 需要分别配置。
+
+环境变量会覆盖 `ServerState` 上的 admin 配置：
 
 | 变量 | 说明 |
 |---|---|
@@ -414,10 +442,10 @@ pub struct AdminApiConfig {
 
 审计日志保留策略从 `AdminApiConfig` 中拆出，避免破坏 0.4.0 中
 `AdminApiConfig` 的 struct literal 兼容性。调用
-`AppState::with_audit_log_from_config` 之前，可通过
-`AppState::with_audit_log_config` 挂到 `AppState`。
+`ServerState::with_audit_log_from_config` 之前，可通过
+`ServerState::with_audit_log_config` 挂到 `ServerState`。
 
-```rust,ignore
+```rust
 use awaken_server::app::AuditLogConfig;
 
 pub struct AuditLogConfig {
@@ -430,7 +458,7 @@ pub struct AuditLogConfig {
 ### 凭据处理
 
 `RedactedString`（门面 crate 重新导出为 `awaken::RedactedString`，定义在
-`awaken_contract::secret`）是序列化配置中所有凭据的唯一信任边界。线缆格式仍是普通 JSON 字符串、JSON Schema 报告 `string`，内
+`awaken_runtime_contract::secret`）是序列化配置中所有凭据的唯一信任边界。线缆格式仍是普通 JSON 字符串、JSON Schema 报告 `string`，内
 部 buffer 在 `Drop` 时被清零。`Debug` 输出 `RedactedString(***)`，`Display`
 输出 `***`；真正发起请求时调用 `expose_secret()` 获取明文，且不要把返回的
 `&str` 传到日志。原本持有 `String` token 的代码只需在构造处加一个 `.into()`
@@ -452,7 +480,7 @@ pub struct AuditLogConfig {
 
 mailbox 持久化队列配置。控制租约计时、扫描/GC 间隔以及失败任务的重试行为。
 
-```rust,ignore
+```rust
 pub struct MailboxConfig {
     pub lease_ms: u64,                          // default: 30_000
     pub suspended_lease_ms: u64,                // default: 600_000
@@ -480,6 +508,36 @@ pub struct MailboxConfig {
 | `default_retry_delay_ms` | `u64` | `250` | 两次重试之间的基础延迟（毫秒） |
 | `max_retry_delay_ms` | `u64` | `30_000` | 指数退避的最大延迟上限（毫秒） |
 
+### Mailbox lifecycle
+
+`ServerConfig.mailbox_lifecycle` 控制 `serve()` 是否托管 mailbox worker。
+`Auto` 会在接收流量前启动 startup recovery、lease sweep、GC 以及 server cleanup
+callback，并在 server 优雅退出时关闭它们。`Manual` 则把这些任务交给嵌入方，由嵌入方直接调用 mailbox lifecycle API。
+
+```rust
+pub enum MailboxLifecycleMode {
+    Auto,
+    Manual,
+}
+
+pub struct MailboxStartupRecoveryConfig {
+    pub max_attempts: u32,       // default: 1，小于 1 会按 1 处理
+    pub retry_delay: Duration,   // default: 250ms
+}
+
+pub struct MailboxLifecycleConfig {
+    pub startup_delay: Duration, // default: 0
+    pub startup_recovery: MailboxStartupRecoveryConfig,
+    pub maintenance_callback: Option<MailboxMaintenanceCallback>,
+}
+```
+
+**Crate 路径：** `awaken_server::app::MailboxLifecycleMode`，
+`awaken_server::mailbox::{MailboxLifecycleConfig, MailboxStartupRecoveryConfig}`
+
+`Mailbox::start_lifecycle_ready(config).await` 会等待 startup recovery 完成；
+如果重试耗尽仍失败，则返回错误。`Mailbox::start_lifecycle(config)` 会立即返回并在后台启动 lifecycle tasks。两者都是幂等的：重复调用会返回已有 lifecycle 的 handle。丢弃 handle 不会停止任务；嵌入方自管退出时应调用 `MailboxLifecycleHandle::shutdown().await`，只有不需要等待收敛的路径才使用 `abort()`。
+
 ## LlmRetryPolicy
 
 LLM 推理失败后的指数退避重试策略。可通过 `AgentSpec` 的 `"retry"` section 按 agent
@@ -489,7 +547,7 @@ Retry 在 agent 解析阶段生效。缺失 `"retry"` section 时使用 `LlmRetr
 将 `max_retries` 设为 `0` 可以禁用 retry 包装。Provider 构造阶段不会额外隐藏一层
 retry 策略。对于流式推理，retry 只作用于打开 stream 的阶段。
 
-```rust,ignore
+```rust
 pub struct LlmRetryPolicy {
     pub max_retries: u32,                  // default: 2
     pub backoff_base_ms: u64,              // default: 500
@@ -513,7 +571,7 @@ pub struct LlmRetryPolicy {
 
 通过 `"retry"` section 配置：
 
-```rust,ignore
+```rust
 use awaken_runtime::engine::retry::RetryConfigKey;
 
 let spec = AgentSpec::new("my-agent")
@@ -530,7 +588,7 @@ let spec = AgentSpec::new("my-agent")
 
 每个模型单独维护的熔断器配置。通过短路对失败过多的模型的请求，防止级联故障。冷却期过后熔断器进入半开状态，允许有限的探测请求；成功后完全关闭。
 
-```rust,ignore
+```rust
 pub struct CircuitBreakerConfig {
     pub failure_threshold: u32,    // default: 5
     pub cooldown: Duration,        // default: 30s
@@ -566,7 +624,7 @@ pub struct CircuitBreakerConfig {
 
 ### 声明 schema 用于校验
 
-```rust,ignore
+```rust
 fn config_schemas(&self) -> Vec<ConfigSchema> {
     vec![
         ConfigSchema::for_key::<RateLimitConfigKey>()
@@ -579,13 +637,13 @@ fn config_schemas(&self) -> Vec<ConfigSchema> {
 
 ### 在运行时读取配置
 
-```rust,ignore
+```rust
 let cfg = ctx.agent_spec().config::<RateLimitConfigKey>()?;
 ```
 
 ### 示例
 
-```rust,ignore
+```rust
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use awaken::PluginConfigKey;
@@ -660,7 +718,7 @@ section key 是 `deferred_tools`，由 `DeferredToolsConfigKey` 绑定。该 cra
 
 `ConfigStore` 是服务端 `/v1/config/*` 路由背后的异步配置持久化契约。适用于需要在运行时创建、列举和更新配置，而不是把配置静态写死在 `AgentSpec` 中的场景。
 
-```rust,ignore
+```rust
 #[async_trait]
 pub trait ConfigStore: Send + Sync {
     async fn get(&self, namespace: &str, id: &str) -> Result<Option<Value>, StorageError>;
@@ -678,7 +736,7 @@ pub trait ConfigStore: Send + Sync {
 相关类型：
 
 - `ConfigChangeNotifier` / `ConfigChangeSubscriber` —— 可选的原生变更通知接口
-- `AppState::with_config_store(...)` —— 为 `awaken-server` 启用运行时配置路由
+- `ServerState::with_config_store(...)` —— 为 `awaken-server` 启用运行时配置路由
 - `ConfigRuntimeManager` —— 写入配置前编译并校验候选 registry snapshot，校验通过后发布
 - `ConfigService` —— `/v1/config/*`、`/v1/agents` 和 `/v1/capabilities` 使用的服务层
 

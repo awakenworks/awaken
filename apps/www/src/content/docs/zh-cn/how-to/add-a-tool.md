@@ -135,7 +135,7 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
 
 ## 关键文件
 
-- `crates/awaken-contract/src/contract/tool.rs`
+- `crates/awaken-runtime-contract/src/contract/tool.rs`
 - `crates/awaken-runtime/src/builder.rs`
 
 ## 相关

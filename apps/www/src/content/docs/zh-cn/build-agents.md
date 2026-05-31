@@ -1,9 +1,11 @@
 ---
 title: "构建 Agent 路径"
-description: "当你已经理解基础运行流程，接下来就进入这条路径，把 Agent 能力逐步拼装完整。"
+description: "把可执行能力留在 Rust，把 prompt、model、skill 与 policy 放进托管配置，逐步拼装 Agent 行为。"
 ---
 
 当你已经理解基础运行流程，接下来就进入这条路径，把 Agent 能力逐步拼装完整。
+设计目标是代码稳定、行为可调：tools/plugins 保持编译态，prompt、model、skill
+和 policy 通过配置变化。
 
 ## 推荐顺序
 

@@ -205,7 +205,7 @@ pub enum RunRequestOrigin {
 
 ### MailboxStore Trait
 
-`MailboxStore` defines the persistent queue interface. The trait surface lives at `crates/awaken-contract/src/contract/mailbox.rs`:
+`MailboxStore` defines the persistent queue interface. The trait surface lives at `crates/awaken-server-contract/src/contract/mailbox.rs`:
 
 **Enqueue / claim / lifecycle:**
 

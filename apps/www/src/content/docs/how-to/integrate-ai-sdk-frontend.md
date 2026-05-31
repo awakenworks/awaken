@@ -13,7 +13,7 @@ Use this when you have a Vercel AI SDK (v6) React frontend and need to connect i
 
 ```toml
 [dependencies]
-awaken = { version = "0.5", features = ["server"] }
+awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["server"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -33,7 +33,7 @@ use awaken::registry_spec::ModelSpec;
 use awaken::registry_spec::AgentSpec;
 use awaken::stores::{InMemoryMailboxStore, InMemoryStore};
 use awaken::AgentRuntimeBuilder;
-use awaken::server::app::{AppState, ServerConfig};
+use awaken::server::app::{ServerState, ServerConfig};
 use awaken::server::mailbox::{Mailbox, MailboxConfig};
 use awaken::server::routes::build_router;
 
@@ -66,7 +66,7 @@ async fn main() {
         MailboxConfig::default(),
     ));
 
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         store as Arc<dyn ThreadRunStore>,
@@ -91,7 +91,12 @@ The server automatically registers AI SDK v6 routes at:
 - `POST /v1/ai-sdk/chat` -- create a new run and stream events
 - `GET /v1/ai-sdk/chat/:thread_id/stream` -- resume an existing stream by thread ID
 - `GET /v1/ai-sdk/threads/:thread_id/stream` -- alias for thread-based resume
+- `GET /v1/ai-sdk/threads/:thread_id/replay` -- replay durable protocol frames when a `ProtocolReplayLog` is wired
 - `GET /v1/ai-sdk/threads/:id/messages` -- retrieve thread messages
+
+Live stream resume uses numeric `Last-Event-ID` positions from the in-memory
+SSE buffer. Durable replay uses opaque protocol replay cursors from the replay
+endpoint; keep them separate in frontend resume code.
 
 2. Connect the React frontend.
 
@@ -186,7 +191,7 @@ npm run dev
 | `crates/awaken-server/src/protocols/ai_sdk_v6/http.rs` | AI SDK v6 route handlers |
 | `crates/awaken-server/src/protocols/ai_sdk_v6/encoder.rs` | AI SDK v6 SSE event encoder |
 | `crates/awaken-server/src/routes.rs` | Unified router builder |
-| `crates/awaken-server/src/app.rs` | `AppState` and `ServerConfig` |
+| `crates/awaken-server/src/app.rs` | `ServerState` and `ServerConfig` |
 | `examples/ai-sdk-starter/agent/src/main.rs` | Backend entry for the AI SDK starter |
 
 ## Related

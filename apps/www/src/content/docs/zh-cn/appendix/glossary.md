@@ -33,9 +33,9 @@ title: "术语表"
 | `RunStatus` | 运行状态 | 粗粒度 run 状态：`Running`、`Waiting`、`Done`。 |
 | `ToolCallStatus` | 工具调用状态 | 单个 tool call 的状态。 |
 | `ResolvedAgent` | 已解析智能体 | 从 registries 解析完成、可直接运行的 agent。 |
-| `ResolvedExecution` | 已解析执行 | 运行时解析结果：本地 `ResolvedAgent` 或 backend-backed 远程 agent。 |
-| `AgentResolver` | 智能体解析器 | 把 agent ID 解析成 `ResolvedAgent` 的组件。 |
-| `ExecutionResolver` | 执行解析器 | `AgentRuntime` root run 使用的解析器，用来选择本地执行或 backend-backed 执行。 |
+| `ResolvedRunPlan` | 已解析运行计划 | runtime run plan：可重放或 live-only，并带本地或 backend-backed execution。 |
+| `ExecutionPlan` | 执行计划 | 本地 `ResolvedAgent` 或 backend-backed `ResolvedBackendAgent`。 |
+| `AgentResolver` | 智能体解析器 | 把 agent ID 解析成 `ResolvedAgent` 或 `ExecutionPlan` 的组件。 |
 | `ExecutionBackend` | 执行后端 | 非本地 root execution 和 delegation 的扩展点，包括 A2A。 |
 | `BuildError` | 构建错误 | `AgentRuntimeBuilder::build()` 阶段的错误。 |
 | `RuntimeError` | 运行时错误 | agent loop 执行中的错误。 |

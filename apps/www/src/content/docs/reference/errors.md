@@ -8,7 +8,7 @@ All error types use `thiserror` derives and implement `std::error::Error` +
 
 ## StateError
 
-Errors from state management operations. Defined in `awaken-contract`.
+Errors from state management operations. Defined in `awaken-runtime-contract`.
 
 ```rust
 use awaken::Phase;
@@ -197,7 +197,7 @@ pub enum StorageError {
 ## ResolveError
 
 Errors from the agent resolution pipeline (resolving `AgentSpec` to a runnable
-`ResolvedAgent` or `ResolvedExecution`).
+`ResolvedAgent` or backend-backed execution plan).
 
 ```rust
 use awaken::StateError;
@@ -219,7 +219,7 @@ pub enum ResolveError {
 **Crate path:** `awaken::registry::resolve::ResolveError`
 
 `RemoteAgentNotDirectlyRunnable` applies to direct local resolution through
-`AgentResolver::resolve()`. Runtime root execution uses `ExecutionResolver` and
+`AgentResolver::resolve()`. Runtime run resolution uses `ResolvedRunPlan` and
 can run endpoint-backed agents when a matching backend factory is registered.
 
 ## UnknownKeyPolicy

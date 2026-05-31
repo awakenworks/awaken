@@ -35,23 +35,23 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
       <div class="hero-left">
         <span class="hero-eyebrow">
           <span class="dot"></span>
-          <span>{t("v0.5 · type-safe state · 9-phase loop", "v0.5 · 类型化状态 · 9 阶段循环")}</span>
+          <span>{t("runtime library · server control plane", "runtime 开发库 · server 控制面")}</span>
         </span>
         <h1 class="hero-title">
           {locale === "zh-CN" ? (
             <Fragment>
-              <span class="accent">面向 Rust 的</span>生产级 AI Agent 运行时
+              <span class="accent">面向 Rust 的</span>AI Agent 后端
             </Fragment>
           ) : (
             <Fragment>
-              Production AI agent runtime<span class="accent"> for Rust.</span>
+              Production AI agent backend<span class="accent"> for Rust.</span>
             </Fragment>
           )}
         </h1>
         <p class="hero-sub">
           {t(
-            "One backend serves AI SDK, AG-UI, A2A, MCP, and ACP. Streams recover from mid-flight failures. State is typed, mutations are atomic, and the whole run is replayable from a snapshot.",
-            "单后端同时服务 AI SDK、AG-UI、A2A、MCP 与 ACP。流式中断可恢复,状态类型化,变更原子提交,整轮可基于快照重放。",
+            "Build agent capabilities once in Rust, tune behavior live, and serve every client from the same runtime. Use direct runtime for in-process app flows or server mode for protocols, durable runs, and the admin console.",
+            "用 Rust 写一次 Agent 能力，把行为调优交给在线配置，并让同一个 runtime 服务本地开发、生产 API、多协议前端和管理控制台。",
           )}
         </p>
         <div class="hero-actions">
@@ -82,10 +82,10 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
             <button
               type="button"
               class="copy-code"
-              data-copy="cargo add awaken"
+              data-copy="cargo add awaken --git https://github.com/AwakenWorks/awaken"
               aria-label={t("Copy install command", "复制安装命令")}
             >
-              cargo add awaken
+              cargo add awaken --git …
               <svg class="copy-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="9" y="9" width="11" height="11" rx="2"></rect>
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -102,7 +102,7 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
           <div class="terminal-bar">
             <div class="dots"><span></span><span></span><span></span></div>
             <span class="file">src/main.rs</span>
-            <span class="tag">awaken = "0.5"</span>
+            <span class="tag">main branch API</span>
           </div>
           <Code code={heroSnippet} lang="rust" theme={awakenTheme as never} />
           <div class="phase-ribbon" aria-hidden="true">
@@ -119,10 +119,10 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
       <div class="section-head">
         <div>
           <span class="eyebrow">{t("Mental model", "心智模型")}</span>
-          <h2>{t("Two layers, one runtime", "两层模型,一个运行时")}</h2>
+          <h2>{t("Runtime for code, server for operations", "runtime 写代码,server 做运营")}</h2>
           <p set:html={t(
-            "<b>Code</b> compiles once. <b>Config</b> tunes at runtime. Edits to model, agent, or skill spec take effect on the <b>next</b> <code>/v1/runs</code> — no restart, no redeploy.",
-            "<b>代码</b>编译一次。<b>配置</b>运行时调优。Model、Agent、Skill spec 的改动在<b>下一次</b> <code>/v1/runs</code> 生效 —— 无需重启、无需重新部署。",
+            "<b>Runtime mode</b> keeps executable capability in Rust: tools, providers, state, plugins, and direct <code>RunActivation</code> execution. <b>Server mode</b> wraps it with durable runs, protocols, and managed config.",
+            "<b>runtime 模式</b>把可执行能力留在 Rust：tools、providers、state、plugins 与直接 <code>RunActivation</code> 执行。<b>server 模式</b>在外层加入持久 run、协议与托管配置。",
           )} />
         </div>
         <div class="right">
@@ -142,8 +142,8 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
           <div class="eb">{t("Config (declarative)", "配置层（声明式）")}</div>
           <h3>{t("Providers · Models · Agents · Skills", "Providers · Models · Agents · Skills")}</h3>
           <p set:html={t(
-            "Mutate through <code>/v1/config/*</code> (REST) or the admin console (UI) — they're the same API. Runtime publishes a new registry snapshot per change; existing runs keep their resolved spec, new ones pick up the edit. Audit log keeps every version.",
-            "通过 <code>/v1/config/*</code>（REST）或控制台（UI）变更，二者是同一套 API。每次写入都会发布新的 registry snapshot；进行中的 run 保留已解析 spec，下一次 run 拿到新版。Audit log 保留每个版本。",
+            "Mutate through <code>/v1/config/*</code> (REST) or the admin console (UI) — both are server surfaces over the same registry snapshot. Existing runs keep their resolved spec; new runs pick up the edit.",
+            "通过 <code>/v1/config/*</code>（REST）或控制台（UI）变更，二者都是 server 暴露在同一个 registry snapshot 上的控制面。进行中的 run 保留已解析 spec，新 run 拿到新版。",
           )} />
         </div>
       </div>
@@ -155,11 +155,11 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
     <div class="wrap">
       <div class="section-head">
         <div>
-          <span class="eyebrow">{t("One runtime", "一个运行时")}</span>
-          <h2>{t("Five protocol surfaces, one backend", "五种协议表面,一套后端")}</h2>
+          <span class="eyebrow">{t("Server surface", "server 表面")}</span>
+          <h2>{t("Five protocols without five agents", "五种协议,不是五套 Agent")}</h2>
           <p set:html={t(
-            "The same runtime and run model back every wire format. Switch protocols without touching agent code.",
-            "同一个 runtime 与 run model 支撑所有 wire format。切换协议无需改动智能体代码。",
+            "The server translates each wire format into the same runtime event stream and run model. Switch clients without touching agent code.",
+            "server 把每种 wire format 转成同一条 runtime event stream 和 run model。切换客户端无需改动 agent 代码。",
           )} />
         </div>
         <div class="right">
@@ -202,8 +202,8 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
           <h3>MCP</h3>
           <div class="proto-endpoint">POST /v1/mcp</div>
           <p class="proto-desc">{t(
-            "JSON-RPC 2.0 surface — host any MCP-compatible client with stdio or HTTP transport.",
-            "JSON-RPC 2.0 服务面 —— 通过 stdio 或 HTTP 传输承接任意 MCP 兼容客户端。",
+            "JSON-RPC 2.0 surface for MCP-compatible clients over the server route.",
+            "面向 MCP 兼容客户端的 JSON-RPC 2.0 server route。",
           )}</p>
           <div class="proto-frontend">Claude · Cursor · Zed</div>
         </article>
@@ -212,8 +212,8 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
           <h3>ACP</h3>
           <div class="proto-endpoint">stdio serve_stdio</div>
           <p class="proto-desc">{t(
-            "Agent Client Protocol stdio adapter — launch Awaken as a local agent process.",
-            "Agent Client Protocol stdio 适配器 —— 将 Awaken 作为本地 agent 进程启动。",
+            "Agent Client Protocol stdio adapter from the server crate.",
+            "server crate 提供的 Agent Client Protocol stdio 适配器。",
           )}</p>
           <div class="proto-frontend">{t("ACP hosts", "ACP 宿主")}</div>
         </article>
@@ -229,8 +229,8 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
           <span class="eyebrow">{t("Admin Console", "管理控制台")}</span>
           <h2>{t("Operate it like a product, not a script", "把它当产品运营,而不是脚本")}</h2>
           <p set:html={t(
-            "A React 19 SPA wired to the same <code>/v1/config/*</code> API. Manage agents, models, providers, skills, MCP — every change audited and snapshot-applied to the next run.",
-            "一个 React 19 SPA，与 <code>/v1/config/*</code> 共享 API。管理 agents、models、providers、skills、MCP —— 每次变更都进入 audit log，下一次 run 立即生效。",
+            "A React 19 SPA wired to the server APIs. Manage agents, models, providers, skills, MCP, traces, datasets, and eval runs from the same control plane.",
+            "一个接入 server API 的 React 19 SPA。Agents、models、providers、skills、MCP、traces、datasets 与 eval runs 都在同一个控制面管理。",
           )} />
         </div>
         <div class="right">
@@ -255,6 +255,8 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
               <div class="eb" style="margin-top: 8px">{t("Observe", "观测")}</div>
               <div class="item">Dashboard</div>
               <div class="item">Audit Log</div>
+              <div class="item">Datasets</div>
+              <div class="item">Eval Runs</div>
               <div class="item">Eval Reports</div>
             </aside>
             <main class="console-main">
@@ -297,18 +299,18 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
         <div class="console-callouts">
           <div class="callout">
             <div class="eb">{t("Config = control plane", "配置即控制面")}</div>
-            <h3>{t("Spec-first, runtime-applied", "声明先行,运行时即时生效")}</h3>
+            <h3>{t("Spec-first, snapshot-applied", "声明先行,snapshot 生效")}</h3>
             <p set:html={t(
-              "Models, providers, prompts, permissions, MCP — edit the spec and the next <code>/v1/runs</code> sees it. No restart.",
-              "模型、Provider、提示词、权限、MCP —— 编辑 spec,下一次 <code>/v1/runs</code> 即生效。无需重启。",
+              "Models, providers, prompts, permissions, MCP — edit the spec and the server publishes a registry snapshot for later runs.",
+              "模型、Provider、提示词、权限、MCP —— 编辑 spec 后，server 发布新的 registry snapshot 给后续 run 使用。",
             )} />
           </div>
           <div class="callout">
-            <div class="eb">{t("Tested end-to-end", "端到端测试")}</div>
-            <h3>{t("875 tests · 20 doctest examples", "875 个测试 · 20 个 doctest 示例")}</h3>
+            <div class="eb">{t("Docs stay executable", "文档保持可执行")}</div>
+            <h3>{t("Workspace tests and doctests guard the examples", "workspace tests 与 doctests 守住示例")}</h3>
             <p set:html={t(
-              "Workspace under <code>unsafe_code = \"forbid\"</code>. The coverage-map tracks 20 doc-cited API shapes; each example's <code>main()</code> runs in CI to catch silent rename / serde drift.",
-              "整个 workspace <code>unsafe_code = \"forbid\"</code>。Coverage map 跟踪 20 个文档引用的 API 形状，每个示例的 <code>main()</code> 在 CI 真实执行，捕捉静默 rename 或 serde 漂移。",
+              "The workspace runs with <code>unsafe_code = \"forbid\"</code>. Public examples are covered by compile tests, doctests, and docs build checks.",
+              "整个 workspace <code>unsafe_code = \"forbid\"</code>。公开示例由 compile tests、doctests 与 docs build 共同校验。",
             )} />
           </div>
         </div>

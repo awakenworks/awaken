@@ -11,7 +11,7 @@ Change an agent's behaviour mid-flight and verify the change on the very next ru
 
 ## Prerequisites
 
-- The Awaken server is running with a `ConfigStore` wired into `AppState` (see [Expose HTTP SSE](/awaken/how-to/expose-http-sse/)).
+- The Awaken server is running with a `ConfigStore` wired into `ServerState` (see [Expose HTTP SSE](/awaken/how-to/expose-http-sse/)).
 - At least one agent, model, and provider exist in config (see [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/)).
 - Tools you want the agent to call are registered in Rust (`AgentRuntimeBuilder::with_tool`, see [Add a Tool](/awaken/how-to/add-a-tool/)).
 

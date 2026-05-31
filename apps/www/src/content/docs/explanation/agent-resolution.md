@@ -1,9 +1,9 @@
 ---
 title: "Agent Resolution"
-description: "When AgentRuntime runs a request through run_to_completion(request) or run(request, sink), the agent_id in the request is resolved through ExecutionResolver into a ResolvedExecution: either…"
+description: "When AgentRuntime runs a request through run_to_completion(request) or run(request, sink), the agent_id in the request is resolved through Resolver into a ResolvedRunPlan."
 ---
 
-When `AgentRuntime` runs a request through `run_to_completion(request)` or `run(request, sink)`, the `agent_id` in the request is resolved through `ExecutionResolver` into a `ResolvedExecution`: either `Local(ResolvedAgent)` or `NonLocal(ResolvedBackendAgent)`. A local `ResolvedAgent` holds live references to an LLM executor, tools, plugins, and an execution environment. A non-local execution is backed by an `ExecutionBackend`, such as the built-in A2A backend. Resolution happens on every call; local agent environments are not shared between runs.
+When `AgentRuntime` runs a request through `run_to_completion(request)` or `run(request, sink)`, the `agent_id` in the request is resolved through `Resolver` into a `ResolvedRunPlan`. The execution plan inside it is backed either by a local `ResolvedAgent` or by a non-local `ResolvedBackendAgent`. A local `ResolvedAgent` holds live references to an LLM executor, tools, plugins, and an execution environment. A non-local execution is backed by an `ExecutionBackend`, such as the built-in A2A backend. Resolution happens on every call; local agent environments are not shared between runs.
 
 ## Pipeline Overview
 
@@ -45,7 +45,7 @@ Any failure at any stage produces a `ResolveError` and aborts. The pipeline neve
 
 The first stage fetches the raw data from registries:
 
-1. **AgentSpec** -- looked up from `AgentSpecRegistry` by `agent_id`. If direct local resolution is requested for a spec with `endpoint`, it fails with `RemoteAgentNotDirectlyRunnable`. `AgentRuntime` uses `resolve_execution()` for root runs, so endpoint-backed agents are resolved as `ResolvedExecution::NonLocal` when a backend factory exists.
+1. **AgentSpec** -- looked up from `AgentSpecRegistry` by `agent_id`. If direct local resolution is requested for a spec with `endpoint`, it fails with `RemoteAgentNotDirectlyRunnable`. `AgentRuntime` resolves root runs through `ResolvedRunPlan`, so endpoint-backed agents use a non-local execution plan when a backend factory exists.
 
 2. **ModelSpec** -- the spec's `model_id` field (a model registry ID like `"default"`) is resolved through `ModelRegistry` into a `ModelSpec`, which carries the provider ID, upstream API model name (for example, provider `"openai"`, upstream model `"gpt-4o"`), plus optional intrinsic capabilities (context window, max output, modalities, knowledge cutoff) and pricing. The server-side config API persists `ModelSpec` directly; there is no separate spec-to-runtime conversion step.
 
@@ -55,7 +55,7 @@ The first stage fetches the raw data from registries:
 
 ### Non-local execution
 
-For endpoint-backed agents, `resolve_execution()` validates the configured
+For endpoint-backed agents, resolution validates the configured
 `RemoteEndpoint`, builds a `ResolvedBackendAgent`, and leaves execution to the
 selected `ExecutionBackend`. The local model/provider/plugin/tool pipeline is
 skipped for that root run because the remote backend owns those decisions.

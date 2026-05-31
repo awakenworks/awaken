@@ -110,8 +110,8 @@ pub struct ToolCallProgressState {
 
 ## 关键文件
 
-- `crates/awaken-contract/src/contract/progress.rs`
-- `crates/awaken-contract/src/contract/tool.rs`
+- `crates/awaken-runtime-contract/src/contract/progress.rs`
+- `crates/awaken-runtime-contract/src/contract/tool.rs`
 
 ## 相关
 

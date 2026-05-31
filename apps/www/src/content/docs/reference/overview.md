@@ -1,20 +1,21 @@
 ---
 title: "Overview"
-description: "The awaken crate is the public facade for the Awaken agent framework. It re-exports types from the internal awaken-contract and awaken-runtime crates so that downstream code only needs a single…"
+description: "The awaken crate is the public facade for the Awaken agent framework. It re-exports runtime contracts, server contracts, runtime APIs, stores, and extensions so downstream code can start with one dependency."
 ---
 
 The `awaken` crate is the public facade for the Awaken agent framework. It
-re-exports types from the internal `awaken-contract` and `awaken-runtime` crates
-so that downstream code only needs a single dependency.
+re-exports runtime contracts, server contracts, runtime APIs, stores, and
+extensions so downstream code can start with one dependency.
 
 ## Module re-exports
 
 | Facade path | Source crate | Contents |
 |---|---|---|
-| `awaken::contract` | `awaken-contract` | Tool trait, events, messages, suspension, lifecycle |
-| `awaken::model` | `awaken-contract` | Phase, EffectSpec, ScheduledActionSpec, JsonValue |
-| `awaken::registry_spec` | `awaken-contract` | AgentSpec, ModelSpec, ProviderSpec, McpServerSpec, PluginConfigKey |
-| `awaken::state` | `awaken-contract` + `awaken-runtime` | StateKey, StateMap, Snapshot, StateStore, MutationBatch |
+| `awaken::contract` | `awaken-runtime-contract` | Runtime-facing tools, events, messages, suspension, lifecycle, commit coordinator |
+| `awaken::server_contract` | `awaken-server-contract` | Server/store-facing storage queries, scoped stores, staged commits |
+| `awaken::model` | `awaken-runtime-contract` | Phase, EffectSpec, ScheduledActionSpec, JsonValue |
+| `awaken::registry_spec` | `awaken-runtime-contract` | AgentSpec, ModelSpec, ProviderSpec, McpServerSpec, PluginConfigKey |
+| `awaken::state` | `awaken-runtime-contract` + `awaken-runtime` | StateKey, StateMap, Snapshot, StateStore, MutationBatch |
 | `awaken::agent` | `awaken-runtime` | Agent configuration and state |
 | `awaken::builder` | `awaken-runtime` | AgentRuntimeBuilder, BuildError |
 | `awaken::context` | `awaken-runtime` | PhaseContext |
@@ -25,7 +26,7 @@ so that downstream code only needs a single dependency.
 | `awaken::phase` | `awaken-runtime` | PhaseRuntime, PhaseHook |
 | `awaken::plugins` | `awaken-runtime` | Plugin, PluginDescriptor, PluginRegistrar |
 | `awaken::policies` | `awaken-runtime` | Context window and retry policies |
-| `awaken::registry` | `awaken-runtime` | AgentResolver, ExecutionResolver, ResolvedAgent, ResolvedExecution |
+| `awaken::registry` | `awaken-runtime` | AgentResolver, ResolvedAgent, ResolvedBackendAgent |
 | `awaken::runtime` | `awaken-runtime` | AgentRuntime |
 | `awaken::stores` | `awaken-stores` | Memory, file, PostgreSQL, and SQLite-backed store implementations |
 
@@ -45,7 +46,7 @@ so that downstream code only needs a single dependency.
 
 The following types are re-exported at the crate root for convenience:
 
-**From `awaken-contract`:**
+**From `awaken-runtime-contract`:**
 `AgentSpec`, `EffectSpec`, `FailedScheduledActions`, `JsonValue`, `KeyScope`,
 `MergeStrategy`, `PendingScheduledActions`, `PersistedState`, `Phase`,
 `PluginConfigKey`, `ScheduledActionSpec`, `Snapshot`, `StateError`, `StateKey`,

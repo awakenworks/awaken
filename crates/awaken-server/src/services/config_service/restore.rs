@@ -15,7 +15,8 @@ impl ConfigService {
     /// - Returns `RestoreError::NotRestorable` for Restart events (no spec payload).
     /// - Calls `persist_only_locked` (both create and update paths). Per ADR-0035 D11
     ///   restore is an editing-store operation: it does NOT trigger the runtime
-    ///   hot-swap. Operators must run `publish` to promote the restored payload.
+    ///   hot-swap. Operators must use a normal config write/apply flow to
+    ///   promote the restored payload.
     /// - Emits a Restore audit event with `restored_from` set to the source ULID.
     pub async fn restore(
         &self,
@@ -85,7 +86,7 @@ impl ConfigService {
                 )));
             }
             // ADR-0035 D11: restore writes ConfigStore only; runtime
-            // hot-swap is reserved for an explicit publish step.
+            // hot-swap is reserved for an explicit config write/apply step.
             self.persist_only_locked(namespace, id, before.clone(), prepared)
                 .await
                 .map_err(RestoreError::Service)?

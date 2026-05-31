@@ -1,7 +1,7 @@
 use awaken::contract::message::Message;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::{AgentSpec, ModelSpec};
-use awaken::{AgentRuntimeBuilder, RunRequest};
+use awaken::{AgentRuntimeBuilder, RunActivation};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -16,7 +16,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
         .build()?;
 
-    let req = RunRequest::new("thread-1", vec![Message::user("Hello!")]).with_agent_id("assistant");
+    let req =
+        RunActivation::new("thread-1", vec![Message::user("Hello!")]).with_agent_id("assistant");
 
     let out = rt.run_to_completion(req).await?;
     println!("{}", out.response);

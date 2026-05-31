@@ -177,7 +177,7 @@ The contract is enforced and surfaced at five sites:
 
 | Site | Role |
 |------|------|
-| `crates/awaken-contract/src/agent_spec_patch.rs` — `AgentSpecPatch::endpoint` | Long-form rationale in field doc comment |
+| `crates/awaken-runtime-contract/src/agent_spec_patch.rs` — `AgentSpecPatch::endpoint` | Long-form rationale in field doc comment |
 | `crates/awaken-server/src/services/config_service.rs` — `patch_agent_overrides` | Contract-surface note in method doc comment |
 | `crates/awaken-server/tests/config_api.rs` — `patch_overrides_null_clears_nullable_base_field` | Contract-pin test; preamble flags it as load-bearing |
 | `apps/admin-console/src/lib/agent-editor-helpers.ts` — `LOCKED_AGENT_FIELDS` / `lockedFieldChange` | Client-side lock + normalization contract |

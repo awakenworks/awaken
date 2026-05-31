@@ -17,7 +17,7 @@ description: "当你需要可持久化、可多实例共享的存储后端时，
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.5", features = ["postgres"] }
+awaken-stores = { git = "https://github.com/AwakenWorks/awaken", features = ["postgres"] }
 ```
 
 2. 创建连接池：
@@ -42,6 +42,8 @@ let store = Arc::new(PostgresStore::new(pool));
 - `awaken_threads`
 - `awaken_runs`
 - `awaken_messages`
+- `awaken_configs`
+- `awaken_threads_state`
 
 4. 使用自定义前缀：
 
@@ -53,12 +55,16 @@ let store = Arc::new(PostgresStore::with_prefix(pool, "myapp"));
 
 ```rust
 use std::sync::Arc;
+use awaken::contract::commit_coordinator::CommitCoordinator;
 use awaken::AgentRuntimeBuilder;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::ModelSpec;
+use awaken::stores::PgCommitCoordinator;
 
+let coordinator =
+    Arc::new(PgCommitCoordinator::new(store.clone())?) as Arc<dyn CommitCoordinator>;
 let runtime = AgentRuntimeBuilder::new()
-    .with_thread_run_store(store)
+    .with_commit_coordinator(coordinator)
     .with_agent_spec(spec)
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
     .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
@@ -67,7 +73,16 @@ let runtime = AgentRuntimeBuilder::new()
 
 6. Schema 初始化：
 
-表会在首次访问时自动通过 `ensure_schema()` 创建。初始接入无需手动 migration。
+表和索引会在首次访问时自动通过 `ensure_schema()` 创建。thread/run/message/config
+表使用 JSONB payload，并带有 list/cursor query 所需的索引列。使用对应
+server control-plane store 时，同一个 schema 初始化也会安装 event storage、
+protocol replay、outbox、checkpoint repair 和 versioned registry 状态。
+
+- runtime projection：threads、runs、messages、thread state
+- managed config：namespace/id config rows 与 notify channel
+- server control plane：events、replay、outbox、checkpoints、registry versions
+
+初始接入无需手动 migration。
 
 ## 验证
 

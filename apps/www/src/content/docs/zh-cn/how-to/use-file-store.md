@@ -15,7 +15,7 @@ description: "当你希望在不引入外部数据库的情况下，用文件系
 
 ```toml
 [dependencies]
-awaken-stores = { version = "0.5", features = ["file"] }
+awaken-stores = { git = "https://github.com/AwakenWorks/awaken", features = ["file"] }
 ```
 
 如果使用 `awaken` 门面 crate，也建议直接加 `awaken-stores` 来启用 `file` feature。
@@ -35,24 +35,41 @@ let store = Arc::new(FileStore::new("./data"));
 ./data/
   threads/<thread_id>.json
   messages/<thread_id>.json
+  message_records/<thread_id>/<seq>.json
+  pending_messages/<thread_id>/<pending_id>.json
   runs/<run_id>.json
+  thread_states/<thread_id>.json
+  profiles/<scope>/<id>.json
+  config/<namespace>/<id>.json
 ```
+
+`messages/` 保存 materialized conversation view；`message_records/` 和
+`pending_messages/` 保存序号、可见性和 staged input 记录。`thread_states/`、
+`profiles/`、`config/` 会在同一个 file store 被接成 `ThreadStateStore`、
+`ProfileStore` 或 `ConfigStore` 时使用。写入使用 staged file + rename，具体原子性取决于平台支持。
 
 3. 接入 runtime：
 
 ```rust
 use std::sync::Arc;
+use awaken::contract::commit_coordinator::CommitCoordinator;
 use awaken::AgentRuntimeBuilder;
 use awaken::engine::GenaiExecutor;
 use awaken::registry_spec::ModelSpec;
+use awaken::stores::FileCommitCoordinator;
 
+let coordinator = FileCommitCoordinator::wrap(store.clone())? as Arc<dyn CommitCoordinator>;
 let runtime = AgentRuntimeBuilder::new()
-    .with_thread_run_store(store)
+    .with_commit_coordinator(coordinator)
     .with_agent_spec(spec)
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
     .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
     .build()?;
 ```
+
+`FileCommitCoordinator` 面向开发和本地部署。release build 中需要设置
+`AWAKEN_ALLOW_DEV_FILE_COORDINATOR=true` 显式启用；它只提供 best-effort
+跨 store 原子性，严格的多 store commit 原子性应使用 Postgres。
 
 4. 生产环境建议使用绝对路径：
 
@@ -65,7 +82,9 @@ let store = Arc::new(FileStore::new(data_dir));
 
 ## 验证
 
-运行 agent 后检查目录，应该看到 `threads/`、`messages/`、`runs/` 下生成了 JSON 文件。
+运行 agent 后检查目录，应该看到 `threads/`、`messages/`、`runs/` 下生成了 JSON
+文件；server/control-plane wiring 还可能创建 `config/`、`profiles/`、
+`thread_states/` 或 staged message records。
 
 ## 常见错误
 

@@ -12,7 +12,7 @@ Use this when you want the agent to receive automatic context messages after too
 
 ```toml
 [dependencies]
-awaken = { version = "0.5", features = ["reminder"] }
+awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["reminder"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```

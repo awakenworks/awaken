@@ -7,7 +7,7 @@ title: "Config"
 The serializable agent definition. Can be loaded from JSON/YAML or constructed
 programmatically via builder methods.
 
-```rust,ignore
+```rust
 pub struct AgentSpec {
     pub id: String,
     pub model_id: String,                            // model registry id
@@ -33,7 +33,7 @@ pub struct AgentSpec {
 
 ### Builder methods
 
-```rust,ignore
+```rust
 AgentSpec::new(id) -> Self
     .with_model_id(model_id) -> Self
     .with_system_prompt(prompt) -> Self
@@ -48,7 +48,7 @@ AgentSpec::new(id) -> Self
 
 ### Typed config access
 
-```rust,ignore
+```rust
 /// Read a typed plugin config section. Returns default if missing.
 fn config<K: PluginConfigKey>(&self) -> Result<K::Config, StateError>
 
@@ -240,7 +240,7 @@ compatibility, but config write and validate surfaces use
 
 Controls context window management and auto-compaction.
 
-```rust,no_run
+```rust
 #[derive(Default)]
 pub enum ContextCompactionMode {
     #[default]
@@ -261,7 +261,7 @@ pub struct ContextWindowPolicy {
 
 ### ContextCompactionMode
 
-```rust,no_run
+```rust
 pub enum ContextCompactionMode {
     KeepRecentRawSuffix,       // Keep N recent messages raw, compact the rest
     CompactToSafeFrontier,     // Compact everything up to safe frontier
@@ -273,7 +273,7 @@ pub enum ContextCompactionMode {
 Stored in `AgentSpec.sections["compaction"]`. `context_policy` controls the
 window and trigger; this section controls the summarizer.
 
-```rust,no_run
+```rust
 pub enum CompactionExecutionMode {
     Off,
     Background,
@@ -314,7 +314,7 @@ last-wins semantics.
 It does not re-resolve `AgentSpec.model_id` and does not switch providers.
 Use `ModelPoolSpec` when an agent needs model failover.
 
-```rust,no_run
+```rust
 pub enum ReasoningEffort {
     None,
     Low,
@@ -335,14 +335,14 @@ pub struct InferenceOverride {
 
 ### Methods
 
-```rust,ignore
+```rust
 fn is_empty(&self) -> bool
 fn merge(&mut self, other: InferenceOverride)
 ```
 
 ### ReasoningEffort
 
-```rust,no_run
+```rust
 pub enum ReasoningEffort {
     None,
     Low,
@@ -357,7 +357,7 @@ pub enum ReasoningEffort {
 
 Binds a string key to a typed configuration struct at compile time.
 
-```rust,ignore
+```rust
 pub trait PluginConfigKey: 'static + Send + Sync {
     const KEY: &'static str;
     type Config: Default + Clone + Serialize + DeserializeOwned
@@ -373,7 +373,7 @@ their configuration via `agent_spec.config::<MyConfigKey>()`.
 Configuration for agents running on external backends. Today Awaken ships the
 `"a2a"` backend; backend-specific settings live under `options`.
 
-```rust,ignore
+```rust
 pub struct RemoteEndpoint {
     pub backend: String,
     pub base_url: String,
@@ -399,7 +399,7 @@ present. New config should use `auth`, `target`, and `options`.
 
 HTTP server configuration. Used when the `server` feature is enabled.
 
-```rust,ignore
+```rust
 use awaken::RedactedString;
 
 pub struct ServerConfig {
@@ -410,10 +410,21 @@ pub struct ServerConfig {
     pub max_concurrent_requests: usize,               // default: 100
     pub a2a_extended_card_bearer_token: Option<RedactedString>,
     pub mailbox_lifecycle: MailboxLifecycleMode,      // default: Auto
+    pub eval_limits: EvalLimits,
 }
 
 pub struct ShutdownConfig {
     pub timeout_secs: u64,                            // default: 30
+}
+
+pub struct EvalLimits {
+    pub max_cells_per_sync_run: usize,                // default: 100
+    pub max_concurrent_matrix_cells: usize,           // default: 5
+    pub max_cells_per_sync_online: usize,             // default: 10
+    pub max_concurrent_online_cells: usize,           // default: 5
+    pub max_samples_per_cell: u32,                    // default: 20
+    pub max_judge_revisions: u32,                     // default: 3
+    pub default_import_traces_max: usize,             // default: 50
 }
 ```
 
@@ -427,31 +438,49 @@ pub struct ShutdownConfig {
 | `max_concurrent_requests` | `usize` | `100` | Maximum in-flight requests; excess requests receive 503 |
 | `a2a_extended_card_bearer_token` | `Option<RedactedString>` | `None` | Enables authenticated `GET /v1/a2a/extendedAgentCard` when set. The token redacts itself in `Debug`/`Display`; call `expose_secret()` to read the value. JSON wire format remains a plain string |
 | `mailbox_lifecycle` | `MailboxLifecycleMode` | `Auto` | `Auto` lets the framework start and shut down the mailbox; `Manual` hands lifecycle to the embedder |
+| `eval_limits.max_cells_per_sync_run` | `usize` | `100` | Maximum synchronous dataset eval cells (`fixtures × matrix × samples`) before the request is rejected |
+| `eval_limits.max_concurrent_matrix_cells` | `usize` | `5` | Concurrent cells for dataset matrix evals; must be greater than zero |
+| `eval_limits.max_cells_per_sync_online` | `usize` | `10` | Maximum synchronous online eval cells |
+| `eval_limits.max_concurrent_online_cells` | `usize` | `5` | Concurrent cells for online eval; must be greater than zero |
+| `eval_limits.max_samples_per_cell` | `u32` | `20` | Per-cell sample cap for dataset and online eval requests |
+| `eval_limits.max_judge_revisions` | `u32` | `3` | Maximum revise-on-judge-fail iterations |
+| `eval_limits.default_import_traces_max` | `usize` | `50` | Default trace import cap when `POST /v1/eval/datasets/:id/import-traces` omits `max_count` |
 | `shutdown.timeout_secs` | `u64` | `30` | Seconds to wait for in-flight requests to drain before force-exiting |
 
 ## AdminApiConfig
 
-Admin/configuration API security settings. Attach this to `AppState` with
-`AppState::with_admin_api_config`, or use
-`AppState::with_admin_api_bearer_token` when only bearer auth is needed.
+Admin/configuration API security settings. Attach this to `ServerState` with
+`ServerState::with_admin_api_config`, or use
+`ServerState::with_admin_api_bearer_token` when only bearer auth is needed.
+`AppState` remains a deprecated alias for `ServerState`.
 
-```rust,ignore
+```rust
 use awaken::RedactedString;
 
 pub struct AdminApiConfig {
     pub bearer_token: Option<RedactedString>,
     pub cors_allowed_origins: Vec<String>,
     pub expose_config_routes: bool,                   // default: true
+    pub expose_trace_routes: bool,                    // default: false
+    pub expose_eval_routes: bool,                     // default: true
 }
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `bearer_token` | `Option<RedactedString>` | `None` | Requires `Authorization: Bearer ...` for the admin surface when set: `/v1/capabilities`, `/v1/config/*`, `/v1/agents*`, `/v1/system/info`, `/v1/audit-log`, and runtime-stats endpoints. Redacts itself in `Debug`/`Display`; call `expose_secret()` to read the value. JSON wire format remains a plain string |
+| `bearer_token` | `Option<RedactedString>` | `None` | Requires `Authorization: Bearer ...` for mounted admin/system/config/eval/trace surfaces. Redacts itself in `Debug`/`Display`; call `expose_secret()` to read the value. JSON wire format remains a plain string |
 | `cors_allowed_origins` | `Vec<String>` | `["http://127.0.0.1:3002", "http://localhost:3002"]` | Browser origins allowed by the admin CORS layer |
-| `expose_config_routes` | `bool` | `true` | Whether the server mounts the admin/configuration HTTP surface. Set to `false` to drop those routes entirely when configuration is driven through an external RBAC/audit pipeline |
+| `expose_config_routes` | `bool` | `true` | Whether the server mounts config/capabilities, audit-log, MCP admin, provider test, permission preview, admin run summary, and runtime-stats HTTP routes |
+| `expose_trace_routes` | `bool` | `false` | Whether the server mounts `/v1/traces*`. Trace payloads can contain prompts, tool arguments, and model responses, so the default is off |
+| `expose_eval_routes` | `bool` | `true` | Whether the server mounts `/v1/eval/*` dataset, run, and online eval routes |
 
-Environment variables override the `AppState` admin settings:
+If `expose_config_routes`, `expose_trace_routes`, or `expose_eval_routes` is
+`true`, startup requires an admin bearer token. Setting
+`expose_config_routes = false` does not hide system routes, protocol routes,
+canonical event routes, eval routes, or trace routes; configure each surface
+explicitly.
+
+Environment variables override the `ServerState` admin settings:
 
 | Variable | Description |
 |---|---|
@@ -462,10 +491,10 @@ Environment variables override the `AppState` admin settings:
 
 Audit-log retention settings are kept separate from `AdminApiConfig` so the
 admin security struct remains source-compatible with 0.4.0 struct literals.
-Attach them to `AppState` with `AppState::with_audit_log_config` before calling
-`AppState::with_audit_log_from_config`.
+Attach them to `ServerState` with `ServerState::with_audit_log_config` before calling
+`ServerState::with_audit_log_from_config`.
 
-```rust,ignore
+```rust
 use awaken_server::app::AuditLogConfig;
 
 pub struct AuditLogConfig {
@@ -478,7 +507,7 @@ pub struct AuditLogConfig {
 ### Secret handling
 
 `RedactedString` (re-exported from the facade as `awaken::RedactedString`,
-defined in `awaken_contract::secret`) is the single trust boundary for
+defined in `awaken_runtime_contract::secret`) is the single trust boundary for
 credentials in serialized config. The wire format is a plain JSON
 string, JSON Schema reports `string`, and the inner buffer is zeroized on drop.
 `Debug` formats as `RedactedString(***)` and `Display` formats as `***`. Call
@@ -505,7 +534,7 @@ changes and publishes them to the live runtime.
 Configuration for the persistent run queue (mailbox). Controls lease timing,
 sweep/GC intervals, and retry behavior for failed dispatches.
 
-```rust,ignore
+```rust
 pub struct MailboxConfig {
     pub lease_ms: u64,                          // default: 30_000
     pub suspended_lease_ms: u64,                // default: 600_000
@@ -533,6 +562,42 @@ pub struct MailboxConfig {
 | `default_retry_delay_ms` | `u64` | `250` | Base retry delay in milliseconds between attempts |
 | `max_retry_delay_ms` | `u64` | `30_000` | Maximum retry delay in milliseconds for exponential backoff |
 
+### Mailbox lifecycle
+
+`ServerConfig.mailbox_lifecycle` controls whether `serve()` manages mailbox
+workers. `Auto` starts startup recovery, lease sweep, GC, and the server
+cleanup callback before accepting traffic, then shuts them down during graceful
+server stop. `Manual` leaves those tasks to the embedder, which should call the
+mailbox lifecycle APIs directly.
+
+```rust
+pub enum MailboxLifecycleMode {
+    Auto,
+    Manual,
+}
+
+pub struct MailboxStartupRecoveryConfig {
+    pub max_attempts: u32,       // default: 1, values below 1 are treated as 1
+    pub retry_delay: Duration,   // default: 250ms
+}
+
+pub struct MailboxLifecycleConfig {
+    pub startup_delay: Duration, // default: 0
+    pub startup_recovery: MailboxStartupRecoveryConfig,
+    pub maintenance_callback: Option<MailboxMaintenanceCallback>,
+}
+```
+
+**Crate paths:** `awaken_server::app::MailboxLifecycleMode`,
+`awaken_server::mailbox::{MailboxLifecycleConfig, MailboxStartupRecoveryConfig}`
+
+`Mailbox::start_lifecycle_ready(config).await` waits for startup recovery and
+fails if recovery exhausts its retry policy. `Mailbox::start_lifecycle(config)`
+returns immediately after spawning lifecycle tasks. Both calls are idempotent:
+repeated calls return a handle to the existing lifecycle. Dropping the handle
+does not stop the tasks; call `MailboxLifecycleHandle::shutdown().await` during
+embedder-managed shutdown, or `abort()` only for fire-and-forget stop paths.
+
 ## LlmRetryPolicy
 
 Policy for retrying failed LLM inference calls with exponential backoff. Can be
@@ -545,7 +610,7 @@ Providers are not wrapped with a separate hidden retry policy during provider
 construction. For streaming inference, retry only applies while opening the
 stream.
 
-```rust,ignore
+```rust
 pub struct LlmRetryPolicy {
     pub max_retries: u32,                  // default: 2
     pub backoff_base_ms: u64,              // default: 500
@@ -569,7 +634,7 @@ pub struct LlmRetryPolicy {
 
 Register via the `RetryConfigKey` plugin config key (`"retry"` section):
 
-```rust,ignore
+```rust
 use awaken_runtime::engine::retry::RetryConfigKey;
 
 let spec = AgentSpec::new("my-agent")
@@ -589,7 +654,7 @@ short-circuiting requests to models that have experienced repeated consecutive
 failures. After a cooldown the circuit transitions to half-open, allowing
 limited probe requests before fully closing on success.
 
-```rust,ignore
+```rust
 pub struct CircuitBreakerConfig {
     pub failure_threshold: u32,    // default: 5
     pub cooldown: Duration,        // default: 30s
@@ -621,7 +686,7 @@ pub struct CircuitBreakerConfig {
 Plugins declare typed configuration sections using the `PluginConfigKey` trait,
 which binds a string key to a Rust struct at compile time:
 
-```rust,ignore
+```rust
 pub trait PluginConfigKey: 'static + Send + Sync {
     const KEY: &'static str;               // section name in AgentSpec.sections
     type Config: Default + Clone + Serialize + DeserializeOwned
@@ -635,7 +700,7 @@ Plugins override `config_schemas()` to return JSON Schemas generated from
 their config structs. The resolve pipeline (Stage 2) validates every
 `AgentSpec.sections` entry against these schemas before any hook runs.
 
-```rust,ignore
+```rust
 fn config_schemas(&self) -> Vec<ConfigSchema> {
     vec![
         ConfigSchema::for_key::<RateLimitConfigKey>()
@@ -651,13 +716,13 @@ fn config_schemas(&self) -> Vec<ConfigSchema> {
 Plugins read their typed config via `agent_spec.config::<K>()`. If the section
 is absent, the `Default` impl is returned.
 
-```rust,ignore
+```rust
 let cfg = ctx.agent_spec().config::<RateLimitConfigKey>()?;
 ```
 
 ### Worked example
 
-```rust,ignore
+```rust
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use awaken::PluginConfigKey;
@@ -751,7 +816,7 @@ heuristic, `ToolSearch` behavior, and the full DiscBeta probability model.
 
 `ConfigStore` is the async persistence contract behind the server-side `/v1/config/*` APIs. Use it when configuration must be created, listed, or updated at runtime instead of being baked into `AgentSpec`.
 
-```rust,ignore
+```rust
 #[async_trait]
 pub trait ConfigStore: Send + Sync {
     async fn get(&self, namespace: &str, id: &str) -> Result<Option<Value>, StorageError>;
@@ -769,7 +834,7 @@ pub trait ConfigStore: Send + Sync {
 Related types:
 
 - `ConfigChangeNotifier` / `ConfigChangeSubscriber` — optional native change notifications
-- `AppState::with_config_store(...)` — enables runtime config routes in `awaken-server`
+- `ServerState::with_config_store(...)` — enables runtime config routes in `awaken-server`
 - `ConfigRuntimeManager` — validates config writes by compiling a candidate registry snapshot before publishing it
 - `ConfigService` — service layer used by `/v1/config/*`, `/v1/agents`, and `/v1/capabilities`
 

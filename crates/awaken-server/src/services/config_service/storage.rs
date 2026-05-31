@@ -172,7 +172,7 @@ impl ConfigService {
     /// an editing-store operation. Registry rollback is separate." Use
     /// this from restore-style flows so the runtime continues observing
     /// the previously-published `RegistryPublication` until an operator
-    /// explicitly publishes the restored payload.
+    /// promotes the restored payload through a normal config write/apply flow.
     pub(super) async fn persist_only_locked(
         &self,
         namespace: ConfigNamespace,

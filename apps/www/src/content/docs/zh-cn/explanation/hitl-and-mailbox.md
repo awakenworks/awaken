@@ -166,7 +166,7 @@ pub enum RunRequestOrigin {
 
 ### MailboxStore Trait
 
-`MailboxStore` 定义持久化队列接口,trait 在 `crates/awaken-contract/src/contract/mailbox.rs`:
+`MailboxStore` 定义持久化队列接口,trait 在 `crates/awaken-server-contract/src/contract/mailbox.rs`:
 
 **Enqueue / claim / 生命周期:**
 

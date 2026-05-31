@@ -10,7 +10,7 @@ title: "Glossary"
 | `Snapshot` | 快照 | Immutable state snapshot (`struct Snapshot { revision: u64, ext: Arc<StateMap> }`) seen by phase hooks. |
 | `StateKey` | 状态键 | Typed key with scope, merge strategy, and value type. |
 | `MutationBatch` | 变更批次 | Collected state mutations applied atomically after phase convergence. |
-| `AgentRuntime` | 智能体运行时 | Orchestration layer for agent resolution and run execution. |
+| `AgentRuntime` | 智能体运行时 | Embeddable execution core for agent resolution and run execution. |
 | `AgentSpec` | 智能体规约 | Serializable agent definition with model, prompt, tools, plugins. |
 | `AgentEvent` | 智能体事件 | Canonical runtime stream event. |
 | `Plugin` | 插件 | System-level lifecycle hook registered via `PluginRegistrar`. |
@@ -33,9 +33,9 @@ title: "Glossary"
 | `RunStatus` | 运行状态 | Coarse run status: Running, Waiting, Done. |
 | `ToolCallStatus` | 工具调用状态 | Per-call status: New, Running, Suspended, Resuming, Succeeded, Failed, Cancelled. |
 | `ResolvedAgent` | 已解析智能体 | Agent fully resolved from registries with config, tools, plugins, and executor. |
-| `ResolvedExecution` | 已解析执行 | Runtime resolution result: either a local `ResolvedAgent` or a backend-backed remote agent. |
-| `AgentResolver` | 智能体解析器 | Trait that resolves an agent spec ID into a ResolvedAgent. |
-| `ExecutionResolver` | 执行解析器 | Resolver used by `AgentRuntime` root runs to select local or backend-backed execution. |
+| `ResolvedRunPlan` | 已解析运行计划 | Runtime run plan: replayable or live-only, with local or backend-backed execution. |
+| `ExecutionPlan` | 执行计划 | Local `ResolvedAgent` or backend-backed `ResolvedBackendAgent`. |
+| `AgentResolver` | 智能体解析器 | Trait that resolves an agent spec ID into a `ResolvedAgent` or `ExecutionPlan`. |
 | `ExecutionBackend` | 执行后端 | Extension point for non-local root execution and delegation, including A2A. |
 | `BuildError` | 构建错误 | Error from AgentRuntimeBuilder when validation or wiring fails. |
 | `RuntimeError` | 运行时错误 | Error during agent loop execution. |

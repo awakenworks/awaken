@@ -53,7 +53,7 @@ record envelope, audit hooks, restore semantics (ADR-0028) and listing API
 (ADR-0023) all apply uniformly.
 
 ```rust
-// crates/awaken-contract/src/tool_spec.rs
+// crates/awaken-runtime-contract/src/tool_spec.rs
 pub struct ToolSpec {
     pub id: ToolId,                 // canonical key, sourced from ToolDescriptor.id
     pub name: String,                // read-only display label
@@ -69,7 +69,7 @@ service layer with 422 for namespace `tools`.
 ### D2: Patch surface — `description` only
 
 ```rust
-// crates/awaken-contract/src/tool_spec_patch.rs
+// crates/awaken-runtime-contract/src/tool_spec_patch.rs
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolSpecPatch {

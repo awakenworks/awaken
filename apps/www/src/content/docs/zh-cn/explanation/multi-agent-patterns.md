@@ -20,7 +20,7 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
 
 解析时,运行时会为每个 delegate 生成一个 `AgentTool`,LLM 看见的是普通工具,例如 `agent_run_researcher`。
 
-`AgentTool` 持有 `Arc<dyn ExecutionResolver>`(`crates/awaken-runtime/src/extensions/a2a/agent_tool.rs:38`),**不**预选 backend。LLM 调用该工具时,`execute()` 在 **call time** 调 `resolver.resolve_execution(&agent_id)`(agent_tool.rs:169),resolver 按每次调用决定:
+`AgentTool` 持有 `Arc<dyn AgentResolver>`，**不**预选 backend。LLM 调用该工具时，`execute()` 在 **call time** 调 `resolver.resolve_execution(&agent_id)`，resolver 按每次调用决定：
 
 - **本地 agent**(无 `endpoint`)解析为本地 `ResolvedAgent`,在同一 runtime 内联执行。
 - **远程 agent**(有 `endpoint`)解析为 `ResolvedBackendAgent`,经配置的 `ExecutionBackend`(当前是 A2A)执行 —— 发 `message:send`,然后轮询返回的 task 直到完成。
@@ -57,9 +57,17 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
 
 `run_child_agent` 通过 `initial_state_seed: Option<PersistedState>` 接受父→子的初始状态注入，并通过 `BackendRunResult.state`（一个 `PersistedState`）把子的终态返回给父工具去解码并以 `StateCommand` 形式塞进 `ToolOutput`。子→父 state 走的是普通工具就在用的 `ToolOutput.command` 通路，没有单独的"sub-agent 导出"机制。
 
-state seeding **只对 Local backend 生效**，由 `BackendCapabilities::delegate_state_seed` 控制。非本地 backend（A2A 以及其他未实现 seed wire 协议的 backend）会以 `ExecutionBackendError` 拒绝带 seed 的 delegate 请求；子 run 的 `BackendRunResult.state` 仍然可读，用于回写父侧。
+state seeding **只对 Local backend 生效**。它不是 `BackendProfile` 里的一个
+capability flag：只要解析出的 `ExecutionPlan` 不是本地执行，
+`validate_delegate_execution_request` 就会拒绝
+`BackendDelegateRunRequest.state_seed`。A2A 和自定义远程 backend 没有统一的
+seed wire 协议，因此带 seed 的 delegate 请求会以 `ExecutionBackendError` 失败，
+而不是静默丢弃 seed。只要 backend 返回了结果，子的 `BackendRunResult.state`
+仍然可读，用于回写父侧。
 
-Backend 实现者应通过构造函数创建 `BackendCapabilities`，并且只有在 backend 确实会应用 `BackendDelegateRunRequest.state_seed` 时才设置 `delegate_state_seed = true`；否则带 seed 的 delegate 请求会被拒绝，而不是静默丢弃 seed。
+Backend 实现者应使用 `BackendProfile` 表达 continuation、persistence、waits、
+transcript shape 和 output shape 等 typed capabilities。父→子 state seed 是这个
+profile 之外的本地执行规则。
 
 ## Sub-Agent 模式
 
@@ -114,7 +122,7 @@ root execution 和 delegation 都基于 canonical `ExecutionBackend`：
 
 ```rust
 pub trait ExecutionBackend: Send + Sync {
-    fn capabilities(&self) -> BackendCapabilities;
+    fn capabilities(&self) -> BackendProfile;
 
     async fn abort(&self, request: BackendAbortRequest<'_>)
         -> Result<(), ExecutionBackendError>;
@@ -131,7 +139,7 @@ pub trait ExecutionBackend: Send + Sync {
 }
 ```
 
-`BackendRunResult` 保留 agent ID、状态、终止原因、可选响应文本、结构化输出、run ID、inbox 和持久化状态。`BackendRunStatus` 包含 `Completed`、`WaitingInput`、`WaitingAuth`、`Suspended`、`Failed`、`Cancelled` 和 `Timeout`。
+`BackendRunResult` 保留 agent ID、状态、终止原因、可选响应文本、结构化输出、run ID、inbox、run-scoped 持久化状态，以及可选的 thread-scoped 持久化状态。`BackendRunStatus` 包含 `Completed`、`WaitingInput`、`WaitingAuth`、`Suspended`、`Failed`、`Cancelled` 和 `Timeout`。
 
 这也是实现自定义本地或远程执行后端的扩展点。`awaken_runtime::extensions::a2a` 仍然重新导出 `AgentBackend`、`AgentBackendFactory` 和 `DelegateRunResult` 作为兼容别名，但新代码应使用 `ExecutionBackend` 命名。
 

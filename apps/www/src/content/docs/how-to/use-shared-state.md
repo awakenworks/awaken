@@ -161,8 +161,8 @@ Use `ProfileKey` with a `StateScope` key when state must survive across runs **a
 
 | Path | Purpose |
 |------|---------|
-| `crates/awaken-contract/src/contract/shared_state.rs` | `StateScope` type |
-| `crates/awaken-contract/src/contract/profile_store.rs` | `ProfileKey` trait, `ProfileOwner` enum |
+| `crates/awaken-runtime-contract/src/contract/shared_state.rs` | `StateScope` type |
+| `crates/awaken-runtime-contract/src/contract/profile_store.rs` | `ProfileKey` trait, `ProfileOwner` enum |
 | `crates/awaken-runtime/src/profile/mod.rs` | `ProfileAccess` with `read`, `write`, `delete` methods |
 | `crates/awaken-runtime/src/plugins/registry.rs` | `PluginRegistrar::register_profile_key` registration |
 

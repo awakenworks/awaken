@@ -11,7 +11,7 @@ Awaken runtime 把工具(Rust)与 prompt、reminder、permission、skill 目录(
 
 ## 前置
 
-- Awaken 服务已经把 `ConfigStore` 接入 `AppState`(见[暴露 HTTP SSE](/awaken/zh-cn/how-to/expose-http-sse/))。
+- Awaken 服务已经把 `ConfigStore` 接入 `ServerState`(见[暴露 HTTP SSE](/awaken/zh-cn/how-to/expose-http-sse/))。
 - 配置里至少有一个 agent、一个 model、一个 provider(见[通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/))。
 - 你希望 agent 调用的工具已经在 Rust 注册(`AgentRuntimeBuilder::with_tool`,见[添加 Tool](/awaken/zh-cn/how-to/add-a-tool/))。
 

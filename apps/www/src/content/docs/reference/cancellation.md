@@ -17,7 +17,7 @@ use awaken::CancellationToken;
 let token = CancellationToken::new();
 ```
 
-**Crate path:** `awaken_contract::cancellation::CancellationToken`
+**Crate path:** `awaken_runtime_contract::cancellation::CancellationToken`
 
 ### Methods
 

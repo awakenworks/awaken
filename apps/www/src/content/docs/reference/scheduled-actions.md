@@ -41,7 +41,7 @@ async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
 
 ```rust
 use awaken_runtime::agent::state::AddContextMessage;
-use awaken_contract::contract::context_message::ContextMessage;
+use awaken::contract::context_message::ContextMessage;
 
 async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
     let mut cmd = StateCommand::new();
@@ -220,8 +220,8 @@ The default `encode_payload` / `decode_payload` impls use the runtime's JSON
 codec; override them only when you need custom serialization.
 
 ```rust
-use awaken_contract::error::StateError;
-use awaken_contract::model::{JsonValue, Phase, ScheduledActionSpec};
+use awaken::model::{JsonValue, Phase, ScheduledActionSpec};
+use awaken::StateError;
 
 pub struct MyCustomAction;
 

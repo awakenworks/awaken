@@ -301,6 +301,43 @@ h1.page-title,
 .sl-markdown-content .tbl-api .req { color: var(--aw-tone-error); font-weight: 500; }
 .sl-markdown-content .tbl-api .opt { color: var(--aw-text-faint); }
 
+/* ============ screenshots ============ */
+.sl-markdown-content .screenshot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+.sl-markdown-content figure.screenshot {
+  margin: 24px 0;
+}
+.sl-markdown-content .screenshot-grid figure.screenshot {
+  margin: 0;
+}
+.sl-markdown-content figure.screenshot a {
+  display: block;
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-md);
+  overflow: hidden;
+  background: var(--aw-bg-elevated);
+  box-shadow: var(--aw-shadow-card);
+}
+.sl-markdown-content figure.screenshot a:hover {
+  border-color: var(--aw-border-strong);
+  box-shadow: var(--aw-shadow-card-lift);
+}
+.sl-markdown-content figure.screenshot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.sl-markdown-content figure.screenshot figcaption {
+  margin-top: 8px;
+  color: var(--aw-text-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 /* ============ Starlight Aside → docs-styling callout ============
  * Starlight renders <Aside type="note|tip|caution|danger"> as
  * <aside class="starlight-aside starlight-aside--{type}">. We retheme

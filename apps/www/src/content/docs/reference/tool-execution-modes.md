@@ -143,7 +143,7 @@ pub enum DecisionReplayPolicy {
 
 ## Key Files
 
-- `crates/awaken-contract/src/contract/executor.rs` -- `ToolExecutionMode` enum
+- `crates/awaken-runtime-contract/src/contract/executor.rs` -- `ToolExecutionMode` enum
 - `crates/awaken-runtime/src/execution/executor.rs` -- `SequentialToolExecutor`, `ParallelToolExecutor`, `ToolExecutor` trait
 
 ## Related

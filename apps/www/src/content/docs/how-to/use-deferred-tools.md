@@ -12,8 +12,8 @@ Use this when your agent has many tools and you want to reduce context window us
 
 ```toml
 [dependencies]
-awaken-ext-deferred-tools = { version = "0.5" }
-awaken = { version = "0.5" }
+awaken-ext-deferred-tools = { git = "https://github.com/AwakenWorks/awaken" }
+awaken = { git = "https://github.com/AwakenWorks/awaken" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 ```
@@ -284,7 +284,7 @@ for (tool_id, mode) in &state.modes {
 | `crates/awaken-ext-deferred-tools/src/plugin/plugin.rs` | `DeferredToolsPlugin` registration |
 | `crates/awaken-ext-deferred-tools/src/plugin/hooks.rs` | Phase hooks (BeforeInference, AfterToolExecute, AfterInference, RunStart, RunEnd) |
 | `crates/awaken-ext-deferred-tools/src/tool_search.rs` | `ToolSearchTool` implementation and query parsing |
-| `crates/awaken-ext-deferred-tools/src/policy.rs` | `ConfigOnlyPolicy` and `DiscBetaEvaluator` |
+| `crates/awaken-ext-deferred-tools/src/policy.rs` | `DiscBetaEvaluator`; initial classification is declarative via `DeferredToolsConfig::resolve_mode` |
 | `crates/awaken-ext-deferred-tools/src/state.rs` | State keys: `DeferralState`, `DeferralRegistry`, `DiscBetaState`, `ToolUsageStats`, `AgentToolPriors` |
 
 ## Related

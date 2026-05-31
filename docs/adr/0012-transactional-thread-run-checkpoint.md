@@ -43,6 +43,11 @@ pub trait ThreadRunStore {
 
 ### D2: Runtime uses ThreadRunStore as single persistence dependency
 
+This decision described the 0.5 runtime wiring. ADR-0036 and ADR-0038 supersede
+the current runtime write boundary: 0.6 runtime writes go through
+`CommitCoordinator::commit_checkpoint`, which supplies the matching checkpoint
+reader through `CommitCoordinator::reader()`.
+
 `AgentRuntime` persistence dependency is unified as:
 
 ```rust

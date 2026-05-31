@@ -146,17 +146,30 @@ pub struct MessageRecord {
 
 ## ThreadRunStore
 
-`ThreadRunStore` 在 `ThreadStore + RunStore` 基础上增加了原子 checkpoint：
+`ThreadRunStore` 在 `ThreadStore + RunStore` 基础上提供 checkpoint helper。0.6
+的生产写入应通过 `CommitCoordinator::commit_checkpoint`；legacy `checkpoint`
+保留给 conformance tests 和 coordinator 内部使用。`checkpoint_append` 会在可选的
+expected message count guard 下追加 message delta，并返回新的 committed message
+count。
 
 ```rust
 #[async_trait]
 pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
+    #[deprecated(since = "0.6.0", note = "use CommitCoordinator")]
     async fn checkpoint(
         &self,
         thread_id: &str,
         messages: &[Message],
         run: &RunRecord,
     ) -> Result<(), StorageError>;
+
+    async fn checkpoint_append(
+        &self,
+        thread_id: &str,
+        messages: &[Message],
+        expected_version: Option<u64>,
+        run: &RunRecord,
+    ) -> Result<u64, StorageError>;
 }
 ```
 
@@ -180,7 +193,7 @@ pub struct RunRecord {
     pub thread_id: String,
     pub agent_id: String,
     pub parent_run_id: Option<String>,
-    pub registry_manifest: Option<PinnedRegistryManifest>,
+    pub resolution_id: Option<String>,
     pub activation: Option<RunActivationSnapshot>,
     pub request: Option<RunRequestSnapshot>,
     pub input: Option<RunMessageInput>,
@@ -206,7 +219,9 @@ pub struct RunRecord {
 ```
 
 `RunRecord` 是一次用户意图的事实来源。它保存 request 元信息、生命周期状态、
-waiting 状态、输出/错误结果和 trace id，但不拥有消息正文。
+waiting 状态、输出/错误结果和 trace id。run 绑定到已发布 registry snapshot 时，
+`resolution_id` 是 server 拥有的不透明 binding id；runtime 不再把 registry
+manifest 嵌入 run record。它不拥有消息正文。
 
 ### RunActivationSnapshot 和 RunRequestSnapshot
 
@@ -219,7 +234,7 @@ pub struct RunActivationSnapshot {
     pub options: RunOptions,
     pub trace: RunTraceContext,
     pub seeded_decisions: Vec<(String, ToolCallResume)>,
-    pub resolution_scope: PinnedRegistryManifest,
+    pub resolution_id: Option<String>,
 }
 ```
 

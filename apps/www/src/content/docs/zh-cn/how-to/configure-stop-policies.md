@@ -87,7 +87,7 @@ let runtime = AgentRuntimeBuilder::new()
 3. 用声明式 `StopConditionSpec`：
 
 ```rust
-use awaken_contract::contract::lifecycle::StopConditionSpec;
+use awaken::contract::lifecycle::StopConditionSpec;
 use awaken::policies::{policies_from_specs, StopConditionPlugin};
 
 let specs = vec![
@@ -182,7 +182,7 @@ pub enum StopDecision {
 - `crates/awaken-runtime/src/policies/plugin.rs`
 - `crates/awaken-runtime/src/policies/state.rs`
 - `crates/awaken-runtime/src/policies/hook.rs`
-- `crates/awaken-contract/src/contract/lifecycle.rs`
+- `crates/awaken-runtime-contract/src/contract/lifecycle.rs`
 
 ## 相关
 

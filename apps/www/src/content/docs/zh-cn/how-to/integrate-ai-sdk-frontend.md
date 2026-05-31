@@ -13,7 +13,7 @@ description: "当你有一个基于 Vercel AI SDK v6 的 React 前端，并希�
 
 ```toml
 [dependencies]
-awaken = { version = "0.5", features = ["server"] }
+awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["server"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde_json = "1"
@@ -33,7 +33,7 @@ use awaken::registry_spec::ModelSpec;
 use awaken::registry_spec::AgentSpec;
 use awaken::stores::{InMemoryMailboxStore, InMemoryStore};
 use awaken::AgentRuntimeBuilder;
-use awaken::server::app::{AppState, ServerConfig};
+use awaken::server::app::{ServerState, ServerConfig};
 use awaken::server::mailbox::{Mailbox, MailboxConfig};
 use awaken::server::routes::build_router;
 
@@ -66,7 +66,7 @@ async fn main() {
         MailboxConfig::default(),
     ));
 
-    let state = AppState::new(
+    let state = ServerState::new(
         runtime,
         mailbox,
         store as Arc<dyn ThreadRunStore>,
@@ -88,7 +88,12 @@ AI SDK v6 相关路由：
 - `POST /v1/ai-sdk/chat`
 - `GET /v1/ai-sdk/chat/:thread_id/stream`
 - `GET /v1/ai-sdk/threads/:thread_id/stream`
+- `GET /v1/ai-sdk/threads/:thread_id/replay`
 - `GET /v1/ai-sdk/threads/:id/messages`
+
+Live stream resume 使用内存 SSE buffer 的数字 `Last-Event-ID`。持久 replay
+使用 replay endpoint 返回的不透明 protocol replay cursor；前端恢复逻辑需要区分
+这两类 cursor。
 
 2. 安装前端依赖：
 
@@ -172,7 +177,7 @@ export default function Chat() {
 | `crates/awaken-server/src/protocols/ai_sdk_v6/http.rs` | AI SDK v6 路由 |
 | `crates/awaken-server/src/protocols/ai_sdk_v6/encoder.rs` | AI SDK v6 SSE encoder |
 | `crates/awaken-server/src/routes.rs` | 总路由 |
-| `crates/awaken-server/src/app.rs` | `AppState` / `ServerConfig` |
+| `crates/awaken-server/src/app.rs` | `ServerState` / `ServerConfig` |
 | `examples/ai-sdk-starter/agent/src/main.rs` | AI SDK starter 后端入口 |
 
 ## 相关

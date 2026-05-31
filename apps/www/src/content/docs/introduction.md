@@ -1,13 +1,57 @@
 ---
 title: "Introduction"
-description: "Awaken — Rust agent runtime where the framework is itself the platform. Tools-first, live-tuned prompts, integrated tracing/eval/HITL."
+description: "Awaken — build agent capabilities once in Rust, tune behavior live, and serve every client from the same runtime."
 ---
 
-**Awaken** is a production AI agent runtime written in Rust. The framework is the platform: one runtime surface hosts config, protocol adapters, tracing, replay, eval, permission gating, and the admin console. Modules and plugins opt in where they own storage, secrets, or policy.
+**Awaken** is a production AI agent backend written in Rust. Build tools, state,
+and plugins once in code; tune agents, models, and prompts live through config;
+then serve in-process apps, production APIs, protocol frontends, and the admin
+console from the same runtime. Modules and plugins opt in where they own
+storage, secrets, or policy.
 
-Dependency snippets use the published `0.5` release line. If you are following
-main-branch APIs before the next release, use a git dependency on this
-repository instead of the crates.io version.
+Dependency snippets on this site follow the current main-branch API. Use the
+git dependency shown in examples until the next crates.io release lands; use
+the migration guide when upgrading from the published `0.5` line.
+
+## Two programming modes
+
+Awaken is useful as both a library and a service. Both modes use the same
+`AgentRuntime`, `RunActivation`, `AgentSpec`, tools, plugins, and event stream;
+the difference is who owns IO and configuration.
+
+| Mode | How it runs | Use it when |
+|---|---|---|
+| In-process runtime | Your Rust process builds `AgentRuntime` with `AgentRuntimeBuilder`, registers tools/providers/plugins in code, and calls `runtime.run_to_completion(...)` or `runtime.run(..., EventSink)` directly. | CLI tools, local workers, tests, or application services that already own their IO boundary. |
+| Server control plane | `awaken-server` stores an `Arc<AgentRuntime>`, queues work through mailbox-backed run dispatch, and exposes HTTP/SSE plus AI SDK, AG-UI, A2A, MCP, and ACP adapters. Normal `/v1/config/*` writes validate config, compile a candidate registry, and hot-swap the published snapshot for later runs. | Shared agent backends, browser frontends, managed providers/models/agents, auditability, HITL, eval, and operator control. |
+
+In-process runtime mode is still a standard Rust async library mode, not a
+`no_std` or Tokio-free embedded-device target. `awaken-runtime` currently
+depends on Tokio for timers, timeouts, async coordination, and HTTP/provider
+execution.
+
+Current IO/runtime boundary:
+
+| Component | Tokio / IO profile |
+|---|---|
+| `awaken-runtime` | Requires Tokio. The phase loop is in-process, but the crate includes `genai` / `reqwest` provider paths and Tokio-based timeout/retry/background-task machinery. |
+| `awaken-runtime-contract` / `awaken-server-contract` | Contract/type surfaces only; useful for API boundaries, but still target `std` Rust crates, not `no_std` embedded targets. |
+| Permission, Reminder, Deferred Tools, Generative UI | Mostly in-process policy/state/event logic, but they depend on the runtime contract/runtime stack and therefore inherit the Tokio/std assumption. |
+| MCP and Skills | IO-capable: MCP uses network/stdio/process transports; Skills can read skill packages from disk, spawn configured commands, and optionally register MCP tools. |
+| Observability | In-memory recording is local; OTLP/file/metrics exporters introduce external IO. |
+| Stores and Server | Explicit IO layers: memory/file/PostgreSQL/SQLite/NATS stores, HTTP routes, SSE, mailbox workers, and protocol replay. |
+
+In both modes, Rust code supplies executable capabilities: `Tool`
+implementations, plugins, provider factories, stores, and backend factories.
+Managed config supplies agent behavior: prompts, `model_id`, model pools,
+allowed/excluded tools, plugin sections, MCP servers, skills, and permission
+rules. The admin console is the browser UI over the server mode; it does not
+replace the runtime.
+
+Server mode adds the pieces that a direct runtime caller otherwise has to
+build: HTTP/SSE, protocol adapters, mailbox dispatch, resumable background runs,
+managed config publication, version restore, audit trails, scoped stores, and
+admin-console tuning. Runtime mode is the developer library; server mode is the
+operational product surface around that library.
 
 Three design rules drive everything else:
 
@@ -47,7 +91,8 @@ The above three rules combine to give four properties most agent frameworks lack
 
 | Crate | Description |
 |-------|-------------|
-| `awaken-contract` | Types, traits, state model, agent specs |
+| `awaken-runtime-contract` | Runtime-facing contracts: specs, tools, events, state, commit coordinator |
+| `awaken-server-contract` | Server/store-facing contracts: queries, scoped stores, mailbox/outbox, staged commits |
 | `awaken-runtime` | Phase loop, plugin system, agent loop, builder |
 | `awaken-server` | HTTP/SSE gateway + protocol adapters |
 | `awaken-stores` | Storage backends: memory, file, Postgres, SQLite mailbox |

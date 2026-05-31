@@ -37,7 +37,7 @@ Two consequences leak into production:
   fallible entry point; it can only observe a diagnostic after the fact.
 
 This ADR closes both gaps by introducing a commit-atomicity boundary
-between `ThreadRunStore` and `EventStore` and a runtime-private event
+between `ThreadRunStore` and `EventStore` and a server-dispatch-owned event
 buffer that defers durable event drafts to that boundary. The atomicity
 guarantee is **checkpoint-batched**: every canonical event a phase
 produces between checkpoints is committed atomically with the
@@ -77,9 +77,10 @@ ADR-0034 D5.
 
 ### D2: `CommitCoordinator` owns the cross-store transaction
 
-A new contract trait `CommitCoordinator` is introduced in
-`awaken-contract`. It is the only abstraction that observes both
-`ThreadRunStore` and `EventStore` writes. Conceptual shape:
+A runtime-facing contract trait `CommitCoordinator` is introduced in
+`awaken-runtime-contract`. Store/server crates may import the same runtime
+contract through `awaken-server-contract`. It is the only abstraction that
+observes both `ThreadRunStore` and `EventStore` writes. Conceptual shape:
 
 ```rust
 pub trait CommitCoordinator: Send + Sync {
@@ -87,16 +88,23 @@ pub trait CommitCoordinator: Send + Sync {
 
     async fn commit_checkpoint(
         &self,
-        plan: CheckpointCommitPlan,
-    ) -> Result<CheckpointCommitOutcome, CommitError>;
+        plan: ThreadCommit,
+    ) -> Result<ThreadCommitOutcome, CommitError>;
 }
 
-pub struct CheckpointCommitPlan {
-    pub checkpoint: ThreadRunCheckpointInputs, // ADR-0012 inputs
-    pub canonical_drafts: Vec<CanonicalEventDraft>,
-    pub outbox_rows: Vec<OutboxRow>,
+pub struct ThreadCommit {
+    pub thread_id: String,
+    pub message_delta: Vec<Message>,
+    pub expected_message_count: Option<u64>,
+    pub run_projection: RunRecord,
+    pub thread_state_snapshot: Option<PersistedState>,
 }
 ```
+
+Server/store-owned event and outbox writes are not fields on the
+runtime-facing `ThreadCommit`. They are carried by
+`ThreadCommitStagedWrites` and `StagedCommitCoordinator` in
+`awaken-server-contract`.
 
 `ThreadRunStore` and `EventStore` contracts remain backend-agnostic and
 do not grow transaction parameters. The coordinator is the only crate
@@ -165,8 +173,9 @@ stages them into the canonical buffer.
 Durable variants (message appended, tool call completed, run status
 changed, checkpoint reached, and other variants currently mapped to
 canonical kinds by ADR-0034 D8) are wire-tee'd immediately **and** staged
-as `CanonicalEventDraft` in the per-run `EventBuffer`. The buffer drains
-at the next checkpoint commit.
+as `CanonicalEventDraft` in the per-run `EventBuffer`. The server dispatch
+path owns that buffer and drains it through a `StagingCommitCoordinator` at
+the next checkpoint commit.
 
 The classification lives next to the enum, not at emission sites. Adding
 a new `AgentEvent` variant requires choosing its durability at definition
@@ -216,8 +225,8 @@ The runtime treats any `CommitError` as terminal for the current run:
 1. The run transitions to `Failed { reason: CheckpointCommitFailed { cause } }`
    in in-memory state. No further `commit_checkpoint` is attempted for
    this run; the in-memory failure is observed by the next dispatch.
-2. The `EventBuffer` is drained and discarded. Drafts staged but not
-   committed are gone; they will not be replayed.
+2. The staging coordinator drains and discards the `EventBuffer`. Drafts
+   staged but not committed are gone; they will not be replayed.
 3. Live wire emit that has already occurred for the dropped drafts is
    the client's reconciliation problem per D5.
 
@@ -260,17 +269,25 @@ set that introduces the coordinator; all callers switch to
 their existing signatures. Coordinator wiring is added through the
 builder surface only, satisfying ADR-0034 §735–736.
 
-There is no default coordinator. A `RuntimeBuilder` without a
-coordinator returns a build error naming the two sanctioned choices
+There is no production default coordinator. A `RuntimeBuilder` without a
+coordinator returns a build error naming the sanctioned production choices
 (`PgCommitCoordinator`, `MemoryCommitCoordinator`).
 
-### D9: `EventBuffer` placement and `DurableEventSink` reshape
+Release mailbox construction also fails closed when the executor exposes no
+coordinator. Debug/test builds may construct a checkpoint-only
+`MailboxRunStoreCoordinator` for embedded callers that do not publish
+canonical runtime events. `FileCommitCoordinator` is dev/local only: release
+builds require explicit `AWAKEN_ALLOW_DEV_FILE_COORDINATOR=true`, and callers
+needing strict cross-store atomicity use `PgCommitCoordinator`.
 
-The buffer is a runtime-owned, per-run structure. A minimal `stage`
+### D9: Server-owned `EventBuffer` and `DurableEventSink` reshape
+
+The buffer is a server-dispatch-owned, per-run structure. A minimal `stage`
 trait (`CanonicalEventStager` or equivalent, exposing only
 `fn stage(&self, draft: CanonicalEventDraft)`) is defined in
-`awaken-contract`; the concrete buffer with `drain` capability lives
-in `awaken-runtime`.
+`awaken-runtime-contract`. The runtime never receives the concrete buffer;
+server dispatch passes it to the sink as a stage-only port and to
+`StagingCommitCoordinator` as the drain owner.
 
 `DurableEventSink` is reshaped in place rather than retired:
 
@@ -291,15 +308,16 @@ in `awaken-runtime`.
 existing `EventSink` surface and the reshaped sink stages on their
 behalf. No new `PhaseContext` API is required.
 
-The buffer is drained inside `complete_step` / `persist_checkpoint`
-(`crates/awaken-runtime/src/loop_runner/checkpoint.rs`) when those
-functions call `coordinator.commit_checkpoint(plan)`. No hook or
-phase code observes `CommitCoordinator` or the buffer concrete type.
+The buffer is drained by `StagingCommitCoordinator`, which wraps the
+server/store `StagedCommitCoordinator`. The server installs this wrapper
+with `RunActivation::with_commit_coordinator_override`, so the runtime calls
+only `CommitCoordinator::commit_checkpoint(plan)`. No hook, phase code, or
+runtime activation field observes the buffer concrete type.
 
 Server-side inline writers (per ADR-0034 D9) do not go through this
-buffer. They call `CommitCoordinator::commit_checkpoint` directly
-with their own `CheckpointCommitPlan` built from the facts they are
-publishing.
+buffer. They call `StagedCommitCoordinator::commit_checkpoint_staged`
+with a `ThreadCommit` plus `ThreadCommitStagedWrites` built from the facts
+they are publishing.
 
 ## Failure mode decisions
 
@@ -318,12 +336,13 @@ publishing.
 The change set is a single hard cut, sequenced internally as ordered
 steps so each is independently reviewable but all land together:
 
-1. Land `CommitCoordinator`, `MemoryCommitCoordinator`, and
-   `PgCommitCoordinator` in `awaken-contract` / `awaken-stores`.
+1. Land `CommitCoordinator` in `awaken-runtime-contract`, and land
+   `MemoryCommitCoordinator` / `PgCommitCoordinator` in `awaken-stores`.
 2. Replace `RuntimeBuilder::with_thread_run_store` with
    `with_commit_coordinator`. The old method is removed, not deprecated.
 3. Add the `EventBuffer` (and its `CanonicalEventStager` trait) and
-   wire it into `LoopRunner`. Reshape `DurableEventSink` in place:
+   wire it through the server dispatch sink plus `StagingCommitCoordinator`.
+   Reshape `DurableEventSink` in place:
    replace its `EventWriter` field with a `CanonicalEventStager`,
    flip `emit` to wire-first + stage, and remove `last_error` /
    `has_failed`. No new `PhaseContext` API is added; phase code
@@ -340,7 +359,7 @@ steps so each is independently reviewable but all land together:
 
 | Test | Coordinator | Asserts |
 |---|---|---|
-| `memory_commit_atomicity` | `MemoryCommitCoordinator` | Injecting `EventStore::append` failure leaves checkpoint un-advanced and buffer drained |
+| `memory_commit_atomicity` | `MemoryCommitCoordinator` | Injecting `EventStore::append` failure leaves checkpoint un-advanced and staged drafts drained |
 | `pg_commit_atomicity` | `PgCommitCoordinator` (testcontainer) | Same property under real Postgres transactions |
 | `scope_mismatch_rejected` | builder unit test | Memory `ThreadRunStore` + Postgres `EventStore` fails `build()` with both backend names in the error |
 | `phase_crash_replay` | `MemoryCommitCoordinator` | Panic mid-phase causes replay from the prior checkpoint; uncommitted durable drafts are absent on replay |

@@ -214,7 +214,7 @@ Send a message that should trigger the tool. Inspect the run result to confirm t
 
 ## Key Files
 
-- `crates/awaken-contract/src/contract/tool.rs` -- `Tool` trait, `ToolDescriptor`, `ToolResult`, `ToolError`
+- `crates/awaken-runtime-contract/src/contract/tool.rs` -- `Tool` trait, `ToolDescriptor`, `ToolResult`, `ToolError`
 - `crates/awaken-runtime/src/builder.rs` -- `with_tool` registration
 
 ## Related

@@ -130,7 +130,7 @@ Awaken 当前默认启用以下 A2A 能力：
 
 ## 远程 Agent 执行
 
-Awaken agent 可以通过内置 `A2aBackend` 运行或委托到远程 A2A agent；它是一个 `ExecutionBackend` 实现。委托时，父 agent 的 LLM 看到的是普通工具调用。root execution 时，`AgentRuntime` 会把 endpoint-backed agent 解析为 `ResolvedExecution::NonLocal`。
+Awaken agent 可以通过内置 `A2aBackend` 运行或委托到远程 A2A agent；它是一个 `ExecutionBackend` 实现。委托时，父 agent 的 LLM 看到的是普通工具调用。root execution 时，`AgentRuntime` 会把 endpoint-backed agent 解析成 backend-backed execution plan。
 
 backend 会向远端发送 `message:send` 请求，读取返回的 `task.id`，再通过 stream 或轮询 `/tasks/:task_id` 直到任务进入终态或中断态。它会保留远端生命周期状态，用于 continuation、等待输入/认证、取消和 artifact 输出。
 

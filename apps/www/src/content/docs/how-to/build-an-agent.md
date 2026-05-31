@@ -88,13 +88,15 @@ let builder = builder
 
 ```rust
 use std::sync::Arc;
-use awaken::stores::InMemoryStore;
+use awaken::contract::commit_coordinator::CommitCoordinator;
+use awaken::stores::{InMemoryStore, MemoryCommitCoordinator};
 use awaken::AgentRuntimeBuilder;
 
 let builder = AgentRuntimeBuilder::new();
 
 let store = Arc::new(InMemoryStore::new());
-let builder = builder.with_thread_run_store(store);
+let coordinator = MemoryCommitCoordinator::wrap(store) as Arc<dyn CommitCoordinator>;
+let builder = builder.with_commit_coordinator(coordinator);
 ```
 
 5. Build and validate.
@@ -195,7 +197,7 @@ Call the `/health` endpoint (if using the server feature) or inspect the returne
 ## Key Files
 
 - `crates/awaken-runtime/src/builder.rs` -- `AgentRuntimeBuilder`
-- `crates/awaken-contract/src/registry_spec.rs` -- `AgentSpec`
+- `crates/awaken-runtime-contract/src/registry_spec.rs` -- `AgentSpec`
 - `crates/awaken-runtime/src/runtime/agent_runtime/mod.rs` -- `AgentRuntime`
 
 ## Related

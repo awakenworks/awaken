@@ -35,7 +35,7 @@ async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
 
 ```rust
 use awaken_runtime::agent::state::AddContextMessage;
-use awaken_contract::contract::context_message::ContextMessage;
+use awaken::contract::context_message::ContextMessage;
 
 async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
     let mut cmd = StateCommand::new();
@@ -140,8 +140,8 @@ async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput
 `ScheduledActionSpec` 声明 action 的 identity、phase、payload 类型。默认的 `encode_payload` / `decode_payload` 实现走 runtime 的 JSON 编解码,仅在需要自定义序列化时才 override。
 
 ```rust
-use awaken_contract::error::StateError;
-use awaken_contract::model::{JsonValue, Phase, ScheduledActionSpec};
+use awaken::model::{JsonValue, Phase, ScheduledActionSpec};
+use awaken::StateError;
 
 pub struct MyCustomAction;
 

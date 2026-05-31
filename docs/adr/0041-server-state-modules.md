@@ -21,10 +21,10 @@ services.
 
 ## Decision
 
-Replace `AppState` with typed `ServerState` modules. Each optional vertical
-is represented by a module state, and routers for optional verticals are
-mounted only when that module exists. Handlers extract concrete module
-state, never `Option<...>` and never the whole `ServerState`.
+Replace `AppState` with typed `ServerState` modules and route states. Required
+verticals (`run`, `protocol`, `system`) are mounted unconditionally; optional
+verticals are mounted only when their module exists. Handlers extract concrete
+route/module state, never `Option<...>` and never the whole `ServerState`.
 
 ### D1: Module decomposition and field ownership
 
@@ -35,9 +35,10 @@ pub struct ServerState {
     pub events: Option<EventModuleState>,
     pub eval: Option<EvalModuleState>,
     pub trace: Option<TraceModuleState>,
-    pub protocol: Option<ProtocolModuleState>,
+    pub protocol: ProtocolModuleState,
     pub admin: AdminModuleState,
     pub server_config: ServerConfig,
+    pub scope_provider: Arc<dyn HttpScopeProvider>,
 }
 
 #[derive(Clone)]
@@ -88,6 +89,8 @@ pub struct TraceModuleState {
 pub struct ProtocolModuleState {
     pub replay_buffers: ReplayBufferMap,
     pub mcp_http: Arc<McpHttpState>,
+    pub a2a_push_outbox: Arc<dyn OutboxStore>,
+    pub a2a_push_relay_config: A2aPushWebhookRelayConfig,
 }
 
 #[derive(Clone)]
@@ -103,6 +106,12 @@ external mailbox backend use `ServerState::new_with_local_mailbox`, which
 installs an in-memory mailbox so run-control and protocol routes keep the same
 HTTP surface. This local mailbox is process-local and best-effort; durable and
 multi-replica deployments provide an externally backed `Mailbox`.
+
+`ProtocolModuleState` and `scope_provider` are mandatory. The default protocol
+module installs in-memory replay buffers, MCP HTTP state, and an in-memory A2A
+push webhook outbox; deployments that need durable push delivery replace the
+outbox through the protocol setters. The default scope provider is a single
+scope.
 
 Default protocol wiring also attaches an in-memory A2A push webhook outbox to
 the active `ProtocolModuleState` replay buffers. This preserves the public A2A
@@ -120,72 +129,63 @@ via `with_a2a_push_webhook_relay`.
 | `trace_store` | `TraceModuleState` |
 | `event_store` (composed reader/writer/lookup/subscriber) | `EventModuleState` |
 | `eval_run_store` | `EvalModuleState` |
-| `replay_buffers`, `mcp_http` | `ProtocolModuleState` |
+| `replay_buffers`, `mcp_http`, A2A push webhook outbox | `ProtocolModuleState` |
 
 ### D2: Router composition with concrete module state
 
-Module route builders are typed over their own state. They are converted to
-`Router<()>` with `.with_state(...)` before being nested into the top-level
-router:
+Module route builders are typed over route-specific state. `ServerState`
+constructs those route states, and each `RouteModule` mounts itself onto the
+top-level router:
 
 ```rust
-pub fn run_routes() -> Router<RunModuleState> { /* handlers use State<RunModuleState> */ }
-pub fn config_routes() -> Router<ConfigModuleState> { /* ... */ }
-pub fn event_routes() -> Router<EventModuleState> { /* ... */ }
+pub(crate) trait RouteModule {
+    fn mount(self, router: Router) -> Router;
+}
 
-pub fn build_router(state: ServerState) -> Router {
-    let mut router: Router = run_routes()
-        .with_state(state.run.clone());
-
-    if let Some(config) = state.config.clone() {
-        router = router.nest("/v1/config", config_routes().with_state(config));
+impl<M: RouteModule> RouteModule for Option<M> {
+    fn mount(self, router: Router) -> Router {
+        match self {
+            Some(module) => module.mount(router),
+            None => router,
+        }
     }
+}
 
-    if let Some(events) = state.events.clone() {
-        router = router.nest("/v1/events", event_routes().with_state(events));
-    }
-
-    if let Some(trace) = state.trace.clone() {
-        router = router.nest("/v1/traces", trace_routes().with_state(trace));
-    }
-
-    if let Some(eval) = state.eval.clone() {
-        router = router.nest("/v1/eval", eval_routes().with_state(eval));
-    }
-
-    if let Some(protocol) = state.protocol.clone() {
-        router = router
-            .nest("/v1/mcp", mcp_routes().with_state(protocol.clone()))
-            .nest("/v1/a2a", a2a_routes().with_state(protocol.clone()))
-            .nest("/v1/ai-sdk", ai_sdk_routes().with_state(protocol));
-    }
-
+pub fn build_router(state: &ServerState) -> Router {
+    let mut router = Router::new();
+    router = state.run_routes_state().mount(router);
+    router = state.protocol_routes_state().mount(router);
+    router = SystemRoutes(state.system_routes_state()).mount(router);
+    router = state.event_module().mount(router);
+    router = state.config_routes_state().mount(router);
+    router = state.eval_routes_state().mount(router);
+    router = state.trace_routes_state().mount(router);
     router
 }
 ```
 
-`eval_routes()` in this example covers eval-store surfaces that need only
-`EvalModuleState`. Eval execution routes that also need run/config state
-use the service-state pattern in D3.
+Run, protocol, and system routes are mounted unconditionally. Optional module
+routes mount through `Option<M: RouteModule>` and become no-ops when their
+module state is absent or the admin exposure flag excludes them.
 
-A route that needs two modules gets a combined state at the composition
+A route that needs multiple modules gets a route state at the composition
 root:
 
 ```rust
 #[derive(Clone)]
-pub struct ConfigRunModuleState {
+pub struct ConfigRoutesState {
+    pub admin: AdminModuleState,
     pub run: RunModuleState,
     pub config: ConfigModuleState,
+    pub scope_provider: Arc<dyn HttpScopeProvider>,
 }
 
-pub fn config_run_routes() -> Router<ConfigRunModuleState> { /* ... */ }
+pub fn config_routes() -> Router<ConfigRoutesState> { /* ... */ }
 
-if let Some(config) = state.config.clone() {
-    let combined = ConfigRunModuleState { run: state.run.clone(), config };
-    router = router.nest(
-        "/v1/config-run",
-        config_run_routes().with_state(combined),
-    );
+impl RouteModule for ConfigRoutesState {
+    fn mount(self, router: Router) -> Router {
+        router.merge(config_routes().with_state(self))
+    }
 }
 ```
 
@@ -229,12 +229,14 @@ Handlers do not assemble tuples from `ServerState` and do not extract
 `ServerState`. The required dependency set remains visible at the route
 boundary.
 
-### D4: Optional routes change absent-module behavior
+### D4: Mandatory and optional route behavior
 
-If a module is absent, its routes are absent and axum returns 404. This is
-a 0.6.0 API behavior change from handlers that were always mounted and
-returned 503 for missing optional stores. Admin exposure flags are still
-checked, but route mounting requires both:
+Run, protocol, and system routes are always mounted because their state is
+mandatory. If an optional module is absent, its routes are absent and axum
+returns 404. This is a 0.6.0 API behavior change from handlers that were
+always mounted and returned 503 for missing optional stores. Admin exposure
+flags are still checked for admin-gated modules, but route mounting requires
+both:
 
 1. the exposure flag permits the surface; and
 2. the module state is present.
@@ -250,20 +252,19 @@ Client upgrade behavior is explicit:
 | `events` | `/v1/threads/:id/events*`, `/v1/runs/:id/events*` |
 | `trace` | `/v1/traces*` |
 | `eval` | `/v1/eval/*` |
-| `protocol` | `/v1/mcp/*`, `/v1/a2a/*`, `/v1/ai-sdk/*` |
 
-Deployments that need capability discovery expose an admin-protected
-`GET /v1/system/modules` response listing which modules are mounted. Clients
-that previously probed optional handlers by expecting 503 should switch to
-that endpoint or deployment configuration.
+`/v1/system/modules` is mounted unconditionally and lists mounted modules,
+including mandatory `run`, `admin`, and `protocol`. Clients that previously
+probed optional handlers by expecting 503 should switch to that endpoint or
+deployment configuration.
 
 ### D5: `AppState` is a deprecated compatibility alias only
 
 0.6.0 requires new code to construct `ServerState` explicitly. The public
 `AppState` name remains only as a `#[deprecated]` type alias to avoid a
-needless source break for route tests and callers that use the type name but
-not the old service-locator setters. The alias does not preserve the old
-`AppState::with_*` model; those setters are removed.
+needless source break for route tests and callers that use the type name.
+Legacy `with_*` setters remain as compatibility helpers, but each setter
+updates typed module state instead of restoring the old service-locator model.
 
 ```rust
 impl ServerState {
@@ -273,21 +274,22 @@ impl ServerState {
     pub fn with_eval(mut self, eval: EvalModuleState) -> Self { /* ... */ }
     pub fn with_trace(mut self, trace: TraceModuleState) -> Self { /* ... */ }
     pub fn with_protocol(mut self, protocol: ProtocolModuleState) -> Self { /* ... */ }
+    pub fn with_scope_provider(mut self, provider: Arc<dyn HttpScopeProvider>) -> Self { /* ... */ }
+    pub fn with_config_store(self, store: Arc<dyn ConfigStore>) -> Self { /* compatibility */ }
+    pub fn with_event_store(self, store: Arc<dyn EventStore>) -> Self { /* compatibility */ }
+    pub fn with_trace_store(self, store: Arc<dyn TraceStore>) -> Self { /* compatibility */ }
 }
 ```
-
-The old `AppState::with_config_store(...)`, `with_event_store(...)`,
-`with_trace_store(...)`, and similar scattered setters are deleted.
 
 ## Migration
 
 | 0.5.x | 0.6.0 |
 |---|---|
-| `AppState::new(...).with_config_store(cs)` | `ServerState::new(run, cfg).with_config(ConfigModuleState { config_store: cs, ... })` |
+| `AppState::new(...).with_config_store(cs)` | compatibility setter builds `ConfigModuleState`; new code may call `with_config(...)` directly |
 | `state.event_store()` returning `Option` | handlers extract `State<EventModuleState>` |
 | `APP_STATE_EXTRAS` | explicit fields on module states |
-| always-mounted optional routes returning 503 | module-gated routes returning 404 when absent |
-| handler extracts `State<AppState>` | handler extracts one module state or purpose-specific service state |
+| optional routes returning 503 | module-gated routes returning 404 when absent |
+| handler extracts `State<AppState>` | handler extracts route state, module state, or purpose-specific service state |
 
 ## Risks
 
@@ -299,7 +301,8 @@ The old `AppState::with_config_store(...)`, `with_event_store(...)`,
 
 ## Test Plan
 
-1. A `ServerState` with only `run` mounts only run-level routes.
+1. A `ServerState` with only required state mounts run, protocol, and system
+   routes.
 2. A state with `events` mounts event routes whose handlers receive
    `EventModuleState` directly.
 3. `APP_STATE_EXTRAS` has no matches in server code.
@@ -310,7 +313,7 @@ The old `AppState::with_config_store(...)`, `with_event_store(...)`,
 6. A three-module operation is represented by a purpose-specific service
    state, not `ServerState` extraction.
 7. Absent optional modules return 404 for the documented route families and
-   appear absent from `/v1/system/modules`.
+   appear absent from `/v1/system/modules`; mandatory modules are always listed.
 
 ## Non-Goals
 

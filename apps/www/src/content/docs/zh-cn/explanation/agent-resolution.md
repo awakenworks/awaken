@@ -1,9 +1,9 @@
 ---
 title: "智能体解析"
-description: "当 AgentRuntime 通过 run_to_completion(request) 或 run(request, sink) 执行请求时，请求中的 agent_id 会通过 ExecutionResolver 解析为 ResolvedExecution：要么是 Local(ResolvedAgent)，要么是 NonLocal(ResolvedBackendAgent)。本地…"
+description: "当 AgentRuntime 通过 run_to_completion(request) 或 run(request, sink) 执行请求时，请求中的 agent_id 会通过 Resolver 解析为 ResolvedRunPlan。"
 ---
 
-当 `AgentRuntime` 通过 `run_to_completion(request)` 或 `run(request, sink)` 执行请求时，请求中的 `agent_id` 会通过 `ExecutionResolver` 解析为 `ResolvedExecution`：要么是 `Local(ResolvedAgent)`，要么是 `NonLocal(ResolvedBackendAgent)`。本地 `ResolvedAgent` 持有 LLM 执行器、工具、插件和执行环境的活引用；非本地执行则由 `ExecutionBackend` 承载，例如内置 A2A backend。每次调用都会重新解析；本地 agent 环境不会在 run 之间共享。
+当 `AgentRuntime` 通过 `run_to_completion(request)` 或 `run(request, sink)` 执行请求时，请求中的 `agent_id` 会通过 `Resolver` 解析为 `ResolvedRunPlan`。其中的 execution plan 由本地 `ResolvedAgent` 或非本地 `ResolvedBackendAgent` 承载。本地 `ResolvedAgent` 持有 LLM 执行器、工具、插件和执行环境的活引用；非本地执行则由 `ExecutionBackend` 承载，例如内置 A2A backend。每次调用都会重新解析；本地 agent 环境不会在 run 之间共享。
 
 ## 流水线概览
 
@@ -45,7 +45,7 @@ flowchart LR
 
 第一阶段从注册表中获取原始数据：
 
-1. **AgentSpec** -- 通过 `agent_id` 从 `AgentSpecRegistry` 中查找。如果对带 `endpoint` 的规格请求直接本地解析，会以 `RemoteAgentNotDirectlyRunnable` 失败。`AgentRuntime` 的 root run 使用 `resolve_execution()`，因此在存在 backend factory 时，endpoint-backed agent 会被解析为 `ResolvedExecution::NonLocal`。
+1. **AgentSpec** -- 通过 `agent_id` 从 `AgentSpecRegistry` 中查找。如果对带 `endpoint` 的规格请求直接本地解析，会以 `RemoteAgentNotDirectlyRunnable` 失败。`AgentRuntime` 的 root run 会解析为 `ResolvedRunPlan`；存在 backend factory 时，endpoint-backed agent 使用非本地 execution plan。
 
 2. **ModelSpec** -- 规格的 `model_id` 字段（模型注册表 ID，如 `"default"`）通过 `ModelRegistry` 解析为 `ModelSpec`，其中携带 provider ID、上游 API 模型名（例如 provider `"openai"`、上游模型 `"gpt-4o"`），以及可选的固有能力（上下文窗口、最大输出、modalities、知识截止）和定价。服务端配置 API 直接持久化 `ModelSpec`，发布 registry 时无需二次转换。
 
@@ -55,7 +55,7 @@ flowchart LR
 
 ### 非本地执行
 
-对于 endpoint-backed agent，`resolve_execution()` 会校验 `RemoteEndpoint`，构建 `ResolvedBackendAgent`，并把执行交给选中的 `ExecutionBackend`。这类 root run 会跳过本地 model/provider/plugin/tool 流水线，因为这些决策由远端 backend 拥有。
+对于 endpoint-backed agent，解析过程会校验 `RemoteEndpoint`，构建 `ResolvedBackendAgent`，并把执行交给选中的 `ExecutionBackend`。这类 root run 会跳过本地 model/provider/plugin/tool 流水线，因为这些决策由远端 backend 拥有。
 
 ## 阶段 2：插件流水线
 

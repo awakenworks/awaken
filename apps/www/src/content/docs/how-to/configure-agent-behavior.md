@@ -22,7 +22,7 @@ redeploy.
 Validate → Save → run a preview chat → measure → adjust. The runtime
 swaps to the new spec on the next request without restarting the process.
 
-This guide assumes the server has a `ConfigStore` wired into `AppState` and that
+This guide assumes the server has a `ConfigStore` wired into `ServerState` and that
 the referenced plugins have been registered in the runtime plugin registry.
 
 ## Configuration layers
@@ -61,7 +61,9 @@ is the string sent to the provider API.
 
 Config writes are compiled into a candidate registry snapshot, validated, and
 then published. New runs use the latest published snapshot. Runs that already
-started keep the snapshot they started with.
+started keep the snapshot they started with. Audit-log restore is the exception:
+it writes the recovered payload to the editing store only; publish that payload
+with a normal config save/PUT when it should become active for new runs.
 
 Endpoint-backed agents skip the local provider, model, plugin, and tool
 resolution chain. Their `endpoint` config is executed by the selected remote

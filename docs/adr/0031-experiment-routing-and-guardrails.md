@@ -58,7 +58,7 @@ under namespace `experiments` with `source: User`. Built-in seeded
 experiments are not allowed; experiments are operator-created.
 
 ```rust
-// crates/awaken-contract/src/experiment.rs (new)
+// crates/awaken-runtime-contract/src/experiment.rs (new)
 pub struct Experiment {
     pub id: String,                       // ULID
     pub target: ExperimentTarget,         // Agent | Tool | Skill, with target id

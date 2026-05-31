@@ -34,14 +34,45 @@ When you first open the console, the topbar pill on the right shows
 **Token missing**. Click it, paste your token, save. The pill flips to
 **Connected** with a green dot.
 
+## Visual tour
+
+The console is a thin browser control plane over the running server. The
+screenshots below are static captures made with sample API data; a running
+console reads the same surfaces from your backend. They show the current
+high-value workflow: inspect live system state, edit an agent, and compare
+agent catalog health before running traffic.
+
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/01-dashboard.png">
+      <img src="/awaken/assets/admin-console/01-dashboard.png" alt="Admin dashboard showing live workload, agent activity, recent audit events, health status, and current scope metadata." loading="lazy" />
+    </a>
+    <figcaption>Dashboard: counts, current scope, and health come from `/v1/capabilities`, `/v1/system/info`, `/v1/audit-log`, and runtime stats.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/02-agent-editor.png">
+      <img src="/awaken/assets/admin-console/02-agent-editor.png" alt="Agent editor with model selection, system prompt fields, tabs, save controls, and draft preview chat." loading="lazy" />
+    </a>
+    <figcaption>Agent editor: Validate is non-destructive; Save publishes through `/v1/config/agents`.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/03-agents-list.png">
+      <img src="/awaken/assets/admin-console/03-agents-list.png" alt="Agents list with filters, model and plugin metadata, and runtime inference statistics." loading="lazy" />
+    </a>
+    <figcaption>Agents list: filter by model/plugin and see rolling inference/error/p95 stats when observability is enabled.</figcaption>
+  </figure>
+</div>
+
 ## Navigate the workspace
 
 The left sidebar groups every screen by intent:
 
 | Group | What lives here |
 |---|---|
-| **Configure** | Agents, Models, Providers, MCP Servers — the runtime catalog you can edit. |
-| **Observe** | Dashboard, Audit Log, Eval Reports, Skill Registry — read-only views into runtime state. |
+| **Agents** | Agents — create/edit agent specs and open per-agent dashboards. |
+| **Resources** | Models, MCP Servers, Skills, Tools — runtime dependencies and discovered capabilities. |
+| **Infrastructure** | Providers — credentials and upstream model connectivity. |
+| **Observe** | Dashboard, Audit Log, Datasets, Eval Runs, Eval Reports — operational views and evaluation records. |
 | **Assistant** | AI Assistant — chat interface that runs a real agent against your live config. |
 
 Use the **breadcrumb** in the topbar to confirm which group you are in
@@ -61,8 +92,8 @@ Open the **Dashboard** (it's the default landing page). Key panels:
 - **Recent activity** — last 8 audit events, if the audit log is enabled
   on the server. If you see a yellow "**Audit log is disabled**" notice,
   enable it on the server (see [Enable the audit log](#enable-the-audit-log)).
-- **System** — server version, uptime, and which optional subsystems
-  (config store, audit log, runtime stats) are wired in.
+- **System** — server version, current `scope_id`, uptime, and which optional
+  subsystems (config store, audit log, runtime stats) are wired in.
 
 ## Edit an agent
 
@@ -137,10 +168,15 @@ Awaken's audit log is also a version history.
    The console previews the JSON diff between current and target and
    asks for confirmation.
 5. On confirm, the console calls
-   `POST /v1/config/:ns/:id/restore` with the event id. The server
-   re-applies that snapshot through the normal validate + apply pipeline
-   and emits a fresh `restore` audit event with `restored_from = <event-id>`
-   so the rollback itself is auditable.
+   `POST /v1/config/:ns/:id/restore` with the event id. Restore is an
+   editing-store operation: the server validates the restored payload and writes
+   it to `ConfigStore`, but it does **not** hot-swap the runtime registry. This
+   keeps rollback review separate from runtime promotion.
+6. To make a restored payload active for new runs, publish it through a normal
+   config write after review, for example `PUT /v1/config/:ns/:id` with the
+   restored body. That write runs the standard validate + apply pipeline and
+   emits its own audit event. The restore event still records
+   `restored_from = <event-id>` so the rollback source remains auditable.
 
 ## Browse the audit log
 
@@ -164,7 +200,7 @@ but you'll get a much better experience with them on.
 
 ### Enable the audit log
 
-Wire an audit logger into `AppState`; retention is configured separately from
+Wire an audit logger into `ServerState`; retention is configured separately from
 `AdminApiConfig` to keep that security struct source-compatible with 0.4.0:
 
 ```rust
@@ -185,7 +221,7 @@ Without this:
 
 ### Enable runtime stats
 
-Wire the observability plugin into your `AppState`:
+Wire the observability plugin into your `ServerState`:
 
 ```rust
 use awaken_ext_observability::{ObservabilityPlugin, RuntimeStatsRegistry};
@@ -194,7 +230,7 @@ let registry = Arc::new(RuntimeStatsRegistry::new());
 let observability = ObservabilityPlugin::new()
     .with_sink(SharedRegistrySink(Arc::clone(&registry)));
 
-let state = AppState::new(/* ... */)
+let state = ServerState::new(/* ... */)
     .with_runtime_stats(registry);
 
 let runtime = AgentRuntimeBuilder::default()
@@ -229,13 +265,11 @@ token. See the
 for the exact endpoint list, and the
 [HTTP API reference](/awaken/reference/http-api/) for request shapes.
 
-## Switch to dark mode
+## Switch theme
 
-Add `data-theme="dark"` to `<html>` (or any subtree) and the
-`--aw-*` tokens flip automatically. There is no built-in toggle in the
-chrome yet — most operators run dark via a browser extension or the
-system colour scheme (`tokens-auto-dark.css` honours
-`prefers-color-scheme: dark`).
+Use the topbar theme control to choose light, dark, or system mode. The choice
+is persisted locally and maps to `data-theme`, so the same `--aw-*` design
+tokens drive the console and docs.
 
 ## Troubleshooting
 
@@ -244,7 +278,7 @@ system colour scheme (`tokens-auto-dark.css` honours
 | Topbar pill says **Token missing** or **Token rejected** | Bearer token absent or wrong | Click the pill, paste the token configured on the server |
 | Topbar pill says **Backend unreachable** | Server not listening or wrong URL | Confirm the server is running on `BACKEND_URL`. The default is `http://127.0.0.1:38080`. Override with `VITE_BACKEND_URL` at build time |
 | Console shows `503` errors but pages still load | An optional subsystem (audit / runtime stats) is off | See [Enable optional subsystems](#enable-optional-subsystems) |
-| Save fails with "config management API not enabled" | The server has no `ConfigStore` wired | Embedder must call `AppState::with_config_store(...)` |
+| Save fails with "config management API not enabled" | The server has no `ConfigStore` wired | Embedder must call `ServerState::with_config_store(...)` |
 | Provider Test always returns "unsupported adapter" | The provider uses the `scripted` adapter (no upstream to probe) | Expected; only real adapters have a meaningful test path |
 | Sidebar nav health dot stays neutral | Health badges are derived from list payloads only — full per-server probes are intentionally not made on every page load | Open the resource detail to see live `/status` |
 
