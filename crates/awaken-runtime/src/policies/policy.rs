@@ -206,13 +206,13 @@ impl StopPolicy for StopOnToolPolicy {
 
 pub struct ContentMatchPolicy {
     pattern: String,
-    regex: Option<Regex>,
+    regex: Result<Regex, String>,
 }
 
 impl ContentMatchPolicy {
     pub fn new(pattern: impl Into<String>) -> Self {
         let pattern = pattern.into();
-        let regex = Regex::new(&pattern).ok();
+        let regex = Regex::new(&pattern).map_err(|error| error.to_string());
         Self { pattern, regex }
     }
 }
@@ -226,8 +226,17 @@ impl StopPolicy for ContentMatchPolicy {
         if self.pattern.is_empty() {
             return StopDecision::Continue;
         }
-        let Some(regex) = &self.regex else {
-            return StopDecision::Continue;
+        let regex = match &self.regex {
+            Ok(regex) => regex,
+            Err(error) => {
+                return StopDecision::Stop {
+                    code: "content_match_invalid_regex".into(),
+                    detail: format!(
+                        "content_match stop condition has invalid regex {}: {error}",
+                        self.pattern
+                    ),
+                };
+            }
         };
         if regex.is_match(&stats.last_response_text) {
             StopDecision::Stop {
@@ -256,6 +265,9 @@ impl StopPolicy for LoopDetectionPolicy {
     }
 
     fn evaluate(&self, stats: &StopPolicyStats) -> StopDecision {
+        // This policy intentionally detects exact repeated response text only.
+        // Whitespace, timestamp, or formatting differences are treated as
+        // distinct responses.
         if self.window < 2 || stats.recent_response_texts.len() < self.window {
             return StopDecision::Continue;
         }

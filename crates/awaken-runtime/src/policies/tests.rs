@@ -328,6 +328,24 @@ fn declarative_content_match_policy_supports_regex_patterns() {
 }
 
 #[test]
+fn declarative_content_match_policy_stops_on_invalid_regex() {
+    let policies = policies_from_specs(&[StopConditionSpec::ContentMatch {
+        pattern: "[".into(),
+    }]);
+    let stats = StopPolicyStats {
+        last_response_text: "any response".into(),
+        ..base_stats()
+    };
+    assert!(
+        matches!(
+            policies[0].evaluate(&stats),
+            StopDecision::Stop { code, .. } if code == "content_match_invalid_regex"
+        ),
+        "invalid regex must fail closed instead of silently continuing"
+    );
+}
+
+#[test]
 fn declarative_loop_detection_policy_fires_for_repeated_window() {
     let policies = policies_from_specs(&[StopConditionSpec::LoopDetection { window: 3 }]);
     let stats = StopPolicyStats {
@@ -337,6 +355,19 @@ fn declarative_loop_detection_policy_fires_for_repeated_window() {
     assert!(
         matches!(policies[0].evaluate(&stats), StopDecision::Stop { code, .. } if code == "loop_detection")
     );
+}
+
+#[test]
+fn declarative_loop_detection_requires_exact_repeated_response_text() {
+    let policies = policies_from_specs(&[StopConditionSpec::LoopDetection { window: 3 }]);
+    let stats = StopPolicyStats {
+        recent_response_texts: vec!["same".into(), "same ".into(), "same".into()],
+        ..base_stats()
+    };
+    assert!(matches!(
+        policies[0].evaluate(&stats),
+        StopDecision::Continue
+    ));
 }
 
 #[test]
