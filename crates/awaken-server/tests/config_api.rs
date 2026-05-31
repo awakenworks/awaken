@@ -1955,7 +1955,6 @@ async fn capabilities_expose_admin_assistant_without_registry_tools() {
         .as_array()
         .expect("admin assistant bound tools should be listed");
     assert!(contains_id(bound_tools, "admin_get_platform_capabilities"));
-    assert!(contains_id(bound_tools, "admin_create_agent"));
     assert!(contains_id(bound_tools, "admin_create_agent_draft"));
     assert!(contains_id(bound_tools, "admin_validate_agent"));
     assert!(
@@ -2042,6 +2041,76 @@ async fn admin_assistant_config_is_admin_only_and_persisted() {
         capabilities["admin_assistant"]["model_id"],
         "assistant-model"
     );
+}
+
+#[tokio::test]
+async fn admin_assistant_config_rejects_invalid_model_and_stale_revision() {
+    let app = make_app().await;
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/admin/assistant/config",
+        Some(json!({
+            "id": "default",
+            "policy_prompt": "",
+            "model_id": "missing-model",
+            "revision": 0
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+
+    let (status, current) =
+        request_json(&app.router, Method::GET, "/v1/admin/assistant/config", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let first = json!({
+        "id": "default",
+        "policy_prompt": "Prefer concise drafts.",
+        "model_id": null,
+        "revision": current["revision"]
+    });
+    let (status, updated) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/admin/assistant/config",
+        Some(first),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {updated}");
+
+    let (status, conflict) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/admin/assistant/config",
+        Some(json!({
+            "id": "default",
+            "policy_prompt": "stale",
+            "model_id": null,
+            "revision": current["revision"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {conflict}");
+}
+
+#[tokio::test]
+async fn admin_assistant_config_rejects_oversized_policy_prompt() {
+    let app = make_app().await;
+    let prompt = "x".repeat(8 * 1024 + 1);
+    let (status, body) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/admin/assistant/config",
+        Some(json!({
+            "id": "default",
+            "policy_prompt": prompt,
+            "model_id": null,
+            "revision": 0
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
 }
 
 #[tokio::test]

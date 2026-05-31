@@ -193,7 +193,9 @@ async fn ai_sdk_admin_assistant(
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(st.sse_buffer_size.max(32));
     let sink: Arc<dyn EventSink> = Arc::new(BoundedChannelEventSink::new(event_tx));
     tokio::spawn(async move {
-        let _ = preview_runtime.run(request, sink).await;
+        if let Err(error) = preview_runtime.run(request, sink).await {
+            tracing::error!(error = %error, "admin assistant run failed");
+        }
     });
 
     let encoder = AiSdkEncoder::new();
@@ -277,7 +279,9 @@ async fn ai_sdk_chat_preview_agent(
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(st.sse_buffer_size.max(32));
     let sink: Arc<dyn EventSink> = Arc::new(BoundedChannelEventSink::new(event_tx));
     tokio::spawn(async move {
-        let _ = preview_runtime.run(request, sink).await;
+        if let Err(error) = preview_runtime.run(request, sink).await {
+            tracing::error!(error = %error, "agent preview run failed");
+        }
     });
 
     let encoder = AiSdkEncoder::new();
@@ -354,7 +358,7 @@ fn build_admin_assistant_registry_set(
             agent.clone(),
             current.agents.clone(),
         )),
-        tools: crate::admin_assistant::admin_tool_overlay(current.tools.clone(), config_state),
+        tools: crate::admin_assistant::admin_tool_registry(config_state),
         models: current.models.clone(),
         providers: current.providers.clone(),
         plugins: current.plugins.clone(),

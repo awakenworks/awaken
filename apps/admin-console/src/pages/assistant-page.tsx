@@ -51,15 +51,7 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "f
     scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
   }, [messages]);
 
-  // The AI SDK reports stream-level failures via `finishReason: "error"`
-  // inside the stream itself, not via the hook's `error` ref. Treat a
-  // finished run whose last message is still the user prompt as an error
-  // — that's the visible symptom of "agent not found" / dead-letter.
-  const streamErrored =
-    !!error ||
-    (status === "ready" &&
-      messages.length > 0 &&
-      messages[messages.length - 1]?.role === "user");
+  const streamErrored = !!error;
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();

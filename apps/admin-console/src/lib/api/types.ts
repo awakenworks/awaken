@@ -277,6 +277,7 @@ export interface AdminAssistantConfig {
   id: string;
   policy_prompt: string;
   model_id?: string | null;
+  revision?: number | null;
 }
 
 export interface Capabilities {

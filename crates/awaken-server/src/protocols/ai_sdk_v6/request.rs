@@ -5,6 +5,7 @@
 //! purely on routing and SSE wiring.
 use std::collections::HashSet;
 
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -15,9 +16,12 @@ use awaken_server_contract::contract::suspension::{ResumeDecisionAction, ToolCal
 use awaken_server_contract::registry_spec::AgentSpec;
 
 use crate::message_convert::{
-    content_block_from_media_base64, content_block_from_media_url, message_from_role_blocks,
-    parse_data_uri,
+    content_block_from_media_base64, message_from_role_blocks, parse_data_uri,
 };
+
+const MAX_ATTACHMENT_FILES: usize = 4;
+const MAX_ATTACHMENT_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ATTACHMENT_DATA_URL_CHARS: usize = (MAX_ATTACHMENT_TOTAL_BYTES * 4 / 3) + 1024;
 
 // ── AI SDK v6 wire types ────────────────────────────────────────────
 //
@@ -167,6 +171,7 @@ pub(crate) async fn process_chat_request(
 
     // Only convert NEW messages (not already in store) for the runtime.
     let new_ui_messages = dedup_messages(payload.messages, &known_ids);
+    validate_attachment_parts(&new_ui_messages)?;
     let messages = convert_messages(new_ui_messages);
 
     if messages.is_empty() && decisions.is_empty() && !has_interaction_responses {
@@ -199,6 +204,7 @@ pub(crate) fn process_preview_chat_request(
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    validate_attachment_parts(&messages)?;
     let messages = convert_messages_with_assistant_history(messages);
 
     if messages.is_empty() && decisions.is_empty() {
@@ -227,13 +233,78 @@ fn part_to_content_block(part: &Value) -> Option<ContentBlock> {
         UIPart::Text { text } => Some(ContentBlock::text(text.as_str())),
         UIPart::File { url, media_type } => {
             if let Some((mime, data)) = parse_data_uri(&url) {
+                if !media_type_matches_data_uri(&media_type, &mime) || !is_allowed_media_type(&mime)
+                {
+                    return None;
+                }
                 Some(content_block_from_media_base64(data, mime, None))
             } else {
-                Some(content_block_from_media_url(url, Some(&media_type), None))
+                let _ = url;
+                None
             }
         }
         _ => None,
     }
+}
+
+fn validate_attachment_parts(messages: &[UIMessage]) -> Result<(), String> {
+    let mut file_count = 0usize;
+    let mut total_bytes = 0usize;
+    for part in messages.iter().flat_map(|message| message.parts.iter()) {
+        if part_kind(part) != Some("file") {
+            continue;
+        }
+        file_count += 1;
+        if file_count > MAX_ATTACHMENT_FILES {
+            return Err(format!(
+                "attachments are limited to {MAX_ATTACHMENT_FILES} files per request"
+            ));
+        }
+        let UIPart::File { url, media_type } = serde_json::from_value::<UIPart>(part.clone())
+            .map_err(|error| format!("invalid file attachment part: {error}"))?
+        else {
+            continue;
+        };
+        if url.len() > MAX_ATTACHMENT_DATA_URL_CHARS {
+            return Err("attachment data URL is too large".into());
+        }
+        let (mime, data) = parse_data_uri(&url)
+            .ok_or_else(|| "file attachments must use data: URLs".to_string())?;
+        if !media_type_matches_data_uri(&media_type, &mime) {
+            return Err(format!(
+                "file attachment mediaType '{media_type}' does not match data URL MIME '{mime}'"
+            ));
+        }
+        if !is_allowed_media_type(&mime) {
+            return Err(format!("file attachment MIME type '{mime}' is not allowed"));
+        }
+        let decoded_len = base64::engine::general_purpose::STANDARD
+            .decode(data.as_bytes())
+            .map_err(|_| "file attachment data URL is not valid base64".to_string())?
+            .len();
+        total_bytes = total_bytes.saturating_add(decoded_len);
+        if total_bytes > MAX_ATTACHMENT_TOTAL_BYTES {
+            return Err(format!(
+                "attachments are limited to {MAX_ATTACHMENT_TOTAL_BYTES} bytes per request"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn media_type_matches_data_uri(media_type: &str, data_uri_mime: &str) -> bool {
+    media_type.trim().eq_ignore_ascii_case(data_uri_mime.trim())
+}
+
+fn is_allowed_media_type(media_type: &str) -> bool {
+    let media_type = media_type.trim().to_ascii_lowercase();
+    media_type.starts_with("image/")
+        || media_type.starts_with("audio/")
+        || media_type.starts_with("video/")
+        || matches!(
+            media_type.as_str(),
+            "application/pdf" | "text/plain" | "text/markdown" | "application/json"
+        )
 }
 
 /// Convert `UIMessage` list to runtime input messages.
@@ -605,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn convert_user_message_with_image_file() {
+    fn convert_user_message_skips_remote_file_url() {
         let msgs = vec![UIMessage {
             id: Some("m2".into()),
             role: "user".into(),
@@ -620,12 +691,8 @@ mod tests {
         }];
         let converted = convert_messages(msgs);
         assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].content.len(), 2);
+        assert_eq!(converted[0].content.len(), 1);
         assert_eq!(converted[0].content[0], ContentBlock::text("Describe"));
-        assert_eq!(
-            converted[0].content[1],
-            ContentBlock::image_url("https://example.com/img.png")
-        );
     }
 
     #[test]
@@ -635,7 +702,7 @@ mod tests {
             role: "user".into(),
             parts: vec![raw_part(json!({
                 "type": "file",
-                "url": "data:image/png;base64,iVBOR",
+                "url": "data:image/png;base64,aGVsbG8=",
                 "mediaType": "image/png"
             }))],
         }];
@@ -643,12 +710,12 @@ mod tests {
         assert_eq!(converted.len(), 1);
         assert_eq!(
             converted[0].content[0],
-            ContentBlock::image_base64("image/png", "iVBOR")
+            ContentBlock::image_base64("image/png", "aGVsbG8=")
         );
     }
 
     #[test]
-    fn convert_user_message_with_audio_file() {
+    fn convert_user_message_skips_remote_audio_file() {
         let msgs = vec![UIMessage {
             id: None,
             role: "user".into(),
@@ -659,11 +726,7 @@ mod tests {
             }))],
         }];
         let converted = convert_messages(msgs);
-        assert_eq!(converted.len(), 1);
-        assert_eq!(
-            converted[0].content[0],
-            ContentBlock::audio_url("https://example.com/audio.mp3")
-        );
+        assert!(converted.is_empty());
     }
 
     #[test]
@@ -745,7 +808,7 @@ mod tests {
                         raw_part(json!({"type": "text", "text": "Describe this image"})),
                         raw_part(json!({
                             "type": "file",
-                            "url": "data:image/png;base64,iVBOR",
+                            "url": "data:image/png;base64,aGVsbG8=",
                             "mediaType": "image/png",
                             "filename": "chart.png"
                         })),
@@ -778,10 +841,118 @@ mod tests {
         );
         assert_eq!(
             processed.messages[0].content[1],
-            ContentBlock::image_base64("image/png", "iVBOR")
+            ContentBlock::image_base64("image/png", "aGVsbG8=")
         );
         assert_eq!(processed.messages[1].text(), "It is a chart.");
         assert_eq!(processed.messages[2].text(), "What is the trend?");
+    }
+
+    #[test]
+    fn process_preview_chat_request_rejects_more_than_four_files() {
+        let files = (0..5)
+            .map(|index| {
+                raw_part(json!({
+                    "type": "file",
+                    "url": "data:text/plain;base64,aGk=",
+                    "mediaType": "text/plain",
+                    "filename": format!("f{index}.txt")
+                }))
+            })
+            .collect();
+        let err = process_preview_chat_request(
+            vec![UIMessage {
+                id: Some("u1".into()),
+                role: "user".into(),
+                parts: files,
+            }],
+            None,
+            None,
+        )
+        .err()
+        .expect("too many files must be rejected");
+        assert!(err.contains("limited to 4 files"));
+    }
+
+    #[test]
+    fn process_preview_chat_request_rejects_remote_file_url() {
+        let err = process_preview_chat_request(
+            vec![UIMessage {
+                id: Some("u1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({
+                    "type": "file",
+                    "url": "https://example.com/file.png",
+                    "mediaType": "image/png"
+                }))],
+            }],
+            None,
+            None,
+        )
+        .err()
+        .expect("remote file URL must be rejected");
+        assert!(err.contains("data: URLs"));
+    }
+
+    #[test]
+    fn process_preview_chat_request_rejects_mime_mismatch() {
+        let err = process_preview_chat_request(
+            vec![UIMessage {
+                id: Some("u1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({
+                    "type": "file",
+                    "url": "data:text/plain;base64,aGk=",
+                    "mediaType": "image/png"
+                }))],
+            }],
+            None,
+            None,
+        )
+        .err()
+        .expect("MIME mismatch must be rejected");
+        assert!(err.contains("does not match"));
+    }
+
+    #[test]
+    fn process_preview_chat_request_rejects_disallowed_mime() {
+        let err = process_preview_chat_request(
+            vec![UIMessage {
+                id: Some("u1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({
+                    "type": "file",
+                    "url": "data:application/octet-stream;base64,aGk=",
+                    "mediaType": "application/octet-stream"
+                }))],
+            }],
+            None,
+            None,
+        )
+        .err()
+        .expect("disallowed MIME must be rejected");
+        assert!(err.contains("not allowed"));
+    }
+
+    #[test]
+    fn process_preview_chat_request_rejects_oversized_attachment_total() {
+        let data = "a".repeat(MAX_ATTACHMENT_TOTAL_BYTES + 1);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+        let err = process_preview_chat_request(
+            vec![UIMessage {
+                id: Some("u1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({
+                    "type": "file",
+                    "url": format!("data:text/plain;base64,{encoded}"),
+                    "mediaType": "text/plain"
+                }))],
+            }],
+            None,
+            None,
+        )
+        .err()
+        .expect("oversized attachment must be rejected");
+        assert!(err.contains("too large") || err.contains("limited to"));
     }
 
     // ── extract_tool_call_decisions ──
@@ -1138,11 +1309,7 @@ mod tests {
             "url": "https://example.com/photo.jpg",
             "mediaType": "image/jpeg"
         });
-        let block = part_to_content_block(&part).unwrap();
-        assert_eq!(
-            block,
-            ContentBlock::image_url("https://example.com/photo.jpg")
-        );
+        assert!(part_to_content_block(&part).is_none());
     }
 
     #[test]
@@ -1152,11 +1319,7 @@ mod tests {
             "url": "https://example.com/song.mp3",
             "mediaType": "audio/mpeg"
         });
-        let block = part_to_content_block(&part).unwrap();
-        assert_eq!(
-            block,
-            ContentBlock::audio_url("https://example.com/song.mp3")
-        );
+        assert!(part_to_content_block(&part).is_none());
     }
 
     #[test]
@@ -1166,11 +1329,7 @@ mod tests {
             "url": "https://example.com/clip.mp4",
             "mediaType": "video/mp4"
         });
-        let block = part_to_content_block(&part).unwrap();
-        assert_eq!(
-            block,
-            ContentBlock::video_url("https://example.com/clip.mp4")
-        );
+        assert!(part_to_content_block(&part).is_none());
     }
 
     #[test]
@@ -1180,11 +1339,7 @@ mod tests {
             "url": "https://example.com/doc.pdf",
             "mediaType": "application/pdf"
         });
-        let block = part_to_content_block(&part).unwrap();
-        assert_eq!(
-            block,
-            ContentBlock::document_url("https://example.com/doc.pdf", None)
-        );
+        assert!(part_to_content_block(&part).is_none());
     }
 
     #[test]

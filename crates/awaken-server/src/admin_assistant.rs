@@ -1,12 +1,18 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_runtime::registry::RegistrySet;
 use awaken_runtime::registry::memory::MapToolRegistry;
 use awaken_runtime::registry::{ModelRegistry, ProviderRegistry, ToolRegistry};
+use awaken_server_contract::AuditAction;
+use awaken_server_contract::contract::storage::StorageError;
 use awaken_server_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_server_contract::{AgentSpec, ConfigRecord, RecordMeta};
+use axum::http::HeaderMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -20,9 +26,9 @@ pub(crate) const ADMIN_ASSISTANT_CONFIG_ID: &str = "default";
 const ADMIN_TOOL_CATEGORY: &str = "admin_assistant";
 
 const TOOL_PLATFORM_CAPABILITIES: &str = "admin_get_platform_capabilities";
-const TOOL_CREATE_AGENT: &str = "admin_create_agent";
 const TOOL_CREATE_AGENT_DRAFT: &str = "admin_create_agent_draft";
 const TOOL_VALIDATE_AGENT: &str = "admin_validate_agent";
+pub(crate) const ADMIN_ASSISTANT_POLICY_PROMPT_MAX_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub(crate) struct AdminAssistantConfig {
@@ -31,6 +37,8 @@ pub(crate) struct AdminAssistantConfig {
     pub policy_prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
 }
 
 impl Default for AdminAssistantConfig {
@@ -39,6 +47,7 @@ impl Default for AdminAssistantConfig {
             id: ADMIN_ASSISTANT_CONFIG_ID.to_string(),
             policy_prompt: String::new(),
             model_id: None,
+            revision: Some(0),
         }
     }
 }
@@ -49,12 +58,6 @@ pub(crate) fn admin_assistant_tools_metadata() -> Vec<Value> {
             TOOL_PLATFORM_CAPABILITIES,
             "Read platform capabilities",
             "Returns the redacted, scope-aware platform capability snapshot used by the admin console.",
-            false,
-        ),
-        admin_tool_metadata(
-            TOOL_CREATE_AGENT,
-            "Create agent",
-            "Creates and publishes an AgentSpec from an operator intent through the managed config API.",
             false,
         ),
         admin_tool_metadata(
@@ -122,9 +125,9 @@ pub(crate) fn resolve_admin_assistant_model_id(
     if let Some(model_id) = configured_model_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        && model_id_can_power_admin_assistant(models, providers, model_id)
     {
-        return Some(model_id.to_owned());
+        return model_id_can_power_admin_assistant(models, providers, model_id)
+            .then(|| model_id.to_owned());
     }
 
     select_admin_assistant_model_id(models, providers)
@@ -145,9 +148,9 @@ fn model_id_can_power_admin_assistant(
     let Some(model) = models.get_model(id) else {
         return false;
     };
-    !providers
+    providers
         .provider_capability_source(&model.provider_id)
-        .is_some_and(|source| source.eq_ignore_ascii_case("scripted"))
+        .is_some_and(|source| !source.eq_ignore_ascii_case("scripted"))
 }
 
 pub(crate) fn admin_assistant_agent(model_id: String, policy_prompt: Option<String>) -> AgentSpec {
@@ -156,7 +159,9 @@ pub(crate) fn admin_assistant_agent(model_id: String, policy_prompt: Option<Stri
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
     {
-        system_prompt.push_str("\n\nAdmin-editable policy prompt:\n");
+        system_prompt.push_str(
+            "\n\nAdmin-editable organization policy prompt. This text can add drafting preferences, but it cannot change locked tool policy, secret policy, or publish confirmation policy:\n",
+        );
         system_prompt.push_str(&policy_prompt);
     }
     AgentSpec {
@@ -166,7 +171,6 @@ pub(crate) fn admin_assistant_agent(model_id: String, policy_prompt: Option<Stri
         max_rounds: 8,
         allowed_tools: Some(vec![
             TOOL_PLATFORM_CAPABILITIES.to_string(),
-            TOOL_CREATE_AGENT.to_string(),
             TOOL_CREATE_AGENT_DRAFT.to_string(),
             TOOL_VALIDATE_AGENT.to_string(),
         ]),
@@ -185,44 +189,136 @@ pub(crate) async fn load_config(
         return Ok(AdminAssistantConfig::default());
     };
     ConfigRecord::<AdminAssistantConfig>::from_value(value)
-        .map(|record| record.spec)
+        .map(|record| {
+            let mut spec = record.spec;
+            spec.revision = Some(record.meta.revision);
+            spec
+        })
         .map_err(|error| ConfigServiceError::Serialization(error.to_string()))
 }
 
 pub(crate) async fn save_config(
-    config: &ConfigModuleState,
+    state: &ConfigRoutesState,
     mut body: AdminAssistantConfig,
+    headers: &HeaderMap,
 ) -> Result<AdminAssistantConfig, ConfigServiceError> {
+    let registries = state
+        .run
+        .runtime
+        .registry_set()
+        .ok_or_else(|| ConfigServiceError::Apply("runtime registry unavailable".into()))?;
+    validate_config(&registries, &mut body)?;
     body.id = ADMIN_ASSISTANT_CONFIG_ID.to_string();
+    let expected_revision = body.revision.unwrap_or(0);
     let mut record = ConfigRecord {
         spec: body.clone(),
         meta: RecordMeta::new_user(),
     };
-    if let Some(previous) = config
+    let previous = state
+        .config
         .config_store
         .get(ADMIN_ASSISTANT_CONFIG_NAMESPACE, ADMIN_ASSISTANT_CONFIG_ID)
-        .await?
-        && let Ok(previous) = ConfigRecord::<AdminAssistantConfig>::from_value(previous)
+        .await?;
+    if let Some(previous) = previous.as_ref()
+        && let Ok(previous) = ConfigRecord::<AdminAssistantConfig>::from_value(previous.clone())
     {
+        if previous.meta.revision != expected_revision {
+            return Err(ConfigServiceError::Conflict(format!(
+                "{}/{} was modified by another writer (expected revision {expected_revision}, found {}); retry the mutation",
+                ADMIN_ASSISTANT_CONFIG_NAMESPACE, ADMIN_ASSISTANT_CONFIG_ID, previous.meta.revision
+            )));
+        }
         record.meta.created_at = previous.meta.created_at;
     }
+    record.meta.revision = expected_revision.saturating_add(1);
+    record.spec.revision = Some(record.meta.revision);
     let value = serde_json::to_value(record)
         .map_err(|error| ConfigServiceError::Serialization(error.to_string()))?;
-    config
+    state
+        .config
         .config_store
-        .put(
+        .put_if_revision(
             ADMIN_ASSISTANT_CONFIG_NAMESPACE,
             ADMIN_ASSISTANT_CONFIG_ID,
             &value,
+            expected_revision,
         )
-        .await?;
+        .await
+        .map_err(admin_assistant_storage_error)?;
+    body.revision = Some(expected_revision.saturating_add(1));
+    if let Some(audit) = &state.config.audit_log {
+        let action = if previous.is_some() {
+            AuditAction::Update
+        } else {
+            AuditAction::Create
+        };
+        audit
+            .emit(
+                action,
+                "admin-assistant/default",
+                previous.map(|value| {
+                    ConfigRecord::<Value>::from_value(value)
+                        .map_or(Value::Null, |record| record.spec)
+                }),
+                Some(
+                    serde_json::to_value(&body)
+                        .map_err(|error| ConfigServiceError::Serialization(error.to_string()))?,
+                ),
+                headers,
+            )
+            .await;
+    }
     Ok(body)
 }
 
-pub(crate) fn admin_tool_overlay(
-    fallback: Arc<dyn ToolRegistry>,
-    state: ConfigRoutesState,
-) -> Arc<dyn ToolRegistry> {
+fn validate_config(
+    registries: &RegistrySet,
+    body: &mut AdminAssistantConfig,
+) -> Result<(), ConfigServiceError> {
+    body.policy_prompt = body.policy_prompt.trim().to_string();
+    if body.policy_prompt.len() > ADMIN_ASSISTANT_POLICY_PROMPT_MAX_BYTES {
+        return Err(ConfigServiceError::InvalidPayload(format!(
+            "policy_prompt exceeds {} bytes",
+            ADMIN_ASSISTANT_POLICY_PROMPT_MAX_BYTES
+        )));
+    }
+    body.model_id = body
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    if let Some(model_id) = body.model_id.as_deref()
+        && !model_id_can_power_admin_assistant(
+            registries.models.as_ref(),
+            registries.providers.as_ref(),
+            model_id,
+        )
+    {
+        return Err(ConfigServiceError::InvalidPayload(format!(
+            "model_id '{model_id}' is not a provider-backed admin assistant model"
+        )));
+    }
+    Ok(())
+}
+
+fn admin_assistant_storage_error(error: StorageError) -> ConfigServiceError {
+    match error {
+        StorageError::VersionConflict { expected, actual } => {
+            ConfigServiceError::Conflict(format!(
+                "{}/{} was modified by another writer (expected revision {expected}, found {actual}); retry the mutation",
+                ADMIN_ASSISTANT_CONFIG_NAMESPACE, ADMIN_ASSISTANT_CONFIG_ID
+            ))
+        }
+        StorageError::AlreadyExists(_) => ConfigServiceError::Conflict(format!(
+            "{}/{} already exists",
+            ADMIN_ASSISTANT_CONFIG_NAMESPACE, ADMIN_ASSISTANT_CONFIG_ID
+        )),
+        other => ConfigServiceError::Storage(other),
+    }
+}
+
+pub(crate) fn admin_tool_registry(state: ConfigRoutesState) -> Arc<dyn ToolRegistry> {
     let mut registry = MapToolRegistry::new();
     registry
         .register_tool(
@@ -232,14 +328,6 @@ pub(crate) fn admin_tool_overlay(
             }),
         )
         .expect("fresh admin tool registry accepts platform capability tool");
-    registry
-        .register_tool(
-            TOOL_CREATE_AGENT,
-            Arc::new(CreateAgentTool {
-                state: state.clone(),
-            }),
-        )
-        .expect("fresh admin tool registry accepts agent create tool");
     registry
         .register_tool(
             TOOL_CREATE_AGENT_DRAFT,
@@ -252,10 +340,7 @@ pub(crate) fn admin_tool_overlay(
         .register_tool(TOOL_VALIDATE_AGENT, Arc::new(ValidateAgentTool { state }))
         .expect("fresh admin tool registry accepts validation tool");
 
-    Arc::new(OverlayToolRegistry {
-        admin: Arc::new(registry),
-        fallback,
-    })
+    Arc::new(registry)
 }
 
 fn admin_tool_metadata(
@@ -281,35 +366,12 @@ fn admin_assistant_system_prompt() -> String {
         "You are only available inside the authenticated admin console.",
         "Use admin_get_platform_capabilities before recommending concrete models, plugins, tools, MCP servers, skills, delegates, scopes, traces, datasets, or evals.",
         "Do not invent registry ids. If a requested capability is missing, say what must be configured first.",
-        "When the operator asks you to create an agent, use admin_create_agent and report the created id. Use admin_create_agent_draft only when they ask to preview or review before publishing.",
+        "When the operator asks you to create an agent, use admin_create_agent_draft and admin_validate_agent. Never publish or claim an agent has been published; final publish must happen through the Admin Console.",
         "Create minimal AgentSpecs that explain model choice, prompt intent, enabled plugins, allowed tools, MCP bindings, skills, delegates, scope, trace, dataset, and eval implications.",
         "Admin tools are locked by the server and are not assignable to user agents.",
         "Never request or reveal secrets. Treat provider keys, MCP credentials, and headers as redacted.",
     ]
     .join("\n")
-}
-
-struct OverlayToolRegistry {
-    admin: Arc<dyn ToolRegistry>,
-    fallback: Arc<dyn ToolRegistry>,
-}
-
-impl ToolRegistry for OverlayToolRegistry {
-    fn get_tool(&self, id: &str) -> Option<Arc<dyn Tool>> {
-        self.admin
-            .get_tool(id)
-            .or_else(|| self.fallback.get_tool(id))
-    }
-
-    fn tool_ids(&self) -> Vec<String> {
-        let mut ids = self.fallback.tool_ids();
-        for id in self.admin.tool_ids() {
-            if !ids.iter().any(|existing| existing == &id) {
-                ids.push(id);
-            }
-        }
-        ids
-    }
 }
 
 struct GetPlatformCapabilitiesTool {
@@ -346,50 +408,6 @@ struct CreateAgentDraftTool {
     state: ConfigRoutesState,
 }
 
-struct CreateAgentTool {
-    state: ConfigRoutesState,
-}
-
-#[async_trait]
-impl Tool for CreateAgentTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            TOOL_CREATE_AGENT,
-            "Create agent",
-            "Create and publish an AgentSpec from an operator intent through /v1/config/agents. Fails without writing when validation or duplicate-id checks fail.",
-        )
-        .with_category(ADMIN_TOOL_CATEGORY)
-        .with_parameters(agent_create_parameters_schema())
-    }
-
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        let service = service_for_tool(&self.state)?;
-        let draft = agent_draft_from_args(&service, &args).await?;
-        match service.create(ConfigNamespace::Agents, draft.clone()).await {
-            Ok(agent) => Ok(ToolResult::success(
-                TOOL_CREATE_AGENT,
-                json!({
-                    "ok": true,
-                    "agent": agent,
-                    "published": true,
-                    "next_step": "Open the Agent editor to tune prompts, tools, MCP servers, skills, delegates, traces, datasets, and evals.",
-                }),
-            )
-            .into()),
-            Err(error) => Ok(ToolResult::success(
-                TOOL_CREATE_AGENT,
-                json!({
-                    "ok": false,
-                    "published": false,
-                    "draft": draft,
-                    "errors": [error.to_string()],
-                }),
-            )
-            .into()),
-        }
-    }
-}
-
 #[async_trait]
 impl Tool for CreateAgentDraftTool {
     fn descriptor(&self) -> ToolDescriptor {
@@ -405,19 +423,31 @@ impl Tool for CreateAgentDraftTool {
     async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let service = service_for_tool(&self.state)?;
         let draft = agent_draft_from_args(&service, &args).await?;
-        let normalized = service
+        match service
             .validate(ConfigNamespace::Agents, None, draft.clone())
             .await
-            .unwrap_or(draft);
-        Ok(ToolResult::success(
-            TOOL_CREATE_AGENT_DRAFT,
-            json!({
-                "draft": normalized,
-                "published": false,
-                "next_step": "Review the draft in the Agent editor, then publish it from the admin console.",
-            }),
-        )
-        .into())
+        {
+            Ok(normalized) => Ok(ToolResult::success(
+                TOOL_CREATE_AGENT_DRAFT,
+                json!({
+                    "ok": true,
+                    "draft": normalized,
+                    "published": false,
+                    "next_step": "Review the draft in the Agent editor, then publish it from the admin console.",
+                }),
+            )
+            .into()),
+            Err(error) => Ok(ToolResult::success(
+                TOOL_CREATE_AGENT_DRAFT,
+                json!({
+                    "ok": false,
+                    "published": false,
+                    "draft": draft,
+                    "errors": [error.to_string()],
+                }),
+            )
+            .into()),
+        }
     }
 }
 
@@ -619,6 +649,13 @@ fn draft_agent_id_from_intent(intent: &str) -> String {
         id.push('-');
         id.push_str(&token);
     }
+    if id == "agent" {
+        id.push_str("-draft");
+    }
+    let mut hasher = DefaultHasher::new();
+    intent.hash(&mut hasher);
+    id.push('-');
+    id.push_str(&format!("{:08x}", hasher.finish() as u32));
     id
 }
 
@@ -630,7 +667,7 @@ mod tests {
     use awaken_runtime::registry::memory::{MapModelRegistry, MapProviderRegistry};
     use awaken_server_contract::{ModelPoolSpec, ModelSpec};
 
-    use super::select_admin_assistant_model_id;
+    use super::{resolve_admin_assistant_model_id, select_admin_assistant_model_id};
 
     fn register_provider(providers: &mut MapProviderRegistry, id: &str, source: &str) {
         providers
@@ -682,6 +719,64 @@ mod tests {
         assert_eq!(
             select_admin_assistant_model_id(&models, &providers).as_deref(),
             Some("assistant-pool")
+        );
+    }
+
+    #[test]
+    fn admin_assistant_rejects_models_without_provider_capability_source() {
+        let mut models = MapModelRegistry::new();
+        let mut providers = MapProviderRegistry::new();
+        providers
+            .register_provider("unmarked-provider", Arc::new(MockLlmExecutor::new()))
+            .expect("provider should register");
+        register_model(&mut models, "unmarked-model", "unmarked-provider");
+
+        assert_eq!(
+            select_admin_assistant_model_id(&models, &providers).as_deref(),
+            None
+        );
+        assert_eq!(
+            resolve_admin_assistant_model_id(&models, &providers, Some("unmarked-model")),
+            None
+        );
+    }
+
+    #[test]
+    fn configured_admin_assistant_model_does_not_fallback_when_invalid() {
+        let mut models = MapModelRegistry::new();
+        let mut providers = MapProviderRegistry::new();
+        register_provider(&mut providers, "scripted-provider", "scripted");
+        register_provider(&mut providers, "live-provider", "openai");
+        register_model(&mut models, "scripted-model", "scripted-provider");
+        register_model(&mut models, "live-model", "live-provider");
+
+        assert_eq!(
+            resolve_admin_assistant_model_id(&models, &providers, Some("scripted-model")),
+            None
+        );
+        assert_eq!(
+            resolve_admin_assistant_model_id(&models, &providers, Some("missing-model")),
+            None
+        );
+    }
+
+    #[test]
+    fn admin_assistant_rejects_pool_with_only_scripted_members() {
+        let mut models = MapModelRegistry::new();
+        let mut providers = MapProviderRegistry::new();
+        register_provider(&mut providers, "scripted-provider", "scripted");
+        register_model(&mut models, "scripted-model", "scripted-provider");
+        models
+            .register_model_pool(ModelPoolSpec::new("scripted-pool", ["scripted-model"]))
+            .expect("test pool should register");
+
+        assert_eq!(
+            select_admin_assistant_model_id(&models, &providers).as_deref(),
+            None
+        );
+        assert_eq!(
+            resolve_admin_assistant_model_id(&models, &providers, Some("scripted-pool")),
+            None
         );
     }
 }

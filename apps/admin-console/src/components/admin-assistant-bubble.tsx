@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { AssistantChatPanel } from "@/pages/assistant-page";
 import { adminRoutes } from "@/lib/routes";
@@ -6,6 +6,9 @@ import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
 
 export function AdminAssistantBubble() {
   const [open, setOpen] = useState(false);
+  const dialogRef = useRef<HTMLElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const previousOpenRef = useRef(false);
   const capabilitiesQuery = useCapabilitiesQuery();
   const assistant = capabilitiesQuery.data?.admin_assistant;
   const enabled = Boolean(assistant?.enabled);
@@ -16,18 +19,53 @@ export function AdminAssistantBubble() {
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = focusableElements(dialog);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
+  useEffect(() => {
+    const previousOpen = previousOpenRef.current;
+    previousOpenRef.current = open;
+    if (open) {
+      dialogRef.current?.focus();
+    } else if (previousOpen) {
+      triggerRef.current?.focus();
+    }
   }, [open]);
 
   return (
     <div className="fixed bottom-5 right-5 z-50 flex flex-col items-end gap-3">
       {open ? (
         <section
+          ref={dialogRef}
           role="dialog"
+          aria-modal="true"
           aria-label="Admin Assistant"
+          tabIndex={-1}
           className="relative h-[min(720px,calc(100dvh-6rem))] w-[min(440px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-line-strong bg-bg shadow-overlay"
         >
           <button
@@ -46,6 +84,7 @@ export function AdminAssistantBubble() {
         </section>
       ) : null}
       <button
+        ref={triggerRef}
         type="button"
         aria-label={enabled ? "Open Admin Assistant" : "Configure a model to enable Admin Assistant"}
         title={enabled ? "Admin Assistant" : reason}
@@ -61,6 +100,21 @@ export function AdminAssistantBubble() {
       </button>
     </div>
   );
+}
+
+function focusableElements(root: HTMLElement): HTMLElement[] {
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      [
+        "a[href]",
+        "button:not([disabled])",
+        "textarea:not([disabled])",
+        "input:not([disabled])",
+        "select:not([disabled])",
+        "[tabindex]:not([tabindex='-1'])",
+      ].join(","),
+    ),
+  ).filter((element) => !element.hasAttribute("disabled") && element.offsetParent !== null);
 }
 
 function AssistantSetupNotice({ loading, reason }: { loading: boolean; reason: string }) {

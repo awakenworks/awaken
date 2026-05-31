@@ -56,9 +56,20 @@ async fn put_admin_assistant_config(
     if let Err(err) = crate::config_routes::ensure_admin_auth(&state.admin, &headers) {
         return err.into_response();
     }
-    match crate::admin_assistant::save_config(&state.config, body).await {
+    match crate::admin_assistant::save_config(&state, body, &headers).await {
         Ok(config) => Json(config).into_response(),
-        Err(err) => ApiError::BadRequest(err.to_string()).into_response(),
+        Err(err) => map_admin_assistant_config_error(err).into_response(),
+    }
+}
+
+fn map_admin_assistant_config_error(
+    err: crate::services::config_service::ConfigServiceError,
+) -> ApiError {
+    use crate::services::config_service::ConfigServiceError as E;
+    match err {
+        E::Conflict(message) => ApiError::Conflict(message),
+        E::InvalidPayload(message) => ApiError::BadRequest(message),
+        other => ApiError::BadRequest(other.to_string()),
     }
 }
 
