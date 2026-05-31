@@ -19,7 +19,7 @@ async fn test_store(prefix: &str) -> PostgresStore {
 
 fn unique_prefix(name: &str) -> String {
     let uuid_short = uuid::Uuid::now_v7().simple().to_string();
-    format!("pgo_{}_{}", &uuid_short[..12], &name[..name.len().min(8)])
+    format!("pgo_{}_{}", &uuid_short[12..28], &name[..name.len().min(8)])
 }
 
 fn draft(payload: i64) -> OutboxMessageDraft {
