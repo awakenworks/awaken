@@ -131,6 +131,13 @@ export default defineConfig({
       title: "Awaken",
       description: "Build agent capabilities once in Rust, tune and operate them live, and serve every client from one runtime.",
       logo: { src: "./src/assets/awaken-mark.svg", replacesTitle: false },
+      head: [
+        { tag: "link", attrs: { rel: "icon", href: "/awaken/favicon-light.svg", media: "(prefers-color-scheme: light)" } },
+        { tag: "link", attrs: { rel: "icon", href: "/awaken/favicon-dark.svg", media: "(prefers-color-scheme: dark)" } },
+        { tag: "link", attrs: { rel: "apple-touch-icon", href: "/awaken/apple-touch-icon-light.svg" } },
+        { tag: "meta", attrs: { name: "theme-color", content: "#fafafa", media: "(prefers-color-scheme: light)" } },
+        { tag: "meta", attrs: { name: "theme-color", content: "#0a0a0a", media: "(prefers-color-scheme: dark)" } },
+      ],
       social: [
         { icon: "github", label: "GitHub", href: "https://github.com/AwakenWorks/awaken" },
       ],
