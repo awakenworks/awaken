@@ -445,6 +445,7 @@ struct SignalMailboxStore {
     nacked_count: Arc<AtomicUsize>,
     enqueue_failures_remaining: AtomicUsize,
     claim_failures_remaining: AtomicUsize,
+    ack_failures_remaining: AtomicUsize,
     claim_dispatch_empty_once: AtomicBool,
 }
 
@@ -463,6 +464,12 @@ impl SignalMailboxStore {
         store
     }
 
+    fn with_ack_failures(ack_failures: usize) -> Self {
+        let mut store = Self::with_failures_and_empty_claim_dispatch(0, false);
+        store.ack_failures_remaining = AtomicUsize::new(ack_failures);
+        store
+    }
+
     fn with_empty_claim_dispatch_once() -> Self {
         Self::with_failures_and_empty_claim_dispatch(0, true)
     }
@@ -478,6 +485,7 @@ impl SignalMailboxStore {
             nacked_count: Arc::new(AtomicUsize::new(0)),
             enqueue_failures_remaining: AtomicUsize::new(0),
             claim_failures_remaining: AtomicUsize::new(claim_failures),
+            ack_failures_remaining: AtomicUsize::new(0),
             claim_dispatch_empty_once: AtomicBool::new(claim_dispatch_empty_once),
         }
     }
@@ -505,8 +513,8 @@ impl MailboxStore for SignalMailboxStore {
         }
         self.inner.enqueue(dispatch).await?;
         self.signals.lock().await.push_back(TestDispatchSignal {
-            thread_id: dispatch.thread_id.clone(),
-            dispatch_id: dispatch.dispatch_id.clone(),
+            thread_id: dispatch.thread_id().clone(),
+            dispatch_id: dispatch.dispatch_id().clone(),
         });
         Ok(())
     }
@@ -554,6 +562,15 @@ impl MailboxStore for SignalMailboxStore {
         claim_token: &str,
         now: u64,
     ) -> Result<(), StorageError> {
+        let remaining = self.ack_failures_remaining.load(Ordering::SeqCst);
+        if remaining > 0
+            && self
+                .ack_failures_remaining
+                .compare_exchange(remaining, remaining - 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(StorageError::Io("injected ack failure".into()));
+        }
         self.inner.ack(dispatch_id, claim_token, now).await
     }
 
@@ -881,10 +898,12 @@ impl MailboxStore for InterruptOnLoadMailboxStore {
     async fn load_dispatch(&self, dispatch_id: &str) -> Result<Option<RunDispatch>, StorageError> {
         let loaded = self.inner.load_dispatch(dispatch_id).await?;
         if let Some(dispatch) = loaded.as_ref()
-            && dispatch.status == RunDispatchStatus::Claimed
+            && dispatch.status() == RunDispatchStatus::Claimed
             && self.interrupt_once.swap(false, Ordering::SeqCst)
         {
-            self.inner.interrupt(&dispatch.thread_id, now_ms()).await?;
+            self.inner
+                .interrupt(&dispatch.thread_id(), now_ms())
+                .await?;
         }
         Ok(loaded)
     }
@@ -959,6 +978,49 @@ fn make_mailbox_with_run_store(
         "test-consumer".to_string(),
         MailboxConfig::default(),
     ))
+}
+
+#[test]
+fn try_with_pinned_registry_rejects_invalid_scope() {
+    let mailbox = Mailbox::new(
+        make_runtime(),
+        Arc::new(InMemoryMailboxStore::new()),
+        Arc::new(InMemoryStore::new()),
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    );
+
+    let result =
+        mailbox.try_with_pinned_registry(Arc::new(InMemoryVersionedRegistryStore::new()), " ");
+
+    assert!(result.is_err(), "invalid scope id must be surfaced");
+}
+
+#[tokio::test]
+async fn materialize_pinned_registry_rejects_invalid_resolution_id() {
+    let mailbox = Mailbox::new(
+        make_runtime(),
+        Arc::new(InMemoryMailboxStore::new()),
+        Arc::new(InMemoryStore::new()),
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    )
+    .with_pinned_registry(Arc::new(InMemoryVersionedRegistryStore::new()), "default");
+
+    let error = match mailbox
+        .materialize_pinned_registry_set("not-a-version")
+        .await
+    {
+        Ok(_) => panic!("invalid resolution id must fail"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("invalid pinned registry resolution id"),
+        "unexpected error: {error}"
+    );
 }
 
 struct NoopMailboxRuntime;
@@ -1815,9 +1877,9 @@ async fn enqueue_prepared_dispatch(
 ) -> MailboxSubmitResult {
     let dispatch = prepare_queued_dispatch(mailbox, thread_id, content).await;
     let result = MailboxSubmitResult {
-        dispatch_id: dispatch.dispatch_id.clone(),
-        run_id: dispatch.run_id.clone(),
-        thread_id: dispatch.thread_id.clone(),
+        dispatch_id: dispatch.dispatch_id().clone(),
+        run_id: dispatch.run_id().clone(),
+        thread_id: dispatch.thread_id().clone(),
         status: MailboxDispatchStatus::Queued,
     };
     store
@@ -1973,7 +2035,7 @@ async fn start_lifecycle_ready_retries_startup_recovery_until_ready() {
     let dispatch = mailbox
         .build_dispatch(&request, &thread_id)
         .expect("build queued dispatch");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store
         .enqueue(&dispatch)
         .await
@@ -1991,10 +2053,10 @@ async fn start_lifecycle_ready_retries_startup_recovery_until_ready() {
         .expect("ready lifecycle should retry startup recovery");
 
     let recovered = wait_for_dispatch(&store.inner, &dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::DeadLetter
+        dispatch.status() == RunDispatchStatus::DeadLetter
     })
     .await;
-    assert_eq!(recovered.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(recovered.status(), RunDispatchStatus::DeadLetter);
     handle.shutdown().await.expect("shutdown lifecycle");
 }
 
@@ -2017,8 +2079,8 @@ async fn reconstruct_failure_dead_letters_once_without_repolling() {
     ));
 
     let dispatch = prepare_queued_dispatch(&mailbox, "thread-gc", "hi").await;
-    let dispatch_id = dispatch.dispatch_id.clone();
-    let thread_id = dispatch.thread_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
+    let thread_id = dispatch.thread_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
 
     // Simulate durable corruption: the run record survives but its activation
@@ -2034,16 +2096,16 @@ async fn reconstruct_failure_dead_letters_once_without_repolling() {
     mailbox.try_dispatch_next(&thread_id).await;
 
     let dead = wait_for_dispatch(&store, &dispatch_id, |d| {
-        d.status == RunDispatchStatus::DeadLetter
+        d.status() == RunDispatchStatus::DeadLetter
     })
     .await;
-    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
     assert!(
-        dead.last_error
+        dead.last_error()
             .as_deref()
             .is_some_and(|e| e.contains("not found")),
         "expected missing-message error, got: {:?}",
-        dead.last_error
+        dead.last_error()
     );
     // Reconstruct failure must short-circuit before the runtime is entered.
     assert_eq!(
@@ -2054,7 +2116,7 @@ async fn reconstruct_failure_dead_letters_once_without_repolling() {
 
     // No double-poll: a subsequent dispatch poll must not re-claim the
     // terminal row. attempt_count and run_count stay frozen.
-    let attempts_after_dead_letter = dead.attempt_count;
+    let attempts_after_dead_letter = dead.attempt_count();
     mailbox.try_dispatch_next(&thread_id).await;
     sleep(Duration::from_millis(50)).await;
     let after = store
@@ -2063,12 +2125,13 @@ async fn reconstruct_failure_dead_letters_once_without_repolling() {
         .unwrap()
         .expect("dispatch remains inspectable");
     assert_eq!(
-        after.status,
+        after.status(),
         RunDispatchStatus::DeadLetter,
         "dead-lettered row must stay terminal"
     );
     assert_eq!(
-        after.attempt_count, attempts_after_dead_letter,
+        after.attempt_count(),
+        attempts_after_dead_letter,
         "terminal row must not be re-claimed / re-attempted"
     );
     assert_eq!(
@@ -2150,18 +2213,14 @@ async fn run_gc_auto_vacuums_old_terminal_dispatches() {
 
     // Drive a dispatch to a terminal (Acked) state with a past completed_at.
     let mut dispatch = prepare_queued_dispatch(&mailbox, "thread-gc-vacuum", "done").await;
-    dispatch.available_at = 1000;
-    let dispatch_id = dispatch.dispatch_id.clone();
+    dispatch = dispatch.with_available_at(1000);
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
     let claimed = store
         .claim("thread-gc-vacuum", "p3-gc-consumer", 30_000, 1000, 1)
         .await
         .expect("claim dispatch");
-    let token = claimed[0]
-        .claim_token
-        .as_deref()
-        .expect("claim token")
-        .to_string();
+    let token = claimed[0].claim_token().expect("claim token").to_string();
     store.ack(&dispatch_id, &token, 2000).await.expect("ack");
     assert_eq!(
         store
@@ -2169,7 +2228,7 @@ async fn run_gc_auto_vacuums_old_terminal_dispatches() {
             .await
             .unwrap()
             .expect("acked dispatch is inspectable")
-            .status,
+            .status(),
         RunDispatchStatus::Acked
     );
 
@@ -2202,24 +2261,24 @@ async fn permanent_inference_error_dead_letters_after_single_run() {
     ));
 
     let dispatch = prepare_queued_dispatch(&mailbox, "thread-perm", "go").await;
-    let dispatch_id = dispatch.dispatch_id.clone();
-    let thread_id = dispatch.thread_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
+    let thread_id = dispatch.thread_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
 
     mailbox.get_or_create_worker(&thread_id).await;
     mailbox.try_dispatch_next(&thread_id).await;
 
     let dead = wait_for_dispatch(&store, &dispatch_id, |d| {
-        d.status == RunDispatchStatus::DeadLetter
+        d.status() == RunDispatchStatus::DeadLetter
     })
     .await;
-    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
     assert!(
-        dead.last_error
+        dead.last_error()
             .as_deref()
             .is_some_and(|e| e.contains("unauthorized")),
         "expected unauthorized error, got: {:?}",
-        dead.last_error
+        dead.last_error()
     );
     // The decisive assertion: the runtime ran exactly once. A pre-fix build
     // nacked and re-ran up to max_attempts (5) before dead-lettering.
@@ -2229,9 +2288,9 @@ async fn permanent_inference_error_dead_letters_after_single_run() {
         "permanent fault must not be retried"
     );
     assert!(
-        dead.attempt_count < 5,
+        dead.attempt_count() < 5,
         "permanent fault must not exhaust the retry budget, attempt_count={}",
-        dead.attempt_count
+        dead.attempt_count()
     );
 }
 
@@ -2259,8 +2318,8 @@ async fn transient_inference_error_nacks_for_retry() {
     ));
 
     let dispatch = prepare_queued_dispatch(&mailbox, "thread-transient", "go").await;
-    let dispatch_id = dispatch.dispatch_id.clone();
-    let thread_id = dispatch.thread_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
+    let thread_id = dispatch.thread_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
 
     mailbox.get_or_create_worker(&thread_id).await;
@@ -2269,11 +2328,11 @@ async fn transient_inference_error_nacks_for_retry() {
     // Nacked back to Queued (eligible later, after backoff) with one attempt
     // recorded — not dead-lettered.
     let requeued = wait_for_dispatch(&store, &dispatch_id, |d| {
-        d.status == RunDispatchStatus::Queued && d.attempt_count == 1
+        d.status() == RunDispatchStatus::Queued && d.attempt_count() == 1
     })
     .await;
-    assert_eq!(requeued.status, RunDispatchStatus::Queued);
-    assert_eq!(requeued.attempt_count, 1);
+    assert_eq!(requeued.status(), RunDispatchStatus::Queued);
+    assert_eq!(requeued.attempt_count(), 1);
     assert_eq!(
         runtime.run_count(),
         1,
@@ -2281,11 +2340,11 @@ async fn transient_inference_error_nacks_for_retry() {
     );
     assert!(
         requeued
-            .last_error
+            .last_error()
             .as_deref()
             .is_some_and(|e| e.contains("rate limited")),
         "expected rate-limit error, got: {:?}",
-        requeued.last_error
+        requeued.last_error()
     );
 }
 
@@ -2307,25 +2366,30 @@ async fn reconstruct_failure_missing_run_dead_letters_once() {
 
     let mut dispatch = prepare_queued_dispatch(&mailbox, "thread-missing-run", "hi").await;
     // Point the dispatch at a run that was never persisted.
-    dispatch.run_id = "nonexistent-run".to_string();
-    let dispatch_id = dispatch.dispatch_id.clone();
-    let thread_id = dispatch.thread_id.clone();
+    dispatch.remap_identity(
+        dispatch.dispatch_id().clone(),
+        dispatch.thread_id().clone(),
+        "nonexistent-run".to_string(),
+        dispatch.dedupe_key().map(str::to_string),
+    );
+    let dispatch_id = dispatch.dispatch_id().clone();
+    let thread_id = dispatch.thread_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
 
     mailbox.get_or_create_worker(&thread_id).await;
     mailbox.try_dispatch_next(&thread_id).await;
 
     let dead = wait_for_dispatch(&store, &dispatch_id, |d| {
-        d.status == RunDispatchStatus::DeadLetter
+        d.status() == RunDispatchStatus::DeadLetter
     })
     .await;
-    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
     assert!(
-        dead.last_error
+        dead.last_error()
             .as_deref()
             .is_some_and(|e| e.contains("not found")),
         "expected run-not-found error, got: {:?}",
-        dead.last_error
+        dead.last_error()
     );
     assert_eq!(
         runtime.run_count(),
@@ -2351,8 +2415,8 @@ async fn run_sweep_reclaims_expired_lease_and_completes_work() {
     ));
 
     let mut dispatch = prepare_queued_dispatch(&mailbox, "thread-sweep-reclaim", "x").await;
-    dispatch.available_at = 1000;
-    let dispatch_id = dispatch.dispatch_id.clone();
+    dispatch = dispatch.with_available_at(1000);
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
     // A consumer claims then "crashes": short lease far in the past.
     store
@@ -2365,7 +2429,7 @@ async fn run_sweep_reclaims_expired_lease_and_completes_work() {
             .await
             .unwrap()
             .expect("claimed dispatch is inspectable")
-            .status,
+            .status(),
         RunDispatchStatus::Claimed
     );
 
@@ -2373,12 +2437,13 @@ async fn run_sweep_reclaims_expired_lease_and_completes_work() {
     mailbox.run_sweep().await;
 
     let done = wait_for_dispatch(&store, &dispatch_id, |d| {
-        d.status == RunDispatchStatus::Acked
+        d.status() == RunDispatchStatus::Acked
     })
     .await;
-    assert_eq!(done.status, RunDispatchStatus::Acked);
+    assert_eq!(done.status(), RunDispatchStatus::Acked);
     assert_eq!(
-        done.attempt_count, 1,
+        done.attempt_count(),
+        1,
         "reclaim records exactly one recovery attempt"
     );
     assert!(
@@ -2415,7 +2480,7 @@ async fn quota_storm_drains_with_bounded_work() {
     for i in 0..DISPATCHES {
         let thread_id = format!("storm-thread-{i}");
         let dispatch = prepare_queued_dispatch(&mailbox, &thread_id, "go").await;
-        dispatch_ids.push(dispatch.dispatch_id.clone());
+        dispatch_ids.push(dispatch.dispatch_id().clone());
         store.enqueue(&dispatch).await.expect("enqueue dispatch");
         mailbox.get_or_create_worker(&thread_id).await;
         mailbox.try_dispatch_next(&thread_id).await;
@@ -2424,10 +2489,10 @@ async fn quota_storm_drains_with_bounded_work() {
     // Every dispatch must reach DeadLetter (the storm fully drains).
     for dispatch_id in &dispatch_ids {
         let dead = wait_for_dispatch(&store, dispatch_id, |d| {
-            d.status == RunDispatchStatus::DeadLetter
+            d.status() == RunDispatchStatus::DeadLetter
         })
         .await;
-        assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+        assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
     }
 
     // Bounded work: each dispatch ran exactly once. A pre-fix build would have
@@ -2481,8 +2546,8 @@ async fn permanent_error_recovers_from_transient_dead_letter_fault() {
     ));
 
     let dispatch = prepare_queued_dispatch(&mailbox, "thread-dl-fault", "go").await;
-    let dispatch_id = dispatch.dispatch_id.clone();
-    let thread_id = dispatch.thread_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
+    let thread_id = dispatch.thread_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
 
     mailbox.get_or_create_worker(&thread_id).await;
@@ -2498,13 +2563,13 @@ async fn permanent_error_recovers_from_transient_dead_letter_fault() {
             .await
             .unwrap()
             .expect("dispatch is inspectable");
-        if current.status == RunDispatchStatus::DeadLetter {
+        if current.status() == RunDispatchStatus::DeadLetter {
             break;
         }
         assert!(
             Instant::now() < deadline,
             "dispatch never recovered to DeadLetter (stuck at {:?})",
-            current.status
+            current.status()
         );
         sleep(Duration::from_millis(50)).await;
         mailbox.run_sweep().await;
@@ -2515,13 +2580,13 @@ async fn permanent_error_recovers_from_transient_dead_letter_fault() {
         .await
         .unwrap()
         .expect("dispatch is inspectable");
-    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
     assert!(
-        dead.last_error
+        dead.last_error()
             .as_deref()
             .is_some_and(|e| e.contains("unauthorized")),
         "expected unauthorized error, got: {:?}",
-        dead.last_error
+        dead.last_error()
     );
     // The injected fault forced exactly one recovery cycle: the run executed
     // twice (the failed-dead_letter attempt and the successful one).
@@ -2807,7 +2872,7 @@ async fn start_lifecycle_is_idempotent_and_drop_does_not_abort_recovery() {
     let dispatch = mailbox
         .build_dispatch(&request, &thread_id)
         .expect("build queued dispatch");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store
         .enqueue(&dispatch)
         .await
@@ -2829,7 +2894,7 @@ async fn start_lifecycle_is_idempotent_and_drop_does_not_abort_recovery() {
     drop(duplicate);
 
     wait_for_dispatch(&store, &dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::DeadLetter
+        dispatch.status() == RunDispatchStatus::DeadLetter
     })
     .await;
 
@@ -3012,7 +3077,7 @@ async fn start_lifecycle_runs_startup_recovery_for_existing_queued_dispatches() 
     let dispatch = mailbox
         .build_dispatch(&request, &thread_id)
         .expect("build queued dispatch");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store
         .enqueue(&dispatch)
         .await
@@ -3023,14 +3088,14 @@ async fn start_lifecycle_runs_startup_recovery_for_existing_queued_dispatches() 
         .expect("lifecycle should start");
 
     let recovered = wait_for_dispatch(&store, &dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::DeadLetter
+        dispatch.status() == RunDispatchStatus::DeadLetter
     })
     .await;
 
-    assert_eq!(recovered.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(recovered.status(), RunDispatchStatus::DeadLetter);
     assert!(
         recovered
-            .last_error
+            .last_error()
             .as_deref()
             .is_some_and(|error| error.contains("missing-agent")),
         "dead-letter error should preserve the runtime failure: {recovered:?}"
@@ -3059,8 +3124,8 @@ async fn start_lifecycle_reclaims_expired_claimed_dispatches_and_executes_them()
     let dispatch = mailbox
         .build_dispatch(&request, &thread_id)
         .expect("build stale claimed dispatch");
-    let dispatch_id = dispatch.dispatch_id.clone();
-    let claim_now = dispatch.available_at;
+    let dispatch_id = dispatch.dispatch_id().clone();
+    let claim_now = dispatch.available_at();
     store
         .enqueue(&dispatch)
         .await
@@ -3070,8 +3135,8 @@ async fn start_lifecycle_reclaims_expired_claimed_dispatches_and_executes_them()
         .await
         .expect("claim dispatch before simulated crash");
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].status, RunDispatchStatus::Claimed);
-    assert_eq!(claimed[0].lease_until, Some(claim_now + 1));
+    assert_eq!(claimed[0].status(), RunDispatchStatus::Claimed);
+    assert_eq!(claimed[0].lease_until(), Some(claim_now + 1));
     sleep(Duration::from_millis(2)).await;
 
     let handle = mailbox
@@ -3079,27 +3144,26 @@ async fn start_lifecycle_reclaims_expired_claimed_dispatches_and_executes_them()
         .expect("lifecycle should start");
 
     let recovered = wait_for_dispatch(&store, &dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::DeadLetter
-            && dispatch.run_status == Some(RunStatus::Done)
+        dispatch.status() == RunDispatchStatus::DeadLetter
+            && dispatch.run_status() == Some(RunStatus::Done)
     })
     .await;
 
-    assert_eq!(recovered.status, RunDispatchStatus::DeadLetter);
-    assert_eq!(recovered.attempt_count, 1);
-    let run_id = recovered.run_id.as_str();
+    assert_eq!(recovered.status(), RunDispatchStatus::DeadLetter);
+    assert_eq!(recovered.attempt_count(), 1);
+    let run_id = recovered.run_id().as_str();
     assert_ne!(
         run_id, dispatch_id,
         "recovered stale dispatches should also keep run id separate from mailbox dispatch id"
     );
-    assert!(recovered.dispatch_instance_id.is_some());
+    assert!(recovered.dispatch_instance_id().is_some());
     assert!(matches!(
-        recovered.termination,
-        Some(TerminationReason::Error(ref message)) if message.contains("missing-agent")
+        recovered.termination(),
+        Some(TerminationReason::Error(message)) if message.contains("missing-agent")
     ));
     assert!(
         recovered
-            .run_error
-            .as_deref()
+            .run_error()
             .is_some_and(|error| error.contains("missing-agent"))
     );
     handle.shutdown().await.expect("shutdown lifecycle");
@@ -3131,7 +3195,7 @@ async fn multi_instance_ready_lifecycle_executes_shared_dispatch_once() {
         "shared startup dispatch",
     )
     .await;
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     mailbox_store
         .enqueue(&dispatch)
         .await
@@ -3145,10 +3209,10 @@ async fn multi_instance_ready_lifecycle_executes_shared_dispatch_once() {
     let handle_b = handle_b.expect("instance b lifecycle should start");
 
     let acked = wait_for_dispatch(&mailbox_store, &dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::Acked
+        dispatch.status() == RunDispatchStatus::Acked
     })
     .await;
-    assert_eq!(acked.status, RunDispatchStatus::Acked);
+    assert_eq!(acked.status(), RunDispatchStatus::Acked);
     assert_eq!(
         runtime_a.run_count() + runtime_b.run_count(),
         1,
@@ -3187,7 +3251,7 @@ async fn dispatch_signal_loop_claims_and_executes_queued_dispatch() {
     let dispatch = mailbox
         .build_dispatch(&request, &thread_id)
         .expect("build dispatch");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
 
     let signal_loop = tokio::spawn(Arc::clone(&mailbox).run_dispatch_signal_loop());
@@ -3197,7 +3261,7 @@ async fn dispatch_signal_loop_claims_and_executes_queued_dispatch() {
             .load_dispatch(&dispatch_id)
             .await
             .expect("dispatch lookup should succeed")
-            && dispatch.status == RunDispatchStatus::Acked
+            && dispatch.status() == RunDispatchStatus::Acked
         {
             break dispatch;
         }
@@ -3209,7 +3273,7 @@ async fn dispatch_signal_loop_claims_and_executes_queued_dispatch() {
     };
     signal_loop.abort();
 
-    assert_eq!(acked.status, RunDispatchStatus::Acked);
+    assert_eq!(acked.status(), RunDispatchStatus::Acked);
     assert_eq!(store.acked_signal_count(), 1);
 }
 
@@ -3241,7 +3305,7 @@ async fn dispatch_signal_loop_nacks_and_redelivers_after_claim_error() {
     let dispatch = mailbox
         .build_dispatch(&request, &thread_id)
         .expect("build dispatch");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
 
     let signal_loop = tokio::spawn(Arc::clone(&mailbox).run_dispatch_signal_loop());
@@ -3252,7 +3316,7 @@ async fn dispatch_signal_loop_nacks_and_redelivers_after_claim_error() {
             .await
             .expect("dispatch lookup should succeed")
             .expect("dispatch should exist");
-        if dispatch.status == RunDispatchStatus::Acked {
+        if dispatch.status() == RunDispatchStatus::Acked {
             break;
         }
         assert!(
@@ -3295,7 +3359,7 @@ async fn dispatch_signal_loop_nacks_when_signal_is_blocked_by_active_claim() {
     let active_dispatch = mailbox
         .build_dispatch(&active, &thread_id)
         .expect("build active dispatch");
-    let active_dispatch_id = active_dispatch.dispatch_id.clone();
+    let active_dispatch_id = active_dispatch.dispatch_id().clone();
     store
         .enqueue(&active_dispatch)
         .await
@@ -3305,7 +3369,7 @@ async fn dispatch_signal_loop_nacks_when_signal_is_blocked_by_active_claim() {
         .await
         .expect("claim active dispatch");
     assert_eq!(claimed.len(), 1);
-    let active_claim_token = claimed[0].claim_token.clone().unwrap();
+    let active_claim_token = claimed[0].claim_token().unwrap().to_string();
 
     let mut queued = RunActivation::new("thread-signal-blocked", vec![Message::user("queued")])
         .with_agent_id("agent");
@@ -3322,7 +3386,7 @@ async fn dispatch_signal_loop_nacks_when_signal_is_blocked_by_active_claim() {
     let queued_dispatch = mailbox
         .build_dispatch(&queued, &thread_id)
         .expect("build queued dispatch");
-    let queued_dispatch_id = queued_dispatch.dispatch_id.clone();
+    let queued_dispatch_id = queued_dispatch.dispatch_id().clone();
     store
         .enqueue(&queued_dispatch)
         .await
@@ -3346,7 +3410,7 @@ async fn dispatch_signal_loop_nacks_when_signal_is_blocked_by_active_claim() {
         .await
         .expect("queued dispatch lookup")
         .expect("queued dispatch exists");
-    assert_eq!(queued_before_release.status, RunDispatchStatus::Queued);
+    assert_eq!(queued_before_release.status(), RunDispatchStatus::Queued);
 
     store
         .ack(&active_dispatch_id, &active_claim_token, now_ms())
@@ -3360,7 +3424,7 @@ async fn dispatch_signal_loop_nacks_when_signal_is_blocked_by_active_claim() {
             .await
             .expect("queued dispatch lookup")
             .expect("queued dispatch exists");
-        if dispatch.status == RunDispatchStatus::Acked {
+        if dispatch.status() == RunDispatchStatus::Acked {
             break;
         }
         assert!(
@@ -3467,7 +3531,7 @@ async fn submit_background_enqueues_dispatch() {
         .await
         .unwrap();
     assert!(!dispatches.is_empty());
-    assert_eq!(dispatches[0].run_id, result.run_id);
+    assert_eq!(dispatches[0].run_id(), &result.run_id);
 }
 
 #[tokio::test]
@@ -3786,7 +3850,7 @@ async fn cancel_queued_dispatch_works() {
     assert!(cancelled);
 
     let after = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(after.status, RunDispatchStatus::Cancelled);
+    assert_eq!(after.status(), RunDispatchStatus::Cancelled);
 
     let run = run_store
         .load_run(&result.run_id)
@@ -3990,6 +4054,18 @@ fn classify_error_inference_failed_is_transient() {
     assert!(matches!(
         classify_error(&result),
         MailboxRunOutcome::TransientError(_)
+    ));
+}
+
+#[test]
+fn classify_error_invalid_activation_is_permanent() {
+    use awaken_runtime::loop_runner::AgentLoopError;
+    let result = Err(AgentLoopError::InvalidActivation(
+        "blank thread".to_string(),
+    ));
+    assert!(matches!(
+        classify_error(&result),
+        MailboxRunOutcome::PermanentError(_)
     ));
 }
 
@@ -4240,17 +4316,17 @@ async fn build_dispatch_sets_correct_fields() {
         RunActivation::new("thread-42", vec![Message::user("test")]).with_run_id_hint("run-42");
     let dispatch = mailbox.build_dispatch(&request, "thread-42").unwrap();
 
-    assert_eq!(dispatch.thread_id, "thread-42");
-    assert_eq!(dispatch.run_id, "run-42");
-    assert_eq!(dispatch.status, RunDispatchStatus::Queued);
-    assert_eq!(dispatch.attempt_count, 0);
-    assert_eq!(dispatch.max_attempts, 5); // default
-    assert_eq!(dispatch.priority, 128);
-    assert_eq!(dispatch.dispatch_epoch, 0);
-    assert!(dispatch.claim_token.is_none());
-    assert!(dispatch.claimed_by.is_none());
-    assert!(dispatch.lease_until.is_none());
-    assert!(dispatch.last_error.is_none());
+    assert_eq!(dispatch.thread_id(), "thread-42");
+    assert_eq!(dispatch.run_id(), "run-42");
+    assert_eq!(dispatch.status(), RunDispatchStatus::Queued);
+    assert_eq!(dispatch.attempt_count(), 0);
+    assert_eq!(dispatch.max_attempts(), 5); // default
+    assert_eq!(dispatch.priority(), 128);
+    assert_eq!(dispatch.dispatch_epoch(), 0);
+    assert!(dispatch.claim_token().is_none());
+    assert!(dispatch.claimed_by().is_none());
+    assert!(dispatch.lease_until().is_none());
+    assert!(dispatch.last_error().is_none());
 }
 
 #[test]
@@ -4543,7 +4619,7 @@ async fn mailbox_execution_records_dispatch_latency_metrics() {
         .expect("submit should succeed");
 
     wait_for_dispatch(&mailbox_store, &submitted.dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::Acked
+        dispatch.status() == RunDispatchStatus::Acked
     })
     .await;
 
@@ -4604,7 +4680,7 @@ async fn mailbox_lease_renewal_is_wired_and_prevents_reclaim() {
         .await
         .expect("load dispatch")
         .expect("dispatch should exist")
-        .lease_until
+        .lease_until()
         .expect("claimed dispatch should have a lease");
 
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -4615,7 +4691,7 @@ async fn mailbox_lease_renewal_is_wired_and_prevents_reclaim() {
                 .expect("load dispatch")
                 .expect("dispatch should exist");
             if dispatch
-                .lease_until
+                .lease_until()
                 .is_some_and(|lease| lease > initial_lease)
             {
                 break;
@@ -4637,7 +4713,7 @@ async fn mailbox_lease_renewal_is_wired_and_prevents_reclaim() {
 
     release_first.notify_one();
     wait_for_dispatch(&mailbox_store, &submitted.dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::Acked
+        dispatch.status() == RunDispatchStatus::Acked
     })
     .await;
 
@@ -4679,20 +4755,66 @@ async fn background_success_records_run_result_and_keeps_dispatch_id_separate_fr
         .expect("submit should succeed");
 
     let acked = wait_for_dispatch(&mailbox_store, &submitted.dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::Acked && dispatch.run_status == Some(RunStatus::Done)
+        dispatch.status() == RunDispatchStatus::Acked
+            && dispatch.run_status() == Some(RunStatus::Done)
     })
     .await;
 
-    let run_id = acked.run_id.as_str();
+    let run_id = acked.run_id().as_str();
     assert_ne!(
         run_id, submitted.dispatch_id,
         "default mailbox dispatch IDs must not be used as canonical run IDs"
     );
-    assert!(acked.dispatch_instance_id.is_some());
-    assert_eq!(acked.termination, Some(TerminationReason::NaturalEnd));
-    assert_eq!(acked.run_response.as_deref(), Some("finished"));
-    assert!(acked.run_error.is_none());
-    assert!(acked.completed_at.is_some());
+    assert!(acked.dispatch_instance_id().is_some());
+    assert_eq!(acked.termination(), Some(&TerminationReason::NaturalEnd));
+    assert_eq!(acked.run_response(), Some("finished"));
+    assert!(acked.run_error().is_none());
+    assert!(acked.completed_at().is_some());
+}
+
+#[tokio::test]
+async fn background_success_recovers_ack_after_result_was_recorded() {
+    let mailbox_store = Arc::new(SignalMailboxStore::with_ack_failures(1));
+    let run_store = Arc::new(InMemoryStore::new());
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("finished")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+    let resolver = Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("agent", "m", "sys", llm),
+        plugins: vec![],
+    });
+    let runtime = Arc::new(AgentRuntime::new(resolver));
+    let mailbox = Arc::new(Mailbox::new(
+        runtime,
+        mailbox_store.clone(),
+        run_store,
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+
+    let submitted = mailbox
+        .submit_background(
+            RunActivation::new("thread-run-result-ack-recover", vec![Message::user("go")])
+                .with_agent_id("agent"),
+        )
+        .await
+        .expect("submit should succeed");
+
+    let acked = wait_for_dispatch(&mailbox_store.inner, &submitted.dispatch_id, |dispatch| {
+        dispatch.status() == RunDispatchStatus::Acked
+            && dispatch.run_status() == Some(RunStatus::Done)
+    })
+    .await;
+
+    assert_eq!(acked.run_response(), Some("finished"));
+    assert_eq!(
+        mailbox_store.ack_failures_remaining.load(Ordering::SeqCst),
+        0
+    );
 }
 
 #[tokio::test]
@@ -4710,33 +4832,32 @@ async fn background_permanent_error_records_run_result_before_dead_letter() {
         .expect("submit should succeed");
 
     let dead = wait_for_dispatch(&store, &submitted.dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::DeadLetter
-            && dispatch.run_status == Some(RunStatus::Done)
-            && dispatch.run_error.is_some()
+        dispatch.status() == RunDispatchStatus::DeadLetter
+            && dispatch.run_status() == Some(RunStatus::Done)
+            && dispatch.run_error().is_some()
     })
     .await;
 
-    let run_id = dead.run_id.as_str();
+    let run_id = dead.run_id().as_str();
     assert_ne!(
         run_id, submitted.dispatch_id,
         "synthetic terminal events must preserve canonical run id instead of reusing dispatch id"
     );
-    assert!(dead.dispatch_instance_id.is_some());
+    assert!(dead.dispatch_instance_id().is_some());
     assert!(matches!(
-        dead.termination,
-        Some(TerminationReason::Error(ref message)) if message.contains("missing-agent")
+        dead.termination(),
+        Some(TerminationReason::Error(message)) if message.contains("missing-agent")
     ));
     assert!(
-        dead.last_error
+        dead.last_error()
             .as_deref()
             .is_some_and(|error| error.contains("missing-agent"))
     );
     assert!(
-        dead.run_error
-            .as_deref()
+        dead.run_error()
             .is_some_and(|error| error.contains("missing-agent"))
     );
-    assert!(dead.completed_at.is_some());
+    assert!(dead.completed_at().is_some());
 }
 
 #[tokio::test]
@@ -4754,30 +4875,14 @@ async fn reconstruct_failure_cleans_worker_and_dispatches_next_queued() {
     let thread_id = "thread-reconstruct-next";
     let now = now_ms();
 
-    let missing = RunDispatch {
-        dispatch_id: "dispatch-missing-run".to_string(),
-        thread_id: thread_id.to_string(),
-        run_id: "missing-run".to_string(),
-        priority: 10,
-        dedupe_key: None,
-        dispatch_epoch: 0,
-        status: RunDispatchStatus::Queued,
-        available_at: now,
-        attempt_count: 0,
-        max_attempts: 3,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        dispatch_instance_id: None,
-        run_status: None,
-        termination: None,
-        run_response: None,
-        run_error: None,
-        completed_at: None,
-        created_at: now,
-        updated_at: now,
-    };
+    let missing = RunDispatch::queued(
+        "dispatch-missing-run".to_string(),
+        thread_id.to_string(),
+        "missing-run".to_string(),
+        now,
+    )
+    .with_priority(10)
+    .with_max_attempts(3);
     store.enqueue(&missing).await.expect("enqueue missing run");
 
     let mut next_request =
@@ -4795,10 +4900,10 @@ async fn reconstruct_failure_cleans_worker_and_dispatches_next_queued() {
     let mut next = mailbox
         .build_dispatch(&next_request, thread_id)
         .expect("build next dispatch");
-    next.priority = 20;
-    next.created_at = now.saturating_add(1);
-    next.updated_at = next.created_at;
-    let next_dispatch_id = next.dispatch_id.clone();
+    next = next
+        .with_priority(20)
+        .with_created_at(now.saturating_add(1));
+    let next_dispatch_id = next.dispatch_id().clone();
     store.enqueue(&next).await.expect("enqueue next");
 
     mailbox.get_or_create_worker(thread_id).await;
@@ -4808,16 +4913,16 @@ async fn reconstruct_failure_cleans_worker_and_dispatches_next_queued() {
     );
 
     let dead = wait_for_dispatch(&store, "dispatch-missing-run", |dispatch| {
-        dispatch.status == RunDispatchStatus::DeadLetter
+        dispatch.status() == RunDispatchStatus::DeadLetter
     })
     .await;
-    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
 
     let acked = wait_for_dispatch(&store, &next_dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::Acked
+        dispatch.status() == RunDispatchStatus::Acked
     })
     .await;
-    assert_eq!(acked.status, RunDispatchStatus::Acked);
+    assert_eq!(acked.status(), RunDispatchStatus::Acked);
 }
 
 #[tokio::test]
@@ -4835,30 +4940,14 @@ async fn reconstruct_failure_dead_letters_once_and_is_not_polled_again() {
     let thread_id = "thread-reconstruct-once";
     let now = now_ms();
 
-    let missing = RunDispatch {
-        dispatch_id: "dispatch-reconstruct-once".to_string(),
-        thread_id: thread_id.to_string(),
-        run_id: "missing-run".to_string(),
-        priority: 10,
-        dedupe_key: None,
-        dispatch_epoch: 0,
-        status: RunDispatchStatus::Queued,
-        available_at: now,
-        attempt_count: 0,
-        max_attempts: 3,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        dispatch_instance_id: None,
-        run_status: None,
-        termination: None,
-        run_response: None,
-        run_error: None,
-        completed_at: None,
-        created_at: now,
-        updated_at: now,
-    };
+    let missing = RunDispatch::queued(
+        "dispatch-reconstruct-once".to_string(),
+        thread_id.to_string(),
+        "missing-run".to_string(),
+        now,
+    )
+    .with_priority(10)
+    .with_max_attempts(3);
     store.enqueue(&missing).await.expect("enqueue missing run");
 
     mailbox.get_or_create_worker(thread_id).await;
@@ -4868,10 +4957,10 @@ async fn reconstruct_failure_dead_letters_once_and_is_not_polled_again() {
     );
 
     let dead = wait_for_dispatch(&store.inner, "dispatch-reconstruct-once", |dispatch| {
-        dispatch.status == RunDispatchStatus::DeadLetter
+        dispatch.status() == RunDispatchStatus::DeadLetter
     })
     .await;
-    assert_eq!(dead.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -4954,7 +5043,7 @@ async fn interrupt_marks_superseded_queued_runs_cancelled() {
             .await
             .unwrap()
             .expect("superseded dispatch should remain inspectable");
-        assert_eq!(dispatch.status, RunDispatchStatus::Superseded);
+        assert_eq!(dispatch.status(), RunDispatchStatus::Superseded);
 
         let run = run_store
             .load_run(&submitted.run_id)
@@ -4996,7 +5085,7 @@ async fn runtime_event_capture_records_run_interrupted_on_thread_interrupt() {
     );
     let thread_id = "thread-interrupt-event";
     let active_dispatch = prepare_queued_dispatch(&mailbox, thread_id, "active").await;
-    let active_dispatch_id = active_dispatch.dispatch_id.clone();
+    let active_dispatch_id = active_dispatch.dispatch_id().clone();
     mailbox_store
         .enqueue(&active_dispatch)
         .await
@@ -5016,7 +5105,7 @@ async fn runtime_event_capture_records_run_interrupted_on_thread_interrupt() {
         result
             .active_dispatch
             .as_ref()
-            .map(|dispatch| dispatch.dispatch_id.as_str()),
+            .map(|dispatch| dispatch.dispatch_id().as_str()),
         Some(active_dispatch_id.as_str())
     );
     let page = event_store
@@ -5030,7 +5119,7 @@ async fn runtime_event_capture_records_run_interrupted_on_thread_interrupt() {
         .expect("run interrupted event should be recorded");
     assert_eq!(
         event.run_id.as_deref(),
-        Some(active_dispatch.run_id.as_str())
+        Some(active_dispatch.run_id().as_str())
     );
     assert_eq!(
         event.correlation_id.as_deref(),
@@ -5072,7 +5161,7 @@ async fn runtime_event_capture_records_run_rescheduled_on_retry_backoff() {
         .await
         .expect("background submit should succeed");
     let queued = wait_for_dispatch(&mailbox_store, &submitted.dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::Queued && dispatch.attempt_count == 1
+        dispatch.status() == RunDispatchStatus::Queued && dispatch.attempt_count() == 1
     })
     .await;
 
@@ -5095,7 +5184,7 @@ async fn runtime_event_capture_records_run_rescheduled_on_retry_backoff() {
     assert_eq!(event.payload["attempt_count"].as_u64(), Some(1));
     assert_eq!(
         event.payload["available_at"].as_u64(),
-        Some(queued.available_at)
+        Some(queued.available_at())
     );
 }
 
@@ -5121,8 +5210,8 @@ async fn runtime_event_capture_records_run_rescheduled_on_expired_lease_reclaim(
     );
     let thread_id = "thread-reschedule-reclaim";
     let mut dispatch = prepare_queued_dispatch(&mailbox, thread_id, "reclaim").await;
-    dispatch.available_at = 1_000;
-    let dispatch_id = dispatch.dispatch_id.clone();
+    dispatch = dispatch.with_available_at(1_000);
+    let dispatch_id = dispatch.dispatch_id().clone();
     mailbox_store
         .enqueue(&dispatch)
         .await
@@ -5184,7 +5273,7 @@ async fn foreground_submit_marks_prior_queued_run_cancelled() {
         .await
         .unwrap()
         .expect("old dispatch should remain inspectable");
-    assert_eq!(old_dispatch.status, RunDispatchStatus::Superseded);
+    assert_eq!(old_dispatch.status(), RunDispatchStatus::Superseded);
 
     let old_run = run_store
         .load_run(&old.run_id)
@@ -5235,10 +5324,10 @@ async fn submit_inline_claim_empty_cancels_precreated_run() {
         .expect("list inline cleanup dispatches");
     assert_eq!(dispatches.len(), 1);
     let dispatch = &dispatches[0];
-    assert_eq!(dispatch.status, RunDispatchStatus::Cancelled);
+    assert_eq!(dispatch.status(), RunDispatchStatus::Cancelled);
 
     let run = run_store
-        .load_run(&dispatch.run_id)
+        .load_run(&dispatch.run_id())
         .await
         .unwrap()
         .expect("inline cleanup should keep run inspectable");
@@ -5246,7 +5335,7 @@ async fn submit_inline_claim_empty_cancels_precreated_run() {
     assert_eq!(run.termination_reason, Some(TerminationReason::Cancelled));
     assert_eq!(
         run.dispatch_id.as_deref(),
-        Some(dispatch.dispatch_id.as_str())
+        Some(dispatch.dispatch_id().as_str())
     );
 
     let output = crate::metrics::render().unwrap_or_default();
@@ -5342,10 +5431,10 @@ async fn reclaim_dead_letter_marks_run_error() {
     ));
 
     let mut dispatch = prepare_queued_dispatch(&mailbox, "thread-reclaim-dead", "expire").await;
-    dispatch.max_attempts = 1;
-    dispatch.available_at = 1000;
-    let dispatch_id = dispatch.dispatch_id.clone();
-    let run_id = dispatch.run_id.clone();
+    dispatch = dispatch.with_max_attempts(1);
+    dispatch = dispatch.with_available_at(1000);
+    let dispatch_id = dispatch.dispatch_id().clone();
+    let run_id = dispatch.run_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
     let claimed = store
         .claim("thread-reclaim-dead", "stale-consumer", 100, 1000, 1)
@@ -5363,7 +5452,7 @@ async fn reclaim_dead_letter_marks_run_error() {
         .await
         .unwrap()
         .expect("dead-lettered dispatch should remain inspectable");
-    assert_eq!(dead_letter.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(dead_letter.status(), RunDispatchStatus::DeadLetter);
 
     let run = run_store
         .load_run(&run_id)
@@ -5397,9 +5486,9 @@ async fn sweep_reconciles_dead_letter_dispatch_after_crash() {
 
     let mut dispatch =
         prepare_queued_dispatch(&mailbox, "thread-sweep-reconcile-dead", "dead").await;
-    dispatch.available_at = 1;
-    let dispatch_id = dispatch.dispatch_id.clone();
-    let run_id = dispatch.run_id.clone();
+    dispatch = dispatch.with_available_at(1);
+    let dispatch_id = dispatch.dispatch_id().clone();
+    let run_id = dispatch.run_id().clone();
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
     let claimed = store
         .claim(
@@ -5412,8 +5501,7 @@ async fn sweep_reconciles_dead_letter_dispatch_after_crash() {
         .await
         .expect("claim dispatch");
     let claim_token = claimed[0]
-        .claim_token
-        .as_deref()
+        .claim_token()
         .expect("claimed dispatch should have a claim token")
         .to_string();
     store
@@ -5697,6 +5785,73 @@ async fn maintenance_drain_republishes_enqueued_checkpoint_repair() {
         .await
         .unwrap();
     assert_eq!(page.events.len(), 2, "re-publish must be idempotent");
+}
+
+#[tokio::test]
+async fn maintenance_drain_requeues_checkpoint_repair_when_messages_missing() {
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let thread_store = Arc::new(InMemoryStore::new());
+    let mailbox = Arc::new(
+        Mailbox::new(
+            Arc::new(NoopMailboxRuntime),
+            make_store(),
+            thread_store,
+            "test-consumer".to_string(),
+            MailboxConfig::default(),
+        )
+        .with_server_event_publisher(
+            test_server_event_publisher(Arc::clone(&event_store)),
+            "server",
+        )
+        .unwrap(),
+    );
+
+    mailbox.enqueue_checkpoint_repair(super::checkpoint_repair::CheckpointRepairTask {
+        thread_id: "thread-missing".to_string(),
+        run_id: "run-missing".to_string(),
+        first_seq: 1,
+        last_seq: 1,
+    });
+    mailbox.run_sweep().await;
+
+    let page = event_store
+        .list(EventScope::thread("thread-missing"), None, 10)
+        .await
+        .unwrap();
+    assert!(page.events.is_empty());
+    let queued = mailbox.checkpoint_repair_queue.lock().unwrap();
+    assert_eq!(queued.len(), 1);
+}
+
+#[tokio::test]
+async fn checkpoint_event_recording_rejects_out_of_range_message_seq() {
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let thread_store = Arc::new(InMemoryStore::new());
+    let mailbox = Mailbox::new(
+        Arc::new(NoopMailboxRuntime),
+        make_store(),
+        thread_store,
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    )
+    .with_server_event_publisher(
+        test_server_event_publisher(Arc::clone(&event_store)),
+        "server",
+    )
+    .unwrap();
+
+    let message = Message::user("hi").with_id("msg-1".to_string());
+    let error = mailbox
+        .record_thread_message_checkpoint_events("thread-range", "run-range", &[message], 1, 2)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, MailboxError::Internal(_)));
+    let page = event_store
+        .list(EventScope::thread("thread-range"), None, 10)
+        .await
+        .unwrap();
+    assert!(page.events.is_empty());
 }
 
 #[tokio::test]
@@ -6226,7 +6381,7 @@ async fn live_then_queue_steers_active_run_without_new_dispatch() {
     assert_eq!(
         dispatches
             .iter()
-            .filter(|dispatch| dispatch.run_id == first.run_id)
+            .filter(|dispatch| dispatch.run_id() == &first.run_id)
             .count(),
         1,
         "live steering must not create an extra dispatch"
@@ -6261,7 +6416,7 @@ async fn live_then_queue_falls_back_to_durable_dispatch_when_receiver_unavailabl
     let active_dispatch = mailbox
         .build_dispatch(&active_request, thread_id)
         .expect("build active dispatch");
-    let active_dispatch_id = active_dispatch.dispatch_id.clone();
+    let active_dispatch_id = active_dispatch.dispatch_id().clone();
     mailbox_store
         .enqueue(&active_dispatch)
         .await
@@ -6276,7 +6431,7 @@ async fn live_then_queue_falls_back_to_durable_dispatch_when_receiver_unavailabl
         let mut worker = worker.lock();
         worker.status = MailboxWorkerStatus::Running {
             dispatch_id: active_dispatch_id.clone(),
-            run_id: active_dispatch.run_id.clone(),
+            run_id: active_dispatch.run_id().clone(),
             lease_handle: tokio::spawn(async {}),
             sink: Arc::new(ReconnectableEventSink::new(mpsc::channel(16).0)),
         };
@@ -6310,7 +6465,7 @@ async fn live_then_queue_falls_back_to_durable_dispatch_when_receiver_unavailabl
         .await
         .expect("list queued");
     assert_eq!(queued.len(), 1);
-    assert_eq!(queued[0].dispatch_id, result.dispatch_id);
+    assert_eq!(queued[0].dispatch_id(), &result.dispatch_id);
 }
 
 #[tokio::test]
@@ -6353,7 +6508,7 @@ async fn foreground_submit_sends_live_cancel_for_remote_active_dispatch() {
     let active_dispatch = mailbox
         .build_dispatch(&active_request, thread_id)
         .expect("build active dispatch");
-    let active_dispatch_id = active_dispatch.dispatch_id.clone();
+    let active_dispatch_id = active_dispatch.dispatch_id().clone();
     mailbox_store
         .enqueue(&active_dispatch)
         .await
@@ -6363,7 +6518,7 @@ async fn foreground_submit_sends_live_cancel_for_remote_active_dispatch() {
         .await
         .expect("claim active dispatch")
         .expect("active dispatch should be claimed");
-    let active_claim_token = claimed.claim_token.clone().expect("claim token");
+    let active_claim_token = claimed.claim_token().expect("claim token").to_string();
 
     let subscriber = mailbox_store
         .open_live_channel_for(&live_target_for_dispatch(&active_dispatch))
@@ -6469,7 +6624,7 @@ async fn foreground_submit_does_not_prepare_replacement_when_remote_cancel_times
     let active_dispatch = mailbox
         .build_dispatch(&active_request, thread_id)
         .expect("build active dispatch");
-    let active_dispatch_id = active_dispatch.dispatch_id.clone();
+    let active_dispatch_id = active_dispatch.dispatch_id().clone();
     mailbox_store.enqueue(&active_dispatch).await.unwrap();
     mailbox_store
         .claim_dispatch(&active_dispatch_id, "remote-consumer", 30_000, now_ms())
@@ -6517,8 +6672,8 @@ async fn foreground_submit_does_not_prepare_replacement_when_remote_cancel_times
         .await
         .expect("list dispatches");
     assert_eq!(all.len(), 1);
-    assert_eq!(all[0].dispatch_id, active_dispatch_id);
-    assert_eq!(all[0].status, RunDispatchStatus::Claimed);
+    assert_eq!(all[0].dispatch_id(), &active_dispatch_id);
+    assert_eq!(all[0].status(), RunDispatchStatus::Claimed);
 }
 
 #[tokio::test]
@@ -6558,7 +6713,7 @@ async fn foreground_submit_does_not_prepare_replacement_when_local_cancel_times_
     let active_dispatch = mailbox
         .build_dispatch(&active_request, thread_id)
         .expect("build active dispatch");
-    let active_dispatch_id = active_dispatch.dispatch_id.clone();
+    let active_dispatch_id = active_dispatch.dispatch_id().clone();
     mailbox_store.enqueue(&active_dispatch).await.unwrap();
     mailbox_store
         .claim_dispatch(&active_dispatch_id, "foreground-consumer", 30_000, now_ms())
@@ -6590,8 +6745,8 @@ async fn foreground_submit_does_not_prepare_replacement_when_local_cancel_times_
         .await
         .expect("list dispatches");
     assert_eq!(all.len(), 1);
-    assert_eq!(all[0].dispatch_id, active_dispatch_id);
-    assert_eq!(all[0].status, RunDispatchStatus::Claimed);
+    assert_eq!(all[0].dispatch_id(), &active_dispatch_id);
+    assert_eq!(all[0].status(), RunDispatchStatus::Claimed);
 
     let page = event_store
         .list(EventScope::thread(thread_id), None, 10)
@@ -6639,7 +6794,7 @@ async fn foreground_submit_waits_for_local_cancelled_dispatch_to_release_claim()
     let active_dispatch = mailbox
         .build_dispatch(&active_request, thread_id)
         .expect("build active dispatch");
-    let active_dispatch_id = active_dispatch.dispatch_id.clone();
+    let active_dispatch_id = active_dispatch.dispatch_id().clone();
     mailbox_store.enqueue(&active_dispatch).await.unwrap();
     mailbox_store
         .claim_dispatch(&active_dispatch_id, "foreground-consumer", 30_000, now_ms())
@@ -6671,8 +6826,8 @@ async fn foreground_submit_waits_for_local_cancelled_dispatch_to_release_claim()
         .await
         .expect("list dispatches");
     assert_eq!(all.len(), 1);
-    assert_eq!(all[0].dispatch_id, active_dispatch_id);
-    assert_eq!(all[0].status, RunDispatchStatus::Claimed);
+    assert_eq!(all[0].dispatch_id(), &active_dispatch_id);
+    assert_eq!(all[0].status(), RunDispatchStatus::Claimed);
 }
 
 /// Cross-node live delivery: no local worker, but the thread has an
@@ -6919,7 +7074,7 @@ async fn live_then_queue_falls_back_when_subscriber_drops_receipt() {
         1,
         "unacked receipt must force a durable dispatch"
     );
-    assert_eq!(result.dispatch_id, dispatches[0].dispatch_id);
+    assert_eq!(&result.dispatch_id, dispatches[0].dispatch_id());
 }
 
 /// Contract test documenting the `submit_live_then_queue` at-least-once
@@ -6997,7 +7152,7 @@ async fn live_then_queue_is_at_least_once_when_ack_lost() {
         .await
         .expect("list dispatches");
     assert_eq!(dispatches.len(), 1);
-    assert_eq!(result.dispatch_id, dispatches[0].dispatch_id);
+    assert_eq!(&result.dispatch_id, dispatches[0].dispatch_id());
 }
 
 /// expected_run_id mismatch against a remote Running run must abort
@@ -7207,7 +7362,7 @@ async fn live_then_queue_falls_back_to_queue_when_no_remote_subscriber() {
         1,
         "no-subscriber cross-node must fall back to durable queue"
     );
-    assert_eq!(result.dispatch_id, all_dispatches[0].dispatch_id);
+    assert_eq!(&result.dispatch_id, all_dispatches[0].dispatch_id());
 }
 
 #[tokio::test]
@@ -7533,8 +7688,8 @@ async fn recover_reconstructs_dispatch_for_prepared_run_missing_wal() {
         .await
         .expect("load reconstructed dispatch")
         .expect("dispatch reconstructed");
-    assert_eq!(dispatch.run_id, run_id);
-    assert_eq!(dispatch.thread_id, "thread-prepared-crash");
+    assert_eq!(dispatch.run_id(), &run_id);
+    assert_eq!(dispatch.thread_id(), "thread-prepared-crash");
 }
 
 #[tokio::test]
@@ -7585,8 +7740,8 @@ async fn recover_reconstructs_dispatch_for_prepared_waiting_resume_missing_wal()
         .await
         .expect("load reconstructed dispatch")
         .expect("dispatch reconstructed");
-    assert_eq!(dispatch.run_id, "run-waiting-crash");
-    assert_eq!(dispatch.thread_id, "thread-waiting-crash");
+    assert_eq!(dispatch.run_id(), "run-waiting-crash");
+    assert_eq!(dispatch.thread_id(), "thread-waiting-crash");
 }
 
 #[tokio::test]
@@ -7679,9 +7834,9 @@ async fn distributed_claim_same_dispatch_allows_exactly_one_consumer() {
         .await
         .expect("load dispatch")
         .expect("dispatch exists");
-    assert_eq!(loaded.status, RunDispatchStatus::Claimed);
-    assert_eq!(loaded.claimed_by, winners[0].claimed_by);
-    assert_eq!(loaded.claim_token, winners[0].claim_token);
+    assert_eq!(loaded.status(), RunDispatchStatus::Claimed);
+    assert_eq!(loaded.claimed_by(), winners[0].claimed_by());
+    assert_eq!(loaded.claim_token(), winners[0].claim_token());
 }
 
 #[tokio::test]
@@ -7689,7 +7844,7 @@ async fn distributed_expired_lease_reclaim_rejects_late_old_owner_ack() {
     let store = make_store();
     let mut dispatch =
         sample_dispatch("thread-lease-race", "run-lease-race", "dispatch-lease-race");
-    dispatch.available_at = 0;
+    dispatch = dispatch.with_available_at(0);
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
 
     let claimed_by_a = store
@@ -7697,22 +7852,22 @@ async fn distributed_expired_lease_reclaim_rejects_late_old_owner_ack() {
         .await
         .expect("claim by a")
         .expect("a owns dispatch");
-    let old_token = claimed_by_a.claim_token.clone().expect("old token");
+    let old_token = claimed_by_a.claim_token().expect("old token");
 
     let reclaimed = store
         .reclaim_expired_leases(1_101, 10)
         .await
         .expect("reclaim expired lease");
     assert_eq!(reclaimed.len(), 1);
-    assert_eq!(reclaimed[0].status, RunDispatchStatus::Queued);
-    assert_eq!(reclaimed[0].attempt_count, 1);
+    assert_eq!(reclaimed[0].status(), RunDispatchStatus::Queued);
+    assert_eq!(reclaimed[0].attempt_count(), 1);
 
     let claimed_by_b = store
         .claim_dispatch("dispatch-lease-race", "consumer-b", 30_000, 1_102)
         .await
         .expect("claim by b")
         .expect("b owns dispatch after reclaim");
-    let new_token = claimed_by_b.claim_token.clone().expect("new token");
+    let new_token = claimed_by_b.claim_token().expect("new token");
 
     assert!(
         store
@@ -7726,8 +7881,8 @@ async fn distributed_expired_lease_reclaim_rejects_late_old_owner_ack() {
         .await
         .expect("load after old ack")
         .expect("dispatch exists");
-    assert_eq!(still_claimed_by_b.status, RunDispatchStatus::Claimed);
-    assert_eq!(still_claimed_by_b.claimed_by.as_deref(), Some("consumer-b"));
+    assert_eq!(still_claimed_by_b.status(), RunDispatchStatus::Claimed);
+    assert_eq!(still_claimed_by_b.claimed_by(), Some("consumer-b"));
 
     store
         .ack("dispatch-lease-race", &new_token, 1_104)
@@ -7738,7 +7893,7 @@ async fn distributed_expired_lease_reclaim_rejects_late_old_owner_ack() {
         .await
         .expect("load delivered")
         .expect("dispatch exists");
-    assert_eq!(delivered.status, RunDispatchStatus::Acked);
+    assert_eq!(delivered.status(), RunDispatchStatus::Acked);
 }
 
 #[tokio::test]
@@ -7749,7 +7904,7 @@ async fn distributed_lease_reclaim_uses_strict_expiry_boundary() {
         "run-lease-boundary",
         "dispatch-lease-boundary",
     );
-    dispatch.available_at = 0;
+    dispatch = dispatch.with_available_at(0);
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
 
     store
@@ -7785,7 +7940,7 @@ async fn distributed_lease_reclaim_uses_strict_expiry_boundary() {
         1,
         "lease should only be reclaimed after the boundary has passed"
     );
-    assert_eq!(after_expiry[0].status, RunDispatchStatus::Queued);
+    assert_eq!(after_expiry[0].status(), RunDispatchStatus::Queued);
 }
 
 #[tokio::test]
@@ -7796,7 +7951,7 @@ async fn distributed_nack_retry_window_respects_retry_at_boundary() {
         "run-retry-boundary",
         "dispatch-retry-boundary",
     );
-    dispatch.available_at = 0;
+    dispatch = dispatch.with_available_at(0);
     store.enqueue(&dispatch).await.expect("enqueue dispatch");
 
     let claimed = store
@@ -7804,7 +7959,7 @@ async fn distributed_nack_retry_window_respects_retry_at_boundary() {
         .await
         .expect("claim dispatch")
         .expect("claim exists");
-    let token = claimed.claim_token.expect("claim token");
+    let token = claimed.claim_token().expect("claim token");
 
     store
         .nack(
@@ -7833,7 +7988,7 @@ async fn distributed_nack_retry_window_respects_retry_at_boundary() {
     assert!(
         at_retry
             .first()
-            .is_some_and(|dispatch| dispatch.dispatch_id == "dispatch-retry-boundary"),
+            .is_some_and(|dispatch| dispatch.dispatch_id() == "dispatch-retry-boundary"),
         "dispatch must become claimable at retry_at"
     );
 }
@@ -7884,7 +8039,7 @@ async fn distributed_recover_prepared_run_missing_wal_is_idempotent_across_insta
         .await
         .expect("list dispatches");
     assert_eq!(dispatches.len(), 1);
-    assert_eq!(dispatches[0].dispatch_id, "dispatch-distributed-recover");
+    assert_eq!(dispatches[0].dispatch_id(), "dispatch-distributed-recover");
 }
 
 #[tokio::test]
@@ -8111,7 +8266,7 @@ async fn interrupt_between_claim_and_execution_supersedes_without_runtime_start(
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if let Some(dispatch) = store.load_dispatch(&result.dispatch_id).await.unwrap()
-                && dispatch.status == RunDispatchStatus::Superseded
+                && dispatch.status() == RunDispatchStatus::Superseded
             {
                 break;
             }
@@ -8131,9 +8286,9 @@ async fn interrupt_between_claim_and_execution_supersedes_without_runtime_start(
         .await
         .unwrap()
         .expect("dispatch should remain inspectable");
-    assert_eq!(loaded.status, RunDispatchStatus::Superseded);
-    assert!(loaded.claim_token.is_none());
-    assert!(loaded.lease_until.is_none());
+    assert_eq!(loaded.status(), RunDispatchStatus::Superseded);
+    assert!(loaded.claim_token().is_none());
+    assert!(loaded.lease_until().is_none());
 
     let run = run_store
         .load_run(&result.run_id)
@@ -8187,7 +8342,7 @@ async fn dispatch_signal_busy_ack_still_runs_queued_dispatch_after_current_finis
     let first_dispatch = mailbox
         .build_dispatch(&first, &thread_id)
         .expect("build first dispatch");
-    let first_dispatch_id = first_dispatch.dispatch_id.clone();
+    let first_dispatch_id = first_dispatch.dispatch_id().clone();
     store.enqueue(&first_dispatch).await.expect("enqueue first");
 
     let mut second = RunActivation::new("thread-signal-busy", vec![Message::user("second")])
@@ -8205,7 +8360,7 @@ async fn dispatch_signal_busy_ack_still_runs_queued_dispatch_after_current_finis
     let second_dispatch = mailbox
         .build_dispatch(&second, &thread_id)
         .expect("build second dispatch");
-    let second_dispatch_id = second_dispatch.dispatch_id.clone();
+    let second_dispatch_id = second_dispatch.dispatch_id().clone();
     store
         .enqueue(&second_dispatch)
         .await
@@ -8243,7 +8398,7 @@ async fn dispatch_signal_busy_ack_still_runs_queued_dispatch_after_current_finis
         .expect("load queued dispatch")
         .expect("queued dispatch exists");
     assert_eq!(
-        queued_before_release.status,
+        queued_before_release.status(),
         RunDispatchStatus::Queued,
         "busy signal ack must not claim the other dispatch before the first finishes"
     );
@@ -8257,17 +8412,17 @@ async fn dispatch_signal_busy_ack_still_runs_queued_dispatch_after_current_finis
     assert_eq!(dispatch_id.as_deref(), Some(queued_dispatch_id));
 
     let first_done = wait_for_dispatch(&store.inner, &first_dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::Acked
+        dispatch.status() == RunDispatchStatus::Acked
     })
     .await;
     let second_done = wait_for_dispatch(&store.inner, &second_dispatch_id, |dispatch| {
-        dispatch.status == RunDispatchStatus::Acked
+        dispatch.status() == RunDispatchStatus::Acked
     })
     .await;
     signal_loop.abort();
 
-    assert_eq!(first_done.status, RunDispatchStatus::Acked);
-    assert_eq!(second_done.status, RunDispatchStatus::Acked);
+    assert_eq!(first_done.status(), RunDispatchStatus::Acked);
+    assert_eq!(second_done.status(), RunDispatchStatus::Acked);
     assert_eq!(store.acked_signal_count(), 2);
     assert_eq!(store.nacked_signal_count(), 0);
 }
@@ -8505,7 +8660,7 @@ fn nack_backoff_progression() {
     // Formula from execute_dispatch: 2^(attempt_count.saturating_sub(1).min(6))
     // attempt_count is 0-based on the dispatch at nack time, but incremented
     // by the store before re-queue. The backoff in execute_dispatch uses
-    // dispatch.attempt_count which is the pre-nack value.
+    // dispatch.attempt_count() which is the pre-nack value.
     for (attempt_count, expected_ms) in [
         (1, 250),   // 2^0 * 250 = 250
         (2, 500),   // 2^1 * 250 = 500
@@ -8648,6 +8803,7 @@ async fn gc_idle_workers_noop_when_empty() {
 // ── ThreadContext cache tests ───────────────────────────────────
 
 fn make_run_record(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
+    let finished_at = (status == RunStatus::Done).then_some(2);
     RunRecord {
         run_id: run_id.to_string(),
         thread_id: thread_id.to_string(),
@@ -8669,7 +8825,7 @@ fn make_run_record(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecor
         outcome: None,
         created_at: 1,
         started_at: None,
-        finished_at: None,
+        finished_at,
         updated_at: 1,
         steps: 0,
         input_tokens: 0,
@@ -8725,7 +8881,7 @@ async fn thread_context_cache_used_by_reusable_waiting_run_id() {
         w.thread_ctx = Some(ctx);
     }
 
-    let result = mailbox.reusable_waiting_run_id(thread_id).await;
+    let result = mailbox.reusable_waiting_run_id(thread_id).await.unwrap();
     assert_eq!(result, Some("run-waiting".to_string()));
 }
 
@@ -8882,7 +9038,10 @@ async fn reusable_waiting_run_id_ignores_stale_worker_cache() {
         .await
         .unwrap();
 
-    assert_eq!(mailbox.reusable_waiting_run_id(thread_id).await, None);
+    assert_eq!(
+        mailbox.reusable_waiting_run_id(thread_id).await.unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -8975,7 +9134,7 @@ async fn reusable_waiting_run_id_returns_none_for_done_cached_run() {
         w.thread_ctx = Some(ctx);
     }
 
-    let result = mailbox.reusable_waiting_run_id(thread_id).await;
+    let result = mailbox.reusable_waiting_run_id(thread_id).await.unwrap();
     assert_eq!(result, None, "Done run should not be reusable");
 }
 
@@ -9008,30 +9167,14 @@ impl RunDispatchExecutor for CoordinatorAwareNoopRuntime {
 
 fn sample_dispatch(thread_id: &str, run_id: &str, dispatch_id: &str) -> RunDispatch {
     let now = now_ms();
-    RunDispatch {
-        dispatch_id: dispatch_id.to_string(),
-        thread_id: thread_id.to_string(),
-        run_id: run_id.to_string(),
-        priority: 0,
-        dedupe_key: None,
-        dispatch_epoch: 0,
-        status: RunDispatchStatus::Queued,
-        available_at: now,
-        attempt_count: 0,
-        max_attempts: 3,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        dispatch_instance_id: None,
-        run_status: None,
-        termination: None,
-        run_response: None,
-        run_error: None,
-        completed_at: None,
-        created_at: now,
-        updated_at: now,
-    }
+    RunDispatch::queued(
+        dispatch_id.to_string(),
+        thread_id.to_string(),
+        run_id.to_string(),
+        now,
+    )
+    .with_priority(0)
+    .with_max_attempts(3)
 }
 
 /// ADR-0036 D9: when a per-run `EventBuffer` is supplied to
@@ -9045,7 +9188,10 @@ async fn wrap_dispatch_with_buffer_stages_into_buffer_not_writer() {
     let event_store = Arc::new(InMemoryEventStore::new());
     let mailbox_store = make_store();
     let thread_store = Arc::new(InMemoryStore::new());
-    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(CoordinatorAwareNoopRuntime);
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(CommittingEmittingMailboxRuntime::new(
+        Arc::clone(&thread_store),
+        Arc::clone(&event_store),
+    ));
     let mailbox = Arc::new(
         Mailbox::new(
             runtime,
@@ -9111,5 +9257,58 @@ fn runtime_event_capture_requires_commit_coordinator() {
     assert_eq!(
         error.to_string(),
         "validation error: runtime event capture requires an executor with CommitCoordinator"
+    );
+}
+
+#[test]
+fn runtime_event_capture_requires_staged_commit_coordinator() {
+    let mailbox_store = make_store();
+    let thread_store = Arc::new(InMemoryStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(CoordinatorAwareNoopRuntime);
+    let result = Mailbox::new(
+        runtime,
+        mailbox_store,
+        thread_store,
+        "c".into(),
+        MailboxConfig::default(),
+    )
+    .with_runtime_event_capture(RuntimeEventDurability::Compacted, "test");
+    let error = match result {
+        Ok(_) => panic!("capture without a staged coordinator must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.to_string(),
+        "validation error: runtime event capture requires an executor with StagedCommitCoordinator"
+    );
+}
+
+#[test]
+fn mailbox_try_new_rejects_coordinator_run_store_mismatch() {
+    let coordinator_store = Arc::new(InMemoryStore::new());
+    let mailbox_run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(CommittingEmittingMailboxRuntime::new(
+        coordinator_store,
+        event_store,
+    ));
+
+    let result = Mailbox::try_new(
+        runtime,
+        make_store(),
+        mailbox_run_store,
+        "c".into(),
+        MailboxConfig::default(),
+    );
+
+    let error = match result {
+        Ok(_) => panic!("mailbox must reject mismatched coordinator and run_store"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("mailbox run_store must match executor CommitCoordinator"),
+        "unexpected error: {error}"
     );
 }
