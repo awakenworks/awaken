@@ -39,7 +39,7 @@ impl DispatchIndex {
     }
 
     fn upsert_inner(&mut self, dispatch: RunDispatch, revision: Option<u64>, force: bool) {
-        let id = dispatch.dispatch_id.clone();
+        let id = dispatch.dispatch_id().to_string();
         if let Some(prev) = self.by_id.get(&id) {
             if !force {
                 if let (Some(prev_revision), Some(incoming_revision)) = (prev.revision, revision)
@@ -47,21 +47,21 @@ impl DispatchIndex {
                 {
                     return;
                 }
-                if revision.is_none() && dispatch.updated_at < prev.dispatch.updated_at {
+                if revision.is_none() && dispatch.updated_at() < prev.dispatch.updated_at() {
                     return;
                 }
             }
-            if let Some(set) = self.by_status.get_mut(&status_key(prev.dispatch.status)) {
+            if let Some(set) = self.by_status.get_mut(&status_key(prev.dispatch.status())) {
                 set.remove(&id);
             }
         } else {
             self.by_thread
-                .entry(dispatch.thread_id.clone())
+                .entry(dispatch.thread_id().to_string())
                 .or_default()
                 .push(id.clone());
         }
         self.by_status
-            .entry(status_key(dispatch.status))
+            .entry(status_key(dispatch.status()))
             .or_default()
             .insert(id.clone());
         self.by_id
@@ -86,13 +86,13 @@ impl DispatchIndex {
         }
         if let Some(indexed) = self.by_id.remove(dispatch_id) {
             let dispatch = indexed.dispatch;
-            if let Some(set) = self.by_status.get_mut(&status_key(dispatch.status)) {
+            if let Some(set) = self.by_status.get_mut(&status_key(dispatch.status())) {
                 set.remove(dispatch_id);
             }
-            if let Some(ids) = self.by_thread.get_mut(&dispatch.thread_id) {
+            if let Some(ids) = self.by_thread.get_mut(dispatch.thread_id()) {
                 ids.retain(|id| id != dispatch_id);
                 if ids.is_empty() {
-                    self.by_thread.remove(&dispatch.thread_id);
+                    self.by_thread.remove(dispatch.thread_id());
                 }
             }
         }
@@ -119,7 +119,7 @@ impl DispatchIndex {
         ids.iter()
             .filter_map(|id| self.by_id.get(id).map(|indexed| indexed.dispatch.clone()))
             .filter(|d| match status_filter {
-                Some(filter) => filter.contains(&d.status),
+                Some(filter) => filter.contains(&d.status()),
                 None => true,
             })
             .collect()
@@ -139,16 +139,16 @@ impl DispatchIndex {
             let Some(dispatch) = self.by_id.get(id).map(|indexed| &indexed.dispatch) else {
                 continue;
             };
-            if dispatch.status != RunDispatchStatus::Queued || dispatch.available_at > now {
+            if dispatch.status() != RunDispatchStatus::Queued || dispatch.available_at() > now {
                 continue;
             }
             eligible_count += 1;
             if best.is_none_or(|current| {
                 dispatch
-                    .priority
-                    .cmp(&current.priority)
-                    .then(dispatch.created_at.cmp(&current.created_at))
-                    .then(dispatch.dispatch_id.cmp(&current.dispatch_id))
+                    .priority()
+                    .cmp(&current.priority())
+                    .then(dispatch.created_at().cmp(&current.created_at()))
+                    .then(dispatch.dispatch_id().cmp(current.dispatch_id()))
                     .is_lt()
             }) {
                 best = Some(dispatch);
@@ -162,15 +162,15 @@ impl DispatchIndex {
         ids.iter()
             .filter_map(|id| self.by_id.get(id).map(|indexed| &indexed.dispatch))
             .filter(|dispatch| {
-                dispatch.status == RunDispatchStatus::Claimed
+                dispatch.status() == RunDispatchStatus::Claimed
                     && dispatch
-                        .lease_until
+                        .lease_until()
                         .is_some_and(|lease_until| lease_until >= now)
             })
             .min_by(|left, right| {
-                left.lease_until
-                    .cmp(&right.lease_until)
-                    .then(left.dispatch_id.cmp(&right.dispatch_id))
+                left.lease_until()
+                    .cmp(&right.lease_until())
+                    .then(left.dispatch_id().cmp(right.dispatch_id()))
             })
             .cloned()
     }
@@ -187,13 +187,13 @@ impl DispatchIndex {
             .filter_map(|id| self.by_id.get(id).map(|indexed| &indexed.dispatch))
             .filter(|dispatch| {
                 dispatch
-                    .lease_until
+                    .lease_until()
                     .is_some_and(|lease_until| lease_until < now)
             })
             .map(|dispatch| {
                 (
-                    dispatch.lease_until.unwrap_or(0),
-                    dispatch.dispatch_id.clone(),
+                    dispatch.lease_until().unwrap_or(0),
+                    dispatch.dispatch_id().to_string(),
                 )
             })
             .collect::<Vec<_>>();
@@ -212,7 +212,7 @@ impl DispatchIndex {
         let mut threads: HashSet<String> = HashSet::new();
         for id in queued_ids {
             if let Some(indexed) = self.by_id.get(id) {
-                threads.insert(indexed.dispatch.thread_id.clone());
+                threads.insert(indexed.dispatch.thread_id().to_string());
             }
         }
         threads.into_iter().collect()
@@ -231,7 +231,7 @@ impl DispatchIndex {
         queued_ids
             .iter()
             .filter_map(|id| self.by_id.get(id).map(|indexed| &indexed.dispatch))
-            .filter(|d| d.available_at <= now)
+            .filter(|d| d.available_at() <= now)
             .cloned()
             .collect()
     }
@@ -312,12 +312,12 @@ async fn initial_scan(
             && !kv_helpers::is_tombstone(&entry)
             && let Ok(dispatch) = codec::decode(&entry.value)
         {
-            seen_threads.insert(dispatch.thread_id.clone());
-            if !is_terminal(dispatch.status) {
+            seen_threads.insert(dispatch.thread_id().to_string());
+            if !is_terminal(dispatch.status()) {
                 active_by_thread
-                    .entry(dispatch.thread_id.clone())
+                    .entry(dispatch.thread_id().to_string())
                     .or_default()
-                    .push(dispatch.dispatch_id.clone());
+                    .push(dispatch.dispatch_id().to_string());
             }
             index
                 .write()
@@ -355,8 +355,8 @@ async fn apply_entry(
     if let Ok(dispatch) = codec::decode(&entry.value) {
         if let Err(error) = reconcile_thread_index(kv_thread_index, &dispatch).await {
             tracing::warn!(
-                thread_id = %dispatch.thread_id,
-                dispatch_id = %dispatch.dispatch_id,
+                thread_id = %dispatch.thread_id(),
+                dispatch_id = %dispatch.dispatch_id(),
                 error = %error,
                 "failed to maintain nats_mailbox thread index from watcher"
             );
@@ -372,18 +372,18 @@ async fn reconcile_thread_index(
     kv_thread_index: &async_nats::jetstream::kv::Store,
     dispatch: &RunDispatch,
 ) -> Result<(), StorageError> {
-    if is_terminal(dispatch.status) {
+    if is_terminal(dispatch.status()) {
         ops_write::remove_thread_index_from_bucket(
             kv_thread_index,
-            &dispatch.thread_id,
-            &dispatch.dispatch_id,
+            dispatch.thread_id(),
+            dispatch.dispatch_id(),
         )
         .await
     } else {
         ops_write::append_thread_index_to_bucket(
             kv_thread_index,
-            &dispatch.thread_id,
-            &dispatch.dispatch_id,
+            dispatch.thread_id(),
+            dispatch.dispatch_id(),
         )
         .await
     }
@@ -404,7 +404,7 @@ mod tests {
     use super::*;
 
     fn dispatch(id: &str, status: RunDispatchStatus, updated_at: u64) -> RunDispatch {
-        RunDispatch {
+        let parts = awaken_server_contract::contract::mailbox::RunDispatchParts {
             dispatch_id: id.to_string(),
             thread_id: "thread".to_string(),
             run_id: format!("{id}-run"),
@@ -416,18 +416,19 @@ mod tests {
             attempt_count: 0,
             max_attempts: 3,
             last_error: None,
-            claim_token: None,
-            claimed_by: None,
-            lease_until: None,
+            claim_token: (status == RunDispatchStatus::Claimed).then(|| "token".to_string()),
+            claimed_by: (status == RunDispatchStatus::Claimed).then(|| "worker".to_string()),
+            lease_until: (status == RunDispatchStatus::Claimed).then_some(10_000),
             dispatch_instance_id: None,
             run_status: None,
             termination: None,
             run_response: None,
             run_error: None,
-            completed_at: None,
+            completed_at: status.is_terminal().then_some(updated_at),
             created_at: 0,
             updated_at,
-        }
+        };
+        RunDispatch::from_persisted_parts(parts).expect("test dispatch must be valid")
     }
 
     #[test]
@@ -437,7 +438,7 @@ mod tests {
         index.upsert_with_revision(dispatch("d1", RunDispatchStatus::Queued, 10), 10);
 
         assert_eq!(
-            index.get("d1").map(|dispatch| dispatch.status),
+            index.get("d1").map(|dispatch| dispatch.status()),
             Some(RunDispatchStatus::Claimed)
         );
         assert_eq!(index.count_by_status(RunDispatchStatus::Claimed), 1);

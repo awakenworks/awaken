@@ -12,7 +12,10 @@ pub fn encode(dispatch: &RunDispatch) -> Result<Bytes, StorageError> {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<RunDispatch, StorageError> {
-    serde_json::from_slice(bytes).map_err(|e| StorageError::Serialization(e.to_string()))
+    let dispatch: RunDispatch =
+        serde_json::from_slice(bytes).map_err(|e| StorageError::Serialization(e.to_string()))?;
+    dispatch.validate_for_persist()?;
+    Ok(dispatch)
 }
 
 pub fn encode_thread_index(ids: &[String]) -> Result<Bytes, StorageError> {
@@ -88,33 +91,10 @@ pub fn decode_epoch(bytes: &[u8]) -> Result<u64, StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+    use awaken_server_contract::contract::mailbox::RunDispatch;
 
     fn sample_dispatch() -> RunDispatch {
-        RunDispatch {
-            dispatch_id: "d1".to_string(),
-            thread_id: "t1".to_string(),
-            run_id: "r1".to_string(),
-            priority: 128,
-            dedupe_key: None,
-            dispatch_epoch: 0,
-            status: RunDispatchStatus::Queued,
-            available_at: 0,
-            attempt_count: 0,
-            max_attempts: 3,
-            last_error: None,
-            claim_token: None,
-            claimed_by: None,
-            lease_until: None,
-            dispatch_instance_id: None,
-            run_status: None,
-            termination: None,
-            run_response: None,
-            run_error: None,
-            completed_at: None,
-            created_at: 0,
-            updated_at: 0,
-        }
+        RunDispatch::queued("d1", "t1", "r1", 0).with_max_attempts(3)
     }
 
     #[test]
@@ -122,7 +102,7 @@ mod tests {
         let dispatch = sample_dispatch();
         let encoded = encode(&dispatch).unwrap();
         let decoded = decode(&encoded).unwrap();
-        assert_eq!(decoded.dispatch_id, "d1");
+        assert_eq!(decoded.dispatch_id(), "d1");
     }
 
     #[test]

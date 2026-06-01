@@ -7,35 +7,49 @@ use std::{
     time::{Duration, Instant},
 };
 
-use awaken_server_contract::contract::mailbox::{MailboxStore, RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::mailbox::{
+    MailboxStore, RunDispatch, RunDispatchParts, RunDispatchStatus,
+};
 use awaken_stores::{NatsMailboxConfig, NatsMailboxStore};
 use nats_fixture::NatsFixture;
 
 fn test_dispatch(id: &str, thread_id: &str) -> RunDispatch {
-    RunDispatch {
-        dispatch_id: id.to_string(),
-        thread_id: thread_id.to_string(),
-        run_id: format!("{id}-run"),
-        priority: 128,
-        dedupe_key: None,
-        dispatch_epoch: 0,
-        status: RunDispatchStatus::Queued,
-        available_at: 0,
-        attempt_count: 0,
-        max_attempts: 3,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        dispatch_instance_id: None,
-        run_status: None,
-        termination: None,
-        run_response: None,
-        run_error: None,
-        completed_at: None,
-        created_at: 0,
-        updated_at: 0,
-    }
+    RunDispatch::queued(
+        id.to_string(),
+        thread_id.to_string(),
+        format!("{id}-run"),
+        0,
+    )
+    .with_max_attempts(3)
+}
+
+fn claimed_test_dispatch(
+    id: &str,
+    thread_id: &str,
+    consumer_id: &str,
+    claim_token: &str,
+    lease_until: u64,
+    now: u64,
+) -> RunDispatch {
+    let mut dispatch = test_dispatch(id, thread_id);
+    dispatch
+        .claim(
+            consumer_id.to_string(),
+            claim_token.to_string(),
+            lease_until,
+            now,
+        )
+        .expect("claimed test dispatch must be valid");
+    dispatch
+}
+
+fn dispatch_from_parts(
+    dispatch: RunDispatch,
+    mutate: impl FnOnce(&mut RunDispatchParts),
+) -> RunDispatch {
+    let mut parts = dispatch.to_persisted_parts();
+    mutate(&mut parts);
+    RunDispatch::from_persisted_parts(parts).expect("test dispatch parts must be valid")
 }
 
 async fn make_store(fixture: &NatsFixture) -> NatsMailboxStore {
@@ -111,7 +125,7 @@ async fn index_rebuilds_from_kv_on_restart() {
 
     let claimed = store2.claim("t1", "c2", 30_000, 1_000, 1).await.unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].dispatch_id, "d1");
+    assert_eq!(claimed[0].dispatch_id(), "d1");
     store2.shutdown().await.unwrap();
 }
 
@@ -140,8 +154,8 @@ async fn index_rebuilds_hot_thread_from_kv_on_restart() {
         .await
         .expect("connect 1");
     for i in 0..2_000 {
-        let mut dispatch = test_dispatch(&format!("d-hot-restart-{i}"), "t-hot-restart");
-        dispatch.created_at = i;
+        let dispatch =
+            test_dispatch(&format!("d-hot-restart-{i}"), "t-hot-restart").with_created_at(i);
         store1.enqueue(&dispatch).await.unwrap();
     }
     store1
@@ -159,7 +173,7 @@ async fn index_rebuilds_hot_thread_from_kv_on_restart() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].dispatch_id, "d-hot-restart-0");
+    assert_eq!(claimed[0].dispatch_id(), "d-hot-restart-0");
 
     store2.shutdown().await.unwrap();
 }
@@ -173,7 +187,7 @@ async fn sweeper_republishes_available_dispatch() {
     store.enqueue(&d).await.unwrap();
     let claimed = store.claim("t1", "c1", 30_000, 100, 1).await.unwrap();
     assert_eq!(claimed.len(), 1);
-    let token = claimed[0].claim_token.clone().unwrap();
+    let token = claimed[0].claim_token().unwrap().to_string();
 
     // Nack with retry_at in the past so sweeper picks it up on next tick.
     store
@@ -207,8 +221,9 @@ async fn load_dispatch_reads_authoritative_kv_not_stale_index() {
         .unwrap();
     assert_eq!(claimed.len(), 1);
 
-    let mut stale = dispatch;
-    stale.status = RunDispatchStatus::Queued;
+    let stale = dispatch_from_parts(dispatch, |parts| {
+        parts.status = RunDispatchStatus::Queued;
+    });
     store.__test_upsert_index_only(&stale).await;
 
     let loaded = store
@@ -216,8 +231,8 @@ async fn load_dispatch_reads_authoritative_kv_not_stale_index() {
         .await
         .unwrap()
         .expect("authoritative dispatch");
-    assert_eq!(loaded.status, RunDispatchStatus::Claimed);
-    assert_eq!(loaded.claimed_by.as_deref(), Some("consumer"));
+    assert_eq!(loaded.status(), RunDispatchStatus::Claimed);
+    assert_eq!(loaded.claimed_by(), Some("consumer"));
     store.shutdown().await.unwrap();
 }
 
@@ -257,7 +272,7 @@ async fn dispatch_signal_can_wake_a_different_store_instance() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].dispatch_id, "d-signal");
+    assert_eq!(claimed[0].dispatch_id(), "d-signal");
     signal.receipt.ack().await.unwrap();
 
     store1.shutdown().await.unwrap();
@@ -298,7 +313,7 @@ async fn pull_dispatch_signal_repairs_missing_thread_index_without_restart() {
         1,
         "pull_dispatch_signals should repair the authoritative thread index before claim"
     );
-    assert_eq!(claimed[0].dispatch_id, "d-signal-repairs-index");
+    assert_eq!(claimed[0].dispatch_id(), "d-signal-repairs-index");
     signal.receipt.ack().await.unwrap();
 
     store.shutdown().await.unwrap();
@@ -322,7 +337,7 @@ async fn interrupt_detects_authoritative_active_dispatch_when_local_index_is_sta
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    let claim_token = claimed[0].claim_token.clone().unwrap();
+    let claim_token = claimed[0].claim_token().unwrap().to_string();
 
     store2
         .__test_remove_dispatch_from_index("d-active-authoritative")
@@ -340,7 +355,7 @@ async fn interrupt_detects_authoritative_active_dispatch_when_local_index_is_sta
         interrupted
             .active_dispatch
             .as_ref()
-            .map(|dispatch| dispatch.dispatch_id.as_str()),
+            .map(|dispatch| dispatch.dispatch_id().as_str()),
         Some("d-active-authoritative")
     );
 
@@ -357,7 +372,7 @@ async fn interrupt_detects_authoritative_active_dispatch_when_local_index_is_sta
         .await
         .unwrap()
         .expect("dispatch remains recorded");
-    assert_eq!(stale.status, RunDispatchStatus::Superseded);
+    assert_eq!(stale.status(), RunDispatchStatus::Superseded);
 
     store1.shutdown().await.unwrap();
 }
@@ -377,13 +392,16 @@ async fn interrupt_keeps_claim_guard_active_dispatch_over_stale_claimed_records(
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].dispatch_id, "a-current-active");
+    assert_eq!(claimed[0].dispatch_id(), "a-current-active");
 
-    let mut stale = test_dispatch("z-stale-claimed", thread_id);
-    stale.status = RunDispatchStatus::Claimed;
-    stale.claim_token = Some("stale-token".to_string());
-    stale.claimed_by = Some("stale-consumer".to_string());
-    stale.lease_until = Some(500);
+    let stale = claimed_test_dispatch(
+        "z-stale-claimed",
+        thread_id,
+        "stale-consumer",
+        "stale-token",
+        500,
+        100,
+    );
     store
         .__test_plant_dispatch_exact(&stale)
         .await
@@ -394,7 +412,7 @@ async fn interrupt_keeps_claim_guard_active_dispatch_over_stale_claimed_records(
         interrupted
             .active_dispatch
             .as_ref()
-            .map(|dispatch| dispatch.dispatch_id.as_str()),
+            .map(|dispatch| dispatch.dispatch_id().as_str()),
         Some("a-current-active"),
         "claim-guard active dispatch must not be overwritten by stale claimed scan results"
     );
@@ -408,12 +426,12 @@ async fn claim_uses_authoritative_ordering_when_local_index_only_has_later_dispa
     let (store1, store2) = make_shared_stores(&fixture).await;
     store2.shutdown().await.unwrap();
 
-    let mut high = test_dispatch("d-high-priority", "t-authoritative-order");
-    high.priority = 10;
-    high.created_at = 1;
-    let mut low = test_dispatch("d-low-priority", "t-authoritative-order");
-    low.priority = 128;
-    low.created_at = 2;
+    let high = test_dispatch("d-high-priority", "t-authoritative-order")
+        .with_priority(10)
+        .with_created_at(1);
+    let low = test_dispatch("d-low-priority", "t-authoritative-order")
+        .with_priority(128)
+        .with_created_at(2);
 
     store1.enqueue(&high).await.unwrap();
     store1.enqueue(&low).await.unwrap();
@@ -437,7 +455,8 @@ async fn claim_uses_authoritative_ordering_when_local_index_only_has_later_dispa
         .unwrap();
     assert_eq!(claimed.len(), 1);
     assert_eq!(
-        claimed[0].dispatch_id, "d-high-priority",
+        claimed[0].dispatch_id(),
+        "d-high-priority",
         "claim must use authoritative ordering instead of the incomplete local watcher index"
     );
 
@@ -450,8 +469,8 @@ async fn reclaim_expired_leases_uses_authoritative_kv_and_clears_terminal_claim_
     let (store1, store2) = make_shared_stores(&fixture).await;
     store2.shutdown().await.unwrap();
 
-    let mut dispatch = test_dispatch("d-expired-authoritative", "t-expired-authoritative");
-    dispatch.max_attempts = 1;
+    let dispatch =
+        test_dispatch("d-expired-authoritative", "t-expired-authoritative").with_max_attempts(1);
     store1.enqueue(&dispatch).await.unwrap();
     let claimed = store1
         .claim("t-expired-authoritative", "consumer-1", 100, 1_000, 1)
@@ -469,21 +488,21 @@ async fn reclaim_expired_leases_uses_authoritative_kv_and_clears_terminal_claim_
 
     let reclaimed = store2.reclaim_expired_leases(2_000, 10).await.unwrap();
     assert_eq!(reclaimed.len(), 1);
-    assert_eq!(reclaimed[0].dispatch_id, "d-expired-authoritative");
-    assert_eq!(reclaimed[0].status, RunDispatchStatus::DeadLetter);
-    assert!(reclaimed[0].claim_token.is_none());
-    assert!(reclaimed[0].claimed_by.is_none());
-    assert!(reclaimed[0].lease_until.is_none());
+    assert_eq!(reclaimed[0].dispatch_id(), "d-expired-authoritative");
+    assert_eq!(reclaimed[0].status(), RunDispatchStatus::DeadLetter);
+    assert!(reclaimed[0].claim_token().is_none());
+    assert!(reclaimed[0].claimed_by().is_none());
+    assert!(reclaimed[0].lease_until().is_none());
 
     let loaded = store1
         .load_dispatch("d-expired-authoritative")
         .await
         .unwrap()
         .expect("dispatch remains inspectable");
-    assert_eq!(loaded.status, RunDispatchStatus::DeadLetter);
-    assert!(loaded.claim_token.is_none());
-    assert!(loaded.claimed_by.is_none());
-    assert!(loaded.lease_until.is_none());
+    assert_eq!(loaded.status(), RunDispatchStatus::DeadLetter);
+    assert!(loaded.claim_token().is_none());
+    assert!(loaded.claimed_by().is_none());
+    assert!(loaded.lease_until().is_none());
 
     store1.shutdown().await.unwrap();
 }
@@ -530,7 +549,7 @@ async fn dispatch_signal_nack_redelivers_same_dispatch() {
         .await
         .unwrap()
         .expect("dispatch should still exist after signal nack");
-    assert_eq!(dispatch.status, RunDispatchStatus::Queued);
+    assert_eq!(dispatch.status(), RunDispatchStatus::Queued);
     redelivered.receipt.ack().await.unwrap();
     store.shutdown().await.unwrap();
 }
@@ -699,7 +718,7 @@ async fn dispatch_signal_nack_redelivers_to_other_store_instance() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].dispatch_id, "d-cross-redeliver");
+    assert_eq!(claimed[0].dispatch_id(), "d-cross-redeliver");
     redelivered.receipt.ack().await.unwrap();
 
     store1.shutdown().await.unwrap();
@@ -734,7 +753,7 @@ async fn enqueue_stamps_current_thread_epoch_after_interrupt() {
          enqueue should stamp current thread epoch"
     );
     assert!(
-        claimed.unwrap().dispatch_epoch >= 1,
+        claimed.unwrap().dispatch_epoch() >= 1,
         "stamped dispatch_epoch must be >= the post-interrupt epoch"
     );
 
@@ -750,8 +769,7 @@ async fn background_enqueue_after_interrupt_is_claimable_via_scan() {
 
     store.interrupt("t-bg", 1_000).await.unwrap();
 
-    let mut dispatch = test_dispatch("d-bg", "t-bg");
-    dispatch.available_at = 0; // claimable immediately
+    let dispatch = test_dispatch("d-bg", "t-bg").with_available_at(0);
     store.enqueue(&dispatch).await.unwrap();
 
     let claimed = store
@@ -781,7 +799,7 @@ async fn queue_claim_respects_retry_available_at_after_nack() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    let token = claimed[0].claim_token.clone().unwrap();
+    let token = claimed[0].claim_token().unwrap().to_string();
     store
         .nack("d-retry-window", &token, 10_000, "retry later", 2_000)
         .await
@@ -819,18 +837,17 @@ async fn claim_skips_and_supersedes_stale_epoch_queue_head() {
 
     store.interrupt("t-stale-head", 1_000).await.unwrap();
 
-    let mut old = test_dispatch("d-old-stale", "t-stale-head");
-    old.dedupe_key = Some("stale-key".to_string());
-    old.dispatch_epoch = 0;
-    old.created_at = 1;
+    let old = test_dispatch("d-old-stale", "t-stale-head")
+        .with_dedupe_key(Some("stale-key".to_string()))
+        .with_dispatch_epoch(0)
+        .with_created_at(1);
     store.__test_plant_dispatch_exact(&old).await.unwrap();
     store
         .__test_force_dedupe_lock("t-stale-head", "stale-key", "d-old-stale")
         .await
         .unwrap();
 
-    let mut new = test_dispatch("d-new-valid", "t-stale-head");
-    new.created_at = 2;
+    let new = test_dispatch("d-new-valid", "t-stale-head").with_created_at(2);
     store.enqueue(&new).await.unwrap();
 
     let claimed = store
@@ -838,17 +855,17 @@ async fn claim_skips_and_supersedes_stale_epoch_queue_head() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].dispatch_id, "d-new-valid");
+    assert_eq!(claimed[0].dispatch_id(), "d-new-valid");
 
     let old_after = store
         .load_dispatch("d-old-stale")
         .await
         .unwrap()
         .expect("old dispatch should remain inspectable");
-    assert_eq!(old_after.status, RunDispatchStatus::Superseded);
+    assert_eq!(old_after.status(), RunDispatchStatus::Superseded);
 
-    let mut fresh = test_dispatch("d-fresh-dedupe", "t-stale-head");
-    fresh.dedupe_key = Some("stale-key".to_string());
+    let fresh = test_dispatch("d-fresh-dedupe", "t-stale-head")
+        .with_dedupe_key(Some("stale-key".to_string()));
     store
         .enqueue(&fresh)
         .await
@@ -865,8 +882,8 @@ async fn interrupt_does_not_release_dedupe_for_claimed_dispatch_from_stale_index
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;
 
-    let mut indexed = test_dispatch("d-authoritative-claimed", "t-interrupt-race");
-    indexed.dedupe_key = Some("race-key".to_string());
+    let indexed = test_dispatch("d-authoritative-claimed", "t-interrupt-race")
+        .with_dedupe_key(Some("race-key".to_string()));
     store
         .__test_force_dedupe_lock("t-interrupt-race", "race-key", "d-authoritative-claimed")
         .await
@@ -881,10 +898,9 @@ async fn interrupt_does_not_release_dedupe_for_claimed_dispatch_from_stale_index
     );
 
     let mut claimed = indexed.clone();
-    claimed.status = RunDispatchStatus::Claimed;
-    claimed.claim_token = Some("claim-token".to_string());
-    claimed.claimed_by = Some("remote-consumer".to_string());
-    claimed.lease_until = Some(60_000);
+    claimed
+        .claim("remote-consumer", "claim-token", 60_000, 500)
+        .expect("claimed dispatch must be valid");
     store
         .__test_plant_dispatch_exact(&claimed)
         .await
@@ -900,8 +916,8 @@ async fn interrupt_does_not_release_dedupe_for_claimed_dispatch_from_stale_index
         Some("d-authoritative-claimed")
     );
 
-    let mut before_interrupt = test_dispatch("d-before-interrupt", "t-interrupt-race");
-    before_interrupt.dedupe_key = Some("race-key".to_string());
+    let before_interrupt = test_dispatch("d-before-interrupt", "t-interrupt-race")
+        .with_dedupe_key(Some("race-key".to_string()));
     assert!(
         store.enqueue(&before_interrupt).await.is_err(),
         "dedupe lock should be held before interrupt"
@@ -916,13 +932,13 @@ async fn interrupt_does_not_release_dedupe_for_claimed_dispatch_from_stale_index
         interrupted
             .active_dispatch
             .as_ref()
-            .map(|dispatch| dispatch.dispatch_id.as_str()),
+            .map(|dispatch| dispatch.dispatch_id().as_str()),
         Some("d-authoritative-claimed"),
         "interrupt should return the authoritative active dispatch"
     );
 
-    let mut next = test_dispatch("d-next-same-key", "t-interrupt-race");
-    next.dedupe_key = Some("race-key".to_string());
+    let next = test_dispatch("d-next-same-key", "t-interrupt-race")
+        .with_dedupe_key(Some("race-key".to_string()));
     let result = store.enqueue(&next).await;
     assert!(
         result.is_err(),
@@ -946,8 +962,7 @@ async fn dedupe_lock_orphan_is_reconciled_by_next_enqueue() {
         .await
         .unwrap();
 
-    let mut d1 = test_dispatch("d-recovers", "t-orphan");
-    d1.dedupe_key = Some("ghost-key".to_string());
+    let d1 = test_dispatch("d-recovers", "t-orphan").with_dedupe_key(Some("ghost-key".to_string()));
     store
         .enqueue(&d1)
         .await
@@ -972,8 +987,8 @@ async fn dedupe_lock_holder_delete_tombstone_is_reconciled_by_next_enqueue() {
         .await
         .unwrap();
 
-    let mut next = test_dispatch("d-after-tombstone", "t-tombstone");
-    next.dedupe_key = Some("same-key".to_string());
+    let next = test_dispatch("d-after-tombstone", "t-tombstone")
+        .with_dedupe_key(Some("same-key".to_string()));
     store
         .enqueue(&next)
         .await
@@ -996,7 +1011,7 @@ async fn thread_claim_tombstone_does_not_block_next_claim() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    let token = claimed[0].claim_token.clone().unwrap();
+    let token = claimed[0].claim_token().unwrap().to_string();
     store
         .ack("d-claim-before-purge", &token, 2_000)
         .await
@@ -1019,7 +1034,7 @@ async fn thread_claim_tombstone_does_not_block_next_claim() {
         1,
         "thread claim Delete/Purge tombstones should be treated as absent"
     );
-    assert_eq!(claimed[0].dispatch_id, "d-claim-after-purge");
+    assert_eq!(claimed[0].dispatch_id(), "d-claim-after-purge");
 
     store.shutdown().await.unwrap();
 }
@@ -1029,10 +1044,8 @@ async fn purged_active_thread_claim_does_not_allow_second_active_claim() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;
 
-    let mut first = test_dispatch("d-active-before-purge", "t-active-claim-purged");
-    first.created_at = 1;
-    let mut second = test_dispatch("d-queued-after-purge", "t-active-claim-purged");
-    second.created_at = 2;
+    let first = test_dispatch("d-active-before-purge", "t-active-claim-purged").with_created_at(1);
+    let second = test_dispatch("d-queued-after-purge", "t-active-claim-purged").with_created_at(2);
     store.enqueue(&first).await.unwrap();
     store.enqueue(&second).await.unwrap();
 
@@ -1041,7 +1054,7 @@ async fn purged_active_thread_claim_does_not_allow_second_active_claim() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].dispatch_id, "d-active-before-purge");
+    assert_eq!(claimed[0].dispatch_id(), "d-active-before-purge");
 
     store
         .__test_purge_thread_claim("t-active-claim-purged")
@@ -1071,13 +1084,13 @@ async fn purged_active_thread_claim_does_not_allow_second_active_claim() {
         .await
         .unwrap()
         .expect("active dispatch remains recorded");
-    assert_eq!(active.status, RunDispatchStatus::Claimed);
+    assert_eq!(active.status(), RunDispatchStatus::Claimed);
     let queued = store
         .load_dispatch("d-queued-after-purge")
         .await
         .unwrap()
         .expect("queued dispatch remains recorded");
-    assert_eq!(queued.status, RunDispatchStatus::Queued);
+    assert_eq!(queued.status(), RunDispatchStatus::Queued);
 
     store.shutdown().await.unwrap();
 }
@@ -1111,19 +1124,19 @@ async fn purged_expired_thread_claim_is_reclaimed_from_dispatch_index() {
         1,
         "expired claimed dispatches must be recoverable even when the thread-claim KV record is lost"
     );
-    assert_eq!(reclaimed[0].dispatch_id, "d-expired-claim-purged");
-    assert_eq!(reclaimed[0].status, RunDispatchStatus::Queued);
-    assert_eq!(reclaimed[0].attempt_count, 1);
-    assert!(reclaimed[0].claim_token.is_none());
-    assert!(reclaimed[0].claimed_by.is_none());
-    assert!(reclaimed[0].lease_until.is_none());
+    assert_eq!(reclaimed[0].dispatch_id(), "d-expired-claim-purged");
+    assert_eq!(reclaimed[0].status(), RunDispatchStatus::Queued);
+    assert_eq!(reclaimed[0].attempt_count(), 1);
+    assert!(reclaimed[0].claim_token().is_none());
+    assert!(reclaimed[0].claimed_by().is_none());
+    assert!(reclaimed[0].lease_until().is_none());
 
     let claimed_again = store
         .claim("t-expired-claim-purged", "consumer-2", 60_000, 3_000, 1)
         .await
         .unwrap();
     assert_eq!(claimed_again.len(), 1);
-    assert_eq!(claimed_again[0].dispatch_id, "d-expired-claim-purged");
+    assert_eq!(claimed_again[0].dispatch_id(), "d-expired-claim-purged");
 
     store.shutdown().await.unwrap();
 }
@@ -1149,8 +1162,8 @@ async fn dedupe_lock_tombstone_is_treated_as_absent() {
         None
     );
 
-    let mut next = test_dispatch("d-after-lock-tombstone", "t-lock-tombstone");
-    next.dedupe_key = Some("same-key".to_string());
+    let next = test_dispatch("d-after-lock-tombstone", "t-lock-tombstone")
+        .with_dedupe_key(Some("same-key".to_string()));
     store
         .enqueue(&next)
         .await
@@ -1173,7 +1186,7 @@ async fn purge_terminal_uses_authoritative_kv_when_local_index_is_missing() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    let token = claimed[0].claim_token.clone().unwrap();
+    let token = claimed[0].claim_token().unwrap().to_string();
     store
         .ack("d-authoritative-gc", &token, 2_000)
         .await
@@ -1210,14 +1223,13 @@ async fn dedupe_key_reusable_after_cancel() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;
 
-    let mut first = test_dispatch("d-first", "t-reuse");
-    first.dedupe_key = Some("reuse-key".to_string());
+    let first = test_dispatch("d-first", "t-reuse").with_dedupe_key(Some("reuse-key".to_string()));
     store.enqueue(&first).await.unwrap();
 
     store.cancel("d-first", 1_000).await.unwrap();
 
-    let mut second = test_dispatch("d-second", "t-reuse");
-    second.dedupe_key = Some("reuse-key".to_string());
+    let second =
+        test_dispatch("d-second", "t-reuse").with_dedupe_key(Some("reuse-key".to_string()));
     store
         .enqueue(&second)
         .await
@@ -1239,8 +1251,8 @@ async fn dedupe_key_reuse_publishes_distinct_dispatch_signals() {
     config.dedup_window = Duration::from_secs(120);
     let store = NatsMailboxStore::connect(config).await.expect("connect");
 
-    let mut first = test_dispatch("d-dedupe-signal-1", "t-dedupe-signal");
-    first.dedupe_key = Some("same-key".to_string());
+    let first = test_dispatch("d-dedupe-signal-1", "t-dedupe-signal")
+        .with_dedupe_key(Some("same-key".to_string()));
     store.enqueue(&first).await.unwrap();
     let first_signal = store
         .pull_dispatch_signals(8, Duration::from_secs(2))
@@ -1257,8 +1269,8 @@ async fn dedupe_key_reuse_publishes_distinct_dispatch_signals() {
         .unwrap()
         .expect("cancel first dispatch");
 
-    let mut second = test_dispatch("d-dedupe-signal-2", "t-dedupe-signal");
-    second.dedupe_key = Some("same-key".to_string());
+    let second = test_dispatch("d-dedupe-signal-2", "t-dedupe-signal")
+        .with_dedupe_key(Some("same-key".to_string()));
     store.enqueue(&second).await.unwrap();
 
     let second_signal = store
@@ -1302,9 +1314,12 @@ async fn concurrent_enqueue_same_thread_preserves_thread_index_entries() {
     for i in 0..total {
         let store = Arc::clone(&store);
         handles.push(tokio::spawn(async move {
-            let mut dispatch = test_dispatch(&format!("d-hot-index-{i}"), "t-hot-index");
-            dispatch.created_at = i as u64;
-            dispatch.updated_at = i as u64;
+            let dispatch = dispatch_from_parts(
+                test_dispatch(&format!("d-hot-index-{i}"), "t-hot-index").with_created_at(i as u64),
+                |parts| {
+                    parts.updated_at = i as u64;
+                },
+            );
             store.enqueue(&dispatch).await
         }));
     }
@@ -1329,12 +1344,12 @@ async fn concurrent_enqueue_same_thread_preserves_thread_index_entries() {
             "thread index should expose every concurrently enqueued dispatch"
         );
         let dispatch = got.into_iter().next().unwrap();
-        let token = dispatch.claim_token.clone().unwrap();
+        let token = dispatch.claim_token().unwrap().to_string();
         verifier
-            .ack(&dispatch.dispatch_id, &token, 20_000 + i as u64)
+            .ack(&dispatch.dispatch_id(), &token, 20_000 + i as u64)
             .await
             .unwrap();
-        claimed.push(dispatch.dispatch_id);
+        claimed.push(dispatch.dispatch_id().to_string());
     }
     claimed.sort();
     assert_eq!(claimed.len(), total);
@@ -1355,21 +1370,21 @@ async fn delayed_old_owner_release_does_not_delete_new_dedupe_lock() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;
 
-    let mut first = test_dispatch("d-release-old", "t-release-race");
-    first.dedupe_key = Some("race-key".to_string());
+    let first = test_dispatch("d-release-old", "t-release-race")
+        .with_dedupe_key(Some("race-key".to_string()));
     store.enqueue(&first).await.unwrap();
     store.cancel("d-release-old", 1_000).await.unwrap();
 
-    let mut second = test_dispatch("d-release-new", "t-release-race");
-    second.dedupe_key = Some("race-key".to_string());
+    let second = test_dispatch("d-release-new", "t-release-race")
+        .with_dedupe_key(Some("race-key".to_string()));
     store.enqueue(&second).await.unwrap();
 
     store
         .__test_release_dedupe_lock_as("t-release-race", "race-key", "d-release-old")
         .await;
 
-    let mut third = test_dispatch("d-release-third", "t-release-race");
-    third.dedupe_key = Some("race-key".to_string());
+    let third = test_dispatch("d-release-third", "t-release-race")
+        .with_dedupe_key(Some("race-key".to_string()));
     let result = store.enqueue(&third).await;
     assert!(
         result.is_err(),
@@ -1391,10 +1406,10 @@ async fn concurrent_orphan_reconcile_admits_exactly_one_owner() {
         .await
         .unwrap();
 
-    let mut first = test_dispatch("d-race-a", "t-reconcile-race");
-    first.dedupe_key = Some("race-key".to_string());
-    let mut second = test_dispatch("d-race-b", "t-reconcile-race");
-    second.dedupe_key = Some("race-key".to_string());
+    let first =
+        test_dispatch("d-race-a", "t-reconcile-race").with_dedupe_key(Some("race-key".to_string()));
+    let second =
+        test_dispatch("d-race-b", "t-reconcile-race").with_dedupe_key(Some("race-key".to_string()));
 
     let store_a = store.clone();
     let store_b = store.clone();
@@ -1451,7 +1466,7 @@ async fn partial_failure_kv_put_without_publish_is_recovered_by_sweeper() {
         .await
         .expect("claim must not error")
         .expect("dispatch must be claimable after KV-only commit");
-    assert_eq!(claimed.dispatch_id, "d-partial");
+    assert_eq!(claimed.dispatch_id(), "d-partial");
 
     store.shutdown().await.unwrap();
 }
@@ -1461,12 +1476,10 @@ async fn dedup_rejects_duplicate_key_on_same_thread() {
     let fixture = NatsFixture::start().await;
     let store = make_store(&fixture).await;
 
-    let mut d1 = test_dispatch("d1", "t1");
-    d1.dedupe_key = Some("dup-key".to_string());
+    let d1 = test_dispatch("d1", "t1").with_dedupe_key(Some("dup-key".to_string()));
     store.enqueue(&d1).await.expect("first enqueue");
 
-    let mut d2 = test_dispatch("d2", "t1");
-    d2.dedupe_key = Some("dup-key".to_string());
+    let d2 = test_dispatch("d2", "t1").with_dedupe_key(Some("dup-key".to_string()));
     let result = store.enqueue(&d2).await;
     assert!(
         result.is_err(),

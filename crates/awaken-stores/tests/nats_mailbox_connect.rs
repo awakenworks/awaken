@@ -2,35 +2,18 @@
 
 mod nats_fixture;
 
-use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::mailbox::RunDispatch;
 use awaken_stores::{NatsMailboxConfig, NatsMailboxStore};
 use nats_fixture::NatsFixture;
 
 fn test_dispatch(id: &str, thread_id: &str) -> RunDispatch {
-    RunDispatch {
-        dispatch_id: id.to_string(),
-        thread_id: thread_id.to_string(),
-        run_id: format!("{id}-run"),
-        priority: 128,
-        dedupe_key: None,
-        dispatch_epoch: 0,
-        status: RunDispatchStatus::Queued,
-        available_at: 0,
-        attempt_count: 0,
-        max_attempts: 3,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        dispatch_instance_id: None,
-        run_status: None,
-        termination: None,
-        run_response: None,
-        run_error: None,
-        completed_at: None,
-        created_at: 0,
-        updated_at: 0,
-    }
+    RunDispatch::queued(
+        id.to_string(),
+        thread_id.to_string(),
+        format!("{id}-run"),
+        0,
+    )
+    .with_max_attempts(3)
 }
 
 fn unique_config(fixture: &NatsFixture) -> NatsMailboxConfig {

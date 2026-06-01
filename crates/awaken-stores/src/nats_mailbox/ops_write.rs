@@ -2,7 +2,6 @@
 
 use async_nats::HeaderMap;
 use async_nats::jetstream::kv::CreateErrorKind;
-use awaken_server_contract::contract::lifecycle::RunStatus;
 use awaken_server_contract::contract::mailbox::{
     RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
@@ -14,6 +13,7 @@ use crate::mailbox_state;
 const DEDUPE_ORPHAN_GRACE_MS: u64 = 5_000;
 
 pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result<(), StorageError> {
+    dispatch.validate_for_enqueue()?;
     // ── Stamp dispatch_epoch from authoritative KV state ──
     //
     // The `MailboxStore` trait contract states "sets dispatch epoch from
@@ -23,7 +23,8 @@ pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result
     // rejects it as stale, so every foreground submit after any interrupt
     // would fail.
     let mut dispatch = dispatch.clone();
-    dispatch.dispatch_epoch = current_thread_epoch(store, &dispatch.thread_id).await?;
+    dispatch.prepare_for_enqueue(current_thread_epoch(store, dispatch.thread_id()).await?);
+    dispatch.validate_for_persist()?;
 
     // ── Authoritative dedupe (race-free across nodes) ──
     //
@@ -33,12 +34,12 @@ pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result
     // holder crashed between lock create and dispatch put, or if the
     // holding dispatch has become terminal/stale-by-epoch, the acquire
     // path reconciles by purging the orphan lock and retrying.
-    if let Some(ref dedupe_key) = dispatch.dedupe_key {
+    if let Some(dedupe_key) = dispatch.dedupe_key() {
         acquire_dedupe_lock(
             store,
-            &dispatch.thread_id,
+            dispatch.thread_id(),
             dedupe_key,
-            &dispatch.dispatch_id,
+            dispatch.dispatch_id(),
         )
         .await?;
     }
@@ -47,13 +48,13 @@ pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result
     // makes queue scans O(thread dispatches) without introducing a
     // stranded-dispatch gap: if the later dispatch put fails, the index
     // entry is a harmless dangling id that strong loads skip.
-    if let Err(e) = append_thread_index(store, &dispatch.thread_id, &dispatch.dispatch_id).await {
-        if let Some(ref dedupe_key) = dispatch.dedupe_key {
+    if let Err(e) = append_thread_index(store, dispatch.thread_id(), dispatch.dispatch_id()).await {
+        if let Some(dedupe_key) = dispatch.dedupe_key() {
             release_dedupe_lock(
                 store,
-                &dispatch.thread_id,
+                dispatch.thread_id(),
                 dedupe_key,
-                &dispatch.dispatch_id,
+                dispatch.dispatch_id(),
             )
             .await;
         }
@@ -69,18 +70,18 @@ pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result
     let bytes = codec::encode(&dispatch)?;
     let revision = match store
         .kv_dispatch
-        .put(keys::dispatch_key(&dispatch.dispatch_id), bytes)
+        .put(keys::dispatch_key(dispatch.dispatch_id()), bytes)
         .await
     {
         Ok(revision) => revision,
         // Roll back the dedupe lock so a retry isn't permanently blocked.
         Err(e) => {
-            if let Some(ref dedupe_key) = dispatch.dedupe_key {
+            if let Some(dedupe_key) = dispatch.dedupe_key() {
                 release_dedupe_lock(
                     store,
-                    &dispatch.thread_id,
+                    dispatch.thread_id(),
                     dedupe_key,
-                    &dispatch.dispatch_id,
+                    dispatch.dispatch_id(),
                 )
                 .await;
             }
@@ -99,13 +100,13 @@ pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result
     // Best-effort: JetStream delivery signal. Failure is recovered by the
     // sweeper, which re-publishes for every Queued dispatch still missing
     // its notification.
-    let subject = keys::dispatch_subject(&dispatch.thread_id);
-    let payload = bytes::Bytes::from(dispatch.dispatch_id.clone().into_bytes());
-    let publish_result = if let Some(ref dedupe_key) = dispatch.dedupe_key {
+    let subject = keys::dispatch_subject(dispatch.thread_id());
+    let payload = bytes::Bytes::from(dispatch.dispatch_id().as_bytes().to_vec());
+    let publish_result = if let Some(dedupe_key) = dispatch.dedupe_key() {
         let mut headers = HeaderMap::new();
         headers.insert(
             "Nats-Msg-Id",
-            keys::dedupe_msg_id(&dispatch.thread_id, dedupe_key, &dispatch.dispatch_id).as_str(),
+            keys::dedupe_msg_id(dispatch.thread_id(), dedupe_key, dispatch.dispatch_id()).as_str(),
         );
         store
             .jetstream
@@ -118,8 +119,8 @@ pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result
         Ok(future) => {
             if let Err(e) = future.await {
                 tracing::warn!(
-                    thread_id = dispatch.thread_id,
-                    dispatch_id = dispatch.dispatch_id,
+                    thread_id = %dispatch.thread_id(),
+                    dispatch_id = %dispatch.dispatch_id(),
                     error = %e,
                     "JetStream publish ack failed; sweeper will retry"
                 );
@@ -127,8 +128,8 @@ pub async fn enqueue(store: &NatsMailboxStore, dispatch: &RunDispatch) -> Result
         }
         Err(e) => {
             tracing::warn!(
-                thread_id = dispatch.thread_id,
-                dispatch_id = dispatch.dispatch_id,
+                thread_id = %dispatch.thread_id(),
+                dispatch_id = %dispatch.dispatch_id(),
                 error = %e,
                 "JetStream publish failed; sweeper will retry"
             );
@@ -227,7 +228,7 @@ async fn reconcile_dedupe_lock(
     }
     let holder = codec::decode(&holder_entry.value)?;
     if matches!(
-        holder.status,
+        holder.status(),
         RunDispatchStatus::Acked
             | RunDispatchStatus::Cancelled
             | RunDispatchStatus::DeadLetter
@@ -245,12 +246,12 @@ async fn reconcile_dedupe_lock(
         Some(e) => codec::decode_epoch(&e.value)?,
         None => 0,
     };
-    if holder.dispatch_epoch < thread_epoch {
+    if holder.dispatch_epoch() < thread_epoch {
         // Holder wasn't seen by interrupt's local-index sweep but is
         // stale by authoritative epoch. Queued holders can be released so a
         // fresh enqueue can proceed; Claimed holders are still active and keep
         // their dedupe lock until their terminal transition releases it.
-        if holder.status == RunDispatchStatus::Queued {
+        if holder.status() == RunDispatchStatus::Queued {
             return purge_lock_if_revision(store, &key, entry.revision).await;
         }
         return Ok(false);
@@ -538,14 +539,14 @@ pub(crate) async fn replace_thread_index_bucket(
 pub(super) async fn cleanup_thread_index(store: &NatsMailboxStore, dispatch: &RunDispatch) {
     if let Err(error) = remove_thread_index_from_bucket(
         &store.kv_thread_index,
-        &dispatch.thread_id,
-        &dispatch.dispatch_id,
+        dispatch.thread_id(),
+        dispatch.dispatch_id(),
     )
     .await
     {
         tracing::warn!(
-            thread_id = %dispatch.thread_id,
-            dispatch_id = %dispatch.dispatch_id,
+            thread_id = %dispatch.thread_id(),
+            dispatch_id = %dispatch.dispatch_id(),
             error = %error,
             "failed to remove terminal dispatch from thread index"
         );
@@ -633,14 +634,14 @@ pub async fn extend_lease(
             return Ok(false);
         }
         let mut dispatch = codec::decode(&entry.value)?;
-        if dispatch.status != RunDispatchStatus::Claimed {
+        if dispatch.status() != RunDispatchStatus::Claimed {
             return Ok(false);
         }
-        if dispatch.claim_token.as_deref() != Some(claim_token) {
+        if dispatch.claim_token() != Some(claim_token) {
             return Ok(false);
         }
-        let thread_epoch = current_thread_epoch(store, &dispatch.thread_id).await?;
-        if dispatch.dispatch_epoch < thread_epoch {
+        let thread_epoch = current_thread_epoch(store, dispatch.thread_id()).await?;
+        if dispatch.dispatch_epoch() < thread_epoch {
             mailbox_state::mark_superseded_at_epoch(
                 &mut dispatch,
                 now,
@@ -658,13 +659,13 @@ pub async fn extend_lease(
                     .write()
                     .await
                     .upsert_with_revision(dispatch.clone(), revision);
-                claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token).await?;
-                if let Some(ref dedupe_key) = dispatch.dedupe_key {
+                claim_guard::release(store, dispatch.thread_id(), dispatch_id, claim_token).await?;
+                if let Some(dedupe_key) = dispatch.dedupe_key() {
                     release_dedupe_lock(
                         store,
-                        &dispatch.thread_id,
+                        dispatch.thread_id(),
                         dedupe_key,
-                        &dispatch.dispatch_id,
+                        dispatch.dispatch_id(),
                     )
                     .await;
                 }
@@ -676,7 +677,7 @@ pub async fn extend_lease(
         let lease_until = now.saturating_add(extension_ms);
         if !claim_guard::extend(
             store,
-            &dispatch.thread_id,
+            dispatch.thread_id(),
             dispatch_id,
             claim_token,
             lease_until,
@@ -685,8 +686,7 @@ pub async fn extend_lease(
         {
             return Ok(false);
         }
-        dispatch.lease_until = Some(lease_until);
-        dispatch.updated_at = now;
+        dispatch.extend_lease(lease_until, now)?;
         let bytes = codec::encode(&dispatch)?;
         if let Ok(revision) = store
             .kv_dispatch
@@ -731,12 +731,12 @@ where
         }
         let mut dispatch = codec::decode(&entry.value)?;
         if let Some(now) = stale_check_now
-            && dispatch.status == RunDispatchStatus::Claimed
+            && dispatch.status() == RunDispatchStatus::Claimed
         {
-            let thread_epoch = current_thread_epoch(store, &dispatch.thread_id).await?;
-            if dispatch.dispatch_epoch < thread_epoch {
-                let stale_epoch = dispatch.dispatch_epoch;
-                let old_claim_token = dispatch.claim_token.clone();
+            let thread_epoch = current_thread_epoch(store, dispatch.thread_id()).await?;
+            if dispatch.dispatch_epoch() < thread_epoch {
+                let stale_epoch = dispatch.dispatch_epoch();
+                let old_claim_token = dispatch.claim_token().map(str::to_string);
                 mailbox_state::mark_superseded_at_epoch(
                     &mut dispatch,
                     now,
@@ -755,15 +755,15 @@ where
                         .await
                         .upsert_with_revision(dispatch.clone(), revision);
                     if let Some(ref claim_token) = old_claim_token {
-                        claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token)
+                        claim_guard::release(store, dispatch.thread_id(), dispatch_id, claim_token)
                             .await?;
                     }
-                    if let Some(ref dedupe_key) = dispatch.dedupe_key {
+                    if let Some(dedupe_key) = dispatch.dedupe_key() {
                         release_dedupe_lock(
                             store,
-                            &dispatch.thread_id,
+                            dispatch.thread_id(),
                             dedupe_key,
-                            &dispatch.dispatch_id,
+                            dispatch.dispatch_id(),
                         )
                         .await;
                     }
@@ -801,13 +801,13 @@ pub async fn ack(
     now: u64,
 ) -> Result<(), StorageError> {
     let result = cas_update(store, dispatch_id, Some(now), |d| {
-        if d.status != RunDispatchStatus::Claimed {
+        if d.status() != RunDispatchStatus::Claimed {
             return Err(StorageError::NotFound(format!(
                 "dispatch {dispatch_id} not claimed (status={:?})",
-                d.status
+                d.status()
             )));
         }
-        if d.claim_token.as_deref() != Some(claim_token) {
+        if d.claim_token() != Some(claim_token) {
             return Err(StorageError::NotFound(format!(
                 "claim_token mismatch for {dispatch_id}"
             )));
@@ -820,15 +820,15 @@ pub async fn ack(
         return Err(StorageError::NotFound(dispatch_id.to_string()));
     }
     if let Some((dispatch, _)) = result {
-        claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token).await?;
+        claim_guard::release(store, dispatch.thread_id(), dispatch_id, claim_token).await?;
         // Terminal state — release the dedupe lock so a future request
         // with the same key can succeed.
-        if let Some(ref dedupe_key) = dispatch.dedupe_key {
+        if let Some(dedupe_key) = dispatch.dedupe_key() {
             release_dedupe_lock(
                 store,
-                &dispatch.thread_id,
+                dispatch.thread_id(),
                 dedupe_key,
-                &dispatch.dispatch_id,
+                dispatch.dispatch_id(),
             )
             .await;
         }
@@ -846,12 +846,12 @@ pub async fn nack(
     now: u64,
 ) -> Result<(), StorageError> {
     let result = cas_update(store, dispatch_id, Some(now), |d| {
-        if d.status != RunDispatchStatus::Claimed {
+        if d.status() != RunDispatchStatus::Claimed {
             return Err(StorageError::NotFound(format!(
                 "dispatch {dispatch_id} not claimed"
             )));
         }
-        if d.claim_token.as_deref() != Some(claim_token) {
+        if d.claim_token() != Some(claim_token) {
             return Err(StorageError::NotFound(format!(
                 "claim_token mismatch for {dispatch_id}"
             )));
@@ -864,21 +864,21 @@ pub async fn nack(
         return Err(StorageError::NotFound(dispatch_id.to_string()));
     }
     if let Some((dispatch, _)) = result {
-        claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token).await?;
+        claim_guard::release(store, dispatch.thread_id(), dispatch_id, claim_token).await?;
         // Only release the dedupe lock if THIS attempt was actually
         // terminal (nack can either retry-queue or dead-letter).
-        if dispatch.status == RunDispatchStatus::DeadLetter
-            && let Some(ref dedupe_key) = dispatch.dedupe_key
+        if dispatch.status() == RunDispatchStatus::DeadLetter
+            && let Some(dedupe_key) = dispatch.dedupe_key()
         {
             release_dedupe_lock(
                 store,
-                &dispatch.thread_id,
+                dispatch.thread_id(),
                 dedupe_key,
-                &dispatch.dispatch_id,
+                dispatch.dispatch_id(),
             )
             .await;
         }
-        if dispatch.status == RunDispatchStatus::DeadLetter {
+        if dispatch.status() == RunDispatchStatus::DeadLetter {
             cleanup_thread_index(store, &dispatch).await;
         }
     }
@@ -893,12 +893,12 @@ pub async fn dead_letter(
     now: u64,
 ) -> Result<(), StorageError> {
     let result = cas_update(store, dispatch_id, Some(now), |d| {
-        if d.status != RunDispatchStatus::Claimed {
+        if d.status() != RunDispatchStatus::Claimed {
             return Err(StorageError::NotFound(format!(
                 "dispatch {dispatch_id} not claimed"
             )));
         }
-        if d.claim_token.as_deref() != Some(claim_token) {
+        if d.claim_token() != Some(claim_token) {
             return Err(StorageError::NotFound(format!(
                 "claim_token mismatch for {dispatch_id}"
             )));
@@ -911,13 +911,13 @@ pub async fn dead_letter(
         return Err(StorageError::NotFound(dispatch_id.to_string()));
     }
     if let Some((dispatch, _)) = result {
-        claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token).await?;
-        if let Some(ref dedupe_key) = dispatch.dedupe_key {
+        claim_guard::release(store, dispatch.thread_id(), dispatch_id, claim_token).await?;
+        if let Some(dedupe_key) = dispatch.dedupe_key() {
             release_dedupe_lock(
                 store,
-                &dispatch.thread_id,
+                dispatch.thread_id(),
                 dedupe_key,
-                &dispatch.dispatch_id,
+                dispatch.dispatch_id(),
             )
             .await;
         }
@@ -946,19 +946,19 @@ pub async fn supersede_claimed(
             return Ok(None);
         }
         let mut dispatch = codec::decode(&entry.value)?;
-        if dispatch.status != RunDispatchStatus::Claimed {
+        if dispatch.status() != RunDispatchStatus::Claimed {
             return Ok(None);
         }
-        if dispatch.claim_token.as_deref() != Some(claim_token) {
+        if dispatch.claim_token() != Some(claim_token) {
             return Err(StorageError::VersionConflict {
                 expected: 0,
                 actual: 1,
             });
         }
-        let thread_epoch = current_thread_epoch(store, &dispatch.thread_id).await?;
-        let old_claim_token = dispatch.claim_token.clone();
-        dispatch.dispatch_epoch = dispatch.dispatch_epoch.max(thread_epoch);
-        mailbox_state::mark_superseded(&mut dispatch, now, Some(reason));
+        let thread_epoch = current_thread_epoch(store, dispatch.thread_id()).await?;
+        let old_claim_token = dispatch.claim_token().map(str::to_string);
+        let epoch = dispatch.dispatch_epoch().max(thread_epoch);
+        mailbox_state::mark_superseded_at_epoch(&mut dispatch, now, epoch, Some(reason));
         let bytes = codec::encode(&dispatch)?;
         if let Ok(revision) = store
             .kv_dispatch
@@ -971,14 +971,14 @@ pub async fn supersede_claimed(
                 .await
                 .upsert_with_revision(dispatch.clone(), revision);
             if let Some(ref claim_token) = old_claim_token {
-                claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token).await?;
+                claim_guard::release(store, dispatch.thread_id(), dispatch_id, claim_token).await?;
             }
-            if let Some(ref dedupe_key) = dispatch.dedupe_key {
+            if let Some(dedupe_key) = dispatch.dedupe_key() {
                 release_dedupe_lock(
                     store,
-                    &dispatch.thread_id,
+                    dispatch.thread_id(),
                     dedupe_key,
-                    &dispatch.dispatch_id,
+                    dispatch.dispatch_id(),
                 )
                 .await;
             }
@@ -997,10 +997,10 @@ pub async fn cancel(
     now: u64,
 ) -> Result<Option<RunDispatch>, StorageError> {
     let result = match cas_update(store, dispatch_id, None, |d| {
-        if d.status != RunDispatchStatus::Queued {
+        if d.status() != RunDispatchStatus::Queued {
             return Err(StorageError::NotFound(format!(
                 "dispatch {dispatch_id} not cancellable (status={:?})",
-                d.status
+                d.status()
             )));
         }
         mailbox_state::mark_cancelled(d, now);
@@ -1014,13 +1014,13 @@ pub async fn cancel(
     };
     let result = result.map(|(dispatch, _)| dispatch);
     if let Some(ref dispatch) = result
-        && let Some(ref dedupe_key) = dispatch.dedupe_key
+        && let Some(dedupe_key) = dispatch.dedupe_key()
     {
         release_dedupe_lock(
             store,
-            &dispatch.thread_id,
+            dispatch.thread_id(),
             dedupe_key,
-            &dispatch.dispatch_id,
+            dispatch.dispatch_id(),
         )
         .await;
     }
@@ -1038,24 +1038,17 @@ pub async fn record_dispatch_start(
     now: u64,
 ) -> Result<(), StorageError> {
     let result = cas_update(store, dispatch_id, Some(now), |d| {
-        if d.claim_token.as_deref() != Some(claim_token) {
+        if d.claim_token() != Some(claim_token) {
             return Err(StorageError::NotFound(format!(
                 "claim_token mismatch for {dispatch_id}"
             )));
         }
-        if d.status != RunDispatchStatus::Claimed {
+        if d.status() != RunDispatchStatus::Claimed {
             return Err(StorageError::NotFound(format!(
                 "dispatch {dispatch_id} not claimed"
             )));
         }
-        d.dispatch_instance_id = Some(dispatch_instance_id.to_string());
-        d.run_status = Some(RunStatus::Running);
-        d.termination = None;
-        d.run_response = None;
-        d.run_error = None;
-        d.completed_at = None;
-        d.updated_at = now;
-        Ok(())
+        d.record_dispatch_start(dispatch_instance_id, now)
     })
     .await?;
     if result.is_none() {
@@ -1072,24 +1065,17 @@ pub async fn record_run_result(
     now: u64,
 ) -> Result<(), StorageError> {
     let updated = cas_update(store, dispatch_id, Some(now), |d| {
-        if d.claim_token.as_deref() != Some(claim_token) {
+        if d.claim_token() != Some(claim_token) {
             return Err(StorageError::NotFound(format!(
                 "claim_token mismatch for {dispatch_id}"
             )));
         }
-        if d.status != RunDispatchStatus::Claimed {
+        if d.status() != RunDispatchStatus::Claimed {
             return Err(StorageError::NotFound(format!(
                 "dispatch {dispatch_id} not claimed"
             )));
         }
-        d.dispatch_instance_id = Some(result.dispatch_instance_id.clone());
-        d.run_status = Some(result.status);
-        d.termination = result.termination.clone();
-        d.run_response = result.response.clone();
-        d.run_error = result.error.clone();
-        d.completed_at = Some(now);
-        d.updated_at = now;
-        Ok(())
+        d.record_run_result(result, now)
     })
     .await?;
     if updated.is_none() {

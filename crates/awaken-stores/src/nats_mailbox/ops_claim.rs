@@ -31,19 +31,19 @@ async fn active_local_claim_blocks(
     else {
         return Ok(false);
     };
-    if except_dispatch_id == Some(local_active.dispatch_id.as_str()) {
+    if except_dispatch_id == Some(local_active.dispatch_id()) {
         return Ok(false);
     }
 
-    let Some(authoritative) = ops_query::load_dispatch(store, &local_active.dispatch_id).await?
+    let Some(authoritative) = ops_query::load_dispatch(store, local_active.dispatch_id()).await?
     else {
-        store.index.write().await.remove(&local_active.dispatch_id);
+        store.index.write().await.remove(local_active.dispatch_id());
         return Ok(false);
     };
     store.index.write().await.upsert(authoritative.clone());
-    Ok(authoritative.status == RunDispatchStatus::Claimed
+    Ok(authoritative.status() == RunDispatchStatus::Claimed
         && authoritative
-            .lease_until
+            .lease_until()
             .is_some_and(|lease_until| lease_until >= now))
 }
 
@@ -105,10 +105,11 @@ async fn claim_dispatch_inner(
         }
         let mut dispatch = codec::decode(&entry.value)?;
 
-        if dispatch.status != RunDispatchStatus::Queued {
+        if dispatch.status() != RunDispatchStatus::Queued {
             return Ok(None);
         }
-        if matches!(available_at_policy, AvailableAtPolicy::Respect) && dispatch.available_at > now
+        if matches!(available_at_policy, AvailableAtPolicy::Respect)
+            && dispatch.available_at() > now
         {
             return Ok(None);
         }
@@ -118,8 +119,8 @@ async fn claim_dispatch_inner(
         // cross-node guarantee for `interrupt()` — a node whose local
         // index hasn't caught up may see a stale Queued dispatch; the
         // KV read here is strongly consistent and rejects it.
-        let thread_epoch = ops_write::current_thread_epoch(store, &dispatch.thread_id).await?;
-        if dispatch.dispatch_epoch < thread_epoch {
+        let thread_epoch = ops_write::current_thread_epoch(store, dispatch.thread_id()).await?;
+        if dispatch.dispatch_epoch() < thread_epoch {
             mailbox_state::mark_superseded_at_epoch(&mut dispatch, now, thread_epoch, None);
             let bytes = codec::encode(&dispatch)?;
             if let Ok(revision) = store
@@ -132,12 +133,12 @@ async fn claim_dispatch_inner(
                     .write()
                     .await
                     .upsert_with_revision(dispatch.clone(), revision);
-                if let Some(ref dedupe_key) = dispatch.dedupe_key {
+                if let Some(dedupe_key) = dispatch.dedupe_key() {
                     ops_write::release_dedupe_lock(
                         store,
-                        &dispatch.thread_id,
+                        dispatch.thread_id(),
                         dedupe_key,
-                        &dispatch.dispatch_id,
+                        dispatch.dispatch_id(),
                     )
                     .await;
                 }
@@ -147,21 +148,22 @@ async fn claim_dispatch_inner(
             continue;
         }
 
-        if active_local_claim_blocks(store, &dispatch.thread_id, Some(dispatch_id), now).await? {
+        if active_local_claim_blocks(store, dispatch.thread_id(), Some(dispatch_id), now).await? {
             return Ok(None);
         }
 
         let Some(thread_claim) =
-            claim_guard::acquire(store, &dispatch.thread_id, dispatch_id, lease_ms, now).await?
+            claim_guard::acquire(store, dispatch.thread_id(), dispatch_id, lease_ms, now).await?
         else {
             return Ok(None);
         };
 
-        dispatch.status = RunDispatchStatus::Claimed;
-        dispatch.claim_token = Some(thread_claim.claim_token.clone());
-        dispatch.claimed_by = Some(consumer_id.to_string());
-        dispatch.lease_until = Some(thread_claim.lease_until);
-        dispatch.updated_at = now;
+        dispatch.claim(
+            consumer_id,
+            thread_claim.claim_token.clone(),
+            thread_claim.lease_until,
+            now,
+        )?;
 
         let bytes = codec::encode(&dispatch)?;
         let result = store
@@ -180,7 +182,7 @@ async fn claim_dispatch_inner(
             Err(_e) => {
                 claim_guard::release(
                     store,
-                    &dispatch.thread_id,
+                    dispatch.thread_id(),
                     dispatch_id,
                     &thread_claim.claim_token,
                 )
@@ -222,7 +224,7 @@ pub async fn claim(
     if local_candidate_count >= LOCAL_CLAIM_FAST_PATH_MIN_CANDIDATES
         && let Some(candidate) = local_candidate
     {
-        match claim_available_dispatch(store, &candidate.dispatch_id, consumer_id, lease_ms, now)
+        match claim_available_dispatch(store, candidate.dispatch_id(), consumer_id, lease_ms, now)
             .await
         {
             Ok(Some(d)) => {
@@ -245,19 +247,19 @@ pub async fn claim(
         }
     }
     .into_iter()
-    .filter(|dispatch| dispatch.status == RunDispatchStatus::Queued)
+    .filter(|dispatch| dispatch.status() == RunDispatchStatus::Queued)
     .collect::<Vec<_>>();
-    candidates.retain(|d| d.available_at <= now);
+    candidates.retain(|d| d.available_at() <= now);
     let available_candidates = candidates.len();
     candidates.sort_by(|a, b| {
-        a.priority
-            .cmp(&b.priority)
-            .then(a.created_at.cmp(&b.created_at))
+        a.priority()
+            .cmp(&b.priority())
+            .then(a.created_at().cmp(&b.created_at()))
     });
 
     let mut claimed = Vec::new();
     for candidate in candidates {
-        match claim_available_dispatch(store, &candidate.dispatch_id, consumer_id, lease_ms, now)
+        match claim_available_dispatch(store, candidate.dispatch_id(), consumer_id, lease_ms, now)
             .await
         {
             Ok(Some(d)) => {

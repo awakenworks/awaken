@@ -89,6 +89,7 @@ pub async fn checkpoint<T: ThreadRunStore + Send + Sync + 'static>(
     messages: &[Message],
     run: &RunRecord,
 ) -> Result<(), StorageError> {
+    run.validate_for_persist()?;
     let existing_thread = reader::load_thread_overlay(store, thread_id).await?;
     reader::validate_thread_hierarchy_overlay(
         store,
