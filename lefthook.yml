@@ -149,6 +149,34 @@ pre-commit:
         fi
       stage_fixed: false
 
+    check-doc-links:
+      glob: "{AGENTS.md,CLAUDE.md,docs/**/*.md,scripts/ci/check-doc-links.py}"
+      run: |
+        python3 scripts/ci/check-doc-links.py --self-test
+        python3 scripts/ci/check-doc-links.py --staged
+      stage_fixed: false
+
+    check-adr-constraints:
+      glob: "{docs/adr/*.md,scripts/ci/check-adr-constraints.py}"
+      run: |
+        python3 scripts/ci/check-adr-constraints.py --self-test
+        python3 scripts/ci/check-adr-constraints.py --staged
+      stage_fixed: false
+
+    check-guardrails:
+      glob: "{AGENTS.md,docs/adr/*.md,scripts/ci/check-guardrails.py}"
+      run: |
+        python3 scripts/ci/check-guardrails.py --self-test
+        python3 scripts/ci/check-guardrails.py
+      stage_fixed: false
+
+    check-source-guardrails:
+      glob: "{crates/**/*.rs,scripts/ci/check-source-guardrails.py}"
+      run: |
+        python3 scripts/ci/check-source-guardrails.py --self-test
+        python3 scripts/ci/check-source-guardrails.py --staged
+      stage_fixed: false
+
     check-secrets:
       run: |
         # 检查常见的硬编码密钥模式

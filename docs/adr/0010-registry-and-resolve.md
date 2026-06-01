@@ -138,6 +138,11 @@ policy passes through unchanged.
 - **Forward-compatible options.** Unknown keys in `adapter_options` are
   ignored at build time so older binaries do not reject newer specs.
 
+**Amendment: explicit environment credentials.** Bearer providers without
+`api_key` are rejected by default. `adapter_options.allow_env_credentials =
+true` may explicitly delegate bearer lookup to the host environment. The option
+is non-secret and must be a boolean.
+
 ### D4: resolve(agent_id) → ResolvedRun
 
 ```rust
