@@ -274,6 +274,7 @@ fn make_agent_spec_deny_all_with_extra_allowed_tools(extra_allowed_tools: &[&str
         system_prompt: "sys".into(),
         max_rounds: 16,
         max_continuation_retries: 2,
+        stop_conditions: Vec::new(),
         reasoning_effort: None,
         context_policy: None,
         plugin_ids: Vec::new(),

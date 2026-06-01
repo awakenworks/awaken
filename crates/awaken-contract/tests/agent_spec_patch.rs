@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use awaken_contract::contract::inference::{ContextWindowPolicy, ReasoningEffort};
+use awaken_contract::contract::lifecycle::StopConditionSpec;
 use awaken_contract::registry_spec::RemoteEndpoint;
 use awaken_contract::{AgentSpec, AgentSpecPatch, merge_agent_spec};
 use serde_json::{Value, json};
@@ -90,6 +91,7 @@ fn serde_round_trip_full_patch() {
         system_prompt: Some("You are helpful.".into()),
         max_rounds: Some(10),
         max_continuation_retries: Some(3),
+        stop_conditions: Some(vec![StopConditionSpec::Timeout { seconds: 30 }]),
         context_policy: Some(Some(ContextWindowPolicy::default())),
         plugin_ids: Some(vec!["plugin-a".into(), "plugin-b".into()]),
         active_hook_filter: Some(["plugin-a".to_string()].into_iter().collect()),
