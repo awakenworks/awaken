@@ -836,6 +836,34 @@ async fn wait_until(
 }
 
 #[tokio::test]
+async fn admin_assistant_runs_require_bearer_token_when_configured() {
+    let app = make_app_with_admin_token("admin-token").await;
+    let body = serde_json::json!({ "messages": [] });
+
+    // No token: rejected.
+    let (status, body_out) = request_json_with_headers(
+        &app.router,
+        Method::POST,
+        "/v1/admin/assistant/runs",
+        Some(body.clone()),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "no token: {body_out}");
+
+    // Wrong token: rejected.
+    let (status, _) = request_json_with_headers(
+        &app.router,
+        Method::POST,
+        "/v1/admin/assistant/runs",
+        Some(body),
+        &[("authorization", "Bearer wrong-token")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn admin_config_routes_require_bearer_token_when_configured() {
     let app = make_app_with_admin_token("admin-token").await;
 
@@ -883,6 +911,31 @@ async fn admin_config_routes_require_bearer_token_when_configured() {
         .await;
         assert_eq!(status, StatusCode::OK, "uri: {uri}, body: {body}");
     }
+}
+
+#[tokio::test]
+async fn capabilities_route_stays_mounted_when_config_crud_routes_are_hidden() {
+    let app = make_app_with_skill_catalog_config_and_admin(
+        None,
+        ServerConfig::default(),
+        Some(AdminApiConfig {
+            expose_config_routes: false,
+            bearer_token: Some(ADMIN_TOKEN.into()),
+            ..AdminApiConfig::default()
+        }),
+    )
+    .await;
+
+    let (status, body) = request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["namespaces"].is_array());
+
+    let (status, _) = request_json(&app.router, Method::GET, "/v1/config/agents", None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "config CRUD must still respect expose_config_routes=false"
+    );
 }
 
 #[tokio::test]

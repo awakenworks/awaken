@@ -784,6 +784,53 @@ async fn test_provider_redacts_provider_secrets_from_error() {
 }
 
 #[tokio::test]
+async fn capabilities_redacts_provider_credentials_and_headers() {
+    let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+    let (state, _manager) = build_state(config_store.clone()).await;
+    let service = ConfigService::new(&state).expect("config service");
+
+    let secret = "sk-capability-secret-redaction";
+    let mut headers = serde_json::Map::new();
+    headers.insert(
+        "Authorization".to_string(),
+        json!(format!("Bearer {secret}")),
+    );
+    headers.insert("X-Api-Key".to_string(), json!(secret));
+    service
+        .create_with_headers(
+            ConfigNamespace::Providers,
+            json!({
+                "id": "credentialed-provider",
+                "adapter": "stub",
+                "api_key": secret,
+                "adapter_options": { "headers": Value::Object(headers) }
+            }),
+            &axum::http::HeaderMap::new(),
+        )
+        .await
+        .expect("write provider");
+
+    let capabilities = service.capabilities().await.expect("capabilities");
+    let providers = capabilities["providers"]
+        .as_array()
+        .expect("providers array");
+    assert!(
+        providers
+            .iter()
+            .any(|provider| provider == &json!({ "id": "credentialed-provider" })),
+        "credentialed provider should be represented by id only: {providers:?}"
+    );
+
+    let rendered = serde_json::to_string(&capabilities).expect("serialize capabilities");
+    for forbidden in [secret, "Authorization", "X-Api-Key"] {
+        assert!(
+            !rendered.contains(forbidden),
+            "capabilities leaked provider credential material `{forbidden}`: {rendered}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn find_dependents_agents_and_mcp_servers_are_leaf_nodes() {
     let config_store = Arc::new(awaken_stores::InMemoryStore::new());
     let (state, _manager) = build_state(config_store.clone()).await;

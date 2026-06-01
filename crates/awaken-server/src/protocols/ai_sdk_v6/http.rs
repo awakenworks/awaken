@@ -25,7 +25,7 @@ use awaken_server_contract::contract::storage::{MessageOrder, MessageQuery};
 use awaken_server_contract::registry_spec::AgentSpec;
 
 use crate::app::ProtocolRoutesState as S;
-use crate::http_run::wire_sse_relay;
+use crate::http_run::{format_relay_error, wire_sse_relay};
 use crate::http_sse::{sse_body_stream, sse_response};
 use crate::routes::{ApiError, map_mailbox_error};
 use crate::transport::channel_sink::BoundedChannelEventSink;
@@ -190,16 +190,12 @@ async fn ai_sdk_admin_assistant(
         request = request.with_decisions(processed.decisions);
     }
 
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel(st.sse_buffer_size.max(32));
-    let sink: Arc<dyn EventSink> = Arc::new(BoundedChannelEventSink::new(event_tx));
-    tokio::spawn(async move {
-        if let Err(error) = preview_runtime.run(request, sink).await {
-            tracing::error!(error = %error, "admin assistant run failed");
-        }
-    });
-
-    let encoder = AiSdkEncoder::new();
-    let sse_rx = wire_sse_relay(event_rx, encoder, st.sse_buffer_size, None);
+    let sse_rx = spawn_ephemeral_runtime_stream(
+        preview_runtime,
+        request,
+        st.sse_buffer_size,
+        "admin assistant run failed",
+    );
     Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)))
 }
 
@@ -256,6 +252,37 @@ async fn ai_sdk_chat_preview_agent(
         ));
     }
 
+    // Prefer the durable path when a versioned registry store is wired: stage
+    // the unsaved draft as a one-off ephemeral publication and run it through
+    // the mailbox like a saved agent. The returned snapshot_version is carried
+    // as an explicit resolution id hint so concurrent previews cannot race on
+    // "latest publication".
+    let durable_resolution_id = match st.config.as_ref() {
+        Some(config) if config.runtime_manager.has_versioned_registry_store() => Some(
+            config
+                .runtime_manager
+                .publish_ephemeral_with_extra_agent(&agent)
+                .await
+                .map_err(|error| {
+                    ApiError::Internal(format!("failed to publish draft preview registry: {error}"))
+                })?
+                .to_string(),
+        ),
+        _ => None,
+    };
+    if let Some(resolution_id) = durable_resolution_id {
+        let chat_request = AiSdkChatRequest {
+            messages,
+            thread_id,
+            agent_id: Some(agent.id),
+            state,
+        };
+        return ai_sdk_chat_inner_with_resolution_id_hint(st, chat_request, Some(resolution_id))
+            .await;
+    }
+
+    // Fallback (no versioned registry store): single-shot ephemeral run with no
+    // durable persistence/resume. HITL approval needs the durable path above.
     let processed = super::request::process_preview_chat_request(messages, thread_id, state)
         .map_err(ApiError::BadRequest)?;
     let candidate = build_preview_registry_set(&st, &agent)?;
@@ -276,17 +303,73 @@ async fn ai_sdk_chat_preview_agent(
         request = request.with_decisions(processed.decisions);
     }
 
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel(st.sse_buffer_size.max(32));
+    let sse_rx = spawn_ephemeral_runtime_stream(
+        preview_runtime,
+        request,
+        st.sse_buffer_size,
+        "agent preview run failed",
+    );
+    Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)))
+}
+
+fn spawn_ephemeral_runtime_stream(
+    runtime: Arc<AgentRuntime>,
+    request: RunActivation,
+    sse_buffer_size: usize,
+    failure_message: &'static str,
+) -> tokio::sync::mpsc::Receiver<Bytes> {
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(sse_buffer_size.max(32));
     let sink: Arc<dyn EventSink> = Arc::new(BoundedChannelEventSink::new(event_tx));
+    let run_task = tokio::spawn(async move { runtime.run(request, sink).await });
+
+    let encoder = AiSdkEncoder::new();
+    let mut relay_rx = wire_sse_relay(event_rx, encoder, sse_buffer_size, None);
+    let (final_tx, final_rx) = tokio::sync::mpsc::channel::<Bytes>(sse_buffer_size.max(1));
+
     tokio::spawn(async move {
-        if let Err(error) = preview_runtime.run(request, sink).await {
-            tracing::error!(error = %error, "agent preview run failed");
+        let mut run_task = std::pin::pin!(run_task);
+        let mut relay_done = false;
+        let mut run_done = false;
+
+        loop {
+            tokio::select! {
+                frame = relay_rx.recv(), if !relay_done => {
+                    match frame {
+                        Some(frame) => {
+                            if final_tx.send(frame).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => relay_done = true,
+                    }
+                }
+                result = &mut run_task, if !run_done => {
+                    run_done = true;
+                    match result {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => {
+                            tracing::error!(error = %error, message = failure_message, "ephemeral runtime run failed");
+                            let _ = final_tx
+                                .send(format_relay_error(&format!("{failure_message}: {error}")))
+                                .await;
+                        }
+                        Err(error) => {
+                            tracing::error!(error = %error, message = failure_message, "ephemeral runtime task failed");
+                            let _ = final_tx
+                                .send(format_relay_error(&format!("{failure_message}: {error}")))
+                                .await;
+                        }
+                    }
+                }
+            }
+
+            if relay_done && run_done {
+                break;
+            }
         }
     });
 
-    let encoder = AiSdkEncoder::new();
-    let sse_rx = wire_sse_relay(event_rx, encoder, st.sse_buffer_size, None);
-    Ok(ai_sdk_sse_response(sse_body_stream(sse_rx)))
+    final_rx
 }
 
 #[derive(Clone)]
@@ -380,6 +463,14 @@ fn build_admin_assistant_registry_set(
 // ── Core chat handler ───────────────────────────────────────────────
 
 async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response, ApiError> {
+    ai_sdk_chat_inner_with_resolution_id_hint(st, payload, None).await
+}
+
+async fn ai_sdk_chat_inner_with_resolution_id_hint(
+    st: S,
+    payload: AiSdkChatRequest,
+    resolution_id_hint: Option<String>,
+) -> Result<Response, ApiError> {
     let processed = super::request::process_chat_request(st.run.store().as_ref(), payload)
         .await
         .map_err(ApiError::BadRequest)?;
@@ -469,6 +560,9 @@ async fn ai_sdk_chat_inner(st: S, payload: AiSdkChatRequest) -> Result<Response,
     }
     if !decisions.is_empty() {
         request = request.with_decisions(decisions);
+    }
+    if let Some(resolution_id_hint) = resolution_id_hint {
+        request = request.with_resolution_id_hint(resolution_id_hint);
     }
     let (_result, event_rx) = st
         .run
@@ -858,8 +952,20 @@ fn is_finish_step_frame(frame: &Bytes) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_runtime::RuntimeError;
+    use awaken_runtime::registry::ResolvedAgent;
     use futures::stream;
     use serde_json::json;
+
+    struct FailingResolver;
+
+    impl AgentResolver for FailingResolver {
+        fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, RuntimeError> {
+            Err(RuntimeError::ResolveFailed {
+                message: "forced test failure".into(),
+            })
+        }
+    }
 
     #[test]
     fn ai_sdk_sse_response_sets_transport_header() {
@@ -870,6 +976,36 @@ mod tests {
                 .get(AI_SDK_STREAM_HEADER)
                 .and_then(|value| value.to_str().ok()),
             Some(AI_SDK_STREAM_VERSION)
+        );
+    }
+
+    #[tokio::test]
+    async fn ephemeral_runtime_stream_emits_error_frame_when_run_fails() {
+        let runtime = Arc::new(AgentRuntime::new(Arc::new(FailingResolver)));
+        let request = RunActivation::new("thread", vec![Message::user("hello")])
+            .with_agent_id("missing-agent");
+        let mut rx =
+            spawn_ephemeral_runtime_stream(runtime, request, 8, "test ephemeral run failed");
+
+        let mut frames = Vec::new();
+        while let Some(frame) = rx.recv().await {
+            frames.push(String::from_utf8(frame.to_vec()).expect("utf8 sse frame"));
+            if frames
+                .iter()
+                .any(|frame| frame.contains(r#""type":"error""#))
+            {
+                break;
+            }
+        }
+
+        let body = frames.join("");
+        assert!(
+            body.contains(r#""type":"error""#),
+            "run failure should be visible to the SSE client: {body}"
+        );
+        assert!(
+            body.contains("test ephemeral run failed"),
+            "error frame should name the failed runtime path: {body}"
         );
     }
 

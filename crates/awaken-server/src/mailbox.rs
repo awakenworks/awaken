@@ -707,6 +707,21 @@ pub struct Mailbox {
     thread_append_locks: Box<[Mutex<()>]>,
     /// Retry queue for checkpoint events that failed to publish (see `checkpoint_repair`).
     checkpoint_repair_queue: Arc<StdMutex<VecDeque<checkpoint_repair::CheckpointRepairTask>>>,
+    /// Optional source for materializing a run's pinned `RegistrySet` from its
+    /// persisted resolution_id (publication snapshot_version) at execution
+    /// time. Lets a durable run resolve against a pinned publication — e.g. an
+    /// unsaved admin-sandbox draft agent — by handing the runtime a resolved
+    /// `RegistrySet` via `with_pinned_registry_set`. Pin/publication logic stays
+    /// server-side; the runtime never learns what a "pin" is. `None` keeps the
+    /// live-registry resolution used by all other deployments.
+    pinned_registry: Option<PinnedRegistrySource>,
+}
+
+/// Server-side handle for re-materializing a run's pinned publication.
+#[derive(Clone)]
+struct PinnedRegistrySource {
+    store: Arc<dyn awaken_server_contract::VersionedRegistryStore>,
+    scope: awaken_server_contract::ScopeId,
 }
 
 impl Mailbox {
@@ -773,7 +788,62 @@ impl Mailbox {
                 .map(|_| Mutex::new(()))
                 .collect(),
             checkpoint_repair_queue: Arc::new(StdMutex::new(VecDeque::new())),
+            pinned_registry: None,
         })
+    }
+
+    /// Wire a versioned-registry source so durable runs can resolve against a
+    /// pinned publication (by their persisted resolution_id) at execution
+    /// time. Used to run unsaved draft agents (admin sandbox) durably. The
+    /// runtime stays pin-agnostic — it only receives the materialized
+    /// `RegistrySet` via `with_pinned_registry_set`.
+    #[must_use]
+    pub fn with_pinned_registry(
+        mut self,
+        store: Arc<dyn awaken_server_contract::VersionedRegistryStore>,
+        scope: impl Into<String>,
+    ) -> Self {
+        let scope = awaken_server_contract::ScopeId::new(scope.into())
+            .expect("pinned registry scope_id must be valid");
+        self.pinned_registry = Some(PinnedRegistrySource { store, scope });
+        self
+    }
+
+    /// Materialize the pinned `RegistrySet` for a run's resolution_id
+    /// (publication snapshot_version), overlaying live runtime objects. Returns
+    /// `Ok(None)` only when no pinned-registry source is wired or the id is not
+    /// a snapshot_version; once a numeric snapshot id is recognized, failures
+    /// are terminal so replay/resume cannot silently drift to the live registry.
+    async fn materialize_pinned_registry_set(
+        &self,
+        resolution_id: &str,
+    ) -> Result<Option<awaken_runtime::registry::RegistrySet>, MailboxError> {
+        let Some(source) = self.pinned_registry.as_ref() else {
+            return Ok(None);
+        };
+        let Ok(snapshot_version) = resolution_id.parse::<u64>() else {
+            return Ok(None);
+        };
+        let live = self.executor.live_registry_set().ok_or_else(|| {
+            MailboxError::Internal(format!(
+                "pinned registry snapshot {snapshot_version} cannot be materialized: live registry unavailable"
+            ))
+        })?;
+        let materializer = crate::services::frozen_registry::FrozenAgentRegistryMaterializer::new(
+            source.store.clone(),
+        );
+        match materializer
+            .materialize(awaken_server_contract::VersionSelector::Publication {
+                scope_id: source.scope.as_str().to_string(),
+                snapshot_version,
+            })
+            .await
+        {
+            Ok(frozen) => Ok(Some(frozen.to_registry_set(&live))),
+            Err(error) => Err(MailboxError::Internal(format!(
+                "pinned registry snapshot {snapshot_version} cannot be materialized: {error}"
+            ))),
+        }
     }
 
     /// Number of stripes for `lock_thread_append` (defined in `submit`).

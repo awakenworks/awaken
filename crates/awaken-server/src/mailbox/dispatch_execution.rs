@@ -304,16 +304,34 @@ pub(super) async fn run_claimed_dispatch(
     };
     let result = match resolution_id {
         Ok(resolution_id) => {
-            match this
-                .executor
-                .resolve_activation_in_scope(
-                    &request,
-                    ResolutionPolicy::PersistentServer,
-                    RegistryResolutionScope::Pinned(resolution_id),
-                )
-                .await
-                .and_then(|plan| plan.into_replayable())
-            {
+            // Server-side: hand the runtime the pinned publication's resolved
+            // RegistrySet so the run loop resolves against it (e.g. an unsaved
+            // sandbox draft) instead of falling back to the live registry. The
+            // runtime stays pin-agnostic — it only receives a RegistrySet.
+            let resolved = match this.materialize_pinned_registry_set(&resolution_id).await {
+                Ok(Some(set)) => {
+                    request = request.with_pinned_registry_set(set);
+                    this.executor
+                        .resolve_activation_in_scope(
+                            &request,
+                            ResolutionPolicy::PersistentServer,
+                            RegistryResolutionScope::Pinned(resolution_id),
+                        )
+                        .await
+                        .and_then(|plan| plan.into_replayable())
+                }
+                Ok(None) => this
+                    .executor
+                    .resolve_activation_in_scope(
+                        &request,
+                        ResolutionPolicy::PersistentServer,
+                        RegistryResolutionScope::Pinned(resolution_id),
+                    )
+                    .await
+                    .and_then(|plan| plan.into_replayable()),
+                Err(error) => Err(awaken_runtime::ResolveError::Runtime(error.to_string())),
+            };
+            match resolved {
                 Ok(plan) => {
                     if let Some(handler) = this.pending_boundary_handler(
                         &request,

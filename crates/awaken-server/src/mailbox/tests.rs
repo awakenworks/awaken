@@ -39,7 +39,7 @@ use awaken_server_contract::{
 };
 use awaken_stores::{
     InMemoryEventStore, InMemoryMailboxStore, InMemoryOutboxStore, InMemoryStore,
-    MemoryCommitCoordinator, PendingMessageStore,
+    InMemoryVersionedRegistryStore, MemoryCommitCoordinator, PendingMessageStore,
 };
 use serde_json::{Value, json};
 use std::collections::VecDeque;
@@ -149,12 +149,14 @@ impl awaken_runtime::Resolver for FixedRunResolver {
             "system",
             Arc::new(ScriptedLlm::new(vec![])),
         );
+        let resolution_id = match req.resolution_scope {
+            awaken_runtime::RegistryResolutionScope::Pinned(id) => id,
+            awaken_runtime::RegistryResolutionScope::Live => self.resolution_id.clone(),
+        };
         let requirements = awaken_runtime::BackendRequirements::from_features(&req.features);
         Ok(awaken_runtime::ResolvedRunPlan::Replayable(
             awaken_runtime::ReplayableResolvedRun {
-                artifact: awaken_runtime::ResolutionArtifact {
-                    resolution_id: self.resolution_id.clone(),
-                },
+                artifact: awaken_runtime::ResolutionArtifact { resolution_id },
                 execution: awaken_runtime::ResolvedRun {
                     agent_spec: (*agent.spec).clone(),
                     role: awaken_runtime::ExecutionRole::Root,
@@ -3625,6 +3627,79 @@ async fn prepare_run_for_dispatch_persists_resolved_resolution_id() {
         .expect("load run")
         .expect("created run");
     assert_eq!(run.resolution_id, Some(resolution_id));
+}
+
+#[tokio::test]
+async fn prepare_run_for_dispatch_uses_explicit_resolution_id_hint() {
+    let thread_store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        AgentRuntime::new(Arc::new(StubResolver))
+            .with_in_memory_thread_run_store(thread_store.clone()),
+    );
+    runtime.set_run_resolver(Arc::new(FixedRunResolver {
+        resolution_id: "fallback-resolution".to_string(),
+    }));
+    let mailbox = Arc::new(Mailbox::new(
+        runtime.clone(),
+        make_store(),
+        thread_store.clone() as Arc<dyn ThreadRunStore>,
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    ));
+    let mut request = RunActivation::new("thread-manifest", vec![Message::user("plan this")])
+        .with_agent_id("agent-created")
+        .with_resolution_id_hint("42");
+    let (thread_id, messages) = validate_run_inputs(
+        request.thread_id().to_owned(),
+        request.messages().to_vec(),
+        false,
+    )
+    .unwrap();
+
+    let run_id = mailbox
+        .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
+        .await
+        .expect("precreate");
+
+    let run = thread_store
+        .load_run(&run_id)
+        .await
+        .expect("load run")
+        .expect("created run");
+    assert_eq!(run.resolution_id.as_deref(), Some("42"));
+}
+
+#[tokio::test]
+async fn materialize_pinned_registry_set_fails_closed_for_missing_numeric_snapshot() {
+    let thread_store = Arc::new(InMemoryStore::new());
+    let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(CountingMailboxRuntime::default());
+    let versioned_registry = Arc::new(InMemoryVersionedRegistryStore::new());
+    let mailbox = Mailbox::new(
+        runtime,
+        make_store(),
+        thread_store.clone() as Arc<dyn ThreadRunStore>,
+        "test-consumer".to_string(),
+        MailboxConfig::default(),
+    )
+    .with_pinned_registry(versioned_registry, "default");
+
+    assert!(
+        mailbox
+            .materialize_pinned_registry_set("draft-run-id")
+            .await
+            .expect("non-numeric resolution ids are not publication snapshots")
+            .is_none()
+    );
+    let error = match mailbox.materialize_pinned_registry_set("42").await {
+        Ok(_) => panic!("numeric snapshot ids must fail closed when the publication is missing"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("pinned registry snapshot 42 cannot be materialized"),
+        "unexpected error: {error}"
+    );
 }
 
 #[tokio::test]
