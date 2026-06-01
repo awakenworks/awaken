@@ -1,6 +1,9 @@
 import { DefaultChatTransport, type FileUIPart } from "ai";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import {
+  createContext,
+  useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -29,6 +32,14 @@ const SANDBOX_ACCEPTED_MEDIA =
   "image/*,audio/*,video/*,application/pdf,text/plain,text/markdown,application/json";
 const MAX_SANDBOX_FILES = 4;
 const MAX_SANDBOX_TOTAL_BYTES = 8 * 1024 * 1024;
+
+// Lets the deeply-nested ToolInvocation resolve a tool-call approval without
+// threading callbacks through the exported MessageParts signature.
+interface ApprovalActions {
+  onApprove?: (approvalId: string) => void;
+  onDeny?: (approvalId: string) => void;
+}
+const ApprovalActionsContext = createContext<ApprovalActions>({});
 
 export function AgentPreviewPanel({
   draft,
@@ -76,10 +87,47 @@ export function AgentPreviewPanel({
     [sessionId],
   );
 
-  const { messages, sendMessage, setMessages, status, error } = useChat({
-    id: `agent-preview:${sessionId}`,
-    transport,
-  });
+  const { messages, sendMessage, setMessages, status, error, addToolApprovalResponse } =
+    useChat({
+      id: `agent-preview:${sessionId}`,
+      transport,
+      // After the operator answers an approval prompt, re-send the conversation
+      // so the suspended run resumes. Server-executed tools (providerExecuted)
+      // arrive via the stream and must not trigger a resubmit.
+      sendAutomaticallyWhen: ({ messages }) => {
+        const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+        if (!lastAssistant) return false;
+        return lastAssistant.parts.some((part) => {
+          if (!part || typeof part !== "object" || !("state" in part)) return false;
+          if (
+            "providerExecuted" in part &&
+            (part as { providerExecuted?: boolean }).providerExecuted
+          ) {
+            return false;
+          }
+          const state = (part as { state?: string }).state;
+          return (
+            state === "output-available" ||
+            state === "output-denied" ||
+            state === "output-error" ||
+            state === "approval-responded"
+          );
+        });
+      },
+    });
+
+  const onApprove = useCallback(
+    (approvalId: string) => {
+      void addToolApprovalResponse({ id: approvalId, approved: true });
+    },
+    [addToolApprovalResponse],
+  );
+  const onDeny = useCallback(
+    (approvalId: string) => {
+      void addToolApprovalResponse({ id: approvalId, approved: false });
+    },
+    [addToolApprovalResponse],
+  );
 
   const blockedReason = previewDraft.model_id.trim()
     ? null
@@ -154,6 +202,7 @@ export function AgentPreviewPanel({
   }
 
   return (
+    <ApprovalActionsContext.Provider value={{ onApprove, onDeny }}>
     <aside className="rounded-sm border border-line bg-surface p-4 shadow-sm xl:sticky xl:top-6">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-sm font-semibold text-fg-strong">
@@ -352,6 +401,7 @@ export function AgentPreviewPanel({
         </form>
       </div>
     </aside>
+    </ApprovalActionsContext.Provider>
   );
 }
 
@@ -591,6 +641,7 @@ interface ToolPart {
   input?: unknown;
   output?: unknown;
   errorText?: string;
+  approval?: { id?: string };
 }
 
 interface FilePart {
@@ -646,8 +697,19 @@ function ToolInvocation({ part }: { part: ToolPart }) {
   const name = part.toolName ?? part.type.replace(/^tool-/, "") ?? "tool";
   const state = part.state ?? "input-streaming";
   const tone = TOOL_STATE_TONE[state] ?? "neutral";
+  const { onApprove, onDeny } = useContext(ApprovalActionsContext);
+  const approvalId = part.approval?.id;
+  const awaitingApproval = state === "approval-requested" && Boolean(approvalId);
+  const inputRecord =
+    part.input != null && typeof part.input === "object"
+      ? (part.input as Record<string, unknown>)
+      : undefined;
+  const requestedToolName =
+    name === "PermissionConfirm" && typeof inputRecord?.tool_name === "string"
+      ? inputRecord.tool_name
+      : name;
   return (
-    <details className="rounded-sm border border-line bg-soft text-xs">
+    <details className="rounded-sm border border-line bg-soft text-xs" open={awaitingApproval}>
       <summary className="flex cursor-pointer flex-wrap items-center gap-2 px-3 py-2">
         <span
           className={[
@@ -686,6 +748,34 @@ function ToolInvocation({ part }: { part: ToolPart }) {
             </div>
             <StructuredPayload value={part.output} emptyLabel="(no output)" />
           </>
+        ) : null}
+        {awaitingApproval && approvalId ? (
+          <div
+            data-testid="sandbox-approval"
+            className="mt-3 rounded-sm border border-tone-warn/35 bg-tone-warn/10 p-3"
+          >
+            <div className="text-xs text-fg-strong">
+              Approve <span className="font-mono">{requestedToolName}</span> execution?
+            </div>
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                data-testid="sandbox-approval-allow"
+                onClick={() => onApprove?.(approvalId)}
+                className="rounded-sm border border-tone-success/40 bg-tone-success/15 px-3 py-1.5 text-xs font-semibold text-tone-success transition hover:bg-tone-success/25"
+              >
+                Allow
+              </button>
+              <button
+                type="button"
+                data-testid="sandbox-approval-deny"
+                onClick={() => onDeny?.(approvalId)}
+                className="rounded-sm border border-tone-error/40 bg-tone-error/15 px-3 py-1.5 text-xs font-semibold text-tone-error transition hover:bg-tone-error/25"
+              >
+                Deny
+              </button>
+            </div>
+          </div>
         ) : null}
       </div>
     </details>
