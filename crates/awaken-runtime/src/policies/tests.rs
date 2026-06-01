@@ -278,6 +278,86 @@ fn policies_from_specs_converts_declarative_specs() {
 }
 
 #[test]
+fn every_exposed_stop_condition_variant_has_runtime_semantics() {
+    let cases: Vec<(StopConditionSpec, StopPolicyStats, &'static str)> = vec![
+        (
+            StopConditionSpec::MaxRounds { rounds: 2 },
+            StopPolicyStats {
+                step_count: 2,
+                ..base_stats()
+            },
+            "max_rounds",
+        ),
+        (
+            StopConditionSpec::Timeout { seconds: 3 },
+            StopPolicyStats {
+                elapsed_ms: 3_001,
+                ..base_stats()
+            },
+            "timeout",
+        ),
+        (
+            StopConditionSpec::TokenBudget { max_total: 10 },
+            StopPolicyStats {
+                total_input_tokens: 6,
+                total_output_tokens: 5,
+                ..base_stats()
+            },
+            "token_budget",
+        ),
+        (
+            StopConditionSpec::ConsecutiveErrors { max: 2 },
+            StopPolicyStats {
+                consecutive_errors: 2,
+                ..base_stats()
+            },
+            "consecutive_errors",
+        ),
+        (
+            StopConditionSpec::StopOnTool {
+                tool_name: "finish".into(),
+            },
+            StopPolicyStats {
+                last_tool_names: vec!["search".into(), "finish".into()],
+                ..base_stats()
+            },
+            "stop_on_tool",
+        ),
+        (
+            StopConditionSpec::ContentMatch {
+                pattern: "DONE".into(),
+            },
+            StopPolicyStats {
+                last_response_text: "status: DONE".into(),
+                ..base_stats()
+            },
+            "content_match",
+        ),
+        (
+            StopConditionSpec::LoopDetection { window: 3 },
+            StopPolicyStats {
+                recent_response_texts: vec!["same".into(), "same".into(), "same".into()],
+                ..base_stats()
+            },
+            "loop_detection",
+        ),
+    ];
+
+    for (spec, stats, expected_code) in cases {
+        let policies = policies_from_specs(std::slice::from_ref(&spec));
+        assert_eq!(
+            policies.len(),
+            1,
+            "spec should produce one policy: {spec:?}"
+        );
+        assert!(
+            matches!(policies[0].evaluate(&stats), StopDecision::Stop { code, .. } if code == expected_code),
+            "spec should stop with {expected_code}: {spec:?}"
+        );
+    }
+}
+
+#[test]
 fn declarative_stop_on_tool_policy_fires_for_matching_tool() {
     let policies = policies_from_specs(&[StopConditionSpec::StopOnTool {
         tool_name: "finish".into(),
