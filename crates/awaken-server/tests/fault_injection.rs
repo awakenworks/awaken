@@ -245,30 +245,14 @@ impl MailboxStore for FailingMailboxStore {
 }
 
 fn make_dispatch(dispatch_id: &str, thread_id: &str) -> RunDispatch {
-    RunDispatch {
-        dispatch_id: dispatch_id.to_string(),
-        thread_id: thread_id.to_string(),
-        run_id: format!("run-{dispatch_id}"),
-        priority: 128,
-        dedupe_key: None,
-        dispatch_epoch: 0,
-        status: RunDispatchStatus::Queued,
-        available_at: 1000,
-        attempt_count: 0,
-        max_attempts: 5,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        dispatch_instance_id: None,
-        run_status: None,
-        termination: None,
-        run_response: None,
-        run_error: None,
-        completed_at: None,
-        created_at: 1000,
-        updated_at: 1000,
-    }
+    RunDispatch::queued(
+        dispatch_id.to_string(),
+        thread_id.to_string(),
+        format!("run-{dispatch_id}"),
+        1000,
+    )
+    .with_priority(128)
+    .with_max_attempts(5)
 }
 
 struct ImmediateLlm;
@@ -434,7 +418,7 @@ async fn ack_failure_leaves_dispatch_claimed_for_reclaim() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    let claim_token = claimed[0].claim_token.clone().unwrap();
+    let claim_token = claimed[0].claim_token().unwrap().to_string();
 
     // Make ack fail
     store.fail_ack.store(true, Ordering::SeqCst);
@@ -443,19 +427,19 @@ async fn ack_failure_leaves_dispatch_claimed_for_reclaim() {
 
     // Dispatch should still be in Claimed state
     let loaded = store.load_dispatch("j-1").await.unwrap().unwrap();
-    assert_eq!(loaded.status, RunDispatchStatus::Claimed);
+    assert_eq!(loaded.status(), RunDispatchStatus::Claimed);
 
     // After lease expiry, reclaim should recover the dispatch
     store.fail_ack.store(false, Ordering::SeqCst);
-    let lease_expiry = loaded.lease_until.unwrap() + 1;
+    let lease_expiry = loaded.lease_until().unwrap() + 1;
     let reclaimed = store
         .reclaim_expired_leases(lease_expiry, 10)
         .await
         .unwrap();
     assert_eq!(reclaimed.len(), 1);
-    assert_eq!(reclaimed[0].dispatch_id, "j-1");
-    assert_eq!(reclaimed[0].status, RunDispatchStatus::Queued);
-    assert_eq!(reclaimed[0].attempt_count, 1);
+    assert_eq!(reclaimed[0].dispatch_id(), "j-1");
+    assert_eq!(reclaimed[0].status(), RunDispatchStatus::Queued);
+    assert_eq!(reclaimed[0].attempt_count(), 1);
 }
 
 // ============================================================================
@@ -472,7 +456,7 @@ async fn nack_failure_leaves_dispatch_claimed() {
         .claim("thread-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
-    let claim_token = claimed[0].claim_token.clone().unwrap();
+    let claim_token = claimed[0].claim_token().unwrap().to_string();
 
     store.fail_nack.store(true, Ordering::SeqCst);
     let result = store
@@ -482,7 +466,7 @@ async fn nack_failure_leaves_dispatch_claimed() {
 
     // Dispatch remains Claimed
     let loaded = store.load_dispatch("j-1").await.unwrap().unwrap();
-    assert_eq!(loaded.status, RunDispatchStatus::Claimed);
+    assert_eq!(loaded.status(), RunDispatchStatus::Claimed);
 }
 
 // ============================================================================
@@ -504,8 +488,8 @@ async fn enqueue_failure_does_not_corrupt_existing_dispatches() {
 
     // First dispatch is still intact
     let loaded = store.load_dispatch("j-1").await.unwrap().unwrap();
-    assert_eq!(loaded.dispatch_id, "j-1");
-    assert_eq!(loaded.status, RunDispatchStatus::Queued);
+    assert_eq!(loaded.dispatch_id(), "j-1");
+    assert_eq!(loaded.status(), RunDispatchStatus::Queued);
 
     // Second dispatch was never persisted
     assert!(store.load_dispatch("j-2").await.unwrap().is_none());
@@ -538,7 +522,7 @@ async fn dispatch_remains_claimable_after_claim_failure_recovery() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].dispatch_id, "j-1");
+    assert_eq!(claimed[0].dispatch_id(), "j-1");
 }
 
 // ============================================================================

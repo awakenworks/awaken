@@ -13,10 +13,11 @@ use awaken_runtime::extensions::a2a::{
     AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
     DelegateRunResult, DelegateRunStatus,
 };
-use awaken_server::app::{ServerConfig, ServerState};
+use awaken_server::app::{ConfigModuleState, ServerConfig, ServerState};
 use awaken_server::routes::build_router;
 use awaken_server::scope::{HttpScopeProvider, ScopeResolveError};
-use awaken_server_contract::ModelSpec;
+use awaken_server::services::config_runtime::ConfigRuntimeManager;
+use awaken_server_contract::contract::config_store::ConfigStore;
 use awaken_server_contract::contract::content::extract_text;
 use awaken_server_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -24,7 +25,9 @@ use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_server_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
 use awaken_server_contract::registry_spec::AgentSpec;
 use awaken_server_contract::registry_spec::RemoteEndpoint;
+use awaken_server_contract::{BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
 use awaken_server_contract::{RequestSurface, ScopeContext, ScopeId, scoped_key};
+use awaken_stores::InMemoryVersionedRegistryStore;
 use awaken_stores::memory::InMemoryStore;
 use axum::body::to_bytes;
 use axum::http::request::Parts;
@@ -375,6 +378,80 @@ fn make_test_app_with_executor(
             .expect("build runtime"),
     );
     make_test_app_with_runtime(runtime, store)
+}
+
+async fn make_test_app_with_unpublishable_versioned_config() -> TestApp {
+    let store = Arc::new(InMemoryStore::new());
+    let runtime = Arc::new(
+        AgentRuntimeBuilder::new()
+            .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
+            .with_provider("mock", Arc::new(ImmediateExecutor))
+            .with_agent_spec(AgentSpec {
+                id: "test-agent".into(),
+                model_id: "test-model".into(),
+                system_prompt: "test".into(),
+                max_rounds: 0,
+                ..Default::default()
+            })
+            .with_in_memory_thread_run_store(store.clone())
+            .build()
+            .expect("build runtime"),
+    );
+    runtime.set_run_resolver(Arc::new(TestRunResolver {
+        inner: runtime.resolver_arc(),
+    }));
+    let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
+    let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
+        runtime.clone(),
+        mailbox_store,
+        store.clone(),
+        "test".to_string(),
+        awaken_server::mailbox::MailboxConfig::default(),
+    ));
+    let config_store = store.clone() as Arc<dyn ConfigStore>;
+    let manager = Arc::new(
+        ConfigRuntimeManager::new(runtime.clone(), config_store.clone())
+            .expect("config runtime manager")
+            .with_versioned_registry_store(
+                "default",
+                Arc::new(InMemoryVersionedRegistryStore::new()),
+            ),
+    );
+    manager
+        .apply_seed(&BuiltinSeedSet {
+            binary_version: "test".to_string(),
+            specs: vec![
+                BuiltinSpec::Provider(ProviderSpec {
+                    id: "provider-1".into(),
+                    adapter: "openai".into(),
+                    api_key: Some("sk-test-secret".into()),
+                    ..Default::default()
+                }),
+                BuiltinSpec::Model(ModelSpec::new("model-1", "provider-1", "upstream")),
+                BuiltinSpec::Agent(Box::new(AgentSpec {
+                    id: "agent-1".into(),
+                    model_id: "model-1".into(),
+                    system_prompt: "test".into(),
+                    max_rounds: 0,
+                    ..Default::default()
+                })),
+            ],
+        })
+        .await
+        .expect("seed unpublishable managed config");
+    let mut state = ServerState::new(
+        runtime.clone(),
+        mailbox,
+        store.clone(),
+        runtime.resolver_arc(),
+        ServerConfig::default(),
+    );
+    state.config = Some(ConfigModuleState::new(config_store, manager));
+    state.admin.admin_api_config.bearer_token = Some(TEST_ADMIN_TOKEN.into());
+    TestApp {
+        router: build_router(&state),
+        store,
+    }
 }
 
 fn make_test_app_with_local_components() -> TestApp {
@@ -1124,6 +1201,37 @@ async fn ai_sdk_agent_preview_runs_with_draft_system_prompt_and_history() {
     assert!(
         body.contains("roles=system,user,assistant,user"),
         "preview should preserve assistant history: {body}"
+    );
+}
+
+#[tokio::test]
+async fn ai_sdk_agent_preview_returns_error_when_durable_publish_fails() {
+    let test = make_test_app_with_unpublishable_versioned_config().await;
+    let (status, body) = post_json(
+        test.router,
+        "/v1/ai-sdk/agent-previews/runs",
+        json!({
+            "agent": {
+                "id": "preview",
+                "model_id": "model-1",
+                "system_prompt": "draft system prompt",
+                "max_rounds": 0
+            },
+            "messages": [
+                {
+                    "id": "u1",
+                    "role": "user",
+                    "parts": [{ "type": "text", "text": "hello" }]
+                }
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
+    assert!(
+        body.contains("failed to publish durable preview"),
+        "durable publish failure must not fall back to ephemeral preview: {body}"
     );
 }
 

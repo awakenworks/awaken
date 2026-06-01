@@ -205,7 +205,7 @@ impl AuditLogger {
     /// Returns `Ok(None)` when the event is not found (either never existed or was pruned).
     pub async fn get_event(&self, id: &str) -> Result<Option<AuditEvent>, StorageError> {
         let value = self.store.get(AUDIT_NAMESPACE, id).await?;
-        Ok(value.and_then(|v| serde_json::from_value::<AuditEvent>(v).ok()))
+        value.map(|value| decode_audit_event(id, value)).transpose()
     }
 
     /// Emit a restore audit event with the `restored_from` field set.
@@ -354,17 +354,19 @@ impl AuditLogger {
             .await
             .map_err(AuditQueryError::Storage)?;
 
-        // Deserialize and filter.
-        let mut events: Vec<AuditEvent> = all
+        let mut events = Vec::new();
+        for (id, value) in all {
+            // Cursor: only include entries with id < cursor_id (older pages).
+            // We're serving newest-first so we reverse later.
+            if cursor_id.as_deref().is_some_and(|cid| id.as_str() >= cid) {
+                continue;
+            }
+            events.push(decode_audit_event(&id, value).map_err(AuditQueryError::Storage)?);
+        }
+
+        // Filter decoded events.
+        let mut events: Vec<AuditEvent> = events
             .into_iter()
-            .filter_map(|(id, value)| {
-                // Cursor: only include entries with id < cursor_id (older pages).
-                // We're serving newest-first so we reverse later.
-                if cursor_id.as_deref().is_some_and(|cid| id.as_str() >= cid) {
-                    return None;
-                }
-                serde_json::from_value::<AuditEvent>(value).ok()
-            })
             .filter(|event| {
                 if let Some(ref since) = filter.since
                     && let Ok(ts) = event.ts.parse::<DateTime<Utc>>()
@@ -439,6 +441,11 @@ impl AuditLogger {
         }
         Ok(pruned)
     }
+}
+
+fn decode_audit_event(id: &str, value: Value) -> Result<AuditEvent, StorageError> {
+    serde_json::from_value::<AuditEvent>(value)
+        .map_err(|error| StorageError::Serialization(format!("corrupt audit event {id}: {error}")))
 }
 
 /// Derive the actor string from request headers.
@@ -782,6 +789,34 @@ mod tests {
         assert_eq!(event.action, AuditAction::Create);
         assert_eq!(event.resource, "agents/my-agent");
         assert_eq!(event.actor, "anonymous");
+    }
+
+    #[tokio::test]
+    async fn corrupt_audit_event_fails_closed_on_read() {
+        let store = Arc::new(MemStore::default());
+        store
+            .put(AUDIT_NAMESPACE, "bad-event", &json!({"id": 1}))
+            .await
+            .unwrap();
+        let logger = AuditLogger::new(store);
+
+        let get_error = logger
+            .get_event("bad-event")
+            .await
+            .expect_err("corrupt audit event must not look missing");
+        assert!(matches!(get_error, StorageError::Serialization(_)));
+        assert!(get_error.to_string().contains("bad-event"));
+
+        let query_error = logger
+            .query(AuditQuery::default())
+            .await
+            .expect_err("corrupt audit event must not be skipped");
+        match query_error {
+            AuditQueryError::Storage(StorageError::Serialization(message)) => {
+                assert!(message.contains("bad-event"));
+            }
+            other => panic!("expected serialization storage error, got {other:?}"),
+        }
     }
 
     #[tokio::test]

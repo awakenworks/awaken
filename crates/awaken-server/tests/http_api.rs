@@ -1558,7 +1558,7 @@ mod integration {
             .await
             .unwrap();
         assert_eq!(dispatches.len(), 1);
-        assert_eq!(dispatches[0].run_id, "run-open-input");
+        assert_eq!(dispatches[0].run_id(), "run-open-input");
     }
 
     #[tokio::test]
@@ -1591,7 +1591,7 @@ mod integration {
             .await
             .unwrap();
         assert_eq!(dispatches.len(), 1);
-        assert_eq!(dispatches[0].run_id, "run-durable-decision");
+        assert_eq!(dispatches[0].run_id(), "run-durable-decision");
     }
 
     #[tokio::test]

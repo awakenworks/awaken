@@ -158,9 +158,11 @@ impl RunModuleState {
 
     #[must_use]
     pub fn unscope_dispatch(&self, mut dispatch: RunDispatch) -> RunDispatch {
-        dispatch.dispatch_id = self.unscoped_id(&dispatch.dispatch_id);
-        dispatch.thread_id = self.unscoped_id(&dispatch.thread_id);
-        dispatch.run_id = self.unscoped_id(&dispatch.run_id);
+        let dispatch_id = self.unscoped_id(dispatch.dispatch_id());
+        let thread_id = self.unscoped_id(dispatch.thread_id());
+        let run_id = self.unscoped_id(dispatch.run_id());
+        let dedupe_key = dispatch.dedupe_key().map(|key| self.unscoped_id(key));
+        dispatch.remap_identity(dispatch_id, thread_id, run_id, dedupe_key);
         dispatch
     }
 

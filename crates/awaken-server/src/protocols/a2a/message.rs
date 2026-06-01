@@ -23,8 +23,8 @@ use super::push_config::{
 };
 use super::stream_projector::{InitialStreamEvent, TaskStreamProjector};
 use super::task::{
-    load_task_snapshot, record_task_binding, resolve_task, run_is_a2a_resumable, submitted_task,
-    task_context_id, wait_for_task,
+    decode_task_bindings_metadata, load_task_snapshot, record_task_binding, resolve_task,
+    run_is_a2a_resumable, submitted_task, task_context_id, wait_for_task,
 };
 use super::types::{BLOCKING_POLL_INTERVAL, PreparedRequest, SUPPORTED_OUTPUT_MODE, TaskSnapshot};
 
@@ -493,16 +493,15 @@ async fn thread_has_prior_context(
     if thread.active_run_id.is_some() || thread.open_run_id.is_some() {
         return Ok(true);
     }
-    if thread
+    if let Some(value) = thread
         .metadata
         .custom
         .get(super::types::TASK_BINDINGS_METADATA_KEY)
-        .and_then(|value| {
-            serde_json::from_value::<super::types::StoredTaskBindings>(value.clone()).ok()
-        })
-        .is_some_and(|bindings| !bindings.tasks.is_empty())
     {
-        return Ok(true);
+        let bindings = decode_task_bindings_metadata(value.clone())?;
+        if !bindings.tasks.is_empty() {
+            return Ok(true);
+        }
     }
 
     let messages = store

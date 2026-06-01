@@ -339,11 +339,8 @@ fn load_thread_push_notification_configs(
         return Ok(Vec::new());
     };
 
-    if let Ok(stored) = serde_json::from_value::<StoredPushConfigs>(value.clone()) {
-        Ok(stored.tasks.get(task_id).cloned().unwrap_or_default())
-    } else {
-        serde_json::from_value(value.clone()).map_err(|err| A2aError::Internal(err.to_string()))
-    }
+    let stored = decode_push_configs_metadata(value.clone(), task_id)?;
+    Ok(stored.tasks.get(task_id).cloned().unwrap_or_default())
 }
 
 async fn save_thread_push_notification_configs(
@@ -354,12 +351,10 @@ async fn save_thread_push_notification_configs(
     task_id: &str,
     configs: Vec<PushNotificationConfig>,
 ) -> Result<(), A2aError> {
-    let mut stored = thread
-        .metadata
-        .custom
-        .remove(PUSH_CONFIGS_METADATA_KEY)
-        .and_then(|value| serde_json::from_value::<StoredPushConfigs>(value).ok())
-        .unwrap_or_default();
+    let mut stored = match thread.metadata.custom.remove(PUSH_CONFIGS_METADATA_KEY) {
+        Some(value) => decode_push_configs_metadata(value, task_id)?,
+        None => StoredPushConfigs::default(),
+    };
     if configs.is_empty() {
         stored.tasks.remove(task_id);
     } else {
@@ -376,6 +371,29 @@ async fn save_thread_push_notification_configs(
     persist_thread_metadata(st, thread_id, exists, thread).await?;
 
     Ok(())
+}
+
+fn decode_push_configs_metadata(
+    value: serde_json::Value,
+    task_id: &str,
+) -> Result<StoredPushConfigs, A2aError> {
+    match serde_json::from_value::<StoredPushConfigs>(value.clone()) {
+        Ok(stored) => Ok(stored),
+        Err(stored_error) => {
+            let legacy_configs = serde_json::from_value::<Vec<PushNotificationConfig>>(value)
+                .map_err(|legacy_error| {
+                    A2aError::Internal(format!(
+                        "corrupt A2A push config metadata at {PUSH_CONFIGS_METADATA_KEY}: \
+                         stored format error: {stored_error}; legacy format error: {legacy_error}"
+                    ))
+                })?;
+            let mut stored = StoredPushConfigs::default();
+            if !legacy_configs.is_empty() {
+                stored.tasks.insert(task_id.to_string(), legacy_configs);
+            }
+            Ok(stored)
+        }
+    }
 }
 
 /// Releases the single-flight dedupe key for an A2A push driver when the driver
@@ -490,6 +508,8 @@ async fn drive_push_notification(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     fn config(id: &str, tenant: Option<&str>, url: &str) -> PushNotificationConfig {
@@ -537,6 +557,28 @@ mod tests {
             .find(|c| c.agent_id.as_deref() == Some("b"))
             .unwrap();
         assert_eq!(b.url, "http://b/1");
+    }
+
+    #[test]
+    fn decode_push_configs_metadata_rejects_malformed_state() {
+        let error = decode_push_configs_metadata(json!({"tasks": []}), "task-1")
+            .expect_err("malformed push config metadata must fail closed");
+        match error {
+            A2aError::Internal(message) => {
+                assert!(message.contains(PUSH_CONFIGS_METADATA_KEY));
+                assert!(message.contains("stored format error"));
+                assert!(message.contains("legacy format error"));
+            }
+            other => panic!("expected internal corruption error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_push_configs_metadata_preserves_legacy_task_list() {
+        let stored =
+            decode_push_configs_metadata(json!([config("cfg-1", None, "http://a/1")]), "task-1")
+                .expect("legacy push config list must remain readable");
+        assert_eq!(stored.tasks["task-1"][0].id.as_deref(), Some("cfg-1"));
     }
 
     #[test]

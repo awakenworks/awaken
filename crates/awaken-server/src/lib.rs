@@ -36,3 +36,16 @@ pub mod services;
 pub(crate) mod system_routes;
 pub mod time;
 pub mod transport;
+
+pub mod prelude {
+    pub use awaken_server_contract::contract::mailbox::MailboxStore;
+    pub use awaken_server_contract::contract::storage::ThreadRunStore;
+    pub use awaken_server_contract::{
+        RequestSurface, ScopeContext, ScopeId, ScopedConfigStore, ScopedMailboxStore,
+        ScopedOutboxStore, ScopedProtocolReplayLog, ScopedThreadRunStore, ScopedVersionedRegistry,
+    };
+
+    pub use crate::app::{ServerConfig, ServerState, ShutdownConfig, serve, serve_with_shutdown};
+    pub use crate::mailbox::{Mailbox, MailboxConfig};
+    pub use crate::routes::build_router;
+}

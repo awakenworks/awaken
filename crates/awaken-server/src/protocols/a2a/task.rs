@@ -95,7 +95,7 @@ pub(super) async fn cancel_task(
     let mut cancelled = false;
     for dispatch in queued_dispatches {
         cancelled |= mailbox
-            .cancel(&dispatch.dispatch_id)
+            .cancel(&dispatch.dispatch_id())
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?;
     }
@@ -252,7 +252,7 @@ pub(super) async fn resolve_task(
         return Ok(None);
     };
     Ok(Some(ResolvedTask {
-        thread_id: dispatch.thread_id.clone(),
+        thread_id: dispatch.thread_id().clone(),
         run: None,
         dispatch: Some(dispatch),
     }))
@@ -269,12 +269,10 @@ pub(super) async fn record_task_binding(
     start_message_id: &str,
 ) -> Result<(), A2aError> {
     let (exists, mut thread) = load_thread_metadata_projection(st, thread_id).await?;
-    let mut bindings = thread
-        .metadata
-        .custom
-        .remove(TASK_BINDINGS_METADATA_KEY)
-        .and_then(|value| serde_json::from_value::<StoredTaskBindings>(value).ok())
-        .unwrap_or_default();
+    let mut bindings = match thread.metadata.custom.remove(TASK_BINDINGS_METADATA_KEY) {
+        Some(value) => decode_task_bindings_metadata(value)?,
+        None => StoredTaskBindings::default(),
+    };
     bindings.tasks.insert(
         task_id.to_string(),
         StoredTaskBinding {
@@ -311,12 +309,23 @@ async fn load_task_binding(
         return Ok(None);
     };
 
-    Ok(thread
-        .metadata
-        .custom
-        .get(TASK_BINDINGS_METADATA_KEY)
-        .and_then(|value| serde_json::from_value::<StoredTaskBindings>(value.clone()).ok())
-        .and_then(|bindings| bindings.tasks.get(task_id).cloned()))
+    let Some(value) = thread.metadata.custom.get(TASK_BINDINGS_METADATA_KEY) else {
+        return Ok(None);
+    };
+    Ok(decode_task_bindings_metadata(value.clone())?
+        .tasks
+        .get(task_id)
+        .cloned())
+}
+
+pub(super) fn decode_task_bindings_metadata(
+    value: serde_json::Value,
+) -> Result<StoredTaskBindings, A2aError> {
+    serde_json::from_value::<StoredTaskBindings>(value).map_err(|error| {
+        A2aError::Internal(format!(
+            "corrupt A2A task binding metadata at {TASK_BINDINGS_METADATA_KEY}: {error}"
+        ))
+    })
 }
 
 pub(super) async fn task_context_id(
@@ -380,8 +389,8 @@ pub(super) async fn load_task_snapshot(
             .map_err(|e| A2aError::Internal(e.to_string()))?
             .into_iter()
             .map(|dispatch| st.run.unscope_dispatch(dispatch))
-            .filter(|dispatch| dispatch.run_id == task_id || dispatch.dispatch_id == task_id)
-            .max_by_key(|dispatch| dispatch.updated_at)
+            .filter(|dispatch| dispatch.run_id() == task_id || dispatch.dispatch_id() == task_id)
+            .max_by_key(|dispatch| dispatch.updated_at())
     };
 
     let history = st
@@ -435,8 +444,8 @@ pub(super) async fn load_task_snapshot(
         current_agent_id: Some(record.agent_id.clone()),
     });
     let dispatch_source = latest_dispatch.as_ref().map(|dispatch| TaskSource {
-        state: dispatch_to_task_state(dispatch.status),
-        updated_at_ms: dispatch.updated_at,
+        state: dispatch_to_task_state(dispatch.status()),
+        updated_at_ms: dispatch.updated_at(),
         current_agent_id: latest_run.as_ref().map(|record| record.agent_id.clone()),
     });
 
@@ -444,7 +453,7 @@ pub(super) async fn load_task_snapshot(
         (Some(run), Some(dispatch)) if dispatch.updated_at_ms >= run.updated_at_ms => {
             if latest_dispatch
                 .as_ref()
-                .is_some_and(|dispatch| dispatch.status != RunDispatchStatus::Acked)
+                .is_some_and(|dispatch| dispatch.status() != RunDispatchStatus::Acked)
             {
                 dispatch_source
             } else {
@@ -643,9 +652,29 @@ pub(super) async fn collect_task_ids(st: &ProtocolRoutesState) -> Result<Vec<Str
             ids.extend(
                 dispatches
                     .into_iter()
-                    .map(|dispatch| st.run.unscope_dispatch(dispatch).dispatch_id),
+                    .map(|dispatch| st.run.unscope_dispatch(dispatch).dispatch_id().clone()),
             );
         }
     }
     Ok(ids.into_iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn decode_task_bindings_metadata_rejects_malformed_state() {
+        let error = decode_task_bindings_metadata(json!({"tasks": []}))
+            .expect_err("malformed task binding metadata must fail closed");
+        match error {
+            A2aError::Internal(message) => {
+                assert!(message.contains(TASK_BINDINGS_METADATA_KEY));
+                assert!(message.contains("invalid type"));
+            }
+            other => panic!("expected internal corruption error, got {other:?}"),
+        }
+    }
 }

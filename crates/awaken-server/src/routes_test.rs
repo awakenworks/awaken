@@ -330,6 +330,19 @@ async fn api_error_internal_body() {
 }
 
 #[tokio::test]
+async fn api_error_capability_mismatch_body_has_code() {
+    let err = ApiError::CapabilityMismatch("backend mismatch".into());
+    let resp = err.into_response();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["error"], "backend mismatch");
+    assert_eq!(value["code"], "capability_mismatch");
+}
+
+#[tokio::test]
 async fn api_error_bad_request_body() {
     let err = ApiError::BadRequest("invalid input".into());
     let resp = err.into_response();

@@ -26,6 +26,8 @@ pub enum ApiError {
     /// `--features permission`. Distinct from 404 so callers can
     /// differentiate "no such resource" from "feature not available".
     ServiceUnavailable(String),
+    /// Request cannot be executed by the resolved backend capabilities.
+    CapabilityMismatch(String),
     Internal(String),
     /// Storage promised a row that is missing inside retention. Distinct from
     /// `Internal` so operators can alert on integrity violations (ADR-0034 D8:
@@ -46,6 +48,7 @@ impl fmt::Display for ApiError {
             | ApiError::Gone(msg)
             | ApiError::NotFound(msg)
             | ApiError::ServiceUnavailable(msg)
+            | ApiError::CapabilityMismatch(msg)
             | ApiError::Internal(msg)
             | ApiError::DataIntegrity(msg) => f.write_str(msg),
             ApiError::ThreadNotFound(id) => write!(f, "thread not found: {id}"),
@@ -71,6 +74,9 @@ impl IntoResponse for ApiError {
                 (StatusCode::NOT_FOUND, format!("run not found: {id}"), None)
             }
             ApiError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg, None),
+            ApiError::CapabilityMismatch(msg) => {
+                (StatusCode::BAD_REQUEST, msg, Some("capability_mismatch"))
+            }
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg, None),
             ApiError::DataIntegrity(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -99,6 +105,17 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["error"], "row missing");
         assert_eq!(value["code"], "data_integrity");
+    }
+
+    #[tokio::test]
+    async fn capability_mismatch_carries_user_visible_code() {
+        let response =
+            ApiError::CapabilityMismatch("backend lacks durable resume".into()).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"], "backend lacks durable resume");
+        assert_eq!(value["code"], "capability_mismatch");
     }
 
     #[tokio::test]

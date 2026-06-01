@@ -18,7 +18,7 @@ use crate::query::{self, MessageQueryParams, ThreadQueryParams};
 use crate::services::run_control_service::{
     InputMode, InterruptMode, RunControlError, RunControlService,
 };
-use awaken_runtime::RunActivation;
+use awaken_runtime::{ResolveError, RunActivation};
 use awaken_server_contract::ScopeContext;
 use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::storage::{ChildThreadDeleteStrategy, StorageError};
@@ -36,6 +36,7 @@ pub(crate) fn map_mailbox_error(error: MailboxError) -> ApiError {
             err @ StorageError::AlreadyExists(_) | err @ StorageError::VersionConflict { .. },
         ) => ApiError::Conflict(err.to_string()),
         MailboxError::Store(err) => ApiError::Internal(err.to_string()),
+        MailboxError::Resolution { context, source } => map_resolve_error(context, source),
         MailboxError::Internal(msg) => ApiError::Internal(msg),
         // A barrier ahead in pending must be consumed first: a client-resolvable
         // conflict, not a server fault.
@@ -44,6 +45,28 @@ pub(crate) fn map_mailbox_error(error: MailboxError) -> ApiError {
         } => ApiError::Conflict(format!(
             "delivery blocked by barrier: pending '{blocking_pending_id}' must be consumed first"
         )),
+    }
+}
+
+fn map_resolve_error(context: &'static str, error: ResolveError) -> ApiError {
+    match error {
+        ResolveError::CapabilityMismatch(mismatches) => ApiError::CapabilityMismatch(format!(
+            "{context}: {}",
+            mismatches
+                .into_iter()
+                .map(|mismatch| format!(
+                    "{} required {}, actual {}",
+                    mismatch.capability, mismatch.required, mismatch.actual
+                ))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )),
+        ResolveError::UnsupportedTarget(message)
+        | ResolveError::UnsupportedPersistence(message)
+        | ResolveError::NestedScopeMismatch(message) => {
+            ApiError::BadRequest(format!("{context}: {message}"))
+        }
+        ResolveError::Runtime(message) => ApiError::Internal(format!("{context}: {message}")),
     }
 }
 
