@@ -87,7 +87,8 @@ async fn main() {
     });
 
     let store = Arc::new(InMemoryStore::new());
-    let runtime = AgentRuntime::new(resolver).with_in_memory_thread_run_store(store);
+    let runtime = AgentRuntime::new(resolver)
+        .with_commit_coordinator(awaken::stores::MemoryCommitCoordinator::wrap(store));
 
     let thread_id = "conversation-1";
 
