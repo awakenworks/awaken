@@ -618,6 +618,84 @@ async fn persist_checkpoint_uses_commit_seed_when_no_previous_record() {
 }
 
 #[tokio::test]
+async fn persist_checkpoint_drops_terminal_fields_for_non_terminal_run() {
+    // A non-terminal run record must never persist terminal-only projections
+    // (termination reason, final output, error, outcome, finished_at). Passing
+    // them while the run is still live must be dropped so the record cannot
+    // surface a stale terminal outcome.
+    let state_store = store_with_loop_state();
+    commit_update::<RunLifecycle>(
+        &state_store,
+        RunLifecycleUpdate::Start {
+            run_id: "run-live".into(),
+            updated_at: 1_000,
+        },
+    )
+    .expect("lifecycle starts");
+
+    let checkpoint_store = Arc::new(InMemoryStore::new());
+    let coordinator = MemoryCommitCoordinator::wrap(Arc::clone(&checkpoint_store));
+    let identity = RunIdentity::new(
+        "thread-live".into(),
+        None,
+        "run-live".into(),
+        None,
+        "agent-live".into(),
+        awaken_runtime_contract::contract::identity::RunOrigin::User,
+    );
+    let messages = vec![Arc::new(Message::user("hi"))];
+    let reader = checkpoint_reader(checkpoint_store.clone());
+
+    persist_checkpoint(CheckpointPersist {
+        store: &state_store,
+        checkpoint_store: Some(&reader),
+        commit: crate::loop_runner::CommitWiring::new(Some(&*coordinator)),
+        messages: &messages,
+        input_message_count: 1,
+        run_identity: &identity,
+        run_created_at: 1_000,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        termination_reason: Some(TerminationReason::NaturalEnd),
+        final_output: Some("done".into()),
+        error_payload: Some(json!({ "message": "boom" })),
+        thread_ctx: None,
+    })
+    .await
+    .expect("checkpoint persists");
+
+    let loaded = checkpoint_store
+        .load_run("run-live")
+        .await
+        .expect("load run")
+        .expect("run exists");
+    assert!(
+        !loaded.status.is_terminal(),
+        "run must still be non-terminal"
+    );
+    assert!(
+        loaded.termination_reason.is_none(),
+        "non-terminal record must not store termination_reason"
+    );
+    assert!(
+        loaded.final_output.is_none(),
+        "non-terminal record must not store final_output"
+    );
+    assert!(
+        loaded.error_payload.is_none(),
+        "non-terminal record must not store error_payload"
+    );
+    assert!(
+        loaded.outcome.is_none(),
+        "non-terminal record must not store outcome"
+    );
+    assert!(
+        loaded.finished_at.is_none(),
+        "non-terminal record must not store finished_at"
+    );
+}
+
+#[tokio::test]
 async fn persist_checkpoint_routes_through_commit_coordinator() {
     // ADR-0036 D1+D2: when a coordinator is wired, the checkpoint commits
     // through the coordinator instead of `ThreadRunStore::checkpoint`. The
