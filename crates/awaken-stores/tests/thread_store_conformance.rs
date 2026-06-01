@@ -10,7 +10,7 @@ use awaken_server_contract::contract::storage::{
 use awaken_server_contract::thread::Thread;
 
 pub fn make_run(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
-    RunRecord {
+    let mut run = RunRecord {
         run_id: run_id.to_string(),
         thread_id: thread_id.to_string(),
         agent_id: "agent".to_string(),
@@ -37,7 +37,11 @@ pub fn make_run(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
         input_tokens: 0,
         output_tokens: 0,
         state: None,
+    };
+    if status == RunStatus::Done {
+        run.finished_at = Some(run.updated_at);
     }
+    run
 }
 
 pub async fn checkpoint_persists_messages_and_run<S: ThreadRunStore>(store: &S) {
