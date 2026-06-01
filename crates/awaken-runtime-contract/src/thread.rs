@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::contract::lifecycle::RunStatus;
-use crate::contract::storage::RunRecord;
+use crate::contract::storage::{RunRecord, StorageError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -65,6 +65,9 @@ pub struct Thread {
     /// Most recently known run for this thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_run_id: Option<String>,
+    /// `updated_at` watermark for the projected latest run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_run_updated_at: Option<u64>,
 }
 
 impl Thread {
@@ -78,6 +81,7 @@ impl Thread {
             active_run_id: None,
             open_run_id: None,
             latest_run_id: None,
+            latest_run_updated_at: None,
         }
     }
 
@@ -91,6 +95,7 @@ impl Thread {
             active_run_id: None,
             open_run_id: None,
             latest_run_id: None,
+            latest_run_updated_at: None,
         }
     }
 
@@ -121,6 +126,26 @@ impl Thread {
         self.parent_thread_id = normalize_lineage_id_owned(self.parent_thread_id.take());
     }
 
+    /// Validate model-level invariants before persisting a thread projection.
+    pub fn validate_for_persist(&self) -> Result<(), StorageError> {
+        require_non_empty("thread id", &self.id)?;
+        require_optional_non_empty("thread resource_id", self.resource_id.as_deref())?;
+        require_optional_non_empty("thread parent_thread_id", self.parent_thread_id.as_deref())?;
+        require_optional_non_empty("thread active_run_id", self.active_run_id.as_deref())?;
+        require_optional_non_empty("thread open_run_id", self.open_run_id.as_deref())?;
+        require_optional_non_empty("thread latest_run_id", self.latest_run_id.as_deref())?;
+
+        if normalize_lineage_id(self.parent_thread_id.as_deref()).as_deref() == Some(self.id.trim())
+        {
+            return Err(StorageError::Validation(format!(
+                "thread '{}' cannot parent itself",
+                self.id
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Ensure timestamps are initialized and mark the thread as updated.
     pub fn touch(&mut self, now: u64) {
         self.metadata.created_at.get_or_insert(now);
@@ -129,7 +154,18 @@ impl Thread {
 
     /// Update the thread's run pointers from a durable run record.
     pub fn apply_run_projection(&mut self, run: &RunRecord) {
+        let is_current_projection = self
+            .latest_run_updated_at
+            .is_none_or(|latest_updated_at| run.updated_at >= latest_updated_at);
+        if !is_current_projection {
+            if run.status == RunStatus::Done {
+                self.clear_run_projection_if_matches(&run.run_id);
+            }
+            return;
+        }
+
         self.latest_run_id = Some(run.run_id.clone());
+        self.latest_run_updated_at = Some(run.updated_at);
         if self.parent_thread_id.is_none() {
             self.parent_thread_id = normalize_lineage_id(
                 run.request
@@ -151,15 +187,35 @@ impl Thread {
                 self.open_run_id = Some(run.run_id.clone());
             }
             RunStatus::Done => {
-                if self.active_run_id.as_deref() == Some(run.run_id.as_str()) {
-                    self.active_run_id = None;
-                }
-                if self.open_run_id.as_deref() == Some(run.run_id.as_str()) {
-                    self.open_run_id = None;
-                }
+                self.clear_run_projection_if_matches(&run.run_id);
             }
         }
     }
+
+    fn clear_run_projection_if_matches(&mut self, run_id: &str) {
+        if self.active_run_id.as_deref() == Some(run_id) {
+            self.active_run_id = None;
+        }
+        if self.open_run_id.as_deref() == Some(run_id) {
+            self.open_run_id = None;
+        }
+    }
+}
+
+fn require_non_empty(field: &str, value: &str) -> Result<(), StorageError> {
+    if value.trim().is_empty() {
+        return Err(StorageError::Validation(format!(
+            "{field} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+fn require_optional_non_empty(field: &str, value: Option<&str>) -> Result<(), StorageError> {
+    if let Some(value) = value {
+        require_non_empty(field, value)?;
+    }
+    Ok(())
 }
 
 impl Default for Thread {
@@ -304,6 +360,26 @@ mod tests {
     }
 
     #[test]
+    fn thread_validate_rejects_empty_id() {
+        let thread = Thread::with_id(" ");
+
+        let err = thread.validate_for_persist().unwrap_err();
+
+        assert!(matches!(err, StorageError::Validation(message) if message.contains("thread id")));
+    }
+
+    #[test]
+    fn thread_validate_rejects_self_parent() {
+        let thread = Thread::with_id("thread-1").with_parent_thread_id(" thread-1 ");
+
+        let err = thread.validate_for_persist().unwrap_err();
+
+        assert!(
+            matches!(err, StorageError::Validation(message) if message.contains("parent itself"))
+        );
+    }
+
+    #[test]
     fn touch_initializes_created_and_updated_at() {
         let mut thread = Thread::with_id("t-1");
 
@@ -394,6 +470,22 @@ mod tests {
         assert!(thread.open_run_id.is_none());
         assert!(thread.active_run_id.is_none());
         assert_eq!(thread.latest_run_id.as_deref(), Some("run-1"));
+    }
+
+    #[test]
+    fn apply_run_projection_ignores_older_run_projection() {
+        let mut thread = Thread::with_id("thread-1");
+        let mut newer = run_record("run-new", RunStatus::Running);
+        newer.updated_at = 20;
+        let mut older = run_record("run-old", RunStatus::Running);
+        older.updated_at = 10;
+
+        thread.apply_run_projection(&newer);
+        thread.apply_run_projection(&older);
+
+        assert_eq!(thread.latest_run_id.as_deref(), Some("run-new"));
+        assert_eq!(thread.active_run_id.as_deref(), Some("run-new"));
+        assert_eq!(thread.open_run_id.as_deref(), Some("run-new"));
     }
 
     #[test]

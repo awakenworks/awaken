@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::identity::RunOrigin;
 use super::inference::InferenceOverride;
 use super::message::Message;
-use super::storage::{MessageSeqRange, RunRequestOrigin};
+use super::storage::{MessageSeqRange, RunRequestOrigin, StorageError};
 use super::suspension::ToolCallResume;
 use super::tool::ToolDescriptor;
 use super::tool_intercept::{AdapterKind, RunMode};
@@ -30,6 +30,48 @@ impl RunIntent {
     }
 }
 
+fn require_non_empty(field: &str, value: &str) -> Result<(), StorageError> {
+    if value.trim().is_empty() {
+        return Err(StorageError::Validation(format!(
+            "{field} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+fn require_optional_non_empty(field: &str, value: Option<&str>) -> Result<(), StorageError> {
+    if let Some(value) = value {
+        require_non_empty(field, value)?;
+    }
+    Ok(())
+}
+
+fn validate_message_id_list(field: &str, ids: &[String]) -> Result<(), StorageError> {
+    for (idx, id) in ids.iter().enumerate() {
+        require_non_empty(&format!("{field}[{idx}]"), id)?;
+    }
+    Ok(())
+}
+
+fn validate_seq_range(field: &str, range: MessageSeqRange) -> Result<(), StorageError> {
+    if range.from_seq == 0 || range.from_seq > range.to_seq {
+        return Err(StorageError::Validation(format!(
+            "{field} range must be non-empty and 1-based"
+        )));
+    }
+    Ok(())
+}
+
+impl RunIntent {
+    /// Validate model-level invariants that cannot be represented by the
+    /// public compatibility fields alone.
+    pub fn validate(&self) -> Result<(), StorageError> {
+        require_non_empty("run intent thread_id", &self.thread_id)?;
+        require_optional_non_empty("run intent agent_id", self.agent_id.as_deref())?;
+        self.kind.validate()
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum RunKind {
@@ -41,6 +83,18 @@ pub enum RunKind {
     ContinuationFromRun {
         run_id: String,
     },
+}
+
+impl RunKind {
+    pub fn validate(&self) -> Result<(), StorageError> {
+        match self {
+            Self::NewIntent => Ok(()),
+            Self::HitlResume { run_id } => require_non_empty("hitl resume run_id", run_id),
+            Self::ContinuationFromRun { run_id } => {
+                require_non_empty("continuation run_id", run_id)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +123,32 @@ pub struct RunInputSnapshot {
     pub context_policy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compacted_snapshot_id: Option<String>,
+}
+
+impl RunInputSnapshot {
+    pub fn validate(&self) -> Result<(), StorageError> {
+        require_non_empty("run input snapshot thread_id", &self.thread_id)?;
+        if let Some(range) = self.range {
+            validate_seq_range("run input snapshot", range)?;
+        }
+        validate_message_id_list(
+            "run input snapshot trigger_message_ids",
+            &self.trigger_message_ids,
+        )?;
+        validate_message_id_list(
+            "run input snapshot selected_message_ids",
+            &self.selected_message_ids,
+        )?;
+        require_optional_non_empty(
+            "run input snapshot context_policy",
+            self.context_policy.as_deref(),
+        )?;
+        require_optional_non_empty(
+            "run input snapshot compacted_snapshot_id",
+            self.compacted_snapshot_id.as_deref(),
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -109,6 +189,24 @@ impl RunTraceContext {
     }
 }
 
+impl RunTraceContext {
+    pub fn validate(&self) -> Result<(), StorageError> {
+        require_optional_non_empty("run trace parent_run_id", self.parent_run_id.as_deref())?;
+        require_optional_non_empty(
+            "run trace parent_thread_id",
+            self.parent_thread_id.as_deref(),
+        )?;
+        require_optional_non_empty("run trace dispatch_id", self.dispatch_id.as_deref())?;
+        require_optional_non_empty("run trace session_id", self.session_id.as_deref())?;
+        require_optional_non_empty(
+            "run trace transport_request_id",
+            self.transport_request_id.as_deref(),
+        )?;
+        require_optional_non_empty("run trace correlation_id", self.correlation_id.as_deref())?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunActivationSnapshot {
     pub intent: RunIntent,
@@ -121,6 +219,31 @@ pub struct RunActivationSnapshot {
     /// server owns the referenced content; the runtime treats it as opaque.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution_id: Option<String>,
+}
+
+impl RunActivationSnapshot {
+    pub fn validate(&self) -> Result<(), StorageError> {
+        self.intent.validate()?;
+        self.input.validate()?;
+        self.trace.validate()?;
+        if self.intent.thread_id != self.input.thread_id {
+            return Err(StorageError::Validation(format!(
+                "run activation intent.thread_id '{}' must match input.thread_id '{}'",
+                self.intent.thread_id, self.input.thread_id
+            )));
+        }
+        for (idx, (call_id, _)) in self.seeded_decisions.iter().enumerate() {
+            require_non_empty(
+                &format!("run activation seeded_decisions[{idx}].call_id"),
+                call_id,
+            )?;
+        }
+        require_optional_non_empty(
+            "run activation resolution_id",
+            self.resolution_id.as_deref(),
+        )?;
+        Ok(())
+    }
 }
 
 impl From<RunRequestOrigin> for RunOrigin {
@@ -170,6 +293,74 @@ mod tests {
         let value = serde_json::to_value(&snapshot).expect("serialize snapshot");
         assert_eq!(value["resolution_id"], "resolution-1");
         assert_eq!(value["intent"]["thread_id"], "thread");
+    }
+
+    #[test]
+    fn activation_snapshot_validate_rejects_thread_mismatch() {
+        let snapshot = RunActivationSnapshot {
+            intent: RunIntent::new("thread-a"),
+            input: RunInputSnapshot {
+                thread_id: "thread-b".into(),
+                ..Default::default()
+            },
+            options: RunOptions::default(),
+            trace: RunTraceContext::default(),
+            seeded_decisions: Vec::new(),
+            resolution_id: None,
+        };
+
+        let err = snapshot.validate().unwrap_err();
+
+        assert!(matches!(err, StorageError::Validation(message)
+            if message.contains("intent.thread_id") && message.contains("input.thread_id")));
+    }
+
+    #[test]
+    fn activation_snapshot_validate_rejects_empty_resume_run_id() {
+        let snapshot = RunActivationSnapshot {
+            intent: RunIntent {
+                agent_id: Some("agent-a".into()),
+                thread_id: "thread".into(),
+                kind: RunKind::HitlResume { run_id: " ".into() },
+            },
+            input: RunInputSnapshot {
+                thread_id: "thread".into(),
+                ..Default::default()
+            },
+            options: RunOptions::default(),
+            trace: RunTraceContext::default(),
+            seeded_decisions: Vec::new(),
+            resolution_id: None,
+        };
+
+        let err = snapshot.validate().unwrap_err();
+
+        assert!(matches!(err, StorageError::Validation(message)
+            if message.contains("hitl resume run_id")));
+    }
+
+    #[test]
+    fn activation_snapshot_validate_rejects_invalid_input_range() {
+        let snapshot = RunActivationSnapshot {
+            intent: RunIntent::new("thread"),
+            input: RunInputSnapshot {
+                thread_id: "thread".into(),
+                range: Some(MessageSeqRange {
+                    from_seq: 0,
+                    to_seq: 1,
+                }),
+                ..Default::default()
+            },
+            options: RunOptions::default(),
+            trace: RunTraceContext::default(),
+            seeded_decisions: Vec::new(),
+            resolution_id: None,
+        };
+
+        let err = snapshot.validate().unwrap_err();
+
+        assert!(matches!(err, StorageError::Validation(message)
+            if message.contains("range")));
     }
 
     #[test]

@@ -344,6 +344,22 @@ fn message_record_projects_thread_sequence_and_producer() {
 }
 
 #[test]
+fn message_record_from_message_backfills_payload_id() {
+    let msg: Message =
+        serde_json::from_str(r#"{"role":"user","content":[{"type":"text","text":"legacy"}]}"#)
+            .unwrap();
+    assert!(msg.id.is_none());
+
+    let record = MessageRecord::from_message("thread-1", 1, msg);
+
+    assert!(!record.message_id.trim().is_empty());
+    assert_eq!(
+        record.message.id.as_deref(),
+        Some(record.message_id.as_str())
+    );
+}
+
+#[test]
 fn strip_unpaired_tool_calls_from_view_keeps_answered_calls_only() {
     let mut assistant = Message::assistant("tools");
     assistant.tool_calls = Some(vec![
