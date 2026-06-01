@@ -13,6 +13,7 @@ use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
 use crate::registry::traits::ModelRegistry;
+use crate::resolution::{RegistryResolutionScope, ResolvedModelBinding, ResolvedTool};
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_runtime_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
@@ -1025,6 +1026,263 @@ fn registry_set_resolver_not_found() {
     let resolver = RegistrySetResolver::new(regs);
     let err = AgentResolver::resolve(&resolver, "missing").unwrap_err();
     assert!(matches!(err, RuntimeError::ResolveFailed { .. }));
+}
+
+fn root_request(agent_id: &str, scope: RegistryResolutionScope) -> ResolutionRequest {
+    ResolutionRequest {
+        target: ResolutionTarget::Root {
+            agent_id: agent_id.to_string(),
+            thread_id: "thread-1".to_string(),
+        },
+        resolution_scope: scope,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        features: crate::RunFeatureSet::default(),
+    }
+}
+
+fn plan_model(plan: &ResolvedRunPlan) -> &ResolvedModelBinding {
+    match plan {
+        ResolvedRunPlan::Replayable(plan) => &plan.execution.model,
+        ResolvedRunPlan::LiveOnly(plan) => &plan.model,
+    }
+}
+
+fn plan_tools(plan: &ResolvedRunPlan) -> &[ResolvedTool] {
+    match plan {
+        ResolvedRunPlan::Replayable(plan) => &plan.execution.tools,
+        ResolvedRunPlan::LiveOnly(plan) => &plan.tools,
+    }
+}
+
+#[tokio::test]
+async fn registry_set_resolver_resolves_live_root_plan() {
+    let regs = build_registries(
+        vec![("read", Arc::new(MockTool { id: "read".into() }))],
+        "test-model",
+        ModelSpec::new("test-model", "p", "upstream-live"),
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        make_spec("agent-live"),
+    );
+    let resolver = RegistrySetResolver::new(regs);
+
+    let plan = Resolver::resolve(
+        &resolver,
+        root_request("agent-live", RegistryResolutionScope::Live),
+    )
+    .await
+    .expect("live root resolves");
+
+    assert!(matches!(plan, ResolvedRunPlan::LiveOnly(_)));
+    assert_eq!(plan.resolution_id(), None);
+    assert_eq!(plan.agent_spec().id, "agent-live");
+    assert_eq!(plan.role(), ExecutionRole::Root);
+    assert!(matches!(plan.execution(), ExecutionPlan::Local(_)));
+    assert_eq!(plan_tools(&plan).len(), 1);
+    assert_eq!(plan_model(&plan).upstream_model, "upstream-live");
+}
+
+#[tokio::test]
+async fn registry_set_resolver_rejects_pinned_root_without_snapshot_provenance() {
+    let regs = build_registries(
+        vec![],
+        "test-model",
+        ModelSpec::new("test-model", "p", "upstream-pinned"),
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        make_spec("agent-pinned"),
+    );
+    let resolver = RegistrySetResolver::new(regs);
+
+    let result = Resolver::resolve(
+        &resolver,
+        root_request(
+            "agent-pinned",
+            RegistryResolutionScope::Pinned("publication-42".to_string()),
+        ),
+    )
+    .await;
+    let Err(err) = result else {
+        panic!("ordinary registry set must not claim pinned replayability");
+    };
+
+    assert!(matches!(
+        err,
+        crate::resolution::ResolveError::UnsupportedPersistence(_)
+    ));
+}
+
+#[tokio::test]
+async fn registry_set_resolver_resolves_materialized_pinned_root_as_replayable() {
+    let regs = build_registries(
+        vec![],
+        "test-model",
+        ModelSpec::new("test-model", "p", "upstream-pinned"),
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        make_spec("agent-pinned"),
+    );
+    let resolver = RegistrySetResolver::new_replayable_snapshot(regs);
+
+    let plan = Resolver::resolve(
+        &resolver,
+        root_request(
+            "agent-pinned",
+            RegistryResolutionScope::Pinned("publication-42".to_string()),
+        ),
+    )
+    .await
+    .expect("materialized pinned root resolves");
+
+    assert!(matches!(plan, ResolvedRunPlan::Replayable(_)));
+    assert_eq!(plan.resolution_id(), Some("publication-42"));
+    assert_eq!(plan.agent_spec().id, "agent-pinned");
+    assert_eq!(plan.role(), ExecutionRole::Root);
+    assert_eq!(plan_model(&plan).upstream_model, "upstream-pinned");
+}
+
+#[tokio::test]
+async fn registry_set_agent_resolver_and_run_resolver_share_local_resolution() {
+    use crate::registry::AgentResolver;
+
+    let regs = build_registries(
+        vec![("read", Arc::new(MockTool { id: "read".into() }))],
+        "test-model",
+        ModelSpec::new("test-model", "p", "shared-upstream"),
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        make_spec("agent-shared"),
+    );
+    let resolver = RegistrySetResolver::new(regs);
+
+    let agent = AgentResolver::resolve(&resolver, "agent-shared").expect("agent resolves");
+    let plan = Resolver::resolve(
+        &resolver,
+        root_request("agent-shared", RegistryResolutionScope::Live),
+    )
+    .await
+    .expect("run plan resolves");
+
+    assert_eq!(agent.id(), plan.agent_spec().id);
+    assert_eq!(agent.upstream_model, plan_model(&plan).upstream_model);
+    assert_eq!(agent.tool_descriptors().len(), plan_tools(&plan).len());
+}
+
+#[tokio::test]
+async fn dynamic_registry_resolver_uses_current_snapshot_for_run_plan() {
+    let initial = build_registries(
+        vec![],
+        "test-model",
+        ModelSpec::new("test-model", "p", "upstream-v1"),
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        make_spec("agent-v1"),
+    );
+    let replacement = build_registries(
+        vec![],
+        "test-model",
+        ModelSpec::new("test-model", "p", "upstream-v2"),
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        make_spec("agent-v2"),
+    );
+    let handle = RegistryHandle::new(initial);
+    let resolver = DynamicRegistryResolver::new(handle.clone());
+
+    let v1 = Resolver::resolve(
+        &resolver,
+        root_request("agent-v1", RegistryResolutionScope::Live),
+    )
+    .await
+    .expect("initial snapshot resolves");
+    assert_eq!(v1.agent_spec().id, "agent-v1");
+
+    handle.replace(replacement);
+    let v2 = Resolver::resolve(
+        &resolver,
+        root_request("agent-v2", RegistryResolutionScope::Live),
+    )
+    .await
+    .expect("replacement snapshot resolves");
+    assert_eq!(v2.agent_spec().id, "agent-v2");
+    assert_eq!(plan_model(&v2).upstream_model, "upstream-v2");
+}
+
+#[cfg(feature = "a2a")]
+#[tokio::test]
+async fn registry_set_resolver_resolves_remote_root_plan() {
+    let validate_count = Arc::new(AtomicUsize::new(0));
+    let build_count = Arc::new(AtomicUsize::new(0));
+    let remote = AgentSpec {
+        id: "remote-root".into(),
+        endpoint: Some(RemoteEndpoint {
+            backend: "test-backend".into(),
+            base_url: "https://remote.example.com".into(),
+            ..Default::default()
+        }),
+        ..make_spec("remote-root")
+    };
+
+    let mut model_reg = MapModelRegistry::new();
+    model_reg
+        .register_model(ModelSpec::new("test-model", "p", "n"))
+        .unwrap();
+    let mut provider_reg = MapProviderRegistry::new();
+    provider_reg
+        .register_provider("p", Arc::new(MockExecutor))
+        .unwrap();
+    let mut agent_reg = MapAgentSpecRegistry::new();
+    agent_reg.register_spec(remote).unwrap();
+    let mut backends = MapBackendRegistry::with_default_remote_backends();
+    backends
+        .register_backend_factory(Arc::new(StaticBackendFactory {
+            backend: "test-backend",
+            result: DelegateRunResult {
+                agent_id: "remote-root".into(),
+                status: DelegateRunStatus::Completed,
+                termination: TerminationReason::NaturalEnd,
+                status_reason: None,
+                response: Some("ok".into()),
+                output: crate::backend::BackendRunOutput::from_text(Some("ok".into())),
+                steps: 1,
+                run_id: None,
+                inbox: None,
+                state: None,
+                thread_state: None,
+            },
+            validate_count: validate_count.clone(),
+            build_count: build_count.clone(),
+        }))
+        .unwrap();
+
+    let regs = RegistrySet {
+        agents: Arc::new(agent_reg),
+        tools: Arc::new(MapToolRegistry::new()),
+        models: Arc::new(model_reg),
+        providers: Arc::new(provider_reg),
+        plugins: Arc::new(MapPluginSource::new()),
+        backends: Arc::new(backends) as Arc<dyn BackendRegistry>,
+    };
+    let resolver = RegistrySetResolver::new(regs);
+
+    let plan = Resolver::resolve(
+        &resolver,
+        root_request("remote-root", RegistryResolutionScope::Live),
+    )
+    .await
+    .expect("remote root resolves");
+
+    assert!(matches!(plan.execution(), ExecutionPlan::Remote(_)));
+    assert_eq!(plan.agent_spec().id, "remote-root");
+    assert_eq!(validate_count.load(Ordering::SeqCst), 1);
+    assert_eq!(build_count.load(Ordering::SeqCst), 1);
 }
 
 // -- Config validation tests --

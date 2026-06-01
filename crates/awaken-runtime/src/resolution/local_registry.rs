@@ -1,14 +1,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::contract::inference::InferenceOverride;
 
-use crate::registry::{AgentResolver, ResolvedAgent};
+use crate::registry::AgentResolver;
 
 use super::{
-    BackendProfile, BackendRequirements, ExecutionPlan, ExecutionRole, LiveOnlyScope,
-    RegistryResolutionScope, ResolutionRequest, ResolutionTarget, ResolveError,
-    ResolvedModelBinding, ResolvedRun, ResolvedRunPlan, ResolvedTool, Resolver,
+    ExecutionRole, RegistryResolutionScope, ResolutionRequest, ResolutionTarget, ResolveError,
+    ResolvedRunPlan, Resolver,
 };
 
 /// `Resolver` backed by an `AgentResolver` registry. Handles root local /
@@ -40,56 +38,6 @@ impl Resolver for LocalRegistryResolver {
             ));
         }
         let execution = self.inner.resolve_execution(agent_id)?;
-        let requirements = BackendRequirements::from_features(&req.features);
-        match execution {
-            ExecutionPlan::Local(agent) => Ok(ResolvedRunPlan::LiveOnly(resolved_local_live(
-                *agent,
-                ExecutionRole::Root,
-                req.overrides,
-                requirements,
-            ))),
-            ExecutionPlan::Remote(agent) => {
-                let backend = agent.backend()?;
-                let profile = backend.capabilities();
-                let upstream_model = agent.spec.model_id.clone();
-                Ok(ResolvedRunPlan::LiveOnly(ResolvedRun {
-                    agent_spec: (*agent.spec).clone(),
-                    role: ExecutionRole::Root,
-                    execution: ExecutionPlan::Remote(agent),
-                    model: ResolvedModelBinding { upstream_model },
-                    tools: Vec::new(),
-                    overrides: req.overrides,
-                    backend_profile: profile,
-                    requirements,
-                    scope: LiveOnlyScope,
-                }))
-            }
-        }
-    }
-}
-
-fn resolved_local_live(
-    agent: ResolvedAgent,
-    role: ExecutionRole,
-    overrides: Option<InferenceOverride>,
-    requirements: BackendRequirements,
-) -> ResolvedRun<LiveOnlyScope> {
-    let tools = agent
-        .tool_descriptors()
-        .into_iter()
-        .map(|descriptor| ResolvedTool { descriptor })
-        .collect();
-    ResolvedRun {
-        agent_spec: (*agent.spec).clone(),
-        role,
-        execution: ExecutionPlan::from_resolved_agent(&agent),
-        model: ResolvedModelBinding {
-            upstream_model: agent.upstream_model.clone(),
-        },
-        tools,
-        overrides,
-        backend_profile: BackendProfile::full_local(),
-        requirements,
-        scope: LiveOnlyScope,
+        ResolvedRunPlan::from_execution_for_request(execution, ExecutionRole::Root, req)
     }
 }
