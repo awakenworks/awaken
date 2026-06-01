@@ -57,6 +57,77 @@ export const en = {
     dark: "dark",
     system: "system",
   },
+  assistant: {
+    title: "Admin Assistant",
+    description:
+      "Describe the agent you want to create or modify. The assistant reads platform capabilities, drafts AgentSpecs, and validates settings with locked admin-only tools.",
+    emptyPrompt: "What kind of agent would you like to build?",
+    suggestions: {
+      coding: "Create a coding agent with Bash and file tools",
+      support: "Set up a customer support agent with permission controls",
+      research: "Configure a research agent that delegates to sub-agents",
+      capabilities: "Show me all available plugins and their options",
+    },
+    thinking: "Thinking...",
+    errorTitle: "Assistant call failed",
+    errorUnavailable:
+      "The admin assistant is unavailable. Configure a model and ensure the admin assistant endpoint is enabled.",
+    inputPlaceholder: "Describe your agent or ask about config...",
+    send: "Send",
+    settings: {
+      summary: "Prompt policy and locked tools",
+      model: "Assistant model",
+      autoModel: "Auto-select first configured model",
+      policy: "Editable policy prompt",
+      policyPlaceholder:
+        "Organization-specific preferences for how the Admin Assistant should draft agents.",
+      systemPromptLocked: "system prompt locked",
+      toolsLocked: "tools locked",
+      adminOnly: "admin only",
+      saved: "Saved",
+      saving: "Saving...",
+      save: "Save policy",
+    },
+    blocks: {
+      reasoning: "Reasoning",
+      newStep: "-- new step --",
+      unrendered: "[unrendered: {{type}}]",
+      runtimeMetadata: "Runtime metadata",
+      run: "Run",
+      thread: "Thread",
+      model: "Model",
+      duration: "Duration",
+      usage: "Usage",
+      stateSnapshots: "State snapshots",
+      jsonData: "JSON data",
+      clickToExpand: "click to expand",
+      input: "Input",
+      output: "Output",
+      error: "Error",
+    },
+    bubble: {
+      open: "Open Admin Assistant",
+      configure: "Configure a model to enable Admin Assistant",
+      close: "Close Admin Assistant",
+      closeShort: "Close",
+      disabledReason:
+        "Configure and publish a provider-backed model to enable the Admin Assistant.",
+      setupDescription:
+        "The assistant becomes available after the first provider-backed model is configured.",
+      checking: "Checking configured models...",
+      configureProvider: "Configure provider",
+      configureModel: "Configure model",
+    },
+    lockedTools: {
+      title: "Admin Assistant tools",
+      description:
+        "These management tools are directly bound to the server-managed Admin Assistant. They are visible here for comparison, but they are not registry tools and cannot be assigned to a normal Agent.",
+      locked: "locked",
+      adminOnly: "admin only",
+      notSelectable: "not selectable",
+      confirmation: "confirmation",
+    },
+  },
   dashboard: {
     title: "Dashboard",
     activity: {
@@ -131,6 +202,9 @@ export const en = {
       empty: "No agent activity in the current window yet.",
       disabledTitle: "Runtime stats not configured",
       disabledHint: "wire a RuntimeStatsRegistry into AppState",
+      routeAbsentTitle: "Runtime stats route not exposed",
+      routeAbsentHint:
+        "the server returned 404 on /v1/agents/runtime-stats — older build, or the route layer is misconfigured. RuntimeStatsRegistry may still be wired.",
     },
     system: {
       title: "System",

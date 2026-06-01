@@ -60,6 +60,7 @@ export const PATCHABLE_AGENT_FIELDS = [
   "excluded_tool_patterns",
   "delegates",
   "reasoning_effort",
+  "stop_conditions",
 ] as const satisfies ReadonlyArray<keyof AgentSpec>;
 
 /**

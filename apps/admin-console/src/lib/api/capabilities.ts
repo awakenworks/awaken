@@ -1,5 +1,19 @@
-import { BACKEND_URL, fetchJson } from "./http";
-import type { Capabilities } from "./types";
+import { BACKEND_URL, ConfigApiError, fetchJson } from "./http";
+import type { Capabilities, CapabilitiesResult } from "./types";
+
+export const EMPTY_CAPABILITIES: Capabilities = {
+  agents: [],
+  tools: [],
+  plugins: [],
+  skills: [],
+  models: [],
+  providers: [],
+  namespaces: [],
+};
+
+export function capabilitiesFromResult(result?: CapabilitiesResult | null): Capabilities | null {
+  return result?.kind === "ok" ? result.capabilities : null;
+}
 
 function normalizeCapabilities(capabilities: Capabilities): Capabilities {
   return {
@@ -19,6 +33,22 @@ function normalizeCapabilities(capabilities: Capabilities): Capabilities {
 }
 
 export const capabilitiesApi = {
-  capabilities: async () =>
-    normalizeCapabilities(await fetchJson<Capabilities>(`${BACKEND_URL}/v1/capabilities`)),
+  capabilities: async (): Promise<CapabilitiesResult> => {
+    try {
+      return {
+        kind: "ok",
+        capabilities: normalizeCapabilities(
+          await fetchJson<Capabilities>(`${BACKEND_URL}/v1/capabilities`),
+        ),
+      };
+    } catch (err) {
+      if (err instanceof ConfigApiError && err.status === 404) {
+        return { kind: "route_absent" };
+      }
+      if (err instanceof ConfigApiError && err.status === 503) {
+        return { kind: "store_unavailable", message: err.message };
+      }
+      throw err;
+    }
+  },
 };

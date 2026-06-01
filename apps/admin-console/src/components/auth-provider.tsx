@@ -8,22 +8,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  clearAdminToken,
-  readAdminToken,
-  writeAdminToken,
-} from "@/lib/admin-token";
+import { clearAdminToken, readAdminToken, writeAdminToken } from "@/lib/admin-token";
 import { setUnauthorizedHandler } from "@/lib/auth-interceptor";
 import { configApi, ConfigApiError } from "@/lib/config-api";
 import { AdminTokenModal } from "./admin-token-modal";
 import { useToast } from "./toast-provider";
 
-export type AuthStatus =
-  | "checking"
-  | "ok"
-  | "unauthorized"
-  | "missing"
-  | "disconnected";
+export type AuthStatus = "checking" | "ok" | "unauthorized" | "missing" | "disconnected";
 
 interface AuthContextValue {
   token: string | null;
@@ -50,7 +41,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const seq = ++refreshSeqRef.current;
     setStatus("checking");
     try {
-      await configApi.capabilities();
+      const capabilities = await configApi.capabilities();
+      if (capabilities.kind !== "ok") {
+        throw new ConfigApiError(
+          capabilities.kind === "route_absent" ? 404 : 503,
+          capabilities.kind === "route_absent"
+            ? "capabilities route is not exposed"
+            : (capabilities.message ?? "capabilities store is unavailable"),
+        );
+      }
       if (refreshSeqRef.current === seq) setStatus("ok");
     } catch (probeError) {
       if (refreshSeqRef.current !== seq) return;
@@ -122,9 +121,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [pending]);
 
   const openTokenModal = useCallback(() => {
-    setPending((current) =>
-      current ? current : { reason: "manual", resolve: () => {} },
-    );
+    setPending((current) => (current ? current : { reason: "manual", resolve: () => {} }));
   }, []);
 
   const value = useMemo<AuthContextValue>(

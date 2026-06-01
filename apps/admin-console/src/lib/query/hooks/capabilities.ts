@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { capabilitiesApi, type Capabilities } from "../../api";
+import { capabilitiesApi, type CapabilitiesResult } from "../../api";
 import { qk } from "../keys";
 
 interface CapabilitiesQueryOptions {
@@ -7,7 +7,7 @@ interface CapabilitiesQueryOptions {
 }
 
 export function useCapabilitiesQuery(options: CapabilitiesQueryOptions = {}) {
-  return useQuery<Capabilities>({
+  return useQuery<CapabilitiesResult>({
     queryKey: qk.capabilities(),
     queryFn: capabilitiesApi.capabilities,
     enabled: options.enabled ?? true,

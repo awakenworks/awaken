@@ -10,7 +10,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
-import { configApi, type AgentSpec, type ToolInfo } from "@/lib/config-api";
+import { capabilitiesFromResult, configApi, type AgentSpec, type ToolInfo } from "@/lib/config-api";
 import { navGroups } from "@/lib/nav";
 import { adminRoutes } from "@/lib/routes";
 
@@ -85,7 +85,8 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
     ]).then(([agentsRes, caps]) => {
       if (cancelled) return;
       if (agentsRes) setAgents(agentsRes.items);
-      if (caps) setTools(caps.tools);
+      const capabilities = capabilitiesFromResult(caps);
+      if (capabilities) setTools(capabilities.tools);
     });
     return () => {
       cancelled = true;
@@ -213,7 +214,9 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-3 border-b border-line px-4 py-3">
-          <span aria-hidden className="text-fg-faint">⌘K</span>
+          <span aria-hidden className="text-fg-faint">
+            ⌘K
+          </span>
           <input
             ref={inputRef}
             type="search"
@@ -230,9 +233,7 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
 
         <div className="max-h-[60vh] overflow-y-auto">
           {filtered.length === 0 ? (
-            <div className="px-6 py-10 text-center text-sm text-fg-soft">
-              {t("cmdk.noMatches")}
-            </div>
+            <div className="px-6 py-10 text-center text-sm text-fg-soft">{t("cmdk.noMatches")}</div>
           ) : (
             sections.map((section, sIdx) => {
               return (
@@ -256,9 +257,7 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
                       >
                         <span className="truncate font-medium">{item.label}</span>
                         {item.hint && (
-                          <span className="ml-2 truncate text-xs text-fg-soft">
-                            {item.hint}
-                          </span>
+                          <span className="ml-2 truncate text-xs text-fg-soft">{item.hint}</span>
                         )}
                       </button>
                     );
@@ -279,9 +278,7 @@ function PaletteOverlay({ onClose }: { onClose: () => void }) {
             <kbd className="rounded border border-line bg-bg px-1 font-mono">↵</kbd>{" "}
             {t("cmdk.open")}
           </span>
-          <span className="ml-auto">
-            {t("cmdk.resultCount", { count: filtered.length })}
-          </span>
+          <span className="ml-auto">{t("cmdk.resultCount", { count: filtered.length })}</span>
         </div>
       </div>
     </div>
