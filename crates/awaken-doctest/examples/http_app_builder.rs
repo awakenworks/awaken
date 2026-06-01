@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use awaken::prelude::*;
-use awaken::server::app::ServerState;
+use awaken::server::prelude::*;
 use awaken::stores::{InMemoryMailboxStore, InMemoryStore};
 
 fn main() {

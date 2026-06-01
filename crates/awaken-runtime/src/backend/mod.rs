@@ -497,7 +497,7 @@ pub async fn execute_remote_root_lifecycle(
                         &run_identity.run_id,
                         previous_state.clone(),
                     )
-                    .await;
+                    .await?;
                     return finish_remote_root_run(
                         checkpoint_store,
                         &run_identity.thread_id,
@@ -529,7 +529,7 @@ pub async fn execute_remote_root_lifecycle(
                 &run_identity.run_id,
                 previous_state.clone(),
             )
-            .await;
+            .await?;
             if backend.capabilities().cancellation.supports_remote_abort()
                 && let Err(error) = backend
                     .abort(BackendAbortRequest {
@@ -634,17 +634,18 @@ async fn load_checkpoint_state(
     storage: Option<&dyn RuntimeCheckpointStore>,
     run_id: &str,
     fallback: Option<PersistedState>,
-) -> Option<PersistedState> {
+) -> Result<Option<PersistedState>, AgentLoopError> {
     let Some(storage) = storage else {
-        return fallback;
+        return Ok(fallback);
     };
     match storage.load_run(run_id).await {
-        Ok(Some(run)) => run.state.or(fallback),
-        Ok(None) => fallback,
-        Err(error) => {
-            tracing::warn!(run_id, error = %error, "failed to load latest checkpoint state");
-            fallback
-        }
+        Ok(Some(run)) => Ok(run.state),
+        Ok(None) => Err(AgentLoopError::StorageError(format!(
+            "checkpoint state for run '{run_id}' was not found"
+        ))),
+        Err(error) => Err(AgentLoopError::StorageError(format!(
+            "failed to load latest checkpoint state for run '{run_id}': {error}"
+        ))),
     }
 }
 
@@ -769,6 +770,39 @@ fn run_status_label(status: RunStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_runtime_contract::contract::storage::{RunRecord, StorageError};
+    use awaken_runtime_contract::thread::Thread;
+
+    struct FailingCheckpointStore;
+
+    #[async_trait::async_trait]
+    impl RuntimeCheckpointStore for FailingCheckpointStore {
+        async fn load_thread(&self, _thread_id: &str) -> Result<Option<Thread>, StorageError> {
+            Ok(None)
+        }
+
+        async fn load_messages(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Option<Vec<Message>>, StorageError> {
+            Ok(None)
+        }
+
+        async fn load_committed_messages(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Option<Vec<Message>>, StorageError> {
+            Ok(None)
+        }
+
+        async fn load_run(&self, _run_id: &str) -> Result<Option<RunRecord>, StorageError> {
+            Err(StorageError::Io("injected read failure".into()))
+        }
+
+        async fn latest_run(&self, _thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
+            Ok(None)
+        }
+    }
 
     #[test]
     fn backend_status_timeout_is_first_class_at_runtime_boundary() {
@@ -808,6 +842,68 @@ mod tests {
         assert_eq!(
             status.result_status_label(&TerminationReason::Error("should not win".into())),
             "waiting_input"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_checkpoint_state_propagates_durable_read_errors() {
+        let error = load_checkpoint_state(Some(&FailingCheckpointStore), "run-1", None)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AgentLoopError::StorageError(ref message)
+                if message.contains("failed to load latest checkpoint state")
+                    && message.contains("injected read failure")),
+            "unexpected error: {error}"
+        );
+    }
+
+    struct MissingCheckpointStore;
+
+    #[async_trait]
+    impl RuntimeCheckpointStore for MissingCheckpointStore {
+        async fn load_thread(&self, _thread_id: &str) -> Result<Option<Thread>, StorageError> {
+            Ok(None)
+        }
+
+        async fn load_messages(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Option<Vec<Message>>, StorageError> {
+            Ok(None)
+        }
+
+        async fn load_committed_messages(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Option<Vec<Message>>, StorageError> {
+            Ok(None)
+        }
+
+        async fn load_run(&self, _run_id: &str) -> Result<Option<RunRecord>, StorageError> {
+            Ok(None)
+        }
+
+        async fn latest_run(&self, _thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn load_checkpoint_state_rejects_missing_durable_run_even_with_fallback() {
+        let fallback = PersistedState {
+            revision: 9,
+            extensions: std::collections::HashMap::new(),
+        };
+        let error = load_checkpoint_state(Some(&MissingCheckpointStore), "run-1", Some(fallback))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, AgentLoopError::StorageError(ref message)
+                if message.contains("checkpoint state for run 'run-1' was not found")),
+            "unexpected error: {error}"
         );
     }
 }

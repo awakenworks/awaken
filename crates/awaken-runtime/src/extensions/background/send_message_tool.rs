@@ -255,9 +255,18 @@ impl Tool for SendMessageTool {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        let to = &args["to"];
-        let relation = to["relation"].as_str().unwrap_or_default();
-        let message = args["message"].as_str().unwrap_or_default();
+        self.validate_args(&args)?;
+        let to = args
+            .get("to")
+            .ok_or_else(|| ToolError::InvalidArguments("missing 'to'".into()))?;
+        let relation = to
+            .get("relation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArguments("missing 'to.relation'".into()))?;
+        let message = args
+            .get("message")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArguments("missing 'message'".into()))?;
         let sender = &ctx.run_identity.agent_id;
         let thread_id = &ctx.run_identity.thread_id;
         let msg_id = uuid::Uuid::now_v7().to_string();
@@ -268,7 +277,10 @@ impl Tool for SendMessageTool {
         //   agent  → durable mailbox (cross-thread)
         let receipt = match relation {
             "child" => {
-                let name = to["name"].as_str().unwrap_or_default();
+                let name = to
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ToolError::InvalidArguments("child requires 'name'".into()))?;
                 match self.resolve_child(name, thread_id, ctx) {
                     Some(task_id) => {
                         match self
@@ -306,8 +318,14 @@ impl Tool for SendMessageTool {
                 None => Self::make_error(MessageError::RecipientUnavailable),
             },
             "agent" => {
-                let target_thread = to["thread_id"].as_str().unwrap_or_default();
-                let target_agent = to["agent_id"].as_str().unwrap_or_default();
+                let target_thread =
+                    to.get("thread_id").and_then(Value::as_str).ok_or_else(|| {
+                        ToolError::InvalidArguments("agent requires 'thread_id'".into())
+                    })?;
+                let target_agent = to
+                    .get("agent_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 match self
                     .send_durable(target_thread, target_agent, sender, message)
                     .await
@@ -321,7 +339,7 @@ impl Tool for SendMessageTool {
 
         Ok(ToolResult::success(
             SEND_MESSAGE_TOOL_ID,
-            serde_json::to_value(&receipt).unwrap_or_default(),
+            serde_json::to_value(&receipt).map_err(|e| ToolError::Internal(e.to_string()))?,
         )
         .into())
     }
@@ -582,6 +600,20 @@ mod tests {
             t.validate_args(&json!({"to": {"relation": "agent"}, "message": "hi"}))
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_invalid_args() {
+        let (manager, _store) = make_manager_and_store();
+        let tool = make_tool(manager);
+        let ctx = make_ctx("thread-1", "agent-1");
+
+        let error = tool
+            .execute(json!({"to": {"relation": "child"}, "message": "hi"}), &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ToolError::InvalidArguments(_)));
     }
 
     #[test]

@@ -194,18 +194,52 @@ fn compatible_adapters(kind: CredentialKind) -> &'static [&'static str] {
 ///
 /// Returns:
 /// - `Ok(Some(material))` — material is configured; register with the broker.
-/// - `Ok(None)` — `kind == Bearer` AND `api_key` is absent/empty. The runtime
-///   should skip broker registration and let genai's adapter fall back to
-///   its default env var (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
-///   This preserves 0.4.0 behaviour where omitting `api_key` means "use
-///   the host environment".
+/// - `Ok(None)` — only from [`build_material_allowing_env_fallback`] when
+///   `kind == Bearer` and `api_key` is absent/empty. The runtime should skip
+///   broker registration and let genai's adapter fall back to its default env
+///   var (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). Callers must opt in
+///   explicitly so managed provider configs do not silently borrow host
+///   credentials.
 /// - `Err(_)` — incompatible (kind × adapter), missing required api_key for
-///   non-bearer kinds, the `credentials-google` feature disabled but a
+///   bearer/non-bearer kinds, the `credentials-google` feature disabled but a
 ///   service-account configuration was supplied, or unparseable material.
 pub fn build_material(
     adapter: &str,
     kind: CredentialKind,
     api_key: Option<&RedactedString>,
+) -> Result<Option<CredentialMaterial>, String> {
+    build_material_inner(adapter, kind, api_key, false)
+}
+
+/// Build credential material while explicitly allowing bearer env fallback.
+///
+/// Server-managed provider configs should call this only when their parsed
+/// adapter options contain `allow_env_credentials = true`.
+pub fn build_material_allowing_env_fallback(
+    adapter: &str,
+    kind: CredentialKind,
+    api_key: Option<&RedactedString>,
+) -> Result<Option<CredentialMaterial>, String> {
+    build_material_inner(adapter, kind, api_key, true)
+}
+
+/// Parse the explicit env-credential opt-in from provider adapter options.
+pub fn allow_env_credentials_from_options(
+    options: &BTreeMap<String, Value>,
+) -> Result<bool, String> {
+    let Some(value) = options.get("allow_env_credentials") else {
+        return Ok(false);
+    };
+    value.as_bool().ok_or_else(|| {
+        "adapter_options.allow_env_credentials must be a boolean when present".to_string()
+    })
+}
+
+fn build_material_inner(
+    adapter: &str,
+    kind: CredentialKind,
+    api_key: Option<&RedactedString>,
+    allow_env_fallback: bool,
 ) -> Result<Option<CredentialMaterial>, String> {
     // (kind × adapter) compatibility
     let allowed = compatible_adapters(kind);
@@ -219,10 +253,14 @@ pub fn build_material(
 
     match kind {
         CredentialKind::Bearer => {
-            // Bearer is the back-compat path: missing api_key is allowed
-            // and signals "fall back to genai's env var default".
             let Some(key) = api_key.filter(|k| !k.is_empty()) else {
-                return Ok(None);
+                return if allow_env_fallback {
+                    Ok(None)
+                } else {
+                    Err("credentials_kind 'bearer' requires api_key unless \
+                         adapter_options.allow_env_credentials is true"
+                        .to_string())
+                };
             };
             Ok(Some(CredentialMaterial::static_bearer(key.clone())))
         }
@@ -331,25 +369,27 @@ mod tests {
     }
 
     #[test]
-    fn build_material_bearer_without_key_returns_none_for_env_fallback() {
-        // 0.4.0 contract: omitting api_key is allowed and means "use the
-        // adapter's env var default". Material returns None so the broker
-        // is bypassed entirely.
+    fn build_material_bearer_without_key_is_rejected_by_default() {
+        let err = build_material("openai", CredentialKind::Bearer, None)
+            .expect_err("missing bearer api_key must fail closed");
+        assert!(err.contains("api_key"));
+    }
+
+    #[test]
+    fn build_material_bearer_env_fallback_requires_explicit_opt_in() {
         assert!(
-            build_material("openai", CredentialKind::Bearer, None)
+            build_material_allowing_env_fallback("openai", CredentialKind::Bearer, None)
                 .unwrap()
                 .is_none()
         );
     }
 
     #[test]
-    fn build_material_bearer_with_empty_key_returns_none_not_error() {
+    fn build_material_bearer_with_empty_key_is_rejected_by_default() {
         let key = RedactedString::new("");
-        assert!(
-            build_material("openai", CredentialKind::Bearer, Some(&key))
-                .unwrap()
-                .is_none()
-        );
+        let err = build_material("openai", CredentialKind::Bearer, Some(&key))
+            .expect_err("empty bearer api_key must fail closed");
+        assert!(err.contains("api_key"));
     }
 
     #[test]

@@ -177,8 +177,15 @@ impl Tool for CancelTaskTool {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        self.validate_args(&args)?;
         let current_scope = self.current_scope(ctx);
-        let relation = args["target"]["relation"].as_str().unwrap_or_default();
+        let target = args
+            .get("target")
+            .ok_or_else(|| ToolError::InvalidArguments("missing 'target'".into()))?;
+        let relation = target
+            .get("relation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArguments("missing 'target.relation'".into()))?;
         let (root_task_id, cancelled_count) = match relation {
             "self" => {
                 let scope = current_scope.clone().ok_or_else(|| {
@@ -207,12 +214,16 @@ impl Tool for CancelTaskTool {
                 let scope = current_scope.clone().ok_or_else(|| {
                     ToolError::ExecutionFailed(CancelTaskError::CurrentTaskUnavailable.to_string())
                 })?;
-                let name = args["target"]["name"].as_str().unwrap_or_default();
+                let name = target
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ToolError::InvalidArguments("child requires 'name'".into()))?;
                 let Some(child_task_id) = self.resolve_child(&scope, name) else {
                     let receipt = Self::make_error(name.to_string(), CancelTaskError::TaskNotFound);
                     return Ok(ToolResult::success(
                         CANCEL_TASK_TOOL_ID,
-                        serde_json::to_value(receipt).unwrap_or_default(),
+                        serde_json::to_value(receipt)
+                            .map_err(|e| ToolError::Internal(e.to_string()))?,
                     )
                     .into());
                 };
@@ -234,7 +245,7 @@ impl Tool for CancelTaskTool {
 
         Ok(ToolResult::success(
             CANCEL_TASK_TOOL_ID,
-            serde_json::to_value(receipt).unwrap_or_default(),
+            serde_json::to_value(receipt).map_err(|e| ToolError::Internal(e.to_string()))?,
         )
         .into())
     }
@@ -321,6 +332,20 @@ mod tests {
             tool.validate_args(&json!({"target": {"relation": "child"}}))
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_invalid_args() {
+        let (manager, store) = make_manager_and_store();
+        let tool = CancelTaskTool::new(manager);
+        let ctx = make_ctx_with_store_and_task("thread-1", "agent-1", &store, None);
+
+        let error = tool
+            .execute(json!({"target": {"relation": "child"}}), &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ToolError::InvalidArguments(_)));
     }
 
     #[tokio::test]

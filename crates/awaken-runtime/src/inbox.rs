@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use awaken_runtime_contract::contract::message::{Message, Visibility};
 use futures::channel::mpsc;
+use thiserror::Error;
 
 /// Callback invoked when [`InboxSender::send`] detects the receiver is gone.
 ///
@@ -167,25 +168,46 @@ pub fn is_pending_boundary_wake_payload(json: &serde_json::Value) -> bool {
     json.get("kind").and_then(|kind| kind.as_str()) == Some("pending_boundary_wake")
 }
 
+#[derive(Debug, Error)]
+pub enum InboxPayloadError {
+    #[error("inbox messages payload is missing a messages array")]
+    MissingMessagesArray,
+    #[error("invalid inbox message at index {index}: {source}")]
+    InvalidMessage {
+        index: usize,
+        source: serde_json::Error,
+    },
+}
+
+/// Convert any inbox payload into messages, rejecting malformed direct-message
+/// payloads instead of dropping entries.
+pub fn try_inbox_payload_messages(
+    json: &serde_json::Value,
+) -> Result<Vec<Message>, InboxPayloadError> {
+    if json.get("kind").and_then(|kind| kind.as_str()) != Some("messages") {
+        return Ok(vec![inbox_event_message(json)]);
+    }
+    let values = json
+        .get("messages")
+        .and_then(|messages| messages.as_array())
+        .ok_or(InboxPayloadError::MissingMessagesArray)?;
+
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            serde_json::from_value::<Message>(value.clone())
+                .map_err(|source| InboxPayloadError::InvalidMessage { index, source })
+        })
+        .collect()
+}
+
 /// Convert any inbox payload into messages for the owner agent.
 ///
 /// Unknown payloads are treated as background-task events to preserve the
 /// historical inbox behavior.
 pub fn inbox_payload_messages(json: &serde_json::Value) -> Vec<Message> {
-    if json.get("kind").and_then(|kind| kind.as_str()) == Some("messages")
-        && let Some(values) = json
-            .get("messages")
-            .and_then(|messages| messages.as_array())
-    {
-        let messages = values
-            .iter()
-            .filter_map(|value| serde_json::from_value::<Message>(value.clone()).ok())
-            .collect::<Vec<_>>();
-        if !messages.is_empty() {
-            return messages;
-        }
-    }
-    vec![inbox_event_message(json)]
+    try_inbox_payload_messages(json).unwrap_or_else(|_| vec![inbox_event_message(json)])
 }
 
 /// Create a new `(InboxSender, InboxReceiver)` pair.
@@ -340,6 +362,25 @@ mod tests {
         );
         assert_eq!(messages[0].visibility, Visibility::All);
         assert_eq!(messages[0].text(), "live steering");
+    }
+
+    #[test]
+    fn try_inbox_payload_messages_rejects_malformed_direct_message() {
+        let mut payload = inbox_messages_payload(vec![Message::user("valid")]);
+        payload["messages"]
+            .as_array_mut()
+            .expect("messages array")
+            .push(serde_json::json!({"role": 7}));
+        let error = try_inbox_payload_messages(&payload)
+            .expect_err("malformed direct inbox message must fail closed");
+        assert!(matches!(
+            error,
+            InboxPayloadError::InvalidMessage { index: 1, .. }
+        ));
+
+        let fallback = inbox_payload_messages(&payload);
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].visibility, Visibility::Internal);
     }
 
     #[test]

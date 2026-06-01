@@ -18,7 +18,7 @@
 //!
 //! Static bearers bypass the broker on the production hot path (see
 //! `awaken_server::services::config_runtime::build_genai_provider_executor`)
-//! because there is no token to refresh — it is identical to 0.4.0 wiring.
+//! because there is no token to refresh.
 //! The broker still accepts static-bearer material for embedders that
 //! want everything funnelled through one chokepoint and for tests.
 //!
@@ -30,6 +30,11 @@
 //! |----------------------------|------------------------------------|-----------------|
 //! | absent / `"bearer"`        | OAuth bearer or static API key     | operator-managed|
 //! | `"service_account_json"`   | full Google service-account JSON   | broker, automatic|
+//!
+//! Bearer providers without `api_key` fail closed by default. Set
+//! `ProviderSpec.adapter_options.allow_env_credentials = true` only when the
+//! provider should intentionally use the host environment's adapter-specific
+//! credential variable.
 //!
 //! Compatibility rules and validation live in [`material::build_material`].
 //!
@@ -51,5 +56,8 @@ mod token;
 
 pub use broker::{AwakenCredentialBroker, CredentialBroker, CredentialRetryPolicy};
 pub use error::CredentialError;
-pub use material::{CredentialKind, CredentialMaterial, GoogleServiceAccountKey, build_material};
+pub use material::{
+    CredentialKind, CredentialMaterial, GoogleServiceAccountKey,
+    allow_env_credentials_from_options, build_material, build_material_allowing_env_fallback,
+};
 pub use token::IssuedToken;

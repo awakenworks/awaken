@@ -759,7 +759,8 @@ impl SkillRegistry for McpPromptSkillRegistryManager {
 mod tests {
     use super::*;
     use awaken_ext_mcp::{
-        McpProgressUpdate, McpPromptDefinition, McpResourceDefinition, McpToolTransport,
+        McpCallContext, McpProgressUpdate, McpPromptDefinition, McpResourceDefinition,
+        McpToolTransport,
     };
     use mcp::transport::{McpServerConnectionConfig, ServerCapabilities, TransportTypeId};
     use serde_json::json;
@@ -891,7 +892,8 @@ mod tests {
             &self,
             _name: &str,
             _args: Value,
-            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+            _progress_tx: Option<mpsc::Sender<McpProgressUpdate>>,
+            _context: McpCallContext,
         ) -> Result<mcp::CallToolResult, mcp::transport::McpTransportError> {
             Ok(mcp::CallToolResult {
                 content: Vec::new(),

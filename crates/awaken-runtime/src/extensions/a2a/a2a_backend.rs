@@ -21,25 +21,29 @@ use awaken_runtime_contract::contract::event_sink::EventSink;
 use awaken_runtime_contract::contract::identity::RunIdentity;
 use awaken_runtime_contract::contract::lifecycle::TerminationReason;
 use awaken_runtime_contract::contract::message::{Message, Role, Visibility};
-use awaken_runtime_contract::now_ms;
 use awaken_runtime_contract::registry_spec::RemoteEndpoint;
 use awaken_runtime_contract::state::PersistedState;
 use futures::StreamExt;
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::{sync::Arc, time::Duration};
 
 mod checkpoint;
+mod remote_state;
 use checkpoint::persist_accepted_checkpoint;
+#[cfg(test)]
+use remote_state::{PersistedA2aThreadState, REMOTE_STATE_KEY, REMOTE_STATE_SCHEMA_VERSION};
+use remote_state::{
+    persisted_abort_task_id, read_remote_state_entry, reusable_prior_task_id,
+    update_persisted_state, update_persisted_state_from_direct,
+};
 
 const A2A_VERSION: &str = "1.0";
 const A2A_BACKEND: &str = "a2a";
 const A2A_TASK_PROGRESS_ACTIVITY_TYPE: &str = "a2a-task-progress";
 const HISTORY_LENGTH_OPTION_KEY: &str = "history_length";
 const POLL_INTERVAL_OPTION_KEY: &str = "poll_interval_ms";
-const REMOTE_STATE_KEY: &str = "__runtime_remote_backend";
 const RETURN_IMMEDIATELY_OPTION_KEY: &str = "return_immediately";
 const WAIT_REASON_AUTH_REQUIRED: &str = "auth_required";
 const WAIT_REASON_INPUT_REQUIRED: &str = "input_required";
@@ -235,38 +239,10 @@ impl ExecutionBackendFactory for A2aBackendFactory {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-struct PersistedRemoteBackendState {
-    #[serde(default = "remote_state_schema_version")]
-    version: u32,
-    #[serde(default)]
-    targets: BTreeMap<String, PersistedA2aThreadState>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-struct PersistedA2aThreadState {
-    #[serde(default = "remote_state_schema_version")]
-    version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    task_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    context_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_state: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    updated_at_ms: Option<u64>,
-}
-
 #[derive(Debug)]
 enum SubmissionOutcome {
     DirectMessage(DirectMessageSnapshot),
     Task(TaskSnapshot),
-}
-
-const REMOTE_STATE_SCHEMA_VERSION: u32 = 1;
-
-fn remote_state_schema_version() -> u32 {
-    REMOTE_STATE_SCHEMA_VERSION
 }
 
 enum A2aExecutionRequest<'a> {
@@ -403,8 +379,10 @@ impl A2aBackend {
         request: &A2aExecutionRequest<'_>,
         persisted: Option<&PersistedState>,
     ) -> Result<A2aMessage, ExecutionBackendError> {
-        let prior_state =
-            persisted.and_then(|state| read_remote_state_entry(state, &self.remote_target_key()));
+        let prior_state = persisted
+            .map(|state| read_remote_state_entry(state, &self.remote_target_key()))
+            .transpose()?
+            .flatten();
         let parts = request
             .turn_messages()
             .iter()
@@ -671,12 +649,13 @@ impl ExecutionBackend for A2aBackend {
     }
 
     async fn abort(&self, request: BackendAbortRequest<'_>) -> Result<(), ExecutionBackendError> {
+        let persisted_task_id = persisted_abort_task_id(&request, &self.remote_target_key())?;
         let Some(task_id) = self
             .in_flight_tasks
             .lock()
             .get(&request.run_identity.run_id)
             .cloned()
-            .or_else(|| persisted_abort_task_id(&request, &self.remote_target_key()))
+            .or(persisted_task_id)
         else {
             return Ok(());
         };
@@ -748,7 +727,7 @@ impl A2aBackend {
                         persisted_state,
                         &self.remote_target_key(),
                         &snapshot,
-                    ),
+                    )?,
                     thread_state: None, // A2A state is opaque; all keys ride on `state` (C4).
                 })
             }
@@ -763,7 +742,7 @@ impl A2aBackend {
                     persisted_state,
                     &self.remote_target_key(),
                     &submitted_snapshot,
-                );
+                )?;
                 persist_accepted_checkpoint(&request, accepted_state.clone()).await?;
                 emit_task_progress(&sink, &submitted_snapshot).await;
                 let completion = self.observe_to_completion(submitted_snapshot, &sink).await;
@@ -789,7 +768,7 @@ impl A2aBackend {
                         accepted_state,
                         &self.remote_target_key(),
                         &snapshot,
-                    ),
+                    )?,
                     thread_state: None,
                 })
             }
@@ -1178,119 +1157,6 @@ fn task_progress_content(snapshot: &TaskSnapshot) -> Value {
         "failure_message": snapshot.failure_message.clone(),
     })
 }
-fn update_persisted_state(
-    state: Option<PersistedState>,
-    target_key: &str,
-    snapshot: &TaskSnapshot,
-) -> Option<PersistedState> {
-    let mut persisted = state.unwrap_or(PersistedState {
-        revision: 0,
-        extensions: HashMap::new(),
-    });
-    let mut remote_state = persisted
-        .extensions
-        .remove(REMOTE_STATE_KEY)
-        .and_then(|value| serde_json::from_value::<PersistedRemoteBackendState>(value).ok())
-        .unwrap_or_default();
-    remote_state.version = REMOTE_STATE_SCHEMA_VERSION;
-    remote_state.targets.insert(
-        target_key.to_string(),
-        PersistedA2aThreadState {
-            version: REMOTE_STATE_SCHEMA_VERSION,
-            task_id: Some(snapshot.task_id.clone()),
-            context_id: snapshot.context_id.clone(),
-            last_state: Some(task_state_name(snapshot.state).to_string()),
-            updated_at_ms: Some(now_ms()),
-        },
-    );
-    persisted.extensions.insert(
-        REMOTE_STATE_KEY.to_string(),
-        serde_json::to_value(remote_state).ok()?,
-    );
-    Some(persisted)
-}
-
-fn update_persisted_state_from_direct(
-    state: Option<PersistedState>,
-    target_key: &str,
-    snapshot: &DirectMessageSnapshot,
-) -> Option<PersistedState> {
-    if snapshot.task_id.is_none() && snapshot.context_id.is_none() {
-        return state;
-    }
-
-    let mut persisted = state.unwrap_or(PersistedState {
-        revision: 0,
-        extensions: HashMap::new(),
-    });
-    let mut remote_state = persisted
-        .extensions
-        .remove(REMOTE_STATE_KEY)
-        .and_then(|value| serde_json::from_value::<PersistedRemoteBackendState>(value).ok())
-        .unwrap_or_default();
-    let prior = remote_state
-        .targets
-        .get(target_key)
-        .cloned()
-        .unwrap_or_default();
-
-    remote_state.version = REMOTE_STATE_SCHEMA_VERSION;
-    remote_state.targets.insert(
-        target_key.to_string(),
-        PersistedA2aThreadState {
-            version: REMOTE_STATE_SCHEMA_VERSION,
-            task_id: snapshot.task_id.clone().or(prior.task_id),
-            context_id: snapshot.context_id.clone().or(prior.context_id),
-            last_state: Some("DIRECT_MESSAGE".to_string()),
-            updated_at_ms: Some(now_ms()),
-        },
-    );
-
-    persisted.extensions.insert(
-        REMOTE_STATE_KEY.to_string(),
-        serde_json::to_value(remote_state).ok()?,
-    );
-    Some(persisted)
-}
-
-fn read_remote_state_entry(
-    state: &PersistedState,
-    target_key: &str,
-) -> Option<PersistedA2aThreadState> {
-    state
-        .extensions
-        .get(REMOTE_STATE_KEY)
-        .cloned()
-        .and_then(|value| serde_json::from_value::<PersistedRemoteBackendState>(value).ok())
-        .and_then(|state| state.targets.get(target_key).cloned())
-}
-
-fn persisted_abort_task_id(request: &BackendAbortRequest<'_>, target_key: &str) -> Option<String> {
-    request
-        .persisted_state
-        .and_then(|state| read_remote_state_entry(state, target_key))
-        .and_then(|state| reusable_prior_task_id(&state))
-}
-
-fn reusable_prior_task_id(state: &PersistedA2aThreadState) -> Option<String> {
-    if state
-        .last_state
-        .as_deref()
-        .is_some_and(is_interrupted_remote_state)
-    {
-        state.task_id.clone()
-    } else {
-        None
-    }
-}
-
-fn is_interrupted_remote_state(state: &str) -> bool {
-    matches!(
-        state,
-        "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_AUTH_REQUIRED"
-    )
-}
-
 fn extract_output_text(task: &Task) -> Option<String> {
     for artifact in &task.artifacts {
         if let Some(text) = extract_text_from_parts(&artifact.parts) {
@@ -1900,16 +1766,33 @@ mod tests {
                 failure_message: None,
             },
         )
-        .expect("state should serialize");
+        .expect("state should serialize")
+        .expect("state should be present");
 
         let remote =
             read_remote_state_entry(&persisted, "a2a:https://gateway.example.com/v1/a2a/worker")
+                .expect("remote state should decode")
                 .expect("remote state entry");
         assert_eq!(remote.task_id.as_deref(), Some("task-1"));
         assert_eq!(remote.context_id.as_deref(), Some("ctx-1"));
         assert_eq!(remote.last_state.as_deref(), Some("TASK_STATE_COMPLETED"));
         assert_eq!(remote.version, REMOTE_STATE_SCHEMA_VERSION);
         assert!(remote.updated_at_ms.is_some());
+    }
+
+    #[test]
+    fn corrupt_persisted_remote_state_is_not_treated_as_missing() {
+        let mut extensions = HashMap::new();
+        extensions.insert(REMOTE_STATE_KEY.to_string(), json!({"targets": []}));
+        let persisted = PersistedState {
+            revision: 0,
+            extensions,
+        };
+
+        let error =
+            read_remote_state_entry(&persisted, "a2a:https://gateway.example.com/v1/a2a/worker")
+                .expect_err("corrupt persisted remote state must fail closed");
+        assert!(error.to_string().contains(REMOTE_STATE_KEY));
     }
 
     #[test]
@@ -1966,7 +1849,8 @@ mod tests {
                 failure_message: None,
             },
         )
-        .expect("persisted remote state");
+        .expect("persisted remote state")
+        .expect("persisted remote state must be present");
         let run_identity = RunIdentity::new(
             "thread-1".into(),
             None,
@@ -1984,7 +1868,9 @@ mod tests {
         };
 
         assert_eq!(
-            persisted_abort_task_id(&request, target_key).as_deref(),
+            persisted_abort_task_id(&request, target_key)
+                .expect("persisted abort state should decode")
+                .as_deref(),
             Some("waiting-task")
         );
     }
@@ -2004,7 +1890,8 @@ mod tests {
                 failure_message: None,
             },
         )
-        .expect("persisted remote state");
+        .expect("persisted remote state")
+        .expect("persisted remote state must be present");
         let run_identity = RunIdentity::new(
             "thread-1".into(),
             None,
@@ -2021,7 +1908,11 @@ mod tests {
             is_continuation: false,
         };
 
-        assert_eq!(persisted_abort_task_id(&request, target_key), None);
+        assert_eq!(
+            persisted_abort_task_id(&request, target_key)
+                .expect("persisted abort state should decode"),
+            None
+        );
     }
 
     #[test]
@@ -2035,10 +1926,12 @@ mod tests {
                 output: BackendRunOutput::from_text(Some("done".into())),
             },
         )
-        .expect("direct message state should serialize");
+        .expect("direct message state should serialize")
+        .expect("direct message state should be present");
 
         let remote =
             read_remote_state_entry(&persisted, "a2a:https://gateway.example.com/v1/a2a/worker")
+                .expect("remote state should decode")
                 .expect("remote state entry");
         assert_eq!(remote.task_id.as_deref(), Some("task-direct"));
         assert_eq!(remote.context_id.as_deref(), Some("ctx-direct"));
@@ -2063,7 +1956,7 @@ mod tests {
         )
         .expect("state should pass through");
 
-        assert_eq!(persisted, original);
+        assert_eq!(persisted, Some(original));
     }
 
     #[tokio::test]
@@ -2084,7 +1977,8 @@ mod tests {
                 failure_message: None,
             },
         )
-        .expect("continued state");
+        .expect("continued state")
+        .expect("continued state must be present");
         let newer_state = update_persisted_state(
             None,
             &target_key,
@@ -2097,7 +1991,8 @@ mod tests {
                 failure_message: None,
             },
         )
-        .expect("newer state");
+        .expect("newer state")
+        .expect("newer state must be present");
 
         let store = InMemoryStore::new();
         store
@@ -2114,7 +2009,7 @@ mod tests {
                     request: None,
                     input: None,
                     output: None,
-                    status: RunStatus::Waiting,
+                    status: RunStatus::Created,
                     termination_reason: None,
                     final_output: None,
                     error_payload: None,
@@ -2149,7 +2044,7 @@ mod tests {
                     request: None,
                     input: None,
                     output: None,
-                    status: RunStatus::Done,
+                    status: RunStatus::Created,
                     termination_reason: None,
                     final_output: None,
                     error_payload: None,
@@ -2204,7 +2099,9 @@ mod tests {
             .await
             .expect("load state")
             .expect("state");
-        let remote = read_remote_state_entry(&state, &target_key).expect("remote state");
+        let remote = read_remote_state_entry(&state, &target_key)
+            .expect("remote state should decode")
+            .expect("remote state");
         assert_eq!(remote.task_id.as_deref(), Some("continued-task"));
         assert_eq!(remote.context_id.as_deref(), Some("continued-context"));
     }
