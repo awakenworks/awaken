@@ -113,13 +113,13 @@ pub enum StopConditionSpec {
     Timeout { seconds: u64 },
     TokenBudget { max_total: usize },
     ConsecutiveErrors { max: usize },
-    StopOnTool { tool_name: String },      // not yet implemented
-    ContentMatch { pattern: String },       // not yet implemented
-    LoopDetection { window: usize },        // not yet implemented
+    StopOnTool { tool_name: String },
+    ContentMatch { pattern: String },
+    LoopDetection { window: usize },
 }
 ```
 
-`StopOnTool`, `ContentMatch`, and `LoopDetection` are defined in the contract but not yet backed by policy implementations. `policies_from_specs` silently skips unimplemented variants.
+All variants above are backed by `policies_from_specs`; invalid `ContentMatch` regex patterns fail closed by stopping with `content_match_invalid_regex`.
 
 ## The StopPolicy Trait
 

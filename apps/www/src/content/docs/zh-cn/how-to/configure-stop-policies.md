@@ -101,7 +101,7 @@ let policies = policies_from_specs(&specs);
 let plugin = StopConditionPlugin::new(policies);
 ```
 
-完整的 `StopConditionSpec` 还包含 `StopOnTool`、`ContentMatch`、`LoopDetection`，但这些目前只有契约定义，尚未在 `policies_from_specs` 中实现。
+`StopConditionSpec` 的所有变体都已由 `policies_from_specs` 转换为运行时策略；无效的 `ContentMatch` 正则会 fail-closed，以 `content_match_invalid_regex` 停止。
 
 ## StopPolicy Trait
 
