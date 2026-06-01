@@ -250,20 +250,18 @@ pub(super) async fn persist_checkpoint(
         run_identity.trace.session_id.clone(),
         waiting_tickets_from_store(store),
     );
-    let outcome = lifecycle
-        .status
-        .is_terminal()
-        .then(|| {
-            termination_reason
-                .clone()
-                .map(|termination_reason| RunOutcome {
-                    termination_reason,
-                    final_output: final_output.clone(),
-                    error_payload: error_payload.clone(),
-                })
-        })
-        .flatten();
-    let finished_at = if lifecycle.status.is_terminal() {
+    let terminal = lifecycle.status.is_terminal();
+    let stored_termination_reason = terminal.then(|| termination_reason.clone()).flatten();
+    let stored_final_output = terminal.then(|| final_output.clone()).flatten();
+    let stored_error_payload = terminal.then(|| error_payload.clone()).flatten();
+    let outcome = stored_termination_reason
+        .clone()
+        .map(|termination_reason| RunOutcome {
+            termination_reason,
+            final_output: stored_final_output.clone(),
+            error_payload: stored_error_payload.clone(),
+        });
+    let finished_at = if terminal {
         Some(
             if lifecycle.updated_at == 0 {
                 run_created_at
@@ -272,7 +270,7 @@ pub(super) async fn persist_checkpoint(
             } / 1000,
         )
     } else {
-        previous.as_ref().and_then(|record| record.finished_at)
+        None
     };
     let input = materialize_input(
         messages,
@@ -296,9 +294,9 @@ pub(super) async fn persist_checkpoint(
         input,
         output: previous.as_ref().and_then(|record| record.output.clone()),
         status: lifecycle.status,
-        termination_reason,
-        final_output,
-        error_payload,
+        termination_reason: stored_termination_reason,
+        final_output: stored_final_output,
+        error_payload: stored_error_payload,
         dispatch_id: run_identity.trace.dispatch_id.clone(),
         session_id: run_identity.trace.session_id.clone(),
         transport_request_id: run_identity.trace.transport_request_id.clone(),
@@ -479,18 +477,10 @@ fn materialize_checkpoint_append(
         .and_then(|record| record.output.as_ref())
         .map(|output| output.message_ids.clone())
         .unwrap_or_default();
-    let mut output_from_seq = previous
-        .and_then(|record| record.output.as_ref())
-        .and_then(|output| output.range)
-        .map(|range| range.from_seq);
-    let mut output_to_seq = previous
-        .and_then(|record| record.output.as_ref())
-        .and_then(|output| output.range)
-        .map(|range| range.to_seq);
+    let mut output_seqs = previous_output_seqs(previous);
 
     let mut delta = Vec::new();
     let mut next_append_seq = committed_messages.len() as u64 + 1;
-    let mut has_new_output = false;
     for (index, message) in messages.iter().enumerate() {
         let mut message = (**message).clone();
         let committed = message
@@ -527,14 +517,12 @@ fn materialize_checkpoint_append(
         if already_recorded_output || new_output {
             if new_output {
                 message.mark_produced_by(&run_identity.run_id, step_index);
-                has_new_output = true;
             }
-            output_from_seq = Some(output_from_seq.map_or(seq, |from| from.min(seq)));
-            output_to_seq = Some(output_to_seq.map_or(seq, |to| to.max(seq)));
             if let Some(id) = message.id.clone()
                 && !output_message_ids.iter().any(|existing| existing == &id)
             {
                 output_message_ids.push(id);
+                output_seqs.push(seq);
             }
         }
 
@@ -544,13 +532,12 @@ fn materialize_checkpoint_append(
         }
     }
 
-    let output = if output_from_seq.is_none() || (!has_new_output && output_message_ids.is_empty())
-    {
+    let output = if output_message_ids.is_empty() {
         previous.and_then(|record| record.output.clone())
     } else {
         Some(RunMessageOutput {
             thread_id: run_identity.thread_id.clone(),
-            range: contiguous_output_range(output_from_seq, output_to_seq, &output_message_ids),
+            range: contiguous_output_range(output_message_ids.len(), &output_seqs),
             message_ids: output_message_ids,
         })
     };
@@ -589,15 +576,7 @@ fn materialize_message_log(
         .and_then(|record| record.output.as_ref())
         .map(|output| output.message_ids.clone())
         .unwrap_or_default();
-    let mut output_from_seq = previous
-        .and_then(|record| record.output.as_ref())
-        .and_then(|output| output.range)
-        .map(|range| range.from_seq);
-    let mut output_to_seq = previous
-        .and_then(|record| record.output.as_ref())
-        .and_then(|output| output.range)
-        .map(|range| range.to_seq);
-    let mut has_new_output = false;
+    let mut output_seqs = previous_output_seqs(previous);
     for (index, message) in msgs.iter_mut().enumerate() {
         let seq = index as u64 + 1;
         let existing_output = message.produced_by_run_id() == Some(run_identity.run_id.as_str());
@@ -607,40 +586,26 @@ fn materialize_message_log(
         }
         if new_output {
             message.mark_produced_by(&run_identity.run_id, step_index);
-            has_new_output = true;
         }
-        output_from_seq = Some(output_from_seq.map_or(seq, |from| from.min(seq)));
-        output_to_seq = Some(output_to_seq.map_or(seq, |to| to.max(seq)));
         if let Some(id) = message.id.clone()
             && !output_message_ids.iter().any(|existing| existing == &id)
         {
             output_message_ids.push(id);
+            output_seqs.push(seq);
         }
     }
 
-    let output = if output_from_seq.is_none() || (!has_new_output && output_message_ids.is_empty())
-    {
+    let output = if output_message_ids.is_empty() {
         previous.and_then(|record| record.output.clone())
     } else {
         Some(RunMessageOutput {
             thread_id: run_identity.thread_id.clone(),
-            range: contiguous_output_range(output_from_seq, output_to_seq, &output_message_ids),
+            range: contiguous_output_range(output_message_ids.len(), &output_seqs),
             message_ids: output_message_ids,
         })
     };
 
     (msgs, input, output)
-}
-
-fn contiguous_output_range(
-    from: Option<u64>,
-    to: Option<u64>,
-    message_ids: &[String],
-) -> Option<MessageSeqRange> {
-    let range = from
-        .zip(to)
-        .and_then(|(from, to)| MessageSeqRange::new(from, to))?;
-    (range.len() as usize == message_ids.len()).then_some(range)
 }
 
 fn infer_input_from_legacy_request(
@@ -684,6 +649,38 @@ fn infer_input_from_initial_messages(
         context_policy: None,
         compacted_snapshot_id: None,
     })
+}
+
+fn previous_output_seqs(previous: Option<&RunRecord>) -> Vec<u64> {
+    let Some(output) = previous.and_then(|record| record.output.as_ref()) else {
+        return Vec::new();
+    };
+    let Some(range) = output.range else {
+        return Vec::new();
+    };
+    if range.len() as usize != output.message_ids.len() {
+        return Vec::new();
+    }
+    (range.from_seq..=range.to_seq).collect()
+}
+
+fn contiguous_output_range(message_ids_len: usize, seqs: &[u64]) -> Option<MessageSeqRange> {
+    if message_ids_len == 0 || seqs.len() != message_ids_len {
+        return None;
+    }
+    let mut seqs = seqs.to_vec();
+    seqs.sort_unstable();
+    seqs.dedup();
+    if seqs.len() != message_ids_len {
+        return None;
+    }
+    let from = *seqs.first()?;
+    let to = *seqs.last()?;
+    if to.saturating_sub(from) + 1 == message_ids_len as u64 {
+        MessageSeqRange::new(from, to)
+    } else {
+        None
+    }
 }
 
 fn is_run_output_message(message: &Message) -> bool {

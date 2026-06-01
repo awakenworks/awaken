@@ -778,6 +778,16 @@ async fn finish_remote_root_run(
         result_json["status_reason"] = Value::String(reason.clone());
     }
 
+    let terminal_termination = status.is_terminal().then_some(termination.clone());
+    let terminal_final_output = status.is_terminal().then(|| response.clone());
+    let terminal_error_payload = status
+        .is_terminal()
+        .then(|| match &termination {
+            TerminationReason::Error(message) => Some(json!({ "message": message })),
+            _ => None,
+        })
+        .flatten();
+
     persist_remote_root_checkpoint(
         storage,
         thread_id,
@@ -788,13 +798,10 @@ async fn finish_remote_root_run(
         &messages,
         input_message_count,
         status,
-        Some(termination.clone()),
+        terminal_termination,
         status_reason.clone(),
-        (!response.is_empty()).then(|| response.clone()),
-        match &termination {
-            TerminationReason::Error(message) => Some(json!({ "message": message })),
-            _ => None,
-        },
+        terminal_final_output.filter(|output| !output.is_empty()),
+        terminal_error_payload,
         run_identity,
         steps,
         state,
