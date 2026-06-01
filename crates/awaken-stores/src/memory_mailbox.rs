@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_server_contract::contract::lifecycle::RunStatus;
 use awaken_server_contract::contract::mailbox::{
     LiveCommandReceipt, LiveDeliveryOutcome, LiveRunCommand, LiveRunCommandEntry,
     LiveRunCommandStream, LiveRunTarget, MailboxInterrupt, MailboxInterruptDetails, MailboxStore,
@@ -130,15 +129,16 @@ impl InMemoryMailboxStore {
 #[async_trait]
 impl MailboxStore for InMemoryMailboxStore {
     async fn enqueue(&self, dispatch: &RunDispatch) -> Result<(), StorageError> {
+        dispatch.validate_for_enqueue()?;
         let mut dispatches = self.dispatches.write().await;
         let mut state = self.state.write().await;
 
         // Dedupe check: reject if dedupe_key matches an existing non-terminal dispatch.
-        if let Some(ref dk) = dispatch.dedupe_key {
+        if let Some(dk) = dispatch.dedupe_key() {
             let duplicate = dispatches.values().any(|j| {
-                j.thread_id == dispatch.thread_id
-                    && j.dedupe_key.as_deref() == Some(dk)
-                    && !j.status.is_terminal()
+                j.thread_id() == dispatch.thread_id()
+                    && j.dedupe_key() == Some(dk)
+                    && !j.status().is_terminal()
             });
             if duplicate {
                 return Err(StorageError::AlreadyExists(format!("dedupe_key={dk}")));
@@ -147,22 +147,16 @@ impl MailboxStore for InMemoryMailboxStore {
 
         // Auto-create MailboxState if needed, get current dispatch epoch.
         let ms = state
-            .entry(dispatch.thread_id.clone())
+            .entry(dispatch.thread_id().to_string())
             .or_insert(MailboxState {
                 current_dispatch_epoch: 0,
             });
 
         let mut dispatch = dispatch.clone();
-        dispatch.dispatch_epoch = ms.current_dispatch_epoch;
-        dispatch.status = RunDispatchStatus::Queued;
-        dispatch.dispatch_instance_id = None;
-        dispatch.run_status = None;
-        dispatch.termination = None;
-        dispatch.run_response = None;
-        dispatch.run_error = None;
-        dispatch.completed_at = None;
+        dispatch.prepare_for_enqueue(ms.current_dispatch_epoch);
+        dispatch.validate_for_persist()?;
 
-        dispatches.insert(dispatch.dispatch_id.clone(), dispatch);
+        dispatches.insert(dispatch.dispatch_id().to_string(), dispatch);
         Ok(())
     }
 
@@ -181,14 +175,14 @@ impl MailboxStore for InMemoryMailboxStore {
         };
 
         for dispatch in dispatches.values_mut() {
-            if dispatch.thread_id == thread_id
-                && dispatch.status == RunDispatchStatus::Queued
-                && dispatch.dispatch_epoch < current_epoch
+            if dispatch.thread_id() == thread_id
+                && dispatch.status() == RunDispatchStatus::Queued
+                && dispatch.dispatch_epoch() < current_epoch
             {
-                dispatch.dispatch_epoch = current_epoch;
-                mailbox_state::mark_superseded(
+                mailbox_state::mark_superseded_at_epoch(
                     dispatch,
                     now,
+                    current_epoch,
                     Some(mailbox_state::REASON_QUEUED_SUPERSEDED_BY_EPOCH),
                 );
             }
@@ -197,7 +191,7 @@ impl MailboxStore for InMemoryMailboxStore {
         // Same thread must not have two Claimed dispatches concurrently.
         let has_claimed = dispatches
             .values()
-            .any(|j| j.thread_id == thread_id && j.status == RunDispatchStatus::Claimed);
+            .any(|j| j.thread_id() == thread_id && j.status() == RunDispatchStatus::Claimed);
         if has_claimed {
             return Ok(vec![]);
         }
@@ -206,9 +200,9 @@ impl MailboxStore for InMemoryMailboxStore {
         let mut eligible: Vec<&String> = dispatches
             .iter()
             .filter(|(_, j)| {
-                j.thread_id == thread_id
-                    && j.status == RunDispatchStatus::Queued
-                    && j.available_at <= now
+                j.thread_id() == thread_id
+                    && j.status() == RunDispatchStatus::Queued
+                    && j.available_at() <= now
             })
             .map(|(id, _)| id)
             .collect();
@@ -217,9 +211,9 @@ impl MailboxStore for InMemoryMailboxStore {
         eligible.sort_by(|a, b| {
             let ja = &dispatches[*a];
             let jb = &dispatches[*b];
-            ja.priority
-                .cmp(&jb.priority)
-                .then(ja.created_at.cmp(&jb.created_at))
+            ja.priority()
+                .cmp(&jb.priority())
+                .then(ja.created_at().cmp(&jb.created_at()))
         });
 
         eligible.truncate(limit);
@@ -232,11 +226,7 @@ impl MailboxStore for InMemoryMailboxStore {
             let dispatch = dispatches
                 .get_mut(&id)
                 .ok_or_else(|| StorageError::NotFound(id.clone()))?;
-            dispatch.status = RunDispatchStatus::Claimed;
-            dispatch.claim_token = Some(token.clone());
-            dispatch.claimed_by = Some(consumer_id.to_string());
-            dispatch.lease_until = Some(now + lease_ms);
-            dispatch.updated_at = now;
+            dispatch.claim(consumer_id, token.clone(), now + lease_ms, now)?;
             claimed.push(dispatch.clone());
         }
 
@@ -253,7 +243,7 @@ impl MailboxStore for InMemoryMailboxStore {
         let mut dispatches = self.dispatches.write().await;
 
         let thread_id = match dispatches.get(dispatch_id) {
-            Some(j) if j.status == RunDispatchStatus::Queued => j.thread_id.clone(),
+            Some(j) if j.status() == RunDispatchStatus::Queued => j.thread_id().to_string(),
             _ => return Ok(None),
         };
         let current_epoch = {
@@ -261,20 +251,20 @@ impl MailboxStore for InMemoryMailboxStore {
             Self::current_epoch_from_state(&state, &thread_id)
         };
         if let Some(dispatch) = dispatches.get_mut(dispatch_id)
-            && dispatch.dispatch_epoch < current_epoch
+            && dispatch.dispatch_epoch() < current_epoch
         {
-            dispatch.dispatch_epoch = current_epoch;
-            mailbox_state::mark_superseded(
+            mailbox_state::mark_superseded_at_epoch(
                 dispatch,
                 now,
+                current_epoch,
                 Some(mailbox_state::REASON_QUEUED_SUPERSEDED_BY_EPOCH),
             );
             return Ok(None);
         }
         let has_other_claimed = dispatches.values().any(|j| {
-            j.thread_id == thread_id
-                && j.dispatch_id != dispatch_id
-                && j.status == RunDispatchStatus::Claimed
+            j.thread_id() == &thread_id
+                && j.dispatch_id() != dispatch_id
+                && j.status() == RunDispatchStatus::Claimed
         });
         if has_other_claimed {
             return Ok(None);
@@ -286,11 +276,7 @@ impl MailboxStore for InMemoryMailboxStore {
             .get_mut(dispatch_id)
             .ok_or_else(|| StorageError::Io("dispatch disappeared during claim".into()))?;
         let token = Uuid::now_v7().to_string();
-        dispatch.status = RunDispatchStatus::Claimed;
-        dispatch.claim_token = Some(token);
-        dispatch.claimed_by = Some(consumer_id.to_string());
-        dispatch.lease_until = Some(now + lease_ms);
-        dispatch.updated_at = now;
+        dispatch.claim(consumer_id, token, now + lease_ms, now)?;
 
         Ok(Some(dispatch.clone()))
     }
@@ -307,7 +293,7 @@ impl MailboxStore for InMemoryMailboxStore {
             .get_mut(dispatch_id)
             .ok_or_else(|| StorageError::NotFound(dispatch_id.to_string()))?;
 
-        if dispatch.claim_token.as_deref() != Some(claim_token) {
+        if dispatch.claim_token() != Some(claim_token) {
             return Err(StorageError::VersionConflict {
                 expected: 0,
                 actual: 1,
@@ -315,14 +301,14 @@ impl MailboxStore for InMemoryMailboxStore {
         }
         let current_epoch = {
             let state = self.state.read().await;
-            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+            Self::current_epoch_from_state(&state, dispatch.thread_id())
         };
-        if dispatch.dispatch_epoch < current_epoch {
-            let stale_epoch = dispatch.dispatch_epoch;
-            dispatch.dispatch_epoch = current_epoch;
-            mailbox_state::mark_superseded(
+        if dispatch.dispatch_epoch() < current_epoch {
+            let stale_epoch = dispatch.dispatch_epoch();
+            mailbox_state::mark_superseded_at_epoch(
                 dispatch,
                 now,
+                current_epoch,
                 Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BY_EPOCH),
             );
             return Err(StorageError::VersionConflict {
@@ -348,8 +334,8 @@ impl MailboxStore for InMemoryMailboxStore {
             .get_mut(dispatch_id)
             .ok_or_else(|| StorageError::NotFound(dispatch_id.to_string()))?;
 
-        if dispatch.status != RunDispatchStatus::Claimed
-            || dispatch.claim_token.as_deref() != Some(claim_token)
+        if dispatch.status() != RunDispatchStatus::Claimed
+            || dispatch.claim_token() != Some(claim_token)
         {
             return Err(StorageError::VersionConflict {
                 expected: 0,
@@ -358,14 +344,14 @@ impl MailboxStore for InMemoryMailboxStore {
         }
         let current_epoch = {
             let state = self.state.read().await;
-            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+            Self::current_epoch_from_state(&state, dispatch.thread_id())
         };
-        if dispatch.dispatch_epoch < current_epoch {
-            let stale_epoch = dispatch.dispatch_epoch;
-            dispatch.dispatch_epoch = current_epoch;
-            mailbox_state::mark_superseded(
+        if dispatch.dispatch_epoch() < current_epoch {
+            let stale_epoch = dispatch.dispatch_epoch();
+            mailbox_state::mark_superseded_at_epoch(
                 dispatch,
                 now,
+                current_epoch,
                 Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_START),
             );
             return Err(StorageError::VersionConflict {
@@ -374,13 +360,7 @@ impl MailboxStore for InMemoryMailboxStore {
             });
         }
 
-        dispatch.dispatch_instance_id = Some(dispatch_instance_id.to_string());
-        dispatch.run_status = Some(RunStatus::Running);
-        dispatch.termination = None;
-        dispatch.run_response = None;
-        dispatch.run_error = None;
-        dispatch.completed_at = None;
-        dispatch.updated_at = now;
+        dispatch.record_dispatch_start(dispatch_instance_id, now)?;
         Ok(())
     }
 
@@ -397,8 +377,8 @@ impl MailboxStore for InMemoryMailboxStore {
             .get_mut(dispatch_id)
             .ok_or_else(|| StorageError::NotFound(dispatch_id.to_string()))?;
 
-        if dispatch.status != RunDispatchStatus::Claimed
-            || dispatch.claim_token.as_deref() != Some(claim_token)
+        if dispatch.status() != RunDispatchStatus::Claimed
+            || dispatch.claim_token() != Some(claim_token)
         {
             return Err(StorageError::VersionConflict {
                 expected: 0,
@@ -407,14 +387,14 @@ impl MailboxStore for InMemoryMailboxStore {
         }
         let current_epoch = {
             let state = self.state.read().await;
-            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+            Self::current_epoch_from_state(&state, dispatch.thread_id())
         };
-        if dispatch.dispatch_epoch < current_epoch {
-            let stale_epoch = dispatch.dispatch_epoch;
-            dispatch.dispatch_epoch = current_epoch;
-            mailbox_state::mark_superseded(
+        if dispatch.dispatch_epoch() < current_epoch {
+            let stale_epoch = dispatch.dispatch_epoch();
+            mailbox_state::mark_superseded_at_epoch(
                 dispatch,
                 now,
+                current_epoch,
                 Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_RESULT),
             );
             return Err(StorageError::VersionConflict {
@@ -423,13 +403,7 @@ impl MailboxStore for InMemoryMailboxStore {
             });
         }
 
-        dispatch.dispatch_instance_id = Some(result.dispatch_instance_id.clone());
-        dispatch.run_status = Some(result.status);
-        dispatch.termination = result.termination.clone();
-        dispatch.run_response = result.response.clone();
-        dispatch.run_error = result.error.clone();
-        dispatch.completed_at = Some(now);
-        dispatch.updated_at = now;
+        dispatch.record_run_result(result, now)?;
         Ok(())
     }
 
@@ -447,7 +421,7 @@ impl MailboxStore for InMemoryMailboxStore {
             .get_mut(dispatch_id)
             .ok_or_else(|| StorageError::NotFound(dispatch_id.to_string()))?;
 
-        if dispatch.claim_token.as_deref() != Some(claim_token) {
+        if dispatch.claim_token() != Some(claim_token) {
             return Err(StorageError::VersionConflict {
                 expected: 0,
                 actual: 1,
@@ -455,14 +429,14 @@ impl MailboxStore for InMemoryMailboxStore {
         }
         let current_epoch = {
             let state = self.state.read().await;
-            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+            Self::current_epoch_from_state(&state, dispatch.thread_id())
         };
-        if dispatch.dispatch_epoch < current_epoch {
-            let stale_epoch = dispatch.dispatch_epoch;
-            dispatch.dispatch_epoch = current_epoch;
-            mailbox_state::mark_superseded(
+        if dispatch.dispatch_epoch() < current_epoch {
+            let stale_epoch = dispatch.dispatch_epoch();
+            mailbox_state::mark_superseded_at_epoch(
                 dispatch,
                 now,
+                current_epoch,
                 Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_NACK),
             );
             return Err(StorageError::VersionConflict {
@@ -489,7 +463,7 @@ impl MailboxStore for InMemoryMailboxStore {
             .get_mut(dispatch_id)
             .ok_or_else(|| StorageError::NotFound(dispatch_id.to_string()))?;
 
-        if dispatch.claim_token.as_deref() != Some(claim_token) {
+        if dispatch.claim_token() != Some(claim_token) {
             return Err(StorageError::VersionConflict {
                 expected: 0,
                 actual: 1,
@@ -497,14 +471,14 @@ impl MailboxStore for InMemoryMailboxStore {
         }
         let current_epoch = {
             let state = self.state.read().await;
-            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+            Self::current_epoch_from_state(&state, dispatch.thread_id())
         };
-        if dispatch.dispatch_epoch < current_epoch {
-            let stale_epoch = dispatch.dispatch_epoch;
-            dispatch.dispatch_epoch = current_epoch;
-            mailbox_state::mark_superseded(
+        if dispatch.dispatch_epoch() < current_epoch {
+            let stale_epoch = dispatch.dispatch_epoch();
+            mailbox_state::mark_superseded_at_epoch(
                 dispatch,
                 now,
+                current_epoch,
                 Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_BEFORE_DEAD_LETTER),
             );
             return Err(StorageError::VersionConflict {
@@ -525,7 +499,7 @@ impl MailboxStore for InMemoryMailboxStore {
         let mut dispatches = self.dispatches.write().await;
 
         let dispatch = match dispatches.get_mut(dispatch_id) {
-            Some(j) if j.status == RunDispatchStatus::Queued => j,
+            Some(j) if j.status() == RunDispatchStatus::Queued => j,
             _ => return Ok(None),
         };
 
@@ -544,8 +518,8 @@ impl MailboxStore for InMemoryMailboxStore {
 
         let dispatch = match dispatches.get_mut(dispatch_id) {
             Some(j)
-                if j.status == RunDispatchStatus::Claimed
-                    && j.claim_token.as_deref() == Some(claim_token) =>
+                if j.status() == RunDispatchStatus::Claimed
+                    && j.claim_token() == Some(claim_token) =>
             {
                 j
             }
@@ -553,20 +527,19 @@ impl MailboxStore for InMemoryMailboxStore {
         };
         let current_epoch = {
             let state = self.state.read().await;
-            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+            Self::current_epoch_from_state(&state, dispatch.thread_id())
         };
-        if dispatch.dispatch_epoch < current_epoch {
-            dispatch.dispatch_epoch = current_epoch;
-            mailbox_state::mark_superseded(
+        if dispatch.dispatch_epoch() < current_epoch {
+            mailbox_state::mark_superseded_at_epoch(
                 dispatch,
                 now,
+                current_epoch,
                 Some(mailbox_state::REASON_CLAIMED_SUPERSEDED_DURING_LEASE_RENEWAL),
             );
             return Ok(false);
         }
 
-        dispatch.lease_until = Some(now + extension_ms);
-        dispatch.updated_at = now;
+        dispatch.extend_lease(now + extension_ms, now)?;
         Ok(true)
     }
 
@@ -597,11 +570,11 @@ impl MailboxStore for InMemoryMailboxStore {
         let mut active_dispatch = None;
 
         for dispatch in dispatches.values_mut() {
-            if dispatch.thread_id != thread_id {
+            if dispatch.thread_id() != thread_id {
                 continue;
             }
-            match dispatch.status {
-                RunDispatchStatus::Queued if dispatch.dispatch_epoch <= old_dispatch_epoch => {
+            match dispatch.status() {
+                RunDispatchStatus::Queued if dispatch.dispatch_epoch() <= old_dispatch_epoch => {
                     mailbox_state::mark_superseded(
                         dispatch,
                         now,
@@ -641,10 +614,10 @@ impl MailboxStore for InMemoryMailboxStore {
         let Some(dispatch) = dispatches.get_mut(dispatch_id) else {
             return Ok(None);
         };
-        if dispatch.status != RunDispatchStatus::Claimed {
+        if dispatch.status() != RunDispatchStatus::Claimed {
             return Ok(None);
         }
-        if dispatch.claim_token.as_deref() != Some(claim_token) {
+        if dispatch.claim_token() != Some(claim_token) {
             return Err(StorageError::VersionConflict {
                 expected: 0,
                 actual: 1,
@@ -652,10 +625,14 @@ impl MailboxStore for InMemoryMailboxStore {
         }
         let current_epoch = {
             let state = self.state.read().await;
-            Self::current_epoch_from_state(&state, &dispatch.thread_id)
+            Self::current_epoch_from_state(&state, dispatch.thread_id())
         };
-        dispatch.dispatch_epoch = dispatch.dispatch_epoch.max(current_epoch);
-        mailbox_state::mark_superseded(dispatch, now, Some(reason));
+        mailbox_state::mark_superseded_at_epoch(
+            dispatch,
+            now,
+            dispatch.dispatch_epoch().max(current_epoch),
+            Some(reason),
+        );
         Ok(Some(dispatch.clone()))
     }
 
@@ -676,17 +653,17 @@ impl MailboxStore for InMemoryMailboxStore {
         let mut matched: Vec<&RunDispatch> = dispatches
             .values()
             .filter(|j| {
-                j.thread_id == thread_id
+                j.thread_id() == thread_id
                     && status_filter
-                        .map(|sf| sf.contains(&j.status))
+                        .map(|sf| sf.contains(&j.status()))
                         .unwrap_or(true)
             })
             .collect();
 
         matched.sort_by(|a, b| {
-            a.priority
-                .cmp(&b.priority)
-                .then(a.created_at.cmp(&b.created_at))
+            a.priority()
+                .cmp(&b.priority())
+                .then(a.created_at().cmp(&b.created_at()))
         });
 
         Ok(matched
@@ -704,7 +681,7 @@ impl MailboxStore for InMemoryMailboxStore {
         let dispatches = self.dispatches.read().await;
         Ok(dispatches
             .values()
-            .filter(|dispatch| dispatch.status == status)
+            .filter(|dispatch| dispatch.status() == status)
             .count())
     }
 
@@ -716,14 +693,14 @@ impl MailboxStore for InMemoryMailboxStore {
         let dispatches = self.dispatches.read().await;
         let mut terminal = dispatches
             .values()
-            .filter(|dispatch| dispatch.status.is_terminal())
+            .filter(|dispatch| dispatch.status().is_terminal())
             .cloned()
             .collect::<Vec<_>>();
         terminal.sort_by(|a, b| {
-            a.updated_at
-                .cmp(&b.updated_at)
-                .then(a.created_at.cmp(&b.created_at))
-                .then(a.dispatch_id.cmp(&b.dispatch_id))
+            a.updated_at()
+                .cmp(&b.updated_at())
+                .then(a.created_at().cmp(&b.created_at()))
+                .then(a.dispatch_id().cmp(b.dispatch_id()))
         });
         Ok(terminal.into_iter().skip(offset).take(limit).collect())
     }
@@ -739,10 +716,11 @@ impl MailboxStore for InMemoryMailboxStore {
         let expired_ids: Vec<String> = dispatches
             .values()
             .filter(|j| {
-                j.status == RunDispatchStatus::Claimed && j.lease_until.is_some_and(|lu| lu < now)
+                j.status() == RunDispatchStatus::Claimed
+                    && j.lease_until().is_some_and(|lu| lu < now)
             })
             .take(limit)
-            .map(|j| j.dispatch_id.clone())
+            .map(|j| j.dispatch_id().to_string())
             .collect();
 
         let mut reclaimed = Vec::with_capacity(expired_ids.len());
@@ -751,12 +729,12 @@ impl MailboxStore for InMemoryMailboxStore {
             let dispatch = dispatches
                 .get_mut(&id)
                 .ok_or_else(|| StorageError::NotFound(id.clone()))?;
-            let current_epoch = Self::current_epoch_from_state(&state, &dispatch.thread_id);
-            if dispatch.dispatch_epoch < current_epoch {
-                dispatch.dispatch_epoch = current_epoch;
-                mailbox_state::mark_superseded(
+            let current_epoch = Self::current_epoch_from_state(&state, dispatch.thread_id());
+            if dispatch.dispatch_epoch() < current_epoch {
+                mailbox_state::mark_superseded_at_epoch(
                     dispatch,
                     now,
+                    current_epoch,
                     Some(mailbox_state::REASON_CLAIMED_LEASE_EXPIRED_AFTER_INTERRUPT),
                 );
                 continue;
@@ -771,15 +749,17 @@ impl MailboxStore for InMemoryMailboxStore {
     async fn purge_terminal(&self, older_than: u64) -> Result<usize, StorageError> {
         let mut dispatches = self.dispatches.write().await;
         let before = dispatches.len();
-        dispatches.retain(|_, j| !(j.status.is_terminal() && j.updated_at < older_than));
+        dispatches.retain(|_, j| !(j.status().is_terminal() && j.updated_at() < older_than));
         // Drop per-thread dispatch-epoch state for threads that no longer have
         // any dispatch. Without this the `state` map grows unbounded across
         // every thread id ever seen. A later enqueue recreates the entry at a
         // fresh epoch, which is correct because no dispatch survives to be
         // superseded. Lock order matches the rest of the store (dispatches then
         // state) to avoid deadlock.
-        let live_threads: std::collections::HashSet<&str> =
-            dispatches.values().map(|j| j.thread_id.as_str()).collect();
+        let live_threads: std::collections::HashSet<&str> = dispatches
+            .values()
+            .map(|j| j.thread_id().as_str())
+            .collect();
         let mut state = self.state.write().await;
         state.retain(|thread_id, _| live_threads.contains(thread_id.as_str()));
         Ok(before - dispatches.len())
@@ -789,8 +769,8 @@ impl MailboxStore for InMemoryMailboxStore {
         let dispatches = self.dispatches.read().await;
         let mut ids: Vec<String> = dispatches
             .values()
-            .filter(|j| j.status == RunDispatchStatus::Queued)
-            .map(|j| j.thread_id.clone())
+            .filter(|j| j.status() == RunDispatchStatus::Queued)
+            .map(|j| j.thread_id().to_string())
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();

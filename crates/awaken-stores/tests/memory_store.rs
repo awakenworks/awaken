@@ -332,6 +332,7 @@ async fn list_runs_filter_by_status() {
     let store = InMemoryStore::new();
     let mut done = make_run("r1", "t-1", 100);
     done.status = RunStatus::Done;
+    done.finished_at = Some(done.updated_at);
     store.create_run(&done).await.unwrap();
     store.create_run(&make_run("r2", "t-1", 200)).await.unwrap();
 
@@ -408,6 +409,7 @@ async fn run_record_with_termination_reason() {
     let store = InMemoryStore::new();
     let mut run = make_run("r1", "t-1", 100);
     run.status = RunStatus::Done;
+    run.finished_at = Some(run.updated_at);
     run.termination_reason = Some(TerminationReason::NaturalEnd);
     store.create_run(&run).await.unwrap();
 
@@ -822,12 +824,14 @@ async fn list_runs_combined_filter_thread_and_status() {
 
     let mut done = make_run("r1", "t-1", 100);
     done.status = RunStatus::Done;
+    done.finished_at = Some(done.updated_at);
     store.create_run(&done).await.unwrap();
 
     store.create_run(&make_run("r2", "t-1", 200)).await.unwrap();
 
     let mut done_other = make_run("r3", "t-2", 300);
     done_other.status = RunStatus::Done;
+    done_other.finished_at = Some(done_other.updated_at);
     store.create_run(&done_other).await.unwrap();
 
     let page = store
@@ -907,6 +911,7 @@ async fn full_agent_run_via_checkpoint() {
     // 4. Final assistant message
     let mut final_run = make_run("run-1", "t-1", 300);
     final_run.status = RunStatus::Done;
+    final_run.finished_at = Some(final_run.updated_at);
     final_run.termination_reason = Some(TerminationReason::NaturalEnd);
     final_run.steps = 2;
     final_run.input_tokens = 100;
