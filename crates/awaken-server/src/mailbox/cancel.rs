@@ -49,7 +49,7 @@ impl Mailbox {
         }
 
         if let Some(dispatch) = self.store.load_dispatch(id).await?
-            && dispatch.status == RunDispatchStatus::Claimed
+            && dispatch.status() == RunDispatchStatus::Claimed
         {
             return self
                 .deliver_live_cancel(&live_target_for_dispatch(&dispatch))
@@ -126,14 +126,14 @@ impl Mailbox {
         if wait_for_release {
             if self.executor.cancel_and_wait_by_thread(thread_id).await {
                 if self
-                    .wait_for_dispatch_not_claimed(&active_dispatch.dispatch_id)
+                    .wait_for_dispatch_not_claimed(&active_dispatch.dispatch_id())
                     .await?
                 {
                     return Ok(true);
                 }
                 tracing::warn!(
                     thread_id,
-                    dispatch_id = %active_dispatch.dispatch_id,
+                    dispatch_id = %active_dispatch.dispatch_id(),
                     "local cancel completed but active dispatch did not release before foreground submit"
                 );
                 self.record_mailbox_timeout(
@@ -157,12 +157,12 @@ impl Mailbox {
 
         if wait_for_release
             && !self
-                .wait_for_dispatch_not_claimed(&active_dispatch.dispatch_id)
+                .wait_for_dispatch_not_claimed(&active_dispatch.dispatch_id())
                 .await?
         {
             tracing::warn!(
                 thread_id,
-                dispatch_id = %active_dispatch.dispatch_id,
+                dispatch_id = %active_dispatch.dispatch_id(),
                 "remote cancel delivered but active dispatch did not release before foreground submit"
             );
             self.record_mailbox_timeout(
@@ -226,9 +226,9 @@ impl Mailbox {
         }
         if let Err(error) = result {
             tracing::warn!(
-                dispatch_id = %dispatch.dispatch_id,
-                run_id = %dispatch.run_id,
-                thread_id = %dispatch.thread_id,
+                dispatch_id = %dispatch.dispatch_id(),
+                run_id = %dispatch.run_id(),
+                thread_id = %dispatch.thread_id(),
                 reason,
                 error = %error,
                 "failed to mark terminal mailbox run as cancelled"
@@ -241,10 +241,10 @@ impl Mailbox {
         dispatch: &RunDispatch,
         _reason: &str,
     ) -> Result<bool, MailboxError> {
-        let Some(mut run) = self.run_store.load_run(&dispatch.run_id).await? else {
+        let Some(mut run) = self.run_store.load_run(&dispatch.run_id()).await? else {
             return Ok(false);
         };
-        if run.thread_id != dispatch.thread_id || run.status == RunStatus::Done {
+        if run.thread_id != *dispatch.thread_id() || run.status == RunStatus::Done {
             return Ok(false);
         }
 
@@ -252,8 +252,8 @@ impl Mailbox {
         run.status = RunStatus::Done;
         run.termination_reason = Some(TerminationReason::Cancelled);
         run.error_payload = None;
-        run.dispatch_id = Some(dispatch.dispatch_id.clone());
-        run.session_id = dispatch.dispatch_instance_id.clone();
+        run.dispatch_id = Some(dispatch.dispatch_id().clone());
+        run.session_id = dispatch.dispatch_instance_id().map(str::to_string);
         run.waiting = None;
         run.finished_at = Some(now);
         run.updated_at = now;
@@ -274,9 +274,9 @@ impl Mailbox {
         }
         if let Err(error) = result {
             tracing::warn!(
-                dispatch_id = %dispatch.dispatch_id,
-                run_id = %dispatch.run_id,
-                thread_id = %dispatch.thread_id,
+                dispatch_id = %dispatch.dispatch_id(),
+                run_id = %dispatch.run_id(),
+                thread_id = %dispatch.thread_id(),
                 error = %error,
                 "failed to mark dead-lettered mailbox run as errored"
             );
@@ -284,7 +284,7 @@ impl Mailbox {
     }
 
     pub(super) async fn reconcile_terminal_dispatch(&self, dispatch: &RunDispatch) {
-        match dispatch.status {
+        match dispatch.status() {
             RunDispatchStatus::DeadLetter => {
                 self.mark_dead_letter_dispatch_run_error(dispatch).await;
             }
@@ -352,24 +352,24 @@ impl Mailbox {
         &self,
         dispatch: &RunDispatch,
     ) -> Result<bool, MailboxError> {
-        let Some(mut run) = self.run_store.load_run(&dispatch.run_id).await? else {
+        let Some(mut run) = self.run_store.load_run(&dispatch.run_id()).await? else {
             return Ok(false);
         };
-        if run.thread_id != dispatch.thread_id || run.status == RunStatus::Done {
+        if run.thread_id != *dispatch.thread_id() || run.status == RunStatus::Done {
             return Ok(false);
         }
 
         let reason = dispatch
-            .run_error
-            .clone()
-            .or_else(|| dispatch.last_error.clone())
+            .run_error()
+            .map(str::to_string)
+            .or_else(|| dispatch.last_error().map(str::to_string))
             .unwrap_or_else(|| "mailbox dispatch dead-lettered".to_string());
         let now = now_ms() / 1000;
         run.status = RunStatus::Done;
         run.termination_reason = Some(TerminationReason::Error(reason.clone()));
         run.error_payload = Some(serde_json::json!({ "message": reason }));
-        run.dispatch_id = Some(dispatch.dispatch_id.clone());
-        run.session_id = dispatch.dispatch_instance_id.clone();
+        run.dispatch_id = Some(dispatch.dispatch_id().clone());
+        run.session_id = dispatch.dispatch_instance_id().map(str::to_string);
         run.waiting = None;
         run.finished_at = Some(now);
         run.updated_at = now;
@@ -388,22 +388,22 @@ impl Mailbox {
         for _ in 0..MAX_APPEND_ATTEMPTS {
             let messages = self
                 .run_store
-                .load_committed_messages(&dispatch.thread_id)
+                .load_committed_messages(&dispatch.thread_id())
                 .await?
                 .unwrap_or_default();
             let expected_version = messages.len() as u64;
             if self
-                .commit_run_append(&dispatch.thread_id, &[], Some(expected_version), run)
+                .commit_run_append(&dispatch.thread_id(), &[], Some(expected_version), run)
                 .await?
             {
-                self.refresh_worker_checkpoint_cache(&dispatch.thread_id, &messages, run)
+                self.refresh_worker_checkpoint_cache(&dispatch.thread_id(), &messages, run)
                     .await;
                 return Ok(());
             }
         }
         Err(MailboxError::Internal(format!(
             "terminal dispatch run checkpoint exhausted {MAX_APPEND_ATTEMPTS} retries under version conflict for thread '{}'",
-            dispatch.thread_id
+            dispatch.thread_id()
         )))
     }
 }

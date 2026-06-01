@@ -34,7 +34,7 @@ impl Mailbox {
         }
 
         if let Some(dispatch) = self.store.load_dispatch(id).await?
-            && dispatch.status == RunDispatchStatus::Claimed
+            && dispatch.status() == RunDispatchStatus::Claimed
         {
             let delivered = self
                 .deliver_live_decision(

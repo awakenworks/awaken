@@ -187,17 +187,22 @@ impl Mailbox {
         }
     }
 
-    pub(super) async fn reusable_waiting_run_id(&self, thread_id: &str) -> Option<String> {
-        if let Some(thread) = self.run_store.load_thread(thread_id).await.ok().flatten()
+    pub(super) async fn reusable_waiting_run_id(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<String>, MailboxError> {
+        if let Some(thread) = self.run_store.load_thread(thread_id).await?
             && let Some(open_run_id) = thread.open_run_id.as_deref()
-            && let Some(run) = self.run_store.load_run(open_run_id).await.ok().flatten()
+            && let Some(run) = self.run_store.load_run(open_run_id).await?
             && run.thread_id == thread_id
             && run.is_resumable_waiting()
         {
-            return Some(run.run_id);
+            return Ok(Some(run.run_id));
         }
-        let run = self.run_store.latest_run(thread_id).await.ok().flatten()?;
-        run.is_resumable_waiting().then_some(run.run_id)
+        let Some(run) = self.run_store.latest_run(thread_id).await? else {
+            return Ok(None);
+        };
+        Ok(run.is_resumable_waiting().then_some(run.run_id))
     }
 
     // ── Query ────────────────────────────────────────────────────────

@@ -360,30 +360,13 @@ impl Mailbox {
                 continue;
             }
             let now = now_ms();
-            let dispatch = RunDispatch {
-                dispatch_id: dispatch_id.clone(),
-                thread_id: run.thread_id.clone(),
-                run_id: run.run_id.clone(),
-                priority: 128,
-                dedupe_key: None,
-                dispatch_epoch: 0,
-                status: RunDispatchStatus::Queued,
-                available_at: now,
-                attempt_count: 0,
-                max_attempts: self.config.default_max_attempts,
-                last_error: None,
-                claim_token: None,
-                claimed_by: None,
-                lease_until: None,
-                dispatch_instance_id: None,
-                run_status: None,
-                termination: None,
-                run_response: None,
-                run_error: None,
-                completed_at: None,
-                created_at: now,
-                updated_at: now,
-            };
+            let dispatch = RunDispatch::queued(
+                dispatch_id.clone(),
+                run.thread_id.clone(),
+                run.run_id.clone(),
+                now,
+            )
+            .with_max_attempts(self.config.default_max_attempts);
             if let Err(error) = self.store.enqueue(&dispatch).await {
                 match error {
                     StorageError::AlreadyExists(id) if id == dispatch_id => {
@@ -532,8 +515,8 @@ impl Mailbox {
                         self.record_run_rescheduled_dispatch(&dispatch, "expired_lease_reclaimed")
                             .await;
                         self.reconcile_terminal_dispatch(&dispatch).await;
-                        if dispatch.status == RunDispatchStatus::Queued {
-                            let thread_id = dispatch.thread_id.clone();
+                        if dispatch.status() == RunDispatchStatus::Queued {
+                            let thread_id = dispatch.thread_id().clone();
                             self.get_or_create_worker(&thread_id).await;
                             self.try_dispatch_next(&thread_id).await;
                         }

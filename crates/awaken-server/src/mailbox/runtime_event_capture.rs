@@ -38,6 +38,12 @@ impl Mailbox {
                 "runtime event capture requires an executor with CommitCoordinator".to_string(),
             ));
         }
+        if self.staged_coordinator.is_none() {
+            return Err(MailboxError::Validation(
+                "runtime event capture requires an executor with StagedCommitCoordinator"
+                    .to_string(),
+            ));
+        }
         AgentEventNormalizationContext::new("validation-thread", "validation-run", &origin)
             .map_err(|error| MailboxError::Validation(error.to_string()))?;
         self.runtime_event_capture = Some(RuntimeEventCaptureConfig { mode, origin });
@@ -122,8 +128,8 @@ impl Mailbox {
     ) -> Arc<dyn EventSink> {
         self.wrap_reconnectable_runtime_event_sink(
             inner,
-            &dispatch.thread_id,
-            &dispatch.run_id,
+            &dispatch.thread_id(),
+            &dispatch.run_id(),
             correlation_id,
             resumed,
             event_buffer,

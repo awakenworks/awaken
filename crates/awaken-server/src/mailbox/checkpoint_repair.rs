@@ -67,7 +67,16 @@ impl Mailbox {
         };
         for task in tasks {
             let messages = match self.run_store.load_messages(&task.thread_id).await {
-                Ok(messages) => messages.unwrap_or_default(),
+                Ok(Some(messages)) => messages,
+                Ok(None) => {
+                    tracing::warn!(
+                        thread_id = %task.thread_id,
+                        run_id = %task.run_id,
+                        "checkpoint repair retry found no committed messages; re-queued"
+                    );
+                    self.enqueue_checkpoint_repair(task);
+                    continue;
+                }
                 Err(error) => {
                     tracing::warn!(
                         thread_id = %task.thread_id,

@@ -13,9 +13,11 @@ use awaken_runtime::ThreadContextSnapshot;
 use awaken_runtime::{EventBuffer, ResolutionPolicy, RuntimeError};
 use awaken_server_contract::contract::event::AgentEvent;
 use awaken_server_contract::contract::event_sink::EventSink;
+use awaken_server_contract::contract::lifecycle::RunStatus;
 use awaken_server_contract::contract::mailbox::{
     RunDispatch, RunDispatchResult, RunDispatchStatus,
 };
+use awaken_server_contract::contract::storage::StorageError;
 use awaken_server_contract::now_ms;
 
 use crate::transport::channel_sink::ReconnectableEventSink;
@@ -38,7 +40,7 @@ pub(super) async fn run_claimed_dispatch(
     thread_id: String,
     suspended: Arc<AtomicBool>,
 ) {
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     crate::metrics::inc_active_runs();
     let _guard = ActiveRunGuard;
     // Dispatch epoch check: if this dispatch was superseded between claim and
@@ -63,11 +65,11 @@ pub(super) async fn run_claimed_dispatch(
             return;
         }
     };
-    if current_dispatch.status != RunDispatchStatus::Claimed
-        || current_dispatch.claim_token.as_deref() != Some(claim_token.as_str())
+    if current_dispatch.status() != RunDispatchStatus::Claimed
+        || current_dispatch.claim_token().as_deref() != Some(claim_token.as_str())
     {
-        tracing::info!(dispatch_id, status = ?current_dispatch.status, "dispatch no longer owned by this worker, skipping execution");
-        if current_dispatch.status == RunDispatchStatus::Superseded {
+        tracing::info!(dispatch_id, status = ?current_dispatch.status(), "dispatch no longer owned by this worker, skipping execution");
+        if current_dispatch.status() == RunDispatchStatus::Superseded {
             this.mark_superseded_dispatch_run_cancelled(
                 &current_dispatch,
                 "dispatch superseded before execution start",
@@ -85,11 +87,11 @@ pub(super) async fn run_claimed_dispatch(
         epoch_start,
     );
     match current_epoch_result {
-        Ok(current_epoch) if current_dispatch.dispatch_epoch < current_epoch => {
+        Ok(current_epoch) if current_dispatch.dispatch_epoch() < current_epoch => {
             tracing::info!(
                 dispatch_id,
                 thread_id,
-                dispatch_epoch = current_dispatch.dispatch_epoch,
+                dispatch_epoch = current_dispatch.dispatch_epoch(),
                 current_epoch,
                 "dispatch superseded before execution start"
             );
@@ -136,7 +138,7 @@ pub(super) async fn run_claimed_dispatch(
             );
             let msg = error.to_string();
             let run_result = RunDispatchResult {
-                run_id: dispatch.run_id.clone(),
+                run_id: dispatch.run_id().clone(),
                 dispatch_instance_id: dispatch_instance_id.clone(),
                 status: awaken_server_contract::contract::lifecycle::RunStatus::Done,
                 termination: Some(
@@ -160,7 +162,7 @@ pub(super) async fn run_claimed_dispatch(
             if let Err(error) = record_result {
                 tracing::warn!(dispatch_id, error = %error, "failed to record dispatch start for reconstruction failure");
                 if let Ok(Some(latest_dispatch)) = this.store.load_dispatch(&dispatch_id).await
-                    && latest_dispatch.status == RunDispatchStatus::Superseded
+                    && latest_dispatch.status() == RunDispatchStatus::Superseded
                 {
                     this.mark_superseded_dispatch_run_cancelled(
                         &latest_dispatch,
@@ -194,7 +196,7 @@ pub(super) async fn run_claimed_dispatch(
             if dead_letter_result.is_ok() {
                 this.refresh_dispatch_depth_metrics().await;
                 if let Ok(Some(dead_letter_dispatch)) = this.store.load_dispatch(&dispatch_id).await
-                    && dead_letter_dispatch.status == RunDispatchStatus::DeadLetter
+                    && dead_letter_dispatch.status() == RunDispatchStatus::DeadLetter
                 {
                     this.mark_dead_letter_dispatch_run_error(&dead_letter_dispatch)
                         .await;
@@ -211,9 +213,10 @@ pub(super) async fn run_claimed_dispatch(
     // checkpoint commit). The runtime itself never sees the buffer. Capture
     // requires a staged coordinator (one that can append canonical events
     // atomically with the checkpoint); `with_runtime_event_capture` validated
-    // a commit coordinator is present, and the staged variant is the one that
-    // does the atomic event write.
-    let event_buffer = (this.runtime_event_capture.is_some() && this.staged_coordinator.is_some())
+    // the staged coordinator is present before capture can be enabled.
+    let event_buffer = this
+        .runtime_event_capture
+        .is_some()
         .then(|| Arc::new(EventBuffer::new()));
     let sink = Arc::new(SuspensionAwareSink {
         inner: this.wrap_dispatch_runtime_event_sink(
@@ -226,13 +229,41 @@ pub(super) async fn run_claimed_dispatch(
         suspended,
     });
     normalize_mailbox_run_mode(&mut request, false);
-    let run_id = dispatch.run_id.clone();
+    let run_id = dispatch.run_id().clone();
     request = request
         .with_dispatch_id(dispatch_id.clone())
         .with_session_id(dispatch_instance_id.clone());
-    if let Some(buffer) = event_buffer
-        && let Some(staged) = this.staged_coordinator.as_ref()
-    {
+    if let Some(buffer) = event_buffer {
+        let Some(staged) = this.staged_coordinator.as_ref() else {
+            let msg = "runtime event capture requires staged commit coordinator";
+            tracing::error!(
+                dispatch_id,
+                run_id,
+                "mailbox runtime event capture misconfigured"
+            );
+            let now = now_ms();
+            let dead_letter_start = Instant::now();
+            let dead_letter_result = this
+                .store
+                .dead_letter(&dispatch_id, &claim_token, msg, now)
+                .await;
+            record_mailbox_operation_result(
+                "dead_letter",
+                result_label(&dead_letter_result),
+                dead_letter_start,
+            );
+            if dead_letter_result.is_ok() {
+                this.refresh_dispatch_depth_metrics().await;
+                if let Ok(Some(dead_letter_dispatch)) = this.store.load_dispatch(&dispatch_id).await
+                    && dead_letter_dispatch.status() == RunDispatchStatus::DeadLetter
+                {
+                    this.mark_dead_letter_dispatch_run_error(&dead_letter_dispatch)
+                        .await;
+                }
+            }
+            this.finish_execution(&thread_id, &dispatch_id).await;
+            return;
+        };
         // Fold staged canonical drafts into the run's checkpoint commits via a
         // per-run coordinator wrapping the mailbox's durable staged coordinator.
         let staging =
@@ -252,7 +283,7 @@ pub(super) async fn run_claimed_dispatch(
     if let Err(e) = record_start_result {
         tracing::warn!(dispatch_id, run_id, error = %e, "failed to record mailbox dispatch start; skipping execution");
         if let Ok(Some(latest_dispatch)) = this.store.load_dispatch(&dispatch_id).await
-            && latest_dispatch.status == RunDispatchStatus::Superseded
+            && latest_dispatch.status() == RunDispatchStatus::Superseded
         {
             this.mark_superseded_dispatch_run_cancelled(
                 &latest_dispatch,
@@ -282,7 +313,7 @@ pub(super) async fn run_claimed_dispatch(
     let (inbox_sender, inbox_receiver) =
         awaken_runtime::inbox::inbox_channel_with_fallback(Arc::new(TaskDoneMailboxNotify::new(
             this.clone(),
-            dispatch.thread_id.clone(),
+            dispatch.thread_id().clone(),
             continue_run_id,
         )));
     request = request.with_inbox(inbox_sender, inbox_receiver);
@@ -308,10 +339,13 @@ pub(super) async fn run_claimed_dispatch(
             // RegistrySet so the run loop resolves against it (e.g. an unsaved
             // sandbox draft) instead of falling back to the live registry. The
             // runtime stays pin-agnostic — it only receives a RegistrySet.
-            let resolved = match this.materialize_pinned_registry_set(&resolution_id).await {
-                Ok(Some(set)) => {
-                    request = request.with_pinned_registry_set(set);
-                    this.executor
+            match this.materialize_pinned_registry_set(&resolution_id).await {
+                Ok(pinned_set) => {
+                    if let Some(set) = pinned_set {
+                        request = request.with_pinned_registry_set(set);
+                    }
+                    match this
+                        .executor
                         .resolve_activation_in_scope(
                             &request,
                             ResolutionPolicy::PersistentServer,
@@ -319,30 +353,32 @@ pub(super) async fn run_claimed_dispatch(
                         )
                         .await
                         .and_then(|plan| plan.into_replayable())
-                }
-                Ok(None) => this
-                    .executor
-                    .resolve_activation_in_scope(
-                        &request,
-                        ResolutionPolicy::PersistentServer,
-                        RegistryResolutionScope::Pinned(resolution_id),
-                    )
-                    .await
-                    .and_then(|plan| plan.into_replayable()),
-                Err(error) => Err(awaken_runtime::ResolveError::Runtime(error.to_string())),
-            };
-            match resolved {
-                Ok(plan) => {
-                    if let Some(handler) = this.pending_boundary_handler(
-                        &request,
-                        &run_id,
-                        plan.artifact.resolution_id.as_str(),
-                    ) {
-                        request = request.with_pending_boundary_handler(handler);
+                    {
+                        Ok(plan) => {
+                            if let Some(handler) = this.pending_boundary_handler(
+                                &request,
+                                &run_id,
+                                plan.artifact.resolution_id.as_str(),
+                            ) {
+                                request = request.with_pending_boundary_handler(handler);
+                            }
+                            this.executor
+                                .run_replayable_with_thread_context(
+                                    request,
+                                    plan,
+                                    sink.clone(),
+                                    thread_ctx,
+                                )
+                                .await
+                        }
+                        Err(error) => {
+                            Err(awaken_runtime::loop_runner::AgentLoopError::RuntimeError(
+                                RuntimeError::ResolveFailed {
+                                    message: error.to_string(),
+                                },
+                            ))
+                        }
                     }
-                    this.executor
-                        .run_replayable_with_thread_context(request, plan, sink.clone(), thread_ctx)
-                        .await
                 }
                 Err(error) => Err(awaken_runtime::loop_runner::AgentLoopError::RuntimeError(
                     RuntimeError::ResolveFailed {
@@ -362,12 +398,13 @@ pub(super) async fn run_claimed_dispatch(
         .store
         .record_run_result(&dispatch_id, &claim_token, &run_result, now)
         .await;
+    let run_result_recorded = record_run_result.is_ok();
     record_mailbox_operation_result(
         "record_run_result",
         result_label(&record_run_result),
         record_result_start,
     );
-    if let Err(e) = record_run_result {
+    if let Err(e) = &record_run_result {
         tracing::warn!(dispatch_id, run_id, error = %e, "failed to record mailbox run result");
     }
     let outcome = classify_error(&result);
@@ -379,6 +416,27 @@ pub(super) async fn run_claimed_dispatch(
             record_mailbox_operation_result("ack", result_label(&ack_result), ack_start);
             if let Err(e) = ack_result {
                 tracing::warn!(dispatch_id, error = %e, "ack failed");
+                if run_result_recorded {
+                    let recovery_start = Instant::now();
+                    let recovery_result = recover_completed_ack_after_result_recorded(
+                        &this,
+                        &dispatch_id,
+                        &claim_token,
+                        now,
+                    )
+                    .await;
+                    record_mailbox_operation_result(
+                        "ack_recovery",
+                        result_label(&recovery_result),
+                        recovery_start,
+                    );
+                    match recovery_result {
+                        Ok(()) => this.refresh_dispatch_depth_metrics().await,
+                        Err(error) => {
+                            tracing::warn!(dispatch_id, error = %error, "ack recovery failed");
+                        }
+                    }
+                }
             } else {
                 this.refresh_dispatch_depth_metrics().await;
             }
@@ -388,7 +446,7 @@ pub(super) async fn run_claimed_dispatch(
             // Emit error event so the SSE stream terminates with a proper
             // RUN_ERROR instead of silently closing.
             sink.emit(AgentEvent::RunFinish {
-                thread_id: dispatch.thread_id.clone(),
+                thread_id: dispatch.thread_id().clone(),
                 run_id: run_id.clone(),
                 identity: Some(mailbox_run_identity(
                     &dispatch,
@@ -401,7 +459,7 @@ pub(super) async fn run_claimed_dispatch(
                 ),
             })
             .await;
-            let backoff_factor = 2u64.pow(dispatch.attempt_count.saturating_sub(1).min(6));
+            let backoff_factor = 2u64.pow(dispatch.attempt_count().saturating_sub(1).min(6));
             let retry_at = now
                 + (this.config.default_retry_delay_ms * backoff_factor)
                     .min(this.config.max_retry_delay_ms);
@@ -425,7 +483,7 @@ pub(super) async fn run_claimed_dispatch(
             // RUN_ERROR. The runtime did not reach the loop, so no
             // RunFinish was emitted — we must do it here.
             sink.emit(AgentEvent::RunFinish {
-                thread_id: dispatch.thread_id.clone(),
+                thread_id: dispatch.thread_id().clone(),
                 run_id: run_id.clone(),
                 identity: Some(mailbox_run_identity(
                     &dispatch,
@@ -454,7 +512,7 @@ pub(super) async fn run_claimed_dispatch(
             } else {
                 this.refresh_dispatch_depth_metrics().await;
                 if let Ok(Some(dead_letter_dispatch)) = this.store.load_dispatch(&dispatch_id).await
-                    && dead_letter_dispatch.status == RunDispatchStatus::DeadLetter
+                    && dead_letter_dispatch.status() == RunDispatchStatus::DeadLetter
                 {
                     this.mark_dead_letter_dispatch_run_error(&dead_letter_dispatch)
                         .await;
@@ -463,4 +521,36 @@ pub(super) async fn run_claimed_dispatch(
         }
     }
     this.finish_execution(&thread_id, &dispatch_id).await;
+}
+
+async fn recover_completed_ack_after_result_recorded(
+    this: &Mailbox,
+    dispatch_id: &str,
+    claim_token: &str,
+    now: u64,
+) -> Result<(), StorageError> {
+    let Some(dispatch) = this.store.load_dispatch(dispatch_id).await? else {
+        return Err(StorageError::NotFound(dispatch_id.to_string()));
+    };
+    match dispatch.status() {
+        RunDispatchStatus::Acked => return Ok(()),
+        RunDispatchStatus::Claimed => {}
+        status => {
+            return Err(StorageError::Validation(format!(
+                "cannot recover ack for dispatch '{dispatch_id}' in status {status:?}"
+            )));
+        }
+    }
+    if dispatch.claim_token() != Some(claim_token) {
+        return Err(StorageError::VersionConflict {
+            expected: 0,
+            actual: 1,
+        });
+    }
+    if dispatch.run_status() != Some(RunStatus::Done) {
+        return Err(StorageError::Validation(format!(
+            "cannot recover ack for dispatch '{dispatch_id}' without recorded Done result"
+        )));
+    }
+    this.store.ack(dispatch_id, claim_token, now).await
 }

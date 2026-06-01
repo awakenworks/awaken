@@ -12,7 +12,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
-use awaken_runtime::RunActivation;
+use awaken_runtime::{ResolveError, RunActivation};
 use awaken_server_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_server_contract::contract::event::AgentEvent;
 use awaken_server_contract::contract::event_sink::EventSink;
@@ -354,6 +354,11 @@ pub enum MailboxError {
     Validation(String),
     #[error("store error: {0}")]
     Store(#[from] StorageError),
+    #[error("resolution error while {context}: {source}")]
+    Resolution {
+        context: &'static str,
+        source: ResolveError,
+    },
     #[error("internal error: {0}")]
     Internal(String),
     /// A foreground submit cannot be consumed because a barrier pending entry
@@ -734,16 +739,16 @@ impl Mailbox {
         config: MailboxConfig,
     ) -> Self {
         Self::try_new(executor, store, run_store, consumer_id, config)
-            .expect("Mailbox requires a CommitCoordinator outside debug/test fallback")
+            .expect("Mailbox requires a CommitCoordinator outside unit-test fallback")
     }
 
     /// Fallible constructor for production wiring that must fail closed.
     ///
     /// ADR-0038 D7: the mailbox adopts `executor.commit_coordinator()` and
-    /// derives its `ThreadRunStore` from that coordinator. Debug/test builds
-    /// retain the legacy implicit run-store coordinator for embedded unit
-    /// callers; release builds return an error instead of silently taking a
-    /// partial durable path with no canonical events/outbox writes.
+    /// derives its `ThreadRunStore` from that coordinator. Unit tests retain
+    /// the legacy implicit run-store coordinator for small harnesses; every
+    /// non-test build returns an error instead of silently taking a partial
+    /// durable path with no canonical events/outbox writes.
     pub fn try_new(
         executor: impl IntoDispatchExecutor,
         store: Arc<dyn MailboxStore>,
@@ -755,20 +760,30 @@ impl Mailbox {
         let staged_coordinator = executor.staged_commit_coordinator();
         let coordinator = if let Some(coordinator) = executor.commit_coordinator() {
             coordinator
-        } else if cfg!(debug_assertions) {
+        } else if cfg!(test) {
             tracing::warn!(
-                "using dev/test MailboxRunStoreCoordinator fallback; production executors must \
+                "using unit-test MailboxRunStoreCoordinator fallback; non-test executors must \
                  provide a CommitCoordinator"
             );
             Arc::new(MailboxRunStoreCoordinator::new(Arc::clone(&run_store)))
                 as Arc<dyn CommitCoordinator>
         } else {
             return Err(MailboxError::Internal(
-                "Mailbox requires a CommitCoordinator in release builds; wire a durable \
+                "Mailbox requires a CommitCoordinator; wire a durable \
                  Memory/File/Pg coordinator through the runtime"
                     .to_string(),
             ));
         };
+        if let (Some(coordinator_identity), Some(run_store_identity)) = (
+            coordinator.thread_run_storage_identity(),
+            run_store.thread_run_storage_identity(),
+        ) && coordinator_identity != run_store_identity
+        {
+            return Err(MailboxError::Validation(format!(
+                "mailbox run_store must match executor CommitCoordinator thread/run store \
+                 (coordinator={coordinator_identity}, run_store={run_store_identity})"
+            )));
+        }
         Ok(Self {
             executor,
             store,
@@ -799,21 +814,27 @@ impl Mailbox {
     /// `RegistrySet` via `with_pinned_registry_set`.
     #[must_use]
     pub fn with_pinned_registry(
-        mut self,
+        self,
         store: Arc<dyn awaken_server_contract::VersionedRegistryStore>,
         scope: impl Into<String>,
     ) -> Self {
-        let scope = awaken_server_contract::ScopeId::new(scope.into())
-            .expect("pinned registry scope_id must be valid");
+        self.try_with_pinned_registry(store, scope)
+            .expect("pinned registry scope_id must be valid")
+    }
+
+    pub fn try_with_pinned_registry(
+        mut self,
+        store: Arc<dyn awaken_server_contract::VersionedRegistryStore>,
+        scope: impl Into<String>,
+    ) -> Result<Self, awaken_server_contract::ScopeError> {
+        let scope = awaken_server_contract::ScopeId::new(scope.into())?;
         self.pinned_registry = Some(PinnedRegistrySource { store, scope });
-        self
+        Ok(self)
     }
 
     /// Materialize the pinned `RegistrySet` for a run's resolution_id
     /// (publication snapshot_version), overlaying live runtime objects. Returns
-    /// `Ok(None)` only when no pinned-registry source is wired or the id is not
-    /// a snapshot_version; once a numeric snapshot id is recognized, failures
-    /// are terminal so replay/resume cannot silently drift to the live registry.
+    /// `Ok(None)` only when no pinned-registry source is wired.
     async fn materialize_pinned_registry_set(
         &self,
         resolution_id: &str,
@@ -821,29 +842,31 @@ impl Mailbox {
         let Some(source) = self.pinned_registry.as_ref() else {
             return Ok(None);
         };
-        let Ok(snapshot_version) = resolution_id.parse::<u64>() else {
-            return Ok(None);
-        };
-        let live = self.executor.live_registry_set().ok_or_else(|| {
+        let snapshot_version = resolution_id.parse::<u64>().map_err(|error| {
             MailboxError::Internal(format!(
-                "pinned registry snapshot {snapshot_version} cannot be materialized: live registry unavailable"
+                "invalid pinned registry resolution id '{resolution_id}': {error}"
             ))
+        })?;
+        let live = self.executor.live_registry_set().ok_or_else(|| {
+            MailboxError::Internal(
+                "pinned registry materialization requires a live registry snapshot".to_string(),
+            )
         })?;
         let materializer = crate::services::frozen_registry::FrozenAgentRegistryMaterializer::new(
             source.store.clone(),
         );
-        match materializer
+        let frozen = materializer
             .materialize(awaken_server_contract::VersionSelector::Publication {
                 scope_id: source.scope.as_str().to_string(),
                 snapshot_version,
             })
             .await
-        {
-            Ok(frozen) => Ok(Some(frozen.to_registry_set(&live))),
-            Err(error) => Err(MailboxError::Internal(format!(
-                "pinned registry snapshot {snapshot_version} cannot be materialized: {error}"
-            ))),
-        }
+            .map_err(|error| {
+                MailboxError::Internal(format!(
+                    "failed to materialize pinned registry publication {snapshot_version}: {error}"
+                ))
+            })?;
+        Ok(Some(frozen.to_registry_set(&live)))
     }
 
     /// Number of stripes for `lock_thread_append` (defined in `submit`).

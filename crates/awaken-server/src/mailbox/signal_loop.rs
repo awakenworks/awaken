@@ -72,7 +72,7 @@ impl Mailbox {
         let deadline = tokio::time::Instant::now() + Duration::from_millis(REMOTE_CANCEL_WAIT_MS);
         loop {
             match self.store.load_dispatch(dispatch_id).await? {
-                Some(dispatch) if dispatch.status == RunDispatchStatus::Claimed => {}
+                Some(dispatch) if dispatch.status() == RunDispatchStatus::Claimed => {}
                 _ => return Ok(true),
             }
             if tokio::time::Instant::now() >= deadline {
@@ -209,7 +209,7 @@ impl Mailbox {
         let Some(dispatch) = self.store.load_dispatch(&entry.dispatch_id).await? else {
             return Ok(false);
         };
-        Ok(dispatch.status == RunDispatchStatus::Queued && dispatch.available_at <= now)
+        Ok(dispatch.status() == RunDispatchStatus::Queued && dispatch.available_at() <= now)
     }
 
     // ── Internal: dispatch ───────────────────────────────────────────
@@ -247,8 +247,11 @@ impl Mailbox {
             return DispatchAttempt::NoEligible;
         };
 
-        let dispatch_id = dispatch.dispatch_id.clone();
-        let claim_token = dispatch.claim_token.clone().unwrap_or_default();
+        let dispatch_id = dispatch.dispatch_id().clone();
+        let claim_token = dispatch
+            .claim_token()
+            .map(str::to_string)
+            .unwrap_or_default();
 
         // Shared flag: set by the event sink when a tool call is suspended.
         let suspended = Arc::new(AtomicBool::new(false));
@@ -281,7 +284,7 @@ impl Mailbox {
             w.thread_ctx = thread_ctx;
             w.status = MailboxWorkerStatus::Running {
                 dispatch_id: dispatch_id.clone(),
-                run_id: dispatch.run_id.clone(),
+                run_id: dispatch.run_id().clone(),
                 lease_handle,
                 sink: Arc::clone(&reconnectable_sink),
             };
@@ -376,7 +379,7 @@ impl Mailbox {
     }
 
     /// Spawn the actual execution task for a claimed dispatch.
-    #[tracing::instrument(skip(self, reconnectable_sink, suspended), fields(dispatch_id = %dispatch.dispatch_id, thread_id = %thread_id))]
+    #[tracing::instrument(skip(self, reconnectable_sink, suspended), fields(dispatch_id = %dispatch.dispatch_id(), thread_id = %thread_id))]
     pub(super) fn spawn_execution(
         self: &Arc<Self>,
         dispatch: RunDispatch,

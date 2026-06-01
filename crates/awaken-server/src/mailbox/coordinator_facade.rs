@@ -5,9 +5,9 @@
 //!   the trait object the mailbox stores internally so `Mailbox::new`
 //!   accepts both shapes through one signature.
 //! - [`MailboxRunStoreCoordinator`] is the implicit coordinator the mailbox
-//!   builds when the supplied executor exposes none. It delegates straight
-//!   to `ThreadRunStore::checkpoint` and is intended for embedded/test
-//!   callers; production deployments wire a full coordinator
+//!   builds only in unit tests when the supplied executor exposes none. It
+//!   delegates straight to `ThreadRunStore::checkpoint`; non-test callers wire
+//!   a full coordinator
 //!   (`MemoryCommitCoordinator` / `FileCommitCoordinator` /
 //!   `PgCommitCoordinator`) through the runtime instead.
 
@@ -43,13 +43,12 @@ impl IntoDispatchExecutor for Arc<dyn RunDispatchExecutor> {
 }
 
 /// Minimal [`CommitCoordinator`] that delegates straight to
-/// [`ThreadRunStore::checkpoint`]. Used by `Mailbox::new` when the
-/// executor does not supply its own coordinator (embedded callers / unit
-/// tests where the runtime never carries persistence wiring). It does not
-/// publish canonical events or outbox drafts — only checkpoint commits —
-/// so it is **not** a replacement for `MemoryCommitCoordinator` /
-/// `FileCommitCoordinator` / `PgCommitCoordinator` in deployments that
-/// need full transactional event capture.
+/// [`ThreadRunStore::checkpoint`]. Used by `Mailbox::new` only in unit tests
+/// where the runtime never carries persistence wiring. It does not publish
+/// canonical events or outbox drafts — only checkpoint commits — so it is
+/// **not** a replacement for `MemoryCommitCoordinator` /
+/// `FileCommitCoordinator` / `PgCommitCoordinator` in deployments that need
+/// full transactional event capture.
 pub(super) struct MailboxRunStoreCoordinator {
     store: Arc<dyn ThreadRunStore>,
     scope: TransactionScopeId,

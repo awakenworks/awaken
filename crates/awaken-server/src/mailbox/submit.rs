@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use awaken_runtime::{RegistryResolutionScope, ResolutionPolicy, RunActivation};
 use awaken_server_contract::contract::event::AgentEvent;
 use awaken_server_contract::contract::lifecycle::RunStatus;
-use awaken_server_contract::contract::mailbox::{RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::mailbox::RunDispatch;
 use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::run::{RunInput, RunInputSnapshot, RunKind};
 use awaken_server_contract::contract::storage::{MessageSeqRange, RunRecord, RunRequestSnapshot};
@@ -130,14 +130,13 @@ impl Mailbox {
             .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
             .await?;
         let dispatch = self.build_dispatch(&request, &thread_id)?;
-        let dispatch_id = dispatch.dispatch_id.clone();
-        let thread_id = dispatch.thread_id.clone();
+        let dispatch_id = dispatch.dispatch_id().clone();
+        let thread_id = dispatch.thread_id().clone();
 
         // WAL: persist after the prepared checkpoint; startup recovery reconciles
         // the crash window. available_at is set slightly ahead so the sweep does not
         // grab the dispatch during the inline claim window (reclaimed after the guard).
-        let mut wal_dispatch = dispatch;
-        wal_dispatch.available_at = now_ms() + INLINE_CLAIM_GUARD_MS;
+        let wal_dispatch = dispatch.with_available_at(now_ms() + INLINE_CLAIM_GUARD_MS);
         self.enqueue_dispatch_for_request(&request, &wal_dispatch)
             .await?;
         self.record_mailbox_dispatch_event("RunQueued", &wal_dispatch)
@@ -162,7 +161,15 @@ impl Mailbox {
         let (event_tx, event_rx) = mpsc::channel(Self::EVENT_CHANNEL_CAPACITY);
 
         if let Some(claimed_dispatch) = claimed {
-            let claim_token = claimed_dispatch.claim_token.clone().unwrap_or_default();
+            let claim_token = claimed_dispatch
+                .claim_token()
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    MailboxError::Internal(format!(
+                        "claimed dispatch '{}' is missing claim token",
+                        claimed_dispatch.dispatch_id()
+                    ))
+                })?;
 
             // Shared flag: set by the event sink when a tool call is suspended.
             let suspended = Arc::new(AtomicBool::new(false));
@@ -270,8 +277,8 @@ impl Mailbox {
             .prepare_run_for_dispatch(&mut request, &thread_id, &messages)
             .await?;
         let dispatch = self.build_dispatch(&request, &thread_id)?;
-        let dispatch_id = dispatch.dispatch_id.clone();
-        let thread_id = dispatch.thread_id.clone();
+        let dispatch_id = dispatch.dispatch_id().clone();
+        let thread_id = dispatch.thread_id().clone();
 
         // WAL: persist with available_at = now; startup recovery reconstructs
         // the row if the process crashed after preparing the run checkpoint.
@@ -355,7 +362,7 @@ impl Mailbox {
         let _append_guard = lock_thread_append(&self.thread_append_locks, thread_id).await;
         if request.resume_run_id().is_none()
             && request.persistence.run_id_hint.is_none()
-            && let Some(waiting_run_id) = self.reusable_waiting_run_id(thread_id).await
+            && let Some(waiting_run_id) = self.reusable_waiting_run_id(thread_id).await?
         {
             request.intent.kind = RunKind::HitlResume {
                 run_id: waiting_run_id,
@@ -580,10 +587,9 @@ impl Mailbox {
             .await
             .and_then(|plan| plan.into_replayable())
             .map(|plan| plan.artifact.resolution_id)
-            .map_err(|error| {
-                MailboxError::Validation(format!(
-                    "persistent mailbox dispatch requires a replayable resolved run: {error}"
-                ))
+            .map_err(|source| MailboxError::Resolution {
+                context: "resolving persistent mailbox dispatch to a replayable run",
+                source,
             })
     }
 
@@ -599,34 +605,17 @@ impl Mailbox {
             .or_else(|| request.persistence.run_id_hint.clone())
             .ok_or_else(|| MailboxError::Internal("run_id missing after preparation".into()))?;
         let now = now_ms();
-        Ok(RunDispatch {
-            dispatch_id: request
+        Ok(RunDispatch::queued(
+            request
                 .persistence
                 .dispatch_id_hint
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
-            thread_id: thread_id.to_string(),
+            thread_id.to_string(),
             run_id,
-            priority: 128,
-            dedupe_key: None,
-            dispatch_epoch: 0,
-            status: RunDispatchStatus::Queued,
-            available_at: now,
-            attempt_count: 0,
-            max_attempts: self.config.default_max_attempts,
-            last_error: None,
-            claim_token: None,
-            claimed_by: None,
-            lease_until: None,
-            dispatch_instance_id: None,
-            run_status: None,
-            termination: None,
-            run_response: None,
-            run_error: None,
-            completed_at: None,
-            created_at: now,
-            updated_at: now,
-        })
+            now,
+        )
+        .with_max_attempts(self.config.default_max_attempts))
     }
 
     pub(super) async fn reconstruct_run_request(
@@ -636,31 +625,34 @@ impl Mailbox {
         let run = {
             let cached = {
                 let workers = self.workers.read().await;
-                workers.get(&dispatch.thread_id).and_then(|w| {
+                workers.get(dispatch.thread_id()).and_then(|w| {
                     let w = w.lock();
                     w.thread_ctx
                         .as_ref()
-                        .and_then(|ctx| ctx.get_run(&dispatch.run_id).cloned())
+                        .and_then(|ctx| ctx.get_run(&dispatch.run_id()).cloned())
                 })
             };
             if let Some(run) = cached {
                 run
             } else {
                 self.run_store
-                    .load_run(&dispatch.run_id)
+                    .load_run(&dispatch.run_id())
                     .await?
                     .ok_or_else(|| {
                         MailboxError::Validation(format!(
                             "run '{}' not found for dispatch '{}'",
-                            dispatch.run_id, dispatch.dispatch_id
+                            dispatch.run_id(),
+                            dispatch.dispatch_id()
                         ))
                     })?
             }
         };
-        if run.thread_id != dispatch.thread_id {
+        if run.thread_id != *dispatch.thread_id() {
             return Err(MailboxError::Validation(format!(
                 "run '{}' belongs to thread '{}', not dispatch thread '{}'",
-                run.run_id, run.thread_id, dispatch.thread_id
+                run.run_id,
+                run.thread_id,
+                dispatch.thread_id()
             )));
         }
         if let Some(snapshot) = run.activation.clone() {
@@ -734,7 +726,7 @@ impl Mailbox {
         } else {
             request.with_run_id_hint(run.run_id.clone())
         };
-        Ok(request.with_trace_dispatch_id(dispatch.dispatch_id.clone()))
+        Ok(request.with_trace_dispatch_id(dispatch.dispatch_id().clone()))
     }
 
     async fn activation_messages_for_snapshot(

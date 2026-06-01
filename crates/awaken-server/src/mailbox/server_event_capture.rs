@@ -57,8 +57,8 @@ impl Mailbox {
         };
         let origin = self.server_event_origin.clone();
         let payload = match serde_json::to_value(AgentEvent::RunFinish {
-            thread_id: dispatch.thread_id.clone(),
-            run_id: dispatch.run_id.clone(),
+            thread_id: dispatch.thread_id().clone(),
+            run_id: dispatch.run_id().clone(),
             identity: None,
             result: None,
             termination: awaken_server_contract::contract::lifecycle::TerminationReason::Error(
@@ -67,14 +67,14 @@ impl Mailbox {
         }) {
             Ok(payload) => payload,
             Err(error) => {
-                tracing::error!(error = %error, dispatch_id = %dispatch.dispatch_id, "invalid run errored event payload");
+                tracing::error!(error = %error, dispatch_id = %dispatch.dispatch_id(), "invalid run errored event payload");
                 return;
             }
         };
         let mut draft = match CanonicalEventDraft::new(
             vec![
-                EventScope::thread(dispatch.thread_id.clone()),
-                EventScope::run(dispatch.run_id.clone()),
+                EventScope::thread(dispatch.thread_id().clone()),
+                EventScope::run(dispatch.run_id().clone()),
             ],
             match CanonicalEventKind::new("RunErrored") {
                 Ok(kind) => kind,
@@ -88,22 +88,23 @@ impl Mailbox {
         ) {
             Ok(draft) => draft,
             Err(error) => {
-                tracing::error!(error = %error, dispatch_id = %dispatch.dispatch_id, "invalid run errored event draft");
+                tracing::error!(error = %error, dispatch_id = %dispatch.dispatch_id(), "invalid run errored event draft");
                 return;
             }
         };
         draft.visibility = EventVisibility::Public;
-        draft.correlation_id = Some(dispatch.dispatch_id.clone());
+        draft.correlation_id = Some(dispatch.dispatch_id().clone());
         let options = AppendOptions {
             writer_id: Some("mailbox".to_string()),
             idempotency_key: Some(format!(
                 "RunErrored/{}/{}",
-                dispatch.dispatch_id, dispatch.attempt_count
+                dispatch.dispatch_id(),
+                dispatch.attempt_count()
             )),
             expected_prior_cursors: Default::default(),
         };
         if let Err(error) = publisher.publish(draft, options).await {
-            tracing::error!(error = %error, dispatch_id = %dispatch.dispatch_id, "failed to record run errored event");
+            tracing::error!(error = %error, dispatch_id = %dispatch.dispatch_id(), "failed to record run errored event");
         }
     }
 
@@ -131,20 +132,20 @@ impl Mailbox {
             })
             .collect::<Vec<_>>();
         let payload = json!({
-            "thread_id": dispatch.thread_id,
-            "run_id": dispatch.run_id,
-            "dispatch_id": dispatch.dispatch_id,
-            "dispatch_epoch": dispatch.dispatch_epoch,
-            "attempt_count": dispatch.attempt_count,
-            "status": dispatch_status_label(dispatch.status),
+            "thread_id": dispatch.thread_id(),
+            "run_id": dispatch.run_id(),
+            "dispatch_id": dispatch.dispatch_id(),
+            "dispatch_epoch": dispatch.dispatch_epoch(),
+            "attempt_count": dispatch.attempt_count(),
+            "status": dispatch_status_label(dispatch.status()),
             "reason": reason,
             "error": error.to_string(),
             "decisions": decisions,
         });
         let mut draft = match CanonicalEventDraft::new(
             vec![
-                EventScope::thread(dispatch.thread_id.clone()),
-                EventScope::run(dispatch.run_id.clone()),
+                EventScope::thread(dispatch.thread_id().clone()),
+                EventScope::run(dispatch.run_id().clone()),
             ],
             match CanonicalEventKind::new("MailboxResumeFailed") {
                 Ok(kind) => kind,
@@ -158,22 +159,23 @@ impl Mailbox {
         ) {
             Ok(draft) => draft,
             Err(error) => {
-                tracing::error!(error = %error, dispatch_id = %dispatch.dispatch_id, "invalid mailbox resume failed event draft");
+                tracing::error!(error = %error, dispatch_id = %dispatch.dispatch_id(), "invalid mailbox resume failed event draft");
                 return;
             }
         };
         draft.visibility = EventVisibility::Public;
-        draft.correlation_id = Some(dispatch.dispatch_id.clone());
+        draft.correlation_id = Some(dispatch.dispatch_id().clone());
         let options = AppendOptions {
             writer_id: Some("mailbox".to_string()),
             idempotency_key: Some(format!(
                 "MailboxResumeFailed/{}/{}",
-                dispatch.dispatch_id, dispatch.attempt_count
+                dispatch.dispatch_id(),
+                dispatch.attempt_count()
             )),
             expected_prior_cursors: Default::default(),
         };
         if let Err(error) = publisher.publish(draft, options).await {
-            tracing::error!(error = %error, dispatch_id = %dispatch.dispatch_id, "failed to record mailbox resume failed event");
+            tracing::error!(error = %error, dispatch_id = %dispatch.dispatch_id(), "failed to record mailbox resume failed event");
         }
     }
 
@@ -182,7 +184,7 @@ impl Mailbox {
         dispatch: &RunDispatch,
         reason: &'static str,
     ) {
-        if dispatch.status == RunDispatchStatus::Queued {
+        if dispatch.status() == RunDispatchStatus::Queued {
             self.record_mailbox_dispatch_event_inner(
                 "RunRescheduled",
                 dispatch,
@@ -224,15 +226,15 @@ impl Mailbox {
         };
         let origin = self.server_event_origin.clone();
         let mut payload = json!({
-            "thread_id": dispatch.thread_id,
-            "run_id": dispatch.run_id,
-            "dispatch_id": dispatch.dispatch_id,
-            "dispatch_epoch": dispatch.dispatch_epoch,
-            "attempt_count": dispatch.attempt_count,
-            "status": dispatch_status_label(dispatch.status),
-            "available_at": dispatch.available_at,
-            "created_at": dispatch.created_at,
-            "updated_at": dispatch.updated_at,
+            "thread_id": dispatch.thread_id(),
+            "run_id": dispatch.run_id(),
+            "dispatch_id": dispatch.dispatch_id(),
+            "dispatch_epoch": dispatch.dispatch_epoch(),
+            "attempt_count": dispatch.attempt_count(),
+            "status": dispatch_status_label(dispatch.status()),
+            "available_at": dispatch.available_at(),
+            "created_at": dispatch.created_at(),
+            "updated_at": dispatch.updated_at(),
         });
         if let Some(reason) = reason
             && let Some(payload) = payload.as_object_mut()
@@ -251,8 +253,8 @@ impl Mailbox {
         }
         let mut draft = match CanonicalEventDraft::new(
             vec![
-                EventScope::thread(dispatch.thread_id.clone()),
-                EventScope::run(dispatch.run_id.clone()),
+                EventScope::thread(dispatch.thread_id().clone()),
+                EventScope::run(dispatch.run_id().clone()),
             ],
             match CanonicalEventKind::new(event_kind) {
                 Ok(kind) => kind,
@@ -266,22 +268,24 @@ impl Mailbox {
         ) {
             Ok(draft) => draft,
             Err(error) => {
-                tracing::error!(error = %error, event_kind, dispatch_id = %dispatch.dispatch_id, "invalid mailbox event draft");
+                tracing::error!(error = %error, event_kind, dispatch_id = %dispatch.dispatch_id(), "invalid mailbox event draft");
                 return;
             }
         };
         draft.visibility = EventVisibility::Public;
-        draft.correlation_id = Some(dispatch.dispatch_id.clone());
+        draft.correlation_id = Some(dispatch.dispatch_id().clone());
         let options = AppendOptions {
             writer_id: Some("mailbox".to_string()),
             idempotency_key: Some(format!(
                 "{}/{}/{}",
-                event_kind, dispatch.dispatch_id, dispatch.attempt_count
+                event_kind,
+                dispatch.dispatch_id(),
+                dispatch.attempt_count()
             )),
             expected_prior_cursors: Default::default(),
         };
         if let Err(error) = publisher.publish(draft, options).await {
-            tracing::error!(error = %error, event_kind, dispatch_id = %dispatch.dispatch_id, "failed to record mailbox event");
+            tracing::error!(error = %error, event_kind, dispatch_id = %dispatch.dispatch_id(), "failed to record mailbox event");
         }
     }
 
@@ -306,6 +310,7 @@ impl Mailbox {
         if first_new_seq > last_new_seq {
             return Ok(());
         }
+        validate_checkpoint_event_range(thread_id, run_id, messages, first_new_seq, last_new_seq)?;
         for seq in first_new_seq..=last_new_seq {
             self.record_message_committed(thread_id, run_id, messages, seq)
                 .await?;
@@ -398,9 +403,9 @@ impl Mailbox {
         delivery_path: &'static str,
     ) {
         self.record_mailbox_decision_received(
-            &dispatch.thread_id,
-            &dispatch.run_id,
-            Some(&dispatch.dispatch_id),
+            &dispatch.thread_id(),
+            &dispatch.run_id(),
+            Some(&dispatch.dispatch_id()),
             tool_call_id,
             resume,
             delivery_path,
@@ -739,6 +744,32 @@ impl Mailbox {
         })?;
         Ok(())
     }
+}
+
+fn validate_checkpoint_event_range(
+    thread_id: &str,
+    run_id: &str,
+    messages: &[Message],
+    first_new_seq: u64,
+    last_new_seq: u64,
+) -> Result<(), MailboxError> {
+    for seq in first_new_seq..=last_new_seq {
+        let Some(message) = seq
+            .checked_sub(1)
+            .and_then(|index| messages.get(index as usize))
+        else {
+            return Err(MailboxError::Internal(format!(
+                "checkpoint event range {first_new_seq}-{last_new_seq} for thread '{thread_id}' run '{run_id}' exceeds committed message count {}",
+                messages.len()
+            )));
+        };
+        if message.id.as_deref().is_none_or(|id| id.trim().is_empty()) {
+            return Err(MailboxError::Internal(format!(
+                "checkpoint event message seq {seq} for thread '{thread_id}' run '{run_id}' is missing message id"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn message_kind(message: &Message) -> &'static str {

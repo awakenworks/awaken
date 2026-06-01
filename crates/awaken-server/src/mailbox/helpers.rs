@@ -142,8 +142,8 @@ pub(super) fn normalize_message_ids(messages: &[Message]) -> Vec<Message> {
 }
 
 pub(super) fn live_target_for_dispatch(dispatch: &RunDispatch) -> LiveRunTarget {
-    LiveRunTarget::new(dispatch.thread_id.clone(), dispatch.run_id.clone())
-        .with_dispatch_id(dispatch.dispatch_id.clone())
+    LiveRunTarget::new(dispatch.thread_id().clone(), dispatch.run_id().clone())
+        .with_dispatch_id(dispatch.dispatch_id().clone())
 }
 
 pub(super) fn live_target_for_run(run: &RunRecord) -> LiveRunTarget {
@@ -196,14 +196,14 @@ pub(super) fn mailbox_run_identity(
     dispatch_instance_id: &str,
 ) -> awaken_server_contract::contract::identity::RunIdentity {
     awaken_server_contract::contract::identity::RunIdentity::new(
-        dispatch.thread_id.clone(),
+        dispatch.thread_id().clone(),
         None,
         run_id.to_string(),
         None,
         String::new(),
         awaken_server_contract::contract::identity::RunOrigin::Internal,
     )
-    .with_dispatch_id(dispatch.dispatch_id.clone())
+    .with_dispatch_id(dispatch.dispatch_id().clone())
     .with_session_id(dispatch_instance_id.to_string())
 }
 
@@ -212,9 +212,9 @@ pub(super) fn millis_to_seconds(ms: u64) -> f64 {
 }
 
 pub(super) fn record_mailbox_dispatch_start_metrics(dispatch: &RunDispatch, start_now: u64) {
-    let enqueue_to_start_ms = start_now.saturating_sub(dispatch.created_at);
-    let eligible_to_start_ms = start_now.saturating_sub(dispatch.available_at);
-    let claim_to_start_ms = start_now.saturating_sub(dispatch.updated_at);
+    let enqueue_to_start_ms = start_now.saturating_sub(dispatch.created_at());
+    let eligible_to_start_ms = start_now.saturating_sub(dispatch.available_at());
+    let claim_to_start_ms = start_now.saturating_sub(dispatch.updated_at());
 
     crate::metrics::record_mailbox_dispatch_enqueue_to_start(millis_to_seconds(
         enqueue_to_start_ms,
@@ -225,9 +225,9 @@ pub(super) fn record_mailbox_dispatch_start_metrics(dispatch: &RunDispatch, star
     crate::metrics::record_mailbox_dispatch_claim_to_start(millis_to_seconds(claim_to_start_ms));
 
     tracing::info!(
-        dispatch_id = %dispatch.dispatch_id,
-        run_id = %dispatch.run_id,
-        thread_id = %dispatch.thread_id,
+        dispatch_id = %dispatch.dispatch_id(),
+        run_id = %dispatch.run_id(),
+        thread_id = %dispatch.thread_id(),
         enqueue_to_start_ms,
         eligible_to_start_ms,
         claim_to_start_ms,
@@ -242,7 +242,7 @@ pub(super) fn record_mailbox_dispatch_completion_metrics(
     outcome: &str,
 ) {
     let runtime_ms = completed_now.saturating_sub(start_now);
-    let enqueue_to_complete_ms = completed_now.saturating_sub(dispatch.created_at);
+    let enqueue_to_complete_ms = completed_now.saturating_sub(dispatch.created_at());
 
     crate::metrics::record_mailbox_dispatch_runtime(millis_to_seconds(runtime_ms), outcome);
     crate::metrics::record_mailbox_dispatch_enqueue_to_complete(
@@ -252,9 +252,9 @@ pub(super) fn record_mailbox_dispatch_completion_metrics(
     crate::metrics::record_run_completion(millis_to_seconds(runtime_ms), outcome);
 
     tracing::info!(
-        dispatch_id = %dispatch.dispatch_id,
-        run_id = %dispatch.run_id,
-        thread_id = %dispatch.thread_id,
+        dispatch_id = %dispatch.dispatch_id(),
+        run_id = %dispatch.run_id(),
+        thread_id = %dispatch.thread_id(),
         outcome,
         runtime_ms,
         enqueue_to_complete_ms,
@@ -263,7 +263,7 @@ pub(super) fn record_mailbox_dispatch_completion_metrics(
 }
 
 pub(super) fn record_mailbox_dispatch_terminal_metrics(dispatch: &RunDispatch, outcome: &str) {
-    let completed_now = dispatch.completed_at.unwrap_or_else(now_ms);
+    let completed_now = dispatch.completed_at().unwrap_or_else(now_ms);
     record_mailbox_dispatch_completion_metrics(dispatch, completed_now, completed_now, outcome);
 }
 
@@ -385,6 +385,9 @@ pub(super) fn classify_error(
                 // transient to preserve prior behavior.
                 AgentLoopError::InferenceFailed(_) => {
                     MailboxRunOutcome::TransientError(e.to_string())
+                }
+                AgentLoopError::InvalidActivation(_) => {
+                    MailboxRunOutcome::PermanentError(e.to_string())
                 }
                 // Agent-level failures (phase error, invalid resume) are not infra errors.
                 _ => MailboxRunOutcome::Completed,
