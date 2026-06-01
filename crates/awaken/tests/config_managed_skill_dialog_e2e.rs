@@ -114,7 +114,7 @@ async fn build_dialog_harness(responses: Vec<StreamResult>) -> DialogHarness {
 
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
-            .with_in_memory_thread_run_store(store.clone())
+            .with_commit_coordinator(awaken::stores::MemoryCommitCoordinator::wrap(store.clone()))
             .with_plugin(
                 "skills-discovery",
                 Arc::new(SkillDiscoveryPlugin::new(managed_skills.clone())) as Arc<dyn Plugin>,

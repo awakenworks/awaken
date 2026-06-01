@@ -68,14 +68,6 @@ pub use awaken_runtime_contract::contract::event_sink::EventSink;
 // ── Lifecycle ──
 pub use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
 
-// ── Storage ──
-pub use awaken_server_contract::MailboxStore;
-pub use awaken_server_contract::contract::storage::ThreadRunStore;
-pub use awaken_server_contract::{
-    RequestSurface, ScopeContext, ScopeId, ScopedConfigStore, ScopedMailboxStore,
-    ScopedOutboxStore, ScopedProtocolReplayLog, ScopedThreadRunStore, ScopedVersionedRegistry,
-};
-
 // ── Stop policies ──
 pub use crate::policies::{StopConditionPlugin, StopDecision, StopPolicy, StopPolicyStats};
 
@@ -111,12 +103,3 @@ pub use awaken_ext_reminder::{
 pub use awaken_ext_generative_ui::{
     A2uiPlugin, A2uiPromptConfig, A2uiPromptConfigKey, DEFAULT_A2UI_CATALOG_ID,
 };
-
-#[cfg(feature = "server")]
-pub use awaken_server::app::{
-    ServerConfig, ServerState, ShutdownConfig, serve, serve_with_shutdown,
-};
-#[cfg(feature = "server")]
-pub use awaken_server::mailbox::{Mailbox, MailboxConfig};
-#[cfg(feature = "server")]
-pub use awaken_server::routes::build_router;
