@@ -30,6 +30,8 @@ use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+#[cfg(test)]
+mod credential_tests;
 mod managed_config;
 mod provider_cache;
 mod provider_capability_discovery;
@@ -1163,13 +1165,12 @@ impl ConfigRuntimeManager {
 ///
 /// Auth wiring branches on credential kind:
 ///
-/// - **Static bearer / env-fallback** (0.4.0 default): the api_key (or
-///   genai's per-adapter env var, when api_key is absent) is handed
-///   directly to genai's synchronous `with_auth_resolver_fn`. The broker
-///   is **not** consulted — there is no token to refresh and no token
-///   endpoint to single-flight against. This keeps the inference hot path
-///   identical to 0.4.0 and avoids the cache / lock churn the broker
-///   would otherwise add per request.
+/// - **Static bearer / explicit env fallback**: the api_key is handed directly
+///   to genai's synchronous `with_auth_resolver_fn`. If api_key is absent,
+///   callers must set `adapter_options.allow_env_credentials = true` to let
+///   genai use its per-adapter env var. The broker is **not** consulted —
+///   there is no token to refresh and no token endpoint to single-flight
+///   against.
 ///
 /// - **Dynamic** (`service_account_json`, future cloud creds): material
 ///   is registered with the broker, and an async auth resolver consults
@@ -1184,10 +1185,15 @@ pub fn build_genai_provider_executor_with_broker(
     spec: &ProviderSpec,
     broker: Arc<dyn awaken_runtime::credentials::CredentialBroker>,
 ) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
-    use awaken_runtime::credentials::{CredentialKind, build_material};
+    use awaken_runtime::credentials::{
+        CredentialKind, allow_env_credentials_from_options, build_material,
+        build_material_allowing_env_fallback,
+    };
 
     let adapter_kind = parse_adapter_kind(&spec.adapter)?;
     let kind = CredentialKind::from_options(&spec.adapter_options)
+        .map_err(ConfigRuntimeError::InvalidConfig)?;
+    let allow_env_credentials = allow_env_credentials_from_options(&spec.adapter_options)
         .map_err(ConfigRuntimeError::InvalidConfig)?;
 
     // Eager-validate material shape (malformed SA JSON, kind/adapter
@@ -1197,15 +1203,19 @@ pub fn build_genai_provider_executor_with_broker(
     // because the bearer wiring reads `spec.api_key` directly to bypass
     // the broker entirely. Non-bearer kinds *do* register the returned
     // material with the broker.
-    let material = build_material(&spec.adapter, kind, spec.api_key.as_ref())
-        .map_err(ConfigRuntimeError::InvalidConfig)?;
+    let material = if allow_env_credentials {
+        build_material_allowing_env_fallback(&spec.adapter, kind, spec.api_key.as_ref())
+    } else {
+        build_material(&spec.adapter, kind, spec.api_key.as_ref())
+    }
+    .map_err(ConfigRuntimeError::InvalidConfig)?;
 
     let mut builder = Client::builder().with_model_mapper_fn(move |model: ModelIden| {
         Ok(ModelIden::new(adapter_kind, model.model_name.to_string()))
     });
 
     if matches!(kind, CredentialKind::Bearer) {
-        // Static bearer / env-fallback path — identical wiring to 0.4.0.
+        // Static bearer / explicit env-fallback path.
         // Broker is bypassed entirely: there's no token to refresh and no
         // token endpoint to single-flight against, so cache/lock churn
         // would be pure overhead.
@@ -1214,7 +1224,7 @@ pub fn build_genai_provider_executor_with_broker(
             builder = builder
                 .with_auth_resolver_fn(move |_| Ok(Some(AuthData::from_single(key.clone()))));
         }
-        // else: env-fallback — leave genai's default resolver
+        // else: explicit env fallback — leave genai's default resolver
         // (VENDOR_API_KEY env var) in place.
     } else if let Some(material) = material {
         // Dynamic kind: register with the broker; the async resolver
@@ -1580,6 +1590,7 @@ mod tests {
         ProviderSpec {
             id: "test".into(),
             adapter: "openai".into(),
+            api_key: Some("test-secret-key".to_string().into()),
             adapter_options,
             ..ProviderSpec::default()
         }
@@ -1877,370 +1888,6 @@ mod tests {
                 "as_lower_str round-trip mismatch for {name}"
             );
         }
-    }
-
-    // -- credential broker integration tests ---------------------------------
-    //
-    // These tests exercise the path: ProviderSpec → build_material →
-    // broker.register → executor build. They cover the eager-validation
-    // contract (bad credentials_kind, bad SA JSON, missing api_key) and
-    // backward compatibility (no api_key + bearer = silent fallback to
-    // genai env vars).
-
-    fn provider_spec_with_kind_and_key(
-        adapter: &str,
-        kind: Option<&str>,
-        api_key: Option<&str>,
-    ) -> ProviderSpec {
-        let mut options: BTreeMap<String, Value> = BTreeMap::new();
-        if let Some(k) = kind {
-            options.insert("credentials_kind".into(), json!(k));
-        }
-        ProviderSpec {
-            id: format!("test-{adapter}"),
-            adapter: adapter.into(),
-            api_key: api_key.map(|k| k.to_string().into()),
-            adapter_options: options,
-            ..ProviderSpec::default()
-        }
-    }
-
-    #[test]
-    fn supported_adapters_includes_recent_additions() {
-        let names: std::collections::HashSet<&str> = supported_adapters().into_iter().collect();
-        for required in ["vertex", "github_copilot", "ollama_cloud"] {
-            assert!(
-                names.contains(required),
-                "expected adapter {required} to be exposed via supported_adapters()"
-            );
-        }
-    }
-
-    #[test]
-    fn supported_adapters_filters_unknown_candidates() {
-        // Forward-looking candidates that genai 0.6 does not yet recognise must
-        // be dropped, not passed through as broken options to the admin UI.
-        let names: std::collections::HashSet<&str> = supported_adapters().into_iter().collect();
-        for speculative in ["bedrock", "azure", "azure_openai", "mistral", "perplexity"] {
-            if AdapterKind::from_lower_str(speculative).is_none() {
-                assert!(
-                    !names.contains(speculative),
-                    "speculative candidate {speculative} leaked into supported_adapters() despite genai not supporting it"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn unsupported_adapter_error_points_at_genai_docs() {
-        let err = parse_adapter_kind("definitely-not-a-real-adapter").unwrap_err();
-        let display = err.to_string();
-        assert!(
-            display.contains("definitely-not-a-real-adapter"),
-            "error must echo the offending name, got: {display}"
-        );
-        assert!(
-            display.contains("docs.rs/genai"),
-            "error must point operators at genai's AdapterKind docs, got: {display}"
-        );
-    }
-
-    #[test]
-    fn build_genai_executor_for_every_supported_adapter() {
-        // Stronger than the parse round-trip: every adapter exposed via
-        // supported_adapters() must successfully construct an LlmExecutor end
-        // to end (parse → AdapterKind → genai builder chain → wrapper). No
-        // network calls happen at build time, so this is safe and offline.
-        for name in supported_adapters() {
-            let spec = ProviderSpec {
-                id: format!("test-{name}"),
-                adapter: name.to_string(),
-                ..ProviderSpec::default()
-            };
-            build_genai_provider_executor_with_broker(&spec, test_broker()).unwrap_or_else(|err| {
-                panic!("supported adapter `{name}` failed to build executor: {err:?}")
-            });
-        }
-    }
-
-    #[test]
-    fn build_genai_executor_with_api_key_for_every_supported_adapter() {
-        // Same as above but exercising the auth_resolver path (api_key set).
-        // Catches any adapter that rejects a static key at builder time.
-        for name in supported_adapters() {
-            let spec = ProviderSpec {
-                id: format!("test-{name}"),
-                adapter: name.to_string(),
-                api_key: Some("test-secret-key".to_string().into()),
-                ..ProviderSpec::default()
-            };
-            build_genai_provider_executor_with_broker(&spec, test_broker()).unwrap_or_else(|err| {
-                panic!("supported adapter `{name}` (with api_key) failed to build: {err:?}")
-            });
-        }
-    }
-
-    #[test]
-    fn build_genai_executor_with_base_url_override_for_every_supported_adapter() {
-        // Cover the third resolver path: base_url override (proxy / self-hosted).
-        // Use a syntactically valid URL — genai validates the form at build time.
-        for name in supported_adapters() {
-            let spec = ProviderSpec {
-                id: format!("test-{name}"),
-                adapter: name.to_string(),
-                base_url: Some("https://example.invalid/v1".to_string()),
-                ..ProviderSpec::default()
-            };
-            build_genai_provider_executor_with_broker(&spec, test_broker()).unwrap_or_else(|err| {
-                panic!("supported adapter `{name}` (with base_url) failed to build: {err:?}")
-            });
-        }
-    }
-
-    #[test]
-    fn build_genai_executor_with_full_options_for_every_supported_adapter() {
-        // All resolver paths simultaneously: api_key + base_url + headers +
-        // an unknown forward-compat option key. Every adapter must accept the
-        // combination without breaking the builder chain.
-        for name in supported_adapters() {
-            let mut adapter_options = BTreeMap::new();
-            adapter_options.insert(
-                "headers".into(),
-                json!({ "X-Awaken-Trace": "regression-test" }),
-            );
-            adapter_options.insert("future_extension_key".into(), json!({ "ignored": true }));
-            let spec = ProviderSpec {
-                id: format!("test-{name}"),
-                adapter: name.to_string(),
-                api_key: Some("test-secret-key".to_string().into()),
-                base_url: Some("https://example.invalid/v1".to_string()),
-                timeout_secs: 60,
-                adapter_options,
-            };
-            build_genai_provider_executor_with_broker(&spec, test_broker()).unwrap_or_else(|err| {
-                panic!("supported adapter `{name}` (full options) failed to build: {err:?}")
-            });
-        }
-    }
-
-    #[test]
-    fn build_genai_executor_clamps_zero_timeout_for_every_supported_adapter() {
-        // Boundary: timeout_secs = 0 must be clamped to >=1 instead of producing
-        // a Duration that breaks the executor. Same protection for every adapter.
-        for name in supported_adapters() {
-            let spec = ProviderSpec {
-                id: format!("test-{name}"),
-                adapter: name.to_string(),
-                timeout_secs: 0,
-                ..ProviderSpec::default()
-            };
-            build_genai_provider_executor_with_broker(&spec, test_broker()).unwrap_or_else(|err| {
-                panic!("supported adapter `{name}` (zero timeout) failed to build: {err:?}")
-            });
-        }
-    }
-
-    #[test]
-    fn parse_adapter_kind_is_case_insensitive_for_every_supported_adapter() {
-        // Every supported adapter must parse regardless of casing variations.
-        // Guards against silent regressions in the to_ascii_lowercase normalisation.
-        for name in supported_adapters() {
-            let upper = name.to_ascii_uppercase();
-            let mixed: String = name
-                .chars()
-                .enumerate()
-                .map(|(i, c)| {
-                    if i % 2 == 0 {
-                        c.to_ascii_uppercase()
-                    } else {
-                        c
-                    }
-                })
-                .collect();
-            for variant in [name.to_string(), upper, mixed, format!("  {name}  ")] {
-                parse_adapter_kind(&variant).unwrap_or_else(|err| {
-                    panic!("`{variant}` (canonical: {name}) failed to parse: {err:?}")
-                });
-            }
-        }
-    }
-
-    #[test]
-    fn supported_adapters_unique_no_duplicate_names() {
-        // Detect copy-paste mistakes in ADAPTER_CANDIDATES that would silently
-        // duplicate an entry in the admin UI dropdown.
-        let names: Vec<&'static str> = supported_adapters();
-        let mut seen = std::collections::HashSet::with_capacity(names.len());
-        for name in &names {
-            assert!(
-                seen.insert(*name),
-                "duplicate entry `{name}` in supported_adapters()"
-            );
-        }
-        // Sanity floor: PR opens with 19 known adapters, never expect to ship
-        // fewer (would mean we lost coverage of an upstream-supported adapter).
-        assert!(
-            names.len() >= 19,
-            "supported_adapters() shrank below floor of 19 (got {}): {names:?}",
-            names.len()
-        );
-    }
-
-    #[test]
-    fn vertex_anthropic_namespaces_parse_when_routed_through_adapter_string() {
-        // Vertex routes Gemini and Claude via the same adapter string; only
-        // genai's namespace routing inside `from_model` discriminates publishers.
-        // Ensure the adapter-name level still resolves to AdapterKind::Vertex
-        // regardless of which model the caller eventually sends.
-        let kind = parse_adapter_kind("vertex").expect("vertex must parse");
-        assert_eq!(kind, AdapterKind::Vertex);
-        // GitHub Copilot is the same shape: one adapter, multi-publisher routing.
-        let kind = parse_adapter_kind("github_copilot").expect("github_copilot must parse");
-        assert_eq!(kind, AdapterKind::GithubCopilot);
-        // Ollama Cloud must not collide with vanilla Ollama.
-        let cloud = parse_adapter_kind("ollama_cloud").expect("ollama_cloud must parse");
-        let local = parse_adapter_kind("ollama").expect("ollama must parse");
-        assert_ne!(
-            cloud, local,
-            "ollama_cloud and ollama must map to distinct kinds"
-        );
-        assert_eq!(cloud, AdapterKind::OllamaCloud);
-        assert_eq!(local, AdapterKind::Ollama);
-    }
-
-    #[test]
-    fn parse_adapter_kind_accepts_legacy_aliases() {
-        assert_eq!(
-            parse_adapter_kind("openai-resp").unwrap(),
-            AdapterKind::OpenAIResp
-        );
-        assert_eq!(
-            parse_adapter_kind("responses").unwrap(),
-            AdapterKind::OpenAIResp
-        );
-        assert_eq!(
-            parse_adapter_kind("  Anthropic ").unwrap(),
-            AdapterKind::Anthropic
-        );
-    }
-
-    #[test]
-    fn build_genai_omitted_api_key_falls_back_to_env_default() {
-        // 0.4.0 behaviour: a provider with no api_key should still build —
-        // genai's adapter will read VENDOR_API_KEY at request time. The
-        // broker integration must not break this.
-        let spec = provider_spec_with_kind_and_key("openai", None, None);
-        build_genai_provider_executor_with_broker(&spec, test_broker())
-            .expect("env-fallback bearer must build");
-    }
-
-    #[test]
-    fn build_genai_explicit_bearer_succeeds() {
-        let spec = provider_spec_with_kind_and_key("openai", Some("bearer"), Some("sk-test-123"));
-        build_genai_provider_executor_with_broker(&spec, test_broker())
-            .expect("explicit bearer must build");
-    }
-
-    #[test]
-    fn build_genai_unknown_credentials_kind_rejected_with_clear_error() {
-        let spec = provider_spec_with_kind_and_key(
-            "openai",
-            Some("never-heard-of-it"),
-            Some("sk-test-123"),
-        );
-        let err = build_genai_provider_executor_with_broker(&spec, test_broker())
-            .err()
-            .expect("expected error");
-        assert!(
-            matches!(err, ConfigRuntimeError::InvalidConfig(ref m) if m.contains("never-heard-of-it")),
-            "expected InvalidConfig naming the bad kind, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn build_genai_service_account_kind_with_non_vertex_adapter_rejected() {
-        let spec = provider_spec_with_kind_and_key(
-            "openai",
-            Some("service_account_json"),
-            Some(r#"{"client_email":"x@y","private_key":"-----BEGIN PRIVATE KEY-----"}"#),
-        );
-        let err = build_genai_provider_executor_with_broker(&spec, test_broker())
-            .err()
-            .expect("expected error");
-        assert!(
-            matches!(err, ConfigRuntimeError::InvalidConfig(ref m)
-                if m.contains("service_account_json") && m.contains("vertex") && m.contains("openai")),
-            "expected InvalidConfig naming the kind/adapter mismatch, got: {err:?}"
-        );
-    }
-
-    // Note: deeper service_account_json shape tests live in
-    // `awaken_runtime::credentials::material::tests` so they don't depend
-    // on `parse_adapter_kind` recognising the "vertex" adapter (which is
-    // gated on the upstream genai version actually shipping it).
-
-    /// Broker double that records every `register` / `deregister` call so
-    /// tests can assert what was (or wasn't) handed to the broker.
-    #[derive(Default)]
-    struct RecordingBroker {
-        registered: parking_lot::Mutex<Vec<String>>,
-    }
-
-    #[async_trait::async_trait]
-    impl awaken_runtime::credentials::CredentialBroker for RecordingBroker {
-        fn register(
-            &self,
-            provider_id: String,
-            _material: awaken_runtime::credentials::CredentialMaterial,
-        ) {
-            self.registered.lock().push(provider_id);
-        }
-        async fn token_for(
-            &self,
-            _provider_id: &str,
-            _scope: &str,
-        ) -> Result<
-            awaken_runtime::credentials::IssuedToken,
-            awaken_runtime::credentials::CredentialError,
-        > {
-            unreachable!("static-bearer build must not call token_for");
-        }
-    }
-
-    #[test]
-    fn build_genai_static_bearer_does_not_register_with_broker() {
-        // Item 2: static bearers go straight into genai's sync resolver,
-        // bypassing the broker. If we ever regress and register them, the
-        // broker would unnecessarily cache, single-flight, and lock on
-        // every chat call.
-        let recording: Arc<RecordingBroker> = Arc::new(RecordingBroker::default());
-        let broker: Arc<dyn awaken_runtime::credentials::CredentialBroker> =
-            Arc::clone(&recording) as _;
-
-        let spec = provider_spec_with_kind_and_key("openai", Some("bearer"), Some("sk-x"));
-        build_genai_provider_executor_with_broker(&spec, broker).expect("static bearer must build");
-
-        assert!(
-            recording.registered.lock().is_empty(),
-            "static bearer must not register with the broker"
-        );
-    }
-
-    #[test]
-    fn build_genai_omitted_api_key_does_not_register_with_broker() {
-        // Env-var fallback — same expectation as the static bearer case:
-        // there's no material to register and no token to mint.
-        let recording: Arc<RecordingBroker> = Arc::new(RecordingBroker::default());
-        let broker: Arc<dyn awaken_runtime::credentials::CredentialBroker> =
-            Arc::clone(&recording) as _;
-
-        let spec = provider_spec_with_kind_and_key("openai", None, None);
-        build_genai_provider_executor_with_broker(&spec, broker).expect("env-fallback must build");
-
-        assert!(
-            recording.registered.lock().is_empty(),
-            "env-fallback must not register with the broker"
-        );
     }
 
     #[test]

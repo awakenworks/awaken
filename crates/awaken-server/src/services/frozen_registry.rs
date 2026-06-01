@@ -170,16 +170,17 @@ impl Resolver for ScopedServerResolver {
                 scope_id: self.scope_id.as_str().to_string(),
             },
             // The runtime carries an opaque resolution id; for the published
-            // path it is the publication snapshot version. Anything else falls
-            // back to the latest publication.
+            // path it is the publication snapshot version.
             RegistryResolutionScope::Pinned(resolution_id) => match resolution_id.parse::<u64>() {
                 Ok(snapshot_version) => VersionSelector::Publication {
                     scope_id: self.scope_id.as_str().to_string(),
                     snapshot_version,
                 },
-                Err(_) => VersionSelector::LatestPublication {
-                    scope_id: self.scope_id.as_str().to_string(),
-                },
+                Err(error) => {
+                    return Err(ResolveError::Runtime(format!(
+                        "invalid pinned registry resolution id '{resolution_id}': {error}"
+                    )));
+                }
             },
         };
         let frozen = self
@@ -187,16 +188,17 @@ impl Resolver for ScopedServerResolver {
             .materialize(selector)
             .await
             .map_err(|error| ResolveError::Runtime(error.to_string()))?;
-        request.resolution_scope = RegistryResolutionScope::Pinned(
-            frozen
-                .manifest
-                .registry_snapshot_version
-                .map(|version| version.to_string())
-                .unwrap_or_default(),
-        );
-        awaken_runtime::registry::resolve::RegistrySetResolver::new(frozen.to_registry_set(&live))
-            .resolve(request)
-            .await
+        let snapshot_version = frozen.manifest.registry_snapshot_version.ok_or_else(|| {
+            ResolveError::Runtime(
+                "published registry manifest is missing registry_snapshot_version".to_string(),
+            )
+        })?;
+        request.resolution_scope = RegistryResolutionScope::Pinned(snapshot_version.to_string());
+        awaken_runtime::registry::resolve::RegistrySetResolver::new_replayable_snapshot(
+            frozen.to_registry_set(&live),
+        )
+        .resolve(request)
+        .await
     }
 }
 
@@ -661,6 +663,47 @@ mod tests {
         let resumed = resolver.resolve(resume).await.unwrap();
         assert_eq!(resumed.resolution_id(), Some(resolution_id.as_str()));
         assert_eq!(resumed.agent_spec().id, "root");
+    }
+
+    #[tokio::test]
+    async fn scoped_server_resolver_rejects_invalid_pinned_resolution_id() {
+        let store = InMemoryVersionedRegistryStore::new();
+        let provider = publish_provider(&store, "provider-1").await;
+        let model = publish_model(&store, "model-1", "provider-1").await;
+        let root = publish_agent(&store, agent("root", "model-1", [])).await;
+        store
+            .create_publication(
+                "default",
+                "pub-1",
+                refs([&provider, &model, &root]),
+                Vec::new(),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let resolver = ScopedServerResolver::new(
+            ScopeId::default_scope(),
+            Arc::new(store),
+            live_registry_handle(),
+        );
+        let mut resume = nested_request(ResolutionTarget::Root {
+            agent_id: "root".into(),
+            thread_id: "thread-1".into(),
+        });
+        resume.resolution_scope = RegistryResolutionScope::Pinned("not-a-version".into());
+
+        let error = match resolver.resolve(resume).await {
+            Ok(_) => panic!("invalid pinned resolution id must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("invalid pinned registry resolution id"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

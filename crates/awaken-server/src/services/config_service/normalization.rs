@@ -87,12 +87,25 @@ impl ConfigService {
                     &spec.adapter_options,
                 )
                 .map_err(ConfigServiceError::InvalidPayload)?;
-                awaken_runtime::credentials::build_material(
-                    &spec.adapter,
-                    kind,
-                    spec.api_key.as_ref(),
-                )
-                .map_err(ConfigServiceError::InvalidPayload)?;
+                let allow_env_credentials =
+                    awaken_runtime::credentials::allow_env_credentials_from_options(
+                        &spec.adapter_options,
+                    )
+                    .map_err(ConfigServiceError::InvalidPayload)?;
+                let material_result = if allow_env_credentials {
+                    awaken_runtime::credentials::build_material_allowing_env_fallback(
+                        &spec.adapter,
+                        kind,
+                        spec.api_key.as_ref(),
+                    )
+                } else {
+                    awaken_runtime::credentials::build_material(
+                        &spec.adapter,
+                        kind,
+                        spec.api_key.as_ref(),
+                    )
+                };
+                material_result.map_err(ConfigServiceError::InvalidPayload)?;
             }
             ConfigNamespace::McpServers => {
                 let spec: McpServerSpec = from_value(body)?;

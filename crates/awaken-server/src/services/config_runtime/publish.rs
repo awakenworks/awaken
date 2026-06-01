@@ -49,7 +49,7 @@ impl ConfigRuntimeManager {
             return Err(error);
         }
 
-        let runtime_set = self.published_or_candidate_registry_set(candidate).await;
+        let runtime_set = self.published_or_candidate_registry_set(candidate).await?;
         let version = match self.runtime.replace_registry_set(runtime_set) {
             Some(version) => version,
             None => {

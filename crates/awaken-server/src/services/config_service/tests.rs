@@ -345,7 +345,8 @@ async fn create_waits_for_in_flight_apply_before_writing_store() {
                     ConfigNamespace::Providers,
                     json!({
                         "id": "serialized",
-                        "adapter": "stub"
+                        "adapter": "stub",
+                        "api_key": "test-key"
                     }),
                     &axum::http::HeaderMap::new(),
                 )
@@ -391,6 +392,27 @@ async fn create_waits_for_in_flight_apply_before_writing_store() {
             .and_then(|spec| spec.get("id"))
             .and_then(Value::as_str),
         Some("serialized")
+    );
+}
+
+#[tokio::test]
+async fn create_provider_rejects_missing_bearer_api_key_by_default() {
+    let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+    let (state, _manager) = build_state(config_store).await;
+    let service = ConfigService::new(&state).expect("config service");
+
+    let error = service
+        .create_with_headers(
+            ConfigNamespace::Providers,
+            json!({ "id": "missing-key", "adapter": "stub" }),
+            &axum::http::HeaderMap::new(),
+        )
+        .await
+        .expect_err("missing bearer api_key must fail closed");
+
+    assert!(
+        matches!(error, ConfigServiceError::InvalidPayload(ref message) if message.contains("api_key")),
+        "expected InvalidPayload naming api_key, got {error:?}"
     );
 }
 
@@ -516,7 +538,7 @@ async fn find_dependents_model_uses_effective_agent_model_override() {
     service
         .create_with_headers(
             ConfigNamespace::Providers,
-            json!({ "id": "prov-b", "adapter": "stub" }),
+            json!({ "id": "prov-b", "adapter": "stub", "api_key": "test-key" }),
             &axum::http::HeaderMap::new(),
         )
         .await
@@ -612,7 +634,7 @@ async fn provider_removal_preview_ignores_effective_remote_endpoint_agents() {
     service
         .create_with_headers(
             ConfigNamespace::Providers,
-            json!({ "id": "prov-remote", "adapter": "stub" }),
+            json!({ "id": "prov-remote", "adapter": "stub", "api_key": "test-key" }),
             &axum::http::HeaderMap::new(),
         )
         .await
@@ -667,7 +689,7 @@ async fn provider_removal_preview_collects_dependents_across_multiple_models() {
         service
             .create_with_headers(
                 ConfigNamespace::Providers,
-                json!({ "id": provider_id, "adapter": "stub" }),
+                json!({ "id": provider_id, "adapter": "stub", "api_key": "test-key" }),
                 &axum::http::HeaderMap::new(),
             )
             .await
@@ -859,7 +881,7 @@ async fn delete_without_force_returns_blocked_when_dependents_exist() {
     service
         .create_with_headers(
             ConfigNamespace::Providers,
-            json!({ "id": "prov-b", "adapter": "stub" }),
+            json!({ "id": "prov-b", "adapter": "stub", "api_key": "test-key" }),
             &axum::http::HeaderMap::new(),
         )
         .await
@@ -903,7 +925,7 @@ async fn delete_with_force_cascades_unused_provider_models() {
     service
         .create_with_headers(
             ConfigNamespace::Providers,
-            json!({ "id": "prov-c", "adapter": "stub" }),
+            json!({ "id": "prov-c", "adapter": "stub", "api_key": "test-key" }),
             &axum::http::HeaderMap::new(),
         )
         .await
@@ -953,7 +975,7 @@ async fn delete_with_force_rolls_back_cascade_when_model_delete_fails() {
     service
         .create_with_headers(
             ConfigNamespace::Providers,
-            json!({ "id": "prov-e", "adapter": "stub" }),
+            json!({ "id": "prov-e", "adapter": "stub", "api_key": "test-key" }),
             &axum::http::HeaderMap::new(),
         )
         .await
@@ -1009,7 +1031,7 @@ async fn delete_provider_with_force_blocks_when_agents_use_provider_models() {
     service
         .create_with_headers(
             ConfigNamespace::Providers,
-            json!({ "id": "prov-d", "adapter": "stub" }),
+            json!({ "id": "prov-d", "adapter": "stub", "api_key": "test-key" }),
             &axum::http::HeaderMap::new(),
         )
         .await
@@ -1083,7 +1105,7 @@ async fn delete_rollback_re_emits_envelope() {
     service
         .create_with_headers(
             ConfigNamespace::Providers,
-            json!({ "id": "rollback-prov", "adapter": "stub" }),
+            json!({ "id": "rollback-prov", "adapter": "stub", "api_key": "test-key" }),
             &axum::http::HeaderMap::new(),
         )
         .await
@@ -1303,7 +1325,7 @@ mod audit_integration {
         service
             .create_with_headers(
                 ConfigNamespace::Providers,
-                json!({ "id": "audit-prov", "adapter": "stub" }),
+                json!({ "id": "audit-prov", "adapter": "stub", "api_key": "test-key" }),
                 &HeaderMap::new(),
             )
             .await
@@ -1418,7 +1440,7 @@ mod audit_integration {
         service
             .create_with_headers(
                 ConfigNamespace::Providers,
-                json!({ "id": "audit-cascade-prov", "adapter": "stub" }),
+                json!({ "id": "audit-cascade-prov", "adapter": "stub", "api_key": "test-key" }),
                 &HeaderMap::new(),
             )
             .await

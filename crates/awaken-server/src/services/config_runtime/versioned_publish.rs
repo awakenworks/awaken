@@ -66,35 +66,24 @@ impl ConfigRuntimeManager {
         self.versioned_registry.is_some()
     }
 
-    /// Pick the `RegistrySet` to install via runtime hot-swap: prefer
-    /// the materialized `RegistryPublication`, fall back to the editing
-    /// candidate when no versioned store is wired or materialization
-    /// fails (ADR-0035 D8/D11). Takes ownership of `candidate` so the
-    /// caller never accidentally hot-swaps with stale editing data after
-    /// a successful publication.
+    /// Pick the `RegistrySet` to install via runtime hot-swap. When a
+    /// versioned store is wired, the published registry must materialize; the
+    /// editing candidate is only valid for unversioned runtimes.
     pub(super) async fn published_or_candidate_registry_set(
         &self,
         candidate: RegistrySet,
-    ) -> RegistrySet {
+    ) -> Result<RegistrySet, ConfigRuntimeError> {
         let Some(target) = self.versioned_registry.as_ref() else {
-            return candidate;
+            return Ok(candidate);
         };
         let materializer = FrozenAgentRegistryMaterializer::new(target.store.clone());
-        match materializer
+        let frozen = materializer
             .materialize(VersionSelector::LatestPublication {
                 scope_id: target.scope_id.as_str().to_string(),
             })
             .await
-        {
-            Ok(frozen) => frozen.to_registry_set(&candidate),
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "failed to materialize published registry set; falling back to candidate"
-                );
-                candidate
-            }
-        }
+            .map_err(|error| ConfigRuntimeError::VersionedRegistry(error.to_string()))?;
+        Ok(frozen.to_registry_set(&candidate))
     }
 
     /// Publish a ONE-OFF ephemeral publication = the current managed config
@@ -431,6 +420,27 @@ mod tests {
         assert!(publication.source_config_revisions.iter().any(|revision| {
             revision.namespace == "agents" && revision.id == "agent-1" && revision.revision > 0
         }));
+    }
+
+    #[tokio::test]
+    async fn published_registry_materialization_failure_does_not_use_candidate() {
+        let (manager, _, _) = make_manager_with_versioned_store().await;
+        let candidate = manager
+            .runtime
+            .registry_handle()
+            .expect("runtime registry handle")
+            .snapshot()
+            .into_registries();
+
+        let error = match manager.published_or_candidate_registry_set(candidate).await {
+            Ok(_) => panic!("missing latest publication must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, ConfigRuntimeError::VersionedRegistry(ref message)
+                if message.contains("publication") && message.contains("latest")),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[tokio::test]
