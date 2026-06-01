@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   capabilitiesApi,
+  capabilitiesFromResult,
   configResourceApi,
   ConfigApiError,
   type AgentSpec,
@@ -62,20 +63,33 @@ export function useDashboardQuery(range: TimeRange) {
       // page rather than crashing the dashboard with a red error box.
       // Auth (401/403) and 4xx still propagate — the user needs to
       // re-auth, not stare at half-blank cards.
-      const [capabilities, mcp, providers, models, agents, audit, systemInfo] = await Promise.all([
-        capabilitiesApi.capabilities(),
-        tolerantList(configResourceApi.list<McpServerRecord>("mcp-servers")),
-        tolerantList(configResourceApi.list<ProviderRecord>("providers")),
-        tolerantList(configResourceApi.list<ModelSpec>("models")),
-        tolerantList(configResourceApi.list<AgentSpec>("agents")),
-        auditPromise,
-        loadOptionalSystemInfo(),
-      ]);
+      const [capabilitiesResult, mcp, providers, models, agents, audit, systemInfo] =
+        await Promise.all([
+          capabilitiesApi.capabilities(),
+          tolerantList(configResourceApi.list<McpServerRecord>("mcp-servers")),
+          tolerantList(configResourceApi.list<ProviderRecord>("providers")),
+          tolerantList(configResourceApi.list<ModelSpec>("models")),
+          tolerantList(configResourceApi.list<AgentSpec>("agents")),
+          auditPromise,
+          loadOptionalSystemInfo(),
+        ]);
       const degraded: DegradedSlots = {};
       if (mcp.degraded) degraded.mcpServers = true;
       if (providers.degraded) degraded.providers = true;
       if (models.degraded) degraded.models = true;
       if (agents.degraded) degraded.agents = true;
+      if (capabilitiesResult.kind !== "ok") {
+        throw new ConfigApiError(
+          capabilitiesResult.kind === "route_absent" ? 404 : 503,
+          capabilitiesResult.kind === "route_absent"
+            ? "capabilities route is not exposed"
+            : (capabilitiesResult.message ?? "capabilities store is unavailable"),
+        );
+      }
+      const capabilities = capabilitiesFromResult(capabilitiesResult);
+      if (!capabilities) {
+        throw new ConfigApiError(500, "capabilities response was empty");
+      }
       return {
         capabilities,
         mcpServers: mcp.items,

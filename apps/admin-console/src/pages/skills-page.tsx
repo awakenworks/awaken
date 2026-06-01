@@ -4,6 +4,7 @@ import { Link } from "react-router";
 import type { SkillInfo } from "@/lib/api";
 import { adminRoutes } from "@/lib/routes";
 import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
+import { capabilitiesFromResult } from "@/lib/api";
 import { useToast } from "@/components/toast-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
@@ -31,7 +32,8 @@ export function SkillsPage() {
   const { t } = useTranslation();
   const toast = useToast();
   const capabilitiesQuery = useCapabilitiesQuery();
-  const skills = capabilitiesQuery.data?.skills ?? EMPTY_SKILLS;
+  const capabilities = capabilitiesFromResult(capabilitiesQuery.data);
+  const skills = capabilities?.skills ?? EMPTY_SKILLS;
   const loading = capabilitiesQuery.isPending;
 
   const { apply: applyFilter, ...filter } = useSkillsFilterUrlState();

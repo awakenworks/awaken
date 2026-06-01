@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   capabilitiesApi,
+  capabilitiesFromResult,
   ConfigApiError,
   providersApi,
   type ModelSpec,
@@ -180,9 +181,11 @@ export function ProvidersPage() {
     prepareSave,
     auxiliaryQueryKey: PROVIDER_AUXILIARY_QUERY_KEY,
     auxiliaryLoaders: () =>
-      capabilitiesApi
-        .capabilities()
-        .then((caps) => [caps.supported_adapters ?? FALLBACK_ADAPTERS, caps.models ?? []]),
+      capabilitiesApi.capabilities().then((result) => {
+        const caps = capabilitiesFromResult(result);
+        if (!caps) return [FALLBACK_ADAPTERS, []];
+        return [caps.supported_adapters ?? FALLBACK_ADAPTERS, caps.models ?? []];
+      }),
   });
 
   const serverAdapters = crud.auxiliaryData[0] as string[] | undefined;

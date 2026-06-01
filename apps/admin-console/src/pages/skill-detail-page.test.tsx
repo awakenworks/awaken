@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { SkillDetailPage } from "./skill-detail-page";
-import type { AgentSpec, SkillInfo } from "@/lib/api";
+import type { AgentSpec, Capabilities, CapabilitiesResult, SkillInfo } from "@/lib/api";
 
 const queryState = vi.hoisted(() => ({
   capabilities: {
-    data: undefined as { skills: SkillInfo[] } | undefined,
+    data: undefined as CapabilitiesResult | undefined,
     isPending: false,
     error: null as unknown,
   },
@@ -58,6 +58,21 @@ function agent(overrides: Partial<AgentSpec>): AgentSpec {
   };
 }
 
+function capabilities(skills: SkillInfo[]): CapabilitiesResult {
+  return {
+    kind: "ok",
+    capabilities: {
+      agents: [],
+      tools: [],
+      plugins: [],
+      skills,
+      models: [],
+      providers: [],
+      namespaces: [],
+    } satisfies Capabilities,
+  };
+}
+
 function renderDetail(path: string, route = "/skills/:id") {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -98,14 +113,14 @@ describe("SkillDetailPage", () => {
     expect(screen.getByText("capabilities unavailable")).toBeTruthy();
     errorView.unmount();
 
-    queryState.capabilities = { data: { skills: [] }, isPending: false, error: null };
+    queryState.capabilities = { data: capabilities([]), isPending: false, error: null };
     renderDetail("/skills/imagegen");
     expect(screen.getByText("trace.notFound")).toBeTruthy();
   });
 
   it("renders details, injection preview, and all supported agent reference shapes", () => {
     queryState.capabilities = {
-      data: { skills: [skill()] },
+      data: capabilities([skill()]),
       isPending: false,
       error: null,
     };
@@ -159,22 +174,20 @@ describe("SkillDetailPage", () => {
 
   it("renders empty optional sections without inventing tool, path, argument, or agent data", () => {
     queryState.capabilities = {
-      data: {
-        skills: [
-          skill({
-            id: "planner",
-            name: "planner",
-            description: "Plan work",
-            allowed_tools: [],
-            when_to_use: null,
-            arguments: [],
-            user_invocable: false,
-            model_invocable: false,
-            context: "fork",
-            paths: [],
-          }),
-        ],
-      },
+      data: capabilities([
+        skill({
+          id: "planner",
+          name: "planner",
+          description: "Plan work",
+          allowed_tools: [],
+          when_to_use: null,
+          arguments: [],
+          user_invocable: false,
+          model_invocable: false,
+          context: "fork",
+          paths: [],
+        }),
+      ]),
       isPending: false,
       error: null,
     };

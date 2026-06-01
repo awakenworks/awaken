@@ -5,10 +5,7 @@ import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { AuthProvider, useAuth } from "./auth-provider";
 import { ToastProvider } from "./toast-provider";
 import { configApi, ConfigApiError, ADMIN_TOKEN_STORAGE_KEY } from "@/lib/config-api";
-import {
-  __resetAuthInterceptorForTesting,
-  hasUnauthorizedHandler,
-} from "@/lib/auth-interceptor";
+import { __resetAuthInterceptorForTesting, hasUnauthorizedHandler } from "@/lib/auth-interceptor";
 
 afterEach(() => {
   cleanup();
@@ -19,13 +16,16 @@ afterEach(() => {
 
 function emptyCapabilities(): Awaited<ReturnType<typeof configApi.capabilities>> {
   return {
-    agents: [],
-    tools: [],
-    plugins: [],
-    skills: [],
-    models: [],
-    providers: [],
-    namespaces: [],
+    kind: "ok",
+    capabilities: {
+      agents: [],
+      tools: [],
+      plugins: [],
+      skills: [],
+      models: [],
+      providers: [],
+      namespaces: [],
+    },
   } as Awaited<ReturnType<typeof configApi.capabilities>>;
 }
 
@@ -64,9 +64,7 @@ function renderWithCapture() {
 
 describe("AuthProvider — StrictMode double-mount guard", () => {
   it("calls configApi.capabilities exactly once even under StrictMode", async () => {
-    const spy = vi
-      .spyOn(configApi, "capabilities")
-      .mockResolvedValue(emptyCapabilities());
+    const spy = vi.spyOn(configApi, "capabilities").mockResolvedValue(emptyCapabilities());
 
     renderInStrictMode();
 
@@ -76,9 +74,7 @@ describe("AuthProvider — StrictMode double-mount guard", () => {
   });
 
   it("manual refresh() still triggers a fresh probe (guard is mount-only)", async () => {
-    const spy = vi
-      .spyOn(configApi, "capabilities")
-      .mockResolvedValue(emptyCapabilities());
+    const spy = vi.spyOn(configApi, "capabilities").mockResolvedValue(emptyCapabilities());
 
     let captured: ReturnType<typeof useAuth> | null = null;
     function Capture() {
@@ -121,9 +117,7 @@ describe("AuthProvider — probe state machine", () => {
 
   it('probe → "unauthorized" on 401 when a token is stored', async () => {
     localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, "my-token");
-    vi.spyOn(configApi, "capabilities").mockRejectedValue(
-      new ConfigApiError(401, "Unauthorized"),
-    );
+    vi.spyOn(configApi, "capabilities").mockRejectedValue(new ConfigApiError(401, "Unauthorized"));
 
     const { getCapture } = renderWithCapture();
 
@@ -134,9 +128,7 @@ describe("AuthProvider — probe state machine", () => {
 
   it('probe → "missing" on 401 when no token is stored', async () => {
     localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
-    vi.spyOn(configApi, "capabilities").mockRejectedValue(
-      new ConfigApiError(401, "Unauthorized"),
-    );
+    vi.spyOn(configApi, "capabilities").mockRejectedValue(new ConfigApiError(401, "Unauthorized"));
 
     const { getCapture } = renderWithCapture();
 
@@ -146,9 +138,7 @@ describe("AuthProvider — probe state machine", () => {
   });
 
   it('probe → "disconnected" on a generic (non-ConfigApiError) network error', async () => {
-    vi.spyOn(configApi, "capabilities").mockRejectedValue(
-      new Error("fetch failed"),
-    );
+    vi.spyOn(configApi, "capabilities").mockRejectedValue(new Error("fetch failed"));
 
     const { getCapture } = renderWithCapture();
 
@@ -161,19 +151,16 @@ describe("AuthProvider — probe state machine", () => {
     // resolve1 controls the first probe; reject2 controls the second.
     let resolve1!: (v: Awaited<ReturnType<typeof configApi.capabilities>>) => void;
 
-    const p1 = new Promise<Awaited<ReturnType<typeof configApi.capabilities>>>(
-      (res) => { resolve1 = res; },
-    );
+    const p1 = new Promise<Awaited<ReturnType<typeof configApi.capabilities>>>((res) => {
+      resolve1 = res;
+    });
     // Second probe rejects so the final status is "disconnected" (distinct from "ok").
     let reject2!: (e: unknown) => void;
-    const p2 = new Promise<Awaited<ReturnType<typeof configApi.capabilities>>>(
-      (_, rej) => { reject2 = rej; },
-    );
+    const p2 = new Promise<Awaited<ReturnType<typeof configApi.capabilities>>>((_, rej) => {
+      reject2 = rej;
+    });
 
-    const spy = vi
-      .spyOn(configApi, "capabilities")
-      .mockReturnValueOnce(p1)
-      .mockReturnValueOnce(p2);
+    const spy = vi.spyOn(configApi, "capabilities").mockReturnValueOnce(p1).mockReturnValueOnce(p2);
 
     const { getCapture } = renderWithCapture();
 
@@ -181,7 +168,9 @@ describe("AuthProvider — probe state machine", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
 
     // Kick off a second probe (rapid refresh) before resolving the first.
-    void act(() => { void getCapture().refresh(); });
+    void act(() => {
+      void getCapture().refresh();
+    });
 
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
 

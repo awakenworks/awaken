@@ -162,7 +162,8 @@ export function AgentEditorPage() {
     enabled: !isNew && Boolean(id),
     optional: true,
   });
-  const capabilities = capabilitiesQuery.data ?? null;
+  const capabilities =
+    capabilitiesQuery.data?.kind === "ok" ? capabilitiesQuery.data.capabilities : null;
   const loading = capabilitiesQuery.isPending || (!isNew && agentQuery.isPending);
   const agentError = !isNew && agentQuery.error ? safeErrorMessage(agentQuery.error) : null;
   const mcpServersError = mcpServersQuery.error ? safeErrorMessage(mcpServersQuery.error) : null;
@@ -171,7 +172,6 @@ export function AgentEditorPage() {
     !isNew && agentMetaQuery.error ? safeErrorMessage(agentMetaQuery.error) : null;
   const saveDisabled = saving || Boolean(agentMetaError || (!isNew && agentMetaQuery.isPending));
   const initializedAgentIdRef = useRef<string | null>(null);
-
   const isDirty = useMemo(() => {
     if (saving) return false;
     if (isNew) {

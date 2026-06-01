@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { SkillsPage } from "./skills-page";
-import type { SkillInfo } from "@/lib/api";
+import type { Capabilities, CapabilitiesResult, SkillInfo } from "@/lib/api";
 
 const queryState = vi.hoisted(() => ({
   value: {
-    data: undefined as { skills: SkillInfo[] } | undefined,
+    data: undefined as CapabilitiesResult | undefined,
     isPending: false,
     error: null as unknown,
   },
@@ -42,6 +42,21 @@ function skill(overrides: Partial<SkillInfo>): SkillInfo {
   };
 }
 
+function capabilities(skills: SkillInfo[]): CapabilitiesResult {
+  return {
+    kind: "ok",
+    capabilities: {
+      agents: [],
+      tools: [],
+      plugins: [],
+      skills,
+      models: [],
+      providers: [],
+      namespaces: [],
+    } satisfies Capabilities,
+  };
+}
+
 function renderSkills() {
   return render(
     <MemoryRouter initialEntries={["/skills"]}>
@@ -64,23 +79,21 @@ describe("SkillsPage", () => {
     queryState.value = {
       isPending: false,
       error: null,
-      data: {
-        skills: [
-          skill({ id: "imagegen", name: "Image Generator" }),
-          skill({
-            id: "planner",
-            name: "planner",
-            description: "Internal planning helper",
-            allowed_tools: [],
-            when_to_use: null,
-            arguments: [],
-            user_invocable: false,
-            model_invocable: false,
-            context: "fork",
-            paths: [],
-          }),
-        ],
-      },
+      data: capabilities([
+        skill({ id: "imagegen", name: "Image Generator" }),
+        skill({
+          id: "planner",
+          name: "planner",
+          description: "Internal planning helper",
+          allowed_tools: [],
+          when_to_use: null,
+          arguments: [],
+          user_invocable: false,
+          model_invocable: false,
+          context: "fork",
+          paths: [],
+        }),
+      ]),
     };
 
     renderSkills();
@@ -105,30 +118,28 @@ describe("SkillsPage", () => {
     queryState.value = {
       isPending: false,
       error: null,
-      data: {
-        skills: [
-          skill({ id: "imagegen", name: "Image Generator" }),
-          skill({
-            id: "code-review",
-            name: "Code Review",
-            description: "Review patches and tests",
-            allowed_tools: ["Read", "Grep"],
-            user_invocable: false,
-            model_invocable: true,
-            context: "inline",
-          }),
-          skill({
-            id: "internal-plan",
-            name: "Internal Planner",
-            description: "Private fork planning",
-            allowed_tools: [],
-            arguments: [],
-            user_invocable: false,
-            model_invocable: false,
-            context: "fork",
-          }),
-        ],
-      },
+      data: capabilities([
+        skill({ id: "imagegen", name: "Image Generator" }),
+        skill({
+          id: "code-review",
+          name: "Code Review",
+          description: "Review patches and tests",
+          allowed_tools: ["Read", "Grep"],
+          user_invocable: false,
+          model_invocable: true,
+          context: "inline",
+        }),
+        skill({
+          id: "internal-plan",
+          name: "Internal Planner",
+          description: "Private fork planning",
+          allowed_tools: [],
+          arguments: [],
+          user_invocable: false,
+          model_invocable: false,
+          context: "fork",
+        }),
+      ]),
     };
 
     renderSkills();
@@ -160,7 +171,7 @@ describe("SkillsPage", () => {
     queryState.value = {
       isPending: false,
       error: new Error("capabilities unavailable"),
-      data: { skills: [] },
+      data: capabilities([]),
     };
 
     renderSkills();

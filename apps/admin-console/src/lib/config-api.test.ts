@@ -7,10 +7,7 @@ import {
   type RecordMeta,
   type RestoreResponse,
 } from "./config-api";
-import {
-  __resetAuthInterceptorForTesting,
-  setUnauthorizedHandler,
-} from "./auth-interceptor";
+import { __resetAuthInterceptorForTesting, setUnauthorizedHandler } from "./auth-interceptor";
 
 describe("restoreConfig", () => {
   afterEach(() => {
@@ -28,9 +25,7 @@ describe("restoreConfig", () => {
     await configApi.restoreConfig("agents", "alpha/beta", "evt-123");
 
     const calledUrl: string = fetchSpy.mock.calls[0][0] as string;
-    expect(calledUrl).toBe(
-      `${BACKEND_URL}/v1/config/agents/alpha%2Fbeta/restore`,
-    );
+    expect(calledUrl).toBe(`${BACKEND_URL}/v1/config/agents/alpha%2Fbeta/restore`);
   });
 
   it("encodes namespace with special chars", async () => {
@@ -44,9 +39,7 @@ describe("restoreConfig", () => {
     await configApi.restoreConfig("my/ns", "simple-id", "evt-456");
 
     const calledUrl: string = fetchSpy.mock.calls[0][0] as string;
-    expect(calledUrl).toBe(
-      `${BACKEND_URL}/v1/config/my%2Fns/simple-id/restore`,
-    );
+    expect(calledUrl).toBe(`${BACKEND_URL}/v1/config/my%2Fns/simple-id/restore`);
   });
 
   it("sends version in the POST body", async () => {
@@ -66,41 +59,48 @@ describe("restoreConfig", () => {
 
   it("returns the parsed response on success", async () => {
     const payload = { id: "agent-1", model_id: "gpt-4" };
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify(payload),
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(payload),
+      }),
+    );
 
     const result: RestoreResponse = await configApi.restoreConfig("agents", "agent-1", "evt-1");
     expect(result).toEqual(payload);
   });
 
   it("throws ConfigApiError with detail string for 404 with reason", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: false,
-      status: 404,
-      text: async () => JSON.stringify({ error: "not found", reason: "version missing" }),
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        text: async () => JSON.stringify({ error: "not found", reason: "version missing" }),
+      }),
+    );
 
-    await expect(
-      configApi.restoreConfig("agents", "agent-1", "bad-version"),
-    ).rejects.toMatchObject({
-      name: "ConfigApiError",
-      status: 404,
-    });
+    await expect(configApi.restoreConfig("agents", "agent-1", "bad-version")).rejects.toMatchObject(
+      {
+        name: "ConfigApiError",
+        status: 404,
+      },
+    );
   });
 
   it("throws ConfigApiError for 422 with resolver message", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: false,
-      status: 422,
-      text: async () => JSON.stringify({ error: "validation failed" }),
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        text: async () => JSON.stringify({ error: "validation failed" }),
+      }),
+    );
 
-    await expect(
-      configApi.restoreConfig("agents", "agent-1", "evt-1"),
-    ).rejects.toMatchObject({
+    await expect(configApi.restoreConfig("agents", "agent-1", "evt-1")).rejects.toMatchObject({
       name: "ConfigApiError",
       status: 422,
       message: "validation failed",
@@ -108,15 +108,16 @@ describe("restoreConfig", () => {
   });
 
   it("throws ConfigApiError for 503 audit log not configured", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
-      text: async () => JSON.stringify({ error: "service unavailable" }),
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: async () => JSON.stringify({ error: "service unavailable" }),
+      }),
+    );
 
-    await expect(
-      configApi.restoreConfig("agents", "agent-1", "evt-1"),
-    ).rejects.toMatchObject({
+    await expect(configApi.restoreConfig("agents", "agent-1", "evt-1")).rejects.toMatchObject({
       name: "ConfigApiError",
       status: 503,
     });
@@ -190,16 +191,13 @@ describe("configApi", () => {
     });
     vi.stubGlobal("fetch", fetchSpy);
     vi.stubGlobal("localStorage", {
-      getItem: (key: string) =>
-        key === ADMIN_TOKEN_STORAGE_KEY ? "stored-token" : null,
+      getItem: (key: string) => (key === ADMIN_TOKEN_STORAGE_KEY ? "stored-token" : null),
     });
 
     await configApi.list("agents");
 
     const init = fetchSpy.mock.calls[0][1] as RequestInit;
-    expect(new Headers(init.headers).get("authorization")).toBe(
-      "Bearer stored-token",
-    );
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer stored-token");
   });
 
   it("uses stored bearer token before the dev env token", async () => {
@@ -211,16 +209,13 @@ describe("configApi", () => {
     });
     vi.stubGlobal("fetch", fetchSpy);
     vi.stubGlobal("localStorage", {
-      getItem: (key: string) =>
-        key === ADMIN_TOKEN_STORAGE_KEY ? "fresh-stored-token" : null,
+      getItem: (key: string) => (key === ADMIN_TOKEN_STORAGE_KEY ? "fresh-stored-token" : null),
     });
 
     await configApi.list("agents");
 
     const init = fetchSpy.mock.calls[0][1] as RequestInit;
-    expect(new Headers(init.headers).get("authorization")).toBe(
-      "Bearer fresh-stored-token",
-    );
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer fresh-stored-token");
   });
 
   it("ignores VITE_ADMIN_BEARER_TOKEN in production builds", async () => {
@@ -264,9 +259,7 @@ describe("configApi", () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     const retryInit = fetchSpy.mock.calls[1][1] as RequestInit;
-    expect(new Headers(retryInit.headers).get("authorization")).toBe(
-      "Bearer rotated-token",
-    );
+    expect(new Headers(retryInit.headers).get("authorization")).toBe("Bearer rotated-token");
 
     __resetAuthInterceptorForTesting();
   });
@@ -334,14 +327,48 @@ describe("configApi", () => {
     );
 
     await expect(configApi.capabilities()).resolves.toMatchObject({
-      skills: [
-        {
-          id: "greeting",
-          allowed_tools: [],
-          arguments: [],
-          paths: [],
-        },
-      ],
+      kind: "ok",
+      capabilities: {
+        skills: [
+          {
+            id: "greeting",
+            allowed_tools: [],
+            arguments: [],
+            paths: [],
+          },
+        ],
+      },
+    });
+  });
+
+  it("reports absent capabilities route", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        text: async () => JSON.stringify({ error: "not found" }),
+        headers: new Headers({ "content-type": "application/json" }),
+      }),
+    );
+
+    await expect(configApi.capabilities()).resolves.toEqual({ kind: "route_absent" });
+  });
+
+  it("reports unavailable capabilities route errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: async () => JSON.stringify({ error: "unavailable" }),
+        headers: new Headers({ "content-type": "application/json" }),
+      }),
+    );
+
+    await expect(configApi.capabilities()).resolves.toMatchObject({
+      kind: "store_unavailable",
+      message: "unavailable",
     });
   });
 });

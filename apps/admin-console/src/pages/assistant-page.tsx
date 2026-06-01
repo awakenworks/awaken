@@ -1,6 +1,7 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useMemo, useRef, useEffect, useState, type FormEvent } from "react";
+import { useTranslation } from "react-i18next";
 import {
   adminAssistantApi,
   adminAssistantRunUrl,
@@ -8,6 +9,7 @@ import {
 } from "@/lib/config-api";
 import { adminAuthHeaders } from "@/lib/api/http";
 import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
+import { capabilitiesFromResult } from "@/lib/api";
 import {
   describeToolCallState,
   previewPayload,
@@ -17,18 +19,12 @@ import {
   type RuntimeDataPart,
 } from "@/lib/assistant-message";
 
-const suggestions = [
-  "Create a coding agent with Bash and file tools",
-  "Set up a customer support agent with permission controls",
-  "Configure a research agent that delegates to sub-agents",
-  "Show me all available plugins and their options",
-];
-
 export function AssistantPage() {
   return <AssistantChatPanel variant="page" />;
 }
 
 export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "floating" }) {
+  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState("");
   const transport = useMemo(
@@ -52,6 +48,12 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "f
   }, [messages]);
 
   const streamErrored = !!error;
+  const suggestions = [
+    t("assistant.suggestions.coding"),
+    t("assistant.suggestions.support"),
+    t("assistant.suggestions.research"),
+    t("assistant.suggestions.capabilities"),
+  ];
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -67,25 +69,21 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "f
     // the input is always anchored at the visible bottom — `h-full`
     // collapses to `auto` whenever an ancestor stops propagating a
     // definite height, hiding the input below the fold.
-    <div className={variant === "floating" ? "flex h-full flex-col" : "flex h-[calc(100dvh-3rem)] flex-col"}>
+    <div
+      className={
+        variant === "floating" ? "flex h-full flex-col" : "flex h-[calc(100dvh-3rem)] flex-col"
+      }
+    >
       <header className="border-b border-line bg-surface px-6 py-4">
-        <h2 className="text-lg font-semibold text-fg-strong">
-          Admin Assistant
-        </h2>
-        <p className="mt-1 text-sm text-fg-soft">
-          Describe the agent you want to create or modify. The assistant reads
-          platform capabilities, drafts AgentSpecs, and validates settings with
-          locked admin-only tools.
-        </p>
+        <h2 className="text-lg font-semibold text-fg-strong">{t("assistant.title")}</h2>
+        <p className="mt-1 text-sm text-fg-soft">{t("assistant.description")}</p>
         <AssistantSettingsPanel compact={variant === "floating"} />
       </header>
 
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-auto p-6">
         {messages.length === 0 && (
           <div className="mt-12 space-y-3 text-center text-fg-faint">
-            <p className="text-lg">
-              What kind of agent would you like to build?
-            </p>
+            <p className="text-lg">{t("assistant.emptyPrompt")}</p>
             <div className="mt-4 flex flex-wrap justify-center gap-2">
               {suggestions.map((s) => (
                 <button
@@ -106,15 +104,10 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "f
           if (view.blocks.length === 0) return null;
           const isUser = message.role === "user";
           return (
-            <div
-              key={message.id}
-              className={`flex ${isUser ? "justify-end" : "justify-start"}`}
-            >
+            <div key={message.id} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
               <div
                 className={`max-w-[80%] space-y-2 rounded-lg px-4 py-2 text-sm ${
-                  isUser
-                    ? "bg-cyan-700 text-bg"
-                    : "bg-surface text-fg shadow"
+                  isUser ? "bg-cyan-700 text-bg" : "bg-surface text-fg shadow"
                 }`}
               >
                 {view.blocks.map((block) => (
@@ -128,7 +121,7 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "f
         {status === "streaming" && (
           <div className="flex justify-start">
             <div className="animate-pulse rounded-lg bg-surface px-4 py-2 text-sm text-fg-faint shadow">
-              Thinking...
+              {t("assistant.thinking")}
             </div>
           </div>
         )}
@@ -138,10 +131,9 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "f
             role="alert"
             className="rounded-lg border border-tone-error bg-surface px-4 py-3 text-sm text-tone-error shadow"
           >
-            <div className="font-medium">Assistant call failed</div>
+            <div className="font-medium">{t("assistant.errorTitle")}</div>
             <div className="mt-1 text-xs text-fg-soft">
-              {error?.message ||
-                "The admin assistant is unavailable. Configure a model and ensure the admin assistant endpoint is enabled."}
+              {error?.message || t("assistant.errorUnavailable")}
             </div>
           </div>
         )}
@@ -154,7 +146,7 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "f
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Describe your agent or ask about config..."
+          placeholder={t("assistant.inputPlaceholder")}
           className="flex-1 rounded-lg border border-line-strong px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-600"
         />
         <button
@@ -162,7 +154,7 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "f
           disabled={status === "streaming" || !input.trim()}
           className="rounded-lg bg-cyan-700 px-4 py-2 text-sm text-bg hover:bg-cyan-600 disabled:opacity-50"
         >
-          Send
+          {t("assistant.send")}
         </button>
       </form>
     </div>
@@ -170,6 +162,7 @@ export function AssistantChatPanel({ variant = "page" }: { variant?: "page" | "f
 }
 
 function AssistantSettingsPanel({ compact = false }: { compact?: boolean }) {
+  const { t } = useTranslation();
   const capabilitiesQuery = useCapabilitiesQuery();
   const [config, setConfig] = useState<AdminAssistantConfig | null>(null);
   const [draft, setDraft] = useState<AdminAssistantConfig | null>(null);
@@ -219,17 +212,18 @@ function AssistantSettingsPanel({ compact = false }: { compact?: boolean }) {
   }
 
   const dirty = JSON.stringify(config) !== JSON.stringify(draft);
-  const models = capabilitiesQuery.data?.models ?? [];
+  const capabilities = capabilitiesFromResult(capabilitiesQuery.data);
+  const models = capabilities?.models ?? [];
 
   return (
     <details className="mt-4 rounded-sm border border-line bg-soft">
       <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-fg-soft">
-        Prompt policy and locked tools
+        {t("assistant.settings.summary")}
       </summary>
       <div className="space-y-3 border-t border-line px-3 py-3">
         <div className={compact ? "grid gap-3" : "grid gap-3 md:grid-cols-[16rem,1fr]"}>
           <label className="text-xs font-medium text-fg-soft">
-            Assistant model
+            {t("assistant.settings.model")}
             <select
               value={draft?.model_id ?? ""}
               onChange={(event) =>
@@ -245,7 +239,7 @@ function AssistantSettingsPanel({ compact = false }: { compact?: boolean }) {
               disabled={!draft || loading || saving}
               className="mt-1 w-full rounded-sm border border-line-strong bg-surface px-2 py-1.5 text-sm text-fg outline-none focus:border-fg"
             >
-              <option value="">Auto-select first configured model</option>
+              <option value="">{t("assistant.settings.autoModel")}</option>
               {models.map((model) => (
                 <option key={model.id} value={model.id}>
                   {model.id}
@@ -254,7 +248,7 @@ function AssistantSettingsPanel({ compact = false }: { compact?: boolean }) {
             </select>
           </label>
           <label className="text-xs font-medium text-fg-soft">
-            Editable policy prompt
+            {t("assistant.settings.policy")}
             <textarea
               value={draft?.policy_prompt ?? ""}
               onChange={(event) =>
@@ -264,24 +258,32 @@ function AssistantSettingsPanel({ compact = false }: { compact?: boolean }) {
               }
               disabled={!draft || loading || saving}
               rows={compact ? 3 : 5}
-              placeholder="Organization-specific preferences for how the Admin Assistant should draft agents."
+              placeholder={t("assistant.settings.policyPlaceholder")}
               className="mt-1 w-full rounded-sm border border-line-strong bg-surface px-3 py-2 font-mono text-xs text-fg outline-none focus:border-fg"
             />
           </label>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-fg-soft">
-          <span className="rounded-pill bg-muted px-2 py-0.5">system prompt locked</span>
-          <span className="rounded-pill bg-muted px-2 py-0.5">tools locked</span>
-          <span className="rounded-pill bg-muted px-2 py-0.5">admin only</span>
+          <span className="rounded-pill bg-muted px-2 py-0.5">
+            {t("assistant.settings.systemPromptLocked")}
+          </span>
+          <span className="rounded-pill bg-muted px-2 py-0.5">
+            {t("assistant.settings.toolsLocked")}
+          </span>
+          <span className="rounded-pill bg-muted px-2 py-0.5">
+            {t("assistant.settings.adminOnly")}
+          </span>
           {error ? <span className="text-tone-error">{error}</span> : null}
-          {saved ? <span className="text-tone-success">Saved</span> : null}
+          {saved ? (
+            <span className="text-tone-success">{t("assistant.settings.saved")}</span>
+          ) : null}
           <button
             type="button"
             onClick={() => void save()}
             disabled={!dirty || saving || loading || !draft}
             className="ml-auto rounded-sm border border-line-strong bg-surface px-2 py-1 text-xs font-medium text-fg transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {saving ? "Saving..." : "Save policy"}
+            {saving ? t("assistant.settings.saving") : t("assistant.settings.save")}
           </button>
         </div>
       </div>
@@ -294,6 +296,7 @@ function errorMessage(error: unknown): string {
 }
 
 function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }) {
+  const { t } = useTranslation();
   switch (block.kind) {
     case "text":
       return <div className="whitespace-pre-wrap break-words">{block.text}</div>;
@@ -306,7 +309,7 @@ function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }
           ].join(" ")}
         >
           <div className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
-            Reasoning
+            {t("assistant.blocks.reasoning")}
           </div>
           <div className="mt-1 whitespace-pre-wrap break-words">{block.text}</div>
         </div>
@@ -314,7 +317,7 @@ function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }
     case "step-start":
       return (
         <div className="text-[10px] font-semibold uppercase tracking-wide text-fg-faint">
-          ── new step ──
+          {t("assistant.blocks.newStep")}
         </div>
       );
     case "runtime-metadata":
@@ -329,13 +332,14 @@ function BlockView({ block, isUser }: { block: AssistantBlock; isUser: boolean }
             isUser ? "bg-cyan-800 text-cyan-100" : "bg-muted text-fg-soft",
           ].join(" ")}
         >
-          [unrendered: {block.type || "unknown"}]
+          {t("assistant.blocks.unrendered", { type: block.type || "unknown" })}
         </div>
       );
   }
 }
 
 function RuntimeMetadataView({ parts }: { parts: RuntimeDataPart[] }) {
+  const { t } = useTranslation();
   const runInfo = parts.find((part) => part.type === "data-run-info");
   const inference = [...parts].reverse().find((part) => part.type === "data-inference-complete");
   const snapshots = parts.filter((part) => part.type === "data-state-snapshot");
@@ -355,19 +359,26 @@ function RuntimeMetadataView({ parts }: { parts: RuntimeDataPart[] }) {
   return (
     <details className="rounded-sm border border-line bg-soft px-3 py-2 text-xs text-fg-soft">
       <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-fg-soft">
-        Runtime metadata{summary.length > 0 ? ` · ${summary.join(" · ")}` : ""}
+        {t("assistant.blocks.runtimeMetadata")}
+        {summary.length > 0 ? ` · ${summary.join(" · ")}` : ""}
       </summary>
       <dl className="mt-2 grid gap-1.5">
-        <MetadataRow label="Run" value={asRecord(runInfo?.data).runId} />
-        <MetadataRow label="Thread" value={asRecord(runInfo?.data).threadId} />
-        <MetadataRow label="Model" value={inferenceData.model} />
-        <MetadataRow label="Duration" value={summaryValue(inferenceData.durationMs, formatDuration)} />
-        <MetadataRow label="Usage" value={formatUsage(usage)} />
-        <MetadataRow label="State snapshots" value={snapshots.length} />
+        <MetadataRow label={t("assistant.blocks.run")} value={asRecord(runInfo?.data).runId} />
+        <MetadataRow
+          label={t("assistant.blocks.thread")}
+          value={asRecord(runInfo?.data).threadId}
+        />
+        <MetadataRow label={t("assistant.blocks.model")} value={inferenceData.model} />
+        <MetadataRow
+          label={t("assistant.blocks.duration")}
+          value={summaryValue(inferenceData.durationMs, formatDuration)}
+        />
+        <MetadataRow label={t("assistant.blocks.usage")} value={formatUsage(usage)} />
+        <MetadataRow label={t("assistant.blocks.stateSnapshots")} value={snapshots.length} />
       </dl>
       <details className="mt-2 rounded-sm border border-line bg-code-bg">
         <summary className="cursor-pointer px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-code-fg/70">
-          JSON data
+          {t("assistant.blocks.jsonData")}
         </summary>
         <pre className="max-h-48 overflow-auto border-t border-line p-2 font-mono text-[11px] leading-5 text-code-fg">
           {previewPayload(parts)}
@@ -423,11 +434,8 @@ const TONE_CLASS: Record<AssistantBlockTone, string> = {
   error: "bg-tone-error/15 text-tone-error",
 };
 
-function ToolCallView({
-  block,
-}: {
-  block: Extract<AssistantBlock, { kind: "tool-call" }>;
-}) {
+function ToolCallView({ block }: { block: Extract<AssistantBlock, { kind: "tool-call" }> }) {
+  const { t } = useTranslation();
   const description = describeToolCallState(block.state);
   const inputPreview = previewPayload(block.input);
   const outputPreview = previewPayload(block.output);
@@ -445,18 +453,22 @@ function ToolCallView({
           {description.label}
         </span>
         <span className="ml-auto text-[10px] text-fg-faint group-open:hidden">
-          click to expand
+          {t("assistant.blocks.clickToExpand")}
         </span>
       </summary>
       <div className="space-y-2 border-t border-line px-3 py-2">
         {inputPreview ? (
-          <PayloadPanel label="Input" payload={inputPreview} />
+          <PayloadPanel label={t("assistant.blocks.input")} payload={inputPreview} />
         ) : null}
         {outputPreview ? (
-          <PayloadPanel label="Output" payload={outputPreview} />
+          <PayloadPanel label={t("assistant.blocks.output")} payload={outputPreview} />
         ) : null}
         {block.errorText ? (
-          <PayloadPanel label="Error" payload={block.errorText} tone="error" />
+          <PayloadPanel
+            label={t("assistant.blocks.error")}
+            payload={block.errorText}
+            tone="error"
+          />
         ) : null}
       </div>
     </details>

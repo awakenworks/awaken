@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useParams } from "react-router";
 import type { AgentSpec, SkillInfo } from "@/lib/api";
+import { capabilitiesFromResult } from "@/lib/api";
 import { Pill } from "@/components/ui/pill";
 import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
 import { useConfigListQuery } from "@/lib/query/hooks/config";
@@ -21,10 +22,11 @@ export function SkillDetailPage() {
       ? capabilitiesQuery.error.message
       : String(capabilitiesQuery.error)
     : null;
+  const capabilities = capabilitiesFromResult(capabilitiesQuery.data);
   const skill = useMemo(() => {
-    if (!id || !capabilitiesQuery.data) return undefined;
-    return capabilitiesQuery.data.skills.find((s) => s.id === id) ?? null;
-  }, [capabilitiesQuery.data, id]);
+    if (!id || !capabilities) return undefined;
+    return capabilities.skills.find((s) => s.id === id) ?? null;
+  }, [capabilities, id]);
   const agents = agentsQuery.data?.items ?? EMPTY_AGENTS;
 
   const usedByAgents = useMemo(() => {
