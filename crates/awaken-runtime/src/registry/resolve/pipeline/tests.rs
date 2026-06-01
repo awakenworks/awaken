@@ -1394,6 +1394,36 @@ fn resolve_spec_max_rounds_propagated() {
 }
 
 #[test]
+fn resolve_spec_stop_conditions_install_stop_condition_plugin() {
+    let spec = AgentSpec {
+        stop_conditions: vec![
+            awaken_runtime_contract::contract::lifecycle::StopConditionSpec::ContentMatch {
+                pattern: "DONE".into(),
+            },
+        ],
+        ..make_spec("a")
+    };
+
+    let regs = build_registries(
+        vec![],
+        "test-model",
+        ModelSpec::new("test-model", "p", "n"),
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        spec,
+    );
+
+    let run = resolve(&regs, "a").unwrap();
+    assert!(
+        run.env
+            .plugins
+            .iter()
+            .any(|plugin| plugin.descriptor().name == "stop-condition")
+    );
+}
+
+#[test]
 fn resolve_spec_system_prompt_propagated() {
     let spec = AgentSpec {
         system_prompt: "Custom instructions for the agent.".into(),

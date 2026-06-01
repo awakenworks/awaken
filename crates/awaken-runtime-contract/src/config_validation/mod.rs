@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use crate::agent_spec_patch::AgentSpecPatch;
 use crate::config_record::{ConfigRecord, ConfigRecordError, ConfigRecordMerge};
+use crate::contract::lifecycle::StopConditionSpec;
 use crate::registry_spec::{
     AgentSpec, Modality, ModelPoolSpec, ModelSpec, PoolMemberRole, ProviderSpec,
 };
@@ -66,6 +67,11 @@ const SKILL_SPEC_FIELDS: &[&str] = &[
     "paths",
 ];
 
+const MAX_STOP_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
+const MAX_STOP_TOKEN_BUDGET_TOTAL: usize = 100_000_000;
+const MAX_CONTENT_MATCH_PATTERN_CHARS: usize = 1024;
+const MAX_LOOP_DETECTION_WINDOW: usize = 64;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigValidationError {
     #[error("invalid agent spec: {0}")]
@@ -105,14 +111,74 @@ pub enum ConfigValidationError {
 ///
 /// Unknown fields are rejected by `AgentSpec`'s serde definition.
 pub fn validate_agent_spec(value: Value) -> Result<AgentSpec, ConfigValidationError> {
-    serde_json::from_value(value).map_err(ConfigValidationError::AgentSpec)
+    let spec: AgentSpec =
+        serde_json::from_value(value).map_err(ConfigValidationError::AgentSpec)?;
+    validate_stop_conditions("agent spec", &spec.stop_conditions)?;
+    Ok(spec)
 }
 
 /// Validate and decode an `AgentSpecPatch`.
 ///
 /// Unknown fields are rejected by `AgentSpecPatch`'s serde definition.
 pub fn validate_agent_spec_patch(value: Value) -> Result<AgentSpecPatch, ConfigValidationError> {
-    serde_json::from_value(value).map_err(ConfigValidationError::AgentSpecPatch)
+    let patch: AgentSpecPatch =
+        serde_json::from_value(value).map_err(ConfigValidationError::AgentSpecPatch)?;
+    if let Some(stop_conditions) = &patch.stop_conditions {
+        validate_stop_conditions("agent spec patch", stop_conditions)?;
+    }
+    Ok(patch)
+}
+
+fn validate_stop_conditions(
+    surface: &'static str,
+    stop_conditions: &[StopConditionSpec],
+) -> Result<(), ConfigValidationError> {
+    for condition in stop_conditions {
+        match condition {
+            StopConditionSpec::Timeout { seconds } if *seconds > MAX_STOP_TIMEOUT_SECONDS => {
+                return Err(ConfigValidationError::Invalid {
+                    surface,
+                    message: format!(
+                        "timeout.seconds must be <= {MAX_STOP_TIMEOUT_SECONDS}, got {seconds}"
+                    ),
+                });
+            }
+            StopConditionSpec::TokenBudget { max_total }
+                if *max_total > MAX_STOP_TOKEN_BUDGET_TOTAL =>
+            {
+                return Err(ConfigValidationError::Invalid {
+                    surface,
+                    message: format!(
+                        "token_budget.max_total must be <= {MAX_STOP_TOKEN_BUDGET_TOTAL}, got {max_total}"
+                    ),
+                });
+            }
+            StopConditionSpec::ContentMatch { pattern } => {
+                reject_max_chars(
+                    surface,
+                    "content_match.pattern",
+                    pattern,
+                    MAX_CONTENT_MATCH_PATTERN_CHARS,
+                )?;
+                if !pattern.is_empty() {
+                    regex::Regex::new(pattern).map_err(|error| ConfigValidationError::Invalid {
+                        surface,
+                        message: format!("content_match.pattern must be valid regex: {error}"),
+                    })?;
+                }
+            }
+            StopConditionSpec::LoopDetection { window } if *window > MAX_LOOP_DETECTION_WINDOW => {
+                return Err(ConfigValidationError::Invalid {
+                    surface,
+                    message: format!(
+                        "loop_detection.window must be <= {MAX_LOOP_DETECTION_WINDOW}, got {window}"
+                    ),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Validate and decode a `ProviderSpec` for config write surfaces.

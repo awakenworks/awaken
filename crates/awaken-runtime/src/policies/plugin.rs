@@ -4,7 +4,7 @@ use crate::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime_contract::StateError;
 use awaken_runtime_contract::model::Phase;
 
-use super::hook::StopConditionHook;
+use super::hook::{StopConditionHook, StopConditionStartHook};
 use super::policy::{MaxRoundsPolicy, StopPolicy};
 use super::state::StopConditionStatsKey;
 
@@ -28,6 +28,7 @@ impl Plugin for StopConditionPlugin {
 
     fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
         registrar.register_key::<StopConditionStatsKey>(crate::state::StateKeyOptions::default())?;
+        registrar.register_phase_hook("stop-condition", Phase::RunStart, StopConditionStartHook)?;
         registrar.register_phase_hook(
             "stop-condition",
             Phase::AfterInference,
@@ -63,6 +64,11 @@ impl Plugin for MaxRoundsPlugin {
         let policies: Vec<Arc<dyn StopPolicy>> =
             vec![Arc::new(MaxRoundsPolicy::new(self.max_rounds))];
         registrar.register_key::<StopConditionStatsKey>(crate::state::StateKeyOptions::default())?;
+        registrar.register_phase_hook(
+            "stop-condition:max-rounds",
+            Phase::RunStart,
+            StopConditionStartHook,
+        )?;
         registrar.register_phase_hook(
             "stop-condition:max-rounds",
             Phase::AfterInference,

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::contract::lifecycle::StopConditionSpec;
+use regex::Regex;
 
 /// Decision returned by a stop policy evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,7 @@ pub struct StopPolicyStats {
     pub consecutive_errors: u32,
     pub last_tool_names: Vec<String>,
     pub last_response_text: String,
+    pub recent_response_texts: Vec<String>,
 }
 
 /// A stateless stop condition evaluator.
@@ -55,10 +57,10 @@ impl StopPolicy for MaxRoundsPolicy {
         if self.max == 0 {
             return StopDecision::Continue;
         }
-        if stats.step_count as usize > self.max {
+        if stats.step_count as usize >= self.max {
             StopDecision::Stop {
                 code: "max_rounds".into(),
-                detail: format!("exceeded {} rounds", self.max),
+                detail: format!("reached {} rounds", self.max),
             }
         } else {
             StopDecision::Continue
@@ -132,7 +134,7 @@ impl StopPolicy for TimeoutPolicy {
     }
 }
 
-/// Stop after N consecutive tool errors.
+/// Stop after N consecutive inference errors.
 pub struct ConsecutiveErrorsPolicy {
     pub max: u32,
 }
@@ -156,9 +158,119 @@ impl StopPolicy for ConsecutiveErrorsPolicy {
             StopDecision::Stop {
                 code: "consecutive_errors".into(),
                 detail: format!(
-                    "{} consecutive errors (limit {})",
+                    "{} consecutive inference errors (limit {})",
                     stats.consecutive_errors, self.max
                 ),
+            }
+        } else {
+            StopDecision::Continue
+        }
+    }
+}
+
+pub struct StopOnToolPolicy {
+    tool_name: String,
+}
+
+impl StopOnToolPolicy {
+    pub fn new(tool_name: impl Into<String>) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+        }
+    }
+}
+
+impl StopPolicy for StopOnToolPolicy {
+    fn id(&self) -> &str {
+        "stop_on_tool"
+    }
+
+    fn evaluate(&self, stats: &StopPolicyStats) -> StopDecision {
+        if self.tool_name.is_empty() {
+            return StopDecision::Continue;
+        }
+        if stats
+            .last_tool_names
+            .iter()
+            .any(|name| name == &self.tool_name)
+        {
+            StopDecision::Stop {
+                code: "stop_on_tool".into(),
+                detail: format!("tool {} was requested before execution", self.tool_name),
+            }
+        } else {
+            StopDecision::Continue
+        }
+    }
+}
+
+pub struct ContentMatchPolicy {
+    pattern: String,
+    regex: Option<Regex>,
+}
+
+impl ContentMatchPolicy {
+    pub fn new(pattern: impl Into<String>) -> Self {
+        let pattern = pattern.into();
+        let regex = Regex::new(&pattern).ok();
+        Self { pattern, regex }
+    }
+}
+
+impl StopPolicy for ContentMatchPolicy {
+    fn id(&self) -> &str {
+        "content_match"
+    }
+
+    fn evaluate(&self, stats: &StopPolicyStats) -> StopDecision {
+        if self.pattern.is_empty() {
+            return StopDecision::Continue;
+        }
+        let Some(regex) = &self.regex else {
+            return StopDecision::Continue;
+        };
+        if regex.is_match(&stats.last_response_text) {
+            StopDecision::Stop {
+                code: "content_match".into(),
+                detail: format!("response matched stop regex {}", self.pattern),
+            }
+        } else {
+            StopDecision::Continue
+        }
+    }
+}
+
+pub struct LoopDetectionPolicy {
+    window: usize,
+}
+
+impl LoopDetectionPolicy {
+    pub fn new(window: usize) -> Self {
+        Self { window }
+    }
+}
+
+impl StopPolicy for LoopDetectionPolicy {
+    fn id(&self) -> &str {
+        "loop_detection"
+    }
+
+    fn evaluate(&self, stats: &StopPolicyStats) -> StopDecision {
+        if self.window < 2 || stats.recent_response_texts.len() < self.window {
+            return StopDecision::Continue;
+        }
+        let start = stats.recent_response_texts.len() - self.window;
+        let window = &stats.recent_response_texts[start..];
+        let Some(first) = window.first() else {
+            return StopDecision::Continue;
+        };
+        if first.is_empty() {
+            return StopDecision::Continue;
+        }
+        if window.iter().all(|item| item == first) {
+            StopDecision::Stop {
+                code: "loop_detection".into(),
+                detail: format!("same response repeated for {} steps", self.window),
             }
         } else {
             StopDecision::Continue
@@ -170,24 +282,27 @@ impl StopPolicy for ConsecutiveErrorsPolicy {
 pub fn policies_from_specs(specs: &[StopConditionSpec]) -> Vec<Arc<dyn StopPolicy>> {
     specs
         .iter()
-        .filter_map(|spec| -> Option<Arc<dyn StopPolicy>> {
+        .map(|spec| -> Arc<dyn StopPolicy> {
             match spec {
-                StopConditionSpec::MaxRounds { rounds } => {
-                    Some(Arc::new(MaxRoundsPolicy::new(*rounds)))
-                }
+                StopConditionSpec::MaxRounds { rounds } => Arc::new(MaxRoundsPolicy::new(*rounds)),
                 StopConditionSpec::Timeout { seconds } => {
-                    Some(Arc::new(TimeoutPolicy::new(*seconds * 1000)))
+                    Arc::new(TimeoutPolicy::new(seconds.saturating_mul(1000)))
                 }
                 StopConditionSpec::TokenBudget { max_total } => {
-                    Some(Arc::new(TokenBudgetPolicy::new(*max_total as u64)))
+                    Arc::new(TokenBudgetPolicy::new(*max_total as u64))
                 }
                 StopConditionSpec::ConsecutiveErrors { max } => {
-                    Some(Arc::new(ConsecutiveErrorsPolicy::new(*max as u32)))
+                    Arc::new(ConsecutiveErrorsPolicy::new(*max as u32))
                 }
-                // StopOnTool, ContentMatch, LoopDetection are not yet implemented
-                StopConditionSpec::StopOnTool { .. }
-                | StopConditionSpec::ContentMatch { .. }
-                | StopConditionSpec::LoopDetection { .. } => None,
+                StopConditionSpec::StopOnTool { tool_name } => {
+                    Arc::new(StopOnToolPolicy::new(tool_name.clone()))
+                }
+                StopConditionSpec::ContentMatch { pattern } => {
+                    Arc::new(ContentMatchPolicy::new(pattern.clone()))
+                }
+                StopConditionSpec::LoopDetection { window } => {
+                    Arc::new(LoopDetectionPolicy::new(*window))
+                }
             }
         })
         .collect()

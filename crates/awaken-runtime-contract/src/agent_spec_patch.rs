@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::contract::inference::{ContextWindowPolicy, ReasoningEffort};
+use crate::contract::lifecycle::StopConditionSpec;
 use crate::registry_spec::{AgentSpec, RemoteEndpoint};
 
 /// Patch value for `AgentSpec` fields that are optional in the base spec.
@@ -39,6 +40,8 @@ pub struct AgentSpecPatch {
     pub max_rounds: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_continuation_retries: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_conditions: Option<Vec<StopConditionSpec>>,
     #[serde(
         default,
         deserialize_with = "nullable_patch::deserialize",
@@ -147,6 +150,7 @@ impl AgentSpecPatch {
             && self.system_prompt.is_none()
             && self.max_rounds.is_none()
             && self.max_continuation_retries.is_none()
+            && self.stop_conditions.is_none()
             && self.context_policy.is_none()
             && self.plugin_ids.is_none()
             && self.active_hook_filter.is_none()
@@ -199,6 +203,7 @@ pub fn merge_agent_spec(base: AgentSpec, patch: AgentSpecPatch) -> AgentSpec {
         max_continuation_retries: patch
             .max_continuation_retries
             .unwrap_or(base.max_continuation_retries),
+        stop_conditions: patch.stop_conditions.unwrap_or(base.stop_conditions),
         context_policy: merge_nullable(base.context_policy, patch.context_policy),
         plugin_ids: patch.plugin_ids.unwrap_or(base.plugin_ids),
         active_hook_filter: patch.active_hook_filter.unwrap_or(base.active_hook_filter),

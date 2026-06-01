@@ -7,8 +7,9 @@ mod state;
 
 pub use plugin::{MaxRoundsPlugin, StopConditionPlugin};
 pub use policy::{
-    ConsecutiveErrorsPolicy, MaxRoundsPolicy, StopDecision, StopPolicy, StopPolicyStats,
-    TimeoutPolicy, TokenBudgetPolicy, policies_from_specs,
+    ConsecutiveErrorsPolicy, ContentMatchPolicy, LoopDetectionPolicy, MaxRoundsPolicy,
+    StopDecision, StopOnToolPolicy, StopPolicy, StopPolicyStats, TimeoutPolicy, TokenBudgetPolicy,
+    policies_from_specs,
 };
 pub use state::{StopConditionStatsKey, StopConditionStatsState};
 

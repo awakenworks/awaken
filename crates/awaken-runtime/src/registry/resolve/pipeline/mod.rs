@@ -52,6 +52,27 @@ pub(crate) fn inject_default_plugins(
     plugins
 }
 
+pub(crate) fn inject_default_plugins_with_stop_policies(
+    mut plugins: Vec<Arc<dyn Plugin>>,
+    max_rounds: usize,
+    mut stop_policies: Vec<Arc<dyn crate::policies::StopPolicy>>,
+) -> Vec<Arc<dyn Plugin>> {
+    if stop_policies.is_empty() {
+        return inject_default_plugins(plugins, max_rounds);
+    }
+
+    plugins.push(Arc::new(
+        crate::loop_runner::actions::LoopActionHandlersPlugin,
+    ));
+    let mut policies: Vec<Arc<dyn crate::policies::StopPolicy>> =
+        vec![Arc::new(crate::policies::MaxRoundsPolicy::new(max_rounds))];
+    policies.append(&mut stop_policies);
+    plugins.push(Arc::new(crate::policies::StopConditionPlugin::new(
+        policies,
+    )));
+    plugins
+}
+
 // ---------------------------------------------------------------------------
 // resolve()
 // ---------------------------------------------------------------------------
@@ -341,7 +362,9 @@ fn build_plugin_chain(
     let plugins = resolve_plugins(registries, spec)?;
 
     // Runtime-required default plugins
-    let mut plugins = inject_default_plugins(plugins, spec.max_rounds);
+    let stop_policies = crate::policies::policies_from_specs(&spec.stop_conditions);
+    let mut plugins =
+        inject_default_plugins_with_stop_policies(plugins, spec.max_rounds, stop_policies);
 
     if let Some(cutoff) =
         capability_runtime::knowledge_cutoff_context(spec, model, capability_sources)?

@@ -90,6 +90,8 @@ pub struct PersistenceHints {
     pub messages_already_persisted: bool,
     pub run_id_hint: Option<String>,
     pub dispatch_id_hint: Option<String>,
+    /// Opaque server-owned resolved registry snapshot id to persist for this run.
+    pub resolution_id_hint: Option<String>,
 }
 
 /// Frozen resolver objects inherited from a pinned root run. Sub-runs
@@ -287,6 +289,12 @@ impl RunActivation {
     }
 
     #[must_use]
+    pub fn with_resolution_id_hint(mut self, resolution_id_hint: impl Into<String>) -> Self {
+        self.persistence.resolution_id_hint = Some(resolution_id_hint.into());
+        self
+    }
+
+    #[must_use]
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.trace.session_id = Some(session_id.into());
         self
@@ -449,6 +457,7 @@ mod tests {
             .with_thread_context_cache(Arc::clone(&cache))
             .with_run_id_hint("hinted-run-id")
             .with_dispatch_id_hint("hinted-dispatch-id")
+            .with_resolution_id_hint("hinted-resolution-id")
             .with_continuation_run_id("parent-run")
             .with_messages_already_persisted(true)
             .with_pinned_registry_set(registry_set)
@@ -476,6 +485,11 @@ mod tests {
             activation.persistence.dispatch_id_hint.as_deref(),
             Some("hinted-dispatch-id"),
             "with_dispatch_id_hint routes to PersistenceHints"
+        );
+        assert_eq!(
+            activation.persistence.resolution_id_hint.as_deref(),
+            Some("hinted-resolution-id"),
+            "with_resolution_id_hint routes to PersistenceHints"
         );
         assert!(
             activation.persistence.is_continuation,

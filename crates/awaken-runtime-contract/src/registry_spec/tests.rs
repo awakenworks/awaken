@@ -8,6 +8,11 @@ fn agent_spec_serde_roundtrip() {
         model_id: "claude-opus".into(),
         system_prompt: "You are a coding assistant.".into(),
         max_rounds: 8,
+        stop_conditions: vec![
+            crate::contract::lifecycle::StopConditionSpec::ContentMatch {
+                pattern: "DONE".into(),
+            },
+        ],
         plugin_ids: vec!["permission".into(), "logging".into()],
         allowed_tools: Some(vec!["read_file".into(), "write_file".into()]),
         excluded_tools: Some(vec!["delete_file".into()]),
@@ -26,6 +31,7 @@ fn agent_spec_serde_roundtrip() {
     assert_eq!(parsed.model_id, "claude-opus");
     assert_eq!(parsed.system_prompt, "You are a coding assistant.");
     assert_eq!(parsed.max_rounds, 8);
+    assert_eq!(parsed.stop_conditions.len(), 1);
     assert_eq!(parsed.plugin_ids, vec!["permission", "logging"]);
     assert_eq!(
         parsed.allowed_tools,
@@ -43,6 +49,7 @@ fn agent_spec_defaults() {
     assert_eq!(spec.model_id, "m");
     assert_eq!(spec.max_rounds, 16);
     assert_eq!(spec.max_continuation_retries, 2);
+    assert!(spec.stop_conditions.is_empty());
     assert!(spec.context_policy.is_none());
     assert!(spec.plugin_ids.is_empty());
     assert!(spec.active_hook_filter.is_empty());

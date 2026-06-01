@@ -3,6 +3,7 @@
 use crate::backend::{ExecutionBackend, ExecutionBackendError, ExecutionBackendFactory};
 use awaken_runtime_contract::contract::executor::LlmExecutor;
 use awaken_runtime_contract::contract::inference::ContextWindowPolicy;
+use awaken_runtime_contract::contract::lifecycle::StopConditionSpec;
 use awaken_runtime_contract::contract::stream_checkpoint::StreamCheckpointStore;
 use awaken_runtime_contract::contract::tool::Tool;
 use awaken_runtime_contract::registry_spec::{AgentSpec, RemoteEndpoint};
@@ -60,6 +61,7 @@ impl ResolvedAgent {
             system_prompt: system_prompt.into(),
             max_rounds: 16,
             max_continuation_retries: 2,
+            stop_conditions: Vec::new(),
             context_policy: None,
             reasoning_effort: None,
             plugin_ids: Vec::new(),
@@ -120,6 +122,10 @@ impl ResolvedAgent {
 
     pub fn max_continuation_retries(&self) -> usize {
         self.spec.max_continuation_retries
+    }
+
+    pub fn stop_conditions(&self) -> &[StopConditionSpec] {
+        &self.spec.stop_conditions
     }
 
     // -- builder methods ------------------------------------------------------

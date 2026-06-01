@@ -8,6 +8,7 @@ pub struct StopConditionStatsState {
     pub(super) total_output_tokens: u64,
     pub(super) start_time_ms: u64,
     pub(super) consecutive_errors: u32,
+    pub(super) recent_response_texts: Vec<String>,
 }
 
 pub struct StopConditionStatsKey;

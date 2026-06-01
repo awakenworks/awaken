@@ -16,6 +16,106 @@ fn validate_agent_spec_rejects_unknown_fields() {
 }
 
 #[test]
+fn validate_agent_spec_enforces_stop_condition_bounds() {
+    let err = validate_agent_spec(json!({
+        "id": "a",
+        "model_id": "m",
+        "system_prompt": "s",
+        "stop_conditions": [{"type": "timeout", "seconds": 86_401}]
+    }))
+    .expect_err("timeout must have a hard upper bound");
+    assert!(err.to_string().contains("timeout.seconds"));
+
+    let err = validate_agent_spec(json!({
+        "id": "a",
+        "model_id": "m",
+        "system_prompt": "s",
+        "stop_conditions": [{"type": "token_budget", "max_total": 100_000_001}]
+    }))
+    .expect_err("token budget must have a hard upper bound");
+    assert!(err.to_string().contains("token_budget.max_total"));
+
+    let err = validate_agent_spec(json!({
+        "id": "a",
+        "model_id": "m",
+        "system_prompt": "s",
+        "stop_conditions": [{"type": "content_match", "pattern": "["}]
+    }))
+    .expect_err("content_match pattern must be valid regex");
+    assert!(err.to_string().contains("valid regex"));
+
+    let err = validate_agent_spec(json!({
+        "id": "a",
+        "model_id": "m",
+        "system_prompt": "s",
+        "stop_conditions": [{"type": "loop_detection", "window": 65}]
+    }))
+    .expect_err("loop detection window must have a hard upper bound");
+    assert!(err.to_string().contains("loop_detection.window"));
+}
+
+#[test]
+fn validate_agent_spec_accepts_empty_stop_conditions() {
+    let spec = validate_agent_spec(json!({
+        "id": "a",
+        "model_id": "m",
+        "system_prompt": "s",
+        "stop_conditions": []
+    }))
+    .expect("empty stop condition list is a valid explicit override");
+    assert!(spec.stop_conditions.is_empty());
+}
+
+#[test]
+fn validate_agent_spec_rejects_unknown_stop_condition_variant() {
+    let err = validate_agent_spec(json!({
+        "id": "a",
+        "model_id": "m",
+        "system_prompt": "s",
+        "stop_conditions": [{"type": "future_condition", "value": 1}]
+    }))
+    .expect_err("unknown stop condition variants must be rejected");
+    assert!(err.to_string().contains("invalid agent spec"));
+}
+
+#[test]
+fn validate_agent_spec_rejects_unknown_stop_condition_fields() {
+    let err = validate_agent_spec(json!({
+        "id": "a",
+        "model_id": "m",
+        "system_prompt": "s",
+        "stop_conditions": [{"type": "max_rounds", "rounds": 3, "future_field": true}]
+    }))
+    .expect_err("unknown fields inside stop conditions must be rejected");
+    assert!(err.to_string().contains("invalid agent spec"));
+}
+
+#[test]
+fn validate_agent_spec_patch_enforces_stop_condition_bounds() {
+    let err = validate_agent_spec_patch(json!({
+        "stop_conditions": [{"type": "content_match", "pattern": "x".repeat(1025)}]
+    }))
+    .expect_err("patch stop conditions must enforce pattern length");
+    assert!(err.to_string().contains("content_match.pattern"));
+}
+
+#[test]
+fn validate_agent_spec_patch_accepts_empty_stop_conditions() {
+    let patch = validate_agent_spec_patch(json!({ "stop_conditions": [] }))
+        .expect("empty stop condition patch is valid");
+    assert_eq!(patch.stop_conditions, Some(vec![]));
+}
+
+#[test]
+fn validate_agent_spec_patch_rejects_invalid_stop_condition_shape() {
+    let err = validate_agent_spec_patch(json!({
+        "stop_conditions": [{"type": "timeout", "seconds": 30, "future_field": true}]
+    }))
+    .expect_err("patch stop conditions must reject unknown fields");
+    assert!(err.to_string().contains("invalid agent spec patch"));
+}
+
+#[test]
 fn validate_agent_spec_patch_rejects_unknown_fields() {
     let err = validate_agent_spec_patch(json!({"bogus": true}))
         .expect_err("unknown patch field must be rejected");

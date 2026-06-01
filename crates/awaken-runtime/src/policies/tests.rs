@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use awaken_runtime_contract::StateError;
 use awaken_runtime_contract::contract::content::ContentBlock;
 use awaken_runtime_contract::contract::inference::{
     InferenceError, LLMResponse, StopReason, StreamResult, TokenUsage,
 };
 use awaken_runtime_contract::contract::lifecycle::{RunStatus, StopConditionSpec};
 use awaken_runtime_contract::model::Phase;
+use awaken_runtime_contract::{StateError, now_ms};
 
 use crate::hooks::PhaseContext;
 use crate::phase::{ExecutionEnv, PhaseRuntime};
@@ -56,7 +56,7 @@ fn make_test_env(policies: Vec<Arc<dyn StopPolicy>>) -> (StateStore, PhaseRuntim
 // -----------------------------------------------------------------------
 
 #[tokio::test]
-async fn max_rounds_plugin_sets_done_after_exceeding_limit() {
+async fn max_rounds_plugin_sets_done_when_limit_is_reached() {
     let store = StateStore::new();
     let runtime = PhaseRuntime::new(store.clone()).unwrap();
     store.install_plugin(LifecycleKeyPlugin).unwrap();
@@ -76,11 +76,7 @@ async fn max_rounds_plugin_sets_done_after_exceeding_limit() {
     let env = ExecutionEnv::from_plugins(&plugins, &Default::default()).unwrap();
     store.register_keys(&env.key_registrations).unwrap();
 
-    // Round 1 and 2: still Running
-    runtime
-        .run_phase(&env, Phase::AfterInference)
-        .await
-        .unwrap();
+    // Round 1: still Running
     runtime
         .run_phase(&env, Phase::AfterInference)
         .await
@@ -88,7 +84,7 @@ async fn max_rounds_plugin_sets_done_after_exceeding_limit() {
     let lifecycle = store.read::<RunLifecycle>().unwrap();
     assert_eq!(lifecycle.status, RunStatus::Running);
 
-    // Round 3: exceeds limit → Done
+    // Round 2: reaches limit -> Done
     runtime
         .run_phase(&env, Phase::AfterInference)
         .await
@@ -117,29 +113,30 @@ fn base_stats() -> StopPolicyStats {
         consecutive_errors: 0,
         last_tool_names: vec![],
         last_response_text: String::new(),
+        recent_response_texts: vec![],
     }
 }
 
 #[test]
-fn max_rounds_policy_continues_at_limit() {
+fn max_rounds_policy_stops_at_limit() {
     let policy = MaxRoundsPolicy::new(5);
     let stats = StopPolicyStats {
         step_count: 5,
         ..base_stats()
     };
-    assert_eq!(policy.evaluate(&stats), StopDecision::Continue);
-}
-
-#[test]
-fn max_rounds_policy_stops_over_limit() {
-    let policy = MaxRoundsPolicy::new(5);
-    let stats = StopPolicyStats {
-        step_count: 6,
-        ..base_stats()
-    };
     assert!(
         matches!(policy.evaluate(&stats), StopDecision::Stop { code, .. } if code == "max_rounds")
     );
+}
+
+#[test]
+fn max_rounds_policy_continues_below_limit() {
+    let policy = MaxRoundsPolicy::new(5);
+    let stats = StopPolicyStats {
+        step_count: 4,
+        ..base_stats()
+    };
+    assert_eq!(policy.evaluate(&stats), StopDecision::Continue);
 }
 
 #[test]
@@ -263,7 +260,7 @@ fn policies_from_specs_converts_known_specs() {
 }
 
 #[test]
-fn policies_from_specs_skips_unimplemented_specs() {
+fn policies_from_specs_converts_declarative_specs() {
     let specs = vec![
         StopConditionSpec::StopOnTool {
             tool_name: "done".into(),
@@ -274,7 +271,72 @@ fn policies_from_specs_skips_unimplemented_specs() {
         StopConditionSpec::LoopDetection { window: 5 },
     ];
     let policies = policies_from_specs(&specs);
-    assert!(policies.is_empty());
+    assert_eq!(policies.len(), 3);
+    assert_eq!(policies[0].id(), "stop_on_tool");
+    assert_eq!(policies[1].id(), "content_match");
+    assert_eq!(policies[2].id(), "loop_detection");
+}
+
+#[test]
+fn declarative_stop_on_tool_policy_fires_for_matching_tool() {
+    let policies = policies_from_specs(&[StopConditionSpec::StopOnTool {
+        tool_name: "finish".into(),
+    }]);
+    let stats = StopPolicyStats {
+        last_tool_names: vec!["search".into(), "finish".into()],
+        ..base_stats()
+    };
+    assert!(
+        matches!(policies[0].evaluate(&stats), StopDecision::Stop { code, .. } if code == "stop_on_tool")
+    );
+}
+
+#[test]
+fn declarative_content_match_policy_fires_for_literal_match() {
+    let policies = policies_from_specs(&[StopConditionSpec::ContentMatch {
+        pattern: "DONE".into(),
+    }]);
+    let stats = StopPolicyStats {
+        last_response_text: "status: DONE".into(),
+        ..base_stats()
+    };
+    assert!(
+        matches!(policies[0].evaluate(&stats), StopDecision::Stop { code, .. } if code == "content_match")
+    );
+}
+
+#[test]
+fn declarative_content_match_policy_supports_regex_patterns() {
+    let policies = policies_from_specs(&[
+        StopConditionSpec::ContentMatch {
+            pattern: r"\bDONE\b".into(),
+        },
+        StopConditionSpec::ContentMatch {
+            pattern: "(?i)complete".into(),
+        },
+    ]);
+    let stats = StopPolicyStats {
+        last_response_text: "Task is complete; marker DONE.".into(),
+        ..base_stats()
+    };
+
+    for policy in policies {
+        assert!(
+            matches!(policy.evaluate(&stats), StopDecision::Stop { code, .. } if code == "content_match")
+        );
+    }
+}
+
+#[test]
+fn declarative_loop_detection_policy_fires_for_repeated_window() {
+    let policies = policies_from_specs(&[StopConditionSpec::LoopDetection { window: 3 }]);
+    let stats = StopPolicyStats {
+        recent_response_texts: vec!["same".into(), "same".into(), "same".into()],
+        ..base_stats()
+    };
+    assert!(
+        matches!(policies[0].evaluate(&stats), StopDecision::Stop { code, .. } if code == "loop_detection")
+    );
 }
 
 #[test]
@@ -295,6 +357,16 @@ fn policies_from_specs_timeout_converts_seconds_to_ms() {
         ..base_stats()
     };
     assert_eq!(policies[0].evaluate(&stats_under), StopDecision::Continue);
+}
+
+#[test]
+fn policies_from_specs_timeout_conversion_saturates() {
+    let policies = policies_from_specs(&[StopConditionSpec::Timeout { seconds: u64::MAX }]);
+    let stats = StopPolicyStats {
+        elapsed_ms: u64::MAX,
+        ..base_stats()
+    };
+    assert_eq!(policies[0].evaluate(&stats), StopDecision::Continue);
 }
 
 // -----------------------------------------------------------------------
@@ -349,6 +421,38 @@ async fn stop_condition_plugin_token_budget_fires() {
             .as_ref()
             .unwrap()
             .contains("token_budget")
+    );
+}
+
+#[tokio::test]
+async fn timeout_starts_at_run_start_before_first_inference_boundary() {
+    let (store, runtime, env) = make_test_env(vec![Arc::new(TimeoutPolicy::new(5000))]);
+
+    runtime.run_phase(&env, Phase::RunStart).await.unwrap();
+    let mut state = store.read::<StopConditionStatsKey>().unwrap();
+    assert!(state.start_time_ms > 0);
+    state.start_time_ms = now_ms().saturating_sub(6000);
+
+    let mut patch = crate::state::MutationBatch::new();
+    patch.update::<StopConditionStatsKey>(state);
+    store.commit(patch).unwrap();
+
+    let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+        .with_llm_response(make_llm_response_with_tokens(10, 10));
+    runtime.run_phase_with_context(&env, ctx).await.unwrap();
+
+    let lifecycle = store.read::<RunLifecycle>().unwrap();
+    assert_eq!(
+        lifecycle.status,
+        RunStatus::Done,
+        "slow first inference should be counted from RunStart at the first boundary"
+    );
+    assert!(
+        lifecycle
+            .status_reason
+            .as_ref()
+            .unwrap()
+            .contains("timeout")
     );
 }
 
@@ -535,6 +639,7 @@ fn multiple_policies_all_continue() {
         consecutive_errors: 1,
         last_tool_names: vec![],
         last_response_text: String::new(),
+        recent_response_texts: vec![],
     };
 
     for policy in &policies {
@@ -719,48 +824,47 @@ async fn stats_with_error_response_increments_errors() {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
-async fn stop_condition_does_not_fire_on_first_step() {
-    // MaxRounds(1) means: stop when step_count > 1, so step 1 should continue
+async fn max_rounds_1_stops_after_first_after_inference_boundary() {
     let (store, runtime, env) = make_test_env(vec![Arc::new(MaxRoundsPolicy::new(1))]);
 
     let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
         .with_llm_response(make_llm_response_with_tokens(10, 10));
     runtime.run_phase_with_context(&env, ctx).await.unwrap();
 
-    assert_eq!(
-        store.read::<RunLifecycle>().unwrap().status,
-        RunStatus::Running,
-        "step_count=1 should not exceed max_rounds=1"
-    );
-
-    // Second step: step_count=2 > 1, should fire
-    let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
-        .with_llm_response(make_llm_response_with_tokens(10, 10));
-    runtime.run_phase_with_context(&env, ctx).await.unwrap();
-
     let lifecycle = store.read::<RunLifecycle>().unwrap();
-    assert_eq!(lifecycle.status, RunStatus::Done);
+    assert_eq!(
+        lifecycle.status,
+        RunStatus::Done,
+        "step_count=1 should reach max_rounds=1"
+    );
+    assert!(
+        lifecycle
+            .status_reason
+            .as_ref()
+            .unwrap()
+            .contains("max_rounds")
+    );
 }
 
 #[tokio::test]
 async fn step_count_matches_internal_counter() {
-    // Verify that step_count increments correctly: max_rounds(3) should fire on step 4
+    // Verify that step_count increments correctly: max_rounds(3) fires on step 3.
     let (store, runtime, env) = make_test_env(vec![Arc::new(MaxRoundsPolicy::new(3))]);
 
-    // Steps 1, 2, 3: all should continue
-    for i in 1..=3 {
+    // Steps 1 and 2 should continue.
+    for i in 1..=2 {
         let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
             .with_llm_response(make_llm_response_with_tokens(10, 10));
         runtime.run_phase_with_context(&env, ctx).await.unwrap();
         assert_eq!(
             store.read::<RunLifecycle>().unwrap().status,
             RunStatus::Running,
-            "step {} should not exceed max_rounds=3",
+            "step {} should be below max_rounds=3",
             i
         );
     }
 
-    // Step 4: step_count=4 > 3, should fire
+    // Step 3: step_count=3 reaches the limit.
     let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
         .with_llm_response(make_llm_response_with_tokens(10, 10));
     runtime.run_phase_with_context(&env, ctx).await.unwrap();
@@ -773,6 +877,32 @@ async fn step_count_matches_internal_counter() {
             .as_ref()
             .unwrap()
             .contains("max_rounds")
+    );
+}
+
+#[tokio::test]
+async fn max_rounds_8_stops_at_step_8_not_9() {
+    let (store, runtime, env) = make_test_env(vec![Arc::new(MaxRoundsPolicy::new(8))]);
+
+    for step in 1..=7 {
+        let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+            .with_llm_response(make_llm_response_with_tokens(10, 10));
+        runtime.run_phase_with_context(&env, ctx).await.unwrap();
+        assert_eq!(
+            store.read::<RunLifecycle>().unwrap().status,
+            RunStatus::Running,
+            "step {step} should continue"
+        );
+    }
+
+    let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
+        .with_llm_response(make_llm_response_with_tokens(10, 10));
+    runtime.run_phase_with_context(&env, ctx).await.unwrap();
+
+    assert_eq!(
+        store.read::<RunLifecycle>().unwrap().status,
+        RunStatus::Done,
+        "step 8 should trigger stop"
     );
 }
 
@@ -791,9 +921,9 @@ fn max_rounds_policy_step_zero_does_not_fire() {
 }
 
 #[test]
-fn max_rounds_policy_fires_above_limit() {
+fn max_rounds_policy_fires_at_or_above_limit() {
     let policy = MaxRoundsPolicy::new(5);
-    for step in [6, 10, 100] {
+    for step in [5, 6, 10, 100] {
         let stats = StopPolicyStats {
             step_count: step,
             ..base_stats()
@@ -897,11 +1027,11 @@ fn stop_decision_eq_and_debug() {
 
     let d3 = StopDecision::Stop {
         code: "max_rounds".into(),
-        detail: "exceeded 5 rounds".into(),
+        detail: "reached 5 rounds".into(),
     };
     let d4 = StopDecision::Stop {
         code: "max_rounds".into(),
-        detail: "exceeded 5 rounds".into(),
+        detail: "reached 5 rounds".into(),
     };
     assert_eq!(d3, d4);
     assert_ne!(d1, d3);
@@ -920,6 +1050,7 @@ fn stop_policy_stats_clone() {
         consecutive_errors: 2,
         last_tool_names: vec!["echo".into()],
         last_response_text: "hello".into(),
+        recent_response_texts: vec!["hello".into()],
     };
     let cloned = stats.clone();
     assert_eq!(cloned.step_count, 5);
@@ -996,11 +1127,12 @@ fn policies_from_specs_mixed_known_and_unknown() {
         StopConditionSpec::ConsecutiveErrors { max: 3 },
     ];
     let policies = policies_from_specs(&specs);
-    // Only MaxRounds, Timeout, ConsecutiveErrors should be created
-    assert_eq!(policies.len(), 3);
+    assert_eq!(policies.len(), 5);
     assert_eq!(policies[0].id(), "max_rounds");
-    assert_eq!(policies[1].id(), "timeout");
-    assert_eq!(policies[2].id(), "consecutive_errors");
+    assert_eq!(policies[1].id(), "stop_on_tool");
+    assert_eq!(policies[2].id(), "timeout");
+    assert_eq!(policies[3].id(), "loop_detection");
+    assert_eq!(policies[4].id(), "consecutive_errors");
 }
 
 #[test]
@@ -1083,10 +1215,10 @@ async fn stop_condition_not_affected_by_empty_llm_response() {
 
 #[tokio::test]
 async fn max_rounds_exact_boundary_step_equals_max() {
-    // MaxRounds(3): step 1, 2, 3 should continue; step 4 should fire
+    // MaxRounds(3): step 1 and 2 should continue; step 3 should fire.
     let (store, runtime, env) = make_test_env(vec![Arc::new(MaxRoundsPolicy::new(3))]);
 
-    for i in 1..=3 {
+    for i in 1..=2 {
         let ctx = PhaseContext::new(Phase::AfterInference, runtime.store().snapshot())
             .with_llm_response(make_llm_response_with_tokens(10, 10));
         runtime.run_phase_with_context(&env, ctx).await.unwrap();
@@ -1104,7 +1236,7 @@ async fn max_rounds_exact_boundary_step_equals_max() {
     assert_eq!(
         store.read::<RunLifecycle>().unwrap().status,
         RunStatus::Done,
-        "step 4 should trigger stop"
+        "step 3 should trigger stop"
     );
 }
 

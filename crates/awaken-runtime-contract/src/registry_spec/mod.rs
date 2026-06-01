@@ -13,6 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::contract::inference::{ContextWindowPolicy, ReasoningEffort};
+use crate::contract::lifecycle::StopConditionSpec;
 use crate::error::StateError;
 
 // ---------------------------------------------------------------------------
@@ -81,6 +82,8 @@ struct AgentSpecRaw {
     #[serde(default = "default_max_continuation_retries")]
     max_continuation_retries: usize,
     #[serde(default)]
+    stop_conditions: Vec<StopConditionSpec>,
+    #[serde(default)]
     context_policy: Option<ContextWindowPolicy>,
     #[serde(default)]
     reasoning_effort: Option<ReasoningEffort>,
@@ -123,6 +126,7 @@ impl From<AgentSpecRaw> for AgentSpec {
             system_prompt: raw.system_prompt,
             max_rounds: raw.max_rounds,
             max_continuation_retries: raw.max_continuation_retries,
+            stop_conditions: raw.stop_conditions,
             context_policy: raw.context_policy,
             reasoning_effort: raw.reasoning_effort,
             plugin_ids: raw.plugin_ids,
@@ -195,6 +199,9 @@ pub struct AgentSpec {
     /// Maximum continuation retries for truncated LLM responses.
     #[serde(default = "default_max_continuation_retries")]
     pub max_continuation_retries: usize,
+    /// Declarative stop conditions installed as runtime stop policies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_conditions: Vec<StopConditionSpec>,
     /// Context window management policy. `None` disables compaction and truncation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_policy: Option<ContextWindowPolicy>,
@@ -590,6 +597,7 @@ impl Default for AgentSpec {
             system_prompt: String::new(),
             max_rounds: default_max_rounds(),
             max_continuation_retries: default_max_continuation_retries(),
+            stop_conditions: Vec::new(),
             context_policy: None,
             reasoning_effort: None,
             plugin_ids: Vec::new(),

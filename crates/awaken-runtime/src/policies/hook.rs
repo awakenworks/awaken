@@ -12,6 +12,33 @@ use super::policy::{StopDecision, StopPolicy, StopPolicyStats};
 use super::state::{StopConditionStatsKey, StopConditionStatsState};
 use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};
 
+const MAX_RESPONSE_HISTORY: usize = 64;
+
+/// Initializes run-scoped stop-condition stats before the first inference.
+pub(super) struct StopConditionStartHook;
+
+impl StopConditionStartHook {
+    fn next_state(ctx: &PhaseContext) -> StopConditionStatsState {
+        let mut state = ctx
+            .state::<StopConditionStatsKey>()
+            .cloned()
+            .unwrap_or_default();
+        if state.start_time_ms == 0 {
+            state.start_time_ms = now_ms();
+        }
+        state
+    }
+}
+
+#[async_trait]
+impl PhaseHook for StopConditionStartHook {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        let mut cmd = StateCommand::new();
+        cmd.update::<StopConditionStatsKey>(Self::next_state(ctx));
+        Ok(cmd)
+    }
+}
+
 /// Internal hook that builds stats from state and evaluates all policies.
 pub(super) struct StopConditionHook {
     pub(super) policies: Vec<Arc<dyn StopPolicy>>,
@@ -52,6 +79,13 @@ impl StopConditionHook {
                     state.total_output_tokens = state.total_output_tokens.saturating_add(output);
 
                     last_response_text = stream_result.text();
+                    if !last_response_text.is_empty() {
+                        state.recent_response_texts.push(last_response_text.clone());
+                        if state.recent_response_texts.len() > MAX_RESPONSE_HISTORY {
+                            let excess = state.recent_response_texts.len() - MAX_RESPONSE_HISTORY;
+                            state.recent_response_texts.drain(0..excess);
+                        }
+                    }
                     last_tool_names = stream_result
                         .tool_calls
                         .iter()
@@ -85,6 +119,7 @@ impl StopConditionHook {
                 consecutive_errors,
                 last_tool_names,
                 last_response_text,
+                recent_response_texts: state.recent_response_texts.clone(),
             },
         )
     }

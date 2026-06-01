@@ -274,8 +274,12 @@ pub fn build_agent_env(
     plugins: &[Arc<dyn crate::plugins::Plugin>],
     agent: &crate::registry::ResolvedAgent,
 ) -> Result<ExecutionEnv, StateError> {
-    let mut all_plugins =
-        crate::registry::resolve::inject_default_plugins(plugins.to_vec(), agent.max_rounds());
+    let stop_policies = crate::policies::policies_from_specs(agent.stop_conditions());
+    let mut all_plugins = crate::registry::resolve::inject_default_plugins_with_stop_policies(
+        plugins.to_vec(),
+        agent.max_rounds(),
+        stop_policies,
+    );
 
     if let Some(policy) = agent.context_policy() {
         let transform_config = agent

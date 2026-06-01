@@ -127,15 +127,22 @@ impl RunStatus {
 }
 
 /// Declarative stop-condition configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StopConditionSpec {
+    /// Stop when the number of completed inference rounds reaches `rounds`.
     MaxRounds { rounds: usize },
+    /// Stop at the next boundary after run elapsed time exceeds `seconds`.
     Timeout { seconds: u64 },
+    /// Stop when total input plus output tokens exceeds `max_total`.
     TokenBudget { max_total: usize },
+    /// Stop after `max` consecutive inference errors.
     ConsecutiveErrors { max: usize },
+    /// Stop before executing a requested tool with this name.
     StopOnTool { tool_name: String },
+    /// Stop when the latest response text matches this regular expression.
     ContentMatch { pattern: String },
+    /// Stop when the same non-empty response repeats across `window` responses.
     LoopDetection { window: usize },
 }
 
