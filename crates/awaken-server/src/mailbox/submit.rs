@@ -405,7 +405,14 @@ impl Mailbox {
                 id
             } else {
                 let id = self
-                    .resolve_replayable_resolution_id(request, run_id.clone())
+                    .resolve_replayable_resolution_id(
+                        request,
+                        request
+                            .persistence
+                            .resolution_id_hint
+                            .clone()
+                            .unwrap_or_else(|| run_id.clone()),
+                    )
                     .await?;
                 existing.resolution_id = Some(id.clone());
                 id
@@ -433,7 +440,14 @@ impl Mailbox {
                 request.intent.agent_id = Some(inferred_agent_id.clone());
             }
             let resolution_id = self
-                .resolve_replayable_resolution_id(request, run_id.clone())
+                .resolve_replayable_resolution_id(
+                    request,
+                    request
+                        .persistence
+                        .resolution_id_hint
+                        .clone()
+                        .unwrap_or_else(|| run_id.clone()),
+                )
                 .await?;
             let now = now_ms() / 1000;
             let record = RunRecord {

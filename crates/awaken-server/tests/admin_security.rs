@@ -207,6 +207,7 @@ async fn admin_routes_reject_missing_wrong_and_ambiguous_authorization_before_ha
         (Method::GET, "/v1/system/info", None),
         (Method::GET, "/v1/agents/runtime-stats", None),
         (Method::GET, "/v1/agents/bootstrap/runtime-stats", None),
+        (Method::GET, "/v1/runs/summary", None),
         (Method::GET, "/v1/capabilities", None),
         (Method::GET, "/v1/config/providers", None),
         (Method::GET, "/v1/config/providers/$schema", None),
@@ -470,6 +471,7 @@ async fn valid_bearer_reaches_admin_handlers_without_auth_failure() {
     for uri in [
         "/v1/system/info",
         "/v1/agents/runtime-stats",
+        "/v1/runs/summary",
         "/v1/config/providers",
         "/v1/audit-log",
     ] {

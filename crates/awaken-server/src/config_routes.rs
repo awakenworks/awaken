@@ -71,7 +71,6 @@ impl RouteConfigNamespace {
 
 pub fn config_routes() -> Router<ConfigRoutesState> {
     Router::new()
-        .route("/v1/capabilities", get(get_capabilities))
         .route(
             "/v1/config/:namespace",
             get(list_config).post(create_config),
@@ -114,6 +113,10 @@ pub fn config_routes() -> Router<ConfigRoutesState> {
         .route("/v1/mcp-servers/:id/status", get(get_mcp_server_status))
         .route("/v1/mcp-servers/:id/restart", post(post_mcp_server_restart))
         .route("/v1/audit-log", get(list_audit_log))
+}
+
+pub fn capabilities_routes() -> Router<ConfigRoutesState> {
+    Router::new().route("/v1/capabilities", get(get_capabilities))
 }
 
 async fn get_capabilities(

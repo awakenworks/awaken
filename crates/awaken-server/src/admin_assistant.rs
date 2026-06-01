@@ -374,6 +374,22 @@ fn admin_assistant_system_prompt() -> String {
     .join("\n")
 }
 
+/// Emit a structured audit record for an admin-assistant tool invocation.
+/// Admin tools run inside the authenticated admin-assistant run, so this ties
+/// each call to its thread/run/tool-call and the (assistant) agent id for an
+/// auditable trail — even the read-only draft/validate tools.
+fn emit_admin_tool_audit(ctx: &ToolCallContext) {
+    tracing::info!(
+        target: "awaken::admin_audit",
+        tool = %ctx.tool_name,
+        tool_call_id = %ctx.call_id,
+        thread_id = %ctx.run_identity.run.thread_id,
+        run_id = %ctx.run_identity.run.run_id,
+        agent_id = %ctx.run_identity.run.agent_id,
+        "admin assistant tool invoked"
+    );
+}
+
 struct GetPlatformCapabilitiesTool {
     state: ConfigRoutesState,
 }
@@ -394,7 +410,8 @@ impl Tool for GetPlatformCapabilitiesTool {
         }))
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, _args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        emit_admin_tool_audit(ctx);
         let service = service_for_tool(&self.state)?;
         let capabilities = service
             .capabilities()
@@ -420,7 +437,8 @@ impl Tool for CreateAgentDraftTool {
         .with_parameters(agent_create_parameters_schema())
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        emit_admin_tool_audit(ctx);
         let service = service_for_tool(&self.state)?;
         let draft = agent_draft_from_args(&service, &args).await?;
         match service
@@ -499,7 +517,6 @@ async fn agent_draft_from_args(service: &ConfigService, args: &Value) -> Result<
         .map_err(config_error_to_tool_error)?;
     let model_id = arg_string(args, "model_id")
         .or_else(|| admin_assistant_model_id(&capabilities))
-        .or_else(|| first_id(&capabilities["models"]))
         .ok_or_else(|| {
             ToolError::ExecutionFailed("no configured model is available for the agent".into())
         })?;
@@ -553,7 +570,8 @@ impl Tool for ValidateAgentTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        emit_admin_tool_audit(ctx);
         let agent = args
             .get("agent")
             .cloned()
@@ -619,15 +637,6 @@ fn string_array_arg(args: &Value, key: &str) -> Vec<String> {
     optional_string_array_arg(args, key).unwrap_or_default()
 }
 
-fn first_id(items: &Value) -> Option<String> {
-    items
-        .as_array()?
-        .iter()
-        .filter_map(|item| item.get("id").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-        .next()
-}
-
 fn admin_assistant_model_id(capabilities: &Value) -> Option<String> {
     capabilities
         .get("admin_assistant")?
@@ -667,7 +676,9 @@ mod tests {
     use awaken_runtime::registry::memory::{MapModelRegistry, MapProviderRegistry};
     use awaken_server_contract::{ModelPoolSpec, ModelSpec};
 
-    use super::{resolve_admin_assistant_model_id, select_admin_assistant_model_id};
+    use super::{
+        admin_assistant_model_id, resolve_admin_assistant_model_id, select_admin_assistant_model_id,
+    };
 
     fn register_provider(providers: &mut MapProviderRegistry, id: &str, source: &str) {
         providers
@@ -777,6 +788,66 @@ mod tests {
         assert_eq!(
             resolve_admin_assistant_model_id(&models, &providers, Some("scripted-pool")),
             None
+        );
+    }
+
+    #[test]
+    fn draft_model_fallback_only_uses_resolved_admin_assistant_model() {
+        let capabilities = serde_json::json!({
+            "admin_assistant": { "model_id": "live-model" },
+            "models": [{ "id": "alphabetically-first-but-not-selected" }]
+        });
+        assert_eq!(
+            admin_assistant_model_id(&capabilities).as_deref(),
+            Some("live-model")
+        );
+
+        let capabilities_without_selected = serde_json::json!({
+            "models": [{ "id": "first-model" }]
+        });
+        assert_eq!(
+            admin_assistant_model_id(&capabilities_without_selected),
+            None,
+            "draft creation must not silently fall back to the first catalog model"
+        );
+    }
+
+    #[test]
+    fn admin_tools_are_locked_to_the_assistant_and_carry_no_publish_tool() {
+        let metadata = super::admin_assistant_tools_metadata();
+        assert!(!metadata.is_empty());
+        for tool in &metadata {
+            let id = tool["id"].as_str().expect("admin tool id");
+            // A normal agent/protocol must never be able to select or expose an
+            // admin tool: the metadata contract is what gates the registry.
+            assert_eq!(
+                tool["selectable_by_agents"],
+                serde_json::json!(false),
+                "admin tool {id} must not be selectable by agents"
+            );
+            assert_eq!(
+                tool["exposable_to_protocols"],
+                serde_json::json!(false),
+                "admin tool {id} must not be exposable to protocols"
+            );
+            assert_eq!(
+                tool["visibility"],
+                serde_json::json!("admin_assistant_only")
+            );
+            assert!(
+                id.starts_with("admin_"),
+                "admin tool id {id} must be namespaced"
+            );
+        }
+        // No direct publish tool is bound to the assistant — publishing an
+        // AgentSpec must go through the Admin Console, not an LLM tool call.
+        let ids: Vec<&str> = metadata
+            .iter()
+            .map(|tool| tool["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            !ids.contains(&"admin_create_agent"),
+            "the publishing admin_create_agent tool must not be bound: {ids:?}"
         );
     }
 }

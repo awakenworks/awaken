@@ -61,6 +61,11 @@ impl ConfigRuntimeManager {
             .and_then(|target| target.resolver_factory.clone())
     }
 
+    #[must_use]
+    pub fn has_versioned_registry_store(&self) -> bool {
+        self.versioned_registry.is_some()
+    }
+
     /// Pick the `RegistrySet` to install via runtime hot-swap: prefer
     /// the materialized `RegistryPublication`, fall back to the editing
     /// candidate when no versioned store is wired or materialization
@@ -90,6 +95,80 @@ impl ConfigRuntimeManager {
                 candidate
             }
         }
+    }
+
+    /// Publish a ONE-OFF ephemeral publication = the current managed config
+    /// resources plus `draft` (overriding any saved agent with the same id),
+    /// returning its `snapshot_version`. The admin sandbox uses this to run an
+    /// unsaved draft agent durably: the run resolves to the latest publication
+    /// (this one) and the mailbox re-materializes it at execution by
+    /// resolution_id. `source_config_revisions` is empty — this is NOT a config
+    /// edit, so it never touches the audit/config-edit stream; only the
+    /// per-scope publication version counter advances.
+    pub async fn publish_ephemeral_with_extra_agent(
+        &self,
+        draft: &awaken_server_contract::AgentSpec,
+    ) -> Result<u64, ConfigRuntimeError> {
+        let Some(target) = &self.versioned_registry else {
+            return Err(ConfigRuntimeError::VersionedRegistry(
+                "ephemeral draft publication requires a versioned registry store".into(),
+            ));
+        };
+        let managed = self.load_managed_config().await?;
+
+        let mut resources = Vec::new();
+        append_provider_specs(&managed.providers, &mut resources)?;
+        append_specs(
+            awaken_server_contract::REGISTRY_KIND_MODEL,
+            &managed.models,
+            |spec| spec.id.as_str(),
+            &mut resources,
+        )?;
+        append_specs(
+            awaken_server_contract::REGISTRY_KIND_MODEL_POOL,
+            &managed.pools,
+            |spec| spec.id.as_str(),
+            &mut resources,
+        )?;
+        let agents: Vec<awaken_server_contract::AgentSpec> = managed
+            .agents
+            .iter()
+            .filter(|agent| agent.id != draft.id)
+            .cloned()
+            .chain(std::iter::once(draft.clone()))
+            .collect();
+        append_specs(
+            awaken_server_contract::REGISTRY_KIND_AGENT,
+            &agents,
+            |spec| spec.id.as_str(),
+            &mut resources,
+        )?;
+        append_specs(
+            awaken_server_contract::REGISTRY_KIND_TOOL,
+            &managed.tools,
+            |spec| spec.id.as_str(),
+            &mut resources,
+        )?;
+        append_specs(
+            awaken_server_contract::REGISTRY_KIND_SKILL,
+            &managed.skills,
+            |spec| spec.id.as_str(),
+            &mut resources,
+        )?;
+
+        let publication = target
+            .store
+            .publish_resources_and_create_publication(
+                target.scope_id.as_str(),
+                &uuid::Uuid::now_v7().to_string(),
+                resources,
+                Vec::new(),
+                None,
+                json!({ "ephemeral_draft_agent": draft.id }),
+            )
+            .await
+            .map_err(to_config_error)?;
+        Ok(publication.snapshot_version)
     }
 
     pub(super) async fn publish_versioned_registry(
@@ -352,6 +431,51 @@ mod tests {
         assert!(publication.source_config_revisions.iter().any(|revision| {
             revision.namespace == "agents" && revision.id == "agent-1" && revision.revision > 0
         }));
+    }
+
+    #[tokio::test]
+    async fn publish_ephemeral_with_extra_agent_includes_draft_without_config_revisions() {
+        let (manager, _, versioned) = make_manager_with_versioned_store().await;
+        manager
+            .apply_seed(&base_seed("system"))
+            .await
+            .expect("seed config");
+        manager.apply().await.expect("apply config");
+
+        let draft = AgentSpec {
+            id: "draft-sandbox".to_string(),
+            model_id: "model-1".to_string(),
+            system_prompt: "draft preview".to_string(),
+            ..Default::default()
+        };
+        let version = manager
+            .publish_ephemeral_with_extra_agent(&draft)
+            .await
+            .expect("ephemeral publish");
+
+        let publication = versioned
+            .get_publication("default", version)
+            .await
+            .expect("read publication")
+            .expect("publication exists");
+        // The draft agent is present so a durable run pinned to this version
+        // resolves it at execution/resume.
+        assert!(
+            publication.entries.iter().any(|entry| entry.kind
+                == awaken_server_contract::REGISTRY_KIND_AGENT
+                && entry.id == "draft-sandbox"),
+            "ephemeral publication must include the draft agent"
+        );
+        // Saved resources still ride along so the draft's deps resolve.
+        assert!(publication.entries.iter().any(|entry| entry.kind
+            == awaken_server_contract::REGISTRY_KIND_MODEL
+            && entry.id == "model-1"));
+        // Not a config edit: no source config revisions, so the audit/config
+        // version stream is untouched.
+        assert!(
+            publication.source_config_revisions.is_empty(),
+            "ephemeral publication must not carry config revisions"
+        );
     }
 
     #[tokio::test]

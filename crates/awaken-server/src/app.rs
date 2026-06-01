@@ -794,6 +794,13 @@ pub fn build_service_router(state: ServerState) -> std::io::Result<axum::Router>
 pub fn validate_admin_surface(state: &ServerState) -> std::io::Result<()> {
     crate::eval_limits::validate_eval_limits(&state.server_config.eval_limits)?;
     let admin = admin_api_config(state);
+    if admin.expose_eval_routes && state.eval_module().is_some() && state.config_module().is_none()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "expose_eval_routes=true with an eval run store requires a config module; call ServerState::with_config_store before with_eval_run_store",
+        ));
+    }
     let any_admin_route_exposed =
         admin.expose_config_routes || admin.expose_trace_routes || admin.expose_eval_routes;
     if !any_admin_route_exposed {
