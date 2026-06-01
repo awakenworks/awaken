@@ -132,11 +132,14 @@ export function AgentsPage() {
     }
     return map;
   }, [metaQuery.data]);
-  const runtimeUnavailable = runtimeQuery.data === null;
+  const runtimeUnavailable =
+    runtimeQuery.data?.kind === "route_absent" ||
+    runtimeQuery.data?.kind === "registry_unavailable";
   const runtimeStats = useMemo(() => {
     if (runtimeQuery.isPending) return null;
+    if (runtimeQuery.data?.kind !== "ok") return new Map<string, AgentRuntimeSnapshot>();
     const map = new Map<string, AgentRuntimeSnapshot>();
-    for (const snap of runtimeQuery.data?.agents ?? []) {
+    for (const snap of runtimeQuery.data.agents) {
       map.set(snap.agent_id, snap);
     }
     return map;

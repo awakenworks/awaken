@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { agentsApi, type AgentRuntimeSnapshot } from "../../api";
+import { agentsApi, type AgentsRuntimeStatsResult } from "../../api";
 import { fetchAgentRuntimeStats, type AgentRuntimeStatsResult } from "../../agent-stats";
 import { qk } from "../keys";
 
@@ -17,7 +17,7 @@ export function useAgentRuntimeStatsQuery(agentId: string | undefined, window: s
 }
 
 export function useAgentsRuntimeStatsQuery() {
-  return useQuery<{ agents: AgentRuntimeSnapshot[] } | null>({
+  return useQuery<AgentsRuntimeStatsResult>({
     queryKey: qk.agent.runtimeStatsList(),
     queryFn: agentsApi.agentsRuntimeStats,
   });

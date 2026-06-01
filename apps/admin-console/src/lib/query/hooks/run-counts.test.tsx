@@ -15,7 +15,7 @@ describe("useRunCountsQuery", () => {
   it("returns the running/waiting/created counters from /v1/runs/summary", async () => {
     const summarySpy = vi
       .spyOn(runsApi, "summary")
-      .mockResolvedValue({ running: 3, waiting: 2, created: 5 });
+      .mockResolvedValue({ kind: "ok", counts: { running: 3, waiting: 2, created: 5 } });
 
     const { result } = renderHook(() => useRunCountsQuery(), {
       wrapper: createQueryClientWrapper(),
@@ -30,7 +30,7 @@ describe("useRunCountsQuery", () => {
   });
 
   it("reports `route_absent` (404) — server doesn't expose /v1/runs/summary", async () => {
-    vi.spyOn(runsApi, "summary").mockRejectedValue(new ConfigApiError(404, "not found"));
+    vi.spyOn(runsApi, "summary").mockResolvedValue({ kind: "route_absent" });
 
     const { result } = renderHook(() => useRunCountsQuery(), {
       wrapper: createQueryClientWrapper(),
@@ -41,7 +41,7 @@ describe("useRunCountsQuery", () => {
   });
 
   it("reports `store_unavailable` (503) — run store unwired / unhealthy", async () => {
-    vi.spyOn(runsApi, "summary").mockRejectedValue(new ConfigApiError(503, "disabled"));
+    vi.spyOn(runsApi, "summary").mockResolvedValue({ kind: "store_unavailable" });
 
     const { result } = renderHook(() => useRunCountsQuery(), {
       wrapper: createQueryClientWrapper(),

@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router";
 import { DashboardPage } from "./dashboard-page";
 import type { DashboardData } from "@/lib/query/hooks/dashboard";
 import type { RunCountsResult } from "@/lib/query/hooks/run-counts";
-import type { AgentRuntimeSnapshot } from "@/lib/config-api";
+import type { AgentRuntimeSnapshot, AgentsRuntimeStatsResult } from "@/lib/config-api";
 
 const dashboardState = vi.hoisted(() => ({
   value: {
@@ -24,7 +24,7 @@ const runCountsState = vi.hoisted(() => ({
 
 const runtimeStatsState = vi.hoisted(() => ({
   value: {
-    data: undefined as AgentRuntimeSnapshot[] | null | undefined,
+    data: undefined as AgentsRuntimeStatsResult | undefined,
     error: null as unknown,
   },
 }));
@@ -256,7 +256,7 @@ beforeEach(() => {
     data: { kind: "ok", counts: { running: 3, waiting: 1, created: 2 } },
     error: null,
   };
-  runtimeStatsState.value = { data: runtimeStatsFixture(), error: null };
+  runtimeStatsState.value = { data: { kind: "ok", agents: runtimeStatsFixture() }, error: null };
 });
 
 afterEach(() => {
@@ -392,7 +392,7 @@ describe("DashboardPage", () => {
       error: null,
     };
     runCountsState.value = { data: { kind: "store_unavailable" }, error: null };
-    runtimeStatsState.value = { data: null, error: null };
+    runtimeStatsState.value = { data: { kind: "registry_unavailable" }, error: null };
 
     renderDashboard();
 
@@ -457,7 +457,7 @@ describe("DashboardPage", () => {
     // mixedWindowsDegraded message — silently summing 1h + 24h rows
     // would let an operator read "errors" as one comparable rate.
     snapshots[1].window_seconds = 86_400;
-    runtimeStatsState.value = { data: snapshots, error: null };
+    runtimeStatsState.value = { data: { kind: "ok", agents: snapshots }, error: null };
     dashboardState.value = { data: dashboardData(), error: null };
 
     renderDashboard();
@@ -471,7 +471,7 @@ describe("DashboardPage", () => {
   });
 
   it("includes the percentage in the tool failure metric extra", () => {
-    runtimeStatsState.value = { data: runtimeStatsFixture(), error: null };
+    runtimeStatsState.value = { data: { kind: "ok", agents: runtimeStatsFixture() }, error: null };
     dashboardState.value = { data: dashboardData(), error: null };
 
     renderDashboard();
@@ -484,7 +484,7 @@ describe("DashboardPage", () => {
   });
 
   it("surfaces a degraded marker when a config-list slot soft-failed", () => {
-    runtimeStatsState.value = { data: [], error: null };
+    runtimeStatsState.value = { data: { kind: "ok", agents: [] }, error: null };
     dashboardState.value = {
       data: dashboardData({
         degraded: { providers: true, mcpServers: true },
@@ -506,7 +506,7 @@ describe("DashboardPage", () => {
   });
 
   it("renders an empty-activity hint when runtime stats has no inferences", () => {
-    runtimeStatsState.value = { data: [], error: null };
+    runtimeStatsState.value = { data: { kind: "ok", agents: [] }, error: null };
     dashboardState.value = { data: dashboardData(), error: null };
 
     renderDashboard();

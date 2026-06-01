@@ -1,4 +1,4 @@
-import { BACKEND_URL, fetchJson } from "./http";
+import { BACKEND_URL, ConfigApiError, fetchJson } from "./http";
 
 /** Coarse run lifecycle status — mirrors Rust `RunStatus`. */
 export type RunStatus = "created" | "running" | "waiting" | "done";
@@ -36,10 +36,25 @@ export interface RunsSummary {
   created: number;
 }
 
+export type RunsSummaryResult =
+  | { kind: "ok"; counts: RunsSummary }
+  | { kind: "route_absent" }
+  | { kind: "store_unavailable" };
+
 export const runsApi = {
   list: (params: ListRunsParams = {}): Promise<ListRunsPage> =>
     fetchJson<ListRunsPage>(`${BACKEND_URL}/v1/runs${buildRunsQuery(params)}`),
 
-  summary: (): Promise<RunsSummary> =>
-    fetchJson<RunsSummary>(`${BACKEND_URL}/v1/runs/summary`),
+  summary: async (): Promise<RunsSummaryResult> => {
+    try {
+      const counts = await fetchJson<RunsSummary>(`${BACKEND_URL}/v1/runs/summary`);
+      return { kind: "ok", counts };
+    } catch (err) {
+      if (err instanceof ConfigApiError) {
+        if (err.status === 404) return { kind: "route_absent" };
+        if (err.status === 503) return { kind: "store_unavailable" };
+      }
+      throw err;
+    }
+  },
 };

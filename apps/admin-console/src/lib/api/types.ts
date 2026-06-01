@@ -42,6 +42,7 @@ export interface AgentSpec {
   system_prompt: string;
   max_rounds?: number;
   max_continuation_retries?: number;
+  stop_conditions?: StopConditionSpec[];
   context_policy?: ContextWindowPolicy | null;
   plugin_ids?: string[];
   /** Runtime hook filter — only hooks from listed plugins run (`[]` = no filter). */
@@ -59,6 +60,15 @@ export interface AgentSpec {
   created_at?: number;
   updated_at?: number;
 }
+
+export type StopConditionSpec =
+  | { type: "max_rounds"; rounds: number }
+  | { type: "timeout"; seconds: number }
+  | { type: "token_budget"; max_total: number }
+  | { type: "consecutive_errors"; max: number }
+  | { type: "stop_on_tool"; tool_name: string }
+  | { type: "content_match"; pattern: string }
+  | { type: "loop_detection"; window: number };
 
 /** Default values mirroring `ContextWindowPolicy::default()` on the Rust side. */
 export const DEFAULT_CONTEXT_POLICY: ContextWindowPolicy = {
@@ -294,6 +304,11 @@ export interface Capabilities {
     schema: Record<string, unknown>;
   }>;
 }
+
+export type CapabilitiesResult =
+  | { kind: "ok"; capabilities: Capabilities }
+  | { kind: "route_absent" }
+  | { kind: "store_unavailable"; message?: string };
 
 /** Wire-format mirror of `GET /v1/mcp-servers/:id/status` response. */
 export interface McpServerStatusResponse {

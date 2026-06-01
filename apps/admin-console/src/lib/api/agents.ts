@@ -1,21 +1,26 @@
 import { BACKEND_URL, ConfigApiError, fetchJson } from "./http";
 import type { AgentRuntimeSnapshot, PermissionPreviewResponse } from "./types";
 
+export type AgentsRuntimeStatsResult =
+  | { kind: "ok"; agents: AgentRuntimeSnapshot[] }
+  | { kind: "route_absent" }
+  | { kind: "registry_unavailable" };
+
 export const agentsApi = {
   /** All-agents runtime stats. Backed by `/v1/agents/runtime-stats`, which
-   *  returns `{ "agents": AgentRuntimeSnapshot[] }`. Returns `null` if the
-   *  observability registry isn't installed (HTTP 503) OR if the server
-   *  predates the endpoint (HTTP 404 — older deploys / gradual rollout).
-   *  Both surfaces as the same "feature unavailable" notice; auth (401/403)
-   *  and other 4xx still propagate so the user fixes credentials. */
-  agentsRuntimeStats: async (): Promise<{ agents: AgentRuntimeSnapshot[] } | null> => {
+   *  returns `{ "agents": AgentRuntimeSnapshot[] }`. 404 means the route is
+   *  absent; 503 means the route exists but RuntimeStatsRegistry is unwired.
+   *  Auth (401/403) and other 4xx still propagate so the user fixes credentials. */
+  agentsRuntimeStats: async (): Promise<AgentsRuntimeStatsResult> => {
     try {
-      return await fetchJson<{ agents: AgentRuntimeSnapshot[] }>(
+      const payload = await fetchJson<{ agents: AgentRuntimeSnapshot[] }>(
         `${BACKEND_URL}/v1/agents/runtime-stats`,
       );
+      return { kind: "ok", agents: payload.agents };
     } catch (err) {
-      if (err instanceof ConfigApiError && (err.status === 503 || err.status === 404)) {
-        return null;
+      if (err instanceof ConfigApiError) {
+        if (err.status === 404) return { kind: "route_absent" };
+        if (err.status === 503) return { kind: "registry_unavailable" };
       }
       throw err;
     }

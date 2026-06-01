@@ -72,9 +72,11 @@ export function DashboardPage() {
     ? { kind: "error", message: errorMessage(runtimeStatsQuery.error) }
     : runtimeStatsQuery.data === undefined
       ? { kind: "loading" }
-      : runtimeStatsQuery.data === null
-        ? { kind: "disabled" }
-        : { kind: "ready", snapshots: runtimeStatsQuery.data };
+      : runtimeStatsQuery.data.kind === "ok"
+        ? { kind: "ready", snapshots: runtimeStatsQuery.data.agents }
+        : runtimeStatsQuery.data.kind === "route_absent"
+          ? { kind: "route_absent" }
+          : { kind: "registry_unavailable" };
 
   return (
     <div className="mx-auto w-full max-w-6xl 2xl:max-w-none p-6 md:p-8">

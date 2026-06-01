@@ -49,26 +49,31 @@ describe("agentsApi", () => {
     const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(payload));
     vi.stubGlobal("fetch", fetchSpy);
 
-    await expect(agentsApi.agentsRuntimeStats()).resolves.toEqual(payload);
+    await expect(agentsApi.agentsRuntimeStats()).resolves.toEqual({
+      kind: "ok",
+      agents: payload.agents,
+    });
     expect(fetchSpy).toHaveBeenCalledWith(
       `${BACKEND_URL}/v1/agents/runtime-stats`,
       undefined,
     );
   });
 
-  it("returns null when runtime stats are disabled (503)", async () => {
+  it("reports registry_unavailable when runtime stats are disabled (503)", async () => {
     mockFetch(503, { error: "runtime stats disabled" });
 
-    await expect(agentsApi.agentsRuntimeStats()).resolves.toBeNull();
+    await expect(agentsApi.agentsRuntimeStats()).resolves.toEqual({
+      kind: "registry_unavailable",
+    });
   });
 
-  it("returns null when the runtime stats endpoint is absent (404)", async () => {
+  it("reports route_absent when the runtime stats endpoint is absent (404)", async () => {
     // Older deploys / gradual rollouts predate /v1/agents/runtime-stats.
     // The dashboard should render the same "feature unavailable" notice
     // rather than crashing with an unhandled error.
     mockFetch(404, { error: "not found" });
 
-    await expect(agentsApi.agentsRuntimeStats()).resolves.toBeNull();
+    await expect(agentsApi.agentsRuntimeStats()).resolves.toEqual({ kind: "route_absent" });
   });
 
   it("rethrows auth/other runtime stats errors so the operator fixes credentials", async () => {

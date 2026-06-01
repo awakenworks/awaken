@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ConfigApiError, runsApi } from "../../api";
+import { runsApi } from "../../api";
 import { DASHBOARD_REFETCH_MS } from "./dashboard";
 
 /** Live count of runs in each non-terminal lifecycle state.
@@ -34,14 +34,5 @@ export function useRunCountsQuery() {
 }
 
 async function loadRunCounts(): Promise<RunCountsResult> {
-  try {
-    const counts = await runsApi.summary();
-    return { kind: "ok", counts };
-  } catch (err) {
-    if (err instanceof ConfigApiError) {
-      if (err.status === 404) return { kind: "route_absent" };
-      if (err.status === 503) return { kind: "store_unavailable" };
-    }
-    throw err;
-  }
+  return runsApi.summary();
 }

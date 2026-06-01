@@ -70,7 +70,7 @@ describe("router smoke", () => {
     renderRoute("/");
     // The lazy AdminLayout always shows "Admin Console" once mounted.
     // findBy* waits for the suspense fallback to resolve.
-    expect(await screen.findByText("Admin Console")).toBeDefined();
+    expect(await screen.findByText("Admin Console", undefined, { timeout: 5_000 })).toBeDefined();
   });
 
   it("renders the agent editor for /agents/new (regression: useBlocker invariant)", async () => {

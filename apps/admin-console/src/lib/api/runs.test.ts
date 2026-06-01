@@ -49,8 +49,23 @@ describe("runsApi", () => {
 
     const summary = await runsApi.summary();
 
-    expect(summary).toEqual({ running: 4, waiting: 1, created: 2 });
+    expect(summary).toEqual({
+      kind: "ok",
+      counts: { running: 4, waiting: 1, created: 2 },
+    });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy.mock.calls[0][0]).toBe(`${BACKEND_URL}/v1/runs/summary`);
+  });
+
+  it("summary reports route_absent for 404", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ error: "missing" }, 404)));
+
+    await expect(runsApi.summary()).resolves.toEqual({ kind: "route_absent" });
+  });
+
+  it("summary reports store_unavailable for 503", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ error: "disabled" }, 503)));
+
+    await expect(runsApi.summary()).resolves.toEqual({ kind: "store_unavailable" });
   });
 });

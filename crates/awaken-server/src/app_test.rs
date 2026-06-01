@@ -47,6 +47,89 @@ fn state_for_admin_surface_test(address: &str, admin_api_config: AdminApiConfig)
     state
 }
 
+struct EmptyEvalRunStore;
+
+impl awaken_eval::EvalRunStore for EmptyEvalRunStore {
+    fn write(&self, _run: &awaken_eval::EvalRun) -> Result<(), awaken_eval::EvalRunStoreError> {
+        Ok(())
+    }
+
+    fn read(&self, run_id: &str) -> Result<awaken_eval::EvalRun, awaken_eval::EvalRunStoreError> {
+        Err(awaken_eval::EvalRunStoreError::NotFound(run_id.to_string()))
+    }
+
+    fn list(
+        &self,
+        _filter: &awaken_eval::EvalRunFilter,
+    ) -> Result<Vec<awaken_eval::EvalRunSummary>, awaken_eval::EvalRunStoreError> {
+        Ok(Vec::new())
+    }
+
+    fn prune(&self, _older_than_secs: u64) -> Result<u64, awaken_eval::EvalRunStoreError> {
+        Ok(0)
+    }
+}
+
+struct EmptyTraceStore;
+
+impl awaken_ext_observability::trace_store::TraceStore for EmptyTraceStore {
+    fn append(
+        &self,
+        _run_id: &str,
+        _event: &awaken_ext_observability::MetricsEvent,
+    ) -> Result<(), awaken_ext_observability::trace_store::TraceStoreError> {
+        Ok(())
+    }
+
+    fn read(
+        &self,
+        run_id: &str,
+    ) -> Result<
+        Vec<awaken_ext_observability::MetricsEvent>,
+        awaken_ext_observability::trace_store::TraceStoreError,
+    > {
+        Err(
+            awaken_ext_observability::trace_store::TraceStoreError::NotFound {
+                run_id: run_id.to_string(),
+            },
+        )
+    }
+
+    fn list(
+        &self,
+        _filter: &awaken_ext_observability::trace_store::TraceFilter,
+    ) -> Result<
+        Vec<awaken_ext_observability::trace_store::RunSummary>,
+        awaken_ext_observability::trace_store::TraceStoreError,
+    > {
+        Ok(Vec::new())
+    }
+
+    fn mark_referenced(
+        &self,
+        _run_id: &str,
+        _by: awaken_ext_observability::trace_store::ReferenceKind,
+    ) -> Result<(), awaken_ext_observability::trace_store::TraceStoreError> {
+        Ok(())
+    }
+
+    fn prune(
+        &self,
+        _older_than: std::time::SystemTime,
+        _except_referenced: &std::collections::HashSet<String>,
+    ) -> Result<u64, awaken_ext_observability::trace_store::TraceStoreError> {
+        Ok(0)
+    }
+
+    fn write_index_for_run(
+        &self,
+        _run_id: &str,
+        _summary: &awaken_ext_observability::trace_store::RunSummary,
+    ) -> Result<(), awaken_ext_observability::trace_store::TraceStoreError> {
+        Ok(())
+    }
+}
+
 #[test]
 fn admin_api_config_default_exposes_config_routes() {
     let config = AdminApiConfig::default();
@@ -139,6 +222,59 @@ async fn server_state_config_compat_builders_mount_config_module() {
 }
 
 #[test]
+fn mounted_modules_reports_only_route_mounted_optional_modules() {
+    use awaken_server_contract::contract::config_store::ConfigStore;
+    use awaken_stores::InMemoryStore;
+
+    let eval_only_state = state_for_admin_surface_test(
+        "127.0.0.1:0",
+        AdminApiConfig {
+            expose_eval_routes: true,
+            ..AdminApiConfig::default()
+        },
+    )
+    .with_eval_run_store(Arc::new(EmptyEvalRunStore));
+
+    assert!(
+        !eval_only_state.mounted_modules().contains(&"eval"),
+        "eval routes require both EvalModuleState and ConfigModuleState"
+    );
+
+    let config_store = Arc::new(InMemoryStore::new()) as Arc<dyn ConfigStore>;
+    let mut fully_wired_state = state_for_admin_surface_test(
+        "127.0.0.1:0",
+        AdminApiConfig {
+            expose_config_routes: true,
+            expose_eval_routes: true,
+            expose_trace_routes: true,
+            ..AdminApiConfig::default()
+        },
+    )
+    .with_config_store(config_store)
+    .with_eval_run_store(Arc::new(EmptyEvalRunStore));
+    fully_wired_state.trace = Some(TraceModuleState {
+        trace_store: Arc::new(EmptyTraceStore),
+    });
+
+    let modules = fully_wired_state.mounted_modules();
+    assert!(modules.contains(&"config"));
+    assert!(modules.contains(&"eval"));
+    assert!(modules.contains(&"trace"));
+
+    fully_wired_state
+        .admin
+        .admin_api_config
+        .expose_config_routes = false;
+    fully_wired_state.admin.admin_api_config.expose_eval_routes = false;
+    fully_wired_state.admin.admin_api_config.expose_trace_routes = false;
+
+    let gated_modules = fully_wired_state.mounted_modules();
+    assert!(!gated_modules.contains(&"config"));
+    assert!(!gated_modules.contains(&"eval"));
+    assert!(!gated_modules.contains(&"trace"));
+}
+
+#[test]
 fn validate_admin_surface_rejects_trace_routes_without_token_on_non_loopback() {
     // Regression for issue 1 residual: even with config routes off, an
     // exposed trace store on a non-loopback bind without a bearer token
@@ -172,6 +308,26 @@ fn validate_admin_surface_rejects_trace_routes_without_token_on_non_loopback() {
     let err = validate_admin_surface(&state).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn validate_admin_surface_rejects_eval_store_without_config_module() {
+    let state = state_for_admin_surface_test(
+        "127.0.0.1:0",
+        AdminApiConfig {
+            expose_eval_routes: true,
+            bearer_token: Some(RedactedString::new("admin-token")),
+            ..AdminApiConfig::default()
+        },
+    )
+    .with_eval_run_store(Arc::new(EmptyEvalRunStore));
+
+    let err = validate_admin_surface(&state).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        err.to_string().contains("with_config_store"),
+        "error should tell operators how to wire eval routes, got: {err}"
+    );
 }
 
 #[test]

@@ -548,17 +548,18 @@ impl ServerState {
     }
 
     pub fn mounted_modules(&self) -> Vec<&'static str> {
+        let admin_config = super::admin_api_config(self);
         let mut modules = vec!["run", "admin", "protocol"];
-        if self.config_module().is_some() {
+        if admin_config.expose_config_routes && self.config_routes_state().is_some() {
             modules.push("config");
         }
         if self.event_module().is_some() {
             modules.push("events");
         }
-        if self.eval_module().is_some() {
+        if admin_config.expose_eval_routes && self.eval_routes_state().is_some() {
             modules.push("eval");
         }
-        if self.trace_module().is_some() {
+        if admin_config.expose_trace_routes && self.trace_routes_state().is_some() {
             modules.push("trace");
         }
         modules

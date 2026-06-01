@@ -17,7 +17,8 @@ const ERROR_RATE_WARN = 0.05;
  *  derives this from the runtime-stats slot. */
 export type RuntimeActivityState =
   | { kind: "loading" }
-  | { kind: "disabled" }
+  | { kind: "route_absent" }
+  | { kind: "registry_unavailable" }
   | { kind: "error"; message: string }
   | { kind: "ready"; snapshots: AgentRuntimeSnapshot[] };
 
@@ -56,7 +57,15 @@ export function RuntimeActivityCard({ state }: { state: RuntimeActivityState }) 
     );
   }
 
-  if (state.kind === "disabled") {
+  if (state.kind === "route_absent" || state.kind === "registry_unavailable") {
+    const title =
+      state.kind === "route_absent"
+        ? t("dashboard.agentActivity.routeAbsentTitle")
+        : t("dashboard.agentActivity.disabledTitle");
+    const hint =
+      state.kind === "route_absent"
+        ? t("dashboard.agentActivity.routeAbsentHint")
+        : t("dashboard.agentActivity.disabledHint");
     return (
       <div
         className="rounded-sm border border-line bg-surface p-5 shadow-card"
@@ -64,8 +73,8 @@ export function RuntimeActivityCard({ state }: { state: RuntimeActivityState }) 
       >
         <h2 className="text-lg font-semibold text-fg-strong">{t("dashboard.agentActivity.title")}</h2>
         <FeatureDisabledNotice
-          title={t("dashboard.agentActivity.disabledTitle")}
-          configHint={t("dashboard.agentActivity.disabledHint")}
+          title={title}
+          configHint={hint}
         />
       </div>
     );

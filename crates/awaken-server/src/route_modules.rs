@@ -191,6 +191,28 @@ impl RouteModule for AdminRunModule {
     }
 }
 
+pub(crate) struct CapabilitiesModule(pub ConfigRoutesState);
+
+impl RouteModule for CapabilitiesModule {
+    fn mount(self, router: Router) -> Router {
+        let auth =
+            middleware::from_fn_with_state(self.0.admin.clone(), require_admin_auth_middleware);
+        let scope = middleware::from_fn_with_state(
+            ScopeMiddlewareState {
+                provider: self.0.scope_provider.clone(),
+                surface: RequestSurface::Admin,
+            },
+            require_scope_middleware,
+        );
+        router.merge(
+            crate::config_routes::capabilities_routes()
+                .route_layer(scope)
+                .route_layer(auth)
+                .with_state(self.0),
+        )
+    }
+}
+
 impl RouteModule for ConfigRoutesState {
     fn mount(self, router: Router) -> Router {
         let auth =

@@ -495,7 +495,7 @@ mod health_integration {
     }
 
     #[tokio::test]
-    async fn admin_routes_return_404_when_admin_surface_disabled() {
+    async fn admin_run_routes_remain_mounted_when_config_routes_disabled() {
         use crate::app::AdminApiConfig;
         use axum::http::StatusCode;
 
@@ -510,16 +510,18 @@ mod health_integration {
         for uri in [
             "/v1/agents/runtime-stats",
             "/v1/agents/default/runtime-stats",
+            "/v1/runs/summary",
         ] {
             let req = axum::http::Request::builder()
                 .uri(uri)
+                .header(axum::http::header::AUTHORIZATION, "Bearer test-admin-token")
                 .body(axum::body::Body::empty())
                 .unwrap();
             let resp = app.clone().oneshot(req).await.unwrap();
-            assert_eq!(
+            assert_ne!(
                 resp.status(),
                 StatusCode::NOT_FOUND,
-                "{uri} must not be mounted when the config-admin surface is disabled"
+                "{uri} must be mounted"
             );
         }
 

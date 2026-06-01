@@ -71,7 +71,7 @@ fn map_run_control_error(error: RunControlError) -> ApiError {
     }
 }
 
-use crate::route_modules::{AdminRunModule, RouteModule, SystemRoutes};
+use crate::route_modules::{AdminRunModule, CapabilitiesModule, RouteModule, SystemRoutes};
 
 /// Build the complete router for the given state.
 pub fn build_router(state: &ServerState) -> Router {
@@ -83,8 +83,12 @@ pub fn build_router(state: &ServerState) -> Router {
     router = state.protocol_routes_state().mount(router);
     router = SystemRoutes(state.system_routes_state()).mount(router);
     router = state.event_module().mount(router);
+    router = AdminRunModule(state.admin_run_routes_state()).mount(router);
+    router = state
+        .config_routes_state()
+        .map(CapabilitiesModule)
+        .mount(router);
     if admin_config.expose_config_routes {
-        router = AdminRunModule(state.admin_run_routes_state()).mount(router);
         router = state.config_routes_state().mount(router);
     }
     if admin_config.expose_eval_routes {
