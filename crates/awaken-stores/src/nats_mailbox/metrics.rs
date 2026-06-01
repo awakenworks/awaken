@@ -30,7 +30,7 @@ pub(crate) fn record_authoritative_scan(keys: usize, elapsed: Duration) {
 
 pub(crate) fn record_queued_without_signal_age(dispatch: &RunDispatch, now: u64) {
     ::metrics::histogram!("awaken_mailbox_queued_without_signal_age_ms")
-        .record(now.saturating_sub(dispatch.available_at) as f64);
+        .record(now.saturating_sub(dispatch.available_at()) as f64);
 }
 
 pub(crate) fn inc_dispatch_signal_republish() {

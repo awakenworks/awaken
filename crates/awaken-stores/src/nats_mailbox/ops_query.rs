@@ -37,7 +37,7 @@ pub(crate) async fn load_thread_dispatches(
         let Some(dispatch) = load_dispatch(store, &dispatch_id).await? else {
             continue;
         };
-        if dispatch.thread_id == thread_id {
+        if dispatch.thread_id() == thread_id {
             store.index.write().await.upsert(dispatch.clone());
             dispatches.push(dispatch);
         }
@@ -62,9 +62,9 @@ pub(crate) async fn load_claim_candidates(
     for dispatch_id in ids {
         let cached = store.index.read().await.get_cloned(&dispatch_id);
         if let Some(dispatch) = cached
-            && dispatch.thread_id == thread_id
-            && dispatch.status == RunDispatchStatus::Queued
-            && dispatch.available_at <= now
+            && dispatch.thread_id() == thread_id
+            && dispatch.status() == RunDispatchStatus::Queued
+            && dispatch.available_at() <= now
         {
             dispatches.push(dispatch);
             continue;
@@ -73,7 +73,7 @@ pub(crate) async fn load_claim_candidates(
         let Some(dispatch) = load_dispatch(store, &dispatch_id).await? else {
             continue;
         };
-        if dispatch.thread_id == thread_id {
+        if dispatch.thread_id() == thread_id {
             store.index.write().await.upsert(dispatch.clone());
             dispatches.push(dispatch);
         }
@@ -169,9 +169,9 @@ pub async fn list_dispatches(
         .await
         .list_by_thread(thread_id, status_filter);
     items.sort_by(|a, b| {
-        a.priority
-            .cmp(&b.priority)
-            .then(a.created_at.cmp(&b.created_at))
+        a.priority()
+            .cmp(&b.priority())
+            .then(a.created_at().cmp(&b.created_at()))
     });
     Ok(items.into_iter().skip(offset).take(limit).collect())
 }
@@ -195,13 +195,13 @@ pub async fn list_terminal_dispatches(
     let mut dispatches = load_all_dispatches(store)
         .await?
         .into_iter()
-        .filter(|dispatch| dispatch.status.is_terminal())
+        .filter(|dispatch| dispatch.status().is_terminal())
         .collect::<Vec<_>>();
     dispatches.sort_by(|a, b| {
-        a.updated_at
-            .cmp(&b.updated_at)
-            .then(a.created_at.cmp(&b.created_at))
-            .then(a.dispatch_id.cmp(&b.dispatch_id))
+        a.updated_at()
+            .cmp(&b.updated_at())
+            .then(a.created_at().cmp(&b.created_at()))
+            .then(a.dispatch_id().cmp(b.dispatch_id()))
     });
     Ok(dispatches.into_iter().skip(offset).take(limit).collect())
 }

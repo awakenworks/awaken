@@ -27,30 +27,13 @@ fn shared_config(fixture: &NatsFixture) -> (String, NatsMailboxConfig) {
 }
 
 fn test_dispatch(id: &str, thread_id: &str) -> RunDispatch {
-    RunDispatch {
-        dispatch_id: id.to_string(),
-        thread_id: thread_id.to_string(),
-        run_id: format!("{id}-run"),
-        priority: 128,
-        dedupe_key: None,
-        dispatch_epoch: 0,
-        status: RunDispatchStatus::Queued,
-        available_at: 0,
-        attempt_count: 0,
-        max_attempts: 3,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        dispatch_instance_id: None,
-        run_status: None,
-        termination: None,
-        run_response: None,
-        run_error: None,
-        completed_at: None,
-        created_at: 0,
-        updated_at: 0,
-    }
+    RunDispatch::queued(
+        id.to_string(),
+        thread_id.to_string(),
+        format!("{id}-run"),
+        0,
+    )
+    .with_max_attempts(3)
 }
 
 async fn wait_for_index(store: &NatsMailboxStore, dispatch_id: &str, timeout_ms: u64) -> bool {
@@ -102,7 +85,7 @@ async fn concurrent_claim_same_dispatch_only_one_wins() {
 
     // Verify winner's claim_token is unique.
     let winner_token = match (r_a, r_b) {
-        (Some(d), None) | (None, Some(d)) => d.claim_token.expect("claim_token set"),
+        (Some(d), None) | (None, Some(d)) => d.claim_token().expect("claim_token set").to_string(),
         _ => unreachable!("exactly one winner verified above"),
     };
     assert!(!winner_token.is_empty());
@@ -182,7 +165,7 @@ async fn expired_lease_reclaimable_by_other_instance() {
         .await
         .unwrap();
     assert_eq!(reclaimed.len(), 1);
-    assert_eq!(reclaimed[0].dispatch_id, "d1");
+    assert_eq!(reclaimed[0].dispatch_id(), "d1");
 
     // Now B can claim the re-queued dispatch.
     let b_claim = store_b
@@ -190,7 +173,7 @@ async fn expired_lease_reclaimable_by_other_instance() {
         .await
         .unwrap();
     assert!(b_claim.is_some());
-    assert_eq!(b_claim.unwrap().claimed_by.as_deref(), Some("consumer-b"));
+    assert_eq!(b_claim.unwrap().claimed_by(), Some("consumer-b"));
 
     store_b.shutdown().await.unwrap();
 }
@@ -215,7 +198,7 @@ async fn late_ack_after_cross_instance_reclaim_is_rejected() {
         .await
         .unwrap()
         .expect("a owns dispatch");
-    let token_a = claimed_a.claim_token.expect("a claim token");
+    let token_a = claimed_a.claim_token().expect("a claim token").to_string();
 
     let reclaimed = store_b.reclaim_expired_leases(1_101, 10).await.unwrap();
     assert_eq!(reclaimed.len(), 1);
@@ -224,7 +207,7 @@ async fn late_ack_after_cross_instance_reclaim_is_rejected() {
         .await
         .unwrap()
         .expect("b owns dispatch");
-    let token_b = claimed_b.claim_token.expect("b claim token");
+    let token_b = claimed_b.claim_token().expect("b claim token").to_string();
 
     assert!(
         store_a.ack("d-late-ack", &token_a, 1_103).await.is_err(),
@@ -235,8 +218,8 @@ async fn late_ack_after_cross_instance_reclaim_is_rejected() {
         .await
         .unwrap()
         .expect("dispatch");
-    assert_eq!(still_claimed.status, RunDispatchStatus::Claimed);
-    assert_eq!(still_claimed.claimed_by.as_deref(), Some("consumer-b"));
+    assert_eq!(still_claimed.status(), RunDispatchStatus::Claimed);
+    assert_eq!(still_claimed.claimed_by(), Some("consumer-b"));
 
     store_b.ack("d-late-ack", &token_b, 1_104).await.unwrap();
     store_a.shutdown().await.unwrap();
@@ -282,7 +265,7 @@ async fn cross_instance_lease_reclaim_uses_strict_expiry_boundary() {
     );
     let reclaimed = store_b.reclaim_expired_leases(1_101, 10).await.unwrap();
     assert_eq!(reclaimed.len(), 1);
-    assert_eq!(reclaimed[0].status, RunDispatchStatus::Queued);
+    assert_eq!(reclaimed[0].status(), RunDispatchStatus::Queued);
 
     store_a.shutdown().await.unwrap();
     store_b.shutdown().await.unwrap();
@@ -307,7 +290,7 @@ async fn cross_instance_nack_retry_window_respects_retry_at() {
         .claim("t-retry-boundary", "consumer-a", 30_000, 1_000, 1)
         .await
         .unwrap();
-    let token = claimed[0].claim_token.clone().expect("claim token");
+    let token = claimed[0].claim_token().expect("claim token").to_string();
     store_a
         .nack("d-retry-boundary", &token, 2_000, "retry later", 1_001)
         .await
@@ -326,7 +309,7 @@ async fn cross_instance_nack_retry_window_respects_retry_at() {
         .await
         .unwrap();
     assert_eq!(claimed_at_retry.len(), 1);
-    assert_eq!(claimed_at_retry[0].dispatch_id, "d-retry-boundary");
+    assert_eq!(claimed_at_retry[0].dispatch_id(), "d-retry-boundary");
 
     store_a.shutdown().await.unwrap();
     store_b.shutdown().await.unwrap();
@@ -388,10 +371,8 @@ async fn concurrent_enqueue_same_dedupe_key_only_one_wins() {
     let store_a = Arc::new(NatsMailboxStore::connect(cfg.clone()).await.expect("a"));
     let store_b = Arc::new(NatsMailboxStore::connect(cfg).await.expect("b"));
 
-    let mut d1 = test_dispatch("dedupe-a", "t-dedupe-race");
-    d1.dedupe_key = Some("same-key".into());
-    let mut d2 = test_dispatch("dedupe-b", "t-dedupe-race");
-    d2.dedupe_key = Some("same-key".into());
+    let d1 = test_dispatch("dedupe-a", "t-dedupe-race").with_dedupe_key(Some("same-key".into()));
+    let d2 = test_dispatch("dedupe-b", "t-dedupe-race").with_dedupe_key(Some("same-key".into()));
 
     let a = Arc::clone(&store_a);
     let b = Arc::clone(&store_b);

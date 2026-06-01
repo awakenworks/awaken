@@ -61,7 +61,7 @@ async fn tick(
             .read()
             .await
             .published
-            .get(&candidate.dispatch_id)
+            .get(candidate.dispatch_id())
             .is_some_and(|published| {
                 now.saturating_sub(published.last_published_at) < republish_after_ms
             });
@@ -72,7 +72,7 @@ async fn tick(
             let mut state_w = state.write().await;
             let entry = state_w
                 .published
-                .entry(candidate.dispatch_id.clone())
+                .entry(candidate.dispatch_id().to_string())
                 .or_insert(PublishedSignal {
                     last_published_at: 0,
                     publish_count: 0,
@@ -82,8 +82,8 @@ async fn tick(
             if entry.publish_count > 1 {
                 metrics::inc_dispatch_signal_republish();
                 tracing::warn!(
-                    thread_id = %candidate.thread_id,
-                    dispatch_id = %candidate.dispatch_id,
+                    thread_id = %candidate.thread_id(),
+                    dispatch_id = %candidate.dispatch_id(),
                     publish_count = entry.publish_count,
                     "republished queued dispatch signal"
                 );
@@ -95,14 +95,14 @@ async fn tick(
     let idx = index.read().await;
     state_w.published.retain(|id, _| {
         idx.get(id)
-            .is_some_and(|d| d.status == RunDispatchStatus::Queued)
+            .is_some_and(|d| d.status() == RunDispatchStatus::Queued)
     });
 }
 
 async fn publish(jetstream: &async_nats::jetstream::Context, dispatch: &RunDispatch) -> bool {
-    let payload = bytes::Bytes::from(dispatch.dispatch_id.clone().into_bytes());
+    let payload = bytes::Bytes::from(dispatch.dispatch_id().as_bytes().to_vec());
     match jetstream
-        .publish(keys::dispatch_subject(&dispatch.thread_id), payload)
+        .publish(keys::dispatch_subject(dispatch.thread_id()), payload)
         .await
     {
         Ok(ack_future) => ack_future.await.is_ok(),

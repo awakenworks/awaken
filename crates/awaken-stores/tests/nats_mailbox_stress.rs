@@ -8,35 +8,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-use awaken_server_contract::contract::mailbox::{MailboxStore, RunDispatch, RunDispatchStatus};
+use awaken_server_contract::contract::mailbox::{MailboxStore, RunDispatch};
 use awaken_stores::{NatsMailboxConfig, NatsMailboxStore};
 use nats_fixture::NatsFixture;
 
 fn test_dispatch(id: &str, thread_id: &str) -> RunDispatch {
-    RunDispatch {
-        dispatch_id: id.to_string(),
-        thread_id: thread_id.to_string(),
-        run_id: format!("{id}-run"),
-        priority: 128,
-        dedupe_key: None,
-        dispatch_epoch: 0,
-        status: RunDispatchStatus::Queued,
-        available_at: 0,
-        attempt_count: 0,
-        max_attempts: 3,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        dispatch_instance_id: None,
-        run_status: None,
-        termination: None,
-        run_response: None,
-        run_error: None,
-        completed_at: None,
-        created_at: 0,
-        updated_at: 0,
-    }
+    RunDispatch::queued(
+        id.to_string(),
+        thread_id.to_string(),
+        format!("{id}-run"),
+        0,
+    )
+    .with_max_attempts(3)
 }
 
 fn stress_records(default: usize) -> usize {
@@ -76,13 +59,12 @@ async fn claim_latency_uses_thread_index_under_large_global_kv() {
     let records = stress_records(10_000);
 
     for i in 0..records {
-        let mut dispatch = test_dispatch(&format!("d-global-{i}"), &format!("t-global-{i}"));
-        dispatch.created_at = i as u64;
+        let dispatch = test_dispatch(&format!("d-global-{i}"), &format!("t-global-{i}"))
+            .with_created_at(i as u64);
         store.enqueue(&dispatch).await.unwrap();
     }
 
-    let mut target = test_dispatch("d-target", "t-target");
-    target.priority = 1;
+    let target = test_dispatch("d-target", "t-target").with_priority(1);
     store.enqueue(&target).await.unwrap();
 
     let start = Instant::now();
@@ -91,7 +73,7 @@ async fn claim_latency_uses_thread_index_under_large_global_kv() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].dispatch_id, "d-target");
+    assert_eq!(claimed[0].dispatch_id(), "d-target");
     assert!(
         start.elapsed() < Duration::from_secs(5),
         "claim latency should not scale linearly with unrelated global dispatch records"
@@ -108,8 +90,8 @@ async fn concurrent_nodes_claim_same_thread_without_duplicate_owners() {
     let seed = NatsMailboxStore::connect(mk_config()).await.expect("seed");
     let total = stress_records(1_000).min(1_000);
     for i in 0..total {
-        let mut dispatch = test_dispatch(&format!("d-thread-{i}"), "t-hot-thread");
-        dispatch.created_at = i as u64;
+        let dispatch =
+            test_dispatch(&format!("d-thread-{i}"), "t-hot-thread").with_created_at(i as u64);
         seed.enqueue(&dispatch).await.unwrap();
     }
     seed.shutdown().await.unwrap();
@@ -139,12 +121,12 @@ async fn concurrent_nodes_claim_same_thread_without_duplicate_owners() {
                     break;
                 }
                 for dispatch in claimed {
-                    let token = dispatch.claim_token.clone().unwrap();
+                    let token = dispatch.claim_token().unwrap().to_string();
                     stores[worker]
-                        .ack(&dispatch.dispatch_id, &token, 100_001)
+                        .ack(dispatch.dispatch_id(), &token, 100_001)
                         .await
                         .unwrap();
-                    out.push(dispatch.dispatch_id);
+                    out.push(dispatch.dispatch_id().to_string());
                 }
             }
             out
@@ -182,8 +164,8 @@ async fn active_claim_with_many_queued_dispatches_remains_recoverable() {
     assert_eq!(claimed.len(), 1);
 
     for i in 0..stress_records(500) {
-        let mut dispatch = test_dispatch(&format!("d-queued-{i}"), "t-active");
-        dispatch.created_at = 10 + i as u64;
+        let dispatch =
+            test_dispatch(&format!("d-queued-{i}"), "t-active").with_created_at(10 + i as u64);
         store.enqueue(&dispatch).await.unwrap();
     }
 
@@ -199,7 +181,7 @@ async fn active_claim_with_many_queued_dispatches_remains_recoverable() {
             .unwrap();
     }
 
-    let token = claimed[0].claim_token.clone().unwrap();
+    let token = claimed[0].claim_token().unwrap().to_string();
     store.ack("d-active", &token, 2_000).await.unwrap();
     let recovered = store
         .claim("t-active", "next", 30_000, 3_000, 10)
@@ -228,8 +210,8 @@ async fn high_concurrency_dedupe_key_admits_exactly_one_owner() {
     for i in 0..total {
         let store = Arc::clone(&store);
         handles.push(tokio::spawn(async move {
-            let mut dispatch = test_dispatch(&format!("d-dedupe-{i}"), "t-dedupe-hot");
-            dispatch.dedupe_key = Some("same-key".to_string());
+            let dispatch = test_dispatch(&format!("d-dedupe-{i}"), "t-dedupe-hot")
+                .with_dedupe_key(Some("same-key".to_string()));
             store.enqueue(&dispatch).await
         }));
     }

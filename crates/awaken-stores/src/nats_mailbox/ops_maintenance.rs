@@ -70,18 +70,18 @@ async fn reclaim_one(
             return Ok(None);
         }
         let mut dispatch = codec::decode(&entry.value)?;
-        if dispatch.status != RunDispatchStatus::Claimed {
+        if dispatch.status() != RunDispatchStatus::Claimed {
             return Ok(None);
         }
-        if dispatch.lease_until.map(|u| u >= now).unwrap_or(true) {
+        if dispatch.lease_until().map(|u| u >= now).unwrap_or(true) {
             return Ok(None);
         }
-        if let Some(lease_until) = dispatch.lease_until {
+        if let Some(lease_until) = dispatch.lease_until() {
             metrics::record_claimed_dispatch_lease_age(now, lease_until);
         }
-        let old_claim_token = dispatch.claim_token.clone();
-        let thread_epoch = ops_write::current_thread_epoch(store, &dispatch.thread_id).await?;
-        if dispatch.dispatch_epoch < thread_epoch {
+        let old_claim_token = dispatch.claim_token().map(str::to_string);
+        let thread_epoch = ops_write::current_thread_epoch(store, dispatch.thread_id()).await?;
+        if dispatch.dispatch_epoch() < thread_epoch {
             mailbox_state::mark_superseded_at_epoch(
                 &mut dispatch,
                 now,
@@ -100,15 +100,15 @@ async fn reclaim_one(
                     .await
                     .upsert_with_revision(dispatch.clone(), revision);
                 if let Some(ref claim_token) = old_claim_token {
-                    claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token)
+                    claim_guard::release(store, dispatch.thread_id(), dispatch_id, claim_token)
                         .await?;
                 }
-                if let Some(ref dedupe_key) = dispatch.dedupe_key {
+                if let Some(dedupe_key) = dispatch.dedupe_key() {
                     ops_write::release_dedupe_lock(
                         store,
-                        &dispatch.thread_id,
+                        dispatch.thread_id(),
                         dedupe_key,
-                        &dispatch.dispatch_id,
+                        dispatch.dispatch_id(),
                     )
                     .await;
                 }
@@ -131,20 +131,20 @@ async fn reclaim_one(
                 .await
                 .upsert_with_revision(dispatch.clone(), revision);
             if let Some(ref claim_token) = old_claim_token {
-                claim_guard::release(store, &dispatch.thread_id, dispatch_id, claim_token).await?;
+                claim_guard::release(store, dispatch.thread_id(), dispatch_id, claim_token).await?;
             }
-            if dispatch.status == RunDispatchStatus::DeadLetter
-                && let Some(ref dedupe_key) = dispatch.dedupe_key
+            if dispatch.status() == RunDispatchStatus::DeadLetter
+                && let Some(dedupe_key) = dispatch.dedupe_key()
             {
                 ops_write::release_dedupe_lock(
                     store,
-                    &dispatch.thread_id,
+                    dispatch.thread_id(),
                     dedupe_key,
-                    &dispatch.dispatch_id,
+                    dispatch.dispatch_id(),
                 )
                 .await;
             }
-            if dispatch.status == RunDispatchStatus::DeadLetter {
+            if dispatch.status() == RunDispatchStatus::DeadLetter {
                 ops_write::cleanup_thread_index(store, &dispatch).await;
             }
             metrics::inc_expired_claim_reclaimed();
@@ -162,9 +162,9 @@ pub async fn purge_terminal(
         .await?
         .into_iter()
         .filter(|dispatch| {
-            dispatch.status.is_terminal()
+            dispatch.status().is_terminal()
                 && dispatch
-                    .completed_at
+                    .completed_at()
                     .is_some_and(|completed_at| completed_at < older_than)
         })
         .collect::<Vec<_>>();
@@ -172,11 +172,11 @@ pub async fn purge_terminal(
     for dispatch in dispatches {
         if store
             .kv_dispatch
-            .delete(&keys::dispatch_key(&dispatch.dispatch_id))
+            .delete(&keys::dispatch_key(dispatch.dispatch_id()))
             .await
             .is_ok()
         {
-            store.index.write().await.remove(&dispatch.dispatch_id);
+            store.index.write().await.remove(dispatch.dispatch_id());
             ops_write::cleanup_thread_index(store, &dispatch).await;
             purged += 1;
         }

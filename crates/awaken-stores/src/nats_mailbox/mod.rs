@@ -316,9 +316,9 @@ impl NatsMailboxStore {
         dispatch: &RunDispatch,
     ) -> Result<(), StorageError> {
         let mut stamped = dispatch.clone();
-        stamped.dispatch_epoch = match self
+        let epoch = match self
             .kv_epoch
-            .entry(&keys::epoch_key(&stamped.thread_id))
+            .entry(&keys::epoch_key(stamped.thread_id()))
             .await
             .map_err(|e| StorageError::Io(format!("kv entry: {e}")))?
         {
@@ -326,11 +326,12 @@ impl NatsMailboxStore {
             Some(entry) => codec::decode_epoch(&entry.value)?,
             None => 0,
         };
-        ops_write::append_thread_index(self, &stamped.thread_id, &stamped.dispatch_id).await?;
+        stamped.prepare_for_enqueue(epoch);
+        ops_write::append_thread_index(self, stamped.thread_id(), stamped.dispatch_id()).await?;
         let bytes = codec::encode(&stamped)?;
         let revision = self
             .kv_dispatch
-            .put(keys::dispatch_key(&stamped.dispatch_id), bytes)
+            .put(keys::dispatch_key(stamped.dispatch_id()), bytes)
             .await
             .map_err(|e| StorageError::Io(format!("kv put: {e}")))?;
         self.index
@@ -348,11 +349,11 @@ impl NatsMailboxStore {
         &self,
         dispatch: &RunDispatch,
     ) -> Result<(), StorageError> {
-        ops_write::append_thread_index(self, &dispatch.thread_id, &dispatch.dispatch_id).await?;
+        ops_write::append_thread_index(self, dispatch.thread_id(), dispatch.dispatch_id()).await?;
         let bytes = codec::encode(dispatch)?;
         let revision = self
             .kv_dispatch
-            .put(keys::dispatch_key(&dispatch.dispatch_id), bytes)
+            .put(keys::dispatch_key(dispatch.dispatch_id()), bytes)
             .await
             .map_err(|e| StorageError::Io(format!("kv put: {e}")))?;
         self.index
@@ -557,15 +558,15 @@ impl MailboxStore for NatsMailboxStore {
                 let _ = message.ack().await;
                 continue;
             };
-            if dispatch.status.is_terminal() {
+            if dispatch.status().is_terminal() {
                 ops_write::cleanup_thread_index(self, &dispatch).await;
             } else {
-                ops_write::append_thread_index(self, &dispatch.thread_id, &dispatch.dispatch_id)
+                ops_write::append_thread_index(self, dispatch.thread_id(), dispatch.dispatch_id())
                     .await?;
             }
             self.index.write().await.upsert(dispatch.clone());
             entries.push(DispatchSignalEntry {
-                thread_id: dispatch.thread_id,
+                thread_id: dispatch.thread_id().to_string(),
                 dispatch_id,
                 receipt: Box::new(NatsDispatchSignalReceipt { message }),
             });

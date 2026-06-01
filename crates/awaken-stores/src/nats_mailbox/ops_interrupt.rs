@@ -28,13 +28,13 @@ pub async fn interrupt(
     let guard_active_dispatch_id = claim_guard::active_dispatch_id(store, thread_id, now).await?;
     if let Some(active_dispatch_id) = guard_active_dispatch_id.as_deref()
         && let Some(authoritative) = ops_query::load_dispatch(store, active_dispatch_id).await?
-        && authoritative.thread_id == thread_id
-        && authoritative.status == RunDispatchStatus::Claimed
+        && authoritative.thread_id() == thread_id
+        && authoritative.status() == RunDispatchStatus::Claimed
     {
         store.index.write().await.upsert(authoritative.clone());
         if !dispatches
             .iter()
-            .any(|dispatch| dispatch.dispatch_id == authoritative.dispatch_id)
+            .any(|dispatch| dispatch.dispatch_id() == authoritative.dispatch_id())
         {
             dispatches.push(authoritative.clone());
         }
@@ -42,19 +42,19 @@ pub async fn interrupt(
     }
 
     for dispatch in dispatches {
-        match dispatch.status {
+        match dispatch.status() {
             RunDispatchStatus::Queued => {
-                match supersede(store, &dispatch.dispatch_id, new_epoch, now).await {
+                match supersede(store, dispatch.dispatch_id(), new_epoch, now).await {
                     Ok(SupersedeOutcome::Superseded(superseded)) => {
                         superseded_count += 1;
                         // Terminal → release any dedupe lock so a subsequent
                         // enqueue with the same key can take over.
-                        if let Some(ref dedupe_key) = superseded.dedupe_key {
+                        if let Some(dedupe_key) = superseded.dedupe_key() {
                             ops_write::release_dedupe_lock(
                                 store,
-                                &superseded.thread_id,
+                                superseded.thread_id(),
                                 dedupe_key,
-                                &superseded.dispatch_id,
+                                superseded.dispatch_id(),
                             )
                             .await;
                         }
@@ -67,7 +67,7 @@ pub async fn interrupt(
                     Err(error) => {
                         tracing::warn!(
                             thread_id,
-                            dispatch_id = %dispatch.dispatch_id,
+                            dispatch_id = %dispatch.dispatch_id(),
                             error = %error,
                             "failed to supersede queued dispatch during interrupt"
                         );
@@ -77,7 +77,7 @@ pub async fn interrupt(
             RunDispatchStatus::Claimed => {
                 if guard_active_dispatch_id
                     .as_deref()
-                    .is_none_or(|active_id| active_id == dispatch.dispatch_id)
+                    .is_none_or(|active_id| active_id == dispatch.dispatch_id())
                 {
                     active_dispatch = Some(dispatch);
                 }
@@ -140,13 +140,13 @@ async fn supersede(
             return Err(StorageError::NotFound(dispatch_id.to_string()));
         }
         let mut dispatch = codec::decode(&entry.value)?;
-        if dispatch.status != RunDispatchStatus::Queued {
-            if dispatch.status == RunDispatchStatus::Claimed {
+        if dispatch.status() != RunDispatchStatus::Queued {
+            if dispatch.status() == RunDispatchStatus::Claimed {
                 return Ok(SupersedeOutcome::Claimed(Box::new(dispatch)));
             }
             return Ok(SupersedeOutcome::NotQueued);
         }
-        if dispatch.dispatch_epoch >= new_epoch {
+        if dispatch.dispatch_epoch() >= new_epoch {
             return Ok(SupersedeOutcome::NotQueued);
         }
         mailbox_state::mark_superseded_at_epoch(&mut dispatch, now, new_epoch, None);
