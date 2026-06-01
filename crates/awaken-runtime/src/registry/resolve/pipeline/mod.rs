@@ -16,10 +16,8 @@ use crate::plugins::Plugin;
 use crate::registry::ResolvedBackendAgent;
 use crate::registry::{AgentResolver, ResolvedAgent};
 use crate::resolution::{
-    BackendProfile, BackendRequirements, ExecutionPlan, ExecutionRole, LiveOnlyScope,
-    RegistryResolutionScope, ReplayableResolvedRun, ReplayableScope, ResolutionArtifact,
-    ResolutionRequest, ResolutionTarget, ResolveError as RunResolveError, ResolvedModelBinding,
-    ResolvedRun, ResolvedRunPlan, ResolvedTool, Resolver,
+    ExecutionPlan, ExecutionRole, RegistryResolutionScope, ResolutionRequest, ResolutionTarget,
+    ResolveError as RunResolveError, ResolvedRunPlan, Resolver,
 };
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::executor::LlmExecutor;
@@ -529,12 +527,24 @@ fn resolve_delegate_tools(
 /// resolution logic. `RegistrySet` stays a pure data container.
 pub struct RegistrySetResolver {
     registries: RegistrySet,
+    replayable_snapshot: bool,
 }
 
 impl RegistrySetResolver {
     #[must_use]
     pub fn new(registries: RegistrySet) -> Self {
-        Self { registries }
+        Self {
+            registries,
+            replayable_snapshot: false,
+        }
+    }
+
+    #[must_use]
+    pub fn new_replayable_snapshot(registries: RegistrySet) -> Self {
+        Self {
+            registries,
+            replayable_snapshot: true,
+        }
     }
 }
 
@@ -564,21 +574,18 @@ impl Resolver for RegistrySetResolver {
         &self,
         request: ResolutionRequest,
     ) -> Result<ResolvedRunPlan, RunResolveError> {
+        if matches!(request.resolution_scope, RegistryResolutionScope::Pinned(_))
+            && !self.replayable_snapshot
+        {
+            return Err(RunResolveError::UnsupportedPersistence(
+                "pinned registry resolution requires a materialized replayable snapshot".into(),
+            ));
+        }
         let (agent_id, role) = target_agent_and_role(&request.target);
         let agent_id = agent_id.to_string();
         let execution = resolve_execution_registry_set(&self.registries, &agent_id)
             .map_err(|error| RunResolveError::Runtime(error.to_string()))?;
-        let requirements = BackendRequirements::from_features(&request.features);
-        let profile = backend_profile_for_execution(&execution)?;
-        let plan = resolved_run(
-            execution,
-            role,
-            request.overrides,
-            requirements,
-            profile,
-            request.resolution_scope,
-        )?;
-        Ok(plan)
+        ResolvedRunPlan::from_execution_for_request(execution, role, request)
     }
 }
 
@@ -587,72 +594,6 @@ fn target_agent_and_role(target: &ResolutionTarget) -> (&str, ExecutionRole) {
         ResolutionTarget::Root { agent_id, .. } => (agent_id.as_str(), ExecutionRole::Root),
         ResolutionTarget::Delegate { agent_id, .. } => (agent_id.as_str(), ExecutionRole::Delegate),
         ResolutionTarget::Handoff { agent_id, .. } => (agent_id.as_str(), ExecutionRole::Handoff),
-    }
-}
-
-fn backend_profile_for_execution(
-    execution: &ExecutionPlan,
-) -> Result<BackendProfile, RunResolveError> {
-    match execution {
-        ExecutionPlan::Local(_) => Ok(BackendProfile::full_local()),
-        ExecutionPlan::Remote(agent) => Ok(agent.backend()?.capabilities()),
-    }
-}
-
-fn resolved_run(
-    execution: ExecutionPlan,
-    role: ExecutionRole,
-    overrides: Option<awaken_runtime_contract::contract::inference::InferenceOverride>,
-    requirements: BackendRequirements,
-    backend_profile: BackendProfile,
-    resolution_scope: RegistryResolutionScope,
-) -> Result<ResolvedRunPlan, RunResolveError> {
-    let agent_spec = execution.spec().clone();
-    let upstream_model = match &execution {
-        ExecutionPlan::Local(agent) => agent.upstream_model.clone(),
-        ExecutionPlan::Remote(agent) => agent.spec.model_id.clone(),
-    };
-    let tools = match &execution {
-        ExecutionPlan::Local(agent) => agent
-            .tool_descriptors()
-            .into_iter()
-            .map(|descriptor| ResolvedTool { descriptor })
-            .collect(),
-        ExecutionPlan::Remote(_) => Vec::new(),
-    };
-    match resolution_scope {
-        RegistryResolutionScope::Pinned(resolution_id) => {
-            Ok(ResolvedRunPlan::Replayable(ReplayableResolvedRun {
-                execution: ResolvedRun {
-                    agent_spec,
-                    role,
-                    execution,
-                    model: ResolvedModelBinding { upstream_model },
-                    tools,
-                    overrides,
-                    backend_profile,
-                    requirements,
-                    scope: ReplayableScope,
-                },
-                artifact: ResolutionArtifact { resolution_id },
-            }))
-        }
-        RegistryResolutionScope::Live => {
-            // No server-issued resolution id: the run resolves against the live
-            // registry. Persistent runs are best-effort (resume re-resolves
-            // live); deterministic replay requires a `Pinned` resolution id.
-            Ok(ResolvedRunPlan::LiveOnly(ResolvedRun {
-                agent_spec,
-                role,
-                execution,
-                model: ResolvedModelBinding { upstream_model },
-                tools,
-                overrides,
-                backend_profile,
-                requirements,
-                scope: LiveOnlyScope,
-            }))
-        }
     }
 }
 

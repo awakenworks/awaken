@@ -7,7 +7,7 @@ use awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_runtime_contract::contract::run::{
     RunInput, RunInputSnapshot, RunIntent, RunKind, RunOptions, RunTraceContext,
 };
-use awaken_runtime_contract::contract::storage::{RunRecord, RunRequestOrigin};
+use awaken_runtime_contract::contract::storage::{RunRecord, RunRequestOrigin, StorageError};
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
 use awaken_runtime_contract::contract::tool_intercept::{AdapterKind, RunMode};
 use awaken_runtime_contract::contract::{
@@ -247,6 +247,7 @@ impl RunActivation {
         self.intent.kind = RunKind::HitlResume {
             run_id: run_id.into(),
         };
+        self.persistence.is_continuation = true;
         self.trace.run_mode = RunMode::Resume;
         self
     }
@@ -364,12 +365,86 @@ impl RunActivation {
         self.capture.thread_context_cache = Some(cache);
         self
     }
+
+    /// Validate activation invariants before runtime execution starts.
+    ///
+    /// This keeps the owned runtime boundary aligned with the persisted
+    /// `RunActivationSnapshot` contract without forcing user-authored
+    /// `NewMessages` to already carry persistence ids.
+    pub fn validate(&self) -> Result<(), RunActivationError> {
+        self.intent.validate()?;
+        self.trace.validate()?;
+
+        match self.intent.kind {
+            RunKind::NewIntent if self.persistence.is_continuation => {
+                return Err(RunActivationError::Validation(
+                    "persistence.is_continuation requires a resume or continuation run kind"
+                        .to_string(),
+                ));
+            }
+            RunKind::HitlResume { .. } | RunKind::ContinuationFromRun { .. }
+                if !self.persistence.is_continuation =>
+            {
+                return Err(RunActivationError::Validation(
+                    "resume and continuation run kinds require persistence.is_continuation"
+                        .to_string(),
+                ));
+            }
+            _ => {}
+        }
+
+        if let RunInput::AlreadyPersisted(snapshot) = &self.input {
+            snapshot.validate()?;
+            if snapshot.thread_id != self.intent.thread_id {
+                return Err(RunActivationError::Validation(format!(
+                    "run activation intent.thread_id '{}' must match input.thread_id '{}'",
+                    self.intent.thread_id, snapshot.thread_id
+                )));
+            }
+        }
+
+        for (idx, (call_id, _)) in self.control.seeded_decisions.iter().enumerate() {
+            require_non_empty(
+                &format!("run activation seeded_decisions[{idx}].call_id"),
+                call_id,
+            )?;
+        }
+        require_optional_non_empty(
+            "run activation run_id_hint",
+            self.persistence.run_id_hint.as_deref(),
+        )?;
+        require_optional_non_empty(
+            "run activation dispatch_id_hint",
+            self.persistence.dispatch_id_hint.as_deref(),
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunActivationError {
     #[error("run activation is missing thread_id")]
     MissingThreadId,
+    #[error("run activation validation failed: {0}")]
+    Validation(String),
+    #[error(transparent)]
+    Contract(#[from] StorageError),
+}
+
+fn require_non_empty(field: &str, value: &str) -> Result<(), RunActivationError> {
+    if value.trim().is_empty() {
+        return Err(RunActivationError::Validation(format!(
+            "{field} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+fn require_optional_non_empty(field: &str, value: Option<&str>) -> Result<(), RunActivationError> {
+    if let Some(value) = value {
+        require_non_empty(field, value)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -421,6 +496,57 @@ mod tests {
     fn activation_is_owned_send_static() {
         let activation = RunActivation::new("thread", vec![Message::user("hi")]);
         assert_send_static(activation);
+    }
+
+    #[test]
+    fn activation_validation_rejects_blank_identity_fields() {
+        let activation = RunActivation::new("thread", vec![Message::user("hi")])
+            .with_agent_id(" ")
+            .with_run_id_hint("run-1");
+
+        let err = activation.validate().unwrap_err();
+        assert!(err.to_string().contains("agent_id"));
+    }
+
+    #[test]
+    fn activation_validation_rejects_mismatched_persisted_input_thread() {
+        let activation = RunActivation::new("thread-a", Vec::new()).with_already_persisted_input(
+            RunInputSnapshot {
+                thread_id: "thread-b".into(),
+                ..RunInputSnapshot::default()
+            },
+        );
+
+        let err = activation.validate().unwrap_err();
+        assert!(err.to_string().contains("intent.thread_id"));
+    }
+
+    #[test]
+    fn activation_validation_rejects_orphaned_continuation_hint() {
+        let mut activation = RunActivation::new("thread", Vec::new());
+        activation.persistence.is_continuation = true;
+
+        let err = activation.validate().unwrap_err();
+        assert!(err.to_string().contains("is_continuation"));
+    }
+
+    #[test]
+    fn hitl_resume_builder_sets_continuation_hint() {
+        let activation = RunActivation::new("thread", Vec::new()).with_hitl_resume_run_id("run-1");
+
+        assert!(activation.persistence.is_continuation);
+        activation.validate().unwrap();
+    }
+
+    #[test]
+    fn activation_validation_rejects_resume_without_continuation_hint() {
+        let mut activation = RunActivation::new("thread", Vec::new());
+        activation.intent.kind = RunKind::HitlResume {
+            run_id: "run-1".into(),
+        };
+
+        let err = activation.validate().unwrap_err();
+        assert!(err.to_string().contains("is_continuation"));
     }
 
     /// Pins the routing between builder methods and the three split

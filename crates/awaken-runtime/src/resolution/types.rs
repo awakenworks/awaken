@@ -161,6 +161,65 @@ pub enum RootScopeKind {
 }
 
 impl ResolvedRunPlan {
+    pub(crate) fn from_execution_for_request(
+        execution: ExecutionPlan,
+        role: ExecutionRole,
+        request: ResolutionRequest,
+    ) -> Result<Self, ResolveError> {
+        let requirements = BackendRequirements::from_features(&request.features);
+        let backend_profile = execution.backend_profile()?;
+        Ok(Self::from_execution(
+            execution,
+            role,
+            request.overrides,
+            requirements,
+            backend_profile,
+            request.resolution_scope,
+        ))
+    }
+
+    #[must_use]
+    pub(crate) fn from_execution(
+        execution: ExecutionPlan,
+        role: ExecutionRole,
+        overrides: Option<InferenceOverride>,
+        requirements: BackendRequirements,
+        backend_profile: BackendProfile,
+        resolution_scope: RegistryResolutionScope,
+    ) -> Self {
+        let agent_spec = execution.spec().clone();
+        let (upstream_model, tools) = execution_model_and_tools(&execution);
+        match resolution_scope {
+            RegistryResolutionScope::Pinned(resolution_id) => {
+                Self::Replayable(ReplayableResolvedRun {
+                    execution: ResolvedRun {
+                        agent_spec,
+                        role,
+                        execution,
+                        model: ResolvedModelBinding { upstream_model },
+                        tools,
+                        overrides,
+                        backend_profile,
+                        requirements,
+                        scope: ReplayableScope,
+                    },
+                    artifact: ResolutionArtifact { resolution_id },
+                })
+            }
+            RegistryResolutionScope::Live => Self::LiveOnly(ResolvedRun {
+                agent_spec,
+                role,
+                execution,
+                model: ResolvedModelBinding { upstream_model },
+                tools,
+                overrides,
+                backend_profile,
+                requirements,
+                scope: LiveOnlyScope,
+            }),
+        }
+    }
+
     pub fn into_replayable(self) -> Result<ReplayableResolvedRun, ResolveError> {
         match self {
             Self::Replayable(plan) => Ok(plan),
@@ -227,6 +286,20 @@ impl ResolvedRunPlan {
     }
 }
 
+fn execution_model_and_tools(execution: &ExecutionPlan) -> (String, Vec<ResolvedTool>) {
+    match execution {
+        ExecutionPlan::Local(agent) => (
+            agent.upstream_model.clone(),
+            agent
+                .tool_descriptors()
+                .into_iter()
+                .map(|descriptor| ResolvedTool { descriptor })
+                .collect(),
+        ),
+        ExecutionPlan::Remote(agent) => (agent.spec.model_id.clone(), Vec::new()),
+    }
+}
+
 #[derive(Clone)]
 pub struct ReplayableScope;
 
@@ -270,6 +343,13 @@ impl ExecutionPlan {
         match self {
             Self::Local(agent) => agent.spec.as_ref(),
             Self::Remote(agent) => agent.spec.as_ref(),
+        }
+    }
+
+    pub(crate) fn backend_profile(&self) -> Result<BackendProfile, ResolveError> {
+        match self {
+            Self::Local(_) => Ok(BackendProfile::full_local()),
+            Self::Remote(agent) => Ok(agent.backend()?.capabilities()),
         }
     }
 }
