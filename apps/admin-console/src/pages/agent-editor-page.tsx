@@ -10,6 +10,7 @@ import {
   type PermissionPreviewResponse,
   type RecordMeta,
   ConfigApiError,
+  capabilitiesFromResult,
   configApi,
   deriveSourceState,
 } from "@/lib/config-api";
@@ -162,8 +163,7 @@ export function AgentEditorPage() {
     enabled: !isNew && Boolean(id),
     optional: true,
   });
-  const capabilities =
-    capabilitiesQuery.data?.kind === "ok" ? capabilitiesQuery.data.capabilities : null;
+  const capabilities = capabilitiesFromResult(capabilitiesQuery.data);
   const loading = capabilitiesQuery.isPending || (!isNew && agentQuery.isPending);
   const agentError = !isNew && agentQuery.error ? safeErrorMessage(agentQuery.error) : null;
   const mcpServersError = mcpServersQuery.error ? safeErrorMessage(mcpServersQuery.error) : null;

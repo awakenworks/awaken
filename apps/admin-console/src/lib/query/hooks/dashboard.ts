@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   capabilitiesApi,
   capabilitiesFromResult,
+  EMPTY_CAPABILITIES,
   configResourceApi,
   ConfigApiError,
   type AgentSpec,
@@ -74,22 +75,14 @@ export function useDashboardQuery(range: TimeRange) {
           loadOptionalSystemInfo(),
         ]);
       const degraded: DegradedSlots = {};
+      if (capabilitiesResult.kind === "registry_unavailable") {
+        throw new Error(capabilitiesResult.message ?? "Capabilities registry unavailable");
+      }
       if (mcp.degraded) degraded.mcpServers = true;
       if (providers.degraded) degraded.providers = true;
       if (models.degraded) degraded.models = true;
       if (agents.degraded) degraded.agents = true;
-      if (capabilitiesResult.kind !== "ok") {
-        throw new ConfigApiError(
-          capabilitiesResult.kind === "route_absent" ? 404 : 503,
-          capabilitiesResult.kind === "route_absent"
-            ? "capabilities route is not exposed"
-            : (capabilitiesResult.message ?? "capabilities store is unavailable"),
-        );
-      }
-      const capabilities = capabilitiesFromResult(capabilitiesResult);
-      if (!capabilities) {
-        throw new ConfigApiError(500, "capabilities response was empty");
-      }
+      const capabilities = capabilitiesFromResult(capabilitiesResult) ?? EMPTY_CAPABILITIES;
       return {
         capabilities,
         mcpServers: mcp.items,

@@ -41,16 +41,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const seq = ++refreshSeqRef.current;
     setStatus("checking");
     try {
-      const capabilities = await configApi.capabilities();
-      if (capabilities.kind !== "ok") {
-        throw new ConfigApiError(
-          capabilities.kind === "route_absent" ? 404 : 503,
-          capabilities.kind === "route_absent"
-            ? "capabilities route is not exposed"
-            : (capabilities.message ?? "capabilities store is unavailable"),
-        );
-      }
-      if (refreshSeqRef.current === seq) setStatus("ok");
+      const result = await configApi.capabilities();
+      if (refreshSeqRef.current !== seq) return;
+      setStatus(result.kind === "registry_unavailable" ? "disconnected" : "ok");
     } catch (probeError) {
       if (refreshSeqRef.current !== seq) return;
       if (probeError instanceof ConfigApiError) {

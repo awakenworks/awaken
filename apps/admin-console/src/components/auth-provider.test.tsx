@@ -26,7 +26,7 @@ function emptyCapabilities(): Awaited<ReturnType<typeof configApi.capabilities>>
       providers: [],
       namespaces: [],
     },
-  } as Awaited<ReturnType<typeof configApi.capabilities>>;
+  };
 }
 
 function Consumer() {

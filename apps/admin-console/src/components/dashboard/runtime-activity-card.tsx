@@ -13,8 +13,8 @@ import type { AgentRuntimeSnapshot } from "@/lib/config-api";
 const ERROR_RATE_WARN = 0.05;
 
 /** State shape mirrors `WorkloadState` so both top cards distinguish
- *  loading / disabled / error / ready the same way. The dashboard
- *  derives this from the runtime-stats slot. */
+ *  loading / route_absent / registry_unavailable / error / ready the
+ *  same way. The dashboard derives this from the runtime-stats slot. */
 export type RuntimeActivityState =
   | { kind: "loading" }
   | { kind: "route_absent" }

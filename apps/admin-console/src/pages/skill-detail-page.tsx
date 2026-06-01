@@ -21,12 +21,14 @@ export function SkillDetailPage() {
     ? capabilitiesQuery.error instanceof Error
       ? capabilitiesQuery.error.message
       : String(capabilitiesQuery.error)
+    : capabilitiesQuery.data?.kind === "registry_unavailable"
+      ? capabilitiesQuery.data.message ?? "Capabilities registry unavailable"
     : null;
   const capabilities = capabilitiesFromResult(capabilitiesQuery.data);
   const skill = useMemo(() => {
-    if (!id || !capabilities) return undefined;
-    return capabilities.skills.find((s) => s.id === id) ?? null;
-  }, [capabilities, id]);
+    if (!id || capabilitiesQuery.data === undefined) return undefined;
+    return capabilities?.skills.find((s) => s.id === id) ?? null;
+  }, [capabilities, capabilitiesQuery.data, id]);
   const agents = agentsQuery.data?.items ?? EMPTY_AGENTS;
 
   const usedByAgents = useMemo(() => {

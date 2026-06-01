@@ -5,11 +5,11 @@ import { useTranslation } from "react-i18next";
 import {
   adminAssistantApi,
   adminAssistantRunUrl,
+  capabilitiesFromResult,
   type AdminAssistantConfig,
 } from "@/lib/config-api";
 import { adminAuthHeaders } from "@/lib/api/http";
 import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
-import { capabilitiesFromResult } from "@/lib/api";
 import {
   describeToolCallState,
   previewPayload,

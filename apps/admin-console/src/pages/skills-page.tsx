@@ -45,8 +45,10 @@ export function SkillsPage() {
           ? capabilitiesQuery.error.message
           : String(capabilitiesQuery.error),
       );
+    } else if (capabilitiesQuery.data?.kind === "registry_unavailable") {
+      toast.error(capabilitiesQuery.data.message ?? "Capabilities registry unavailable");
     }
-  }, [capabilitiesQuery.error, toast]);
+  }, [capabilitiesQuery.data, capabilitiesQuery.error, toast]);
 
   const visibleSkills = useMemo(() => filterSkills(skills, filter), [skills, filter]);
 

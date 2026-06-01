@@ -93,6 +93,12 @@ fn validate_agent_spec_rejects_unknown_stop_condition_fields() {
 #[test]
 fn validate_agent_spec_patch_enforces_stop_condition_bounds() {
     let err = validate_agent_spec_patch(json!({
+        "stop_conditions": [{"type": "content_match", "pattern": "["}]
+    }))
+    .expect_err("patch content_match pattern must be valid regex");
+    assert!(err.to_string().contains("valid regex"));
+
+    let err = validate_agent_spec_patch(json!({
         "stop_conditions": [{"type": "content_match", "pattern": "x".repeat(1025)}]
     }))
     .expect_err("patch stop conditions must enforce pattern length");

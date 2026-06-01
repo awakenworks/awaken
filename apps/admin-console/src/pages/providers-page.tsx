@@ -181,11 +181,15 @@ export function ProvidersPage() {
     prepareSave,
     auxiliaryQueryKey: PROVIDER_AUXILIARY_QUERY_KEY,
     auxiliaryLoaders: () =>
-      capabilitiesApi.capabilities().then((result) => {
-        const caps = capabilitiesFromResult(result);
-        if (!caps) return [FALLBACK_ADAPTERS, []];
-        return [caps.supported_adapters ?? FALLBACK_ADAPTERS, caps.models ?? []];
-      }),
+      capabilitiesApi
+        .capabilities()
+        .then((result) => {
+          if (result.kind === "registry_unavailable") {
+            throw new Error(result.message ?? "Capabilities registry unavailable");
+          }
+          const caps = capabilitiesFromResult(result);
+          return [caps?.supported_adapters ?? FALLBACK_ADAPTERS, caps?.models ?? []];
+        }),
   });
 
   const serverAdapters = crud.auxiliaryData[0] as string[] | undefined;
