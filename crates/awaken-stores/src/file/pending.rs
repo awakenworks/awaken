@@ -342,6 +342,7 @@ impl PendingMessageStore for FileStore {
     ) -> Result<Vec<MessageRecord>, StorageError> {
         validate_id(thread_id, "thread id")?;
         validate_id(&run.run_id, "run id")?;
+        run.validate_for_persist()?;
         let _guard = self.hierarchy_lock.lock().await;
         let committed = self
             .load_committed_message_records_locked(thread_id)
@@ -446,6 +447,7 @@ impl PendingMessageStore for FileStore {
     ) -> Result<Vec<MessageRecord>, StorageError> {
         validate_id(thread_id, "thread id")?;
         validate_id(&run.run_id, "run id")?;
+        run.validate_for_persist()?;
         let _guard = self.hierarchy_lock.lock().await;
         let committed = self
             .load_committed_message_records_locked(thread_id)

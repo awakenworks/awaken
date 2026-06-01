@@ -131,6 +131,13 @@ impl CommitCoordinator for MemoryCommitCoordinator {
         self.scope.clone()
     }
 
+    fn thread_run_storage_identity(&self) -> Option<String> {
+        Some(format!(
+            "memory-thread-run::{:p}",
+            Arc::as_ptr(&self.thread_run)
+        ))
+    }
+
     fn reader(&self) -> Arc<dyn awaken_server_contract::contract::storage::RuntimeCheckpointStore> {
         Arc::new(
             awaken_server_contract::contract::storage::ThreadRunCheckpointStore::new(Arc::clone(
@@ -225,6 +232,7 @@ mod tests {
             thread_id: thread_id.to_string(),
             status: RunStatus::Done,
             agent_id: "agent-1".to_string(),
+            finished_at: Some(1),
             ..Default::default()
         }
     }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::Barrier;
 
 fn make_run(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
-    RunRecord {
+    let mut run = RunRecord {
         run_id: run_id.to_string(),
         thread_id: thread_id.to_string(),
         agent_id: "agent".to_string(),
@@ -39,7 +39,11 @@ fn make_run(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
         input_tokens: 0,
         output_tokens: 0,
         state: None,
+    };
+    if status == RunStatus::Done {
+        run.finished_at = Some(run.updated_at);
     }
+    run
 }
 
 // ── ThreadStore ──
@@ -51,6 +55,20 @@ async fn thread_save_and_load() {
     store.save_thread(&thread).await.unwrap();
     let loaded = store.load_thread(&thread.id).await.unwrap().unwrap();
     assert_eq!(loaded.id, thread.id);
+}
+
+#[tokio::test]
+async fn thread_save_rejects_empty_id() {
+    let store = InMemoryStore::new();
+    let thread = Thread::with_id(" ");
+
+    let err = store
+        .save_thread(&thread)
+        .await
+        .expect_err("thread id must be non-empty");
+
+    assert!(matches!(err, StorageError::Validation(message) if message.contains("thread id")));
+    assert!(store.threads.read().await.is_empty());
 }
 
 #[tokio::test]
@@ -134,6 +152,20 @@ async fn messages_save_and_load() {
 }
 
 #[tokio::test]
+async fn messages_save_rejects_invalid_committed_message_shape() {
+    let store = InMemoryStore::new();
+    let mut invalid = Message::user("invalid").with_id("msg-invalid".to_string());
+    invalid.tool_call_id = Some("tool-call".to_string());
+
+    let error = store
+        .save_messages("t-invalid", &[invalid])
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, StorageError::Validation(_)));
+}
+
+#[tokio::test]
 async fn messages_load_missing_returns_none() {
     let store = InMemoryStore::new();
     assert!(store.load_messages("no-such").await.unwrap().is_none());
@@ -208,6 +240,37 @@ async fn pending_messages_append_edit_reorder_and_retract() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].pending_id, "pending-1");
     assert_eq!(pending[0].position, 1);
+}
+
+#[tokio::test]
+async fn pending_messages_reject_invalid_message_shape() {
+    let store = InMemoryStore::new();
+    let mode = DeliveryMode::new_run(DeliveryGranularity::Batch);
+    let mut invalid = Message::user("invalid").with_id("pending-invalid".to_string());
+    invalid.tool_call_id = Some("tool-call".to_string());
+
+    let error = store
+        .append_pending_message_records("thread-invalid-pending", &[invalid], mode.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, StorageError::Validation(_)));
+
+    store
+        .append_pending_message_records(
+            "thread-invalid-pending",
+            &[Message::user("valid").with_id("pending-valid".to_string())],
+            mode,
+        )
+        .await
+        .unwrap();
+
+    let mut invalid_edit = Message::tool("", "missing call id");
+    invalid_edit.id = Some("pending-valid".to_string());
+    let error = store
+        .update_pending_message_record("thread-invalid-pending", "pending-valid", invalid_edit)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, StorageError::Validation(_)));
 }
 
 #[tokio::test]

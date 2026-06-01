@@ -20,6 +20,8 @@ use awaken_server_contract::thread::{Thread, normalize_lineage_id};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+use crate::message_validation::{validate_committed_message_records, validate_committed_messages};
+
 mod pending;
 
 /// In-memory storage implementing all four store traits.
@@ -143,14 +145,16 @@ impl ThreadStore for InMemoryStore {
     async fn save_thread(&self, thread: &Thread) -> Result<(), StorageError> {
         let mut normalized = thread.clone();
         normalized.normalize_lineage();
+        normalized.validate_for_persist()?;
         let mut guard = self.threads.write().await;
-        guard.insert(thread.id.clone(), normalized);
+        guard.insert(normalized.id.clone(), normalized);
         Ok(())
     }
 
     async fn save_thread_validated(&self, thread: &Thread) -> Result<(), StorageError> {
         let mut normalized = thread.clone();
         normalized.normalize_lineage();
+        normalized.validate_for_persist()?;
         let mut guard = self.threads.write().await;
         validate_thread_hierarchy_map(
             &guard,
@@ -284,10 +288,12 @@ impl ThreadStore for InMemoryStore {
 
     async fn load_messages(&self, thread_id: &str) -> Result<Option<Vec<Message>>, StorageError> {
         let guard = self.messages.read().await;
-        Ok(guard.get(thread_id).cloned().map(|mut messages| {
-            strip_unpaired_tool_calls_from_view(&mut messages);
-            messages
-        }))
+        let Some(mut messages) = guard.get(thread_id).cloned() else {
+            return Ok(None);
+        };
+        validate_committed_messages(&messages)?;
+        strip_unpaired_tool_calls_from_view(&mut messages);
+        Ok(Some(messages))
     }
 
     async fn load_committed_messages(
@@ -295,7 +301,11 @@ impl ThreadStore for InMemoryStore {
         thread_id: &str,
     ) -> Result<Option<Vec<Message>>, StorageError> {
         let guard = self.messages.read().await;
-        Ok(guard.get(thread_id).cloned())
+        let Some(messages) = guard.get(thread_id).cloned() else {
+            return Ok(None);
+        };
+        validate_committed_messages(&messages)?;
+        Ok(Some(messages))
     }
 
     async fn list_message_records(
@@ -307,6 +317,7 @@ impl ThreadStore for InMemoryStore {
         let Some(messages) = guard.get(thread_id) else {
             return Ok(MessagePage::empty());
         };
+        validate_committed_messages(messages)?;
         let mut messages = messages.clone();
         strip_unpaired_tool_calls_from_view(&mut messages);
         let records = messages
@@ -320,7 +331,8 @@ impl ThreadStore for InMemoryStore {
                     message,
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
+        validate_committed_message_records(thread_id, &records)?;
         Ok(paginate_message_records(records, query))
     }
 
@@ -329,6 +341,7 @@ impl ThreadStore for InMemoryStore {
         thread_id: &str,
         messages: &[Message],
     ) -> Result<(), StorageError> {
+        validate_committed_messages(messages)?;
         let mut guard = self.messages.write().await;
         guard.insert(thread_id.to_owned(), messages.to_vec());
         Ok(())
@@ -392,6 +405,7 @@ impl ThreadStore for InMemoryStore {
 #[async_trait]
 impl RunStore for InMemoryStore {
     async fn create_run(&self, record: &RunRecord) -> Result<(), StorageError> {
+        record.validate_for_persist()?;
         let mut guard = self.runs.write().await;
         if guard.contains_key(&record.run_id) {
             return Err(StorageError::AlreadyExists(record.run_id.clone()));
@@ -448,12 +462,18 @@ impl RunStore for InMemoryStore {
 
 #[async_trait]
 impl ThreadRunStore for InMemoryStore {
+    fn thread_run_storage_identity(&self) -> Option<String> {
+        Some(format!("memory-thread-run::{:p}", self))
+    }
+
     async fn checkpoint(
         &self,
         thread_id: &str,
         messages: &[Message],
         run: &RunRecord,
     ) -> Result<(), StorageError> {
+        run.validate_for_persist()?;
+        validate_committed_messages(messages)?;
         let now = current_millis();
         let mut thread_guard = self.threads.write().await;
         let existing_thread = thread_guard.get(thread_id).cloned();
@@ -493,6 +513,7 @@ impl ThreadRunStore for InMemoryStore {
         expected_version: Option<u64>,
         run: &RunRecord,
     ) -> Result<u64, StorageError> {
+        run.validate_for_persist()?;
         let now = current_millis();
         let mut thread_guard = self.threads.write().await;
         let existing_thread = thread_guard.get(thread_id).cloned();

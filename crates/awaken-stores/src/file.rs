@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
+use crate::message_validation::{validate_committed_message_records, validate_committed_messages};
+use crate::pending_message_store::validate_pending_message_records;
+
 mod pending;
 
 /// File-system storage backend.
@@ -47,6 +50,10 @@ impl FileStore {
             config_cas_lock: shared_config_cas_lock(&base_path),
             base_path,
         }
+    }
+
+    pub(crate) fn thread_run_storage_identity_descriptor(&self) -> String {
+        format!("file-thread-run::{}", hierarchy_lock_key(&self.base_path))
     }
 
     fn threads_dir(&self) -> PathBuf {
@@ -287,6 +294,7 @@ impl FileStore {
             }
             records.sort_by_key(|record| record.seq);
             if !records.is_empty() {
+                validate_committed_message_records(thread_id, &records)?;
                 return Ok(Some(records));
             }
         }
@@ -295,6 +303,7 @@ impl FileStore {
         else {
             return Ok(None);
         };
+        validate_committed_messages(&messages)?;
         Ok(Some(
             messages
                 .into_iter()
@@ -337,6 +346,7 @@ impl FileStore {
         messages: &[Message],
         ops: &mut Vec<StagedFileOp>,
     ) -> Result<(), StorageError> {
+        validate_committed_messages(messages)?;
         // Write the replacement records first, then remove stale records only when the new
         // message set is shorter than the existing set. This avoids staging duplicate
         // delete+write operations on the same target path in one transaction.
@@ -440,9 +450,12 @@ impl FileStore {
         &self,
         thread_id: &str,
     ) -> Result<Vec<PendingMessageRecord>, StorageError> {
-        read_json::<Vec<PendingMessageRecord>>(&self.pending_messages_path(thread_id))
-            .await
-            .map(|records| records.unwrap_or_default())
+        let records =
+            read_json::<Vec<PendingMessageRecord>>(&self.pending_messages_path(thread_id))
+                .await
+                .map(|records| records.unwrap_or_default())?;
+        validate_pending_message_records(&records)?;
+        Ok(records)
     }
 
     async fn write_pending_messages_locked(
@@ -450,6 +463,7 @@ impl FileStore {
         thread_id: &str,
         records: &[PendingMessageRecord],
     ) -> Result<StagedWrite, StorageError> {
+        validate_pending_message_records(records)?;
         let payload = serde_json::to_string_pretty(records)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         stage_write(
@@ -1081,6 +1095,7 @@ impl ThreadStore for FileStore {
         validate_id(&thread.id, "thread id")?;
         let mut normalized = thread.clone();
         normalized.normalize_lineage();
+        normalized.validate_for_persist()?;
         let payload = serde_json::to_string_pretty(&normalized)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         atomic_write(
@@ -1334,6 +1349,7 @@ impl ThreadStore for FileStore {
 impl RunStore for FileStore {
     async fn create_run(&self, record: &RunRecord) -> Result<(), StorageError> {
         validate_id(&record.run_id, "run id")?;
+        record.validate_for_persist()?;
         let payload = serde_json::to_string_pretty(record)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         atomic_write_exclusive(
@@ -1628,6 +1644,10 @@ impl ConfigStore for FileStore {
 
 #[async_trait]
 impl ThreadRunStore for FileStore {
+    fn thread_run_storage_identity(&self) -> Option<String> {
+        Some(self.thread_run_storage_identity_descriptor())
+    }
+
     async fn checkpoint(
         &self,
         thread_id: &str,
@@ -1636,6 +1656,7 @@ impl ThreadRunStore for FileStore {
     ) -> Result<(), StorageError> {
         validate_id(thread_id, "thread id")?;
         validate_id(&run.run_id, "run id")?;
+        run.validate_for_persist()?;
         let _guard = self.hierarchy_lock.lock().await;
         self.checkpoint_locked(thread_id, messages, run).await
     }
@@ -1649,6 +1670,7 @@ impl ThreadRunStore for FileStore {
     ) -> Result<u64, StorageError> {
         validate_id(thread_id, "thread id")?;
         validate_id(&run.run_id, "run id")?;
+        run.validate_for_persist()?;
         let _guard = self.hierarchy_lock.lock().await;
 
         let committed = self

@@ -2,7 +2,62 @@ use async_trait::async_trait;
 use awaken_server_contract::contract::message::{
     DeliveryBoundary, DeliveryMode, Message, MessageRecord, PendingMessageRecord,
 };
-use awaken_server_contract::contract::storage::{RunRecord, StorageError, ThreadRunStore};
+use awaken_server_contract::contract::storage::{
+    RunRecord, StorageError, ThreadRunStore, message_append,
+};
+
+pub(crate) fn validate_pending_message_record(
+    record: &PendingMessageRecord,
+) -> Result<(), StorageError> {
+    if record.pending_id.trim().is_empty() {
+        return Err(StorageError::Validation(
+            "pending message id must not be empty".to_string(),
+        ));
+    }
+    if record.thread_id.trim().is_empty() {
+        return Err(StorageError::Validation(format!(
+            "pending message '{}' thread id must not be empty",
+            record.pending_id
+        )));
+    }
+    if record.position == 0 {
+        return Err(StorageError::Validation(format!(
+            "pending message '{}' position must be 1-based",
+            record.pending_id
+        )));
+    }
+    if record.revision == 0 {
+        return Err(StorageError::Validation(format!(
+            "pending message '{}' revision must be 1-based",
+            record.pending_id
+        )));
+    }
+    match record.message.id.as_deref() {
+        Some(message_id) if message_id == record.pending_id => {}
+        Some(message_id) => {
+            return Err(StorageError::Validation(format!(
+                "pending message '{}' cannot carry message id '{}'",
+                record.pending_id, message_id
+            )));
+        }
+        None => {
+            return Err(StorageError::Validation(format!(
+                "pending message '{}' must carry message id",
+                record.pending_id
+            )));
+        }
+    }
+    message_append::validate_message_shape(&record.message, "pending")
+}
+
+pub(crate) fn validate_pending_message_records(
+    records: &[PendingMessageRecord],
+) -> Result<(), StorageError> {
+    for record in records {
+        validate_pending_message_record(record)?;
+    }
+    Ok(())
+}
 
 /// Store-local extension for delivered-but-unconsumed thread messages.
 #[async_trait]

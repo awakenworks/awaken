@@ -12,6 +12,9 @@ use awaken_server_contract::contract::storage::{
 use awaken_server_contract::thread::Thread;
 
 use crate::PendingMessageStore;
+use crate::pending_message_store::{
+    validate_pending_message_record, validate_pending_message_records,
+};
 
 use super::validate_thread_hierarchy_map;
 use super::{InMemoryStore, current_millis};
@@ -70,7 +73,9 @@ impl PendingMessageStore for InMemoryStore {
         thread_id: &str,
     ) -> Result<Vec<PendingMessageRecord>, StorageError> {
         let guard = self.pending_messages.read().await;
-        Ok(guard.get(thread_id).cloned().unwrap_or_default())
+        let records = guard.get(thread_id).cloned().unwrap_or_default();
+        validate_pending_message_records(&records)?;
+        Ok(records)
     }
 
     async fn list_threads_with_pending_messages(
@@ -124,6 +129,7 @@ impl PendingMessageStore for InMemoryStore {
             .map(|record| record.pending_id.as_str())
             .collect::<HashSet<_>>();
         for record in &records {
+            validate_pending_message_record(record)?;
             if !seen.insert(record.pending_id.as_str()) {
                 return Err(duplicate_pending_id(&record.pending_id));
             }
@@ -169,7 +175,10 @@ impl PendingMessageStore for InMemoryStore {
                 Some(_) => {}
                 None => message.id = Some(pending_id.to_owned()),
             }
-            record.message = message;
+            let mut updated = record.clone();
+            updated.message = message;
+            validate_pending_message_record(&updated)?;
+            record.message = updated.message;
             record.revision += 1;
             record.updated_at = Some(current_millis() / 1000);
             return Ok(record.clone());
@@ -343,6 +352,7 @@ impl PendingMessageStore for InMemoryStore {
         expected_pending_ids: &[String],
         run: &RunRecord,
     ) -> Result<Vec<MessageRecord>, StorageError> {
+        run.validate_for_persist()?;
         let now = current_millis();
         let mut thread_guard = self.threads.write().await;
         let existing_thread = thread_guard.get(thread_id).cloned();
@@ -419,6 +429,7 @@ impl PendingMessageStore for InMemoryStore {
         expected_pending_ids: &[String],
         run: &RunRecord,
     ) -> Result<Vec<MessageRecord>, StorageError> {
+        run.validate_for_persist()?;
         let now = current_millis();
         let mut thread_guard = self.threads.write().await;
         let existing_thread = thread_guard.get(thread_id).cloned();
@@ -458,6 +469,7 @@ impl PendingMessageStore for InMemoryStore {
             );
             record.created_at = Some(append_now);
             record.updated_at = Some(append_now);
+            validate_pending_message_record(&record)?;
             if !seen.insert(record.pending_id.clone()) {
                 return Err(duplicate_pending_id(&record.pending_id));
             }

@@ -21,6 +21,7 @@ pub mod memory_mailbox;
 pub mod memory_outbox;
 pub mod memory_protocol_replay_log;
 pub mod memory_versioned_registry;
+mod message_validation;
 pub mod pending_message_store;
 
 /// Wall-clock time in milliseconds since the UNIX epoch.
