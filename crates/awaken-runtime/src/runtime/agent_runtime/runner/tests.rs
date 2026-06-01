@@ -1,7 +1,12 @@
 #![allow(deprecated)]
 
 use super::super::*;
-use super::build_compaction_runtime;
+use super::{
+    BackendRequestInput, RootRunIdentityInput, build_backend_control,
+    build_backend_root_run_request, build_compaction_runtime, build_root_run_identity,
+};
+use crate::backend::BackendControl;
+use crate::cancellation::CancellationToken;
 #[cfg(feature = "a2a")]
 use crate::extensions::a2a::{
     AgentBackend, AgentBackendError, AgentBackendFactory, AgentBackendFactoryError,
@@ -19,6 +24,11 @@ use crate::registry::snapshot::RegistryHandle;
 #[cfg(feature = "a2a")]
 use crate::registry::traits::{BackendRegistry, RegistrySet};
 use crate::registry::{AgentResolver, ResolvedAgent};
+use crate::resolution::{
+    BackendProfile, BackendRequirements, ExecutionPlan, ExecutionRole, LiveOnlyScope,
+    ResolutionRequest, ResolveError, ResolvedModelBinding, ResolvedRun, ResolvedRunPlan,
+    ResolvedTool, Resolver,
+};
 use crate::state::{KeyScope, StateCommand, StateKey, StateKeyOptions};
 use crate::{PhaseContext, PhaseHook, RunActivation, ToolPolicyHook};
 use async_trait::async_trait;
@@ -30,10 +40,13 @@ use awaken_runtime_contract::contract::event_sink::{EventSink, NullEventSink, Ve
 use awaken_runtime_contract::contract::executor::{
     InferenceExecutionError, InferenceRequest, LlmExecutor,
 };
+use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_runtime_contract::contract::inference::{InferenceOverride, StopReason, StreamResult};
 use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_runtime_contract::contract::message::Message;
-use awaken_runtime_contract::contract::storage::{RunRecord, RunWaitingState, WaitingReason};
+use awaken_runtime_contract::contract::storage::{
+    RunOutcome, RunRecord, RunWaitingState, WaitingReason,
+};
 use awaken_runtime_contract::contract::suspension::ResumeDecisionAction;
 use awaken_runtime_contract::contract::suspension::ToolCallResume;
 use awaken_runtime_contract::contract::tool::{
@@ -647,6 +660,50 @@ async fn run_rejects_unknown_continue_run_id() {
 }
 
 #[tokio::test]
+async fn next_root_run_id_rejects_continue_run_from_other_thread() {
+    let store = Arc::new(InMemoryStore::new());
+    let runtime = AgentRuntime::new(Arc::new(FixedResolver {
+        agent: ResolvedAgent::new("agent", "m", "sys", Arc::new(ScriptedLlm::new(Vec::new()))),
+        plugins: vec![],
+    }))
+    .with_in_memory_thread_run_store(store.clone());
+
+    store
+        .checkpoint(
+            "thread-b",
+            &[Message::user("previous")],
+            &RunRecord {
+                run_id: "run-b".into(),
+                thread_id: "thread-b".into(),
+                agent_id: "agent".into(),
+                status: RunStatus::Done,
+                termination_reason: Some(TerminationReason::NaturalEnd),
+                outcome: Some(RunOutcome {
+                    termination_reason: TerminationReason::NaturalEnd,
+                    final_output: None,
+                    error_payload: None,
+                }),
+                created_at: 1,
+                finished_at: Some(2),
+                updated_at: 2,
+                ..RunRecord::default()
+            },
+        )
+        .await
+        .expect("seed run on another thread");
+
+    let error = runtime
+        .next_root_run_id("thread-a", Some("run-b".into()), None, None, true, &None)
+        .await
+        .expect_err("continuation must not cross thread boundaries");
+
+    assert!(
+        error.to_string().contains("belongs to thread 'thread-b'"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn run_uses_dispatch_id_hint_for_new_run_identity() {
     let (runtime, store) = build_remote_runtime(
         RemoteEndpoint {
@@ -1220,6 +1277,166 @@ impl AgentResolver for FixedResolver {
     }
 }
 
+struct ResolveOnlyAgentResolver {
+    agent: ResolvedAgent,
+}
+
+impl AgentResolver for ResolveOnlyAgentResolver {
+    fn resolve(&self, _agent_id: &str) -> Result<ResolvedAgent, crate::error::RuntimeError> {
+        let mut agent = self.agent.clone();
+        agent.env = build_agent_env(&[], &agent)?;
+        Ok(agent)
+    }
+
+    fn resolve_execution(
+        &self,
+        _agent_id: &str,
+    ) -> Result<ExecutionPlan, crate::error::RuntimeError> {
+        Err(crate::error::RuntimeError::ResolveFailed {
+            message: "legacy execution resolver should not be used for root preflight".into(),
+        })
+    }
+}
+
+struct FixedRunPlanResolver {
+    agent: ResolvedAgent,
+}
+
+#[async_trait]
+impl Resolver for FixedRunPlanResolver {
+    async fn resolve(&self, req: ResolutionRequest) -> Result<ResolvedRunPlan, ResolveError> {
+        let requirements = BackendRequirements::from_features(&req.features);
+        let tools = self
+            .agent
+            .tool_descriptors()
+            .into_iter()
+            .map(|descriptor| ResolvedTool { descriptor })
+            .collect();
+        Ok(ResolvedRunPlan::LiveOnly(ResolvedRun {
+            agent_spec: (*self.agent.spec).clone(),
+            role: ExecutionRole::Root,
+            execution: ExecutionPlan::from_resolved_agent(&self.agent),
+            model: ResolvedModelBinding {
+                upstream_model: self.agent.upstream_model.clone(),
+            },
+            tools,
+            overrides: req.overrides,
+            backend_profile: BackendProfile::full_local(),
+            requirements,
+            scope: LiveOnlyScope,
+        }))
+    }
+}
+
+#[test]
+fn build_root_run_identity_preserves_trace_fields() {
+    let identity = build_root_run_identity(RootRunIdentityInput {
+        thread_id: "thread-1".into(),
+        parent_thread_id: Some("parent-thread".into()),
+        run_id: "run-1".into(),
+        parent_run_id: Some("parent-run".into()),
+        agent_id: "agent-1".into(),
+        origin: RunOrigin::Mcp,
+        run_mode: RunMode::Resume,
+        adapter: AdapterKind::AiSdk,
+        dispatch_id: Some("dispatch-1".into()),
+        session_id: Some("session-1".into()),
+        transport_request_id: Some("transport-1".into()),
+    });
+
+    assert_eq!(identity.thread_id, "thread-1");
+    assert_eq!(identity.parent_thread_id.as_deref(), Some("parent-thread"));
+    assert_eq!(identity.run_id, "run-1");
+    assert_eq!(identity.parent_run_id.as_deref(), Some("parent-run"));
+    assert_eq!(identity.agent_id, "agent-1");
+    assert_eq!(identity.origin(), RunOrigin::Mcp);
+    assert_eq!(identity.run_mode(), RunMode::Resume);
+    assert_eq!(identity.adapter(), AdapterKind::AiSdk);
+    assert_eq!(identity.trace.dispatch_id.as_deref(), Some("dispatch-1"));
+    assert_eq!(identity.trace.session_id.as_deref(), Some("session-1"));
+    assert_eq!(
+        identity.trace.transport_request_id.as_deref(),
+        Some("transport-1")
+    );
+}
+
+#[test]
+fn build_backend_request_wires_local_checkpoint_and_resolution_seed() {
+    let agent = ResolvedAgent::new(
+        "agent",
+        "model",
+        "system",
+        Arc::new(ScriptedLlm::new(Vec::new())),
+    );
+    let execution = ExecutionPlan::from_resolved_agent(&agent);
+    let resolver = FixedResolver {
+        agent,
+        plugins: vec![],
+    };
+    let phase_store = crate::state::StateStore::new();
+    let phase_runtime = crate::phase::PhaseRuntime::new(phase_store).unwrap();
+    let durable_store = Arc::new(InMemoryStore::new());
+    let checkpoint_reader =
+        awaken_server_contract::contract::store_traits::ThreadRunCheckpointStore::new(
+            durable_store as Arc<dyn ThreadRunStore>,
+        );
+
+    let request = build_backend_root_run_request(BackendRequestInput {
+        agent_id: "agent",
+        messages: vec![Message::user("hello").with_id("msg-1".to_string())],
+        new_messages: vec![Message::user("hello").with_id("msg-2".to_string())],
+        sink: Arc::new(NullEventSink),
+        resolver: &resolver,
+        run_identity: RunIdentity::new(
+            "thread".into(),
+            None,
+            "run".into(),
+            None,
+            "agent".into(),
+            RunOrigin::User,
+        ),
+        storage: Some(&checkpoint_reader),
+        commit_coordinator: None,
+        resolution_id_seed: Some("resolution-1"),
+        resolved_execution: &execution,
+        phase_runtime: Some(&phase_runtime),
+        control: BackendControl::default(),
+        decisions: Vec::new(),
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: true,
+    });
+
+    assert!(request.local.is_some());
+    assert!(request.checkpoint_store.is_some());
+    assert_eq!(request.commit.resolution_id_seed, Some("resolution-1"));
+    assert!(request.is_continuation);
+}
+
+#[test]
+fn build_backend_control_honors_backend_capabilities() {
+    let (_tx, rx) = futures::channel::mpsc::unbounded();
+    let local = build_backend_control(
+        &BackendProfile::full_local(),
+        CancellationToken::new(),
+        rx,
+        None,
+    );
+    assert!(local.cancellation_token.is_some());
+    assert!(local.decision_rx.is_some());
+
+    let (_tx, rx) = futures::channel::mpsc::unbounded();
+    let remote = build_backend_control(
+        &BackendProfile::remote_stateless_text(),
+        CancellationToken::new(),
+        rx,
+        None,
+    );
+    assert!(remote.cancellation_token.is_none());
+    assert!(remote.decision_rx.is_none());
+}
+
 struct ThreadCounterKey;
 
 impl StateKey for ThreadCounterKey {
@@ -1420,6 +1637,32 @@ async fn run_to_completion_returns_final_result() {
         result.termination,
         awaken_runtime_contract::contract::lifecycle::TerminationReason::NaturalEnd
     );
+}
+
+#[tokio::test]
+async fn run_uses_run_resolver_for_root_preflight() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("ok")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+    let agent = ResolvedAgent::new("agent", "m", "sys", llm);
+    let runtime = AgentRuntime::new(Arc::new(ResolveOnlyAgentResolver {
+        agent: agent.clone(),
+    }))
+    .with_run_resolver(Arc::new(FixedRunPlanResolver { agent }));
+
+    let result = runtime
+        .run_to_completion(
+            RunActivation::new("thread-run-resolver", vec![Message::user("hi")])
+                .with_agent_id("agent"),
+        )
+        .await
+        .expect("run should use the configured run resolver");
+
+    assert_eq!(result.response, "ok");
 }
 
 #[tokio::test]

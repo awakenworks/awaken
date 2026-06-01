@@ -1,25 +1,34 @@
 //! AgentRuntime::run() implementation.
-use super::AgentRuntime;
+use super::{AgentRuntime, DecisionBatch};
 use crate::backend::{
     BackendControl, BackendLocalRootContext, BackendRootRunRequest, ExecutionBackendError,
     LocalBackend, execute_remote_root_lifecycle, execution_capabilities,
     validate_root_execution_request,
 };
-use crate::loop_runner::{AgentLoopError, AgentRunResult, CommitWiring};
-use crate::registry::AgentResolver;
-use crate::resolution::{ExecutionPlan, ExecutionRole, ResolvedRunPlan};
+use crate::cancellation::CancellationToken;
+use crate::checkpoint_store::RuntimeCheckpointStore;
+use crate::loop_runner::{AgentLoopError, AgentRunResult, CommitWiring, PendingBoundaryHandler};
+use crate::registry::{AgentResolver, RegistrySet};
+use crate::resolution::{
+    BackendProfile, ExecutionPlan, ExecutionRole, PersistenceRequirement, RegistryResolutionScope,
+    ResolutionRequest, ResolutionTarget, ResolvedRunPlan, RunFeatureSet,
+};
 use crate::run::{RunActivation, RunInbox, ThreadContextSnapshot};
 use awaken_runtime_contract::contract::active_agent::ActiveAgentIdKey;
+use awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_runtime_contract::contract::event_sink::EventSink;
 use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+use awaken_runtime_contract::contract::inference::InferenceOverride;
 use awaken_runtime_contract::contract::message::{
     Message, Role, Visibility, strip_unpaired_tool_calls_from_view,
 };
 use awaken_runtime_contract::contract::run::{RunInput, RunKind};
 use awaken_runtime_contract::contract::storage::RunRecord;
-use awaken_runtime_contract::contract::suspension::ToolCallStatus;
+use awaken_runtime_contract::contract::suspension::{ToolCallResume, ToolCallStatus};
+use awaken_runtime_contract::contract::tool::ToolDescriptor;
 use awaken_runtime_contract::now_ms;
 use awaken_runtime_contract::state::PersistedState;
+use futures::channel::mpsc;
 use std::sync::Arc;
 const DEFAULT_AGENT_ID: &str = "default";
 /// RAII guard that unregisters the active run on drop, ensuring cleanup
@@ -43,6 +52,72 @@ struct PreparedLocalRootExecution {
     /// not already attached a manager + summarizer.
     compaction: Option<CompactionRuntime>,
 }
+struct PreparedRootExecution {
+    messages: Vec<Message>,
+    phase_runtime: Option<crate::phase::PhaseRuntime>,
+    inbox: Option<crate::inbox::InboxReceiver>,
+    live_inbox_sender: Option<crate::inbox::InboxSender>,
+    previous_non_local_state: Option<PersistedState>,
+    compaction: Option<CompactionRuntime>,
+}
+
+struct RootRunSetup {
+    agent_id: String,
+    execution_resolver: Arc<dyn AgentResolver>,
+    resolved_execution: ExecutionPlan,
+    capabilities: BackendProfile,
+    resolution_id_seed: Option<String>,
+}
+
+struct RootRunSetupInput<'a> {
+    requested_agent_id: Option<String>,
+    thread_id: &'a str,
+    thread_ctx: &'a Option<ThreadContextSnapshot>,
+    pinned_registry_set: Option<RegistrySet>,
+    inherited_run_resolver: Option<Arc<dyn crate::resolution::Resolver>>,
+    resolved_plan: Option<ResolvedRunPlan>,
+    overrides: &'a Option<InferenceOverride>,
+    frontend_tools: &'a [ToolDescriptor],
+    has_seeded_decisions: bool,
+    has_live_decision_channel: bool,
+    is_human_resume: bool,
+    is_continuation: bool,
+}
+
+struct RootRunIdentityInput {
+    thread_id: String,
+    parent_thread_id: Option<String>,
+    run_id: String,
+    parent_run_id: Option<String>,
+    agent_id: String,
+    origin: RunOrigin,
+    run_mode: awaken_runtime_contract::contract::tool_intercept::RunMode,
+    adapter: awaken_runtime_contract::contract::tool_intercept::AdapterKind,
+    dispatch_id: Option<String>,
+    session_id: Option<String>,
+    transport_request_id: Option<String>,
+}
+
+struct BackendRequestInput<'a> {
+    agent_id: &'a str,
+    messages: Vec<Message>,
+    new_messages: Vec<Message>,
+    sink: Arc<dyn EventSink>,
+    resolver: &'a dyn AgentResolver,
+    run_identity: RunIdentity,
+    storage: Option<&'a dyn RuntimeCheckpointStore>,
+    commit_coordinator: Option<&'a dyn CommitCoordinator>,
+    resolution_id_seed: Option<&'a str>,
+    resolved_execution: &'a ExecutionPlan,
+    phase_runtime: Option<&'a crate::phase::PhaseRuntime>,
+    control: BackendControl,
+    decisions: Vec<(String, ToolCallResume)>,
+    overrides: Option<InferenceOverride>,
+    frontend_tools: Vec<ToolDescriptor>,
+    inbox: Option<crate::inbox::InboxReceiver>,
+    is_continuation: bool,
+}
+
 /// Per-run context auto-compaction wiring: shared manager + summarizer that
 /// the loop's resolver-wrapper grafts onto every `ResolvedAgent` it produces.
 #[derive(Clone)]
@@ -167,6 +242,9 @@ impl AgentRuntime {
         thread_ctx: Option<ThreadContextSnapshot>,
         resolved_plan: Option<ResolvedRunPlan>,
     ) -> Result<AgentRunResult, AgentLoopError> {
+        activation
+            .validate()
+            .map_err(|error| AgentLoopError::InvalidActivation(error.to_string()))?;
         let RunActivation {
             intent,
             input,
@@ -182,6 +260,7 @@ impl AgentRuntime {
         // the commit by that coordinator, so the runtime carries no buffer.
         let commit_coordinator_override = control.commit_coordinator_override.clone();
         let pinned_registry_set = inherited.pinned_registry_set;
+        let inherited_run_resolver = inherited.run_resolver;
         let run_id_hint = persistence.run_id_hint;
         let dispatch_id_hint = persistence.dispatch_id_hint;
         let (request_messages, input_already_persisted) = match input {
@@ -190,15 +269,16 @@ impl AgentRuntime {
         };
         let messages_already_persisted =
             persistence.messages_already_persisted || input_already_persisted;
-        let (continue_run_id, intent_is_continuation) = match intent.kind {
-            RunKind::NewIntent => (None, false),
-            RunKind::HitlResume { run_id } => (Some(run_id), false),
-            RunKind::ContinuationFromRun { run_id } => (Some(run_id), true),
+        let (continue_run_id, is_human_resume, intent_is_continuation) = match intent.kind {
+            RunKind::NewIntent => (None, false, false),
+            RunKind::HitlResume { run_id } => (Some(run_id), true, false),
+            RunKind::ContinuationFromRun { run_id } => (Some(run_id), false, true),
         };
         let thread_id = intent.thread_id;
         let agent_id = intent.agent_id;
         let overrides = options.overrides;
         let frontend_tools = options.frontend_tools;
+        let has_live_decision_channel = control.decision_rx.is_some();
         let decisions = control.seeded_decisions;
         let (req_origin, run_mode, adapter) = (trace.origin, trace.run_mode, trace.adapter);
         let (req_parent_run_id, req_parent_thread_id) =
@@ -208,29 +288,29 @@ impl AgentRuntime {
         let run_inbox = control.inbox;
         let new_messages = request_messages.clone();
         let requested_continue_run_id = continue_run_id.clone();
-        let agent_id = self
-            .resolve_agent_id(agent_id, &thread_id, &thread_ctx)
+        let root_setup = self
+            .resolve_root_run_setup(RootRunSetupInput {
+                requested_agent_id: agent_id,
+                thread_id: &thread_id,
+                thread_ctx: &thread_ctx,
+                pinned_registry_set,
+                inherited_run_resolver,
+                resolved_plan,
+                overrides: &overrides,
+                frontend_tools: &frontend_tools,
+                has_seeded_decisions: !decisions.is_empty(),
+                has_live_decision_channel,
+                is_human_resume,
+                is_continuation: intent_is_continuation,
+            })
             .await?;
-        let resolver_set =
-            pinned_registry_set.or_else(|| self.registry_snapshot().map(|s| s.into_registries()));
-        let run_resolver: Arc<dyn AgentResolver> = if let Some(set) = resolver_set {
-            Arc::new(crate::registry::resolve::RegistrySetResolver::new(set))
-        } else {
-            self.execution_resolver_arc()
-        };
-        let resolution_id_seed = resolved_plan
-            .as_ref()
-            .and_then(|plan| plan.resolution_id().map(str::to_string));
-        let resolved_execution = if let Some(plan) = resolved_plan {
-            validate_resolved_root_plan(&plan, &agent_id)?;
-            plan.execution().clone()
-        } else {
-            run_resolver
-                .resolve_execution(&agent_id)
-                .map_err(AgentLoopError::RuntimeError)?
-        };
-        let capabilities =
-            execution_capabilities(&resolved_execution).map_err(local_root_execution_error)?;
+        let RootRunSetup {
+            agent_id,
+            execution_resolver,
+            resolved_execution,
+            capabilities,
+            resolution_id_seed,
+        } = root_setup;
         let (run_id, is_continuation) = self
             .next_root_run_id(
                 &thread_id,
@@ -241,74 +321,39 @@ impl AgentRuntime {
                 &thread_ctx,
             )
             .await?;
-        let run_origin: RunOrigin = req_origin;
-        let mut run_identity = RunIdentity::new(
-            thread_id.clone(),
-            req_parent_thread_id,
-            run_id.clone(),
-            req_parent_run_id,
-            agent_id.clone(),
-            run_origin,
-        )
-        .with_run_mode(run_mode)
-        .with_adapter(adapter);
-        if let Some(dispatch_id) = dispatch_id {
-            run_identity = run_identity.with_dispatch_id(dispatch_id);
-        }
-        if let Some(session_id) = session_id {
-            run_identity = run_identity.with_session_id(session_id);
-        }
-        if let Some(transport_request_id) = transport_request_id {
-            run_identity = run_identity.with_transport_request_id(transport_request_id);
-        }
-        let mut run_inbox = run_inbox;
-        let mut compaction_runtime: Option<CompactionRuntime> = None;
-        let (messages, phase_runtime, inbox, live_inbox_sender, previous_non_local_state) =
-            match &resolved_execution {
-                ExecutionPlan::Local(preflight_resolved) => {
-                    let prepared = self
-                        .prepare_local_root_execution(
-                            preflight_resolved,
-                            &thread_id,
-                            request_messages,
-                            messages_already_persisted,
-                            &decisions,
-                            run_inbox.take(),
-                            &thread_ctx,
-                        )
-                        .await?;
-                    compaction_runtime = prepared.compaction;
-                    (
-                        prepared.messages,
-                        Some(prepared.phase_runtime),
-                        Some(prepared.inbox),
-                        Some(prepared.inbox_sender),
-                        None,
-                    )
-                }
-                ExecutionPlan::Remote(_) => {
-                    let live_inbox_sender =
-                        run_inbox.as_ref().map(|run_inbox| run_inbox.sender.clone());
-                    (
-                        self.load_non_local_messages(
-                            &thread_id,
-                            request_messages,
-                            messages_already_persisted,
-                            &thread_ctx,
-                        )
-                        .await?,
-                        None,
-                        run_inbox.take().map(|run_inbox| run_inbox.receiver),
-                        live_inbox_sender,
-                        self.load_non_local_state(
-                            &thread_id,
-                            requested_continue_run_id.as_deref(),
-                            &thread_ctx,
-                        )
-                        .await?,
-                    )
-                }
-            };
+        let run_identity = build_root_run_identity(RootRunIdentityInput {
+            thread_id: thread_id.clone(),
+            parent_thread_id: req_parent_thread_id,
+            run_id: run_id.clone(),
+            parent_run_id: req_parent_run_id,
+            agent_id: agent_id.clone(),
+            origin: req_origin,
+            run_mode,
+            adapter,
+            dispatch_id,
+            session_id,
+            transport_request_id,
+        });
+        let prepared_execution = self
+            .prepare_root_execution(
+                &resolved_execution,
+                &thread_id,
+                request_messages,
+                messages_already_persisted,
+                &decisions,
+                run_inbox,
+                requested_continue_run_id.as_deref(),
+                &thread_ctx,
+            )
+            .await?;
+        let PreparedRootExecution {
+            messages,
+            phase_runtime,
+            inbox,
+            live_inbox_sender,
+            previous_non_local_state,
+            compaction,
+        } = prepared_execution;
         let run_created_at = now_ms();
         let (handle, cancellation_token, raw_decision_rx) = self.create_run_channels_with_inbox(
             run_id.clone(),
@@ -316,22 +361,22 @@ impl AgentRuntime {
             live_inbox_sender,
         );
         let runtime_cancellation_token = cancellation_token.clone();
-        let decisions_live = matches!(
-            capabilities.decisions,
-            crate::resolution::DecisionCapability::LiveOnly
-                | crate::resolution::DecisionCapability::LiveAndDurable
+        let backend_control = build_backend_control(
+            &capabilities,
+            cancellation_token,
+            raw_decision_rx,
+            control.pending_boundary,
         );
-        let decision_rx = decisions_live.then_some(raw_decision_rx);
         // Wrap the resolver so every `ResolvedAgent` it produces during this
         // run carries the per-run compaction manager + summarizer when the
         // agent opted in via `autocompact_threshold`. Lifetime is tied to
         // `backend_request`, which is consumed before this scope ends.
-        let compaction_resolver = compaction_runtime
+        let compaction_resolver = compaction
             .clone()
-            .map(|runtime| CompactionResolver::new(run_resolver.as_ref(), runtime));
+            .map(|runtime| CompactionResolver::new(execution_resolver.as_ref(), runtime));
         let resolver_for_backend: &dyn AgentResolver = match compaction_resolver.as_ref() {
             Some(wrapper) => wrapper,
-            None => run_resolver.as_ref(),
+            None => execution_resolver.as_ref(),
         };
         let effective_coordinator: Option<
             Arc<dyn awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator>,
@@ -341,36 +386,25 @@ impl AgentRuntime {
             .checkpoint_storage
             .as_deref()
             .or(coord_reader.as_deref());
-        let backend_request = BackendRootRunRequest {
-            agent_id: &agent_id,
+        let backend_request = build_backend_root_run_request(BackendRequestInput {
+            agent_id: agent_id.as_str(),
             messages,
             new_messages,
             sink: sink.clone(),
             resolver: resolver_for_backend,
             run_identity: run_identity.clone(),
-            checkpoint_store: match &resolved_execution {
-                ExecutionPlan::Local(_) => phase_runtime.as_ref().and(storage),
-                ExecutionPlan::Remote(_) => storage,
-            },
-            commit: CommitWiring::new(effective_coordinator.as_deref())
-                .with_resolution_id_seed(resolution_id_seed.as_deref()),
-            control: BackendControl {
-                cancellation_token: capabilities
-                    .cancellation
-                    .supports_cooperative_token()
-                    .then_some(cancellation_token),
-                decision_rx,
-                pending_boundary: control.pending_boundary,
-            },
+            storage,
+            commit_coordinator: effective_coordinator.as_deref(),
+            resolution_id_seed: resolution_id_seed.as_deref(),
+            resolved_execution: &resolved_execution,
+            phase_runtime: phase_runtime.as_ref(),
+            control: backend_control,
             decisions,
             overrides,
             frontend_tools,
-            local: phase_runtime
-                .as_ref()
-                .map(|phase_runtime| BackendLocalRootContext { phase_runtime }),
             inbox,
             is_continuation: is_continuation || intent_is_continuation,
-        };
+        });
         validate_root_execution_request(&resolved_execution, &backend_request).map_err(
             |error| match error {
                 ExecutionBackendError::Loop(loop_error) => loop_error,
@@ -387,28 +421,140 @@ impl AgentRuntime {
             run_id: run_id.clone(),
         };
 
-        match &resolved_execution {
-            ExecutionPlan::Local(_) => {
-                let result = LocalBackend::new()
-                    .execute_root_with_thread_context(backend_request, thread_ctx)
-                    .await
-                    .map_err(local_root_execution_error)?;
-                Ok(AgentRunResult {
-                    run_id: run_id.clone(),
-                    response: result.response.unwrap_or_default(),
-                    termination: result.termination,
-                    steps: result.steps,
+        execute_resolved_root(
+            &resolved_execution,
+            backend_request,
+            thread_ctx,
+            &run_id,
+            run_created_at,
+            runtime_cancellation_token,
+            previous_non_local_state,
+        )
+        .await
+    }
+
+    async fn resolve_root_run_setup(
+        &self,
+        input: RootRunSetupInput<'_>,
+    ) -> Result<RootRunSetup, AgentLoopError> {
+        let agent_id = self
+            .resolve_agent_id(input.requested_agent_id, input.thread_id, input.thread_ctx)
+            .await?;
+        let resolver_set = input
+            .pinned_registry_set
+            .or_else(|| self.registry_snapshot().map(|s| s.into_registries()));
+        let execution_resolver: Arc<dyn AgentResolver> = if let Some(set) = resolver_set.clone() {
+            Arc::new(crate::registry::resolve::RegistrySetResolver::new(set))
+        } else {
+            self.execution_resolver_arc()
+        };
+        let resolved_plan = if let Some(plan) = input.resolved_plan {
+            plan
+        } else {
+            let root_resolver: Arc<dyn crate::resolution::Resolver> =
+                if let Some(resolver) = input.inherited_run_resolver {
+                    resolver
+                } else if let Some(set) = resolver_set {
+                    Arc::new(crate::registry::resolve::RegistrySetResolver::new(set))
+                } else {
+                    self.run_resolver_arc()
+                };
+            let request = ResolutionRequest {
+                target: ResolutionTarget::Root {
+                    agent_id: agent_id.clone(),
+                    thread_id: input.thread_id.to_string(),
+                },
+                resolution_scope: RegistryResolutionScope::Live,
+                overrides: input.overrides.clone(),
+                frontend_tools: input.frontend_tools.to_vec(),
+                features: RunFeatureSet {
+                    has_seeded_decisions: input.has_seeded_decisions,
+                    has_live_decision_channel: input.has_live_decision_channel,
+                    has_overrides: input.overrides.is_some(),
+                    has_frontend_tools: !input.frontend_tools.is_empty(),
+                    is_human_resume: input.is_human_resume,
+                    is_continuation: input.is_continuation,
+                    requested_persistence: PersistenceRequirement::NotRequired,
+                },
+            };
+            root_resolver.resolve(request).await.map_err(|error| {
+                AgentLoopError::RuntimeError(crate::RuntimeError::ResolveFailed {
+                    message: error.to_string(),
+                })
+            })?
+        };
+        validate_resolved_root_plan(&resolved_plan, &agent_id)?;
+        let resolution_id_seed = resolved_plan.resolution_id().map(str::to_string);
+        let resolved_execution = resolved_plan.execution().clone();
+        let capabilities =
+            execution_capabilities(&resolved_execution).map_err(local_root_execution_error)?;
+
+        Ok(RootRunSetup {
+            agent_id,
+            execution_resolver,
+            resolved_execution,
+            capabilities,
+            resolution_id_seed,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_root_execution(
+        &self,
+        resolved_execution: &ExecutionPlan,
+        thread_id: &str,
+        request_messages: Vec<Message>,
+        messages_already_persisted: bool,
+        decisions: &[(
+            String,
+            awaken_runtime_contract::contract::suspension::ToolCallResume,
+        )],
+        run_inbox: Option<RunInbox>,
+        requested_continue_run_id: Option<&str>,
+        thread_ctx: &Option<ThreadContextSnapshot>,
+    ) -> Result<PreparedRootExecution, AgentLoopError> {
+        match resolved_execution {
+            ExecutionPlan::Local(preflight_resolved) => {
+                let prepared = self
+                    .prepare_local_root_execution(
+                        preflight_resolved,
+                        thread_id,
+                        request_messages,
+                        messages_already_persisted,
+                        decisions,
+                        run_inbox,
+                        thread_ctx,
+                    )
+                    .await?;
+                Ok(PreparedRootExecution {
+                    messages: prepared.messages,
+                    phase_runtime: Some(prepared.phase_runtime),
+                    inbox: Some(prepared.inbox),
+                    live_inbox_sender: Some(prepared.inbox_sender),
+                    previous_non_local_state: None,
+                    compaction: prepared.compaction,
                 })
             }
-            ExecutionPlan::Remote(non_local) => {
-                execute_remote_root_lifecycle(
-                    non_local,
-                    backend_request,
-                    run_created_at,
-                    runtime_cancellation_token,
-                    previous_non_local_state,
-                )
-                .await
+            ExecutionPlan::Remote(_) => {
+                let live_inbox_sender =
+                    run_inbox.as_ref().map(|run_inbox| run_inbox.sender.clone());
+                Ok(PreparedRootExecution {
+                    messages: self
+                        .load_non_local_messages(
+                            thread_id,
+                            request_messages,
+                            messages_already_persisted,
+                            thread_ctx,
+                        )
+                        .await?,
+                    phase_runtime: None,
+                    inbox: run_inbox.map(|run_inbox| run_inbox.receiver),
+                    live_inbox_sender,
+                    previous_non_local_state: self
+                        .load_non_local_state(thread_id, requested_continue_run_id, thread_ctx)
+                        .await?,
+                    compaction: None,
+                })
             }
         }
     }
@@ -554,8 +700,9 @@ impl AgentRuntime {
         if let Some(run_id) = continue_run_id {
             // Check cache first for continue_run_id.
             if let Some(ctx) = thread_ctx
-                && ctx.run_cache.contains_key(&run_id)
+                && let Some(existing) = ctx.run_cache.get(&run_id)
             {
+                ensure_continuation_run_thread(thread_id, &run_id, existing)?;
                 return Ok((run_id, true));
             }
             let Some(ref ts) = self.checkpoint_storage else {
@@ -563,12 +710,12 @@ impl AgentRuntime {
                     "continue_run_id '{run_id}' requires run storage"
                 )));
             };
-            if ts
+            let existing = ts
                 .load_run(&run_id)
                 .await
-                .map_err(|e| AgentLoopError::StorageError(e.to_string()))?
-                .is_some()
-            {
+                .map_err(|e| AgentLoopError::StorageError(e.to_string()))?;
+            if let Some(existing) = existing {
+                ensure_continuation_run_thread(thread_id, &run_id, &existing)?;
                 return Ok((run_id, true));
             }
             return Err(AgentLoopError::InvalidResume(format!(
@@ -766,6 +913,131 @@ fn local_root_execution_error(error: ExecutionBackendError) -> AgentLoopError {
         other => AgentLoopError::RuntimeError(crate::RuntimeError::ResolveFailed {
             message: other.to_string(),
         }),
+    }
+}
+
+fn ensure_continuation_run_thread(
+    expected_thread_id: &str,
+    continue_run_id: &str,
+    existing: &RunRecord,
+) -> Result<(), AgentLoopError> {
+    if existing.thread_id != expected_thread_id {
+        return Err(AgentLoopError::InvalidResume(format!(
+            "continue_run_id '{continue_run_id}' belongs to thread '{}' but activation targets thread '{expected_thread_id}'",
+            existing.thread_id
+        )));
+    }
+    Ok(())
+}
+
+fn build_root_run_identity(input: RootRunIdentityInput) -> RunIdentity {
+    let mut identity = RunIdentity::new(
+        input.thread_id,
+        input.parent_thread_id,
+        input.run_id,
+        input.parent_run_id,
+        input.agent_id,
+        input.origin,
+    )
+    .with_run_mode(input.run_mode)
+    .with_adapter(input.adapter);
+
+    if let Some(dispatch_id) = input.dispatch_id {
+        identity = identity.with_dispatch_id(dispatch_id);
+    }
+    if let Some(session_id) = input.session_id {
+        identity = identity.with_session_id(session_id);
+    }
+    if let Some(transport_request_id) = input.transport_request_id {
+        identity = identity.with_transport_request_id(transport_request_id);
+    }
+
+    identity
+}
+
+fn build_backend_root_run_request<'a>(input: BackendRequestInput<'a>) -> BackendRootRunRequest<'a> {
+    let checkpoint_store = match input.resolved_execution {
+        ExecutionPlan::Local(_) => input.phase_runtime.and(input.storage),
+        ExecutionPlan::Remote(_) => input.storage,
+    };
+    let local = input
+        .phase_runtime
+        .map(|phase_runtime| BackendLocalRootContext { phase_runtime });
+
+    BackendRootRunRequest {
+        agent_id: input.agent_id,
+        messages: input.messages,
+        new_messages: input.new_messages,
+        sink: input.sink,
+        resolver: input.resolver,
+        run_identity: input.run_identity,
+        checkpoint_store,
+        commit: CommitWiring::new(input.commit_coordinator)
+            .with_resolution_id_seed(input.resolution_id_seed),
+        control: input.control,
+        decisions: input.decisions,
+        overrides: input.overrides,
+        frontend_tools: input.frontend_tools,
+        local,
+        inbox: input.inbox,
+        is_continuation: input.is_continuation,
+    }
+}
+
+fn build_backend_control(
+    capabilities: &BackendProfile,
+    cancellation_token: CancellationToken,
+    raw_decision_rx: mpsc::UnboundedReceiver<DecisionBatch>,
+    pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
+) -> BackendControl {
+    let decisions_live = matches!(
+        capabilities.decisions,
+        crate::resolution::DecisionCapability::LiveOnly
+            | crate::resolution::DecisionCapability::LiveAndDurable
+    );
+
+    BackendControl {
+        cancellation_token: capabilities
+            .cancellation
+            .supports_cooperative_token()
+            .then_some(cancellation_token),
+        decision_rx: decisions_live.then_some(raw_decision_rx),
+        pending_boundary,
+    }
+}
+
+async fn execute_resolved_root(
+    resolved_execution: &ExecutionPlan,
+    backend_request: BackendRootRunRequest<'_>,
+    thread_ctx: Option<ThreadContextSnapshot>,
+    run_id: &str,
+    run_created_at: u64,
+    runtime_cancellation_token: CancellationToken,
+    previous_non_local_state: Option<PersistedState>,
+) -> Result<AgentRunResult, AgentLoopError> {
+    match resolved_execution {
+        ExecutionPlan::Local(_) => {
+            let result = LocalBackend::new()
+                .execute_root_with_thread_context(backend_request, thread_ctx)
+                .await
+                .map_err(local_root_execution_error)?;
+            Ok(AgentRunResult {
+                run_id: run_id.to_string(),
+                response: result.response.unwrap_or_default(),
+                termination: result.termination,
+                steps: result.steps,
+            })
+        }
+        ExecutionPlan::Remote(non_local) => {
+            execute_remote_root_lifecycle(
+                non_local,
+                backend_request,
+                run_created_at,
+                runtime_cancellation_token,
+                previous_non_local_state,
+            )
+            .await
+        }
     }
 }
 

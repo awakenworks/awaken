@@ -101,6 +101,8 @@ pub enum AgentLoopError {
     PhaseError(#[from] awaken_runtime_contract::StateError),
     #[error("runtime error: {0}")]
     RuntimeError(#[from] crate::error::RuntimeError),
+    #[error("invalid activation: {0}")]
+    InvalidActivation(String),
     #[error("invalid resume: {0}")]
     InvalidResume(String),
 }

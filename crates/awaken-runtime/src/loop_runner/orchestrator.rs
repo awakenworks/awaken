@@ -1,7 +1,7 @@
 //! Main agent loop orchestration.
 
 use crate::context::{TruncationState, try_consume_compaction_event};
-use crate::inbox::{inbox_payload_messages, is_pending_boundary_wake_payload};
+use crate::inbox::{is_pending_boundary_wake_payload, try_inbox_payload_messages};
 use crate::state::StateStore;
 use awaken_runtime_contract::contract::event::AgentEvent;
 use awaken_runtime_contract::contract::lifecycle::{RunStatus, TerminationReason};
@@ -57,7 +57,10 @@ async fn apply_inbox_payloads_at_boundary(
             changed = true;
             continue;
         }
-        inbox_messages.extend(inbox_payload_messages(&payload));
+        inbox_messages.extend(
+            try_inbox_payload_messages(&payload)
+                .map_err(|error| AgentLoopError::InvalidResume(error.to_string()))?,
+        );
     }
     if inbox_messages.is_empty() {
         if wake_pending {
