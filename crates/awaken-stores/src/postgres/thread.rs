@@ -4,14 +4,37 @@ use awaken_server_contract::contract::message::{
 };
 use awaken_server_contract::contract::storage::{
     ChildThreadDeleteStrategy, MessagePage, MessageQuery, StorageError, ThreadPage,
-    ThreadParentFilter, ThreadQuery, ThreadStore, paginate_message_records,
+    ThreadParentFilter, ThreadQuery, ThreadStore, message_append, paginate_message_records,
 };
 use awaken_server_contract::thread::{Thread, normalize_lineage_id_owned};
 use sqlx::{Postgres, Row, Transaction};
 
+use crate::message_validation::validate_committed_message_records;
+
 use super::PostgresStore;
 
+fn committed_seq_to_u64(value: i64) -> Result<u64, StorageError> {
+    u64::try_from(value).map_err(|_| {
+        StorageError::Serialization(format!(
+            "committed message seq must be non-negative, got {value}"
+        ))
+    })
+}
+
 impl PostgresStore {
+    fn decode_committed_message(
+        thread_id: &str,
+        seq: u64,
+        message: Message,
+    ) -> Result<MessageRecord, StorageError> {
+        message_append::validate_message_shape(&message, "committed")?;
+        Ok(MessageRecord::from_message(
+            thread_id.to_owned(),
+            seq,
+            message,
+        ))
+    }
+
     pub(super) fn decode_committed_message_rows(
         rows: Vec<sqlx::postgres::PgRow>,
         thread_id: &str,
@@ -19,26 +42,32 @@ impl PostgresStore {
         let mut records = Vec::new();
         for row in rows {
             let data: serde_json::Value = row.get("data");
-            let seq: Option<i64> = row.try_get("seq").ok().flatten();
+            let seq: Option<i64> = row.try_get("seq").map_err(|error| {
+                StorageError::Serialization(format!(
+                    "failed to decode committed message seq: {error}"
+                ))
+            })?;
             if seq.is_none() && data.is_array() {
                 let messages: Vec<Message> = serde_json::from_value(data)
                     .map_err(|e| StorageError::Serialization(e.to_string()))?;
-                records.extend(messages.into_iter().enumerate().map(|(index, message)| {
-                    MessageRecord::from_message(thread_id.to_owned(), index as u64 + 1, message)
-                }));
+                for (index, message) in messages.into_iter().enumerate() {
+                    records.push(Self::decode_committed_message(
+                        thread_id,
+                        index as u64 + 1,
+                        message,
+                    )?);
+                }
                 continue;
             }
             let message: Message = serde_json::from_value(data)
                 .map_err(|e| StorageError::Serialization(e.to_string()))?;
             let seq = seq
-                .map(|value| value as u64)
+                .map(committed_seq_to_u64)
+                .transpose()?
                 .unwrap_or(records.len() as u64 + 1);
-            records.push(MessageRecord::from_message(
-                thread_id.to_owned(),
-                seq,
-                message,
-            ));
+            records.push(Self::decode_committed_message(thread_id, seq, message)?);
         }
+        validate_committed_message_records(thread_id, &records)?;
         Ok(records)
     }
 
@@ -167,6 +196,7 @@ impl PostgresStore {
     ) -> Result<(), StorageError> {
         let mut normalized = thread.clone();
         normalized.normalize_lineage();
+        normalized.validate_for_persist()?;
         let data = serde_json::to_value(&normalized)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let sql = format!(
@@ -319,6 +349,49 @@ impl PostgresStore {
             };
             current_thread_id = next_parent_thread_id;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn committed_seq_to_u64_rejects_negative_values() {
+        let error = committed_seq_to_u64(-1).expect_err("negative seq must fail");
+        assert!(matches!(error, StorageError::Serialization(_)));
+        assert!(error.to_string().contains("-1"));
+    }
+
+    #[test]
+    fn committed_message_decode_rejects_missing_message_id() {
+        let mut message = Message::user("missing id");
+        message.id = None;
+
+        let error = PostgresStore::decode_committed_message("thread-1", 1, message)
+            .expect_err("missing id must fail");
+
+        assert!(matches!(error, StorageError::Validation(_)));
+    }
+
+    #[test]
+    fn committed_message_records_must_be_continuous() {
+        let first = MessageRecord::from_message(
+            "thread-1",
+            1,
+            Message::user("one").with_id("msg-1".to_string()),
+        );
+        let third = MessageRecord::from_message(
+            "thread-1",
+            3,
+            Message::user("three").with_id("msg-3".to_string()),
+        );
+
+        let error = validate_committed_message_records("thread-1", &[first, third])
+            .expect_err("gap must fail");
+
+        assert!(matches!(error, StorageError::Serialization(_)));
+        assert!(error.to_string().contains("continuous"));
     }
 }
 

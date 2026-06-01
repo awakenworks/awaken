@@ -60,6 +60,10 @@ impl CommitCoordinator for PgCommitCoordinator {
         self.scope.clone()
     }
 
+    fn thread_run_storage_identity(&self) -> Option<String> {
+        Some(self.store.thread_run_storage_identity_descriptor())
+    }
+
     fn reader(&self) -> Arc<dyn awaken_server_contract::contract::storage::RuntimeCheckpointStore> {
         Arc::new(
             awaken_server_contract::contract::storage::ThreadRunCheckpointStore::new(Arc::clone(

@@ -4,10 +4,11 @@ use awaken_server_contract::contract::message::{
     pending_queue_revision, select_pending_for_freeze, select_pending_for_freeze_for_run,
 };
 use awaken_server_contract::contract::storage::{RunRecord, StorageError, message_append};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
 use std::collections::HashSet;
 
 use crate::PendingMessageStore;
+use crate::pending_message_store::validate_pending_message_record;
 
 use super::PostgresStore;
 
@@ -25,6 +26,70 @@ fn already_consumed(pending_id: &str) -> StorageError {
 
 fn duplicate_pending_id(pending_id: &str) -> StorageError {
     StorageError::Validation(format!("pending message '{pending_id}' already exists"))
+}
+
+fn pending_row_decode_error(column: &str, error: impl std::fmt::Display) -> StorageError {
+    StorageError::Serialization(format!(
+        "failed to decode pending message column '{column}': {error}"
+    ))
+}
+
+fn optional_i64(row: &PgRow, column: &str) -> Result<Option<i64>, StorageError> {
+    row.try_get::<Option<i64>, _>(column)
+        .map_err(|error| pending_row_decode_error(column, error))
+}
+
+fn optional_string(row: &PgRow, column: &str) -> Result<Option<String>, StorageError> {
+    row.try_get::<Option<String>, _>(column)
+        .map_err(|error| pending_row_decode_error(column, error))
+}
+
+fn optional_json(row: &PgRow, column: &str) -> Result<Option<serde_json::Value>, StorageError> {
+    row.try_get::<Option<serde_json::Value>, _>(column)
+        .map_err(|error| pending_row_decode_error(column, error))
+}
+
+fn required_nonnegative_u64(row: &PgRow, column: &str, label: &str) -> Result<u64, StorageError> {
+    let value = optional_i64(row, column)?.ok_or_else(|| {
+        StorageError::Serialization(format!("pending message row missing {label}"))
+    })?;
+    u64::try_from(value).map_err(|_| {
+        StorageError::Serialization(format!(
+            "pending message {label} must be non-negative, got {value}"
+        ))
+    })
+}
+
+fn optional_epoch_u64(row: &PgRow, column: &str, unit: &str) -> Result<Option<u64>, StorageError> {
+    optional_i64(row, column)?
+        .map(|value| {
+            u64::try_from(value).map_err(|_| {
+                StorageError::Serialization(format!(
+                    "pending message {column} {unit} must be non-negative, got {value}"
+                ))
+            })
+        })
+        .transpose()
+}
+
+fn decode_delivery_mode(row: &PgRow) -> Result<DeliveryMode, StorageError> {
+    optional_json(row, "delivery_mode")?
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| StorageError::Serialization(e.to_string()))
+        .map(|mode| mode.unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_row_decode_error_includes_column_name() {
+        let error = pending_row_decode_error("position", "wrong type");
+        assert!(matches!(error, StorageError::Serialization(_)));
+        assert!(error.to_string().contains("position"));
+    }
 }
 
 impl PostgresStore {
@@ -49,53 +114,34 @@ impl PostgresStore {
             .map(|row| {
                 let message: Message = serde_json::from_value(row.get("data"))
                     .map_err(|e| StorageError::Serialization(e.to_string()))?;
-                let delivery_mode = row
-                    .try_get::<Option<serde_json::Value>, _>("delivery_mode")
-                    .ok()
-                    .flatten()
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(|e| StorageError::Serialization(e.to_string()))?
-                    .unwrap_or_default();
-                let position = row
-                    .try_get::<Option<i64>, _>("position")
-                    .ok()
-                    .flatten()
-                    .unwrap_or(0) as u64;
-                let pending_id = row
-                    .try_get::<Option<String>, _>("message_id")
-                    .ok()
-                    .flatten()
+                let delivery_mode = decode_delivery_mode(&row)?;
+                let position = required_nonnegative_u64(&row, "position", "position")?;
+                let pending_id = optional_string(&row, "message_id")?
                     .or_else(|| message.id.clone())
                     .ok_or_else(|| {
                         StorageError::Serialization(
                             "pending message row has no message_id or message.id".to_string(),
                         )
                     })?;
-                let created_at = row
-                    .try_get::<Option<i64>, _>("created_at_ms")
-                    .ok()
-                    .flatten()
-                    .map(|ms| (ms as u64) / 1000);
-                let updated_at = row
-                    .try_get::<Option<i64>, _>("updated_at_s")
-                    .ok()
-                    .flatten()
-                    .map(|seconds| seconds as u64);
-                Ok(PendingMessageRecord {
+                let created_at =
+                    optional_epoch_u64(&row, "created_at_ms", "milliseconds")?.map(|ms| ms / 1000);
+                let updated_at = optional_epoch_u64(&row, "updated_at_s", "seconds")?;
+                let record = PendingMessageRecord {
                     pending_id,
                     thread_id: thread_id.to_owned(),
                     position,
                     message,
-                    revision: row
-                        .try_get::<Option<i64>, _>("pending_revision")
-                        .ok()
-                        .flatten()
-                        .unwrap_or(1) as u64,
+                    revision: required_nonnegative_u64(
+                        &row,
+                        "pending_revision",
+                        "pending_revision",
+                    )?,
                     delivery_mode,
                     created_at,
                     updated_at,
-                })
+                };
+                validate_pending_message_record(&record)?;
+                Ok(record)
             })
             .collect()
     }
@@ -124,6 +170,7 @@ impl PostgresStore {
         tx: &mut Transaction<'_, Postgres>,
         record: &PendingMessageRecord,
     ) -> Result<(), StorageError> {
+        validate_pending_message_record(record)?;
         let data = serde_json::to_value(&record.message)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let delivery_mode = serde_json::to_value(record.delivery_mode.clone())
@@ -230,6 +277,7 @@ impl PendingMessageStore for PostgresStore {
             .map(|record| record.pending_id.as_str())
             .collect::<HashSet<_>>();
         for record in &records {
+            validate_pending_message_record(record)?;
             if !seen.insert(record.pending_id.as_str()) {
                 return Err(duplicate_pending_id(&record.pending_id));
             }
@@ -266,6 +314,17 @@ impl PendingMessageStore for PostgresStore {
             Some(_) => {}
             None => message.id = Some(pending_id.to_owned()),
         }
+        let pending_message = PendingMessageRecord {
+            pending_id: pending_id.to_owned(),
+            thread_id: thread_id.to_owned(),
+            position: 1,
+            message: message.clone(),
+            revision: 1,
+            delivery_mode: DeliveryMode::default(),
+            created_at: None,
+            updated_at: None,
+        };
+        validate_pending_message_record(&pending_message)?;
         let mut tx = self
             .pool
             .begin()
@@ -310,36 +369,15 @@ impl PendingMessageStore for PostgresStore {
         let record = PendingMessageRecord {
             pending_id: pending_id.to_owned(),
             thread_id: thread_id.to_owned(),
-            position: row
-                .try_get::<Option<i64>, _>("position")
-                .ok()
-                .flatten()
-                .unwrap_or(0) as u64,
-            revision: row
-                .try_get::<Option<i64>, _>("pending_revision")
-                .ok()
-                .flatten()
-                .unwrap_or(1) as u64,
+            position: required_nonnegative_u64(&row, "position", "position")?,
+            revision: required_nonnegative_u64(&row, "pending_revision", "pending_revision")?,
             message,
-            delivery_mode: row
-                .try_get::<Option<serde_json::Value>, _>("delivery_mode")
-                .ok()
-                .flatten()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|e| StorageError::Serialization(e.to_string()))?
-                .unwrap_or_default(),
-            created_at: row
-                .try_get::<Option<i64>, _>("created_at_ms")
-                .ok()
-                .flatten()
-                .map(|ms| (ms as u64) / 1000),
-            updated_at: row
-                .try_get::<Option<i64>, _>("updated_at_s")
-                .ok()
-                .flatten()
-                .map(|seconds| seconds as u64),
+            delivery_mode: decode_delivery_mode(&row)?,
+            created_at: optional_epoch_u64(&row, "created_at_ms", "milliseconds")?
+                .map(|ms| ms / 1000),
+            updated_at: optional_epoch_u64(&row, "updated_at_s", "seconds")?,
         };
+        validate_pending_message_record(&record)?;
         tx.commit()
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
@@ -605,6 +643,7 @@ impl PostgresStore {
                 );
                 record.created_at = Some(now);
                 record.updated_at = Some(now);
+                validate_pending_message_record(&record)?;
                 if !seen.insert(record.pending_id.clone()) {
                     return Err(duplicate_pending_id(&record.pending_id));
                 }

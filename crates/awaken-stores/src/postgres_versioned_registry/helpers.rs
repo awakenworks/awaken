@@ -36,7 +36,7 @@ pub(super) async fn load_resource_state_tx(
         .fetch_optional(&mut **tx)
         .await
         .map_err(to_registry_error)?;
-    Ok(row.map(resource_from_row))
+    row.map(resource_from_row).transpose()
 }
 
 pub(super) async fn load_version_tx(
@@ -62,7 +62,7 @@ pub(super) async fn load_version_tx(
         .fetch_optional(&mut **tx)
         .await
         .map_err(to_registry_error)?;
-    Ok(row.map(record_from_row))
+    row.map(record_from_row).transpose()
 }
 
 pub(super) async fn next_version_tx(
@@ -86,7 +86,7 @@ pub(super) async fn next_version_tx(
         .await
         .map_err(to_registry_error)?;
     let next_version: i64 = row.get("next_version");
-    Ok(next_version as u64)
+    checked_i64_to_u64("next_version", next_version)
 }
 
 pub(super) async fn insert_version_tx(
@@ -219,24 +219,33 @@ pub(super) async fn load_publication_with_entries(
         .await
         .map_err(to_registry_error)?
         .into_iter()
-        .map(|entry| VersionRef {
-            kind: entry.get("kind"),
-            id: entry.get("id"),
-            version: i64_to_u64(entry.get("version")),
+        .map(|entry| {
+            Ok(VersionRef {
+                kind: entry.get("kind"),
+                id: entry.get("id"),
+                version: checked_i64_to_u64("publication_entries.version", entry.get("version"))?,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, VersionedRegistryError>>()?;
     let source_config_revisions: Value = row.get("source_config_revisions_json");
     let source_config_revisions =
         serde_json::from_value::<Vec<ConfigRevisionRef>>(source_config_revisions)
             .map_err(|error| VersionedRegistryError::Serialization(error.to_string()))?;
+    let snapshot_version = checked_i64_to_u64(
+        "registry_publications.snapshot_version",
+        snapshot_version_i64,
+    )?;
     Ok(Some(RegistryPublication {
         publication_id: row.get("publication_id"),
         scope_id,
-        snapshot_version: snapshot_version_i64 as u64,
+        snapshot_version,
         entries,
         source_config_revisions,
         created_by: row.get("created_by"),
-        created_at_ms: i64_to_u64(row.get("created_at_ms")),
+        created_at_ms: checked_i64_to_u64(
+            "registry_publications.created_at_ms",
+            row.get("created_at_ms"),
+        )?,
         metadata: row.get("metadata_json"),
     }))
 }
@@ -304,32 +313,51 @@ pub(super) fn validate_publication_request(
     Ok(())
 }
 
-pub(super) fn resource_from_row(row: PgRow) -> VersionedResourceState {
-    VersionedResourceState {
+pub(super) fn resource_from_row(
+    row: PgRow,
+) -> Result<VersionedResourceState, VersionedRegistryError> {
+    Ok(VersionedResourceState {
         scope_id: row.get("scope_id"),
         kind: row.get("kind"),
         id: row.get("id"),
-        current_version: row.get::<Option<i64>, _>("current_version").map(i64_to_u64),
-        archived_at_ms: row.get::<Option<i64>, _>("archived_at_ms").map(i64_to_u64),
-        created_at_ms: i64_to_u64(row.get("created_at_ms")),
-        updated_at_ms: i64_to_u64(row.get("updated_at_ms")),
+        current_version: row
+            .get::<Option<i64>, _>("current_version")
+            .map(|value| checked_i64_to_u64("registry_resources.current_version", value))
+            .transpose()?,
+        archived_at_ms: row
+            .get::<Option<i64>, _>("archived_at_ms")
+            .map(|value| checked_i64_to_u64("registry_resources.archived_at_ms", value))
+            .transpose()?,
+        created_at_ms: checked_i64_to_u64(
+            "registry_resources.created_at_ms",
+            row.get("created_at_ms"),
+        )?,
+        updated_at_ms: checked_i64_to_u64(
+            "registry_resources.updated_at_ms",
+            row.get("updated_at_ms"),
+        )?,
         metadata: row.get("metadata_json"),
-    }
+    })
 }
 
-pub(super) fn record_from_row(row: PgRow) -> VersionedRecord<Value> {
+pub(super) fn record_from_row(
+    row: PgRow,
+) -> Result<VersionedRecord<Value>, VersionedRegistryError> {
     let canonical_value_json: String = row.get("canonical_value_json");
-    VersionedRecord {
+    Ok(VersionedRecord {
         kind: row.get("kind"),
         id: row.get("id"),
-        version: i64_to_u64(row.get("version")),
+        version: checked_i64_to_u64("registry_versions.version", row.get("version"))?,
         content_hash: row.get("content_hash"),
         value_schema_version: row.get::<i32, _>("value_schema_version") as u32,
         value: row.get("value_json"),
         canonical_json_bytes: canonical_value_json.into_bytes(),
-        created_at_ms: i64_to_u64(row.get("created_at_ms")),
+        created_at_ms: checked_i64_to_u64(
+            "registry_versions.created_at_ms",
+            row.get("created_at_ms"),
+        )?,
         metadata: row.get("metadata_json"),
-    }
+    })
 }
 
 pub(super) fn canonical_json_string(bytes: &[u8]) -> Result<String, VersionedRegistryError> {
@@ -337,8 +365,22 @@ pub(super) fn canonical_json_string(bytes: &[u8]) -> Result<String, VersionedReg
         .map_err(|error| VersionedRegistryError::Serialization(error.to_string()))
 }
 
-pub(super) fn i64_to_u64(value: i64) -> u64 {
-    value.try_into().unwrap_or_default()
+pub(super) fn checked_i64_to_u64(field: &str, value: i64) -> Result<u64, VersionedRegistryError> {
+    value.try_into().map_err(|_| {
+        VersionedRegistryError::Serialization(format!("{field} contains negative value {value}"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn i64_to_u64_rejects_negative_values() {
+        let error = checked_i64_to_u64("field", -1).expect_err("negative values must fail");
+        assert!(matches!(error, VersionedRegistryError::Serialization(_)));
+        assert!(error.to_string().contains("negative value -1"));
+    }
 }
 
 pub(super) fn from_storage_error(error: StorageError) -> VersionedRegistryError {

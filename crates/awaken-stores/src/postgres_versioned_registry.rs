@@ -69,7 +69,7 @@ impl VersionedRegistryStore for PostgresStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(to_registry_error)?;
-        Ok(row.map(resource_from_row))
+        row.map(resource_from_row).transpose()
     }
 
     async fn current(
@@ -99,7 +99,7 @@ impl VersionedRegistryStore for PostgresStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(to_registry_error)?;
-        Ok(row.map(record_from_row))
+        row.map(record_from_row).transpose()
     }
 
     async fn get(
@@ -126,7 +126,7 @@ impl VersionedRegistryStore for PostgresStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(to_registry_error)?;
-        Ok(row.map(record_from_row))
+        row.map(record_from_row).transpose()
     }
 
     async fn list_versions(
@@ -152,7 +152,7 @@ impl VersionedRegistryStore for PostgresStore {
             .fetch_all(&self.pool)
             .await
             .map_err(to_registry_error)?;
-        Ok(rows.into_iter().map(record_from_row).collect())
+        rows.into_iter().map(record_from_row).collect()
     }
 
     async fn publish_resource(
@@ -429,7 +429,10 @@ impl VersionedRegistryStore for PostgresStore {
             .fetch_one(&mut *tx)
             .await
             .map_err(to_registry_error)?;
-        let snapshot_version = i64_to_u64(snapshot_row.get("snapshot_version"));
+        let snapshot_version = checked_i64_to_u64(
+            "registry_publications.next_snapshot_version",
+            snapshot_row.get("snapshot_version"),
+        )?;
         let source_revisions = serde_json::to_value(&source_config_revisions)
             .map_err(|error| VersionedRegistryError::Serialization(error.to_string()))?;
         let insert_pub_sql = format!(
@@ -574,7 +577,10 @@ impl VersionedRegistryStore for PostgresStore {
             .fetch_one(&mut *tx)
             .await
             .map_err(to_registry_error)?;
-        let snapshot_version = i64_to_u64(snapshot_row.get("snapshot_version"));
+        let snapshot_version = checked_i64_to_u64(
+            "registry_publications.next_snapshot_version",
+            snapshot_row.get("snapshot_version"),
+        )?;
         let source_revisions = serde_json::to_value(&source_config_revisions)
             .map_err(|error| VersionedRegistryError::Serialization(error.to_string()))?;
         let insert_pub_sql = format!(

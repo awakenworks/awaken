@@ -5,6 +5,7 @@ use awaken_server_contract::contract::storage::{
     checkpoint_parent_thread_id, message_append,
 };
 use awaken_server_contract::thread::Thread;
+use serde::de::DeserializeOwned;
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 
@@ -17,48 +18,33 @@ const RUN_COLUMNS: &str = concat!(
     "started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state"
 );
 
+fn optional_json<T: serde::Serialize>(
+    field: &str,
+    value: Option<&T>,
+) -> Result<Option<serde_json::Value>, StorageError> {
+    value
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| StorageError::Serialization(format!("serialize run {field}: {error}")))
+}
+
 // ── RunStore ────────────────────────────────────────────────────────
 
 #[async_trait]
 impl RunStore for PostgresStore {
     async fn create_run(&self, record: &RunRecord) -> Result<(), StorageError> {
+        record.validate_for_persist()?;
         self.ensure_schema().await?;
-        let state_json = record
-            .state
-            .as_ref()
-            .and_then(|s| serde_json::to_value(s).ok());
-        let termination_reason_json = record
-            .termination_reason
-            .as_ref()
-            .and_then(|reason| serde_json::to_value(reason).ok());
-        let activation_json = record
-            .activation
-            .as_ref()
-            .and_then(|activation| serde_json::to_value(activation).ok());
-        let request_json = record
-            .request
-            .as_ref()
-            .and_then(|request| serde_json::to_value(request).ok());
-        let input_json = record
-            .input
-            .as_ref()
-            .and_then(|input| serde_json::to_value(input).ok());
-        let output_json = record
-            .output
-            .as_ref()
-            .and_then(|output| serde_json::to_value(output).ok());
-        let waiting_json = record
-            .waiting
-            .as_ref()
-            .and_then(|waiting| serde_json::to_value(waiting).ok());
-        let outcome_json = record
-            .outcome
-            .as_ref()
-            .and_then(|outcome| serde_json::to_value(outcome).ok());
-        let resolution_id_json = record
-            .resolution_id
-            .as_ref()
-            .and_then(|manifest| serde_json::to_value(manifest).ok());
+        let state_json = optional_json("state", record.state.as_ref())?;
+        let termination_reason_json =
+            optional_json("termination_reason", record.termination_reason.as_ref())?;
+        let activation_json = optional_json("activation", record.activation.as_ref())?;
+        let request_json = optional_json("request", record.request.as_ref())?;
+        let input_json = optional_json("input", record.input.as_ref())?;
+        let output_json = optional_json("output", record.output.as_ref())?;
+        let waiting_json = optional_json("waiting", record.waiting.as_ref())?;
+        let outcome_json = optional_json("outcome", record.outcome.as_ref())?;
+        let resolution_id_json = optional_json("resolution_id", record.resolution_id.as_ref())?;
         let sql = format!(
             "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, resolution_id, activation, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)",
@@ -117,7 +103,7 @@ impl RunStore for PostgresStore {
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
 
-        Ok(row.map(run_record_from_pg_row))
+        row.map(try_run_record_from_pg_row).transpose()
     }
 
     async fn latest_run(&self, thread_id: &str) -> Result<Option<RunRecord>, StorageError> {
@@ -132,7 +118,7 @@ impl RunStore for PostgresStore {
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
 
-        Ok(row.map(run_record_from_pg_row))
+        row.map(try_run_record_from_pg_row).transpose()
     }
 
     async fn list_runs(&self, query: &RunQuery) -> Result<RunPage, StorageError> {
@@ -208,7 +194,10 @@ impl RunStore for PostgresStore {
                 .map_err(|e| StorageError::Io(e.to_string()))?
         };
 
-        let items: Vec<RunRecord> = rows.into_iter().map(run_record_from_pg_row).collect();
+        let items: Vec<RunRecord> = rows
+            .into_iter()
+            .map(try_run_record_from_pg_row)
+            .collect::<Result<_, _>>()?;
 
         let has_more = (query.offset + items.len()) < total as usize;
         Ok(RunPage {
@@ -331,43 +320,18 @@ impl PostgresStore {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         run: &RunRecord,
     ) -> Result<(), StorageError> {
+        run.validate_for_persist()?;
         // Upsert run record
-        let state_json = run
-            .state
-            .as_ref()
-            .and_then(|s| serde_json::to_value(s).ok());
-        let termination_reason_json = run
-            .termination_reason
-            .as_ref()
-            .and_then(|reason| serde_json::to_value(reason).ok());
-        let activation_json = run
-            .activation
-            .as_ref()
-            .and_then(|activation| serde_json::to_value(activation).ok());
-        let request_json = run
-            .request
-            .as_ref()
-            .and_then(|request| serde_json::to_value(request).ok());
-        let input_json = run
-            .input
-            .as_ref()
-            .and_then(|input| serde_json::to_value(input).ok());
-        let output_json = run
-            .output
-            .as_ref()
-            .and_then(|output| serde_json::to_value(output).ok());
-        let waiting_json = run
-            .waiting
-            .as_ref()
-            .and_then(|waiting| serde_json::to_value(waiting).ok());
-        let outcome_json = run
-            .outcome
-            .as_ref()
-            .and_then(|outcome| serde_json::to_value(outcome).ok());
-        let resolution_id_json = run
-            .resolution_id
-            .as_ref()
-            .and_then(|manifest| serde_json::to_value(manifest).ok());
+        let state_json = optional_json("state", run.state.as_ref())?;
+        let termination_reason_json =
+            optional_json("termination_reason", run.termination_reason.as_ref())?;
+        let activation_json = optional_json("activation", run.activation.as_ref())?;
+        let request_json = optional_json("request", run.request.as_ref())?;
+        let input_json = optional_json("input", run.input.as_ref())?;
+        let output_json = optional_json("output", run.output.as_ref())?;
+        let waiting_json = optional_json("waiting", run.waiting.as_ref())?;
+        let outcome_json = optional_json("outcome", run.outcome.as_ref())?;
+        let resolution_id_json = optional_json("resolution_id", run.resolution_id.as_ref())?;
         let run_sql = format!(
             "INSERT INTO {} (run_id, thread_id, agent_id, parent_run_id, resolution_id, activation, request, run_input, run_output, status, termination_reason, final_output, error_payload, dispatch_id, session_id, transport_request_id, waiting, outcome, created_at, started_at, finished_at, updated_at, steps, input_tokens, output_tokens, state)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
@@ -430,6 +394,10 @@ impl PostgresStore {
 
 #[async_trait]
 impl ThreadRunStore for PostgresStore {
+    fn thread_run_storage_identity(&self) -> Option<String> {
+        Some(self.thread_run_storage_identity_descriptor())
+    }
+
     async fn checkpoint(
         &self,
         thread_id: &str,
@@ -499,7 +467,8 @@ impl ThreadRunStore for PostgresStore {
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?
-            .map(run_record_from_pg_row);
+            .map(try_run_record_from_pg_row)
+            .transpose()?;
 
         if records.is_empty() && latest_run.is_none() {
             return Ok(None);
@@ -551,7 +520,17 @@ pub(super) fn like_prefix_pattern(prefix: &str) -> String {
     pattern
 }
 
-fn run_record_from_pg_row(row: PgRow) -> RunRecord {
+fn optional_row_json<T: DeserializeOwned>(
+    field: &str,
+    value: Option<serde_json::Value>,
+) -> Result<Option<T>, StorageError> {
+    value
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| StorageError::Serialization(format!("decode run {field}: {error}")))
+}
+
+fn try_run_record_from_pg_row(row: PgRow) -> Result<RunRecord, StorageError> {
     let status: String = row.get("status");
     let state: Option<serde_json::Value> = row.get("state");
     let resolution_id: Option<serde_json::Value> = row.get("resolution_id");
@@ -570,25 +549,25 @@ fn run_record_from_pg_row(row: PgRow) -> RunRecord {
     let input_tokens: i64 = row.get("input_tokens");
     let output_tokens: i64 = row.get("output_tokens");
 
-    RunRecord {
+    let record = RunRecord {
         run_id: row.get("run_id"),
         thread_id: row.get("thread_id"),
         agent_id: row.get("agent_id"),
         parent_run_id: row.get("parent_run_id"),
-        resolution_id: resolution_id.and_then(|value| serde_json::from_value(value).ok()),
-        activation: activation.and_then(|value| serde_json::from_value(value).ok()),
-        request: request.and_then(|value| serde_json::from_value(value).ok()),
-        input: input.and_then(|value| serde_json::from_value(value).ok()),
-        output: output.and_then(|value| serde_json::from_value(value).ok()),
-        status: parse_run_status(&status),
-        termination_reason: termination_reason.and_then(|value| serde_json::from_value(value).ok()),
+        resolution_id: optional_row_json("resolution_id", resolution_id)?,
+        activation: optional_row_json("activation", activation)?,
+        request: optional_row_json("request", request)?,
+        input: optional_row_json("run_input", input)?,
+        output: optional_row_json("run_output", output)?,
+        status: parse_run_status(&status)?,
+        termination_reason: optional_row_json("termination_reason", termination_reason)?,
         final_output: row.get("final_output"),
         error_payload: row.get("error_payload"),
         dispatch_id: row.get("dispatch_id"),
         session_id: row.get("session_id"),
         transport_request_id: row.get("transport_request_id"),
-        waiting: waiting.and_then(|value| serde_json::from_value(value).ok()),
-        outcome: outcome.and_then(|value| serde_json::from_value(value).ok()),
+        waiting: optional_row_json("waiting", waiting)?,
+        outcome: optional_row_json("outcome", outcome)?,
         created_at: created_at as u64,
         started_at: started_at.map(|value| value as u64),
         finished_at: finished_at.map(|value| value as u64),
@@ -596,17 +575,102 @@ fn run_record_from_pg_row(row: PgRow) -> RunRecord {
         steps: steps as usize,
         input_tokens: input_tokens as u64,
         output_tokens: output_tokens as u64,
-        state: state.and_then(|value| serde_json::from_value(value).ok()),
+        state: optional_row_json("state", state)?,
+    };
+    validate_decoded_run_record(record)
+}
+
+fn validate_decoded_run_record(record: RunRecord) -> Result<RunRecord, StorageError> {
+    record.validate_for_persist()?;
+    Ok(record)
+}
+
+pub(super) fn parse_run_status(
+    s: &str,
+) -> Result<awaken_server_contract::contract::lifecycle::RunStatus, StorageError> {
+    use awaken_server_contract::contract::lifecycle::RunStatus;
+    match s {
+        "created" => Ok(RunStatus::Created),
+        "running" => Ok(RunStatus::Running),
+        "waiting" => Ok(RunStatus::Waiting),
+        "done" => Ok(RunStatus::Done),
+        other => Err(StorageError::Validation(format!(
+            "unknown run status '{other}'"
+        ))),
     }
 }
 
-pub(super) fn parse_run_status(s: &str) -> awaken_server_contract::contract::lifecycle::RunStatus {
-    use awaken_server_contract::contract::lifecycle::RunStatus;
-    match s {
-        "created" => RunStatus::Created,
-        "running" => RunStatus::Running,
-        "waiting" => RunStatus::Waiting,
-        "done" => RunStatus::Done,
-        _ => RunStatus::Running,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::ser::Error as _;
+
+    struct FailingSerialize;
+
+    impl serde::Serialize for FailingSerialize {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(S::Error::custom("injected serialization failure"))
+        }
+    }
+
+    #[test]
+    fn optional_json_propagates_serialization_errors() {
+        let error = optional_json("state", Some(&FailingSerialize)).unwrap_err();
+
+        assert!(
+            matches!(error, StorageError::Serialization(ref message)
+                if message.contains("serialize run state")
+                    && message.contains("injected serialization failure")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn decoded_run_record_validation_rejects_corrupt_activation() {
+        let record = RunRecord {
+            run_id: "run-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            status: awaken_server_contract::contract::lifecycle::RunStatus::Running,
+            created_at: 1,
+            updated_at: 1,
+            activation: Some(
+                awaken_server_contract::contract::run::RunActivationSnapshot {
+                    intent: awaken_server_contract::contract::run::RunIntent::new("other-thread"),
+                    input: awaken_server_contract::contract::run::RunInputSnapshot {
+                        thread_id: "other-thread".to_string(),
+                        ..Default::default()
+                    },
+                    options: awaken_server_contract::contract::run::RunOptions::default(),
+                    trace: awaken_server_contract::contract::run::RunTraceContext::default(),
+                    seeded_decisions: Vec::new(),
+                    resolution_id: None,
+                },
+            ),
+            ..Default::default()
+        };
+
+        let error = validate_decoded_run_record(record).unwrap_err();
+
+        assert!(
+            matches!(error, StorageError::Validation(ref message)
+                if message.contains("activation thread_id")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn optional_row_json_propagates_decode_errors() {
+        let error: StorageError =
+            optional_row_json::<String>("resolution_id", Some(serde_json::json!({}))).unwrap_err();
+
+        assert!(
+            matches!(error, StorageError::Serialization(ref message)
+                if message.contains("decode run resolution_id")),
+            "unexpected error: {error}"
+        );
     }
 }

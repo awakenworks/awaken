@@ -84,6 +84,10 @@ impl PostgresStore {
             self.configs_table,
         )
     }
+
+    pub(crate) fn thread_run_storage_identity_descriptor(&self) -> String {
+        format!("pg-thread-run::{}", self.transaction_scope_descriptor())
+    }
 }
 
 mod config;

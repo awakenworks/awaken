@@ -15,17 +15,31 @@ use super::run::parse_run_status;
 #[test]
 fn parse_run_status_known_values() {
     use awaken_server_contract::contract::lifecycle::RunStatus;
-    assert!(matches!(parse_run_status("created"), RunStatus::Created));
-    assert!(matches!(parse_run_status("running"), RunStatus::Running));
-    assert!(matches!(parse_run_status("waiting"), RunStatus::Waiting));
-    assert!(matches!(parse_run_status("done"), RunStatus::Done));
+    assert!(matches!(
+        parse_run_status("created").unwrap(),
+        RunStatus::Created
+    ));
+    assert!(matches!(
+        parse_run_status("running").unwrap(),
+        RunStatus::Running
+    ));
+    assert!(matches!(
+        parse_run_status("waiting").unwrap(),
+        RunStatus::Waiting
+    ));
+    assert!(matches!(parse_run_status("done").unwrap(), RunStatus::Done));
 }
 
 #[test]
-fn parse_run_status_unknown_defaults_to_running() {
-    use awaken_server_contract::contract::lifecycle::RunStatus;
-    assert!(matches!(parse_run_status("unknown"), RunStatus::Running));
-    assert!(matches!(parse_run_status(""), RunStatus::Running));
+fn parse_run_status_unknown_returns_validation_error() {
+    assert!(matches!(
+        parse_run_status("unknown"),
+        Err(StorageError::Validation(message)) if message.contains("unknown run status")
+    ));
+    assert!(matches!(
+        parse_run_status(""),
+        Err(StorageError::Validation(message)) if message.contains("unknown run status")
+    ));
 }
 
 #[test]
