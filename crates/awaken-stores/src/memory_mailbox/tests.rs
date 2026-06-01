@@ -1,31 +1,14 @@
 use super::*;
+use awaken_server_contract::contract::lifecycle::RunStatus;
 use std::sync::Arc;
 
 fn make_dispatch(thread_id: &str, agent_id: &str) -> RunDispatch {
-    RunDispatch {
-        dispatch_id: Uuid::now_v7().to_string(),
-        thread_id: thread_id.to_string(),
-        run_id: format!("run-{agent_id}"),
-        priority: 128,
-        dedupe_key: None,
-        dispatch_epoch: 0,
-        status: RunDispatchStatus::Queued,
-        available_at: 1000,
-        attempt_count: 0,
-        max_attempts: 5,
-        last_error: None,
-        claim_token: None,
-        claimed_by: None,
-        lease_until: None,
-        dispatch_instance_id: None,
-        run_status: None,
-        termination: None,
-        run_response: None,
-        run_error: None,
-        completed_at: None,
-        created_at: 1000,
-        updated_at: 1000,
-    }
+    RunDispatch::queued(
+        Uuid::now_v7().to_string(),
+        thread_id.to_string(),
+        format!("run-{agent_id}"),
+        1000,
+    )
 }
 
 #[tokio::test]
@@ -36,14 +19,29 @@ async fn enqueue_and_list() {
 
     let listed = store.list_dispatches("m-1", None, 100, 0).await.unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].status, RunDispatchStatus::Queued);
+    assert_eq!(listed[0].status(), RunDispatchStatus::Queued);
+}
+
+#[tokio::test]
+async fn enqueue_rejects_non_queued_dispatch() {
+    let store = InMemoryMailboxStore::new();
+    let mut dispatch = make_dispatch("m-1", "agent-1");
+    dispatch.claim("worker", "stale-token", 2000, 1000).unwrap();
+
+    let err = store
+        .enqueue(&dispatch)
+        .await
+        .expect_err("enqueue must only accept queued dispatches");
+
+    assert!(matches!(err, StorageError::Validation(message)
+        if message.contains("must start as Queued")));
 }
 
 #[tokio::test]
 async fn claim_returns_queued_dispatch() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     let claimed = store
@@ -51,16 +49,16 @@ async fn claim_returns_queued_dispatch() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].dispatch_id, dispatch_id);
-    assert_eq!(claimed[0].status, RunDispatchStatus::Claimed);
-    assert!(claimed[0].claim_token.is_some());
+    assert_eq!(claimed[0].dispatch_id(), &dispatch_id);
+    assert_eq!(claimed[0].status(), RunDispatchStatus::Claimed);
+    assert!(claimed[0].claim_token().is_some());
 }
 
 #[tokio::test]
 async fn claim_respects_available_at() {
     let store = InMemoryMailboxStore::new();
     let mut dispatch = make_dispatch("m-1", "agent-1");
-    dispatch.available_at = 5000; // future
+    dispatch = dispatch.with_available_at(5000); // future
     store.enqueue(&dispatch).await.unwrap();
 
     let claimed = store
@@ -112,7 +110,7 @@ async fn claim_honors_batch_limit_without_active_claim() {
     assert!(
         claimed
             .iter()
-            .all(|dispatch| dispatch.status == RunDispatchStatus::Claimed)
+            .all(|dispatch| dispatch.status() == RunDispatchStatus::Claimed)
     );
 }
 
@@ -120,19 +118,19 @@ async fn claim_honors_batch_limit_without_active_claim() {
 async fn claim_priority_ordering() {
     let store = InMemoryMailboxStore::new();
 
-    let mut low = make_dispatch("m-1", "agent-1");
-    low.priority = 200;
-    low.created_at = 900;
+    let low = make_dispatch("m-1", "agent-1")
+        .with_priority(200)
+        .with_created_at(900);
     store.enqueue(&low).await.unwrap();
 
-    let mut high = make_dispatch("m-1", "agent-1");
-    high.priority = 10;
-    high.created_at = 1000;
+    let high = make_dispatch("m-1", "agent-1")
+        .with_priority(10)
+        .with_created_at(1000);
     store.enqueue(&high).await.unwrap();
 
-    let mut mid = make_dispatch("m-1", "agent-1");
-    mid.priority = 128;
-    mid.created_at = 950;
+    let mid = make_dispatch("m-1", "agent-1")
+        .with_priority(128)
+        .with_created_at(950);
     store.enqueue(&mid).await.unwrap();
 
     let claimed = store
@@ -140,10 +138,10 @@ async fn claim_priority_ordering() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].priority, 10);
-    let token = claimed[0].claim_token.clone().unwrap();
+    assert_eq!(claimed[0].priority(), 10);
+    let token = claimed[0].claim_token().clone().unwrap();
     store
-        .ack(&claimed[0].dispatch_id, &token, 1100)
+        .ack(&claimed[0].dispatch_id(), &token, 1100)
         .await
         .unwrap();
 
@@ -152,10 +150,10 @@ async fn claim_priority_ordering() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].priority, 128);
-    let token = claimed[0].claim_token.clone().unwrap();
+    assert_eq!(claimed[0].priority(), 128);
+    let token = claimed[0].claim_token().clone().unwrap();
     store
-        .ack(&claimed[0].dispatch_id, &token, 1300)
+        .ack(&claimed[0].dispatch_id(), &token, 1300)
         .await
         .unwrap();
 
@@ -164,33 +162,33 @@ async fn claim_priority_ordering() {
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1);
-    assert_eq!(claimed[0].priority, 200);
+    assert_eq!(claimed[0].priority(), 200);
 }
 
 #[tokio::test]
 async fn ack_transitions_to_acked() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     let claimed = store
         .claim("m-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
-    let token = claimed[0].claim_token.as_ref().unwrap().clone();
+    let token = claimed[0].claim_token().unwrap().to_string();
 
     store.ack(&dispatch_id, &token, 2000).await.unwrap();
 
     let loaded = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(loaded.status, RunDispatchStatus::Acked);
+    assert_eq!(loaded.status(), RunDispatchStatus::Acked);
 }
 
 #[tokio::test]
 async fn ack_rejects_wrong_claim_token() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     store
@@ -208,29 +206,29 @@ async fn records_dispatch_start_and_run_result_separately_from_ack() {
 
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     let claimed = store
         .claim("m-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
-    let token = claimed[0].claim_token.as_ref().unwrap().clone();
+    let token = claimed[0].claim_token().unwrap().to_string();
 
     store
         .record_dispatch_start(&dispatch_id, &token, "dispatch-1", 1500)
         .await
         .unwrap();
     let running = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(running.status, RunDispatchStatus::Claimed);
-    assert_eq!(running.run_id, dispatch.run_id);
-    assert_eq!(running.dispatch_instance_id.as_deref(), Some("dispatch-1"));
-    assert_eq!(running.run_status, Some(RunStatus::Running));
-    assert!(running.termination.is_none());
-    assert!(running.completed_at.is_none());
+    assert_eq!(running.status(), RunDispatchStatus::Claimed);
+    assert_eq!(running.run_id(), dispatch.run_id());
+    assert_eq!(running.dispatch_instance_id(), Some("dispatch-1"));
+    assert_eq!(running.run_status(), Some(RunStatus::Running));
+    assert!(running.termination().is_none());
+    assert!(running.completed_at().is_none());
 
     let result = RunDispatchResult {
-        run_id: "run-1".into(),
+        run_id: dispatch.run_id().clone(),
         dispatch_instance_id: "dispatch-1".into(),
         status: RunStatus::Done,
         termination: Some(TerminationReason::NaturalEnd),
@@ -242,24 +240,27 @@ async fn records_dispatch_start_and_run_result_separately_from_ack() {
         .await
         .unwrap();
     let completed = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(completed.status, RunDispatchStatus::Claimed);
-    assert_eq!(completed.run_status, Some(RunStatus::Done));
-    assert_eq!(completed.termination, Some(TerminationReason::NaturalEnd));
-    assert_eq!(completed.run_response.as_deref(), Some("done"));
-    assert_eq!(completed.completed_at, Some(1800));
+    assert_eq!(completed.status(), RunDispatchStatus::Claimed);
+    assert_eq!(completed.run_status(), Some(RunStatus::Done));
+    assert_eq!(
+        completed.termination(),
+        Some(&TerminationReason::NaturalEnd)
+    );
+    assert_eq!(completed.run_response(), Some("done"));
+    assert_eq!(completed.completed_at(), Some(1800));
 
     store.ack(&dispatch_id, &token, 2000).await.unwrap();
     let acked = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(acked.status, RunDispatchStatus::Acked);
-    assert_eq!(acked.run_status, Some(RunStatus::Done));
-    assert_eq!(acked.run_response.as_deref(), Some("done"));
+    assert_eq!(acked.status(), RunDispatchStatus::Acked);
+    assert_eq!(acked.run_status(), Some(RunStatus::Done));
+    assert_eq!(acked.run_response(), Some("done"));
 }
 
 #[tokio::test]
 async fn record_run_result_rejects_stale_claim_token() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     store
@@ -268,7 +269,7 @@ async fn record_run_result_rejects_stale_claim_token() {
         .unwrap();
 
     let result = RunDispatchResult {
-        run_id: "run-1".into(),
+        run_id: dispatch.run_id().clone(),
         dispatch_instance_id: "dispatch-1".into(),
         status: RunStatus::Done,
         termination: None,
@@ -283,22 +284,22 @@ async fn record_run_result_rejects_stale_claim_token() {
     );
 
     let loaded = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert!(loaded.run_status.is_none());
-    assert!(loaded.run_error.is_none());
+    assert!(loaded.run_status().is_none());
+    assert!(loaded.run_error().is_none());
 }
 
 #[tokio::test]
 async fn nack_returns_to_queued() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     let claimed = store
         .claim("m-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
-    let token = claimed[0].claim_token.as_ref().unwrap().clone();
+    let token = claimed[0].claim_token().unwrap().to_string();
 
     store
         .nack(&dispatch_id, &token, 3000, "transient error", 2000)
@@ -306,25 +307,25 @@ async fn nack_returns_to_queued() {
         .unwrap();
 
     let loaded = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(loaded.status, RunDispatchStatus::Queued);
-    assert_eq!(loaded.attempt_count, 1);
-    assert_eq!(loaded.available_at, 3000);
-    assert!(loaded.claim_token.is_none());
+    assert_eq!(loaded.status(), RunDispatchStatus::Queued);
+    assert_eq!(loaded.attempt_count(), 1);
+    assert_eq!(loaded.available_at(), 3000);
+    assert!(loaded.claim_token().is_none());
 }
 
 #[tokio::test]
 async fn nack_dead_letters_after_max_attempts() {
     let store = InMemoryMailboxStore::new();
     let mut dispatch = make_dispatch("m-1", "agent-1");
-    dispatch.max_attempts = 1;
-    let dispatch_id = dispatch.dispatch_id.clone();
+    dispatch = dispatch.with_max_attempts(1);
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     let claimed = store
         .claim("m-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
-    let token = claimed[0].claim_token.as_ref().unwrap().clone();
+    let token = claimed[0].claim_token().unwrap().to_string();
 
     store
         .nack(&dispatch_id, &token, 3000, "final error", 2000)
@@ -332,21 +333,21 @@ async fn nack_dead_letters_after_max_attempts() {
         .unwrap();
 
     let loaded = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(loaded.status, RunDispatchStatus::DeadLetter);
+    assert_eq!(loaded.status(), RunDispatchStatus::DeadLetter);
 }
 
 #[tokio::test]
 async fn dead_letter_is_terminal() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     let claimed = store
         .claim("m-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
-    let token = claimed[0].claim_token.as_ref().unwrap().clone();
+    let token = claimed[0].claim_token().unwrap().to_string();
 
     store
         .dead_letter(&dispatch_id, &token, "permanent failure", 2000)
@@ -354,37 +355,37 @@ async fn dead_letter_is_terminal() {
         .unwrap();
 
     let loaded = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(loaded.status, RunDispatchStatus::DeadLetter);
-    assert!(loaded.status.is_terminal());
+    assert_eq!(loaded.status(), RunDispatchStatus::DeadLetter);
+    assert!(loaded.status().is_terminal());
 }
 
 #[tokio::test]
 async fn cancel_queued_dispatch() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     let cancelled = store.cancel(&dispatch_id, 2000).await.unwrap();
     assert!(cancelled.is_some());
-    assert_eq!(cancelled.unwrap().status, RunDispatchStatus::Cancelled);
+    assert_eq!(cancelled.unwrap().status(), RunDispatchStatus::Cancelled);
 
     let loaded = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(loaded.status, RunDispatchStatus::Cancelled);
+    assert_eq!(loaded.status(), RunDispatchStatus::Cancelled);
 }
 
 #[tokio::test]
 async fn extend_lease_success() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     let claimed = store
         .claim("m-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
-    let token = claimed[0].claim_token.as_ref().unwrap().clone();
+    let token = claimed[0].claim_token().unwrap().to_string();
 
     let ok = store
         .extend_lease(&dispatch_id, &token, 60_000, 15_000)
@@ -393,14 +394,14 @@ async fn extend_lease_success() {
     assert!(ok);
 
     let loaded = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(loaded.lease_until, Some(75_000));
+    assert_eq!(loaded.lease_until(), Some(75_000));
 }
 
 #[tokio::test]
 async fn extend_lease_wrong_token() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     store
@@ -460,7 +461,7 @@ async fn interrupt_returns_active_claimed() {
     let result = store.interrupt("m-1", 2000).await.unwrap();
     assert!(result.active_dispatch.is_some());
     assert_eq!(
-        result.active_dispatch.unwrap().status,
+        result.active_dispatch.unwrap().status(),
         RunDispatchStatus::Claimed
     );
     // The second (Queued) dispatch should be superseded.
@@ -471,11 +472,11 @@ async fn interrupt_returns_active_claimed() {
 async fn dedupe_key_rejects_duplicate() {
     let store = InMemoryMailboxStore::new();
     let mut dispatch1 = make_dispatch("m-1", "agent-1");
-    dispatch1.dedupe_key = Some("unique-key".to_string());
+    dispatch1 = dispatch1.with_dedupe_key(Some("unique-key".to_string()));
     store.enqueue(&dispatch1).await.unwrap();
 
     let mut dispatch2 = make_dispatch("m-1", "agent-1");
-    dispatch2.dedupe_key = Some("unique-key".to_string());
+    dispatch2 = dispatch2.with_dedupe_key(Some("unique-key".to_string()));
     let result = store.enqueue(&dispatch2).await;
     assert!(result.is_err());
 }
@@ -484,7 +485,7 @@ async fn dedupe_key_rejects_duplicate() {
 async fn reclaim_expired_leases() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     // Claim with a short lease.
@@ -496,9 +497,9 @@ async fn reclaim_expired_leases() {
     // Advance time past lease expiry (lease_until = 1100).
     let reclaimed = store.reclaim_expired_leases(2000, 10).await.unwrap();
     assert_eq!(reclaimed.len(), 1);
-    assert_eq!(reclaimed[0].dispatch_id, dispatch_id);
-    assert_eq!(reclaimed[0].status, RunDispatchStatus::Queued);
-    assert_eq!(reclaimed[0].attempt_count, 1);
+    assert_eq!(reclaimed[0].dispatch_id(), &dispatch_id);
+    assert_eq!(reclaimed[0].status(), RunDispatchStatus::Queued);
+    assert_eq!(reclaimed[0].attempt_count(), 1);
 }
 
 #[tokio::test]
@@ -512,9 +513,9 @@ async fn purge_terminal() {
         .claim("m-1", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
-    let token = claimed[0].claim_token.as_ref().unwrap().clone();
+    let token = claimed[0].claim_token().unwrap().to_string();
     store
-        .ack(&claimed[0].dispatch_id, &token, 1500)
+        .ack(&claimed[0].dispatch_id(), &token, 1500)
         .await
         .unwrap();
 
@@ -531,7 +532,7 @@ async fn purge_terminal() {
     // The non-terminal dispatch should remain.
     let listed = store.list_dispatches("m-1", None, 100, 0).await.unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].status, RunDispatchStatus::Queued);
+    assert_eq!(listed[0].status(), RunDispatchStatus::Queued);
 }
 
 #[tokio::test]
@@ -545,9 +546,9 @@ async fn purge_terminal_drops_state_only_for_fully_drained_threads() {
         .claim("thread-a", "consumer-1", 30_000, 1000, 1)
         .await
         .unwrap();
-    let token = claimed[0].claim_token.as_ref().unwrap().clone();
+    let token = claimed[0].claim_token().unwrap().to_string();
     store
-        .ack(&claimed[0].dispatch_id, &token, 1500)
+        .ack(&claimed[0].dispatch_id(), &token, 1500)
         .await
         .unwrap();
 
@@ -595,7 +596,7 @@ async fn purge_terminal_drops_state_only_for_fully_drained_threads() {
         .await
         .unwrap();
     assert_eq!(revived.len(), 1);
-    assert_eq!(revived[0].status, RunDispatchStatus::Queued);
+    assert_eq!(revived[0].status(), RunDispatchStatus::Queued);
 }
 
 #[tokio::test]
@@ -608,9 +609,9 @@ async fn purge_terminal_with_no_remaining_dispatches_clears_all_state() {
             .claim(thread, "consumer-1", 30_000, 1000, 1)
             .await
             .unwrap();
-        let token = claimed[0].claim_token.as_ref().unwrap().clone();
+        let token = claimed[0].claim_token().unwrap().to_string();
         store
-            .ack(&claimed[0].dispatch_id, &token, 1500)
+            .ack(&claimed[0].dispatch_id(), &token, 1500)
             .await
             .unwrap();
     }
@@ -648,7 +649,7 @@ async fn queued_thread_ids() {
 async fn claim_dispatch_by_id() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     let claimed = store
@@ -657,9 +658,9 @@ async fn claim_dispatch_by_id() {
         .unwrap();
     assert!(claimed.is_some());
     let claimed = claimed.unwrap();
-    assert_eq!(claimed.dispatch_id, dispatch_id);
-    assert_eq!(claimed.status, RunDispatchStatus::Claimed);
-    assert!(claimed.claim_token.is_some());
+    assert_eq!(claimed.dispatch_id(), &dispatch_id);
+    assert_eq!(claimed.status(), RunDispatchStatus::Claimed);
+    assert!(claimed.claim_token().is_some());
 }
 
 #[tokio::test]
@@ -684,8 +685,8 @@ async fn claim_dispatch_rejects_if_thread_already_has_claimed() {
     let store = InMemoryMailboxStore::new();
     let dispatch1 = make_dispatch("m-1", "agent-1");
     let dispatch2 = make_dispatch("m-1", "agent-1");
-    let id1 = dispatch1.dispatch_id.clone();
-    let id2 = dispatch2.dispatch_id.clone();
+    let id1 = dispatch1.dispatch_id().clone();
+    let id2 = dispatch2.dispatch_id().clone();
     store.enqueue(&dispatch1).await.unwrap();
     store.enqueue(&dispatch2).await.unwrap();
 
@@ -715,8 +716,8 @@ async fn claim_resumes_after_ack() {
     // Claim first (whichever the store picks).
     let claimed = store.claim("m-1", "c-1", 30_000, 1000, 1).await.unwrap();
     assert_eq!(claimed.len(), 1);
-    let claimed_id = claimed[0].dispatch_id.clone();
-    let claimed_token = claimed[0].claim_token.clone().unwrap();
+    let claimed_id = claimed[0].dispatch_id().clone();
+    let claimed_token = claimed[0].claim_token().clone().unwrap();
 
     // Ack the claimed dispatch → Acked.
     store.ack(&claimed_id, &claimed_token, 2000).await.unwrap();
@@ -724,7 +725,7 @@ async fn claim_resumes_after_ack() {
     // Now claim should succeed for the other dispatch.
     let claimed2 = store.claim("m-1", "c-1", 30_000, 2000, 1).await.unwrap();
     assert_eq!(claimed2.len(), 1);
-    assert_ne!(claimed2[0].dispatch_id, claimed_id);
+    assert_ne!(claimed2[0].dispatch_id(), &claimed_id);
 }
 
 // ── Concurrency & parallelism tests ─────────────────────────────
@@ -737,10 +738,11 @@ async fn fifo_ordering_within_same_priority() {
     let mut dispatch_ids = Vec::new();
     for i in 0u64..5 {
         let mut dispatch = make_dispatch("thread-1", "agent-1");
-        dispatch.priority = 0;
-        dispatch.created_at = 1000 + i;
-        dispatch.available_at = 1000;
-        dispatch_ids.push(dispatch.dispatch_id.clone());
+        dispatch = dispatch
+            .with_priority(0)
+            .with_created_at(1000 + i)
+            .with_available_at(1000);
+        dispatch_ids.push(dispatch.dispatch_id().clone());
         store.enqueue(&dispatch).await.unwrap();
     }
 
@@ -753,12 +755,12 @@ async fn fifo_ordering_within_same_priority() {
             .unwrap();
         assert_eq!(claimed.len(), 1, "expected exactly 1 dispatch per claim");
         let dispatch = &claimed[0];
-        claimed_order.push(dispatch.dispatch_id.clone());
+        claimed_order.push(dispatch.dispatch_id().clone());
         // Ack so it becomes terminal and won't be claimed again.
         store
             .ack(
-                &dispatch.dispatch_id,
-                dispatch.claim_token.as_ref().unwrap(),
+                dispatch.dispatch_id(),
+                dispatch.claim_token().unwrap(),
                 2000,
             )
             .await
@@ -780,7 +782,7 @@ async fn concurrent_enqueue_no_lost_dispatches() {
         let store = std::sync::Arc::clone(&store);
         handles.push(tokio::spawn(async move {
             let mut dispatch = make_dispatch("thread-1", "agent-1");
-            dispatch.dedupe_key = Some(format!("dedupe-{i}"));
+            dispatch = dispatch.with_dedupe_key(Some(format!("dedupe-{i}")));
             store.enqueue(&dispatch).await.unwrap();
         }));
     }
@@ -806,7 +808,7 @@ async fn concurrent_claim_only_one_wins() {
 
     // Enqueue exactly 1 dispatch.
     let dispatch = make_dispatch("thread-1", "agent-1");
-    let dispatch_id = dispatch.dispatch_id.clone();
+    let dispatch_id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     // Use a barrier so all tasks start claiming at roughly the same time.
@@ -834,7 +836,7 @@ async fn concurrent_claim_only_one_wins() {
         } else {
             winners += 1;
             assert_eq!(claimed.len(), 1);
-            assert_eq!(claimed[0].dispatch_id, dispatch_id);
+            assert_eq!(claimed[0].dispatch_id(), &dispatch_id);
         }
     }
 
@@ -843,8 +845,8 @@ async fn concurrent_claim_only_one_wins() {
 
     // Verify the dispatch has a single claim_token.
     let loaded = store.load_dispatch(&dispatch_id).await.unwrap().unwrap();
-    assert_eq!(loaded.status, RunDispatchStatus::Claimed);
-    assert!(loaded.claim_token.is_some());
+    assert_eq!(loaded.status(), RunDispatchStatus::Claimed);
+    assert!(loaded.claim_token().is_some());
 }
 
 #[tokio::test]
@@ -852,11 +854,11 @@ async fn claim_respects_per_thread_isolation() {
     let store = InMemoryMailboxStore::new();
 
     let dispatch1 = make_dispatch("thread-1", "agent-1");
-    let dispatch1_id = dispatch1.dispatch_id.clone();
+    let dispatch1_id = dispatch1.dispatch_id().clone();
     store.enqueue(&dispatch1).await.unwrap();
 
     let dispatch2 = make_dispatch("thread-2", "agent-1");
-    let dispatch2_id = dispatch2.dispatch_id.clone();
+    let dispatch2_id = dispatch2.dispatch_id().clone();
     store.enqueue(&dispatch2).await.unwrap();
 
     // Claim from thread-1.
@@ -865,7 +867,7 @@ async fn claim_respects_per_thread_isolation() {
         .await
         .unwrap();
     assert_eq!(claimed1.len(), 1);
-    assert_eq!(claimed1[0].dispatch_id, dispatch1_id);
+    assert_eq!(claimed1[0].dispatch_id(), &dispatch1_id);
 
     // Claim from thread-2 should succeed independently.
     let claimed2 = store
@@ -873,15 +875,16 @@ async fn claim_respects_per_thread_isolation() {
         .await
         .unwrap();
     assert_eq!(claimed2.len(), 1);
-    assert_eq!(claimed2[0].dispatch_id, dispatch2_id);
+    assert_eq!(claimed2[0].dispatch_id(), &dispatch2_id);
 
     // Both are independently Claimed.
     let loaded1 = store.load_dispatch(&dispatch1_id).await.unwrap().unwrap();
     let loaded2 = store.load_dispatch(&dispatch2_id).await.unwrap().unwrap();
-    assert_eq!(loaded1.status, RunDispatchStatus::Claimed);
-    assert_eq!(loaded2.status, RunDispatchStatus::Claimed);
+    assert_eq!(loaded1.status(), RunDispatchStatus::Claimed);
+    assert_eq!(loaded2.status(), RunDispatchStatus::Claimed);
     assert_ne!(
-        loaded1.claim_token, loaded2.claim_token,
+        loaded1.claim_token(),
+        loaded2.claim_token(),
         "each thread should get its own claim token"
     );
 }
@@ -920,8 +923,8 @@ async fn concurrent_claim_dispatch_only_one_wins() {
     let inner = InMemoryMailboxStore::new();
     let dispatch1 = make_dispatch("m-1", "agent-1");
     let dispatch2 = make_dispatch("m-1", "agent-1");
-    let id1 = dispatch1.dispatch_id.clone();
-    let id2 = dispatch2.dispatch_id.clone();
+    let id1 = dispatch1.dispatch_id().clone();
+    let id2 = dispatch2.dispatch_id().clone();
     inner.enqueue(&dispatch1).await.unwrap();
     inner.enqueue(&dispatch2).await.unwrap();
 
@@ -955,8 +958,8 @@ async fn claim_dispatch_different_thread_both_succeed() {
     let store = InMemoryMailboxStore::new();
     let dispatch1 = make_dispatch("m-1", "agent-1");
     let dispatch2 = make_dispatch("m-2", "agent-1");
-    let id1 = dispatch1.dispatch_id.clone();
-    let id2 = dispatch2.dispatch_id.clone();
+    let id1 = dispatch1.dispatch_id().clone();
+    let id2 = dispatch2.dispatch_id().clone();
     store.enqueue(&dispatch1).await.unwrap();
     store.enqueue(&dispatch2).await.unwrap();
 
@@ -976,7 +979,7 @@ async fn claim_dispatch_different_thread_both_succeed() {
 async fn claim_after_nack_works() {
     let store = InMemoryMailboxStore::new();
     let dispatch = make_dispatch("m-1", "agent-1");
-    let id = dispatch.dispatch_id.clone();
+    let id = dispatch.dispatch_id().clone();
     store.enqueue(&dispatch).await.unwrap();
 
     // Claim then nack.
@@ -985,7 +988,7 @@ async fn claim_after_nack_works() {
         .await
         .unwrap()
         .unwrap();
-    let token = claimed.claim_token.unwrap();
+    let token = claimed.claim_token().unwrap().to_string();
     store.nack(&id, &token, 1000, "retry", 2000).await.unwrap();
 
     // Should be claimable again.
@@ -1250,18 +1253,19 @@ mod proptest_memory_mailbox {
             rt.block_on(async {
                 let store = InMemoryMailboxStore::new();
                 let mut dispatch = make_dispatch("m-prop", "agent-prop");
-                dispatch.priority = priority;
-                dispatch.max_attempts = max_attempts;
+                dispatch = dispatch
+                    .with_priority(priority)
+                    .with_max_attempts(max_attempts);
                 store.enqueue(&dispatch).await.unwrap();
 
                 let claimed = store.claim("m-prop", "consumer-1", 30_000, 1000, 1).await.unwrap();
                 assert_eq!(claimed.len(), 1);
                 let cj = &claimed[0];
-                assert_eq!(cj.priority, priority);
-                assert_eq!(cj.max_attempts, max_attempts);
-                assert_eq!(cj.status, RunDispatchStatus::Claimed);
-                assert!(cj.claim_token.is_some());
-                assert_eq!(cj.claimed_by.as_deref(), Some("consumer-1"));
+                assert_eq!(cj.priority(), priority);
+                assert_eq!(cj.max_attempts(), max_attempts);
+                assert_eq!(cj.status(), RunDispatchStatus::Claimed);
+                assert!(cj.claim_token().is_some());
+                assert_eq!(cj.claimed_by(), Some("consumer-1"));
             });
         }
     }
