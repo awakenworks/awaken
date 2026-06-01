@@ -276,6 +276,121 @@ pub struct RunRecord {
 }
 
 impl RunRecord {
+    /// Validate storage-level invariants before a run is persisted.
+    pub fn validate_for_persist(&self) -> Result<(), StorageError> {
+        require_non_empty("run_id", &self.run_id)?;
+        require_non_empty("thread_id", &self.thread_id)?;
+        require_non_empty("agent_id", &self.agent_id)?;
+
+        if let Some(activation) = &self.activation {
+            activation.validate()?;
+            if activation.intent.thread_id != self.thread_id {
+                return Err(StorageError::Validation(format!(
+                    "run activation thread_id '{}' must match run thread_id '{}'",
+                    activation.intent.thread_id, self.thread_id
+                )));
+            }
+        }
+
+        if let Some(input) = &self.input {
+            validate_run_message_input(&self.thread_id, input)?;
+        }
+        if let Some(output) = &self.output {
+            validate_run_message_output(&self.thread_id, output)?;
+        }
+
+        match self.status {
+            RunStatus::Created | RunStatus::Running => {
+                if self.waiting.is_some() {
+                    return Err(StorageError::Validation(format!(
+                        "{:?} run '{}' must not carry waiting state",
+                        self.status, self.run_id
+                    )));
+                }
+                if self.outcome.is_some() {
+                    return Err(StorageError::Validation(format!(
+                        "{:?} run '{}' must not carry terminal outcome",
+                        self.status, self.run_id
+                    )));
+                }
+                if self.finished_at.is_some() {
+                    return Err(StorageError::Validation(format!(
+                        "{:?} run '{}' must not carry finished_at",
+                        self.status, self.run_id
+                    )));
+                }
+            }
+            RunStatus::Waiting => {
+                if self.waiting.is_none() {
+                    return Err(StorageError::Validation(format!(
+                        "waiting run '{}' must carry waiting state",
+                        self.run_id
+                    )));
+                }
+                if self.outcome.is_some() {
+                    return Err(StorageError::Validation(format!(
+                        "waiting run '{}' must not carry terminal outcome",
+                        self.run_id
+                    )));
+                }
+                if self.finished_at.is_some() {
+                    return Err(StorageError::Validation(format!(
+                        "waiting run '{}' must not carry finished_at",
+                        self.run_id
+                    )));
+                }
+            }
+            RunStatus::Done => {
+                if self.waiting.is_some() {
+                    return Err(StorageError::Validation(format!(
+                        "done run '{}' must not carry waiting state",
+                        self.run_id
+                    )));
+                }
+                if self.finished_at.is_none() {
+                    return Err(StorageError::Validation(format!(
+                        "done run '{}' must carry finished_at",
+                        self.run_id
+                    )));
+                }
+                if let Some(outcome) = &self.outcome {
+                    if self
+                        .termination_reason
+                        .as_ref()
+                        .is_some_and(|reason| reason != &outcome.termination_reason)
+                    {
+                        return Err(StorageError::Validation(format!(
+                            "done run '{}' termination_reason must match outcome.termination_reason",
+                            self.run_id
+                        )));
+                    }
+                    if self
+                        .final_output
+                        .as_ref()
+                        .is_some_and(|output| Some(output) != outcome.final_output.as_ref())
+                    {
+                        return Err(StorageError::Validation(format!(
+                            "done run '{}' final_output must match outcome.final_output",
+                            self.run_id
+                        )));
+                    }
+                    if self
+                        .error_payload
+                        .as_ref()
+                        .is_some_and(|payload| Some(payload) != outcome.error_payload.as_ref())
+                    {
+                        return Err(StorageError::Validation(format!(
+                            "done run '{}' error_payload must match outcome.error_payload",
+                            self.run_id
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Return the structured waiting reason for a non-terminal run.
     ///
     /// Waiting state is durable and structured. Runtime status reason strings
@@ -300,6 +415,63 @@ impl RunRecord {
     pub fn is_background_task_waiting(&self) -> bool {
         self.waiting_reason() == Some(WaitingReason::BackgroundTasks)
     }
+}
+
+fn require_non_empty(field: &str, value: &str) -> Result<(), StorageError> {
+    if value.trim().is_empty() {
+        return Err(StorageError::Validation(format!(
+            "{field} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_seq_range(field: &str, range: MessageSeqRange) -> Result<(), StorageError> {
+    if range.from_seq == 0 || range.from_seq > range.to_seq {
+        return Err(StorageError::Validation(format!(
+            "{field} range must be non-empty and 1-based"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_run_message_input(
+    run_thread_id: &str,
+    input: &RunMessageInput,
+) -> Result<(), StorageError> {
+    if input.thread_id != run_thread_id {
+        return Err(StorageError::Validation(format!(
+            "run input thread_id '{}' must match run thread_id '{}'",
+            input.thread_id, run_thread_id
+        )));
+    }
+    if let Some(range) = input.range {
+        validate_seq_range("run input", range)?;
+    }
+    Ok(())
+}
+
+fn validate_run_message_output(
+    run_thread_id: &str,
+    output: &RunMessageOutput,
+) -> Result<(), StorageError> {
+    if output.thread_id != run_thread_id {
+        return Err(StorageError::Validation(format!(
+            "run output thread_id '{}' must match run thread_id '{}'",
+            output.thread_id, run_thread_id
+        )));
+    }
+    if let Some(range) = output.range {
+        validate_seq_range("run output", range)?;
+        if range.len() as usize != output.message_ids.len() {
+            return Err(StorageError::Validation(format!(
+                "run output message_ids length {} must match range length {}",
+                output.message_ids.len(),
+                range.len()
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ── consistent checkpoint snapshot ───────────────────────────────────

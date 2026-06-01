@@ -108,7 +108,11 @@ pub struct CompactionMark {
 
 impl MessageRecord {
     /// Build a record from a thread-owned message payload.
-    pub fn from_message(thread_id: impl Into<String>, seq: u64, message: Message) -> Self {
+    pub fn from_message(thread_id: impl Into<String>, seq: u64, mut message: Message) -> Self {
+        let message_id = message.id.clone().unwrap_or_else(gen_message_id);
+        if message.id.is_none() {
+            message.id = Some(message_id.clone());
+        }
         let produced_by_run_id = message
             .metadata
             .as_ref()
@@ -123,7 +127,7 @@ impl MessageRecord {
             .as_ref()
             .and_then(|metadata| metadata.compaction);
         Self {
-            message_id: message.id.clone().unwrap_or_else(gen_message_id),
+            message_id,
             thread_id: thread_id.into(),
             seq,
             message,

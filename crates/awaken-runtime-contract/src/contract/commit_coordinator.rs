@@ -329,6 +329,13 @@ pub trait CommitCoordinator: Send + Sync {
     /// scope compatibility per ADR-0036 D3.
     fn scope(&self) -> TransactionScopeId;
 
+    /// Return an identity for the thread/run store backing this coordinator,
+    /// when the implementation can prove it. Server facades use this to reject
+    /// mismatched read stores before runtime dispatch starts.
+    fn thread_run_storage_identity(&self) -> Option<String> {
+        None
+    }
+
     /// Return the runtime read port backed by the same store the coordinator
     /// commits to. The runtime uses this for resume reads (e.g. `load_run`);
     /// writes flow through [`Self::commit_checkpoint`]. The full store CRUD +
