@@ -388,6 +388,14 @@ pub trait RunStore: Send + Sync {
 /// and coordinator-internal use.
 #[async_trait]
 pub trait ThreadRunStore: ThreadStore + RunStore + Send + Sync {
+    /// Return an identity for the backing thread/run store, when the
+    /// implementation can prove it. This is intentionally narrower than a
+    /// coordinator transaction scope: it only identifies the thread/run read
+    /// and write backend used by mailbox/server code.
+    fn thread_run_storage_identity(&self) -> Option<String> {
+        None
+    }
+
     #[deprecated(since = "0.6.0", note = "use CommitCoordinator (ADR-0038 D7)")]
     async fn checkpoint(
         &self,

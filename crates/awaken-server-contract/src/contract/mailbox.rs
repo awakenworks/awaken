@@ -87,65 +87,649 @@ pub struct RunDispatchResult {
 pub struct RunDispatch {
     // ── identity ──
     /// UUID v7, globally unique.
-    pub dispatch_id: String,
+    dispatch_id: String,
     /// Thread ID, routing anchor.
-    pub thread_id: String,
+    thread_id: String,
     /// Canonical runtime run ID this dispatch activates.
-    pub run_id: String,
+    run_id: String,
 
     // ── queue semantics ──
     /// 0 = highest, 255 = lowest, default 128.
-    pub priority: u8,
+    priority: u8,
     /// Idempotent delivery key.
-    pub dedupe_key: Option<String>,
+    dedupe_key: Option<String>,
     /// Thread dispatch epoch captured when this dispatch was created.
-    pub dispatch_epoch: u64,
+    dispatch_epoch: u64,
 
     // ── lifecycle ──
     /// Current status.
-    pub status: RunDispatchStatus,
+    status: RunDispatchStatus,
     /// Unix millis; future value = delayed delivery.
-    pub available_at: u64,
+    available_at: u64,
     /// Number of claim attempts so far.
-    pub attempt_count: u32,
+    attempt_count: u32,
     /// Maximum attempts before dead-lettering (default 5).
-    pub max_attempts: u32,
+    max_attempts: u32,
     /// Last error message.
-    pub last_error: Option<String>,
+    last_error: Option<String>,
 
     // ── lease ──
     /// UUID set on claim.
-    pub claim_token: Option<String>,
+    claim_token: Option<String>,
     /// Consumer identifier (process) that claimed this dispatch.
-    pub claimed_by: Option<String>,
+    claimed_by: Option<String>,
     /// Unix millis, extended by heartbeat.
-    pub lease_until: Option<u64>,
+    lease_until: Option<u64>,
 
     // ── runtime trace ──
     /// Dispatch attempt ID associated with the current/latest claim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dispatch_instance_id: Option<String>,
+    dispatch_instance_id: Option<String>,
     /// Runtime status associated with this dispatch's current/latest run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_status: Option<RunStatus>,
+    run_status: Option<RunStatus>,
     /// Structured terminal reason for the current/latest run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub termination: Option<TerminationReason>,
+    termination: Option<TerminationReason>,
     /// Final response text for the current/latest run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_response: Option<String>,
+    run_response: Option<String>,
     /// Runtime error text for the current/latest run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_error: Option<String>,
+    run_error: Option<String>,
     /// Unix millis when the runtime result was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completed_at: Option<u64>,
+    completed_at: Option<u64>,
 
     // ── timestamps ──
     /// Unix millis when the dispatch was created.
-    pub created_at: u64,
+    created_at: u64,
     /// Unix millis of the last update.
+    updated_at: u64,
+}
+
+/// Explicit persisted representation used by store codecs.
+///
+/// This bag keeps deserialization and backend row decoding possible without
+/// reopening `RunDispatch` to arbitrary field mutation. Convert it with
+/// [`RunDispatch::from_persisted_parts`], which validates lifecycle
+/// invariants before returning a dispatch.
+#[derive(Debug, Clone)]
+pub struct RunDispatchParts {
+    pub dispatch_id: String,
+    pub thread_id: String,
+    pub run_id: String,
+    pub priority: u8,
+    pub dedupe_key: Option<String>,
+    pub dispatch_epoch: u64,
+    pub status: RunDispatchStatus,
+    pub available_at: u64,
+    pub attempt_count: u32,
+    pub max_attempts: u32,
+    pub last_error: Option<String>,
+    pub claim_token: Option<String>,
+    pub claimed_by: Option<String>,
+    pub lease_until: Option<u64>,
+    pub dispatch_instance_id: Option<String>,
+    pub run_status: Option<RunStatus>,
+    pub termination: Option<TerminationReason>,
+    pub run_response: Option<String>,
+    pub run_error: Option<String>,
+    pub completed_at: Option<u64>,
+    pub created_at: u64,
     pub updated_at: u64,
+}
+
+impl RunDispatch {
+    /// Build a queued dispatch. The result is validateable for enqueue and is
+    /// the only public constructor for new mailbox records.
+    #[must_use]
+    pub fn queued(
+        dispatch_id: impl Into<String>,
+        thread_id: impl Into<String>,
+        run_id: impl Into<String>,
+        created_at: u64,
+    ) -> Self {
+        Self {
+            dispatch_id: dispatch_id.into(),
+            thread_id: thread_id.into(),
+            run_id: run_id.into(),
+            priority: 128,
+            dedupe_key: None,
+            dispatch_epoch: 0,
+            status: RunDispatchStatus::Queued,
+            available_at: created_at,
+            attempt_count: 0,
+            max_attempts: 5,
+            last_error: None,
+            claim_token: None,
+            claimed_by: None,
+            lease_until: None,
+            dispatch_instance_id: None,
+            run_status: None,
+            termination: None,
+            run_response: None,
+            run_error: None,
+            completed_at: None,
+            created_at,
+            updated_at: created_at,
+        }
+    }
+
+    #[must_use]
+    pub fn with_priority(mut self, priority: u8) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dedupe_key(mut self, dedupe_key: impl Into<Option<String>>) -> Self {
+        self.dedupe_key = dedupe_key.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_available_at(mut self, available_at: u64) -> Self {
+        self.available_at = available_at;
+        self
+    }
+
+    #[must_use]
+    pub fn with_created_at(mut self, created_at: u64) -> Self {
+        self.created_at = created_at;
+        self
+    }
+
+    #[must_use]
+    pub fn with_max_attempts(mut self, max_attempts: u32) -> Self {
+        self.max_attempts = max_attempts;
+        self
+    }
+
+    #[must_use]
+    pub fn with_attempt_count(mut self, attempt_count: u32) -> Self {
+        self.attempt_count = attempt_count;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dispatch_epoch(mut self, dispatch_epoch: u64) -> Self {
+        self.dispatch_epoch = dispatch_epoch;
+        self
+    }
+
+    pub fn from_persisted_parts(parts: RunDispatchParts) -> Result<Self, StorageError> {
+        let dispatch = Self {
+            dispatch_id: parts.dispatch_id,
+            thread_id: parts.thread_id,
+            run_id: parts.run_id,
+            priority: parts.priority,
+            dedupe_key: parts.dedupe_key,
+            dispatch_epoch: parts.dispatch_epoch,
+            status: parts.status,
+            available_at: parts.available_at,
+            attempt_count: parts.attempt_count,
+            max_attempts: parts.max_attempts,
+            last_error: parts.last_error,
+            claim_token: parts.claim_token,
+            claimed_by: parts.claimed_by,
+            lease_until: parts.lease_until,
+            dispatch_instance_id: parts.dispatch_instance_id,
+            run_status: parts.run_status,
+            termination: parts.termination,
+            run_response: parts.run_response,
+            run_error: parts.run_error,
+            completed_at: parts.completed_at,
+            created_at: parts.created_at,
+            updated_at: parts.updated_at,
+        };
+        dispatch.validate_for_persist()?;
+        Ok(dispatch)
+    }
+
+    #[must_use]
+    pub fn to_persisted_parts(&self) -> RunDispatchParts {
+        RunDispatchParts {
+            dispatch_id: self.dispatch_id.clone(),
+            thread_id: self.thread_id.clone(),
+            run_id: self.run_id.clone(),
+            priority: self.priority,
+            dedupe_key: self.dedupe_key.clone(),
+            dispatch_epoch: self.dispatch_epoch,
+            status: self.status,
+            available_at: self.available_at,
+            attempt_count: self.attempt_count,
+            max_attempts: self.max_attempts,
+            last_error: self.last_error.clone(),
+            claim_token: self.claim_token.clone(),
+            claimed_by: self.claimed_by.clone(),
+            lease_until: self.lease_until,
+            dispatch_instance_id: self.dispatch_instance_id.clone(),
+            run_status: self.run_status,
+            termination: self.termination.clone(),
+            run_response: self.run_response.clone(),
+            run_error: self.run_error.clone(),
+            completed_at: self.completed_at,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+
+    #[must_use]
+    pub fn dispatch_id(&self) -> &String {
+        &self.dispatch_id
+    }
+
+    #[must_use]
+    pub fn thread_id(&self) -> &String {
+        &self.thread_id
+    }
+
+    #[must_use]
+    pub fn run_id(&self) -> &String {
+        &self.run_id
+    }
+
+    #[must_use]
+    pub fn priority(&self) -> u8 {
+        self.priority
+    }
+
+    #[must_use]
+    pub fn dedupe_key(&self) -> Option<&str> {
+        self.dedupe_key.as_deref()
+    }
+
+    #[must_use]
+    pub fn dispatch_epoch(&self) -> u64 {
+        self.dispatch_epoch
+    }
+
+    #[must_use]
+    pub fn status(&self) -> RunDispatchStatus {
+        self.status
+    }
+
+    #[must_use]
+    pub fn available_at(&self) -> u64 {
+        self.available_at
+    }
+
+    #[must_use]
+    pub fn attempt_count(&self) -> u32 {
+        self.attempt_count
+    }
+
+    #[must_use]
+    pub fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    #[must_use]
+    pub fn claim_token(&self) -> Option<&str> {
+        self.claim_token.as_deref()
+    }
+
+    #[must_use]
+    pub fn claimed_by(&self) -> Option<&str> {
+        self.claimed_by.as_deref()
+    }
+
+    #[must_use]
+    pub fn lease_until(&self) -> Option<u64> {
+        self.lease_until
+    }
+
+    #[must_use]
+    pub fn dispatch_instance_id(&self) -> Option<&str> {
+        self.dispatch_instance_id.as_deref()
+    }
+
+    #[must_use]
+    pub fn run_status(&self) -> Option<RunStatus> {
+        self.run_status
+    }
+
+    #[must_use]
+    pub fn termination(&self) -> Option<&TerminationReason> {
+        self.termination.as_ref()
+    }
+
+    #[must_use]
+    pub fn run_response(&self) -> Option<&str> {
+        self.run_response.as_deref()
+    }
+
+    #[must_use]
+    pub fn run_error(&self) -> Option<&str> {
+        self.run_error.as_deref()
+    }
+
+    #[must_use]
+    pub fn completed_at(&self) -> Option<u64> {
+        self.completed_at
+    }
+
+    #[must_use]
+    pub fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    #[must_use]
+    pub fn updated_at(&self) -> u64 {
+        self.updated_at
+    }
+
+    /// Store enqueue normalization: bind the dispatch to the current thread
+    /// epoch and clear all runtime/terminal state.
+    pub fn prepare_for_enqueue(&mut self, dispatch_epoch: u64) {
+        self.dispatch_epoch = dispatch_epoch;
+        self.status = RunDispatchStatus::Queued;
+        self.claim_token = None;
+        self.claimed_by = None;
+        self.lease_until = None;
+        self.dispatch_instance_id = None;
+        self.run_status = None;
+        self.termination = None;
+        self.run_response = None;
+        self.run_error = None;
+        self.completed_at = None;
+    }
+
+    /// Transition a queued dispatch to claimed.
+    pub fn claim(
+        &mut self,
+        consumer_id: impl Into<String>,
+        claim_token: impl Into<String>,
+        lease_until: u64,
+        now: u64,
+    ) -> Result<(), StorageError> {
+        self.require_status(RunDispatchStatus::Queued, "claim")?;
+        self.status = RunDispatchStatus::Claimed;
+        self.claim_token = Some(claim_token.into());
+        self.claimed_by = Some(consumer_id.into());
+        self.lease_until = Some(lease_until);
+        self.updated_at = now;
+        self.validate_for_persist()
+    }
+
+    pub fn extend_lease(&mut self, lease_until: u64, now: u64) -> Result<(), StorageError> {
+        self.require_status(RunDispatchStatus::Claimed, "lease extension")?;
+        self.lease_until = Some(lease_until);
+        self.updated_at = now;
+        self.validate_for_persist()
+    }
+
+    pub fn record_dispatch_start(
+        &mut self,
+        dispatch_instance_id: impl Into<String>,
+        now: u64,
+    ) -> Result<(), StorageError> {
+        self.require_status(RunDispatchStatus::Claimed, "recording runtime start")?;
+        self.dispatch_instance_id = Some(dispatch_instance_id.into());
+        self.run_status = Some(RunStatus::Running);
+        self.termination = None;
+        self.run_response = None;
+        self.run_error = None;
+        self.completed_at = None;
+        self.updated_at = now;
+        self.validate_for_persist()
+    }
+
+    pub fn record_run_result(
+        &mut self,
+        result: &RunDispatchResult,
+        now: u64,
+    ) -> Result<(), StorageError> {
+        self.require_status(RunDispatchStatus::Claimed, "recording runtime result")?;
+        if result.run_id != self.run_id {
+            return Err(StorageError::Validation(format!(
+                "dispatch '{}' result run_id '{}' does not match '{}'",
+                self.dispatch_id, result.run_id, self.run_id
+            )));
+        }
+        self.dispatch_instance_id = Some(result.dispatch_instance_id.clone());
+        self.run_status = Some(result.status);
+        self.termination = result.termination.clone();
+        self.run_response = result.response.clone();
+        self.run_error = result.error.clone();
+        self.completed_at = Some(now);
+        self.updated_at = now;
+        self.validate_for_persist()
+    }
+
+    pub fn mark_acked(&mut self, now: u64) -> Result<(), StorageError> {
+        self.require_status(RunDispatchStatus::Claimed, "ack")?;
+        self.status = RunDispatchStatus::Acked;
+        self.completed_at = Some(now);
+        self.updated_at = now;
+        self.clear_claim_fields();
+        self.validate_for_persist()
+    }
+
+    pub fn mark_cancelled(&mut self, now: u64) -> Result<(), StorageError> {
+        self.require_status(RunDispatchStatus::Queued, "cancel")?;
+        self.status = RunDispatchStatus::Cancelled;
+        self.completed_at = Some(now);
+        self.updated_at = now;
+        self.clear_claim_fields();
+        self.validate_for_persist()
+    }
+
+    pub fn mark_superseded(&mut self, now: u64, reason: Option<&str>) -> Result<(), StorageError> {
+        self.status = RunDispatchStatus::Superseded;
+        self.completed_at = Some(now);
+        self.updated_at = now;
+        if let Some(reason) = reason {
+            self.last_error = Some(reason.to_string());
+        }
+        self.clear_claim_fields();
+        self.validate_for_persist()
+    }
+
+    pub fn mark_superseded_at_epoch(
+        &mut self,
+        now: u64,
+        epoch: u64,
+        reason: Option<&str>,
+    ) -> Result<(), StorageError> {
+        self.dispatch_epoch = epoch;
+        self.mark_superseded(now, reason)
+    }
+
+    pub fn mark_dead_letter(&mut self, now: u64, error: &str) -> Result<(), StorageError> {
+        self.require_status(RunDispatchStatus::Claimed, "dead letter")?;
+        self.status = RunDispatchStatus::DeadLetter;
+        self.last_error = Some(error.to_string());
+        self.completed_at = Some(now);
+        self.updated_at = now;
+        self.clear_claim_fields();
+        self.validate_for_persist()
+    }
+
+    pub fn mark_nack_result(
+        &mut self,
+        now: u64,
+        retry_at: u64,
+        error: &str,
+    ) -> Result<(), StorageError> {
+        self.require_status(RunDispatchStatus::Claimed, "nack")?;
+        self.attempt_count = self.attempt_count.saturating_add(1);
+        self.last_error = Some(error.to_string());
+        self.updated_at = now;
+        self.clear_claim_fields();
+        if self.attempt_count >= self.max_attempts {
+            self.status = RunDispatchStatus::DeadLetter;
+            self.completed_at = Some(now);
+        } else {
+            self.status = RunDispatchStatus::Queued;
+            self.available_at = retry_at;
+            self.completed_at = None;
+        }
+        self.validate_for_persist()
+    }
+
+    pub fn mark_expired_lease(
+        &mut self,
+        now: u64,
+        max_attempts_error: &str,
+    ) -> Result<(), StorageError> {
+        self.require_status(RunDispatchStatus::Claimed, "lease expiration")?;
+        self.attempt_count = self.attempt_count.saturating_add(1);
+        self.available_at = now;
+        self.updated_at = now;
+        self.clear_claim_fields();
+        if self.attempt_count >= self.max_attempts {
+            self.status = RunDispatchStatus::DeadLetter;
+            self.last_error = Some(max_attempts_error.to_string());
+            self.completed_at = Some(now);
+        } else {
+            self.status = RunDispatchStatus::Queued;
+            self.completed_at = None;
+        }
+        self.validate_for_persist()
+    }
+
+    pub fn remap_identity(
+        &mut self,
+        dispatch_id: impl Into<String>,
+        thread_id: impl Into<String>,
+        run_id: impl Into<String>,
+        dedupe_key: Option<String>,
+    ) {
+        self.dispatch_id = dispatch_id.into();
+        self.thread_id = thread_id.into();
+        self.run_id = run_id.into();
+        self.dedupe_key = dedupe_key;
+    }
+
+    fn clear_claim_fields(&mut self) {
+        self.claim_token = None;
+        self.claimed_by = None;
+        self.lease_until = None;
+    }
+
+    fn require_status(
+        &self,
+        expected: RunDispatchStatus,
+        transition: &str,
+    ) -> Result<(), StorageError> {
+        if self.status != expected {
+            return Err(StorageError::Validation(format!(
+                "dispatch '{}' must be {:?} before {transition}",
+                self.dispatch_id, expected
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validate an externally supplied dispatch before queue admission.
+    pub fn validate_for_enqueue(&self) -> Result<(), StorageError> {
+        self.validate_identity_and_retry()?;
+        if self.status != RunDispatchStatus::Queued {
+            return Err(StorageError::Validation(format!(
+                "enqueued dispatch '{}' must start as Queued",
+                self.dispatch_id
+            )));
+        }
+        self.validate_queued()
+    }
+
+    /// Validate persisted dispatch lifecycle invariants.
+    pub fn validate_for_persist(&self) -> Result<(), StorageError> {
+        self.validate_identity_and_retry()?;
+        match self.status {
+            RunDispatchStatus::Queued => self.validate_queued(),
+            RunDispatchStatus::Claimed => {
+                if self
+                    .claim_token
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                    || self
+                        .claimed_by
+                        .as_deref()
+                        .is_none_or(|value| value.trim().is_empty())
+                    || self.lease_until.is_none()
+                {
+                    return Err(StorageError::Validation(format!(
+                        "Claimed dispatch '{}' must carry claim_token, claimed_by, and lease_until",
+                        self.dispatch_id
+                    )));
+                }
+                Ok(())
+            }
+            RunDispatchStatus::Acked
+            | RunDispatchStatus::Cancelled
+            | RunDispatchStatus::Superseded
+            | RunDispatchStatus::DeadLetter => {
+                if self.claim_token.is_some()
+                    || self.claimed_by.is_some()
+                    || self.lease_until.is_some()
+                {
+                    return Err(StorageError::Validation(format!(
+                        "{:?} dispatch '{}' must not carry active lease fields",
+                        self.status, self.dispatch_id
+                    )));
+                }
+                if self.completed_at.is_none() {
+                    return Err(StorageError::Validation(format!(
+                        "{:?} dispatch '{}' must carry completed_at",
+                        self.status, self.dispatch_id
+                    )));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn validate_identity_and_retry(&self) -> Result<(), StorageError> {
+        require_non_empty("dispatch_id", &self.dispatch_id)?;
+        require_non_empty("thread_id", &self.thread_id)?;
+        require_non_empty("run_id", &self.run_id)?;
+        if self.max_attempts == 0 {
+            return Err(StorageError::Validation(format!(
+                "dispatch '{}' max_attempts must be greater than zero",
+                self.dispatch_id
+            )));
+        }
+        if self.attempt_count > self.max_attempts {
+            return Err(StorageError::Validation(format!(
+                "dispatch '{}' attempt_count must not exceed max_attempts",
+                self.dispatch_id
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_queued(&self) -> Result<(), StorageError> {
+        if self.claim_token.is_some() || self.claimed_by.is_some() || self.lease_until.is_some() {
+            return Err(StorageError::Validation(format!(
+                "Queued dispatch '{}' must not carry claim fields",
+                self.dispatch_id
+            )));
+        }
+        if self.completed_at.is_some() {
+            return Err(StorageError::Validation(format!(
+                "Queued dispatch '{}' must not carry completed_at",
+                self.dispatch_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn require_non_empty(field: &str, value: &str) -> Result<(), StorageError> {
+    if value.trim().is_empty() {
+        return Err(StorageError::Validation(format!(
+            "{field} must not be empty"
+        )));
+    }
+    Ok(())
 }
 
 // ── MailboxInterrupt ────────────────────────────────────────────────
@@ -1209,21 +1793,117 @@ mod tests {
         use super::super::lifecycle::TerminationReason;
 
         let mut dispatch = make_run_dispatch();
-        dispatch.dispatch_instance_id = Some("dispatch-1".into());
-        dispatch.run_status = Some(RunStatus::Done);
-        dispatch.termination = Some(TerminationReason::NaturalEnd);
-        dispatch.run_response = Some("done".into());
-        dispatch.completed_at = Some(2000);
+        dispatch
+            .claim("worker", "token", 1500, 1000)
+            .expect("claim should be valid");
+        dispatch
+            .record_run_result(
+                &RunDispatchResult {
+                    run_id: "run-001".into(),
+                    dispatch_instance_id: "dispatch-1".into(),
+                    status: RunStatus::Done,
+                    termination: Some(TerminationReason::NaturalEnd),
+                    response: Some("done".into()),
+                    error: None,
+                },
+                2000,
+            )
+            .expect("run result should be valid");
 
         let json = serde_json::to_string(&dispatch).unwrap();
         let parsed: RunDispatch = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.run_id, "run-001");
-        assert_eq!(parsed.dispatch_instance_id.as_deref(), Some("dispatch-1"));
-        assert_eq!(parsed.run_status, Some(RunStatus::Done));
-        assert_eq!(parsed.termination, Some(TerminationReason::NaturalEnd));
-        assert_eq!(parsed.run_response.as_deref(), Some("done"));
-        assert_eq!(parsed.completed_at, Some(2000));
-        assert_eq!(parsed.status, RunDispatchStatus::Queued);
+        assert_eq!(parsed.run_id(), "run-001");
+        assert_eq!(parsed.dispatch_instance_id(), Some("dispatch-1"));
+        assert_eq!(parsed.run_status(), Some(RunStatus::Done));
+        assert_eq!(parsed.termination(), Some(&TerminationReason::NaturalEnd));
+        assert_eq!(parsed.run_response(), Some("done"));
+        assert_eq!(parsed.completed_at(), Some(2000));
+        assert_eq!(parsed.status(), RunDispatchStatus::Claimed);
+    }
+
+    #[test]
+    fn run_dispatch_transition_api_enforces_lifecycle_shape() {
+        let mut dispatch = RunDispatch::queued("dispatch-001", "thread-abc", "run-001", 1000)
+            .with_dedupe_key(Some("req-xyz".to_string()));
+
+        assert_eq!(dispatch.status(), RunDispatchStatus::Queued);
+        assert!(dispatch.claim_token().is_none());
+
+        dispatch
+            .claim("consumer-1", "claim-1", 2000, 1100)
+            .expect("queued dispatch can be claimed");
+        assert_eq!(dispatch.status(), RunDispatchStatus::Claimed);
+        assert_eq!(dispatch.claimed_by(), Some("consumer-1"));
+        assert_eq!(dispatch.claim_token(), Some("claim-1"));
+        assert_eq!(dispatch.lease_until(), Some(2000));
+
+        dispatch.mark_acked(3000).expect("claimed dispatch can ack");
+        assert_eq!(dispatch.status(), RunDispatchStatus::Acked);
+        assert!(dispatch.claim_token().is_none());
+        assert!(dispatch.claimed_by().is_none());
+        assert!(dispatch.lease_until().is_none());
+        assert_eq!(dispatch.completed_at(), Some(3000));
+    }
+
+    #[test]
+    fn run_dispatch_transition_api_rejects_claiming_terminal_dispatch() {
+        let mut dispatch = RunDispatch::queued("dispatch-001", "thread-abc", "run-001", 1000);
+        dispatch
+            .mark_cancelled(2000)
+            .expect("queued dispatch can be cancelled");
+
+        let error = dispatch
+            .claim("consumer-1", "claim-1", 3000, 2500)
+            .unwrap_err();
+        assert!(
+            matches!(error, StorageError::Validation(ref message) if message.contains("must be Queued")),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn run_dispatch_transition_api_rejects_terminalizing_unclaimed_dispatch() {
+        let mut dispatch = RunDispatch::queued("dispatch-001", "thread-abc", "run-001", 1000);
+
+        let error = dispatch.mark_acked(2000).unwrap_err();
+        assert!(
+            matches!(error, StorageError::Validation(ref message) if message.contains("must be Claimed")),
+            "unexpected ack error: {error}"
+        );
+
+        let error = dispatch.mark_dead_letter(2000, "failed").unwrap_err();
+        assert!(
+            matches!(error, StorageError::Validation(ref message) if message.contains("must be Claimed")),
+            "unexpected dead-letter error: {error}"
+        );
+
+        let error = dispatch
+            .mark_nack_result(2000, 3000, "retry later")
+            .unwrap_err();
+        assert!(
+            matches!(error, StorageError::Validation(ref message) if message.contains("must be Claimed")),
+            "unexpected nack error: {error}"
+        );
+
+        let error = dispatch.mark_expired_lease(2000, "expired").unwrap_err();
+        assert!(
+            matches!(error, StorageError::Validation(ref message) if message.contains("must be Claimed")),
+            "unexpected expired-lease error: {error}"
+        );
+    }
+
+    #[test]
+    fn run_dispatch_transition_api_rejects_cancelling_claimed_dispatch() {
+        let mut dispatch = RunDispatch::queued("dispatch-001", "thread-abc", "run-001", 1000);
+        dispatch
+            .claim("consumer-1", "claim-1", 2000, 1100)
+            .expect("queued dispatch can be claimed");
+
+        let error = dispatch.mark_cancelled(2000).unwrap_err();
+        assert!(
+            matches!(error, StorageError::Validation(ref message) if message.contains("must be Queued")),
+            "unexpected cancel error: {error}"
+        );
     }
 
     #[test]
