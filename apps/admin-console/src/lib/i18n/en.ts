@@ -172,6 +172,11 @@ export const en = {
       toEnable: "To enable, {{hint}}",
       see: "see {{doc}}",
     },
+    capabilities: {
+      routeAbsentTitle: "Capabilities route not exposed",
+      routeAbsentHint:
+        "the server returned 404 on /v1/capabilities — older build, or the route layer is misconfigured. Capability counts are not authoritative.",
+    },
     agentActivity: {
       title: "Agent activity",
       window: "window: {{window}}",

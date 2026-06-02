@@ -505,6 +505,32 @@ describe("DashboardPage", () => {
     expect(degradedHints.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("renders a degraded notice when the capabilities route is absent", () => {
+    runtimeStatsState.value = { data: { kind: "ok", agents: [] }, error: null };
+    dashboardState.value = {
+      data: dashboardData({
+        degraded: { capabilities: true },
+        capabilities: {
+          agents: [],
+          skills: [],
+          tools: [],
+          plugins: [],
+          models: [],
+          providers: [],
+          namespaces: [],
+        },
+      }),
+      error: null,
+    };
+
+    renderDashboard();
+
+    expect(screen.getByText("dashboard.capabilities.routeAbsentTitle")).toBeTruthy();
+    expect(screen.getByText(/dashboard\.capabilities\.routeAbsentHint/)).toBeTruthy();
+    const ribbonQuestionMarks = screen.getAllByText("?");
+    expect(ribbonQuestionMarks.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("renders an empty-activity hint when runtime stats has no inferences", () => {
     runtimeStatsState.value = { data: { kind: "ok", agents: [] }, error: null };
     dashboardState.value = { data: dashboardData(), error: null };

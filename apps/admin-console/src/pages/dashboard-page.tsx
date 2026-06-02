@@ -102,6 +102,7 @@ export function DashboardPage() {
                 label: t("dashboard.counters.skills"),
                 count: capabilities.skills.length,
                 to: adminRoutes.skills,
+                degraded: degraded.capabilities,
               },
               {
                 label: t("dashboard.counters.models"),
@@ -121,11 +122,22 @@ export function DashboardPage() {
                 to: adminRoutes.mcpServers,
                 degraded: degraded.mcpServers,
               },
-              { label: t("dashboard.counters.tools"), count: capabilities.tools.length },
+              {
+                label: t("dashboard.counters.tools"),
+                count: capabilities.tools.length,
+                degraded: degraded.capabilities,
+              },
             ]}
           />
         }
       />
+
+      {degraded.capabilities && (
+        <FeatureDisabledNotice
+          title={t("dashboard.capabilities.routeAbsentTitle")}
+          configHint={t("dashboard.capabilities.routeAbsentHint")}
+        />
+      )}
 
       <section className="mb-4">
         <WorkloadCard state={workloadState} />

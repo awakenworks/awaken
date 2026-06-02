@@ -27,6 +27,7 @@ export const DASHBOARD_REFETCH_MS = 30_000;
  *  (typically a 5xx that returned an empty list). UI uses this to
  *  distinguish "configured empty" from "list endpoint failed". */
 export interface DegradedSlots {
+  capabilities?: boolean;
   mcpServers?: boolean;
   providers?: boolean;
   models?: boolean;
@@ -78,6 +79,7 @@ export function useDashboardQuery(range: TimeRange) {
       if (capabilitiesResult.kind === "registry_unavailable") {
         throw new Error(capabilitiesResult.message ?? "Capabilities registry unavailable");
       }
+      if (capabilitiesResult.kind === "route_absent") degraded.capabilities = true;
       if (mcp.degraded) degraded.mcpServers = true;
       if (providers.degraded) degraded.providers = true;
       if (models.degraded) degraded.models = true;
