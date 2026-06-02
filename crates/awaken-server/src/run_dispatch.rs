@@ -17,23 +17,15 @@ use awaken_server_contract::contract::message::Message;
 use awaken_server_contract::contract::staged_commit::StagedCommitCoordinator;
 use awaken_server_contract::contract::suspension::ToolCallResume;
 
-/// Execution boundary used by mailbox dispatch.
-///
-/// Mailbox owns delivery, leasing, retry, and recovery. The executor behind
-/// this trait owns actual run execution and live-run control. It intentionally
-/// does not expose storage so mailbox scheduling stays orthogonal to the main
-/// runtime implementation. The optional commit coordinator is exposed only
-/// as the durable write boundary for mailbox-authored checkpoints.
+/// Execution boundary used by durable run dispatch.
 #[async_trait]
 pub trait RunDispatchExecutor: Send + Sync {
-    /// Execute a run request and stream events into the provided sink.
     async fn run(
         &self,
         activation: RunActivation,
         sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError>;
 
-    /// Execute a run with an optional mailbox-provided thread cache.
     async fn run_with_thread_context(
         &self,
         activation: RunActivation,
@@ -44,9 +36,6 @@ pub trait RunDispatchExecutor: Send + Sync {
         self.run(activation, sink).await
     }
 
-    /// Resolve an activation before dispatch-side execution. Persistent
-    /// mailbox paths require a replayable plan and reject live-only plans
-    /// before runtime side effects begin.
     async fn resolve_activation(
         &self,
         activation: &RunActivation,
@@ -56,9 +45,6 @@ pub trait RunDispatchExecutor: Send + Sync {
             .await
     }
 
-    /// Resolve an activation with explicit resolver-scope input supplied by
-    /// the server persistence layer. This keeps pinned registry manifests out
-    /// of `RunActivation` while preserving replayable dispatch semantics.
     async fn resolve_activation_in_scope(
         &self,
         activation: &RunActivation,
@@ -79,8 +65,6 @@ pub trait RunDispatchExecutor: Send + Sync {
         }
     }
 
-    /// Execute a persistent run with the replayable plan rebuilt from the
-    /// activation's pinned registry scope.
     async fn run_replayable_with_thread_context(
         &self,
         activation: RunActivation,
@@ -93,52 +77,34 @@ pub trait RunDispatchExecutor: Send + Sync {
             .await
     }
 
-    /// Cancel an active run by run id or thread id.
     fn cancel(&self, id: &str) -> bool;
 
-    /// Cancel an active run by thread id and wait for it to unregister.
     async fn cancel_and_wait_by_thread(&self, thread_id: &str) -> bool;
 
-    /// Forward one human/tool decision to an active run.
     fn send_decision(&self, id: &str, tool_call_id: String, resume: ToolCallResume) -> bool;
 
-    /// Forward direct input messages to an active run.
     fn send_messages(&self, id: &str, messages: Vec<Message>) -> bool {
         let _ = (id, messages);
         false
     }
 
-    /// Wake an active run so it consumes durable pending messages.
     fn wake_pending_boundary(&self, id: &str) -> bool {
         let _ = id;
         false
     }
 
-    /// Snapshot the live RegistrySet from the underlying runtime. Used by
-    /// the mailbox to overlay a pinned `RegistrySet` (ADR-0035 D9) on top
-    /// of the live runtime objects (tools / providers / plugins). Returns
-    /// `None` when the executor has no live registry available.
     fn live_registry_set(&self) -> Option<awaken_runtime::registry::RegistrySet> {
         None
     }
 
-    /// Durable checkpoint boundary wired into the executor, when available.
     fn commit_coordinator(&self) -> Option<Arc<dyn CommitCoordinator>> {
         None
     }
 
-    /// Staged checkpoint boundary, when the executor's coordinator can commit
-    /// canonical-event/outbox writes atomically with the checkpoint (the
-    /// store-backed coordinators). Required for runtime event capture, which
-    /// folds the dispatch-staged canonical drafts into each commit. Defaults to
-    /// `None`: the runtime erases its coordinator to `dyn CommitCoordinator`
-    /// and cannot name this server-contract trait, so embedders that need
-    /// capture supply the staged coordinator directly.
     fn staged_commit_coordinator(&self) -> Option<Arc<dyn StagedCommitCoordinator>> {
         None
     }
 
-    /// Whether the executor has a `CommitCoordinator` wired (ADR-0036 D9).
     fn has_commit_coordinator(&self) -> bool {
         self.commit_coordinator().is_some()
     }

@@ -903,7 +903,6 @@ mod checkpoint_repair;
 mod coordinator_facade;
 mod decision;
 mod dispatch_execution;
-mod executor;
 mod helpers;
 mod lifecycle;
 mod live_delivery;
@@ -916,7 +915,7 @@ mod submit;
 
 use self::coordinator_facade::MailboxRunStoreCoordinator;
 use self::{helpers::*, runtime_event_capture::RuntimeEventCaptureConfig};
+pub use crate::run_dispatch::RunDispatchExecutor;
 pub use coordinator_facade::IntoDispatchExecutor;
-pub use executor::RunDispatchExecutor;
 #[cfg(test)]
 mod tests;

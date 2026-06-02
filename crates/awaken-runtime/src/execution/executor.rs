@@ -51,6 +51,39 @@ pub trait ToolExecutor: Send + Sync {
     }
 }
 
+#[async_trait]
+pub trait ToolExecutionLocus: Send + Sync {
+    async fn execute_tool(
+        &self,
+        tool: &Arc<dyn Tool>,
+        call: &ToolCall,
+        ctx: &ToolCallContext,
+    ) -> Result<ToolOutput, awaken_runtime_contract::contract::tool::ToolError>;
+
+    fn name(&self) -> &'static str;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DirectToolExecutionLocus;
+
+#[async_trait]
+impl ToolExecutionLocus for DirectToolExecutionLocus {
+    async fn execute_tool(
+        &self,
+        tool: &Arc<dyn Tool>,
+        call: &ToolCall,
+        ctx: &ToolCallContext,
+    ) -> Result<ToolOutput, awaken_runtime_contract::contract::tool::ToolError> {
+        execute_tool_with_runtime_context(tool, call, ctx).await
+    }
+
+    fn name(&self) -> &'static str {
+        "direct"
+    }
+}
+
+static DIRECT_TOOL_EXECUTION_LOCUS: DirectToolExecutionLocus = DirectToolExecutionLocus;
+
 /// Execute tool calls one by one in call order.
 /// Context freshness between calls is controlled by the caller.
 /// Stops at first suspension.
@@ -211,6 +244,15 @@ pub(crate) async fn execute_single_tool(
     call: &ToolCall,
     ctx: &ToolCallContext,
 ) -> ToolOutput {
+    execute_single_tool_at(&DIRECT_TOOL_EXECUTION_LOCUS, tools, call, ctx).await
+}
+
+pub(crate) async fn execute_single_tool_at(
+    locus: &dyn ToolExecutionLocus,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    call: &ToolCall,
+    ctx: &ToolCallContext,
+) -> ToolOutput {
     let Some(tool) = tools.get(&call.name) else {
         return ToolResult::error(&call.name, format!("tool '{}' not found", call.name)).into();
     };
@@ -219,7 +261,7 @@ pub(crate) async fn execute_single_tool(
         return ToolResult::error(&call.name, e.to_string()).into();
     }
 
-    match execute_tool_with_runtime_context(tool, call, ctx).await {
+    match locus.execute_tool(tool, call, ctx).await {
         Ok(output) => output,
         Err(e) => tool_error_result(&call.name, e).into(),
     }
@@ -875,6 +917,20 @@ mod tests {
         assert!(output.result.is_success());
         // execute_single_tool sets call_id and tool_name from the call's context
         // (the caller is responsible for setting ctx fields, which the executor does)
+    }
+
+    #[tokio::test]
+    async fn direct_tool_execution_locus_executes_existing_tool() {
+        let locus = DirectToolExecutionLocus;
+        assert_eq!(locus.name(), "direct");
+
+        let tools = tool_map(vec![Arc::new(EchoTool) as Arc<dyn Tool>]);
+        let call = ToolCall::new("call-direct", "echo", json!({"message": "ok"}));
+        let ctx = ToolCallContext::test_default();
+
+        let output = execute_single_tool_at(&locus, &tools, &call, &ctx).await;
+        assert!(output.result.is_success());
+        assert_eq!(output.result.message.as_deref(), Some("ok"));
     }
 
     #[tokio::test]

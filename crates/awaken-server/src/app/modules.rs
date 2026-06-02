@@ -19,8 +19,7 @@ use awaken_server_contract::RedactedString;
 
 use super::{AdminApiConfig, AuditLogConfig, ReplayBufferMap, ServerState, SkillCatalogProvider};
 use crate::eval_limits::EvalLimits;
-use crate::mailbox::Mailbox;
-use crate::mailbox::MailboxSubmitResult;
+use crate::mailbox::{Mailbox, MailboxSubmitResult};
 use crate::outbox_relay::OutboxRelayError;
 use crate::protocol_replay_state::A2aPushWebhookRelayConfig;
 use crate::scope::{HttpScopeProvider, SingleScopeProvider};
@@ -105,15 +104,17 @@ impl RunModuleState {
     }
 
     #[must_use]
+    pub fn active_scope_id(&self) -> ScopeId {
+        self.scope_id.clone().unwrap_or_else(ScopeId::default_scope)
+    }
+
+    #[must_use]
     pub fn scope_activation(
         &self,
         mut request: awaken_runtime::RunActivation,
     ) -> awaken_runtime::RunActivation {
         if let Some(factory) = &self.resolver_factory {
-            let scope_id = self
-                .scope_id
-                .clone()
-                .unwrap_or_else(|| ScopeId::new(DEFAULT_SCOPE_ID).expect("default scope id"));
+            let scope_id = self.active_scope_id();
             request = request.with_run_resolver(factory.resolver_for_scope(scope_id));
         }
         if self.scope_id.is_none() {
@@ -647,6 +648,93 @@ impl ServerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct StubResolver;
+
+    impl awaken_runtime::AgentResolver for StubResolver {
+        fn resolve(
+            &self,
+            agent_id: &str,
+        ) -> Result<awaken_runtime::ResolvedAgent, awaken_runtime::RuntimeError> {
+            Err(awaken_runtime::RuntimeError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })
+        }
+    }
+
+    fn test_run_module(scope_id: Option<ScopeId>) -> RunModuleState {
+        let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
+        let store = Arc::new(awaken_stores::InMemoryStore::new());
+        let mailbox = Arc::new(Mailbox::new(
+            runtime.clone(),
+            Arc::new(awaken_stores::InMemoryMailboxStore::new()),
+            store.clone(),
+            "scope-test".to_string(),
+            crate::mailbox::MailboxConfig::default(),
+        ));
+        RunModuleState {
+            runtime: runtime.clone(),
+            mailbox,
+            resolver: Arc::new(StubResolver),
+            store,
+            credential_broker: Arc::new(awaken_runtime::credentials::AwakenCredentialBroker::new()),
+            runtime_stats: None,
+            scope_id,
+            resolver_factory: None,
+        }
+    }
+
+    #[test]
+    fn run_module_active_scope_defaults_to_default_scope() {
+        let run = test_run_module(None);
+
+        assert_eq!(run.active_scope_id().as_str(), DEFAULT_SCOPE_ID);
+    }
+
+    #[test]
+    fn run_module_active_scope_uses_explicit_scope() {
+        let mut run = test_run_module(Some(ScopeId::new("scope-a").unwrap()));
+
+        assert_eq!(run.active_scope_id().as_str(), "scope-a");
+        let expected = scoped_key(&ScopeId::new("scope-a").unwrap(), "thread-1");
+        assert_eq!(run.scoped_id("thread-1"), expected);
+        assert_eq!(run.unscoped_id(&expected), "thread-1");
+
+        run.scope_id = Some(ScopeId::default_scope());
+        assert_eq!(run.active_scope_id().as_str(), DEFAULT_SCOPE_ID);
+    }
+
+    #[test]
+    fn scope_activation_injects_default_scope_resolver_without_scoping_ids() {
+        use awaken_runtime::RunActivation;
+        use awaken_runtime::registry::{
+            MapAgentSpecRegistry, MapBackendRegistry, MapModelRegistry, MapPluginSource,
+            MapProviderRegistry, MapToolRegistry, RegistryHandle, RegistrySet,
+        };
+
+        let mut run = test_run_module(None).with_scoped_resolver_factory(Arc::new(
+            ScopedServerResolverFactory::new(
+                Arc::new(awaken_stores::InMemoryVersionedRegistryStore::new()),
+                RegistryHandle::new(RegistrySet {
+                    agents: Arc::new(MapAgentSpecRegistry::new()),
+                    tools: Arc::new(MapToolRegistry::new()),
+                    models: Arc::new(MapModelRegistry::new()),
+                    providers: Arc::new(MapProviderRegistry::new()),
+                    plugins: Arc::new(MapPluginSource::new()),
+                    backends: Arc::new(MapBackendRegistry::new()),
+                }),
+            ),
+        ));
+        run.scope_id = None;
+
+        let activation = run.scope_activation(RunActivation::new("thread-1", Vec::new()));
+
+        assert_eq!(activation.thread_id(), "thread-1");
+        assert!(
+            activation.inherited.run_resolver.is_some(),
+            "default scope activations must inherit a scoped resolver"
+        );
+    }
 
     #[test]
     fn protocol_push_driver_registry_is_single_flight_per_task_tenant_config() {
