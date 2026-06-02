@@ -21,9 +21,86 @@ use super::step::{self, StepContext, StepOutcome, execute_step};
 use super::{
     AgentLoopError, AgentLoopParams, AgentRunResult, PendingBoundaryHandler, commit_update, now_ms,
 };
-use crate::agent::state::{RunLifecycle, RunLifecycleUpdate, ToolCallStates, ToolCallStatesUpdate};
+use crate::agent::state::{
+    LoopControl, LoopControlKey, LoopControlUpdate, RunLifecycle, RunLifecycleUpdate,
+    ToolCallStates, ToolCallStatesUpdate,
+};
 #[cfg(feature = "handoff")]
 use crate::state::MutationBatch;
+
+fn non_empty_reason(reason: String, default: &'static str) -> String {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn clear_loop_control_if_present(store: &StateStore) -> Result<(), AgentLoopError> {
+    if store.read::<LoopControlKey>().flatten().is_none() {
+        return Ok(());
+    }
+    let mut patch = crate::state::MutationBatch::new();
+    patch.update::<LoopControlKey>(LoopControlUpdate::Clear);
+    store.commit(patch)?;
+    Ok(())
+}
+
+enum NaturalEndLoopControl {
+    None,
+    Continue,
+    Terminate(TerminationReason),
+}
+
+fn consume_loop_control_at_natural_end(
+    store: &StateStore,
+    messages: &mut Vec<Arc<Message>>,
+) -> Result<NaturalEndLoopControl, AgentLoopError> {
+    let Some(directive) = store.read::<LoopControlKey>().flatten() else {
+        return Ok(NaturalEndLoopControl::None);
+    };
+
+    let mut patch = crate::state::MutationBatch::new();
+    patch.update::<LoopControlKey>(LoopControlUpdate::Clear);
+    match directive {
+        LoopControl::Continue {
+            reason: _,
+            messages: continuation,
+        } => {
+            store.commit(patch)?;
+            if continuation.is_empty() {
+                return Ok(NaturalEndLoopControl::Terminate(TerminationReason::Error(
+                    "loop_control_continue_missing_messages".into(),
+                )));
+            }
+            messages.extend(continuation.into_iter().map(Arc::new));
+            Ok(NaturalEndLoopControl::Continue)
+        }
+        LoopControl::Finish { reason, result: _ } => {
+            store.commit(patch)?;
+            Ok(NaturalEndLoopControl::Terminate(
+                TerminationReason::stopped(non_empty_reason(reason, "loop_control_finish")),
+            ))
+        }
+        LoopControl::Wait { reason } => {
+            patch.update::<RunLifecycle>(RunLifecycleUpdate::SetWaiting {
+                updated_at: now_ms(),
+                pause_reason: non_empty_reason(reason, "loop_control_wait"),
+            });
+            store.commit(patch)?;
+            Ok(NaturalEndLoopControl::Terminate(
+                TerminationReason::NaturalEnd,
+            ))
+        }
+        LoopControl::Fail { reason } => {
+            store.commit(patch)?;
+            Ok(NaturalEndLoopControl::Terminate(TerminationReason::Error(
+                non_empty_reason(reason, "loop control failed"),
+            )))
+        }
+    }
+}
 
 /// Returns `true` when any plugin has declared pending work.
 ///
@@ -352,6 +429,7 @@ pub(super) async fn run_agent_loop_impl(
 
                 if has_new_messages {
                     // New messages arrived — let LLM process them
+                    clear_loop_control_if_present(store)?;
                     continue;
                 }
 
@@ -362,10 +440,12 @@ pub(super) async fn run_agent_loop_impl(
                 )
                 .await?
                 {
+                    clear_loop_control_if_present(store)?;
                     continue;
                 }
 
                 if has_pending_work(store) {
+                    clear_loop_control_if_present(store)?;
                     // Background tasks still running but no new messages yet.
                     if run_identity.origin()
                         == awaken_runtime_contract::contract::identity::RunOrigin::Subagent
@@ -405,7 +485,11 @@ pub(super) async fn run_agent_loop_impl(
                     )?;
                     break TerminationReason::NaturalEnd;
                 } else {
-                    break TerminationReason::NaturalEnd;
+                    match consume_loop_control_at_natural_end(store, &mut messages)? {
+                        NaturalEndLoopControl::None => break TerminationReason::NaturalEnd,
+                        NaturalEndLoopControl::Continue => continue,
+                        NaturalEndLoopControl::Terminate(reason) => break reason,
+                    }
                 }
             }
             StepOutcome::Blocked(reason) => {

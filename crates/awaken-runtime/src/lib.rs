@@ -43,6 +43,7 @@ pub use error::RuntimeError;
 pub use event_buffer::EventBuffer;
 pub use profile::ProfileAccess;
 
+pub use agent::state::{LoopControl, LoopControlKey, LoopControlUpdate};
 pub use backend::{
     BackendAbortRequest, BackendCancellationCapability, BackendContinuationCapability,
     BackendControl, BackendDelegateContinuation, BackendDelegatePersistence, BackendDelegatePolicy,

@@ -185,6 +185,46 @@ impl AgentResolver for FixedResolver {
     }
 }
 
+struct TestLoopControlPlugin {
+    name: &'static str,
+    directive: LoopControl,
+}
+
+struct TestLoopControlHook {
+    directive: LoopControl,
+}
+
+#[async_trait]
+impl PhaseHook for TestLoopControlHook {
+    async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        if ctx.phase != Phase::StepEnd {
+            return Ok(StateCommand::new());
+        }
+        let mut cmd = StateCommand::new();
+        cmd.update::<LoopControlKey>(LoopControlUpdate::Set {
+            directive: self.directive.clone(),
+        });
+        Ok(cmd)
+    }
+}
+
+impl Plugin for TestLoopControlPlugin {
+    fn descriptor(&self) -> PluginDescriptor {
+        PluginDescriptor { name: self.name }
+    }
+
+    fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+        registrar.register_phase_hook(
+            self.name,
+            Phase::StepEnd,
+            TestLoopControlHook {
+                directive: self.directive.clone(),
+            },
+        )?;
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -238,6 +278,321 @@ async fn single_step_natural_end() {
     assert_eq!(lifecycle.status_reason.as_deref(), Some("natural"));
     assert_eq!(lifecycle.step_count, 1);
     assert_eq!(lifecycle.run_id, "run-1");
+}
+
+#[tokio::test]
+async fn plugin_loop_control_continue_keeps_run_alive() {
+    #[derive(Clone)]
+    struct RequestRevisionOncePlugin;
+
+    struct RevisionCount;
+
+    impl StateKey for RevisionCount {
+        const KEY: &'static str = "test.revision_count";
+        type Value = u32;
+        type Update = ();
+
+        fn apply(value: &mut Self::Value, _update: Self::Update) {
+            *value = value.saturating_add(1);
+        }
+    }
+
+    struct RequestRevisionOnceHook;
+
+    #[async_trait]
+    impl PhaseHook for RequestRevisionOnceHook {
+        async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+            if ctx.phase != Phase::StepEnd || ctx.state::<RevisionCount>().copied().unwrap_or(0) > 0
+            {
+                return Ok(StateCommand::new());
+            }
+
+            let mut cmd = StateCommand::new();
+            cmd.update::<RevisionCount>(());
+            cmd.update::<LoopControlKey>(LoopControlUpdate::Set {
+                directive: LoopControl::continue_with(
+                    "needs_revision",
+                    vec![Message::internal_user("Please revise the draft.")],
+                ),
+            });
+            Ok(cmd)
+        }
+    }
+
+    impl Plugin for RequestRevisionOncePlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor {
+                name: "request-revision-once",
+            }
+        }
+
+        fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
+            registrar.register_key::<RevisionCount>(StateKeyOptions::default())?;
+            registrar.register_phase_hook(
+                "request-revision-once",
+                Phase::StepEnd,
+                RequestRevisionOnceHook,
+            )?;
+            Ok(())
+        }
+    }
+
+    let llm = Arc::new(ScriptedLlm::new(vec![
+        StreamResult {
+            content: vec![ContentBlock::text("draft")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+        StreamResult {
+            content: vec![ContentBlock::text("final")],
+            tool_calls: vec![],
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+            has_incomplete_tool_calls: false,
+        },
+    ]));
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "You are helpful.", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(agent, vec![Arc::new(RequestRevisionOncePlugin)]);
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("write something")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+        commit: CommitWiring::default(),
+        initial_state_seed: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.response, "final");
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 2);
+    assert_eq!(runtime.store().read::<RevisionCount>(), Some(1));
+    assert!(
+        runtime.store().read::<LoopControlKey>().unwrap().is_none(),
+        "loop control directive must be consumed before the run finishes"
+    );
+}
+
+#[tokio::test]
+async fn plugin_loop_control_continue_without_messages_fails_run() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("draft")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "You are helpful.", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(
+        agent,
+        vec![Arc::new(TestLoopControlPlugin {
+            name: "empty-continue",
+            directive: LoopControl::continue_with("bad_continue", Vec::new()),
+        })],
+    );
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("write something")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+        commit: CommitWiring::default(),
+        initial_state_seed: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::Error("loop_control_continue_missing_messages".into())
+    );
+    assert_eq!(result.steps, 1);
+    assert!(runtime.store().read::<LoopControlKey>().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn plugin_loop_control_wait_leaves_run_waiting() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("draft")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "You are helpful.", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(
+        agent,
+        vec![Arc::new(TestLoopControlPlugin {
+            name: "wait-for-evaluator",
+            directive: LoopControl::wait("awaiting_outcome_evaluator"),
+        })],
+    );
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("write something")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+        commit: CommitWiring::default(),
+        initial_state_seed: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.response, "draft");
+    assert_eq!(result.termination, TerminationReason::NaturalEnd);
+    assert_eq!(result.steps, 1);
+    let lifecycle = runtime.store().read::<RunLifecycle>().unwrap();
+    assert_eq!(lifecycle.status, RunStatus::Waiting);
+    assert_eq!(
+        lifecycle.status_reason.as_deref(),
+        Some("awaiting_outcome_evaluator")
+    );
+    assert!(runtime.store().read::<LoopControlKey>().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn plugin_loop_control_fail_terminates_run() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("draft")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "You are helpful.", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(
+        agent,
+        vec![Arc::new(TestLoopControlPlugin {
+            name: "failing-evaluator",
+            directive: LoopControl::fail("outcome_evaluator_failed"),
+        })],
+    );
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("write something")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+        commit: CommitWiring::default(),
+        initial_state_seed: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::Error("outcome_evaluator_failed".into())
+    );
+    assert_eq!(result.steps, 1);
+    assert!(runtime.store().read::<LoopControlKey>().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn competing_loop_control_directives_fail_run() {
+    let llm = Arc::new(ScriptedLlm::new(vec![StreamResult {
+        content: vec![ContentBlock::text("draft")],
+        tool_calls: vec![],
+        usage: None,
+        stop_reason: Some(StopReason::EndTurn),
+        has_incomplete_tool_calls: false,
+    }]));
+
+    let agent = ResolvedAgent::new("test", "gpt-4o", "You are helpful.", llm);
+    let runtime = make_runtime();
+    let resolver = FixedResolver::with_plugins(
+        agent,
+        vec![
+            Arc::new(TestLoopControlPlugin {
+                name: "first-finisher",
+                directive: LoopControl::finish("first"),
+            }),
+            Arc::new(TestLoopControlPlugin {
+                name: "second-finisher",
+                directive: LoopControl::finish("second"),
+            }),
+        ],
+    );
+    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+
+    let result = run_agent_loop(AgentLoopParams {
+        resolver: &resolver,
+        agent_id: "test",
+        runtime: &runtime,
+        sink,
+        checkpoint_store: None,
+        messages: vec![Message::user("write something")],
+        run_identity: test_identity(),
+        cancellation_token: None,
+        decision_rx: None,
+        overrides: None,
+        frontend_tools: Vec::new(),
+        inbox: None,
+        is_continuation: false,
+        commit: CommitWiring::default(),
+        initial_state_seed: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.termination,
+        TerminationReason::Error("loop_control_conflict".into())
+    );
+    assert_eq!(result.steps, 1);
+    assert!(runtime.store().read::<LoopControlKey>().unwrap().is_none());
 }
 
 #[tokio::test]

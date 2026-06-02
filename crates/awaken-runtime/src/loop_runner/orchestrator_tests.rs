@@ -197,6 +197,215 @@ mod pending_work_tests {
     }
 }
 
+mod loop_control_tests {
+    use super::*;
+    use crate::agent::state::{LoopControl, LoopControlKey, LoopControlUpdate, RunLifecycle};
+    use awaken_runtime_contract::contract::lifecycle::TerminationReason;
+
+    fn store_with_loop_state() -> StateStore {
+        let store = StateStore::new();
+        store
+            .install_plugin(crate::loop_runner::LoopStatePlugin)
+            .unwrap();
+        store
+    }
+
+    fn set_control(store: &StateStore, directive: LoopControl) {
+        let mut batch = MutationBatch::new();
+        batch.update::<LoopControlKey>(LoopControlUpdate::Set { directive });
+        store.commit(batch).unwrap();
+    }
+
+    #[test]
+    fn absent_directive_returns_none_without_touching_messages() {
+        let store = store_with_loop_state();
+        let mut messages = vec![Arc::new(Message::user("task"))];
+
+        let decision = consume_loop_control_at_natural_end(&store, &mut messages).unwrap();
+
+        assert!(matches!(decision, NaturalEndLoopControl::None));
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text(), "task");
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+
+    #[test]
+    fn continue_appends_messages_and_clears_directive() {
+        let store = store_with_loop_state();
+        set_control(
+            &store,
+            LoopControl::continue_with(
+                "needs_revision",
+                vec![Message::internal_user("revise with more detail")],
+            ),
+        );
+        let mut messages = vec![Arc::new(Message::user("task"))];
+
+        let decision = consume_loop_control_at_natural_end(&store, &mut messages).unwrap();
+
+        assert!(matches!(decision, NaturalEndLoopControl::Continue));
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].text(), "revise with more detail");
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+
+    #[test]
+    fn continue_without_messages_fails_and_clears_directive() {
+        let store = store_with_loop_state();
+        set_control(
+            &store,
+            LoopControl::continue_with("needs_revision", Vec::new()),
+        );
+        let mut messages = vec![Arc::new(Message::user("task"))];
+
+        let decision = consume_loop_control_at_natural_end(&store, &mut messages).unwrap();
+
+        assert!(matches!(
+            decision,
+            NaturalEndLoopControl::Terminate(TerminationReason::Error(reason))
+                if reason == "loop_control_continue_missing_messages"
+        ));
+        assert_eq!(messages.len(), 1);
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+
+    #[test]
+    fn finish_becomes_stopped_termination_and_clears_directive() {
+        let store = store_with_loop_state();
+        set_control(&store, LoopControl::finish("outcome_satisfied"));
+        let mut messages = Vec::new();
+
+        let decision = consume_loop_control_at_natural_end(&store, &mut messages).unwrap();
+
+        assert!(matches!(
+            decision,
+            NaturalEndLoopControl::Terminate(TerminationReason::Stopped(reason))
+                if reason.code == "outcome_satisfied"
+        ));
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+
+    #[test]
+    fn finish_with_blank_reason_uses_default_reason() {
+        let store = store_with_loop_state();
+        set_control(&store, LoopControl::finish("  "));
+        let mut messages = Vec::new();
+
+        let decision = consume_loop_control_at_natural_end(&store, &mut messages).unwrap();
+
+        assert!(matches!(
+            decision,
+            NaturalEndLoopControl::Terminate(TerminationReason::Stopped(reason))
+                if reason.code == "loop_control_finish"
+        ));
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+
+    #[test]
+    fn wait_sets_lifecycle_waiting_and_clears_directive() {
+        let store = store_with_loop_state();
+        set_control(&store, LoopControl::wait("awaiting_outcome_evaluator"));
+        let mut messages = Vec::new();
+
+        let decision = consume_loop_control_at_natural_end(&store, &mut messages).unwrap();
+
+        assert!(matches!(
+            decision,
+            NaturalEndLoopControl::Terminate(TerminationReason::NaturalEnd)
+        ));
+        let lifecycle = store.read::<RunLifecycle>().unwrap();
+        assert_eq!(lifecycle.status, RunStatus::Waiting);
+        assert_eq!(
+            lifecycle.status_reason.as_deref(),
+            Some("awaiting_outcome_evaluator")
+        );
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+
+    #[test]
+    fn wait_with_blank_reason_uses_default_reason() {
+        let store = store_with_loop_state();
+        set_control(&store, LoopControl::wait(""));
+        let mut messages = Vec::new();
+
+        let decision = consume_loop_control_at_natural_end(&store, &mut messages).unwrap();
+
+        assert!(matches!(
+            decision,
+            NaturalEndLoopControl::Terminate(TerminationReason::NaturalEnd)
+        ));
+        let lifecycle = store.read::<RunLifecycle>().unwrap();
+        assert_eq!(lifecycle.status, RunStatus::Waiting);
+        assert_eq!(
+            lifecycle.status_reason.as_deref(),
+            Some("loop_control_wait")
+        );
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+
+    #[test]
+    fn fail_becomes_error_termination_and_clears_directive() {
+        let store = store_with_loop_state();
+        set_control(&store, LoopControl::fail("evaluator_failed"));
+        let mut messages = Vec::new();
+
+        let decision = consume_loop_control_at_natural_end(&store, &mut messages).unwrap();
+
+        assert!(matches!(
+            decision,
+            NaturalEndLoopControl::Terminate(TerminationReason::Error(reason))
+                if reason == "evaluator_failed"
+        ));
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+
+    #[test]
+    fn fail_with_blank_reason_uses_default_reason() {
+        let store = store_with_loop_state();
+        set_control(&store, LoopControl::fail("\n\t"));
+        let mut messages = Vec::new();
+
+        let decision = consume_loop_control_at_natural_end(&store, &mut messages).unwrap();
+
+        assert!(matches!(
+            decision,
+            NaturalEndLoopControl::Terminate(TerminationReason::Error(reason))
+                if reason == "loop control failed"
+        ));
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+
+    #[test]
+    fn duplicate_directives_fail_instead_of_overwriting() {
+        let store = store_with_loop_state();
+        let mut batch = MutationBatch::new();
+        batch.update::<LoopControlKey>(LoopControlUpdate::Set {
+            directive: LoopControl::finish("first"),
+        });
+        batch.update::<LoopControlKey>(LoopControlUpdate::Set {
+            directive: LoopControl::finish("second"),
+        });
+        store.commit(batch).unwrap();
+        let mut messages = Vec::new();
+
+        let decision = consume_loop_control_at_natural_end(&store, &mut messages).unwrap();
+
+        assert!(matches!(
+            decision,
+            NaturalEndLoopControl::Terminate(TerminationReason::Error(reason))
+                if reason == "loop_control_conflict"
+        ));
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+
+    #[test]
+    fn clear_loop_control_is_noop_when_absent() {
+        let store = store_with_loop_state();
+        clear_loop_control_if_present(&store).unwrap();
+        assert!(store.read::<LoopControlKey>().flatten().is_none());
+    }
+}
+
 mod check_termination_tests {
     use super::*;
     use crate::agent::state::{RunLifecycle, RunLifecycleUpdate};

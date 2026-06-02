@@ -73,6 +73,7 @@ impl crate::plugins::Plugin for LoopStatePlugin {
         })?;
         r.register_key::<ContextThrottleState>(StateKeyOptions::default())?;
         r.register_key::<ContextMessageStore>(StateKeyOptions::default())?;
+        r.register_key::<crate::agent::state::LoopControlKey>(StateKeyOptions::default())?;
         r.register_key::<crate::agent::state::PendingWorkKey>(StateKeyOptions::default())?;
 
         Ok(())
