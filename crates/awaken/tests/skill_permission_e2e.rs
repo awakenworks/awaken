@@ -270,6 +270,8 @@ fn make_agent_spec_deny_all_with_extra_allowed_tools(extra_allowed_tools: &[&str
 
     AgentSpec {
         id: "test".into(),
+        description: None,
+        backend: awaken::registry_spec::AgentBackendSpec::awaken_from_fields("m", "sys", 16),
         model_id: "m".into(),
         system_prompt: "sys".into(),
         max_rounds: 16,

@@ -66,13 +66,18 @@ pub(super) async fn persist_remote_root_checkpoint(
         .map(|record| record.created_at)
         .unwrap_or(run_created_at / 1000);
     let finished_at = status.is_terminal().then_some(now_ms() / 1000);
-    let outcome = termination_reason
-        .clone()
-        .map(|termination_reason| RunOutcome {
-            termination_reason,
-            final_output: final_output.clone(),
-            error_payload: error_payload.clone(),
-        });
+    let outcome = status
+        .is_terminal()
+        .then(|| {
+            termination_reason
+                .clone()
+                .map(|termination_reason| RunOutcome {
+                    termination_reason,
+                    final_output: final_output.clone(),
+                    error_payload: error_payload.clone(),
+                })
+        })
+        .flatten();
     let waiting = (status == RunStatus::Waiting).then(|| RunWaitingState {
         reason: waiting_reason_from_backend_status(status_reason.as_deref()),
         ticket_ids: Vec::new(),
@@ -275,14 +280,24 @@ fn materialize_remote_message_append(
     } else {
         Some(RunMessageOutput {
             thread_id: run_identity.thread_id.clone(),
-            range: output_from_seq
-                .zip(output_to_seq)
-                .and_then(|(from, to)| MessageSeqRange::new(from, to)),
+            range: contiguous_output_range(output_from_seq, output_to_seq, &output_message_ids),
             message_ids: output_message_ids,
         })
     };
     (delta, output)
 }
+
+fn contiguous_output_range(
+    from: Option<u64>,
+    to: Option<u64>,
+    message_ids: &[String],
+) -> Option<MessageSeqRange> {
+    let range = from
+        .zip(to)
+        .and_then(|(from, to)| MessageSeqRange::new(from, to))?;
+    (range.len() as usize == message_ids.len()).then_some(range)
+}
+
 fn infer_remote_input_from_initial_messages(
     thread_id: &str,
     input_message_count: usize,

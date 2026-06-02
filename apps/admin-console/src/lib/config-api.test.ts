@@ -329,12 +329,56 @@ describe("configApi", () => {
     await expect(configApi.capabilities()).resolves.toMatchObject({
       kind: "ok",
       capabilities: {
+        backends: [],
         skills: [
           {
             id: "greeting",
             allowed_tools: [],
             arguments: [],
             paths: [],
+          },
+        ],
+      },
+    });
+  });
+
+  it("preserves backend config schemas from capabilities", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            agents: [],
+            tools: [],
+            plugins: [],
+            skills: [],
+            models: [],
+            providers: [],
+            backends: [
+              {
+                kind: "a2a",
+                version: 1,
+                schema: { type: "object", required: ["base_url"] },
+                default_config: { base_url: "" },
+                ui_schema: { auth: { token: { "ui:widget": "password" } } },
+              },
+            ],
+            namespaces: [],
+          }),
+      }),
+    );
+
+    await expect(configApi.capabilities()).resolves.toMatchObject({
+      kind: "ok",
+      capabilities: {
+        backends: [
+          {
+            kind: "a2a",
+            version: 1,
+            schema: { required: ["base_url"] },
+            default_config: { base_url: "" },
           },
         ],
       },

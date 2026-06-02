@@ -589,14 +589,14 @@ describe("hasRenderableContent (R3 #6)", () => {
 });
 
 // R14 — `/v1/ai-sdk/agent-previews/runs` rejects payloads carrying
-// `endpoint` or `registry` (the server forces local-only resolution to
+// `backend`, `endpoint`, or `registry` (the server forces local-only resolution to
 // stop a crafted draft from routing the run to an arbitrary backend or
 // skipping registry-membership checks). Builtin / customized records the
 // editor loads naturally carry `registry`, and any agent backed by a
-// remote backend carries `endpoint`. Without this strip, every preview
-// of such an agent fails with 400 — a hard regression for the most
-// common use case.
-describe("normalizePreviewAgent — strip endpoint/registry for preview (R14)", () => {
+// remote backend carries `backend` and may carry `endpoint`. Without this
+// strip, every preview of such an agent fails with 400 — a hard regression
+// for the most common use case.
+describe("normalizePreviewAgent — strip backend/endpoint/registry for preview (R14)", () => {
   function previewSpec(overrides: Partial<AgentSpec> = {}): AgentSpec {
     return {
       id: "draft",
@@ -620,6 +620,19 @@ describe("normalizePreviewAgent — strip endpoint/registry for preview (R14)", 
     expect("endpoint" in out).toBe(false);
   });
 
+  it("strips backend from the payload", () => {
+    const draft = previewSpec({
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: { base_url: "https://remote.example.com" },
+      },
+    });
+    const out = normalizePreviewAgent(draft);
+    expect(out.backend).toBeUndefined();
+    expect("backend" in out).toBe(false);
+  });
+
   it("strips registry from the payload", () => {
     const draft = previewSpec({ registry: "cloud" });
     const out = normalizePreviewAgent(draft);
@@ -627,15 +640,29 @@ describe("normalizePreviewAgent — strip endpoint/registry for preview (R14)", 
     expect("registry" in out).toBe(false);
   });
 
-  it("strips both endpoint and registry simultaneously", () => {
-    const draft = previewSpec({ endpoint: REMOTE_ENDPOINT, registry: "cloud" });
+  it("strips backend, endpoint, and registry simultaneously", () => {
+    const draft = previewSpec({
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: { base_url: "https://remote.example.com" },
+      },
+      endpoint: REMOTE_ENDPOINT,
+      registry: "cloud",
+    });
     const out = normalizePreviewAgent(draft);
+    expect("backend" in out).toBe(false);
     expect("endpoint" in out).toBe(false);
     expect("registry" in out).toBe(false);
   });
 
   it("preserves every other patchable field", () => {
     const draft = previewSpec({
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: { base_url: "https://remote.example.com" },
+      },
       endpoint: REMOTE_ENDPOINT,
       registry: "cloud",
       plugin_ids: ["permission"],
@@ -685,7 +712,15 @@ describe("normalizePreviewAgent — strip endpoint/registry for preview (R14)", 
   });
 
   it("does not mutate the source draft", () => {
-    const draft = previewSpec({ endpoint: REMOTE_ENDPOINT, registry: "cloud" });
+    const draft = previewSpec({
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: { base_url: "https://remote.example.com" },
+      },
+      endpoint: REMOTE_ENDPOINT,
+      registry: "cloud",
+    });
     const snapshot = JSON.parse(JSON.stringify(draft));
     normalizePreviewAgent(draft);
     expect(draft).toEqual(snapshot);

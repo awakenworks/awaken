@@ -22,9 +22,9 @@ use awaken_runtime_contract::contract::tool::{
     ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 #[cfg(feature = "a2a")]
-use awaken_runtime_contract::registry_spec::RemoteEndpoint;
+use awaken_runtime_contract::registry_spec::{AgentBackendSpec, RemoteEndpoint};
 use awaken_runtime_contract::registry_spec::{ModelPoolSpec, ModelSpec};
-use serde_json::Value;
+use serde_json::{Value, json};
 #[cfg(feature = "a2a")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -593,6 +593,71 @@ fn resolve_remote_agent_returns_error() {
 
 #[cfg(feature = "a2a")]
 #[test]
+fn resolve_backend_spec_remote_agent_returns_error_without_legacy_endpoint() {
+    let spec = AgentSpec {
+        backend: AgentBackendSpec {
+            kind: "a2a".into(),
+            version: 1,
+            config: json!({ "base_url": "https://remote.example.com" }),
+        },
+        ..make_spec("remote-agent")
+    };
+
+    let regs = build_registries(
+        vec![],
+        "test-model",
+        ModelSpec::new("test-model", "p", "n"),
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        spec,
+    );
+
+    let err = resolve(&regs, "remote-agent").unwrap_err();
+    assert!(
+        matches!(err, ResolveError::RemoteAgentNotDirectlyRunnable(ref id) if id == "remote-agent")
+    );
+}
+
+#[cfg(feature = "a2a")]
+#[test]
+fn resolve_execution_invalid_backend_spec_is_not_treated_as_local_agent() {
+    let spec = AgentSpec {
+        backend: AgentBackendSpec {
+            kind: "a2a".into(),
+            version: 1,
+            config: json!({}),
+        },
+        ..make_spec("remote-agent")
+    };
+
+    let regs = build_registries(
+        vec![],
+        "test-model",
+        ModelSpec::new("test-model", "p", "n"),
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        spec,
+    );
+
+    let err = match resolve_execution_registry_set(&regs, "remote-agent") {
+        Ok(_) => panic!("expected InvalidRemoteEndpointConfig"),
+        Err(error) => error,
+    };
+    match err {
+        ResolveError::InvalidRemoteEndpointConfig {
+            agent_id, backend, ..
+        } => {
+            assert_eq!(agent_id, "remote-agent");
+            assert_eq!(backend, "a2a");
+        }
+        other => panic!("expected InvalidRemoteEndpointConfig, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "a2a")]
+#[test]
 fn resolve_delegate_rejects_unknown_remote_backend() {
     use awaken_runtime_contract::registry_spec::RemoteEndpoint;
 
@@ -1143,6 +1208,36 @@ async fn registry_set_resolver_resolves_materialized_pinned_root_as_replayable()
     assert_eq!(plan.agent_spec().id, "agent-pinned");
     assert_eq!(plan.role(), ExecutionRole::Root);
     assert_eq!(plan_model(&plan).upstream_model, "upstream-pinned");
+}
+
+#[tokio::test]
+async fn dynamic_registry_resolver_resolves_pinned_scope_from_current_snapshot() {
+    let regs = build_registries(
+        vec![],
+        "test-model",
+        ModelSpec::new("test-model", "p", "upstream-dynamic"),
+        "p",
+        Arc::new(MockExecutor),
+        vec![],
+        make_spec("agent-dynamic"),
+    );
+    let handle = crate::registry::RegistryHandle::new(regs);
+    let resolver = DynamicRegistryResolver::new(handle);
+
+    let plan = Resolver::resolve(
+        &resolver,
+        root_request(
+            "agent-dynamic",
+            RegistryResolutionScope::Pinned("run-resolution".to_string()),
+        ),
+    )
+    .await
+    .expect("dynamic registry resolves pinned scope");
+
+    assert!(matches!(plan, ResolvedRunPlan::Replayable(_)));
+    assert_eq!(plan.resolution_id(), Some("run-resolution"));
+    assert_eq!(plan.agent_spec().id, "agent-dynamic");
+    assert_eq!(plan_model(&plan).upstream_model, "upstream-dynamic");
 }
 
 #[tokio::test]

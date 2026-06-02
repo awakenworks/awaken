@@ -12,6 +12,16 @@ use super::{
 };
 
 impl ConfigService {
+    /// Serialize an effective agent spec and redact backend secrets (e.g. an
+    /// A2A `backend.config.auth.token`) before returning it to the admin
+    /// client. The override handlers return the spec directly rather than going
+    /// through `get`/`list`, so they must apply the same redaction boundary.
+    fn redact_agent_spec_value(&self, spec: &AgentSpec) -> Result<Value, ConfigServiceError> {
+        let value = serde_json::to_value(spec)
+            .map_err(|e| ConfigServiceError::Serialization(e.to_string()))?;
+        self.redact_response(ConfigNamespace::Agents, value)
+    }
+
     /// POST /v1/config/agents/:id/overrides
     ///
     /// Dry-run validation for the override patch payload. It validates the
@@ -41,7 +51,13 @@ impl ConfigService {
             .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
         enforce_agent_spec_catalog(&effective_spec)?;
 
-        let normalized = proposed_overrides.unwrap_or_else(|| Value::Object(Map::new()));
+        // The dry-run echo can carry backend secrets (e.g. an A2A
+        // `backend.config.auth.token` set by the patch), so redact it on the
+        // same boundary as the list/get responses before returning to the admin.
+        let normalized = self.redact_response(
+            ConfigNamespace::Agents,
+            proposed_overrides.unwrap_or_else(|| Value::Object(Map::new())),
+        )?;
 
         Ok(serde_json::json!({
             "ok": true,
@@ -94,8 +110,7 @@ impl ConfigService {
         if proposed_overrides == record.meta.user_overrides {
             let effective_spec = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
                 .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
-            return serde_json::to_value(&effective_spec)
-                .map_err(|e| ConfigServiceError::Serialization(e.to_string()));
+            return self.redact_agent_spec_value(&effective_spec);
         }
 
         let before_spec = apply_overrides(record.spec.clone(), record.meta.user_overrides.as_ref())
@@ -142,12 +157,12 @@ impl ConfigService {
             id,
             "overrides",
             Some(before),
-            Some(after.clone()),
+            Some(after),
             headers,
         )
         .await;
 
-        Ok(after)
+        self.redact_agent_spec_value(&after_spec)
     }
 
     /// DELETE /v1/config/agents/:id/overrides
@@ -178,8 +193,7 @@ impl ConfigService {
         // Short-circuit: if overrides are already None, this is a no-op — skip
         // the store write, apply_locked, and audit emit.
         if record.meta.user_overrides.is_none() {
-            return serde_json::to_value(&record.spec)
-                .map_err(|e| ConfigServiceError::Serialization(e.to_string()));
+            return self.redact_agent_spec_value(&record.spec);
         }
 
         let expected_revision = record.meta.revision;
@@ -226,12 +240,12 @@ impl ConfigService {
             id,
             "overrides",
             Some(before),
-            Some(after.clone()),
+            Some(after),
             headers,
         )
         .await;
 
-        Ok(after)
+        self.redact_agent_spec_value(&record.spec)
     }
 
     /// DELETE /v1/config/agents/:id/overrides/:field
@@ -295,8 +309,7 @@ impl ConfigService {
         if !existing_map.contains_key(field) {
             let effective_spec = apply_overrides(record.spec, record.meta.user_overrides.as_ref())
                 .map_err(|e| ConfigServiceError::InvalidPayload(e.to_string()))?;
-            return serde_json::to_value(&effective_spec)
-                .map_err(|e| ConfigServiceError::Serialization(e.to_string()));
+            return self.redact_agent_spec_value(&effective_spec);
         }
 
         existing_map.remove(field);
@@ -345,19 +358,20 @@ impl ConfigService {
             id,
             &format!("overrides/{field}"),
             Some(before),
-            Some(after.clone()),
+            Some(after),
             headers,
         )
         .await;
 
-        Ok(after)
+        self.redact_agent_spec_value(&after_spec)
     }
 }
 
 fn is_nullable_agent_patch_field(field: &str) -> bool {
     matches!(
         field,
-        "context_policy"
+        "description"
+            | "context_policy"
             | "allowed_tools"
             | "allowed_tool_patterns"
             | "excluded_tools"
@@ -371,6 +385,8 @@ fn is_nullable_agent_patch_field(field: &str) -> bool {
 /// Used to validate `_clear` directives — typos would otherwise
 /// silently no-op.
 const PATCHABLE_AGENT_SPEC_FIELDS: &[&str] = &[
+    "description",
+    "backend",
     "model_id",
     "system_prompt",
     "max_rounds",

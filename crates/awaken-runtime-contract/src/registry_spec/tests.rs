@@ -282,6 +282,149 @@ fn remote_endpoint_rejects_mixed_legacy_and_canonical_fields() {
 }
 
 #[test]
+fn legacy_endpoint_agent_normalizes_to_a2a_backend_spec() {
+    let spec: AgentSpec = serde_json::from_value(json!({
+        "id": "remote-worker",
+        "description": "Remote worker over A2A",
+        "endpoint": {
+            "backend": "a2a",
+            "base_url": "https://remote.example.com/v1/a2a",
+            "target": "worker",
+            "options": { "poll_interval_ms": 750 }
+        }
+    }))
+    .unwrap();
+
+    assert_eq!(spec.description.as_deref(), Some("Remote worker over A2A"));
+    assert_eq!(spec.backend.kind, A2A_BACKEND_KIND);
+    assert_eq!(spec.backend.version, 1);
+    assert_eq!(spec.model_id, "");
+    assert_eq!(spec.system_prompt, "");
+    let endpoint = spec
+        .remote_endpoint()
+        .expect("valid remote endpoint")
+        .expect("remote endpoint");
+    assert_eq!(endpoint.backend, "a2a");
+    assert_eq!(endpoint.base_url, "https://remote.example.com/v1/a2a");
+    assert_eq!(endpoint.target.as_deref(), Some("worker"));
+    assert_eq!(endpoint.options.get("poll_interval_ms"), Some(&json!(750)));
+}
+
+#[test]
+fn backend_a2a_config_agent_does_not_require_local_model_fields() {
+    let spec: AgentSpec = serde_json::from_value(json!({
+        "id": "remote-worker",
+        "backend": {
+            "kind": "a2a",
+            "version": 1,
+            "config": {
+                "base_url": "https://remote.example.com/v1/a2a",
+                "target": "worker"
+            }
+        }
+    }))
+    .unwrap();
+
+    assert_eq!(spec.backend.kind, A2A_BACKEND_KIND);
+    assert_eq!(spec.model_id, "");
+    assert_eq!(spec.system_prompt, "");
+    let endpoint = spec
+        .remote_endpoint()
+        .expect("valid remote endpoint")
+        .expect("remote endpoint");
+    assert_eq!(endpoint.backend, "a2a");
+    assert_eq!(endpoint.target.as_deref(), Some("worker"));
+}
+
+#[test]
+fn backend_config_backend_must_match_kind() {
+    let spec = AgentBackendSpec {
+        kind: A2A_BACKEND_KIND.into(),
+        version: 1,
+        config: json!({
+            "backend": "a2a",
+            "base_url": "https://remote.example.com/v1/a2a"
+        }),
+    };
+    assert!(spec.validate().is_ok());
+
+    let spec = AgentBackendSpec {
+        kind: A2A_BACKEND_KIND.into(),
+        version: 1,
+        config: json!({
+            "backend": "other",
+            "base_url": "https://remote.example.com/v1/a2a"
+        }),
+    };
+    let err = spec
+        .validate()
+        .expect_err("config backend mismatch must be rejected");
+    assert!(matches!(
+        err,
+        BackendConfigError::ConflictingBackendKind { .. }
+    ));
+}
+
+#[test]
+fn agent_spec_deserialize_rejects_backend_config_backend_mismatch() {
+    let err = serde_json::from_value::<AgentSpec>(json!({
+        "id": "remote-worker",
+        "backend": {
+            "kind": "a2a",
+            "version": 1,
+            "config": {
+                "backend": "other",
+                "base_url": "https://remote.example.com/v1/a2a"
+            }
+        }
+    }))
+    .expect_err("persisted mismatched backend config must be rejected");
+
+    assert!(err.to_string().contains("does not match kind"));
+}
+
+#[test]
+fn remote_backend_base_url_uses_url_parser_validation() {
+    for base_url in [
+        "https://#frag",
+        "http://?x=1",
+        "https://",
+        "https:///path",
+        "ftp://remote.example.com/a2a",
+        "https://remote.example.com/a2a#frag",
+        "https://remote.example.com/a2a?token=leak",
+    ] {
+        let spec = AgentBackendSpec {
+            kind: A2A_BACKEND_KIND.into(),
+            version: 1,
+            config: json!({ "base_url": base_url }),
+        };
+        assert!(spec.validate().is_err(), "{base_url} must be rejected");
+    }
+}
+
+#[test]
+fn legacy_local_agent_normalizes_to_awaken_backend_spec() {
+    let spec: AgentSpec = serde_json::from_value(json!({
+        "id": "assistant",
+        "model_id": "gpt-test",
+        "system_prompt": "You are helpful.",
+        "max_rounds": 7
+    }))
+    .unwrap();
+
+    assert_eq!(spec.backend.kind, AWAKEN_BACKEND_KIND);
+    assert_eq!(spec.backend.config["model_id"], "gpt-test");
+    assert_eq!(spec.backend.config["system_prompt"], "You are helpful.");
+    assert_eq!(spec.backend.config["max_rounds"], 7);
+    assert!(
+        spec.remote_endpoint()
+            .expect("valid local backend")
+            .is_none()
+    );
+}
+
+#[test]
 fn builder() {
     let spec = AgentSpec::new("reviewer")
         .with_model_id("claude-opus")

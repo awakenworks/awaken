@@ -61,7 +61,7 @@ use awaken_runtime_contract::registry_spec::ModelSpec;
 use awaken_runtime_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use awaken_server_contract::contract::storage::RunQuery;
 use awaken_server_contract::contract::storage::{RunStore, ThreadRunStore, ThreadStore};
-use awaken_stores::InMemoryStore;
+use awaken_stores::{InMemoryStore, MemoryCommitCoordinator};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -274,11 +274,13 @@ fn build_remote_runtime(
     };
     let handle = RegistryHandle::new(registries.clone());
     let store = Arc::new(InMemoryStore::new());
+    let coordinator = MemoryCommitCoordinator::wrap(store.clone());
     let runtime = AgentRuntime::new(Arc::new(
         crate::registry::resolve::DynamicRegistryResolver::new(handle.clone()),
     ))
     .with_registry_handle(handle)
-    .with_in_memory_thread_run_store(store.clone());
+    .with_in_memory_thread_run_store(store.clone())
+    .with_commit_coordinator(coordinator);
     (runtime, store)
 }
 
@@ -597,7 +599,7 @@ async fn run_rejects_remote_continuation_without_backend_capability() {
         dispatch_id: None,
         session_id: None,
         transport_request_id: None,
-        waiting: None,
+        waiting: Some(waiting_state(WaitingReason::ExternalEvent)),
         outcome: None,
         created_at: 1,
         started_at: None,
@@ -988,7 +990,7 @@ async fn run_non_local_continuation_uses_requested_run_state_not_latest() {
                 dispatch_id: None,
                 session_id: None,
                 transport_request_id: None,
-                waiting: None,
+                waiting: Some(waiting_state(WaitingReason::ExternalEvent)),
                 outcome: None,
                 created_at: 1,
                 started_at: None,
@@ -1027,7 +1029,7 @@ async fn run_non_local_continuation_uses_requested_run_state_not_latest() {
                 outcome: None,
                 created_at: 2,
                 started_at: None,
-                finished_at: None,
+                finished_at: Some(2),
                 updated_at: 2,
                 steps: 1,
                 input_tokens: 0,
@@ -1601,12 +1603,22 @@ fn seeded_run_record(
         outcome: None,
         created_at: 1,
         started_at: None,
-        finished_at: None,
+        finished_at: Some(1),
         updated_at: 1,
         steps: 1,
         input_tokens: 0,
         output_tokens: 0,
         state,
+    }
+}
+
+fn waiting_state(reason: WaitingReason) -> RunWaitingState {
+    RunWaitingState {
+        reason,
+        ticket_ids: Vec::new(),
+        tickets: Vec::new(),
+        since_dispatch_id: None,
+        message: None,
     }
 }
 
@@ -2260,7 +2272,7 @@ async fn run_request_without_agent_id_prefers_latest_thread_state_agent() {
         has_incomplete_tool_calls: false,
     }]));
     let resolver = Arc::new(FixedResolver {
-        agent: ResolvedAgent::new("agent", "m", "sys", llm),
+        agent: ResolvedAgent::new("agent-from-state", "m", "sys", llm),
         plugins: vec![],
     });
     let store = Arc::new(InMemoryStore::new());
@@ -2315,7 +2327,7 @@ async fn run_request_without_agent_id_falls_back_to_latest_run_record_agent_id()
         has_incomplete_tool_calls: false,
     }]));
     let resolver = Arc::new(FixedResolver {
-        agent: ResolvedAgent::new("agent", "m", "sys", llm),
+        agent: ResolvedAgent::new("agent-from-record", "m", "sys", llm),
         plugins: vec![],
     });
     let store = Arc::new(InMemoryStore::new());

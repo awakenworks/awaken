@@ -22,6 +22,8 @@ use crate::resolution::{
 use async_trait::async_trait;
 use awaken_runtime_contract::contract::executor::LlmExecutor;
 use awaken_runtime_contract::contract::tool::Tool;
+#[cfg(feature = "a2a")]
+use awaken_runtime_contract::registry_spec::RemoteEndpoint;
 use awaken_runtime_contract::registry_spec::{AgentSpec, ModelSpec};
 
 use crate::registry::model_capabilities::ModelCapabilitySources;
@@ -88,7 +90,7 @@ pub(crate) fn resolve_registry_set(
     // Stage 1: Lookup
     let spec = lookup_spec(registries, agent_id)?;
     #[cfg(feature = "a2a")]
-    if spec.endpoint.is_some() {
+    if spec.uses_remote_backend() {
         return Err(ResolveError::RemoteAgentNotDirectlyRunnable(
             spec.id.clone(),
         ));
@@ -129,7 +131,7 @@ pub(crate) fn resolve_execution_registry_set(
     let spec = lookup_spec(registries, agent_id)?;
 
     #[cfg(feature = "a2a")]
-    if let Some(endpoint) = spec.endpoint.clone() {
+    if let Some(endpoint) = remote_endpoint_or_error(&spec)? {
         let factory = registries
             .backends
             .get_backend_factory(&endpoint.backend)
@@ -478,8 +480,8 @@ fn resolve_delegate_tools(
                 .get_agent(delegate_id)
                 .ok_or_else(|| ResolveError::AgentNotFound(delegate_id.clone()))?;
 
-            let description: String = delegate_spec.system_prompt.chars().take(100).collect();
-            if let Some(endpoint) = &delegate_spec.endpoint {
+            let description = delegate_spec.display_description();
+            if let Some(endpoint) = remote_endpoint_or_error(&delegate_spec)? {
                 let factory = registries
                     .backends
                     .get_backend_factory(&endpoint.backend)
@@ -487,7 +489,7 @@ fn resolve_delegate_tools(
                         agent_id: delegate_id.clone(),
                         backend: endpoint.backend.clone(),
                     })?;
-                factory.validate(endpoint).map_err(|error| {
+                factory.validate(&endpoint).map_err(|error| {
                     ResolveError::InvalidRemoteEndpointConfig {
                         agent_id: delegate_id.clone(),
                         backend: endpoint.backend.clone(),
@@ -515,6 +517,26 @@ fn resolve_delegate_tools(
     }
 
     Ok(())
+}
+
+#[cfg(feature = "a2a")]
+fn remote_endpoint_or_error(spec: &AgentSpec) -> Result<Option<RemoteEndpoint>, ResolveError> {
+    if !spec.uses_remote_backend() {
+        return Ok(None);
+    }
+
+    spec.remote_endpoint()
+        .map_err(|error| ResolveError::InvalidRemoteEndpointConfig {
+            agent_id: spec.id.clone(),
+            backend: spec.backend.kind.clone(),
+            message: error.to_string(),
+        })?
+        .ok_or_else(|| ResolveError::InvalidRemoteEndpointConfig {
+            agent_id: spec.id.clone(),
+            backend: spec.backend.kind.clone(),
+            message: "backend config must include a valid remote endpoint shape".to_string(),
+        })
+        .map(Some)
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +664,11 @@ impl Resolver for DynamicRegistryResolver {
         request: ResolutionRequest,
     ) -> Result<ResolvedRunPlan, RunResolveError> {
         let snapshot = self.handle.snapshot();
-        let resolver = RegistrySetResolver::new(snapshot.into_registries());
+        let resolver = if matches!(request.resolution_scope, RegistryResolutionScope::Pinned(_)) {
+            RegistrySetResolver::new_replayable_snapshot(snapshot.into_registries())
+        } else {
+            RegistrySetResolver::new(snapshot.into_registries())
+        };
         Resolver::resolve(&resolver, request).await
     }
 }

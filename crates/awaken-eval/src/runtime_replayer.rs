@@ -527,6 +527,7 @@ impl RuntimeReplayer {
         // Live mode has no script to bound max_rounds against; use the
         // floor as-is. Operators wanting more rounds set the floor.
         let max_rounds = self.max_rounds_floor;
+        let start = Instant::now();
 
         // Base agent spec: either the caller-supplied registered spec
         // (so the eval exercises the real agent's system_prompt / tool
@@ -540,7 +541,25 @@ impl RuntimeReplayer {
             ..Default::default()
         });
         let mut agent_spec = match agent_overrides {
-            Some(patch) => merge_agent_spec(base, patch),
+            Some(patch) => match merge_agent_spec(base, patch) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    return ReplayOutcome {
+                        fixture_id: fixture.id.clone(),
+                        final_text: String::new(),
+                        metrics: sink.metrics(),
+                        elapsed: start.elapsed(),
+                        error_type: None,
+                        inference_error_count: 0,
+                        runtime_failure: Some(ReplayRuntimeFailure::RuntimeError {
+                            message: format!("invalid agent override backend config: {error}"),
+                        }),
+                        revision_count: 0,
+                        judge_score: None,
+                        judge_reasoning: None,
+                    };
+                }
+            },
             None => base,
         };
         // Force three fields back to safe defaults — both the registered
@@ -580,7 +599,6 @@ impl RuntimeReplayer {
         );
 
         let thread_id = format!("eval-thread-{}", fixture.id);
-        let start = Instant::now();
 
         // Iterate through the dialogue: initial user_input + every
         // continued turn, all on the same thread (same-thread reuse —

@@ -119,7 +119,7 @@ impl ConfigRuntimeManager {
             .into_iter()
             .collect::<HashSet<_>>();
         for agent in local_agents {
-            if agent.endpoint.is_some() {
+            if agent.uses_remote_backend() {
                 continue;
             }
             let resolved = resolver.resolve(&agent.id).map_err(|error| {

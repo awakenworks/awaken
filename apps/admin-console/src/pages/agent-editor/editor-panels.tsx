@@ -1,6 +1,5 @@
 import { type AgentSpec, type Capabilities } from "@/lib/config-api";
 import { AGENT_EDITOR_TABS, type AgentEditorTabId } from "@/lib/editor-tabs";
-import { type reasoningEffortMode } from "@/lib/reasoning-effort";
 import { BasicsPanel } from "./panels/basics-panel";
 import { ToolsPanel } from "./panels/tools-panel";
 import { PluginsPanel } from "./panels/plugins-panel";
@@ -17,7 +16,7 @@ export function AgentEditorPanels({
   isNew,
   activeTab,
   updateField,
-  reasoningMode,
+  updateBackend,
   errors,
   canResetFields,
   overriddenFields,
@@ -39,7 +38,7 @@ export function AgentEditorPanels({
   isNew: boolean;
   activeTab: AgentEditorTabId;
   updateField: <K extends keyof AgentSpec>(key: K, value: AgentSpec[K]) => void;
-  reasoningMode: ReturnType<typeof reasoningEffortMode>;
+  updateBackend: (kind: string, config: Record<string, unknown>) => void;
   errors: Partial<Record<"id" | "model_id", string>>;
   canResetFields: boolean;
   overriddenFields: Set<string>;
@@ -73,7 +72,7 @@ export function AgentEditorPanels({
               capabilities={capabilities}
               isNew={isNew}
               updateField={updateField}
-              reasoningMode={reasoningMode}
+              updateBackend={updateBackend}
               errors={errors}
               canResetFields={canResetFields}
               overriddenFields={overriddenFields}

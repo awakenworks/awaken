@@ -8,12 +8,14 @@ export const EMPTY_CAPABILITIES: Capabilities = {
   skills: [],
   models: [],
   providers: [],
+  backends: [],
   namespaces: [],
 };
 
 function normalizeCapabilities(capabilities: Capabilities): Capabilities {
   return {
     ...capabilities,
+    backends: capabilities.backends ?? [],
     skills: (capabilities.skills ?? []).map((skill) => {
       const allowedTools = skill.allowed_tools ?? [];
       const argumentsList = skill.arguments ?? [];

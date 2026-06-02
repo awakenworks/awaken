@@ -51,7 +51,12 @@ test.describe('admin API surface coverage', () => {
       await expectNoServerError(label, await pending);
     }
 
-    const providerPayload = { id: providerId, adapter: 'openai', timeout_secs: 30 };
+    const providerPayload = {
+      id: providerId,
+      adapter: 'openai',
+      api_key: 'test-provider-key',
+      timeout_secs: 30,
+    };
     const providerValidate = await request.post(`${BACKEND_URL}/v1/config/providers/validate`, {
       headers,
       data: providerPayload,

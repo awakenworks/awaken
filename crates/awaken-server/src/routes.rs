@@ -66,6 +66,9 @@ fn map_resolve_error(context: &'static str, error: ResolveError) -> ApiError {
         | ResolveError::NestedScopeMismatch(message) => {
             ApiError::BadRequest(format!("{context}: {message}"))
         }
+        ResolveError::Runtime(message) if message.starts_with("agent not found:") => {
+            ApiError::BadRequest(format!("{context}: {message}"))
+        }
         ResolveError::Runtime(message) => ApiError::Internal(format!("{context}: {message}")),
     }
 }

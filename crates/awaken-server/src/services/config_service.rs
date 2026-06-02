@@ -3,6 +3,7 @@ use std::sync::Arc;
 use awaken_server_contract::AuditAction;
 use awaken_server_contract::contract::config_store::ConfigStore;
 use awaken_server_contract::contract::storage::StorageError;
+use awaken_server_contract::registry_spec::AWAKEN_BACKEND_KIND;
 use awaken_server_contract::{
     AgentSpec, ConfigRecord, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec, SkillSpec,
     ToolSpec,
@@ -317,6 +318,22 @@ impl ConfigService {
             .map(|id| json!({ "id": id }))
             .collect::<Vec<_>>();
 
+        let mut backend_ids = registries.backends.backend_ids();
+        backend_ids.sort();
+        let mut backends = vec![backend_schema_json(
+            AWAKEN_BACKEND_KIND,
+            awaken_runtime::awaken_backend_config_schema(),
+        )];
+        backends.extend(backend_ids.into_iter().filter_map(|kind| {
+            if kind == AWAKEN_BACKEND_KIND {
+                return None;
+            }
+            registries
+                .backends
+                .get_backend_factory(&kind)
+                .map(|factory| backend_schema_json(factory.backend(), factory.config_schema()))
+        }));
+
         let skills = self
             .state
             .config
@@ -332,6 +349,7 @@ impl ConfigService {
             "skills": skills,
             "models": models,
             "providers": providers,
+            "backends": backends,
             "admin_assistant": crate::admin_assistant::admin_assistant_capability(
                 &model_ids,
                 admin_assistant_model_id,
@@ -485,7 +503,10 @@ impl ConfigService {
             )));
         }
         self.validate_payload(namespace, &normalized)?;
-        Ok(normalized)
+        // The validate echo mirrors the normalized payload back to the admin;
+        // redact it on the same boundary as list/get so a backend/provider
+        // secret in the submitted body is never reflected verbatim.
+        self.redact_response(namespace, normalized)
     }
 
     pub async fn create(
@@ -717,6 +738,18 @@ impl ConfigService {
 
         Ok(())
     }
+}
+
+fn backend_schema_json(kind: &str, schema: awaken_runtime::ExecutionBackendConfigSchema) -> Value {
+    json!({
+        "kind": kind,
+        "version": schema.version,
+        "schema": schema.schema,
+        "display_name": schema.display_name,
+        "description": schema.description,
+        "default_config": schema.default_config,
+        "ui_schema": schema.ui_schema,
+    })
 }
 
 pub(super) fn map_runtime_error(error: ConfigRuntimeError) -> ConfigServiceError {

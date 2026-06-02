@@ -486,15 +486,7 @@ pub fn redact_secrets(value: Value) -> Value {
         Value::Object(map) => {
             let mut out = serde_json::Map::new();
             for (key, val) in map {
-                let lower = key.to_lowercase();
-                if lower.contains("api_key")
-                    || lower.contains("bearer")
-                    || lower.contains("credential")
-                    || lower.contains("private_key")
-                    || lower.contains("token")
-                    || lower.contains("password")
-                    || lower.contains("secret")
-                {
+                if should_redact_secret_key(&key) {
                     out.insert(key, Value::String("***".to_string()));
                 } else {
                     out.insert(key, redact_secrets(val));
@@ -505,6 +497,25 @@ pub fn redact_secrets(value: Value) -> Value {
         Value::Array(arr) => Value::Array(arr.into_iter().map(redact_secrets).collect()),
         other => other,
     }
+}
+
+fn should_redact_secret_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    let compact = lower
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>();
+
+    lower.contains("api_key")
+        || compact.contains("apikey")
+        || lower.contains("bearer")
+        || lower.contains("credential")
+        || lower.contains("private_key")
+        || compact.contains("privatekey")
+        || lower.contains("password")
+        || lower.contains("secret")
+        || compact == "token"
+        || compact.ends_with("token")
 }
 
 /// Extract the client IP from request headers.
@@ -765,6 +776,35 @@ mod tests {
             output["adapter_options"]["nested"][0]["safe_label"], "visible",
             "non-secret fields should remain useful"
         );
+    }
+
+    #[test]
+    fn redact_secrets_preserves_token_budget_fields() {
+        let input = json!({
+            "context_policy": {
+                "max_context_tokens": 123456,
+                "max_output_tokens": 8192
+            },
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 42,
+                "total_tokens": 142
+            },
+            "auth": {
+                "token": "secret-token",
+                "refreshToken": "refresh-token"
+            }
+        });
+
+        let output = redact_secrets(input);
+
+        assert_eq!(output["context_policy"]["max_context_tokens"], 123456);
+        assert_eq!(output["context_policy"]["max_output_tokens"], 8192);
+        assert_eq!(output["usage"]["input_tokens"], 100);
+        assert_eq!(output["usage"]["output_tokens"], 42);
+        assert_eq!(output["usage"]["total_tokens"], 142);
+        assert_eq!(output["auth"]["token"], "***");
+        assert_eq!(output["auth"]["refreshToken"], "***");
     }
 
     // ── emit ──────────────────────────────────────────────────────────────

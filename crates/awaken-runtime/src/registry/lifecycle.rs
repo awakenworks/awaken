@@ -381,7 +381,7 @@ fn agents_using_models(agents: &MapAgentSpecRegistry, model_ids: &[String]) -> V
         .into_iter()
         .filter(|agent_id| {
             agents.get(agent_id).is_some_and(|agent| {
-                agent.endpoint.is_none() && model_ids.contains(agent.model_id.as_str())
+                !agent.uses_remote_backend() && model_ids.contains(agent.model_id.as_str())
             })
         })
         .collect()
@@ -395,7 +395,7 @@ fn agents_using_models_from_set(registries: &RegistrySet, model_ids: &[String]) 
         .into_iter()
         .filter(|agent_id| {
             registries.agents.get_agent(agent_id).is_some_and(|agent| {
-                agent.endpoint.is_none() && model_ids.contains(agent.model_id.as_str())
+                !agent.uses_remote_backend() && model_ids.contains(agent.model_id.as_str())
             })
         })
         .collect()

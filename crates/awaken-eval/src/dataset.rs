@@ -84,8 +84,11 @@ impl ConfigRecordMerge for DatasetSpec {
     // dropped on read.
     type Patch = NoConfigPatch;
 
-    fn merge_patch(self, _patch: NoConfigPatch) -> Self {
-        self
+    fn merge_patch(
+        self,
+        _patch: NoConfigPatch,
+    ) -> Result<Self, awaken_runtime_contract::ConfigRecordError> {
+        Ok(self)
     }
 }
 
@@ -128,7 +131,10 @@ mod tests {
             description: "smoke".into(),
             fixtures: vec![sample_fixture("a")],
         };
-        let merged = spec.clone().merge_patch(NoConfigPatch::default());
+        let merged = spec
+            .clone()
+            .merge_patch(NoConfigPatch::default())
+            .expect("NoConfigPatch merge is infallible");
         assert_eq!(merged, spec);
     }
 

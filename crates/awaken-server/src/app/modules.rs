@@ -109,13 +109,15 @@ impl RunModuleState {
         &self,
         mut request: awaken_runtime::RunActivation,
     ) -> awaken_runtime::RunActivation {
+        if let Some(factory) = &self.resolver_factory {
+            let scope_id = self
+                .scope_id
+                .clone()
+                .unwrap_or_else(|| ScopeId::new(DEFAULT_SCOPE_ID).expect("default scope id"));
+            request = request.with_run_resolver(factory.resolver_for_scope(scope_id));
+        }
         if self.scope_id.is_none() {
             return request;
-        }
-        if let Some(scope_id) = self.scope_id.clone()
-            && let Some(factory) = &self.resolver_factory
-        {
-            request = request.with_run_resolver(factory.resolver_for_scope(scope_id));
         }
         request.intent.thread_id = self.scoped_id(&request.intent.thread_id);
         request.intent.kind = match request.intent.kind {

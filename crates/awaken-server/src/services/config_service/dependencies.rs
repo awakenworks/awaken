@@ -44,7 +44,7 @@ impl ConfigService {
                     let Some(agent) = effective_visible_record::<AgentSpec>(value)? else {
                         continue;
                     };
-                    if agent.endpoint.is_none() && agent.model_id == id {
+                    if !agent.uses_remote_backend() && agent.model_id == id {
                         refs.push(DependentRef {
                             namespace: "agents",
                             id: agent_id,
@@ -75,7 +75,7 @@ impl ConfigService {
                     let Some(agent) = effective_visible_record::<AgentSpec>(value)? else {
                         continue;
                     };
-                    if agent.endpoint.is_none() && agent.model_id == id {
+                    if !agent.uses_remote_backend() && agent.model_id == id {
                         refs.push(DependentRef {
                             namespace: "agents",
                             id: agent_id,

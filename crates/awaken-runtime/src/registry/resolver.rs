@@ -57,6 +57,8 @@ impl ResolvedAgent {
         let upstream_model = upstream_model.into();
         let spec = Arc::new(AgentSpec {
             id: id.into(),
+            description: None,
+            backend: Default::default(),
             model_id: upstream_model.clone(),
             system_prompt: system_prompt.into(),
             max_rounds: 16,

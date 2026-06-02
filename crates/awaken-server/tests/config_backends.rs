@@ -463,7 +463,8 @@ async fn seed_managed_agent(router: &axum::Router, prefix: &str) {
         "/v1/config/providers",
         Some(json!({
             "id": provider_id,
-            "adapter": "stub"
+            "adapter": "stub",
+            "api_key": "test-key"
         })),
     )
     .await;

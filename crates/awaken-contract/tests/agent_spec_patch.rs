@@ -103,6 +103,7 @@ fn serde_round_trip_full_patch() {
         delegates: Some(vec!["delegate-a".into()]),
         reasoning_effort: None,
         endpoint: None,
+        ..Default::default()
     };
 
     let json_str = serde_json::to_string(&patch).unwrap();
@@ -132,7 +133,8 @@ fn serde_rejects_unknown_field() {
 fn merge_returns_base_when_patch_is_empty() {
     let base = base_spec();
     let base_value = serde_json::to_value(&base).unwrap();
-    let result = merge_agent_spec(base, AgentSpecPatch::default());
+    let result =
+        merge_agent_spec(base, AgentSpecPatch::default()).expect("agent spec merge succeeds");
     let result_value = serde_json::to_value(&result).unwrap();
     assert_eq!(base_value, result_value);
 }
@@ -148,7 +150,7 @@ fn merge_overrides_model_id() {
         model_id: Some("B".into()),
         ..Default::default()
     };
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.model_id, "B");
 }
 
@@ -163,7 +165,7 @@ fn merge_overrides_system_prompt() {
         system_prompt: Some("new prompt".into()),
         ..Default::default()
     };
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.system_prompt, "new prompt");
 }
 
@@ -178,7 +180,7 @@ fn merge_overrides_max_rounds() {
         max_rounds: Some(20),
         ..Default::default()
     };
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.max_rounds, 20);
 }
 
@@ -193,7 +195,7 @@ fn merge_overrides_max_continuation_retries() {
         max_continuation_retries: Some(5),
         ..Default::default()
     };
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.max_continuation_retries, 5);
 }
 
@@ -208,7 +210,7 @@ fn merge_replaces_plugin_ids_when_patch_some() {
         plugin_ids: Some(vec!["d".into()]),
         ..Default::default()
     };
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.plugin_ids, vec!["d"]);
 }
 
@@ -227,7 +229,7 @@ fn merge_overrides_context_policy() {
         context_policy: Some(Some(policy.clone())),
         ..Default::default()
     };
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.context_policy, Some(policy));
 }
 
@@ -258,7 +260,7 @@ fn merge_clears_nullable_fields_when_patch_value_is_null() {
     }))
     .expect("nullable fields must accept explicit null");
 
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.context_policy, None);
     // Clearing BOTH allow fields triggers the deny-all normalization:
     // they end up as explicit empty lists so a JSON round-trip preserves
@@ -297,7 +299,7 @@ fn merge_keeps_allowed_tool_patterns_when_patch_absent() {
         ..base_spec()
     };
     let patch = AgentSpecPatch::default();
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.allowed_tool_patterns, Some(vec!["mcp:*".into()]));
 }
 
@@ -311,7 +313,7 @@ fn merge_overrides_allowed_tool_patterns_when_patch_value() {
         allowed_tool_patterns: Some(Some(vec!["other:*".into()])),
         ..Default::default()
     };
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.allowed_tool_patterns, Some(vec!["other:*".into()]));
 }
 
@@ -328,7 +330,7 @@ fn merge_clears_allowed_tool_patterns_when_patch_null() {
         "allowed_tool_patterns": null
     }))
     .expect("nullable pattern field accepts null");
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.allowed_tools, Some(vec![]));
     assert_eq!(result.allowed_tool_patterns, Some(vec![]));
 }
@@ -347,7 +349,7 @@ fn merge_clears_allowed_tool_patterns_preserves_literal_when_present() {
         "allowed_tool_patterns": null
     }))
     .expect("nullable pattern field accepts null");
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.allowed_tools, Some(vec!["Bash".into()]));
     assert_eq!(result.allowed_tool_patterns, None);
 }
@@ -359,7 +361,7 @@ fn merge_keeps_excluded_tool_patterns_when_patch_absent() {
         ..base_spec()
     };
     let patch = AgentSpecPatch::default();
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.excluded_tool_patterns, Some(vec!["danger:*".into()]));
 }
 
@@ -373,7 +375,7 @@ fn merge_overrides_excluded_tool_patterns_when_patch_value() {
         excluded_tool_patterns: Some(Some(vec!["other:*".into()])),
         ..Default::default()
     };
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.excluded_tool_patterns, Some(vec!["other:*".into()]));
 }
 
@@ -387,7 +389,7 @@ fn merge_clears_excluded_tool_patterns_when_patch_null() {
         "excluded_tool_patterns": null
     }))
     .expect("nullable pattern field accepts null");
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.excluded_tool_patterns, None);
 }
 
@@ -406,7 +408,7 @@ fn merge_overrides_active_hook_filter() {
         active_hook_filter: Some(patch_filter.clone()),
         ..Default::default()
     };
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.active_hook_filter, patch_filter);
 }
 
@@ -421,7 +423,7 @@ fn merge_keeps_plugin_ids_when_patch_none() {
         plugin_ids: None,
         ..Default::default()
     };
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.plugin_ids, vec!["a", "b"]);
 }
 
@@ -445,7 +447,7 @@ fn merge_sections_per_key_overlay() {
         ..Default::default()
     };
 
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.sections.get("x"), Some(&json!(1)));
     assert_eq!(result.sections.get("y"), Some(&json!(99)));
     assert_eq!(result.sections.len(), 2);
@@ -471,7 +473,7 @@ fn merge_sections_null_value_deletes_key() {
         ..Default::default()
     };
 
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.sections.get("x"), Some(&json!(1)));
     assert!(
         !result.sections.contains_key("y"),
@@ -496,7 +498,7 @@ fn merge_sections_keeps_base_when_patch_none() {
         ..Default::default()
     };
 
-    let result = merge_agent_spec(base, patch);
+    let result = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(result.sections.get("x"), Some(&json!(1)));
 }
 
@@ -528,7 +530,8 @@ fn merge_preserves_pass_through_fields() {
     };
 
     let base_value = serde_json::to_value(&base).unwrap();
-    let result = merge_agent_spec(base, AgentSpecPatch::default());
+    let result =
+        merge_agent_spec(base, AgentSpecPatch::default()).expect("agent spec merge succeeds");
     let result_value = serde_json::to_value(&result).unwrap();
 
     assert_eq!(base_value, result_value);
@@ -548,7 +551,7 @@ fn merge_explicit_clear_of_both_allow_fields_yields_explicit_empty() {
         "allowed_tool_patterns": null,
     }))
     .expect("nullable allow fields accept null");
-    let merged = merge_agent_spec(base, patch);
+    let merged = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
     assert_eq!(merged.allowed_tools, Some(vec![]));
     assert_eq!(merged.allowed_tool_patterns, Some(vec![]));
 }
@@ -565,7 +568,7 @@ fn deny_all_spec_survives_json_round_trip() {
         "allowed_tool_patterns": null,
     }))
     .expect("nullable allow fields accept null");
-    let merged = merge_agent_spec(base, patch);
+    let merged = merge_agent_spec(base, patch).expect("agent spec merge succeeds");
 
     // Round-trip through JSON — this is the path permission preview and
     // other consumers take after `merge_agent_spec`. Without the
@@ -587,6 +590,7 @@ fn deny_all_normalization_only_fires_when_base_starts_allow_all() {
     // deny-all — the legacy shim path stays allow-all.
     let default_spec: AgentSpec = AgentSpec::default();
     assert_eq!(default_spec.allowed_tool_patterns, Some(vec!["*".into()]));
-    let merged = merge_agent_spec(default_spec, AgentSpecPatch::default());
+    let merged = merge_agent_spec(default_spec, AgentSpecPatch::default())
+        .expect("agent spec merge succeeds");
     assert!(merged.tool_allowed("anything"));
 }

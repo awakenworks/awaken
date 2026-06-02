@@ -25,7 +25,7 @@ use awaken_server_contract::contract::lifecycle::RunStatus;
 use awaken_server_contract::contract::message::ToolCall;
 use awaken_server_contract::contract::message::{Message, Role};
 use awaken_server_contract::contract::storage::{
-    RunRecord, RunStore, ThreadRunStore, ThreadStore, WaitingReason,
+    RunRecord, RunStore, RunWaitingState, ThreadRunStore, ThreadStore, WaitingReason,
 };
 use awaken_server_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use awaken_server_contract::state::PersistedState;
@@ -570,6 +570,14 @@ struct SeedRemoteRun<'a> {
 }
 
 async fn seed_remote_run(store: &Arc<InMemoryStore>, seed: SeedRemoteRun<'_>) {
+    let waiting = (seed.status == RunStatus::Waiting).then(|| RunWaitingState {
+        reason: WaitingReason::ExternalEvent,
+        ticket_ids: Vec::new(),
+        tickets: Vec::new(),
+        since_dispatch_id: None,
+        message: None,
+    });
+    let finished_at = (seed.status == RunStatus::Done).then_some(seed.updated_at);
     store
         .checkpoint(
             seed.thread_id,
@@ -591,11 +599,11 @@ async fn seed_remote_run(store: &Arc<InMemoryStore>, seed: SeedRemoteRun<'_>) {
                 dispatch_id: None,
                 session_id: None,
                 transport_request_id: None,
-                waiting: None,
+                waiting,
                 outcome: None,
                 created_at: seed.updated_at,
                 started_at: None,
-                finished_at: None,
+                finished_at,
                 updated_at: seed.updated_at,
                 steps: 1,
                 input_tokens: 0,

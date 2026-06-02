@@ -725,9 +725,6 @@ async fn builder_runtime_resolves_persistent_activation_as_replayable() {
         )],
     )
     .with_agent_id("test-agent");
-    // A server-issued resolution id must be resolved by a server-owned
-    // materialized snapshot resolver. The embedded dynamic registry cannot
-    // prove snapshot provenance and must fail closed.
     let result = runtime
         .resolve_activation_in_scope(
             &activation,
@@ -735,9 +732,11 @@ async fn builder_runtime_resolves_persistent_activation_as_replayable() {
             crate::resolution::RegistryResolutionScope::Pinned("resolution-test".into()),
         )
         .await;
+    let plan = result.expect("pinned dynamic runtime resolves as replayable");
+    assert_eq!(plan.resolution_id(), Some("resolution-test"));
     assert!(matches!(
-        result,
-        Err(crate::resolution::ResolveError::UnsupportedPersistence(_))
+        plan,
+        crate::resolution::ResolvedRunPlan::Replayable(_)
     ));
 
     // Without a resolution id the runtime resolves the live registry into a

@@ -246,9 +246,10 @@ async fn ai_sdk_chat_preview_agent(
     // payload with `endpoint` would otherwise route the run to an
     // arbitrary remote backend; `registry` would mark the draft as
     // registry-defined and skip local resolution.
-    if agent.endpoint.is_some() || agent.registry.is_some() {
+    if agent.uses_remote_backend() || agent.registry.is_some() {
         return Err(ApiError::BadRequest(
-            "preview agent payload must not carry `endpoint` or `registry` fields".to_string(),
+            "preview agent payload must not carry remote backend, `endpoint`, or `registry` fields"
+                .to_string(),
         ));
     }
 
@@ -420,7 +421,7 @@ fn build_preview_registry_set(st: &S, agent: &AgentSpec) -> Result<RegistrySet, 
         backends: current.backends.clone(),
     };
 
-    if agent.endpoint.is_none() {
+    if !agent.uses_remote_backend() {
         RegistrySetResolver::new(candidate.clone())
             .resolve(&agent.id)
             .map_err(|error| {

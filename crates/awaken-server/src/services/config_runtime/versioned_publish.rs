@@ -225,17 +225,16 @@ fn append_provider_specs(
     specs: &[ProviderSpec],
     resources: &mut Vec<RegistryResourcePublish>,
 ) -> Result<(), ConfigRuntimeError> {
-    for spec in specs {
-        if spec.api_key.as_ref().is_some_and(|value| !value.is_empty()) {
-            return Err(ConfigRuntimeError::VersionedRegistry(format!(
-                "provider '{}' cannot be published with plaintext api_key; use a runtime credential reference",
-                spec.id
-            )));
-        }
-    }
+    let redacted_specs = specs
+        .iter()
+        .map(|spec| ProviderSpec {
+            api_key: None,
+            ..spec.clone()
+        })
+        .collect::<Vec<_>>();
     append_specs(
         awaken_server_contract::REGISTRY_KIND_PROVIDER,
-        specs,
+        &redacted_specs,
         |spec| spec.id.as_str(),
         resources,
     )
@@ -489,7 +488,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_rejects_provider_api_key_before_versioned_publish() {
+    async fn apply_redacts_provider_api_key_before_versioned_publish() {
         let (manager, _, versioned) = make_manager_with_versioned_store().await;
 
         manager
@@ -500,37 +499,21 @@ mod tests {
             .await
             .expect("seed config");
 
-        let error = manager
-            .apply()
+        manager.apply().await.expect("apply config");
+        let record = versioned
+            .current(
+                "default",
+                awaken_server_contract::REGISTRY_KIND_PROVIDER,
+                "provider-1",
+            )
             .await
-            .expect_err("provider api_key must not be published as plaintext");
+            .expect("read provider current")
+            .expect("provider resource version");
+        let provider: ProviderSpec =
+            serde_json::from_value(record.value).expect("published provider spec");
         assert!(
-            matches!(
-                error,
-                ConfigRuntimeError::VersionedRegistry(ref message)
-                    if message.contains("provider-1") && message.contains("api_key")
-            ),
-            "expected versioned registry secret error, got: {error:?}"
-        );
-        assert!(
-            versioned
-                .latest_publication("default")
-                .await
-                .expect("read latest publication")
-                .is_none(),
-            "failed publish must not create a publication"
-        );
-        assert!(
-            versioned
-                .current(
-                    "default",
-                    awaken_server_contract::REGISTRY_KIND_PROVIDER,
-                    "provider-1"
-                )
-                .await
-                .expect("read provider current")
-                .is_none(),
-            "failed publish must not create a provider resource version"
+            provider.api_key.is_none(),
+            "versioned provider resources must not carry plaintext api keys"
         );
     }
 

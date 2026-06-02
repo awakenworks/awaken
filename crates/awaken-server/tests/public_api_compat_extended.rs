@@ -27,16 +27,20 @@ use awaken_server::routes::ApiError;
 use awaken_server::services::run_control_service::{
     ActiveRun, InputMode, InterruptMode, RunControlError,
 };
+use awaken_server_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_server_contract::contract::event::AgentEvent;
 use awaken_server_contract::contract::event_sink::EventSink;
 use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken_server_contract::contract::mailbox::{MailboxInterrupt, MailboxStore};
 use awaken_server_contract::contract::storage::{RunWaitingState, ThreadRunStore};
 use awaken_server_contract::contract::suspension::ToolCallResume;
+use awaken_stores::MemoryCommitCoordinator;
 
 // ── Signature lockdown for Mailbox ────────────────────────────────────────
 
-struct OldExec;
+struct OldExec {
+    coordinator: Arc<dyn CommitCoordinator>,
+}
 
 #[async_trait]
 impl RunDispatchExecutor for OldExec {
@@ -55,6 +59,10 @@ impl RunDispatchExecutor for OldExec {
     }
     fn send_decision(&self, _: &str, _: String, _: ToolCallResume) -> bool {
         false
+    }
+
+    fn commit_coordinator(&self) -> Option<Arc<dyn CommitCoordinator>> {
+        Some(Arc::clone(&self.coordinator))
     }
 }
 
@@ -122,8 +130,10 @@ fn mailbox_new_signature_intact() {
     // smoke calls below cover the two prior input shapes through the new
     // unified signature.
     let mailbox_store: Arc<dyn MailboxStore> = Arc::new(awaken_stores::InMemoryMailboxStore::new());
-    let run_store: Arc<dyn ThreadRunStore> = Arc::new(awaken_stores::InMemoryStore::new());
-    let concrete: Arc<OldExec> = Arc::new(OldExec);
+    let memory_store = Arc::new(awaken_stores::InMemoryStore::new());
+    let coordinator = MemoryCommitCoordinator::wrap(Arc::clone(&memory_store));
+    let run_store: Arc<dyn ThreadRunStore> = memory_store;
+    let concrete: Arc<OldExec> = Arc::new(OldExec { coordinator });
     let erased: Arc<dyn RunDispatchExecutor> = concrete.clone();
 
     let _ = Mailbox::new(

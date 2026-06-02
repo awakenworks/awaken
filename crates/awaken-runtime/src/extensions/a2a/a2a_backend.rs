@@ -4,7 +4,6 @@ use crate::backend::{
     BackendDelegateRunRequest, BackendOutputArtifact, BackendOutputCapability,
     BackendRootRunRequest, BackendRunOutput, BackendRunResult, BackendRunStatus,
     BackendTranscriptCapability, BackendWaitCapability, ExecutionBackend, ExecutionBackendError,
-    ExecutionBackendFactory, ExecutionBackendFactoryError,
 };
 use crate::resolution::{BackendProfile, PersistenceCapability};
 use async_trait::async_trait;
@@ -29,6 +28,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::{sync::Arc, time::Duration};
 
+mod backend_factory;
 mod checkpoint;
 mod remote_state;
 use checkpoint::persist_accepted_checkpoint;
@@ -217,27 +217,6 @@ pub struct A2aBackend {
 
 /// Factory for the built-in A2A remote backend.
 pub struct A2aBackendFactory;
-
-impl ExecutionBackendFactory for A2aBackendFactory {
-    fn backend(&self) -> &str {
-        A2A_BACKEND
-    }
-
-    fn validate(&self, endpoint: &RemoteEndpoint) -> Result<(), ExecutionBackendFactoryError> {
-        A2aConfig::try_from_remote_endpoint(endpoint)
-            .map(|_| ())
-            .map_err(|error| ExecutionBackendFactoryError::InvalidConfig(error.to_string()))
-    }
-
-    fn build(
-        &self,
-        endpoint: &RemoteEndpoint,
-    ) -> Result<Arc<dyn ExecutionBackend>, ExecutionBackendFactoryError> {
-        let config = A2aConfig::try_from_remote_endpoint(endpoint)
-            .map_err(|error| ExecutionBackendFactoryError::InvalidConfig(error.to_string()))?;
-        Ok(Arc::new(A2aBackend::new(config)))
-    }
-}
 
 #[derive(Debug)]
 enum SubmissionOutcome {
@@ -1363,6 +1342,7 @@ fn task_state_name(state: TaskState) -> &'static str {
 #[allow(deprecated)] // Tests seed legacy checkpoint fixtures directly.
 mod tests {
     use super::*;
+    use crate::backend::ExecutionBackendFactory;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 

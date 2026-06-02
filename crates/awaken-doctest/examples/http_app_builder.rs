@@ -8,20 +8,22 @@ use std::sync::Arc;
 
 use awaken::prelude::*;
 use awaken::server::prelude::*;
-use awaken::stores::{InMemoryMailboxStore, InMemoryStore};
+use awaken::stores::{InMemoryMailboxStore, InMemoryStore, MemoryCommitCoordinator};
 
 fn main() {
-    // 1. Build an empty runtime — no agents, no providers, just enough to
+    // 1. Thread + run store backs message history and run records.
+    let store = Arc::new(InMemoryStore::new());
+    let coordinator = MemoryCommitCoordinator::wrap(store.clone());
+
+    // 2. Build an empty runtime — no agents, no providers, just enough to
     //    show the wiring shape. A real embedder would register agents,
     //    tools, models, and providers here.
     let runtime = Arc::new(
         AgentRuntimeBuilder::new()
+            .with_commit_coordinator(coordinator)
             .build()
             .expect("empty runtime builds"),
     );
-
-    // 2. Thread + run store backs message history and run records.
-    let store = Arc::new(InMemoryStore::new());
 
     // 3. Mailbox queues dispatches off the HTTP request path so a run can
     //    outlive a hung connection. `InMemoryMailboxStore` is fine for

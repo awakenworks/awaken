@@ -99,7 +99,7 @@ describe("canonicalStringify / deepEqualCanonical", () => {
 });
 
 describe("lockedFieldChange", () => {
-  it("returns null when neither endpoint nor registry differs", () => {
+  it("returns null when no locked endpoint or registry field differs", () => {
     const spec = baseSpec({ endpoint: REMOTE_ENDPOINT, registry: "cloud" });
     const parsed = JSON.parse(JSON.stringify(spec));
     expect(lockedFieldChange(spec, parsed)).toBeNull();
@@ -142,6 +142,28 @@ describe("lockedFieldChange", () => {
     expect(lockedFieldChange(spec, { endpoint: undefined })).toBeNull();
     expect(lockedFieldChange(spec, { registry: null })).toBeNull();
     expect(lockedFieldChange(spec, { registry: undefined })).toBeNull();
+    expect(lockedFieldChange(spec, { backend: null })).toBeNull();
+    expect(lockedFieldChange(spec, { backend: undefined })).toBeNull();
+  });
+
+  it("does not treat backend as locked because the editor can persist it", () => {
+    const spec = baseSpec({
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: { base_url: "https://remote.example.com" },
+      },
+    });
+    expect(
+      lockedFieldChange(spec, {
+        ...spec,
+        backend: {
+          kind: "a2a",
+          version: 1,
+          config: { base_url: "https://other.example.com" },
+        },
+      }),
+    ).toBeNull();
   });
 
   it("flags endpoint when the parsed value differs", () => {
@@ -285,6 +307,11 @@ describe("diffPatchableAgentFields", () => {
       system_prompt: "new",
       max_rounds: 64,
       max_continuation_retries: 5,
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: { base_url: "https://remote.example.com" },
+      },
       delegates: ["other-agent"],
       allowed_tools: ["Bash"],
       allowed_tool_patterns: ["mcp:*"],
@@ -299,6 +326,7 @@ describe("diffPatchableAgentFields", () => {
       [
         "allowed_tools",
         "allowed_tool_patterns",
+        "backend",
         "delegates",
         "excluded_tools",
         "excluded_tool_patterns",
@@ -340,11 +368,16 @@ describe("diffPatchableAgentFields", () => {
 });
 
 describe("cloneAgentSpecForEditor", () => {
-  it("clears id, created_at, updated_at, registry, and endpoint", () => {
+  it("clears id, created_at, updated_at, backend, registry, and endpoint", () => {
     const source: AgentSpec = baseSpec({
       id: "ingest",
       created_at: 1_700_000_000_000,
       updated_at: 1_700_000_500_000,
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: { base_url: "https://remote.example.com" },
+      },
       registry: "cloud",
       endpoint: REMOTE_ENDPOINT,
     });
@@ -353,6 +386,7 @@ describe("cloneAgentSpecForEditor", () => {
     expect(cloned.id).toBe("");
     expect(cloned.created_at).toBeUndefined();
     expect(cloned.updated_at).toBeUndefined();
+    expect(cloned.backend).toBeUndefined();
     expect(cloned.registry).toBeUndefined();
     expect(cloned.endpoint).toBeUndefined();
   });
@@ -1213,6 +1247,7 @@ describe("ALLOWED_AGENT_FIELDS / unknownAgentSpecFields (R3 #3)", () => {
         "id",
         "created_at",
         "updated_at",
+        "backend",
         "endpoint",
         "registry",
         ...PATCHABLE_AGENT_FIELDS,
@@ -1223,6 +1258,7 @@ describe("ALLOWED_AGENT_FIELDS / unknownAgentSpecFields (R3 #3)", () => {
   it("returns an empty list for a fully-known spec object", () => {
     const parsed: Record<string, unknown> = {
       id: "a",
+      description: "test agent",
       model_id: "m",
       system_prompt: "p",
       plugin_ids: ["permission"],
@@ -1254,12 +1290,16 @@ describe("ALLOWED_AGENT_FIELDS / unknownAgentSpecFields (R3 #3)", () => {
     expect(PATCHABLE_AGENT_FIELDS.filter((field) => !rustFieldSet.has(field))).toEqual([]);
   });
 
-  it("documents endpoint as backend-patchable but editor-locked", () => {
+  it("documents backend as editor-patchable and endpoint as editor-locked", () => {
     const rustPatchFields = new Set(rustAgentSpecPatchFields());
 
+    expect(rustPatchFields.has("backend")).toBe(true);
     expect(rustPatchFields.has("endpoint")).toBe(true);
+    expect(ALLOWED_AGENT_FIELDS).toContain("backend");
     expect(ALLOWED_AGENT_FIELDS).toContain("endpoint");
+    expect(LOCKED_AGENT_FIELDS).not.toContain("backend");
     expect(LOCKED_AGENT_FIELDS).toContain("endpoint");
+    expect(PATCHABLE_AGENT_FIELDS).toContain("backend");
     expect(PATCHABLE_AGENT_FIELDS).not.toContain("endpoint");
   });
 
@@ -1281,8 +1321,13 @@ describe("ALLOWED_AGENT_FIELDS / unknownAgentSpecFields (R3 #3)", () => {
 });
 
 describe("mergeLockedFields (R3 #1)", () => {
-  it("overlays current spec's endpoint and registry onto parsed", () => {
+  it("overlays current spec's endpoint and registry while preserving parsed backend", () => {
     const spec = baseSpec({
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: { base_url: "https://real.example.com" },
+      },
       endpoint: {
         base_url: "https://real.example.com",
         auth: { type: "bearer", bearer_token: "real" },
@@ -1291,6 +1336,11 @@ describe("mergeLockedFields (R3 #1)", () => {
     });
     const parsed: Record<string, unknown> = {
       ...spec,
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: { base_url: "https://redacted.example.com" },
+      },
       endpoint: {
         base_url: "https://real.example.com",
         auth: { type: "bearer", bearer_token: "***" },
@@ -1298,6 +1348,7 @@ describe("mergeLockedFields (R3 #1)", () => {
       registry: "cloud",
     };
     const merged = mergeLockedFields(parsed, spec);
+    expect(merged.backend).toEqual(parsed.backend);
     expect(merged.endpoint).toEqual(spec.endpoint);
     expect(merged.registry).toBe("cloud");
   });

@@ -211,7 +211,7 @@ test.describe('admin config UI', () => {
     await page.goto('/agents/new');
     await page.getByLabel('Agent ID').fill(agentId);
     await page.getByLabel('Model').selectOption('default');
-    await page.getByLabel('Max rounds').fill('1');
+    await page.getByLabel('Max rounds').fill('2');
     await page
       .getByLabel('System prompt')
       .fill('Use the scripted tool directives when the user provides one.');
@@ -255,7 +255,7 @@ test.describe('admin config UI', () => {
     await page.goto('/agents/new');
     await page.getByLabel('Agent ID').fill(agentId);
     await page.getByLabel('Model').selectOption('default');
-    await page.getByLabel('Max rounds').fill('1');
+    await page.getByLabel('Max rounds').fill('2');
     await page
       .getByLabel('System prompt')
       .fill('Use the scripted tool directives when the user provides one.');
@@ -267,7 +267,7 @@ test.describe('admin config UI', () => {
       .locator('section')
       .filter({ has: page.getByRole('heading', { name: 'Plugins' }) })
       .first();
-    await pluginsSection.getByLabel('beta_overhead').fill('0');
+    await pluginsSection.getByLabel('Beta overhead tokens').fill('0');
 
     await gotoEditorTab(page, 'Advanced');
     await expect(rawJsonEditor(page)).toHaveValue(/"deferred_tools"/);
@@ -555,7 +555,7 @@ test.describe('admin config UI', () => {
     await gotoEditorTab(page, 'Tools');
 
     const allowedSelector = page.locator('[data-testid="tool-selector-allowed"]');
-    await allowedSelector.getByPlaceholder('e.g. mcp:*').fill('mcp:*');
+    await allowedSelector.getByLabel('New pattern').fill('mcp:*');
     await allowedSelector.getByRole('button', { name: 'Add pattern' }).click();
     // Pattern row appears with the new value.
     await expect(allowedSelector.locator('code', { hasText: /^mcp:\*$/ })).toBeVisible();

@@ -12,7 +12,7 @@ use awaken_server_contract::contract::content::ContentBlock;
 use awaken_server_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_server_contract::registry_spec::AgentSpec;
-use awaken_stores::memory::InMemoryStore;
+use awaken_stores::{MemoryCommitCoordinator, memory::InMemoryStore};
 use axum::body::to_bytes;
 use axum::http::{Request, Response, StatusCode};
 use serde_json::{Value, json};
@@ -60,10 +60,13 @@ impl awaken_server_contract::contract::executor::LlmExecutor for EchoExecutor {
 // ── App setup ──
 
 fn make_mcp_app() -> axum::Router {
+    let store = Arc::new(InMemoryStore::new());
+    let coordinator = MemoryCommitCoordinator::wrap(Arc::clone(&store));
     let runtime = {
         let builder = AgentRuntimeBuilder::new()
             .with_model(ModelSpec::new("test-model", "mock", "mock-model"))
             .with_provider("mock", Arc::new(EchoExecutor))
+            .with_commit_coordinator(coordinator)
             .with_agent_spec(AgentSpec {
                 id: "echo".into(),
                 model_id: "test-model".into(),
@@ -73,7 +76,6 @@ fn make_mcp_app() -> axum::Router {
             });
         Arc::new(builder.build().expect("build runtime"))
     };
-    let store = Arc::new(InMemoryStore::new());
     let mailbox_store = Arc::new(awaken_stores::InMemoryMailboxStore::new());
     let mailbox = Arc::new(awaken_server::mailbox::Mailbox::new(
         runtime.clone(),

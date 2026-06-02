@@ -259,7 +259,7 @@ pub fn diagnose_agent_spec(registries: &RegistrySet, spec: &AgentSpec) -> Vec<Re
     let mut diagnostics = Vec::new();
     let agent_id = spec.id.clone();
 
-    if spec.endpoint.is_none() {
+    if !spec.uses_remote_backend() {
         if let Some(binding) = registries.models.get_model(&spec.model_id) {
             if registries
                 .providers

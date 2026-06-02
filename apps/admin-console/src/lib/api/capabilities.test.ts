@@ -51,6 +51,7 @@ describe("capabilitiesApi", () => {
         ],
         models: [],
         providers: [],
+        backends: [],
         namespaces: [],
       },
     });

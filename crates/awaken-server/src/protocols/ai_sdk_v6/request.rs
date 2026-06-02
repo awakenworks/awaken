@@ -534,6 +534,7 @@ mod tests {
     }
 
     fn test_run(run_id: &str, thread_id: &str, status: RunStatus) -> RunRecord {
+        let finished_at = (status == RunStatus::Done).then_some(1);
         RunRecord {
             run_id: run_id.into(),
             thread_id: thread_id.into(),
@@ -555,7 +556,7 @@ mod tests {
             outcome: None,
             created_at: 1,
             started_at: None,
-            finished_at: None,
+            finished_at,
             updated_at: 1,
             steps: 0,
             input_tokens: 0,

@@ -75,8 +75,12 @@ pub trait PluginConfigKey: 'static + Send + Sync {
 #[serde(deny_unknown_fields)]
 struct AgentSpecRaw {
     id: String,
-    model_id: String,
-    system_prompt: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    model_id: Option<String>,
+    #[serde(default)]
+    system_prompt: Option<String>,
     #[serde(default = "default_max_rounds")]
     max_rounds: usize,
     #[serde(default = "default_max_continuation_retries")]
@@ -103,6 +107,8 @@ struct AgentSpecRaw {
     excluded_tool_patterns: Option<Option<Vec<String>>>,
     // --- pass-through tail ---
     #[serde(default)]
+    backend: Option<AgentBackendSpec>,
+    #[serde(default)]
     endpoint: Option<RemoteEndpoint>,
     #[serde(default)]
     delegates: Vec<String>,
@@ -112,18 +118,61 @@ struct AgentSpecRaw {
     registry: Option<String>,
 }
 
-impl From<AgentSpecRaw> for AgentSpec {
-    fn from(raw: AgentSpecRaw) -> Self {
+impl TryFrom<AgentSpecRaw> for AgentSpec {
+    type Error = BackendConfigError;
+
+    fn try_from(raw: AgentSpecRaw) -> Result<Self, Self::Error> {
         let (allowed_tools, allowed_tool_patterns) =
             inject_legacy_allow_default(raw.allowed_tools, raw.allowed_tool_patterns);
         // Excluded fields have no legacy shim — just collapse the
         // double-Option down to a single Option<Vec<_>>.
         let excluded_tools = raw.excluded_tools.flatten();
         let excluded_tool_patterns = raw.excluded_tool_patterns.flatten();
-        AgentSpec {
+        let model_id = raw.model_id.unwrap_or_else(|| {
+            raw.backend
+                .as_ref()
+                .and_then(AgentBackendSpec::awaken_model_id)
+                .unwrap_or_default()
+        });
+        let system_prompt = raw.system_prompt.unwrap_or_else(|| {
+            raw.backend
+                .as_ref()
+                .and_then(AgentBackendSpec::awaken_system_prompt)
+                .unwrap_or_default()
+        });
+        let (backend, endpoint) = match (raw.backend, raw.endpoint) {
+            (Some(backend), Some(endpoint)) => {
+                backend.validate()?;
+                validate_remote_endpoint(&endpoint)?;
+                if backend.remote_endpoint()? != Some(endpoint.clone()) {
+                    return Err(BackendConfigError::ConflictingLegacyEndpoint);
+                }
+                (backend, Some(endpoint))
+            }
+            (Some(backend), None) => {
+                backend.validate()?;
+                let endpoint = backend.remote_endpoint()?;
+                (backend, endpoint)
+            }
+            (None, Some(endpoint)) => {
+                validate_remote_endpoint(&endpoint)?;
+                (
+                    AgentBackendSpec::from_remote_endpoint(&endpoint),
+                    Some(endpoint),
+                )
+            }
+            (None, None) => (
+                AgentBackendSpec::awaken_from_fields(&model_id, &system_prompt, raw.max_rounds),
+                None,
+            ),
+        };
+
+        Ok(AgentSpec {
             id: raw.id,
-            model_id: raw.model_id,
-            system_prompt: raw.system_prompt,
+            description: raw.description,
+            backend,
+            model_id,
+            system_prompt,
             max_rounds: raw.max_rounds,
             max_continuation_retries: raw.max_continuation_retries,
             stop_conditions: raw.stop_conditions,
@@ -135,11 +184,11 @@ impl From<AgentSpecRaw> for AgentSpec {
             allowed_tool_patterns,
             excluded_tools,
             excluded_tool_patterns,
-            endpoint: raw.endpoint,
+            endpoint,
             delegates: raw.delegates,
             sections: raw.sections,
             registry: raw.registry,
-        }
+        })
     }
 }
 
@@ -177,6 +226,67 @@ fn inject_legacy_allow_default(
     }
 }
 
+/// Built-in backend kind for in-process Awaken agent execution.
+pub const AWAKEN_BACKEND_KIND: &str = "awaken";
+/// Built-in backend kind for A2A HTTP+JSON remote execution.
+pub const A2A_BACKEND_KIND: &str = "a2a";
+
+fn default_backend_version() -> u32 {
+    1
+}
+
+/// Error returned when a canonical agent backend config violates the
+/// runtime-contract invariants required before persistence or execution.
+#[derive(Debug, thiserror::Error)]
+pub enum BackendConfigError {
+    #[error("backend kind must not be empty")]
+    EmptyKind,
+    #[error("backend version {version} is unsupported; expected {expected}")]
+    UnsupportedVersion { version: u32, expected: u32 },
+    #[error("backend config must be a JSON object")]
+    ConfigNotObject,
+    #[error("cannot mix canonical backend and legacy endpoint fields")]
+    ConflictingLegacyEndpoint,
+    #[error("backend config backend '{config_backend}' does not match kind '{kind}'")]
+    ConflictingBackendKind {
+        kind: String,
+        config_backend: String,
+    },
+    #[error("remote endpoint base_url must not be empty")]
+    EmptyBaseUrl,
+    #[error("remote endpoint base_url must use http:// or https://")]
+    NonHttpBaseUrl,
+    #[error("remote endpoint auth token must not be empty")]
+    EmptyAuthToken,
+    #[error("remote endpoint auth token cannot be a redacted placeholder")]
+    RedactedAuthToken,
+    #[error("remote endpoint auth type '{auth_type}' is unsupported")]
+    UnsupportedAuthType { auth_type: String },
+    #[error("invalid remote endpoint config: {message}")]
+    InvalidRemoteEndpoint { message: String },
+}
+
+/// Canonical execution backend selector for an agent.
+///
+/// `kind` selects a registered backend factory. `version` versions the
+/// backend-specific `config` object. The runtime keeps legacy
+/// `model_id`/`system_prompt`/`endpoint` fields on [`AgentSpec`] while this
+/// structure becomes the stable entry point for new configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
+pub struct AgentBackendSpec {
+    pub kind: String,
+    #[serde(default = "default_backend_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub config: Value,
+}
+
+impl Default for AgentBackendSpec {
+    fn default() -> Self {
+        Self::awaken_from_fields("", "", default_max_rounds())
+    }
+}
+
 /// Serializable agent definition referencing registries by ID.
 ///
 /// Can be saved to JSON, loaded from config files, or transmitted over the network.
@@ -185,13 +295,26 @@ fn inject_legacy_allow_default(
 /// Also serves as the runtime behavior configuration passed to hooks via
 /// `PhaseContext.agent_spec`. Plugins read their typed config via `spec.config::<K>()`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(from = "AgentSpecRaw")]
+#[serde(try_from = "AgentSpecRaw")]
 pub struct AgentSpec {
     /// Unique agent identifier.
     pub id: String,
+    /// Human-readable description for UI, catalogs, and delegate tool descriptions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Canonical execution backend configuration.
+    ///
+    /// Backward compatibility: legacy `model_id` / `system_prompt` /
+    /// `endpoint` inputs are normalized into this field during
+    /// deserialization. The legacy fields remain for existing callers and
+    /// local Awaken execution.
+    #[serde(default)]
+    pub backend: AgentBackendSpec,
     /// ModelRegistry ID — resolved to a `ModelSpec` carrying provider, upstream model, capabilities, and pricing.
+    #[serde(default)]
     pub model_id: String,
     /// System prompt sent to the LLM.
+    #[serde(default)]
     pub system_prompt: String,
     /// Maximum inference rounds before the agent stops.
     #[serde(default = "default_max_rounds")]
@@ -406,6 +529,152 @@ impl<'de> Deserialize<'de> for RemoteEndpoint {
     }
 }
 
+impl AgentBackendSpec {
+    #[must_use]
+    pub fn awaken_from_fields(model_id: &str, system_prompt: &str, max_rounds: usize) -> Self {
+        Self {
+            kind: AWAKEN_BACKEND_KIND.to_string(),
+            version: default_backend_version(),
+            config: serde_json::json!({
+                "model_id": model_id,
+                "system_prompt": system_prompt,
+                "max_rounds": max_rounds,
+            }),
+        }
+    }
+
+    #[must_use]
+    pub fn from_remote_endpoint(endpoint: &RemoteEndpoint) -> Self {
+        let mut config = serde_json::to_value(endpoint)
+            .unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
+        if let Value::Object(map) = &mut config {
+            map.remove("backend");
+        }
+        Self {
+            kind: endpoint.backend.clone(),
+            version: default_backend_version(),
+            config,
+        }
+    }
+
+    #[must_use]
+    pub fn is_awaken(&self) -> bool {
+        self.kind == AWAKEN_BACKEND_KIND
+    }
+
+    #[must_use]
+    pub fn awaken_model_id(&self) -> Option<String> {
+        self.is_awaken()
+            .then(|| self.config.get("model_id").and_then(Value::as_str))
+            .flatten()
+            .map(ToOwned::to_owned)
+    }
+
+    #[must_use]
+    pub fn awaken_system_prompt(&self) -> Option<String> {
+        self.is_awaken()
+            .then(|| self.config.get("system_prompt").and_then(Value::as_str))
+            .flatten()
+            .map(ToOwned::to_owned)
+    }
+
+    pub fn validate(&self) -> Result<(), BackendConfigError> {
+        if self.kind.trim().is_empty() {
+            return Err(BackendConfigError::EmptyKind);
+        }
+        if self.version != default_backend_version() {
+            return Err(BackendConfigError::UnsupportedVersion {
+                version: self.version,
+                expected: default_backend_version(),
+            });
+        }
+        if !self.config.is_object() {
+            return Err(BackendConfigError::ConfigNotObject);
+        }
+        if let Some(endpoint) = self.remote_endpoint()? {
+            validate_remote_endpoint(&endpoint)?;
+        }
+        Ok(())
+    }
+
+    pub fn remote_endpoint(&self) -> Result<Option<RemoteEndpoint>, BackendConfigError> {
+        if self.is_awaken() {
+            return Ok(None);
+        }
+        let mut value = match self.config.clone() {
+            Value::Object(map) => Value::Object(map),
+            _ => return Err(BackendConfigError::ConfigNotObject),
+        };
+        if let Value::Object(map) = &mut value {
+            match map.get("backend").and_then(Value::as_str) {
+                Some(config_backend) if config_backend != self.kind => {
+                    return Err(BackendConfigError::ConflictingBackendKind {
+                        kind: self.kind.clone(),
+                        config_backend: config_backend.to_owned(),
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    map.insert("backend".to_string(), Value::String(self.kind.clone()));
+                }
+            }
+        }
+        serde_json::from_value(value).map(Some).map_err(|error| {
+            BackendConfigError::InvalidRemoteEndpoint {
+                message: error.to_string(),
+            }
+        })
+    }
+}
+
+fn validate_remote_endpoint(endpoint: &RemoteEndpoint) -> Result<(), BackendConfigError> {
+    let base_url = endpoint.base_url.trim();
+    if base_url.is_empty() {
+        return Err(BackendConfigError::EmptyBaseUrl);
+    }
+    if base_url.starts_with("http:///") || base_url.starts_with("https:///") {
+        return Err(BackendConfigError::EmptyBaseUrl);
+    }
+    let parsed =
+        url::Url::parse(base_url).map_err(|error| BackendConfigError::InvalidRemoteEndpoint {
+            message: error.to_string(),
+        })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(BackendConfigError::NonHttpBaseUrl);
+    }
+    if parsed.host_str().is_none() {
+        return Err(BackendConfigError::EmptyBaseUrl);
+    }
+    if parsed.fragment().is_some() {
+        return Err(BackendConfigError::InvalidRemoteEndpoint {
+            message: "base_url must not contain a fragment".into(),
+        });
+    }
+    // Request URLs are built by appending paths to base_url (e.g.
+    // `{base}/message:send`), so a query string would be stranded before the
+    // appended path and produce an ambiguous URL. Reject it, like fragments.
+    if parsed.query().is_some() {
+        return Err(BackendConfigError::InvalidRemoteEndpoint {
+            message: "base_url must not contain a query string".into(),
+        });
+    }
+    if let Some(auth) = endpoint.auth.as_ref() {
+        if auth.auth_type != "bearer" {
+            return Err(BackendConfigError::UnsupportedAuthType {
+                auth_type: auth.auth_type.clone(),
+            });
+        }
+        let token = auth.param_str("token").unwrap_or_default().trim();
+        if token.is_empty() {
+            return Err(BackendConfigError::EmptyAuthToken);
+        }
+        if token == "***" {
+            return Err(BackendConfigError::RedactedAuthToken);
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // ProviderSpec
 // ---------------------------------------------------------------------------
@@ -593,6 +862,8 @@ impl Default for AgentSpec {
     fn default() -> Self {
         Self {
             id: String::new(),
+            description: None,
+            backend: AgentBackendSpec::awaken_from_fields("", "", default_max_rounds()),
             model_id: String::new(),
             system_prompt: String::new(),
             max_rounds: default_max_rounds(),
@@ -690,18 +961,27 @@ impl AgentSpec {
     #[must_use]
     pub fn with_model_id(mut self, model_id: impl Into<String>) -> Self {
         self.model_id = model_id.into();
+        self.refresh_awaken_backend_config();
         self
     }
 
     #[must_use]
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = prompt.into();
+        self.refresh_awaken_backend_config();
+        self
+    }
+
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
         self
     }
 
     #[must_use]
     pub fn with_max_rounds(mut self, n: usize) -> Self {
         self.max_rounds = n;
+        self.refresh_awaken_backend_config();
         self
     }
 
@@ -734,8 +1014,63 @@ impl AgentSpec {
 
     #[must_use]
     pub fn with_endpoint(mut self, endpoint: RemoteEndpoint) -> Self {
+        self.backend = AgentBackendSpec::from_remote_endpoint(&endpoint);
         self.endpoint = Some(endpoint);
         self
+    }
+
+    /// Return the effective non-Awaken remote endpoint, supporting both
+    /// legacy `endpoint` and canonical `backend` configuration.
+    pub fn remote_endpoint(&self) -> Result<Option<RemoteEndpoint>, BackendConfigError> {
+        if let Some(endpoint) = self.endpoint.clone() {
+            validate_remote_endpoint(&endpoint)?;
+            return Ok(Some(endpoint));
+        }
+        self.backend.remote_endpoint()
+    }
+
+    /// True when the agent is configured for a non-local backend, even if
+    /// the backend-specific config is currently incomplete or invalid.
+    ///
+    /// Use this for routing and dependency decisions. Use [`remote_endpoint`]
+    /// only after deciding the agent is remote and needing the legacy endpoint
+    /// view for an existing backend factory.
+    #[must_use]
+    pub fn uses_remote_backend(&self) -> bool {
+        self.endpoint.is_some() || !self.backend.is_awaken()
+    }
+
+    /// The short operator-facing description used by catalogs and delegate
+    /// tools. Falls back to the first non-empty system-prompt line, then id.
+    #[must_use]
+    pub fn display_description(&self) -> String {
+        if let Some(description) = self
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return description.to_string();
+        }
+        if let Some(line) = self
+            .system_prompt
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+        {
+            return line.chars().take(100).collect();
+        }
+        self.id.clone()
+    }
+
+    fn refresh_awaken_backend_config(&mut self) {
+        if self.backend.is_awaken() {
+            self.backend = AgentBackendSpec::awaken_from_fields(
+                &self.model_id,
+                &self.system_prompt,
+                self.max_rounds,
+            );
+        }
     }
 
     /// Set a raw JSON section (for tests or untyped usage).

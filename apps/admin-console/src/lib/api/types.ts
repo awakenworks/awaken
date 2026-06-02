@@ -36,8 +36,16 @@ export interface RemoteEndpoint {
   options?: Record<string, unknown>;
 }
 
+export interface AgentBackendSpec {
+  kind: string;
+  version?: number;
+  config?: unknown;
+}
+
 export interface AgentSpec {
   id: string;
+  description?: string | null;
+  backend?: AgentBackendSpec;
   model_id: string;
   system_prompt: string;
   max_rounds?: number;
@@ -229,6 +237,16 @@ export interface PluginInfo {
   }>;
 }
 
+export interface BackendInfo {
+  kind: string;
+  version: number;
+  schema: Record<string, unknown>;
+  display_name?: string | null;
+  description?: string | null;
+  default_config?: unknown;
+  ui_schema?: Record<string, unknown> | null;
+}
+
 export interface SkillArgumentInfo {
   name: string;
   description?: string | null;
@@ -297,6 +315,7 @@ export interface Capabilities {
   skills: SkillInfo[];
   models: ModelSpec[];
   providers: Array<{ id: string }>;
+  backends?: BackendInfo[];
   admin_assistant?: AdminAssistantCapability;
   supported_adapters?: string[];
   namespaces: Array<{

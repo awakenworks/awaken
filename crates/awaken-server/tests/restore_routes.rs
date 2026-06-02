@@ -510,7 +510,7 @@ async fn restore_does_not_validate_references_at_edit_time() {
     let (status, _) = post_json(
         &app,
         "/v1/config/providers",
-        &json!({"id": "prov-restore-test", "adapter": "stub"}),
+        &json!({"id": "prov-restore-test", "adapter": "stub", "api_key": "test-key"}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -594,7 +594,7 @@ async fn apply_rejects_missing_references_after_restore_promotes_invalid_graph()
     let (status, _) = post_json(
         app,
         "/v1/config/providers",
-        &json!({"id": "prov-restore-apply", "adapter": "stub"}),
+        &json!({"id": "prov-restore-apply", "adapter": "stub", "api_key": "test-key"}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);

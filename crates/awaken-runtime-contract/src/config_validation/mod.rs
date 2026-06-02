@@ -6,7 +6,8 @@ use crate::agent_spec_patch::AgentSpecPatch;
 use crate::config_record::{ConfigRecord, ConfigRecordError, ConfigRecordMerge};
 use crate::contract::lifecycle::StopConditionSpec;
 use crate::registry_spec::{
-    AgentSpec, Modality, ModelPoolSpec, ModelSpec, PoolMemberRole, ProviderSpec,
+    A2A_BACKEND_KIND, AWAKEN_BACKEND_KIND, AgentBackendSpec, AgentSpec, Modality, ModelPoolSpec,
+    ModelSpec, PoolMemberRole, ProviderSpec,
 };
 use crate::skill_allowed_tools::{
     is_skill_allowed_tool_pattern, parse_skill_allowed_tools, validate_skill_allowed_tool_pattern,
@@ -113,6 +114,7 @@ pub enum ConfigValidationError {
 pub fn validate_agent_spec(value: Value) -> Result<AgentSpec, ConfigValidationError> {
     let spec: AgentSpec =
         serde_json::from_value(value).map_err(ConfigValidationError::AgentSpec)?;
+    validate_backend_spec("agent spec", &spec.backend)?;
     validate_stop_conditions("agent spec", &spec.stop_conditions)?;
     Ok(spec)
 }
@@ -123,10 +125,41 @@ pub fn validate_agent_spec(value: Value) -> Result<AgentSpec, ConfigValidationEr
 pub fn validate_agent_spec_patch(value: Value) -> Result<AgentSpecPatch, ConfigValidationError> {
     let patch: AgentSpecPatch =
         serde_json::from_value(value).map_err(ConfigValidationError::AgentSpecPatch)?;
+    if patch.backend.is_some() && patch.endpoint.is_some() {
+        return Err(ConfigValidationError::Invalid {
+            surface: "agent spec patch",
+            message: "backend and endpoint cannot be patched in the same request".into(),
+        });
+    }
+    if let Some(backend) = &patch.backend {
+        validate_backend_spec("agent spec patch", backend)?;
+    }
     if let Some(stop_conditions) = &patch.stop_conditions {
         validate_stop_conditions("agent spec patch", stop_conditions)?;
     }
     Ok(patch)
+}
+
+fn validate_backend_spec(
+    surface: &'static str,
+    backend: &AgentBackendSpec,
+) -> Result<(), ConfigValidationError> {
+    backend
+        .validate()
+        .map_err(|error| ConfigValidationError::Invalid {
+            surface,
+            message: error.to_string(),
+        })?;
+    if !matches!(
+        backend.kind.as_str(),
+        AWAKEN_BACKEND_KIND | A2A_BACKEND_KIND
+    ) {
+        return Err(ConfigValidationError::Invalid {
+            surface,
+            message: format!("unsupported backend kind '{}'", backend.kind),
+        });
+    }
+    Ok(())
 }
 
 fn validate_stop_conditions(

@@ -414,11 +414,8 @@ impl Mailbox {
                 let id = self
                     .resolve_replayable_resolution_id(
                         request,
-                        request
-                            .persistence
-                            .resolution_id_hint
-                            .clone()
-                            .unwrap_or_else(|| run_id.clone()),
+                        request.persistence.resolution_id_hint.clone(),
+                        run_id.clone(),
                     )
                     .await?;
                 existing.resolution_id = Some(id.clone());
@@ -449,11 +446,8 @@ impl Mailbox {
             let resolution_id = self
                 .resolve_replayable_resolution_id(
                     request,
-                    request
-                        .persistence
-                        .resolution_id_hint
-                        .clone()
-                        .unwrap_or_else(|| run_id.clone()),
+                    request.persistence.resolution_id_hint.clone(),
+                    run_id.clone(),
                 )
                 .await?;
             let now = now_ms() / 1000;
@@ -576,13 +570,19 @@ impl Mailbox {
     async fn resolve_replayable_resolution_id(
         &self,
         request: &RunActivation,
-        resolution_id: String,
+        resolution_id_hint: Option<String>,
+        fallback_resolution_id: String,
     ) -> Result<String, MailboxError> {
+        let resolution_scope = match resolution_id_hint {
+            Some(resolution_id) => RegistryResolutionScope::Pinned(resolution_id),
+            None if request.inherited.run_resolver.is_some() => RegistryResolutionScope::Live,
+            None => RegistryResolutionScope::Pinned(fallback_resolution_id),
+        };
         self.executor
             .resolve_activation_in_scope(
                 request,
                 ResolutionPolicy::PersistentServer,
-                RegistryResolutionScope::Pinned(resolution_id),
+                resolution_scope,
             )
             .await
             .and_then(|plan| plan.into_replayable())

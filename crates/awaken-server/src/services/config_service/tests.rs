@@ -680,6 +680,48 @@ async fn provider_removal_preview_ignores_effective_remote_endpoint_agents() {
 }
 
 #[tokio::test]
+async fn create_agent_accepts_backend_a2a_without_local_model_fields() {
+    let config_store = Arc::new(awaken_stores::InMemoryStore::new());
+    let (state, _manager) = build_state(config_store.clone()).await;
+    let service = ConfigService::new(&state).expect("config service");
+
+    let value = service
+        .create_with_headers(
+            ConfigNamespace::Agents,
+            json!({
+                "id": "backend-a2a-agent",
+                "description": "Remote worker via backend spec",
+                "backend": {
+                    "kind": "a2a",
+                    "version": 1,
+                    "config": {
+                        "base_url": "http://remote-agent.example/v1/a2a",
+                        "target": "worker"
+                    }
+                }
+            }),
+            &axum::http::HeaderMap::new(),
+        )
+        .await
+        .expect("create backend-configured remote agent");
+
+    assert_eq!(value["id"], "backend-a2a-agent");
+    assert_eq!(value["description"], "Remote worker via backend spec");
+    assert_eq!(value["backend"]["kind"], "a2a");
+    assert!(value.get("model_id").is_none_or(Value::is_null));
+    assert!(value.get("system_prompt").is_none_or(Value::is_null));
+
+    let dependents = service
+        .find_dependents(ConfigNamespace::Models, "bootstrap")
+        .await
+        .expect("find model dependents");
+    assert!(
+        !dependents.iter().any(|dep| dep.id == "backend-a2a-agent"),
+        "backend-configured remote agent must not depend on local model"
+    );
+}
+
+#[tokio::test]
 async fn provider_removal_preview_collects_dependents_across_multiple_models() {
     let config_store = Arc::new(awaken_stores::InMemoryStore::new());
     let (state, _manager) = build_state(config_store.clone()).await;

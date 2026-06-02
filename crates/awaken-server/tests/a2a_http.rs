@@ -1757,14 +1757,14 @@ fn build_multi_agent_app() -> (axum::Router, Arc<InMemoryStore>) {
             id: "agent-alpha".into(),
             model_id: "model-alpha".into(),
             system_prompt: "alpha".into(),
-            max_rounds: 1,
+            max_rounds: 2,
             ..Default::default()
         })
         .with_agent_spec(AgentSpec {
             id: "agent-beta".into(),
             model_id: "model-beta".into(),
             system_prompt: "beta".into(),
-            max_rounds: 1,
+            max_rounds: 2,
             ..Default::default()
         });
     let store = Arc::new(InMemoryStore::new());

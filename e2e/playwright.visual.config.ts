@@ -39,7 +39,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `AWAKEN_STORAGE_DIR=${adminStorageDir} AWAKEN_ADMIN_API_BEARER_TOKEN=${TEST_ADMIN_TOKEN} cargo run -p ai-sdk-starter-agent`,
+      command: `AWAKEN_STORAGE_DIR=${adminStorageDir} AWAKEN_SEED_PROFILE=demo AWAKEN_ADMIN_API_BEARER_TOKEN=${TEST_ADMIN_TOKEN} cargo run -p ai-sdk-starter-agent`,
       cwd: '..',
       port: 38080,
       /* CI runners have a cold Cargo cache on first hit + heavy parallel

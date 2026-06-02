@@ -8,7 +8,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
-use crate::registry_spec::{AgentSpec, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec};
+use crate::registry_spec::{
+    AgentSpec, BackendConfigError, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec,
+};
 use crate::skill_spec::SkillSpec;
 use crate::skill_spec_patch::{SkillSpecPatch, merge_skill_spec};
 use crate::tool_spec::ToolSpec;
@@ -70,62 +72,62 @@ pub struct NoConfigPatch {}
 pub trait ConfigRecordMerge: Sized {
     type Patch: serde::de::DeserializeOwned;
 
-    fn merge_patch(self, patch: Self::Patch) -> Self;
+    fn merge_patch(self, patch: Self::Patch) -> Result<Self, ConfigRecordError>;
 }
 
 impl ConfigRecordMerge for AgentSpec {
     type Patch = AgentSpecPatch;
 
-    fn merge_patch(self, patch: AgentSpecPatch) -> Self {
-        merge_agent_spec(self, patch)
+    fn merge_patch(self, patch: AgentSpecPatch) -> Result<Self, ConfigRecordError> {
+        merge_agent_spec(self, patch).map_err(ConfigRecordError::BackendConfig)
     }
 }
 
 impl ConfigRecordMerge for ToolSpec {
     type Patch = ToolSpecPatch;
 
-    fn merge_patch(self, patch: ToolSpecPatch) -> Self {
-        merge_tool_spec(self, patch)
+    fn merge_patch(self, patch: ToolSpecPatch) -> Result<Self, ConfigRecordError> {
+        Ok(merge_tool_spec(self, patch))
     }
 }
 
 impl ConfigRecordMerge for SkillSpec {
     type Patch = SkillSpecPatch;
 
-    fn merge_patch(self, patch: SkillSpecPatch) -> Self {
-        merge_skill_spec(self, patch)
+    fn merge_patch(self, patch: SkillSpecPatch) -> Result<Self, ConfigRecordError> {
+        Ok(merge_skill_spec(self, patch))
     }
 }
 
 impl ConfigRecordMerge for ProviderSpec {
     type Patch = NoConfigPatch;
 
-    fn merge_patch(self, _patch: NoConfigPatch) -> Self {
-        self
+    fn merge_patch(self, _patch: NoConfigPatch) -> Result<Self, ConfigRecordError> {
+        Ok(self)
     }
 }
 
 impl ConfigRecordMerge for ModelSpec {
     type Patch = NoConfigPatch;
 
-    fn merge_patch(self, _patch: NoConfigPatch) -> Self {
-        self
+    fn merge_patch(self, _patch: NoConfigPatch) -> Result<Self, ConfigRecordError> {
+        Ok(self)
     }
 }
 
 impl ConfigRecordMerge for ModelPoolSpec {
     type Patch = NoConfigPatch;
 
-    fn merge_patch(self, _patch: NoConfigPatch) -> Self {
-        self
+    fn merge_patch(self, _patch: NoConfigPatch) -> Result<Self, ConfigRecordError> {
+        Ok(self)
     }
 }
 
 impl ConfigRecordMerge for McpServerSpec {
     type Patch = NoConfigPatch;
 
-    fn merge_patch(self, _patch: NoConfigPatch) -> Self {
-        self
+    fn merge_patch(self, _patch: NoConfigPatch) -> Result<Self, ConfigRecordError> {
+        Ok(self)
     }
 }
 
@@ -136,6 +138,8 @@ pub enum ConfigRecordError {
     Decode(#[source] serde_json::Error),
     #[error("invalid config record overrides: {0}")]
     Overrides(#[source] serde_json::Error),
+    #[error("invalid config record backend: {0}")]
+    BackendConfig(#[source] BackendConfigError),
 }
 
 impl<T: serde::de::DeserializeOwned> ConfigRecord<T> {
@@ -206,7 +210,7 @@ where
     };
     let patch: T::Patch =
         serde_json::from_value(overrides).map_err(ConfigRecordError::Overrides)?;
-    Ok(record.spec.merge_patch(patch))
+    record.spec.merge_patch(patch)
 }
 
 /// Decode visible records and return their effective specs.

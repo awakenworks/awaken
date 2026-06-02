@@ -39,13 +39,16 @@ export type LockedAgentField = (typeof LOCKED_AGENT_FIELDS)[number];
 /**
  * Fields that can be PATCHed onto a builtin / customized record via
  * `PATCH /v1/config/agents/:id/overrides`. `id` and `created_at` / `updated_at`
- * are not user-editable; `endpoint` and `registry` are locked (see above).
+ * are not user-editable; `endpoint` and `registry` are locked
+ * (see above).
  *
  * Kept in sync with the AgentSpec PATCH whitelist server-side. Every field
  * the editor exposes in any form must appear here, otherwise edits to it
  * silently drop on the customized save path (this is the G1 data-loss bug).
  */
 export const PATCHABLE_AGENT_FIELDS = [
+  "description",
+  "backend",
   "model_id",
   "system_prompt",
   "max_rounds",
@@ -218,12 +221,9 @@ function diffSectionsForPatch(
  * so the new record is treated as locally-defined and the user has to pick a
  * fresh `id` before Save.
  *
- * `endpoint` is also cleared. Endpoint binds the agent to a specific remote
- * backend and is not editable from this form — keeping it on a clone would
- * silently re-target the new agent at the source's remote backend with no
- * affordance to change it. Users who actually want a remote-backed clone
- * must (re)configure the endpoint after cloning via a code path that
- * exposes the form.
+ * `backend` and `endpoint` are also cleared. They bind the agent to a
+ * specific execution backend; clearing them gives the clone the editor's
+ * default local Awaken backend until the operator chooses another backend.
  */
 export function cloneAgentSpecForEditor(source: AgentSpec): AgentSpec {
   return {
@@ -231,6 +231,7 @@ export function cloneAgentSpecForEditor(source: AgentSpec): AgentSpec {
     id: "",
     created_at: undefined,
     updated_at: undefined,
+    backend: undefined,
     registry: undefined,
     endpoint: undefined,
   };

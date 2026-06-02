@@ -22,10 +22,16 @@ use awaken_server_contract::contract::content::extract_text;
 use awaken_server_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_server_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_server_contract::contract::lifecycle::{RunStatus, TerminationReason};
-use awaken_server_contract::contract::storage::{RunRecord, RunStore, ThreadStore};
+use awaken_server_contract::contract::storage::{
+    RunRecord, RunStore, RunWaitingState, ThreadStore, WaitingReason,
+};
 use awaken_server_contract::registry_spec::AgentSpec;
 use awaken_server_contract::registry_spec::RemoteEndpoint;
-use awaken_server_contract::{BuiltinSeedSet, BuiltinSpec, ModelSpec, ProviderSpec};
+use awaken_server_contract::{
+    BuiltinSeedSet, BuiltinSpec, ConfigRevisionRef, ModelSpec, ProviderSpec, PublishOutcome,
+    RegistryPublication, RegistryResourcePublish, VersionRef, VersionedRecord,
+    VersionedRegistryError, VersionedRegistryStore, VersionedResourceState,
+};
 use awaken_server_contract::{RequestSurface, ScopeContext, ScopeId, scoped_key};
 use awaken_stores::InMemoryVersionedRegistryStore;
 use awaken_stores::memory::InMemoryStore;
@@ -38,6 +44,145 @@ use tower::ServiceExt;
 
 struct TestRunResolver {
     inner: Arc<dyn awaken_runtime::AgentResolver>,
+}
+
+struct PublishFailingVersionedRegistryStore {
+    inner: InMemoryVersionedRegistryStore,
+}
+
+#[async_trait]
+impl VersionedRegistryStore for PublishFailingVersionedRegistryStore {
+    async fn resource_state(
+        &self,
+        scope_id: &str,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<VersionedResourceState>, VersionedRegistryError> {
+        self.inner.resource_state(scope_id, kind, id).await
+    }
+
+    async fn current(
+        &self,
+        scope_id: &str,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<VersionedRecord<Value>>, VersionedRegistryError> {
+        self.inner.current(scope_id, kind, id).await
+    }
+
+    async fn get(
+        &self,
+        scope_id: &str,
+        kind: &str,
+        id: &str,
+        version: u64,
+    ) -> Result<Option<VersionedRecord<Value>>, VersionedRegistryError> {
+        self.inner.get(scope_id, kind, id, version).await
+    }
+
+    async fn list_versions(
+        &self,
+        scope_id: &str,
+        kind: &str,
+        id: &str,
+    ) -> Result<Vec<VersionedRecord<Value>>, VersionedRegistryError> {
+        self.inner.list_versions(scope_id, kind, id).await
+    }
+
+    async fn publish_resource(
+        &self,
+        scope_id: &str,
+        kind: &str,
+        id: &str,
+        value: Value,
+        value_schema_version: u32,
+        metadata: Value,
+    ) -> Result<PublishOutcome<Value>, VersionedRegistryError> {
+        self.inner
+            .publish_resource(scope_id, kind, id, value, value_schema_version, metadata)
+            .await
+    }
+
+    async fn rollback_resource(
+        &self,
+        scope_id: &str,
+        kind: &str,
+        id: &str,
+        to_version: u64,
+        metadata: Value,
+    ) -> Result<VersionedRecord<Value>, VersionedRegistryError> {
+        self.inner
+            .rollback_resource(scope_id, kind, id, to_version, metadata)
+            .await
+    }
+
+    async fn archive_resource(
+        &self,
+        scope_id: &str,
+        kind: &str,
+        id: &str,
+    ) -> Result<(), VersionedRegistryError> {
+        self.inner.archive_resource(scope_id, kind, id).await
+    }
+
+    async fn unarchive_resource(
+        &self,
+        scope_id: &str,
+        kind: &str,
+        id: &str,
+    ) -> Result<(), VersionedRegistryError> {
+        self.inner.unarchive_resource(scope_id, kind, id).await
+    }
+
+    async fn publish_resources_and_create_publication(
+        &self,
+        _scope_id: &str,
+        _publication_id: &str,
+        _resources: Vec<RegistryResourcePublish>,
+        _source_config_revisions: Vec<ConfigRevisionRef>,
+        _created_by: Option<String>,
+        _metadata: Value,
+    ) -> Result<RegistryPublication, VersionedRegistryError> {
+        Err(VersionedRegistryError::Backend(
+            "simulated durable publish failure".to_string(),
+        ))
+    }
+
+    async fn create_publication(
+        &self,
+        scope_id: &str,
+        publication_id: &str,
+        entries: Vec<VersionRef>,
+        source_config_revisions: Vec<ConfigRevisionRef>,
+        created_by: Option<String>,
+        metadata: Value,
+    ) -> Result<RegistryPublication, VersionedRegistryError> {
+        self.inner
+            .create_publication(
+                scope_id,
+                publication_id,
+                entries,
+                source_config_revisions,
+                created_by,
+                metadata,
+            )
+            .await
+    }
+
+    async fn latest_publication(
+        &self,
+        scope_id: &str,
+    ) -> Result<Option<RegistryPublication>, VersionedRegistryError> {
+        self.inner.latest_publication(scope_id).await
+    }
+
+    async fn get_publication(
+        &self,
+        scope_id: &str,
+        snapshot_version: u64,
+    ) -> Result<Option<RegistryPublication>, VersionedRegistryError> {
+        self.inner.get_publication(scope_id, snapshot_version).await
+    }
 }
 
 #[async_trait]
@@ -414,7 +559,9 @@ async fn make_test_app_with_unpublishable_versioned_config() -> TestApp {
             .expect("config runtime manager")
             .with_versioned_registry_store(
                 "default",
-                Arc::new(InMemoryVersionedRegistryStore::new()),
+                Arc::new(PublishFailingVersionedRegistryStore {
+                    inner: InMemoryVersionedRegistryStore::new(),
+                }),
             ),
     );
     manager
@@ -616,6 +763,14 @@ async fn post_json_with_scope(
 }
 
 fn run_record_with_status(run_id: &str, status: RunStatus) -> RunRecord {
+    let waiting = (status == RunStatus::Waiting).then(|| RunWaitingState {
+        reason: WaitingReason::UserInput,
+        ticket_ids: Vec::new(),
+        tickets: Vec::new(),
+        since_dispatch_id: None,
+        message: None,
+    });
+    let finished_at = status.is_terminal().then_some(1000);
     RunRecord {
         run_id: run_id.to_string(),
         thread_id: format!("{run_id}-thread"),
@@ -633,11 +788,11 @@ fn run_record_with_status(run_id: &str, status: RunStatus) -> RunRecord {
         dispatch_id: None,
         session_id: None,
         transport_request_id: None,
-        waiting: None,
+        waiting,
         outcome: None,
         created_at: 1000,
         started_at: None,
-        finished_at: None,
+        finished_at,
         updated_at: 1000,
         steps: 0,
         input_tokens: 0,
@@ -1230,7 +1385,7 @@ async fn ai_sdk_agent_preview_returns_error_when_durable_publish_fails() {
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
     assert!(
-        body.contains("failed to publish durable preview"),
+        body.contains("failed to publish draft preview registry"),
         "durable publish failure must not fall back to ephemeral preview: {body}"
     );
 }
@@ -1486,34 +1641,11 @@ async fn runs_summary_route_requires_admin_auth() {
 async fn list_runs_returns_seeded_records() {
     let test = make_test_app();
     for i in 0..3 {
-        let record = RunRecord {
-            run_id: format!("run-list-{i}"),
-            thread_id: format!("thread-list-{i}"),
-            agent_id: "test-agent".to_string(),
-            parent_run_id: None,
-            resolution_id: None,
-            activation: None,
-            request: None,
-            input: None,
-            output: None,
-            status: RunStatus::Done,
-            termination_reason: None,
-            final_output: None,
-            error_payload: None,
-            dispatch_id: None,
-            session_id: None,
-            transport_request_id: None,
-            waiting: None,
-            outcome: None,
-            created_at: 1000 + i as u64,
-            started_at: None,
-            finished_at: None,
-            updated_at: 1000 + i as u64,
-            steps: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            state: None,
-        };
+        let mut record = run_record_with_status(&format!("run-list-{i}"), RunStatus::Done);
+        record.thread_id = format!("thread-list-{i}");
+        record.created_at = 1000 + i as u64;
+        record.finished_at = Some(1000 + i as u64);
+        record.updated_at = 1000 + i as u64;
         test.store.create_run(&record).await.expect("seed run");
     }
 
@@ -1528,62 +1660,12 @@ async fn list_runs_returns_seeded_records() {
 async fn list_runs_supports_status_filter() {
     let test = make_test_app();
 
-    let done_record = RunRecord {
-        run_id: "run-filter-done".to_string(),
-        thread_id: "thread-filter".to_string(),
-        agent_id: "test-agent".to_string(),
-        parent_run_id: None,
-        resolution_id: None,
-        activation: None,
-        request: None,
-        input: None,
-        output: None,
-        status: RunStatus::Done,
-        termination_reason: None,
-        final_output: None,
-        error_payload: None,
-        dispatch_id: None,
-        session_id: None,
-        transport_request_id: None,
-        waiting: None,
-        outcome: None,
-        created_at: 1000,
-        started_at: None,
-        finished_at: None,
-        updated_at: 1000,
-        steps: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-        state: None,
-    };
-    let running_record = RunRecord {
-        run_id: "run-filter-running".to_string(),
-        thread_id: "thread-filter-2".to_string(),
-        agent_id: "test-agent".to_string(),
-        parent_run_id: None,
-        resolution_id: None,
-        activation: None,
-        request: None,
-        input: None,
-        output: None,
-        status: RunStatus::Running,
-        termination_reason: None,
-        final_output: None,
-        error_payload: None,
-        dispatch_id: None,
-        session_id: None,
-        transport_request_id: None,
-        waiting: None,
-        outcome: None,
-        created_at: 1001,
-        started_at: None,
-        finished_at: None,
-        updated_at: 1001,
-        steps: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-        state: None,
-    };
+    let mut done_record = run_record_with_status("run-filter-done", RunStatus::Done);
+    done_record.thread_id = "thread-filter".to_string();
+    let mut running_record = run_record_with_status("run-filter-running", RunStatus::Running);
+    running_record.thread_id = "thread-filter-2".to_string();
+    running_record.created_at = 1001;
+    running_record.updated_at = 1001;
     test.store
         .create_run(&done_record)
         .await

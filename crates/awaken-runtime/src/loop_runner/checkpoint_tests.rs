@@ -171,7 +171,7 @@ fn materialize_message_log_preserves_output_across_same_run_resume() {
         output.message_ids,
         vec!["m-old-output".to_string(), "m-new-output".to_string()]
     );
-    assert_eq!(output.range, MessageSeqRange::new(2, 4));
+    assert_eq!(output.range, None);
     assert_eq!(msgs[3].produced_by_run_id(), Some("run-1"));
 }
 

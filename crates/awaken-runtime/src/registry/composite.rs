@@ -13,7 +13,9 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use awaken_protocol_a2a::{AgentCard, AgentInterface};
-use awaken_runtime_contract::registry_spec::{AgentSpec, RemoteAuth, RemoteEndpoint};
+use awaken_runtime_contract::registry_spec::{
+    AgentBackendSpec, AgentSpec, RemoteAuth, RemoteEndpoint,
+};
 
 use super::traits::AgentSpecRegistry;
 
@@ -227,6 +229,14 @@ fn agent_card_to_spec(
             ),
         })?;
 
+    let endpoint = RemoteEndpoint {
+        backend: "a2a".into(),
+        base_url: interface.url.clone(),
+        auth: source.bearer_token.clone().map(RemoteAuth::bearer),
+        target: interface.agent_id.clone(),
+        ..Default::default()
+    };
+
     Ok(AgentSpec {
         id: interface
             .agent_id
@@ -234,14 +244,10 @@ fn agent_card_to_spec(
             .unwrap_or_else(|| slugify_agent_name(&card.name)),
         // Remote agents don't need a local model — they run on the remote server.
         model_id: String::new(),
-        system_prompt: card.description.clone(),
-        endpoint: Some(RemoteEndpoint {
-            backend: "a2a".into(),
-            base_url: interface.url.clone(),
-            auth: source.bearer_token.clone().map(RemoteAuth::bearer),
-            target: interface.agent_id.clone(),
-            ..Default::default()
-        }),
+        system_prompt: String::new(),
+        description: Some(card.description.clone()),
+        backend: AgentBackendSpec::from_remote_endpoint(&endpoint),
+        endpoint: Some(endpoint),
         registry: Some(source.name.clone()),
         ..Default::default()
     })
@@ -454,7 +460,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(spec.id, "test-agent");
-        assert_eq!(spec.system_prompt, "Handles tests.");
+        assert_eq!(spec.description.as_deref(), Some("Handles tests."));
+        assert_eq!(spec.system_prompt, "");
+        assert_eq!(spec.backend.kind, "a2a");
         assert_eq!(spec.registry.as_deref(), Some("cloud"));
         let endpoint = spec.endpoint.unwrap();
         assert_eq!(endpoint.backend, "a2a");

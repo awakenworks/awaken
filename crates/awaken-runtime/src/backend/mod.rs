@@ -288,9 +288,90 @@ pub trait ExecutionBackend: Send + Sync {
     }
 }
 
+/// JSON schema metadata for one version of a backend-specific agent config.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExecutionBackendConfigSchema {
+    pub version: u32,
+    pub schema: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub default_config: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_schema: Option<Value>,
+}
+
+impl ExecutionBackendConfigSchema {
+    #[must_use]
+    pub fn generic_remote() -> Self {
+        Self {
+            version: 1,
+            schema: json!({
+                "type": "object",
+                "title": "Backend config",
+                "additionalProperties": true,
+            }),
+            display_name: None,
+            description: None,
+            default_config: json!({}),
+            ui_schema: None,
+        }
+    }
+}
+
+/// Schema for the built-in in-process Awaken backend.
+#[must_use]
+pub fn awaken_backend_config_schema() -> ExecutionBackendConfigSchema {
+    ExecutionBackendConfigSchema {
+        version: 1,
+        schema: json!({
+            "type": "object",
+            "title": "Awaken backend config",
+            "description": "In-process Awaken agent execution.",
+            "additionalProperties": false,
+            "required": ["model_id", "system_prompt", "max_rounds"],
+            "properties": {
+                "model_id": {
+                    "type": "string",
+                    "title": "Model",
+                    "minLength": 1
+                },
+                "system_prompt": {
+                    "type": "string",
+                    "title": "System prompt"
+                },
+                "max_rounds": {
+                    "type": "integer",
+                    "title": "Max rounds",
+                    "minimum": 1,
+                    "default": 10
+                }
+            }
+        }),
+        display_name: Some("Awaken".to_string()),
+        description: Some("Run the agent inside this Awaken runtime.".to_string()),
+        default_config: json!({
+            "model_id": "",
+            "system_prompt": "",
+            "max_rounds": 10,
+        }),
+        ui_schema: Some(json!({
+            "system_prompt": {
+                "ui:widget": "textarea"
+            }
+        })),
+    }
+}
+
 /// Factory for backend implementations backed by canonical `RemoteEndpoint` config.
 pub trait ExecutionBackendFactory: Send + Sync {
     fn backend(&self) -> &str;
+
+    fn config_schema(&self) -> ExecutionBackendConfigSchema {
+        ExecutionBackendConfigSchema::generic_remote()
+    }
 
     fn validate(&self, endpoint: &RemoteEndpoint) -> Result<(), ExecutionBackendFactoryError> {
         self.build(endpoint).map(|_| ())
@@ -492,7 +573,7 @@ pub async fn execute_remote_root_lifecycle(
                 Err(error) => {
                     let error_message = remote_backend_error_message(error);
                     let termination = TerminationReason::Error(error_message.clone());
-                    let latest_state = load_checkpoint_state(
+                    let latest_state = load_checkpoint_state_for_active_remote_run(
                         checkpoint_store,
                         &run_identity.run_id,
                         previous_state.clone(),
@@ -524,7 +605,7 @@ pub async fn execute_remote_root_lifecycle(
             }
         }
         _ = runtime_cancellation_token.cancelled() => {
-            let latest_state = load_checkpoint_state(
+            let latest_state = load_checkpoint_state_for_active_remote_run(
                 checkpoint_store,
                 &run_identity.run_id,
                 previous_state.clone(),
@@ -647,6 +728,17 @@ async fn load_checkpoint_state(
             "failed to load latest checkpoint state for run '{run_id}': {error}"
         ))),
     }
+}
+
+async fn load_checkpoint_state_for_active_remote_run(
+    storage: Option<&dyn RuntimeCheckpointStore>,
+    run_id: &str,
+    fallback: Option<PersistedState>,
+) -> Result<Option<PersistedState>, AgentLoopError> {
+    if fallback.is_none() {
+        return Ok(None);
+    }
+    load_checkpoint_state(storage, run_id, fallback).await
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -224,6 +224,7 @@ mod tests {
             thread_id: thread_id.into(),
             agent_id: "agent-test".into(),
             status: RunStatus::Done,
+            finished_at: Some(1),
             ..Default::default()
         }
     }

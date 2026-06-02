@@ -28,6 +28,7 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 secrecy = { workspace = true }
 regex = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

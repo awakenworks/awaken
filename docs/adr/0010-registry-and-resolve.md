@@ -18,6 +18,8 @@ Reference: uncarve's `AgentDefinition` + `RegistrySet` + `resolve()` pattern —
 #[derive(Serialize, Deserialize)]
 pub struct AgentSpec {
     pub id: String,
+    pub description: Option<String>,           // Human-readable catalog/delegate text
+    pub backend: AgentBackendSpec,             // Execution backend: awaken, a2a, ...
     pub model_id: String,                      // ModelRegistry ID
     pub system_prompt: String,
     pub max_rounds: usize,
@@ -30,9 +32,23 @@ pub struct AgentSpec {
     // Plugin-specific sections (opaque JSON per plugin)
     pub sections: HashMap<String, Value>,
 }
+
+pub struct AgentBackendSpec {
+    pub kind: String,                          // "awaken" for in-process execution
+    pub version: u32,                          // Backend config schema version
+    pub config: Value,                         // Backend-specific config object
+}
 ```
 
 No `Arc<dyn T>`, no trait objects. Pure data. Can be saved to JSON, loaded from config files, transmitted over network.
+
+`backend` is the canonical execution selector. Local in-process agents use
+`kind = "awaken"` and keep the existing `model_id` / `system_prompt` fields
+for compatibility with the model/provider resolution path. Remote A2A agents
+use `kind = "a2a"` and carry endpoint-shaped backend config, so they do not
+require a local model or prompt. The legacy top-level `endpoint` field is still
+accepted and normalized into `backend` to preserve existing A2A discovery and
+operator tooling.
 
 ### D2: Five registries, one RegistrySet
 
@@ -96,7 +112,9 @@ pub struct ProviderSpec {
 }
 ```
 
-Resolution: `model_id → ModelSpec → provider_id → Arc<dyn LlmExecutor>`.
+Local Awaken resolution: `model_id → ModelSpec → provider_id →
+Arc<dyn LlmExecutor>`. Non-Awaken backends skip local model/provider binding
+and resolve through the registered agent-backend factory for their `kind`.
 
 `ModelRegistry::get_model(&str) -> Option<ModelSpec>` returns an owned
 `ModelSpec`. Earlier revisions of this ADR split addressing (`provider_id`,

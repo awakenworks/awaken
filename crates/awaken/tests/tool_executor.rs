@@ -651,7 +651,7 @@ async fn max_rounds_precise_count() {
         .with_tool(Arc::new(EchoTool));
     let rt = make_runtime();
     let resolver = FixedResolver::new(agent);
-    let sink: Arc<dyn awaken::contract::event_sink::EventSink> = Arc::new(NullEventSink);
+    let sink = Arc::new(VecEventSink::new());
     let result = run_agent_loop(AgentLoopParams {
         resolver: &resolver,
         agent_id: "test",
@@ -675,10 +675,18 @@ async fn max_rounds_precise_count() {
     assert!(
         matches!(result.termination, TerminationReason::Stopped(ref s) if s.code == "max_rounds")
     );
+    let events = sink.take();
     let lifecycle = rt.store().read::<RunLifecycle>().unwrap();
     assert_eq!(
-        lifecycle.step_count, 3,
-        "should complete exactly 3 steps before stopping"
+        lifecycle.step_count, 2,
+        "max_rounds=3 stops at the third after-inference boundary before executing step 3 tools"
+    );
+    let third_tool_executed = events
+        .iter()
+        .any(|event| matches!(event, AgentEvent::ToolCallDone { id, .. } if id == "c2"));
+    assert!(
+        !third_tool_executed,
+        "the third step tool must not execute once max_rounds is reached"
     );
 }
 

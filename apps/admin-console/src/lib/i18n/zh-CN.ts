@@ -104,7 +104,7 @@ export const zhCN: Dict = {
     },
     bubble: {
       open: "打开管理助手",
-      configure: "配置模型以启用管理助手",
+      configure: "配置管理助手",
       close: "关闭管理助手",
       closeShort: "关闭",
       disabledReason: "请配置并发布一个 provider-backed 模型来启用管理助手。",

@@ -7,9 +7,13 @@
 
 ## Context
 
-`AgentSpec` carries two fields the admin-console agent editor treats as
+`AgentSpec` carries three fields the admin-console agent editor treats as
 *locked*:
 
+- `backend` — canonical execution-backend selector. It supersedes
+  `endpoint` for new config, but has the same retargeting blast radius:
+  changing it can switch an agent from in-process Awaken execution to a
+  remote backend or to another remote target.
 - `endpoint` — remote-backend provenance. When present, the runtime
   resolver routes the agent's runs to a remote backend; when absent, the
   agent is local. Editing `endpoint` from the editor would silently
@@ -19,20 +23,20 @@
   registry the record belongs to. Editing it through the editor would
   detach the record from its source and break upstream sync.
 
-The editor's `LOCKED_AGENT_FIELDS = ["endpoint", "registry"]` enforces
-this client-side: the form path exposes no widgets for either field, the
-Raw JSON Apply rejects edits to either, `cloneAgentSpecForEditor` strips
-both when duplicating a record, and the customized save path's
-`PATCHABLE_AGENT_FIELDS` allowlist omits both.
+The editor's `LOCKED_AGENT_FIELDS = ["backend", "endpoint", "registry"]` enforces
+this client-side: the form path exposes no widgets for these fields, the
+Raw JSON Apply rejects edits to them, `cloneAgentSpecForEditor` strips
+them when duplicating a record, and the customized save path's
+`PATCHABLE_AGENT_FIELDS` allowlist omits them.
 
 At the API layer the picture is asymmetric:
 
 - `registry` is **not** part of `AgentSpecPatch`. The struct's
   `#[serde(deny_unknown_fields)]` causes the server to reject any PATCH
   body containing `registry`. This matches the client lock.
-- `endpoint` **is** part of `AgentSpecPatch` (`NullablePatch<RemoteEndpoint>`).
-  The server accepts both upsert (`{"endpoint": {...}}`) and clear
-  (`{"endpoint": null}`) directives. A passing integration test —
+- `backend` and `endpoint` **are** part of `AgentSpecPatch`. The server accepts
+  programmatic backend replacement, endpoint upserts (`{"endpoint": {...}}`),
+  and endpoint clears (`{"endpoint": null}`) directives. A passing integration test —
   `patch_overrides_null_clears_nullable_base_field` in
   `crates/awaken-server/tests/config_api.rs` — pins this behavior, and
   `merge_agent_spec` documents endpoint as a tri-state nullable patch
@@ -44,19 +48,21 @@ lock isn't a real contract." This ADR settles the question.
 
 ## Decision
 
-**The lock on `endpoint` is a UX boundary, not an immutability boundary
+**The lock on backend routing is a UX boundary, not an immutability boundary
 or a security boundary. The asymmetry is intentional.**
 
 Specifically:
 
-1. **`endpoint` remains a patchable AgentSpec field at the API layer.**
+1. **`backend` and `endpoint` remain patchable AgentSpec fields at the API layer.**
    `PATCH /v1/config/agents/:id/overrides` continues to accept upserts
-   and clears for `endpoint`. The `AgentSpecPatch::endpoint` field stays.
-   Removing it would be a breaking change requiring its own ADR.
+   for `backend` plus upserts and clears for `endpoint`. The
+   `AgentSpecPatch::backend` and `AgentSpecPatch::endpoint` fields stay.
+   Removing either would be a breaking change requiring its own ADR.
 
-2. **The admin-console editor continues to treat `endpoint` as locked.**
-   No form widget edits it. Raw JSON Apply rejects edits to it.
-   `PATCHABLE_AGENT_FIELDS` excludes it. This is the UX simplification:
+2. **The admin-console editor continues to treat backend routing as locked.**
+   No form widget edits `backend` or `endpoint`. Raw JSON Apply rejects edits
+   to either. `PATCHABLE_AGENT_FIELDS` excludes both. This is the UX
+   simplification:
    most operators have no business rebinding a builtin agent's remote
    backend through a graphical editor, and exposing that surface there
    would be one click away from operational mistakes.
@@ -67,9 +73,9 @@ Specifically:
    know how to undo. The API-level rejection (via `deny_unknown_fields`)
    is the right contract here.
 
-4. **Programmatic clients retain endpoint patch capability.** CLI tools,
+4. **Programmatic clients retain backend and endpoint patch capability.** CLI tools,
    operations scripts, A2A federation glue, and other admin tooling can
-   still upsert or clear `endpoint` overrides through the public PATCH
+   still upsert `backend` or upsert/clear `endpoint` overrides through the public PATCH
    endpoint. This supports legitimate use cases like:
    - Temporarily redirecting a builtin agent to a staging backend for
      pre-production validation.

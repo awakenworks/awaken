@@ -752,7 +752,7 @@ mod helper_tests {
         let spec = ProviderSpec {
             id: "tz".into(),
             adapter: "openai".into(),
-            api_key: None,
+            api_key: Some("test-key".to_string().into()),
             base_url: Some("http://127.0.0.1:3000/openai/v1/".into()),
             timeout_secs: 30,
             adapter_options: Default::default(),
@@ -766,7 +766,7 @@ mod helper_tests {
         let spec = ProviderSpec {
             id: "tz".into(),
             adapter: "openai".into(),
-            api_key: None,
+            api_key: Some("test-key".to_string().into()),
             base_url: Some("http://127.0.0.1:3000/openai/v1".into()),
             timeout_secs: 30,
             adapter_options: Default::default(),
@@ -783,7 +783,7 @@ mod helper_tests {
         let spec = ProviderSpec {
             id: "tz".into(),
             adapter: "openai".into(),
-            api_key: None,
+            api_key: Some("test-key".to_string().into()),
             base_url: Some("http://127.0.0.1:3000/openai/v1/".into()),
             timeout_secs: 30,
             adapter_options: Default::default(),

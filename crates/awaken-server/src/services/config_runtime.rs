@@ -99,7 +99,7 @@ impl DiscoveredAgentRegistry {
             let Some(spec) = registry.get_agent(&id) else {
                 continue;
             };
-            if spec.endpoint.is_none() && spec.registry.is_none() {
+            if !spec.uses_remote_backend() && spec.registry.is_none() {
                 continue;
             }
             plain.entry(spec.id.clone()).or_insert_with(|| spec.clone());
@@ -2029,10 +2029,6 @@ mod tests {
         );
     }
 
-    // ── apply_seed tests ─────────────────────────────────────────────────────
-
-    /// Build a minimal ConfigRuntimeManager backed by an InMemoryStore.
-    /// Mirrors the pattern used by `bootstrap_writes_builtin_envelope`.
     pub(super) async fn make_manager_with_store() -> (
         ConfigRuntimeManager,
         Arc<dyn server_contract::contract::config_store::ConfigStore>,
@@ -2062,6 +2058,14 @@ mod tests {
                 "stub"
             }
         }
+        impl ProviderExecutorFactory for Stub {
+            fn build(
+                &self,
+                _spec: &ProviderSpec,
+            ) -> Result<Arc<dyn LlmExecutor>, ConfigRuntimeError> {
+                Ok(Arc::new(Stub))
+            }
+        }
 
         let store = Arc::new(InMemoryStore::new())
             as Arc<dyn server_contract::contract::config_store::ConfigStore>;
@@ -2081,7 +2085,9 @@ mod tests {
                 .build()
                 .expect("build runtime"),
         );
-        let manager = ConfigRuntimeManager::new(runtime, store.clone()).expect("manager");
+        let manager = ConfigRuntimeManager::new(runtime, store.clone())
+            .expect("manager")
+            .with_provider_factory(Arc::new(Stub));
         (manager, store)
     }
 
@@ -2328,9 +2334,6 @@ mod tests {
         use server_contract::registry_spec::RemoteEndpoint;
         use server_contract::{BuiltinSeedSet, BuiltinSpec};
 
-        // Build the runtime with a pre-registered agent "shared" that has an
-        // endpoint (so DiscoveredAgentRegistry picks it up) and a distinct
-        // remote-only agent "remote-only" also with an endpoint.
         struct Stub;
         #[async_trait::async_trait]
         impl server_contract::contract::executor::LlmExecutor for Stub {
@@ -2358,8 +2361,6 @@ mod tests {
             as Arc<dyn server_contract::contract::config_store::ConfigStore>;
         let thread_store = Arc::new(awaken_stores::InMemoryStore::new());
 
-        // Register a "shared" agent with an endpoint (will be captured as discovered)
-        // and a "remote-only" agent with an endpoint.
         let shared_discovered = AgentSpec {
             id: "shared".into(),
             model_id: "boot".into(),
@@ -2394,7 +2395,6 @@ mod tests {
                 .expect("build runtime"),
         );
 
-        // Use a stub provider factory so provider executor construction always succeeds.
         struct StubFactory;
         impl ProviderExecutorFactory for StubFactory {
             fn build(

@@ -3690,7 +3690,7 @@ async fn prepare_run_for_dispatch_persists_resolved_resolution_id() {
         .await
         .expect("load run")
         .expect("created run");
-    assert_eq!(run.resolution_id, Some(resolution_id));
+    assert_eq!(run.resolution_id, Some(run_id));
 }
 
 #[tokio::test]
@@ -3747,12 +3747,18 @@ async fn materialize_pinned_registry_set_fails_closed_for_missing_numeric_snapsh
     )
     .with_pinned_registry(versioned_registry, "default");
 
+    let invalid_id_error = match mailbox
+        .materialize_pinned_registry_set("draft-run-id")
+        .await
+    {
+        Ok(_) => panic!("invalid resolution ids must fail closed"),
+        Err(error) => error,
+    };
     assert!(
-        mailbox
-            .materialize_pinned_registry_set("draft-run-id")
-            .await
-            .expect("non-numeric resolution ids are not publication snapshots")
-            .is_none()
+        invalid_id_error
+            .to_string()
+            .contains("invalid pinned registry resolution id"),
+        "unexpected error: {invalid_id_error}"
     );
     let error = match mailbox.materialize_pinned_registry_set("42").await {
         Ok(_) => panic!("numeric snapshot ids must fail closed when the publication is missing"),
@@ -3761,7 +3767,7 @@ async fn materialize_pinned_registry_set_fails_closed_for_missing_numeric_snapsh
     assert!(
         error
             .to_string()
-            .contains("pinned registry snapshot 42 cannot be materialized"),
+            .contains("missing registry version publication/default@42"),
         "unexpected error: {error}"
     );
 }
@@ -3771,6 +3777,8 @@ async fn prepare_run_for_dispatch_inherits_previous_runtime_state() {
     let thread_store = Arc::new(InMemoryStore::new());
     let mut previous = seeded_waiting_run("run-prev", "thread-state", "agent-prev");
     previous.status = RunStatus::Done;
+    previous.waiting = None;
+    previous.finished_at = Some(2);
     previous.state = Some(awaken_server_contract::state::PersistedState {
         revision: 7,
         extensions: std::collections::HashMap::from([(
@@ -5558,10 +5566,15 @@ async fn submit_returns_event_channel() {
 
 #[test]
 fn runtime_event_capture_disabled_clears_prior_capture_and_skips_origin_validation() {
+    let run_store = Arc::new(InMemoryStore::new());
+    let event_store = Arc::new(InMemoryEventStore::new());
     let mailbox = Mailbox::new(
-        Arc::new(CoordinatorAwareNoopRuntime),
+        Arc::new(CommittingEmittingMailboxRuntime::new(
+            run_store.clone(),
+            event_store,
+        )),
         make_store(),
-        Arc::new(InMemoryStore::new()),
+        run_store,
         "test-consumer".to_string(),
         MailboxConfig::default(),
     )
@@ -6897,6 +6910,7 @@ async fn live_then_queue_publishes_for_remote_active_run() {
     // Seed a Running run — simulates another node owning this run.
     let mut run = seeded_waiting_run(remote_run_id, thread_id, "agent");
     run.status = RunStatus::Running;
+    run.waiting = None;
     thread_store
         .create_run(&run)
         .await
@@ -6971,6 +6985,7 @@ async fn live_then_queue_wakes_remote_active_pending_run() {
 
     let mut run = seeded_waiting_run(remote_run_id, thread_id, "agent");
     run.status = RunStatus::Running;
+    run.waiting = None;
     thread_store.create_run(&run).await.expect("seed run");
 
     let subscriber = mailbox_store
@@ -7034,6 +7049,7 @@ async fn live_then_queue_falls_back_when_subscriber_drops_receipt() {
 
     let mut run = seeded_waiting_run("run-dropped", thread_id, "agent");
     run.status = RunStatus::Running;
+    run.waiting = None;
     thread_store.create_run(&run).await.expect("seed run");
 
     let subscriber = mailbox_store
@@ -7093,6 +7109,7 @@ async fn live_then_queue_is_at_least_once_when_ack_lost() {
 
     let mut run = seeded_waiting_run("run-ack-lost", thread_id, "agent");
     run.status = RunStatus::Running;
+    run.waiting = None;
     thread_store.create_run(&run).await.expect("seed run");
 
     let subscriber = mailbox_store
@@ -7166,6 +7183,7 @@ async fn live_then_queue_rejects_remote_mismatched_expected_run_id() {
 
     let mut run = seeded_waiting_run("run-actual", thread_id, "agent");
     run.status = RunStatus::Running;
+    run.waiting = None;
     thread_store.create_run(&run).await.expect("seed run");
 
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);
@@ -7330,6 +7348,7 @@ async fn live_then_queue_falls_back_to_queue_when_no_remote_subscriber() {
     // we do NOT call `open_live_channel` — no one is listening.
     let mut run = seeded_waiting_run("run-no-listener", thread_id, "agent");
     run.status = RunStatus::Running;
+    run.waiting = None;
     thread_store.create_run(&run).await.expect("seed run");
 
     let runtime: Arc<dyn RunDispatchExecutor> = Arc::new(NoopMailboxRuntime);

@@ -65,6 +65,7 @@ async fn make_manager() -> (ConfigRuntimeManager, Arc<dyn ConfigStore>) {
             BuiltinSpec::Provider(ProviderSpec {
                 id: "p".into(),
                 adapter: "openai".into(),
+                api_key: Some("test-key".to_string().into()),
                 ..Default::default()
             }),
             BuiltinSpec::Model(ModelSpec::new("m", "p", "gpt-4o")),

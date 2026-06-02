@@ -54,7 +54,9 @@ export function SkillsPanel({
   const skillToolAllowed = isToolAllowed(catalog, SKILL_TOOL_ID);
   const loadResourceAllowed = isToolAllowed(catalog, LOAD_SKILL_RESOURCE_TOOL_ID);
   const scriptToolAllowed = isToolAllowed(catalog, SKILL_SCRIPT_TOOL_ID);
-  const hasRemoteEndpoint = Boolean(spec.endpoint || spec.registry);
+  const hasRemoteEndpoint = Boolean(
+    spec.endpoint || spec.registry || (spec.backend && spec.backend.kind !== "awaken"),
+  );
 
   function setPlugin(pluginId: string, checked: boolean) {
     const next = checked

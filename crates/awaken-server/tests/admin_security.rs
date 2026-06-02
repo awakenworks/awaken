@@ -342,6 +342,15 @@ async fn admin_http_contract_snapshot_covers_frontend_route_shapes() {
                 "items": [{
                     "allowed_tool_patterns": ["<string>"],
                     "allowed_tools": "<null>",
+                    "backend": {
+                        "config": {
+                            "max_rounds": "<u64>",
+                            "model_id": "<string>",
+                            "system_prompt": "<string>"
+                        },
+                        "kind": "<string>",
+                        "version": "<u64>"
+                    },
                     "id": "<string>",
                     "max_continuation_retries": "<u64>",
                     "max_rounds": "<u64>",

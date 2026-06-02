@@ -49,8 +49,8 @@ pub use backend::{
     BackendDelegateRunRequest, BackendLocalRootContext, BackendOutputArtifact,
     BackendOutputCapability, BackendParentContext, BackendRootRunRequest, BackendRunOutput,
     BackendRunResult, BackendRunStatus, BackendTranscriptCapability, BackendWaitCapability,
-    ExecutionBackend, ExecutionBackendError, ExecutionBackendFactory, ExecutionBackendFactoryError,
-    LocalBackend,
+    ExecutionBackend, ExecutionBackendConfigSchema, ExecutionBackendError, ExecutionBackendFactory,
+    ExecutionBackendFactoryError, LocalBackend, awaken_backend_config_schema,
 };
 pub use builder::{AgentRuntimeBuilder, BuildError};
 pub use child_agent::{

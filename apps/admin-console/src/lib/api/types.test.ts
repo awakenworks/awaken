@@ -7,7 +7,7 @@ import {
 } from "./types";
 
 describe("AgentSpec round-trip", () => {
-  test("preserves context_policy / active_hook_filter / endpoint / registry through JSON", () => {
+  test("preserves backend / description / context_policy / endpoint / registry through JSON", () => {
     const policy: ContextWindowPolicy = {
       ...DEFAULT_CONTEXT_POLICY,
       autocompact_threshold: 150_000,
@@ -22,6 +22,12 @@ describe("AgentSpec round-trip", () => {
     };
     const spec: AgentSpec = {
       id: "alpha",
+      description: "Remote research helper",
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: { base_url: "https://remote.example.com", target: "remote-agent" },
+      },
       model_id: "research-default",
       system_prompt: "You are useful.",
       max_rounds: 8,
@@ -37,6 +43,8 @@ describe("AgentSpec round-trip", () => {
     const roundTripped = JSON.parse(JSON.stringify(spec)) as AgentSpec;
     expect(roundTripped).toEqual(spec);
     // Sanity: the fields that previously silently dropped on PUT are present.
+    expect(roundTripped.description).toBe("Remote research helper");
+    expect(roundTripped.backend).toEqual(spec.backend);
     expect(roundTripped.context_policy).toEqual(policy);
     expect(roundTripped.active_hook_filter).toEqual(["permission"]);
     expect(roundTripped.endpoint).toEqual(endpoint);

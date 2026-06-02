@@ -813,6 +813,7 @@ async fn list_runs_filter_by_status() {
     let store = FileStore::new(tmp.path());
     let mut done = make_run("r1", "t-1", 100);
     done.status = RunStatus::Done;
+    done.finished_at = Some(100);
     store.create_run(&done).await.unwrap();
     store.create_run(&make_run("r2", "t-1", 200)).await.unwrap();
 
@@ -845,6 +846,7 @@ async fn run_record_with_termination_reason() {
     let store = FileStore::new(tmp.path());
     let mut run = make_run("r1", "t-1", 100);
     run.status = RunStatus::Done;
+    run.finished_at = Some(100);
     run.termination_reason = Some(TerminationReason::NaturalEnd);
     store.create_run(&run).await.unwrap();
 

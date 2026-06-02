@@ -55,7 +55,7 @@ impl ConfigService {
             let Some(agent) = effective_visible_record::<AgentSpec>(value)? else {
                 continue;
             };
-            if agent.endpoint.is_none() && model_id_set.contains(agent.model_id.as_str()) {
+            if !agent.uses_remote_backend() && model_id_set.contains(agent.model_id.as_str()) {
                 refs.push(agent_id);
             }
         }
@@ -253,10 +253,10 @@ impl ConfigService {
                 }
                 Ok(Value::Object(object))
             }
-            ConfigNamespace::Agents
-            | ConfigNamespace::Models
-            | ConfigNamespace::ModelPools
-            | ConfigNamespace::Skills => Ok(value),
+            ConfigNamespace::Agents => Ok(crate::services::audit_log::redact_secrets(value)),
+            ConfigNamespace::Models | ConfigNamespace::ModelPools | ConfigNamespace::Skills => {
+                Ok(value)
+            }
         }
     }
 }

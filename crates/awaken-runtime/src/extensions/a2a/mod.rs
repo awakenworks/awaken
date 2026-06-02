@@ -6,6 +6,7 @@
 
 pub(crate) mod a2a_backend;
 mod agent_tool;
+mod config_schema;
 mod progress_sink;
 
 pub use crate::backend::{

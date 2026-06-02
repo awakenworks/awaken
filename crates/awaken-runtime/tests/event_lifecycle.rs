@@ -435,11 +435,14 @@ async fn max_rounds_termination_emits_step_end() {
         "step_end should come before run_finish: {types:?}"
     );
 
-    // With max_rounds=1 and a simple text response (no tool calls),
-    // the run should finish naturally since the LLM returned EndTurn
+    // The max-rounds stop policy runs at the AfterInference boundary before
+    // the loop observes the EndTurn as natural completion, so the terminal
+    // reason should be the configured stop condition.
     if let AgentEvent::RunFinish { termination, .. } = events.last().unwrap() {
-        // NaturalEnd is expected because the mock returns EndTurn stop reason
-        assert_eq!(*termination, TerminationReason::NaturalEnd);
+        assert!(matches!(
+            termination,
+            TerminationReason::Stopped(reason) if reason.code == "max_rounds"
+        ));
     } else {
         panic!("last event should be RunFinish");
     }

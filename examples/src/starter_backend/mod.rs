@@ -579,6 +579,16 @@ Deterministic compatibility directives:\n\
         },
         &prompt_overrides,
     );
+    let stopper_agent = apply_agent_prompt_override(
+        AgentSpec {
+            id: "stopper".into(),
+            model_id: "default".into(),
+            system_prompt: "You are a test assistant. Respond briefly to every message.".into(),
+            max_rounds: 1,
+            ..Default::default()
+        },
+        &prompt_overrides,
+    );
     // Minimal agent: no tools, no plugins, short prompt — for reasoning/thinking verification.
     let thinking_agent = apply_agent_prompt_override(
         AgentSpec {
@@ -797,6 +807,7 @@ Deterministic compatibility directives:\n\
             ("research", &research_agent),
             ("skills", &skills_agent),
             ("limited", &limited_agent),
+            ("stopper", &stopper_agent),
             ("thinking", &thinking_agent),
             ("a2a", &a2a_agent),
             ("phases", &phases_agent),
@@ -1157,6 +1168,7 @@ Deterministic compatibility directives:\n\
     state.admin.admin_api_config = eval_stores::admin_api_config_with_traces();
     state.run.credential_broker = Arc::clone(&credential_broker);
     state.run.runtime_stats = Some(runtime_stats);
+    state.run.resolver_factory = config_runtime_manager.scoped_resolver_factory();
     state.config = Some(ConfigModuleState {
         config_store,
         runtime_manager: config_runtime_manager,

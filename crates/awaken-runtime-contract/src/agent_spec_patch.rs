@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::contract::inference::{ContextWindowPolicy, ReasoningEffort};
 use crate::contract::lifecycle::StopConditionSpec;
-use crate::registry_spec::{AgentSpec, RemoteEndpoint};
+use crate::registry_spec::{AgentBackendSpec, AgentSpec, BackendConfigError, RemoteEndpoint};
 
 /// Patch value for `AgentSpec` fields that are optional in the base spec.
 ///
@@ -32,6 +32,15 @@ pub type NullablePatch<T> = Option<Option<T>>;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentSpecPatch {
+    #[serde(
+        default,
+        deserialize_with = "nullable_patch::deserialize",
+        serialize_with = "nullable_patch::serialize",
+        skip_serializing_if = "nullable_patch::is_missing"
+    )]
+    pub description: NullablePatch<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<AgentBackendSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -147,6 +156,8 @@ impl AgentSpecPatch {
     /// True when no field is set — equivalent to "no override".
     pub fn is_empty(&self) -> bool {
         self.model_id.is_none()
+            && self.description.is_none()
+            && self.backend.is_none()
             && self.system_prompt.is_none()
             && self.max_rounds.is_none()
             && self.max_continuation_retries.is_none()
@@ -194,9 +205,18 @@ impl AgentSpecPatch {
 /// serializes via a path which drops nulls (custom formatters, lossy
 /// transcoding) still gets explicit `[]` to anchor the deny-all intent.
 /// Explicit empty lists serialize as `[]` and survive every round-trip.
-pub fn merge_agent_spec(base: AgentSpec, patch: AgentSpecPatch) -> AgentSpec {
+pub fn merge_agent_spec(
+    base: AgentSpec,
+    patch: AgentSpecPatch,
+) -> Result<AgentSpec, BackendConfigError> {
+    let endpoint_patch = patch.endpoint.clone();
+    let backend_patched = patch.backend.is_some();
+    let awaken_fields_patched =
+        patch.model_id.is_some() || patch.system_prompt.is_some() || patch.max_rounds.is_some();
     let mut merged = AgentSpec {
         id: base.id,
+        description: merge_nullable(base.description, patch.description),
+        backend: patch.backend.unwrap_or(base.backend),
         model_id: patch.model_id.unwrap_or(base.model_id),
         system_prompt: patch.system_prompt.unwrap_or(base.system_prompt),
         max_rounds: patch.max_rounds.unwrap_or(base.max_rounds),
@@ -225,13 +245,48 @@ pub fn merge_agent_spec(base: AgentSpec, patch: AgentSpecPatch) -> AgentSpec {
         registry: base.registry,
     };
 
+    if backend_patched {
+        if merged.backend.is_awaken() {
+            merged.endpoint = None;
+            if let Some(model_id) = merged.backend.awaken_model_id() {
+                merged.model_id = model_id;
+            }
+            if let Some(system_prompt) = merged.backend.awaken_system_prompt() {
+                merged.system_prompt = system_prompt;
+            }
+        } else {
+            merged.endpoint = merged.backend.remote_endpoint()?;
+        }
+    } else {
+        match endpoint_patch {
+            Some(Some(ref endpoint)) => {
+                merged.backend = AgentBackendSpec::from_remote_endpoint(endpoint);
+            }
+            Some(None) => {
+                merged.backend = AgentBackendSpec::awaken_from_fields(
+                    &merged.model_id,
+                    &merged.system_prompt,
+                    merged.max_rounds,
+                );
+            }
+            None if awaken_fields_patched && merged.backend.is_awaken() => {
+                merged.backend = AgentBackendSpec::awaken_from_fields(
+                    &merged.model_id,
+                    &merged.system_prompt,
+                    merged.max_rounds,
+                );
+            }
+            None => {}
+        }
+    }
+
     // Pin the deny-all intent across a JSON round-trip. See doc comment.
     if merged.allowed_tools.is_none() && merged.allowed_tool_patterns.is_none() {
         merged.allowed_tools = Some(Vec::new());
         merged.allowed_tool_patterns = Some(Vec::new());
     }
 
-    merged
+    Ok(merged)
 }
 
 fn merge_nullable<T>(base: Option<T>, patch: NullablePatch<T>) -> Option<T> {

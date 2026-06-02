@@ -968,7 +968,7 @@ mod tests {
                 spec: &ProviderSpec,
             ) -> Result<Arc<dyn LlmExecutor>, crate::services::config_runtime::ConfigRuntimeError>
             {
-                if spec.adapter.eq_ignore_ascii_case("stub") {
+                if spec.adapter.eq_ignore_ascii_case("openai") {
                     return Ok(Arc::new(ImmediateExecutor));
                 }
                 Err(
@@ -1022,7 +1022,8 @@ mod tests {
                 specs: vec![
                     BuiltinSpec::provider(ProviderSpec {
                         id: "bootstrap".into(),
-                        adapter: "stub".into(),
+                        adapter: "openai".into(),
+                        api_key: Some("test-key".to_string().into()),
                         ..Default::default()
                     }),
                     BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),
@@ -1125,8 +1126,12 @@ mod tests {
         #[tokio::test]
         async fn validate_returns_normalized_payload_without_persisting() {
             let app = build_test_app().await;
-            let (status, body) =
-                validate_record(&app, "providers", r#"{"id":"draft-prov","adapter":"stub"}"#).await;
+            let (status, body) = validate_record(
+                &app,
+                "providers",
+                r#"{"id":"draft-prov","adapter":"openai","api_key":"test-key"}"#,
+            )
+            .await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(body["ok"], Value::Bool(true));
             assert_eq!(body["normalized"]["id"], Value::String("draft-prov".into()));
@@ -1146,7 +1151,7 @@ mod tests {
         #[tokio::test]
         async fn validate_rejects_missing_id() {
             let app = build_test_app().await;
-            let (status, _) = validate_record(&app, "providers", r#"{"adapter":"stub"}"#).await;
+            let (status, _) = validate_record(&app, "providers", r#"{"adapter":"openai"}"#).await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
         }
         #[tokio::test]
@@ -1155,7 +1160,7 @@ mod tests {
             let (status, body) = validate_record(
                 &app,
                 "providers",
-                r#"{"id":"draft-prov","adapter":"stub","future_top_level":true}"#,
+                r#"{"id":"draft-prov","adapter":"openai","api_key":"test-key","future_top_level":true}"#,
             )
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1210,7 +1215,7 @@ mod tests {
                 create_record(
                     &app,
                     "providers",
-                    r#"{"id":"prov-preview","adapter":"stub"}"#
+                    r#"{"id":"prov-preview","adapter":"openai","api_key":"test-key"}"#
                 )
                 .await,
                 StatusCode::CREATED
@@ -1269,7 +1274,12 @@ mod tests {
 
             // Create a new provider and a model referencing it
             assert_eq!(
-                create_record(&app, "providers", r#"{"id":"prov-x","adapter":"stub"}"#).await,
+                create_record(
+                    &app,
+                    "providers",
+                    r#"{"id":"prov-x","adapter":"openai","api_key":"test-key"}"#,
+                )
+                .await,
                 StatusCode::CREATED
             );
             assert_eq!(
@@ -1294,7 +1304,12 @@ mod tests {
             let app = build_test_app().await;
 
             assert_eq!(
-                create_record(&app, "providers", r#"{"id":"prov-y","adapter":"stub"}"#).await,
+                create_record(
+                    &app,
+                    "providers",
+                    r#"{"id":"prov-y","adapter":"openai","api_key":"test-key"}"#,
+                )
+                .await,
                 StatusCode::CREATED
             );
             assert_eq!(
@@ -1412,7 +1427,11 @@ mod tests {
                 config_store.as_ref(),
                 "providers",
                 "prov-openai",
-                &serde_json::json!({ "id": "prov-openai", "adapter": "openai" }),
+                &serde_json::json!({
+                    "id": "prov-openai",
+                    "adapter": "openai",
+                    "api_key": "test-key"
+                }),
             )
             .await
             .expect("put provider");
@@ -1512,7 +1531,8 @@ mod tests {
                 specs: vec![
                     BuiltinSpec::provider(ProviderSpec {
                         id: "bootstrap".into(),
-                        adapter: "stub".into(),
+                        adapter: "openai".into(),
+                        api_key: Some("test-key".to_string().into()),
                         ..Default::default()
                     }),
                     BuiltinSpec::model(ModelSpec::new("bootstrap", "bootstrap", "bootstrap-model")),

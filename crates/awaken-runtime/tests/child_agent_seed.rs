@@ -120,7 +120,7 @@ impl AgentResolver for FixedResolver {
 }
 
 fn make_resolver(llm: Arc<ScriptedLlm>) -> FixedResolver {
-    let mut agent = ResolvedAgent::new("child", "m", "sys", llm).with_max_rounds(2);
+    let mut agent = ResolvedAgent::new("child", "m", "sys", llm).with_max_rounds(3);
     agent
         .tools
         .insert("observe_seed".into(), Arc::new(ObserveSeedTool));
@@ -178,7 +178,10 @@ async fn child_observes_seeded_state_via_tool_context() {
     .await
     .expect("child agent run should succeed");
 
-    assert!(matches!(result.status, BackendRunStatus::Completed));
+    assert!(
+        matches!(result.status, BackendRunStatus::Completed),
+        "result: {result:?}"
+    );
 
     // Final persisted state should round-trip the seed.
     let final_state = result.state.expect("local backend populates final state");
@@ -288,7 +291,10 @@ async fn tool_round_trips_child_state_back_to_parent_store() {
     )
     .await
     .expect("child run should succeed");
-    assert!(matches!(outcome.status, BackendRunStatus::Completed));
+    assert!(
+        matches!(outcome.status, BackendRunStatus::Completed),
+        "outcome: {outcome:?}"
+    );
 
     // ③ Read child terminal state, decode, build the parent StateCommand.
     let mut cmd = StateCommand::new();
@@ -444,7 +450,7 @@ async fn local_child_agent_uses_resolved_execution_without_second_lookup() {
         stop_reason: Some(StopReason::EndTurn),
         has_incomplete_tool_calls: false,
     }]));
-    let agent = ResolvedAgent::new("child", "m", "sys", llm).with_max_rounds(1);
+    let agent = ResolvedAgent::new("child", "m", "sys", llm).with_max_rounds(2);
     let resolver = SingleResolveLocalResolver::new(agent);
 
     let outcome = run_child_agent(ChildAgentParams::new(

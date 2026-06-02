@@ -430,6 +430,7 @@ mod tests {
 
         let updated_run = RunRecord {
             status: RunStatus::Done,
+            finished_at: Some(2),
             ..initial_run
         };
         let committed = mailbox

@@ -107,7 +107,7 @@ export const en = {
     },
     bubble: {
       open: "Open Admin Assistant",
-      configure: "Configure a model to enable Admin Assistant",
+      configure: "Configure Admin Assistant",
       close: "Close Admin Assistant",
       closeShort: "Close",
       disabledReason:

@@ -1291,7 +1291,8 @@ async fn config_apply_failure_rolls_back_create_and_update_without_runtime_swap(
         "/v1/config/providers",
         Some(json!({
             "id": "bad-provider-create",
-            "adapter": "unsupported-provider"
+            "adapter": "unsupported-provider",
+            "api_key": "test-key"
         })),
     )
     .await;
@@ -1317,7 +1318,8 @@ async fn config_apply_failure_rolls_back_create_and_update_without_runtime_swap(
         "/v1/config/providers",
         Some(json!({
             "id": "provider-rollback",
-            "adapter": "stub"
+            "adapter": "stub",
+            "api_key": "test-key"
         })),
     )
     .await;
@@ -1329,7 +1331,8 @@ async fn config_apply_failure_rolls_back_create_and_update_without_runtime_swap(
         "/v1/config/providers/provider-rollback",
         Some(json!({
             "id": "provider-rollback",
-            "adapter": "unsupported-provider"
+            "adapter": "unsupported-provider",
+            "api_key": "test-key"
         })),
     )
     .await;
@@ -1615,7 +1618,8 @@ async fn published_config_updates_live_capabilities_and_resolver() {
         "/v1/config/providers",
         Some(json!({
             "id": "provider-1",
-            "adapter": "stub"
+            "adapter": "stub",
+            "api_key": "test-key"
         })),
     )
     .await;
@@ -1720,6 +1724,7 @@ async fn documented_config_driven_agent_tuning_publishes_sections_and_retry() {
         Some(json!({
             "id": "doc-provider",
             "adapter": "stub",
+            "api_key": "test-key",
             "base_url": null,
             "timeout_secs": 300
         })),
@@ -1987,6 +1992,41 @@ async fn capabilities_report_runtime_supported_adapters_without_scripted() {
         !adapters.iter().any(|value| value == "scripted"),
         "admin capabilities must not advertise adapters the runtime rejects"
     );
+}
+
+#[tokio::test]
+async fn capabilities_expose_backend_config_schemas_for_frontend_rendering() {
+    let app = make_app().await;
+
+    let (status, capabilities) =
+        request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let backends = capabilities["backends"]
+        .as_array()
+        .expect("backends should be an array");
+    let awaken = backends
+        .iter()
+        .find(|backend| backend["kind"] == "awaken")
+        .expect("awaken backend schema should be advertised");
+    assert_eq!(awaken["version"], json!(1));
+    assert_eq!(
+        awaken["schema"]["properties"]["model_id"]["type"],
+        json!("string")
+    );
+    assert_eq!(awaken["default_config"]["max_rounds"], json!(10));
+
+    let a2a = backends
+        .iter()
+        .find(|backend| backend["kind"] == "a2a")
+        .expect("a2a backend schema should be advertised");
+    assert_eq!(a2a["version"], json!(1));
+    assert_eq!(a2a["schema"]["required"], json!(["base_url"]));
+    assert_eq!(
+        a2a["schema"]["properties"]["auth"]["anyOf"][1]["properties"]["type"]["const"],
+        json!("bearer")
+    );
+    assert_eq!(a2a["default_config"]["timeout_ms"], json!(300_000));
 }
 
 #[tokio::test]
@@ -2526,7 +2566,8 @@ async fn duplicate_create_returns_conflict_status() {
         "/v1/config/providers",
         Some(json!({
             "id": "dupe",
-            "adapter": "stub"
+            "adapter": "stub",
+            "api_key": "test-key"
         })),
     )
     .await;
@@ -2538,7 +2579,8 @@ async fn duplicate_create_returns_conflict_status() {
         "/v1/config/providers",
         Some(json!({
             "id": "dupe",
-            "adapter": "stub"
+            "adapter": "stub",
+            "api_key": "test-key"
         })),
     )
     .await;
@@ -2778,7 +2820,8 @@ async fn concurrent_apply_calls_are_serialized_and_publish_unique_versions() {
         "distributed-apply-provider",
         &json!({
             "id": "distributed-apply-provider",
-            "adapter": "stub"
+            "adapter": "stub",
+            "api_key": "test-key"
         }),
     )
     .await
@@ -2923,6 +2966,7 @@ async fn change_listener_coalesces_event_bursts_within_min_apply_interval() {
         let spec = json!({
             "id": "bootstrap",
             "adapter": "stub",
+            "api_key": "test-key",
             "timeout_secs": 100 + i,
         });
         (store.clone() as Arc<dyn ConfigStore>)
@@ -2967,6 +3011,7 @@ async fn apply_rebuilds_executor_when_provider_spec_changes() {
     let mutated = json!({
         "id": "bootstrap",
         "adapter": "stub",
+        "api_key": "test-key",
         "timeout_secs": 999
     });
     (store.clone() as Arc<dyn ConfigStore>)
@@ -2991,7 +3036,8 @@ async fn apply_if_changed_returns_some_after_store_mutation() {
     // applied fingerprint so apply_if_changed publishes again.
     let new_provider = json!({
         "id": "extra",
-        "adapter": "stub"
+        "adapter": "stub",
+        "api_key": "test-key"
     });
     (store.clone() as Arc<dyn ConfigStore>)
         .put("providers", "extra", &new_provider)
@@ -3433,6 +3479,10 @@ async fn patch_overrides_null_clears_nullable_base_field() {
         "base_url": "http://127.0.0.1:1",
         "target": "remote-agent"
     });
+    raw["spec"]
+        .as_object_mut()
+        .expect("spec object")
+        .remove("backend");
     ConfigStore::put(app.store.as_ref(), "agents", "bootstrap", &raw)
         .await
         .expect("store write");
@@ -3453,6 +3503,293 @@ async fn patch_overrides_null_clears_nullable_base_field() {
         overrides.get("endpoint").is_some_and(Value::is_null),
         "endpoint null must be preserved in user_overrides"
     );
+}
+
+#[tokio::test]
+async fn patch_overrides_backend_replaces_stale_endpoint_projection() {
+    let app = make_app().await;
+
+    use awaken_server_contract::contract::config_store::ConfigStore;
+
+    let mut raw = ConfigStore::get(app.store.as_ref(), "agents", "bootstrap")
+        .await
+        .expect("store read")
+        .expect("entry present");
+    raw["spec"]["endpoint"] = json!({
+        "backend": "a2a",
+        "base_url": "http://127.0.0.1:1",
+        "target": "old-agent"
+    });
+    raw["spec"]
+        .as_object_mut()
+        .expect("spec object")
+        .remove("backend");
+    ConfigStore::put(app.store.as_ref(), "agents", "bootstrap", &raw)
+        .await
+        .expect("store write");
+
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({
+            "backend": {
+                "kind": "a2a",
+                "version": 1,
+                "config": {
+                    "base_url": "https://next.example.com/a2a",
+                    "target": "next-agent"
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["backend"]["kind"], "a2a");
+    assert_eq!(
+        body["backend"]["config"]["base_url"],
+        "https://next.example.com/a2a"
+    );
+    assert_eq!(body["endpoint"]["base_url"], "https://next.example.com/a2a");
+    assert_eq!(body["endpoint"]["target"], "next-agent");
+}
+
+#[tokio::test]
+async fn patch_overrides_rejects_conflicting_backend_and_endpoint() {
+    let app = make_app().await;
+
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({
+            "backend": {
+                "kind": "a2a",
+                "version": 1,
+                "config": {"base_url": "https://next.example.com/a2a"}
+            },
+            "endpoint": {
+                "backend": "a2a",
+                "base_url": "https://legacy.example.com/a2a"
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("backend and endpoint cannot be patched in the same request"),
+        "unexpected body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn patch_overrides_rejects_invalid_backend_config_without_secret_echo() {
+    let app = make_app().await;
+    let secret = "backend-secret-should-not-echo";
+
+    let cases = [
+        json!({"backend": {"kind": "a2a", "version": 1, "config": "bad"}}),
+        json!({"backend": {"kind": "a2a", "version": 1, "config": {}}}),
+        json!({"backend": {"kind": "a2a", "version": 1, "config": {"base_url": "ftp://remote.example.com"}}}),
+        json!({"backend": {"kind": "a2a", "version": 1, "config": {
+            "base_url": "https://remote.example.com",
+            "auth": {"type": "bearer", "token": "***"}
+        }}}),
+        json!({"backend": {"kind": "a2a", "version": 1, "config": {
+            "base_url": "https://remote.example.com",
+            "auth": {"type": "basic", "token": secret}
+        }}}),
+    ];
+
+    for body in cases {
+        let (status, response) = patch_overrides(&app.router, "bootstrap", body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {response}");
+        let rendered = response.to_string();
+        assert!(
+            !rendered.contains(secret),
+            "validation response leaked backend auth token: {rendered}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn agent_config_responses_redact_backend_bearer_tokens() {
+    let app = make_app().await;
+    let secret = "backend-list-secret-token";
+
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({
+            "context_policy": {
+                "max_context_tokens": 123456,
+                "max_output_tokens": 8192,
+                "min_recent_messages": 4,
+                "enable_prompt_cache": true
+            },
+            "backend": {
+                "kind": "a2a",
+                "version": 1,
+                "config": {
+                    "base_url": "https://remote.example.com/a2a",
+                    "auth": {"type": "bearer", "token": secret}
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    // The PATCH response returns the effective spec directly (it does not go
+    // through GET/list), so it must redact the backend token on the same
+    // boundary.
+    assert!(
+        !body.to_string().contains(secret),
+        "agent PATCH overrides response leaked backend token: {body}"
+    );
+    assert_eq!(body["backend"]["config"]["auth"]["token"], "***");
+
+    let (status, body) = get_agent_spec(&app.router, "bootstrap").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let rendered = body.to_string();
+    assert!(
+        !rendered.contains(secret),
+        "agent GET response leaked backend token: {rendered}"
+    );
+    assert_eq!(body["backend"]["config"]["auth"]["token"], "***");
+    assert_eq!(body["endpoint"]["auth"]["token"], "***");
+    assert_eq!(body["context_policy"]["max_context_tokens"], 123456);
+    assert_eq!(body["context_policy"]["max_output_tokens"], 8192);
+
+    let (status, list_body) =
+        request_json(&app.router, Method::GET, "/v1/config/agents", None).await;
+    assert_eq!(status, StatusCode::OK, "body: {list_body}");
+    assert!(
+        !list_body.to_string().contains(secret),
+        "agent list response leaked backend token: {list_body}"
+    );
+    let bootstrap = list_body
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent.get("id").and_then(Value::as_str) == Some("bootstrap"))
+        })
+        .expect("bootstrap agent in list");
+    assert_eq!(
+        bootstrap["context_policy"]["max_context_tokens"], 123456,
+        "agent list must not redact context token budget fields"
+    );
+    assert_eq!(
+        bootstrap["context_policy"]["max_output_tokens"], 8192,
+        "agent list must not redact output token budget fields"
+    );
+
+    let (status, capabilities) =
+        request_json(&app.router, Method::GET, "/v1/capabilities", None).await;
+    assert_eq!(status, StatusCode::OK, "body: {capabilities}");
+    assert!(
+        !capabilities.to_string().contains(secret),
+        "capabilities response leaked backend token: {capabilities}"
+    );
+}
+
+#[tokio::test]
+async fn agent_overrides_preview_and_clear_redact_backend_bearer_tokens() {
+    let app = make_app().await;
+    let secret = "preview-clear-secret-token";
+    let backend = |token: &str| {
+        json!({
+            "kind": "a2a",
+            "version": 1,
+            "config": {
+                "base_url": "https://remote.example.com/a2a",
+                "auth": {"type": "bearer", "token": token}
+            }
+        })
+    };
+
+    // Dry-run preview (POST /overrides) echoes the normalized patch back; the
+    // backend token must be redacted before it leaves the server.
+    let (status, preview) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/agents/bootstrap/overrides",
+        Some(json!({ "backend": backend(secret) })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {preview}");
+    assert!(
+        !preview.to_string().contains(secret),
+        "overrides preview leaked backend token: {preview}"
+    );
+    assert_eq!(
+        preview["normalized"]["backend"]["config"]["auth"]["token"],
+        "***"
+    );
+
+    // Persist a backend token plus an unrelated override field.
+    let (status, body) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({ "backend": backend(secret), "description": "remote agent" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    // A no-op PATCH (same overrides) returns the effective spec via the
+    // short-circuit path; it must redact too.
+    let (status, noop) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({ "backend": backend(secret), "description": "remote agent" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {noop}");
+    assert!(
+        !noop.to_string().contains(secret),
+        "no-op PATCH overrides leaked backend token: {noop}"
+    );
+    assert_eq!(noop["backend"]["config"]["auth"]["token"], "***");
+
+    // Clearing an unrelated field returns the effective spec, which still
+    // carries the backend override and must remain redacted.
+    let (status, cleared) = delete_override_field(&app.router, "bootstrap", "description").await;
+    assert_eq!(status, StatusCode::OK, "body: {cleared}");
+    assert!(
+        !cleared.to_string().contains(secret),
+        "clear-field response leaked backend token: {cleared}"
+    );
+    assert_eq!(cleared["backend"]["config"]["auth"]["token"], "***");
+}
+
+#[tokio::test]
+async fn redacted_backend_token_placeholder_cannot_be_persisted() {
+    let app = make_app().await;
+
+    // Submitting the redacted placeholder as a real token must be rejected so a
+    // round-tripped GET response can never be saved back as a live credential.
+    let (status, response) = patch_overrides(
+        &app.router,
+        "bootstrap",
+        json!({ "backend": {
+            "kind": "a2a",
+            "version": 1,
+            "config": {
+                "base_url": "https://remote.example.com/a2a",
+                "auth": {"type": "bearer", "token": "***"}
+            }
+        }}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {response}");
+
+    // The agent must not have been mutated with the placeholder token.
+    let (status, body) = get_agent_spec(&app.router, "bootstrap").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(body["backend"].is_null() || body["backend"]["config"]["auth"]["token"].is_null());
 }
 
 #[tokio::test]
@@ -4292,7 +4629,7 @@ async fn seed_provider_and_model(router: &axum::Router) {
         router,
         Method::POST,
         "/v1/config/providers",
-        Some(json!({ "id": "stub-provider", "adapter": "stub" })),
+        Some(json!({ "id": "stub-provider", "adapter": "stub", "api_key": "test-key" })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -4959,7 +5296,7 @@ async fn config_models_namespace_round_trip_with_capability_fields() {
         &app.router,
         Method::POST,
         "/v1/config/providers",
-        Some(json!({"id":"prov","adapter":"stub"})),
+        Some(json!({"id":"prov","adapter":"stub","api_key":"test-key"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -5019,7 +5356,7 @@ async fn config_models_namespace_rejects_duplicate_id_via_namespace_keying() {
         &app.router,
         Method::POST,
         "/v1/config/providers",
-        Some(json!({"id":"prov","adapter":"stub"})),
+        Some(json!({"id":"prov","adapter":"stub","api_key":"test-key"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -5047,7 +5384,8 @@ async fn create_stub_provider(app: &TestApp, id: &str) {
         "/v1/config/providers",
         Some(json!({
             "id": id,
-            "adapter": "stub"
+            "adapter": "stub",
+            "api_key": "test-key"
         })),
     )
     .await;

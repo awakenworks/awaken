@@ -541,6 +541,15 @@ describe("agent editor save API flows", () => {
     })!;
     expect(JSON.parse(String(createInit?.body))).toEqual({
       id: "new-agent",
+      backend: {
+        kind: "awaken",
+        version: 1,
+        config: {
+          model_id: "model-a",
+          system_prompt: "Respond with facts only.",
+          max_rounds: 12,
+        },
+      },
       model_id: "model-a",
       system_prompt: "Respond with facts only.",
       max_rounds: 12,
@@ -548,6 +557,234 @@ describe("agent editor save API flows", () => {
       plugin_ids: [],
       sections: {},
       delegates: [],
+    });
+  });
+
+  it("creates a new A2A backend agent without requiring local model fields", async () => {
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const href = fetchHref(input);
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "GET" && href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [{ id: "model-a", upstream_model: "gpt-test" }],
+          providers: [],
+          backends: [
+            {
+              kind: "awaken",
+              version: 1,
+              display_name: "Awaken",
+              default_config: { model_id: "", system_prompt: "", max_rounds: 16 },
+              schema: { type: "object", properties: {} },
+            },
+            {
+              kind: "a2a",
+              version: 1,
+              display_name: "A2A",
+              default_config: {
+                base_url: "",
+                auth: null,
+                target: null,
+                timeout_ms: 300000,
+                options: {},
+              },
+              schema: {
+                type: "object",
+                required: ["base_url"],
+                properties: {
+                  base_url: { type: "string", title: "Base URL" },
+                  target: { type: ["string", "null"], title: "Target agent" },
+                  timeout_ms: { type: "integer", title: "Timeout (ms)" },
+                  options: { type: "object", title: "Options", additionalProperties: true },
+                },
+              },
+            },
+          ],
+          namespaces: [],
+        });
+      }
+      if (method === "POST" && href.endsWith("/v1/config/agents")) {
+        return jsonResponse(JSON.parse(String(init?.body)));
+      }
+      if (method === "GET" && href.endsWith("/v1/config/agents/remote-worker/meta")) {
+        return jsonResponse({
+          source: { kind: "user" },
+          hidden: false,
+          user_overrides: null,
+          created_at: 0,
+          updated_at: 0,
+        });
+      }
+      if (method === "GET" && href.endsWith("/v1/config/agents/remote-worker")) {
+        return jsonResponse(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body ?? "{}")));
+      }
+      if (method === "GET" && href.includes("/v1/audit-log")) {
+        return jsonResponse({ items: [] });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${href}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const view = renderEditorRoute("/agents/new");
+    await screen.findByLabelText("Agent ID");
+
+    fireEvent.change(screen.getByLabelText("Agent ID"), { target: { value: "remote-worker" } });
+    fireEvent.change(screen.getByLabelText("Backend"), { target: { value: "a2a" } });
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    await screen.findByTestId("backend-config-schema-form");
+    const baseUrlInput = view.container.querySelector("#root_base_url");
+    const targetInput = view.container.querySelector("#root_target");
+    expect(baseUrlInput).toBeInstanceOf(HTMLInputElement);
+    expect(targetInput).toBeInstanceOf(HTMLInputElement);
+    fireEvent.change(baseUrlInput as HTMLInputElement, {
+      target: { value: "https://remote.example.com/v1/a2a" },
+    });
+    fireEvent.change(targetInput as HTMLInputElement, { target: { value: "worker" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^save$/i })[0]);
+
+    await waitFor(() => {
+      expect(
+        fetchSpy.mock.calls.filter(([input, init]) => {
+          const href = fetchHref(input as string | URL | Request);
+          return init?.method === "POST" && href.endsWith("/v1/config/agents");
+        }),
+      ).toHaveLength(1);
+    });
+    const [, createInit] = fetchSpy.mock.calls.find(([input, init]) => {
+      const href = fetchHref(input as string | URL | Request);
+      return init?.method === "POST" && href.endsWith("/v1/config/agents");
+    })!;
+    expect(JSON.parse(String(createInit?.body))).toMatchObject({
+      id: "remote-worker",
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: {
+          base_url: "https://remote.example.com/v1/a2a",
+          target: "worker",
+          timeout_ms: 300000,
+          options: {},
+        },
+      },
+      model_id: "",
+      system_prompt: "",
+    });
+  });
+
+  it("preserves existing A2A backend secrets when editing non-secret fields", async () => {
+    const agentId = "remote-worker";
+    const agentBody = {
+      id: agentId,
+      backend: {
+        kind: "a2a",
+        version: 1,
+        config: {
+          base_url: "https://remote.example.com/v1/a2a",
+          auth: { token: "secret-token-123" },
+          target: "worker",
+          timeout_ms: 300000,
+          options: {},
+        },
+      },
+      model_id: "",
+      system_prompt: "",
+      max_rounds: 8,
+      max_continuation_retries: 2,
+      plugin_ids: [],
+      sections: {},
+      delegates: [],
+    };
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const href = fetchHref(input);
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "GET" && href.includes("/v1/capabilities")) {
+        return jsonResponse({
+          agents: [],
+          tools: [],
+          plugins: [],
+          skills: [],
+          models: [],
+          providers: [],
+          backends: [
+            {
+              kind: "a2a",
+              version: 1,
+              display_name: "A2A",
+              default_config: {},
+              schema: {
+                type: "object",
+                required: ["base_url"],
+                properties: {
+                  base_url: { type: "string", title: "Base URL" },
+                  auth: {
+                    type: "object",
+                    title: "Auth",
+                    properties: {
+                      token: { type: "string", title: "Token" },
+                    },
+                  },
+                  target: { type: ["string", "null"], title: "Target agent" },
+                  timeout_ms: { type: "integer", title: "Timeout (ms)" },
+                  options: { type: "object", title: "Options", additionalProperties: true },
+                },
+              },
+            },
+          ],
+          namespaces: [],
+        });
+      }
+      if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}/meta`)) {
+        return jsonResponse({
+          source: { kind: "user" },
+          hidden: false,
+          user_overrides: null,
+          created_at: 0,
+          updated_at: 0,
+        });
+      }
+      if (method === "GET" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+        return jsonResponse(agentBody);
+      }
+      if (method === "PUT" && href.endsWith(`/v1/config/agents/${agentId}`)) {
+        return jsonResponse(JSON.parse(String(init?.body)));
+      }
+      if (method === "GET" && href.includes("/v1/audit-log")) {
+        return jsonResponse({ items: [] });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${href}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const view = renderEditorRoute(`/agents/${agentId}`);
+    await screen.findByText(new RegExp(`Edit ${agentId}`, "i"));
+    const targetInput = view.container.querySelector("#root_target");
+    expect(targetInput).toBeInstanceOf(HTMLInputElement);
+    fireEvent.change(targetInput as HTMLInputElement, { target: { value: "worker-v2" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /^save$/i })[0]);
+
+    await waitFor(() => {
+      expect(
+        fetchSpy.mock.calls.filter(([input, init]) => {
+          const href = fetchHref(input as string | URL | Request);
+          return init?.method === "PUT" && href.endsWith(`/v1/config/agents/${agentId}`);
+        }),
+      ).toHaveLength(1);
+    });
+    const [, updateInit] = fetchSpy.mock.calls.find(([input, init]) => {
+      const href = fetchHref(input as string | URL | Request);
+      return init?.method === "PUT" && href.endsWith(`/v1/config/agents/${agentId}`);
+    })!;
+    expect(JSON.parse(String(updateInit?.body))).toMatchObject({
+      backend: {
+        kind: "a2a",
+        config: {
+          auth: { token: "secret-token-123" },
+          target: "worker-v2",
+        },
+      },
     });
   });
 

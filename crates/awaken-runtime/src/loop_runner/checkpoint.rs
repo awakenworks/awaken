@@ -250,13 +250,19 @@ pub(super) async fn persist_checkpoint(
         run_identity.trace.session_id.clone(),
         waiting_tickets_from_store(store),
     );
-    let outcome = termination_reason
-        .clone()
-        .map(|termination_reason| RunOutcome {
-            termination_reason,
-            final_output: final_output.clone(),
-            error_payload: error_payload.clone(),
-        });
+    let outcome = lifecycle
+        .status
+        .is_terminal()
+        .then(|| {
+            termination_reason
+                .clone()
+                .map(|termination_reason| RunOutcome {
+                    termination_reason,
+                    final_output: final_output.clone(),
+                    error_payload: error_payload.clone(),
+                })
+        })
+        .flatten();
     let finished_at = if lifecycle.status.is_terminal() {
         Some(
             if lifecycle.updated_at == 0 {
@@ -544,9 +550,7 @@ fn materialize_checkpoint_append(
     } else {
         Some(RunMessageOutput {
             thread_id: run_identity.thread_id.clone(),
-            range: output_from_seq
-                .zip(output_to_seq)
-                .and_then(|(from, to)| MessageSeqRange::new(from, to)),
+            range: contiguous_output_range(output_from_seq, output_to_seq, &output_message_ids),
             message_ids: output_message_ids,
         })
     };
@@ -620,14 +624,23 @@ fn materialize_message_log(
     } else {
         Some(RunMessageOutput {
             thread_id: run_identity.thread_id.clone(),
-            range: output_from_seq
-                .zip(output_to_seq)
-                .and_then(|(from, to)| MessageSeqRange::new(from, to)),
+            range: contiguous_output_range(output_from_seq, output_to_seq, &output_message_ids),
             message_ids: output_message_ids,
         })
     };
 
     (msgs, input, output)
+}
+
+fn contiguous_output_range(
+    from: Option<u64>,
+    to: Option<u64>,
+    message_ids: &[String],
+) -> Option<MessageSeqRange> {
+    let range = from
+        .zip(to)
+        .and_then(|(from, to)| MessageSeqRange::new(from, to))?;
+    (range.len() as usize == message_ids.len()).then_some(range)
 }
 
 fn infer_input_from_legacy_request(

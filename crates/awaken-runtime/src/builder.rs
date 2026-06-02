@@ -267,8 +267,25 @@ impl AgentRuntimeBuilder {
                 if let Some(spec) = registries
                     .as_ref()
                     .and_then(|set| set.agents.get_agent(&agent_id))
-                    && let Some(endpoint) = &spec.endpoint
+                    && spec.uses_remote_backend()
                 {
+                    let endpoint = match spec.remote_endpoint() {
+                        Ok(Some(endpoint)) => endpoint,
+                        Ok(None) => {
+                            errors.push(format!(
+                                "{agent_id}: invalid remote backend '{}' config",
+                                spec.backend.kind
+                            ));
+                            continue;
+                        }
+                        Err(error) => {
+                            errors.push(format!(
+                                "{agent_id}: invalid remote backend '{}' config: {error}",
+                                spec.backend.kind
+                            ));
+                            continue;
+                        }
+                    };
                     let Some(factory) = registries
                         .as_ref()
                         .and_then(|set| set.backends.get_backend_factory(&endpoint.backend))
@@ -279,7 +296,7 @@ impl AgentRuntimeBuilder {
                         ));
                         continue;
                     };
-                    if let Err(error) = factory.validate(endpoint) {
+                    if let Err(error) = factory.validate(&endpoint) {
                         errors.push(format!("{agent_id}: {error}"));
                     }
                     continue;

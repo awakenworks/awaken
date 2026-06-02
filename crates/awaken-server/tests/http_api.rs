@@ -578,6 +578,14 @@ mod integration {
     }
 
     fn run_record(run_id: &str, thread_id: &str, status: RunStatus, updated_at: u64) -> RunRecord {
+        let waiting = (status == RunStatus::Waiting).then(|| RunWaitingState {
+            reason: WaitingReason::UserInput,
+            ticket_ids: Vec::new(),
+            tickets: Vec::new(),
+            since_dispatch_id: None,
+            message: None,
+        });
+        let finished_at = status.is_terminal().then_some(updated_at);
         RunRecord {
             run_id: run_id.to_string(),
             thread_id: thread_id.to_string(),
@@ -595,11 +603,11 @@ mod integration {
             dispatch_id: None,
             session_id: None,
             transport_request_id: None,
-            waiting: None,
+            waiting,
             outcome: None,
             created_at: updated_at,
             started_at: None,
-            finished_at: None,
+            finished_at,
             updated_at,
             steps: 1,
             input_tokens: 10,
