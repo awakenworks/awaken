@@ -5,8 +5,8 @@ use awaken_server_contract::contract::config_store::ConfigStore;
 use awaken_server_contract::contract::storage::StorageError;
 use awaken_server_contract::registry_spec::AWAKEN_BACKEND_KIND;
 use awaken_server_contract::{
-    AgentSpec, ConfigRecord, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec, SkillSpec,
-    ToolSpec,
+    A2aServerSpec, AgentSpec, ConfigRecord, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec,
+    SkillSpec, ToolSpec,
 };
 use axum::http::HeaderMap;
 use serde_json::{Value, json};
@@ -42,17 +42,19 @@ pub enum ConfigNamespace {
     Models,
     ModelPools,
     Providers,
+    A2aServers,
     McpServers,
     Skills,
 }
 
 impl ConfigNamespace {
     /// All writable public managed namespaces in a fixed order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Agents,
         Self::Providers,
         Self::Models,
         Self::ModelPools,
+        Self::A2aServers,
         Self::McpServers,
         Self::Skills,
     ];
@@ -73,6 +75,7 @@ impl ConfigNamespace {
             "models" => Ok(Self::Models),
             "model-pools" => Ok(Self::ModelPools),
             "providers" => Ok(Self::Providers),
+            "a2a-servers" => Ok(Self::A2aServers),
             "mcp-servers" => Ok(Self::McpServers),
             SKILLS_NAMESPACE => Ok(Self::Skills),
             _ => Err(ConfigServiceError::UnknownNamespace(value.to_string())),
@@ -85,6 +88,7 @@ impl ConfigNamespace {
             Self::Models => "models",
             Self::ModelPools => "model-pools",
             Self::Providers => "providers",
+            Self::A2aServers => "a2a-servers",
             Self::McpServers => "mcp-servers",
             Self::Skills => SKILLS_NAMESPACE,
         }
@@ -96,6 +100,7 @@ impl ConfigNamespace {
             Self::Models => schemars::schema_for!(ModelSpec),
             Self::ModelPools => schemars::schema_for!(ModelPoolSpec),
             Self::Providers => schemars::schema_for!(ProviderSpec),
+            Self::A2aServers => schemars::schema_for!(A2aServerSpec),
             Self::McpServers => schemars::schema_for!(McpServerSpec),
             Self::Skills => schemars::schema_for!(SkillSpec),
         };

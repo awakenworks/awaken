@@ -19,6 +19,10 @@ export const qk = {
   dashboard: (range: string) => ["dashboard", range] as const,
   mcp: {
     status: (id: string) => ["mcp", "status", id] as const,
+    inventory: (id: string) => ["mcp", "inventory", id] as const,
+  },
+  a2a: {
+    status: (id: string) => ["a2a", "status", id] as const,
   },
   agent: {
     runtimeStats: (id: string, window: string) =>

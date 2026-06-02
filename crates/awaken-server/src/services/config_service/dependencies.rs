@@ -1,5 +1,5 @@
 use awaken_server_contract::{
-    AgentSpec, ModelPoolSpec, ModelSpec, SkillSpec, parse_skill_allowed_tool_token,
+    AgentSpec, ModelPoolSpec, ModelSpec, SkillSpec, a2a_server_id, parse_skill_allowed_tool_token,
 };
 use awaken_tool_pattern::{parse_pattern, pattern_matches};
 use serde_json::Value;
@@ -76,6 +76,28 @@ impl ConfigService {
                         continue;
                     };
                     if !agent.uses_remote_backend() && agent.model_id == id {
+                        refs.push(DependentRef {
+                            namespace: "agents",
+                            id: agent_id,
+                        });
+                    }
+                }
+                Ok(refs)
+            }
+            ConfigNamespace::A2aServers => {
+                let agents = self.store.list("agents", 0, usize::MAX).await?;
+                let mut refs = Vec::new();
+                for (agent_id, value) in agents {
+                    let Some(agent) = effective_visible_record::<AgentSpec>(value)? else {
+                        continue;
+                    };
+                    let references_server = agent
+                        .endpoint
+                        .as_ref()
+                        .filter(|endpoint| endpoint.backend == "a2a")
+                        .and_then(a2a_server_id)
+                        == Some(id);
+                    if references_server {
                         refs.push(DependentRef {
                             namespace: "agents",
                             id: agent_id,

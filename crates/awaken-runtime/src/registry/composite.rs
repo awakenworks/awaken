@@ -14,7 +14,7 @@ use parking_lot::RwLock;
 
 use awaken_protocol_a2a::{AgentCard, AgentInterface};
 use awaken_runtime_contract::registry_spec::{
-    AgentBackendSpec, AgentSpec, RemoteAuth, RemoteEndpoint,
+    AgentBackendSpec, AgentSpec, RemoteAuth, RemoteEndpoint, set_a2a_server_id,
 };
 
 use super::traits::AgentSpecRegistry;
@@ -106,7 +106,7 @@ impl CompositeAgentSpecRegistry {
         let mut new_cache: HashMap<String, (String, AgentSpec)> = HashMap::new();
 
         for source in &self.remote_endpoints {
-            let url = discovery_url_for_source(&source.base_url).map_err(|message| {
+            let url = a2a_discovery_url(&source.base_url).map_err(|message| {
                 DiscoveryError::HttpError {
                     url: source.base_url.clone(),
                     message,
@@ -229,13 +229,14 @@ fn agent_card_to_spec(
             ),
         })?;
 
-    let endpoint = RemoteEndpoint {
+    let mut endpoint = RemoteEndpoint {
         backend: "a2a".into(),
         base_url: interface.url.clone(),
         auth: source.bearer_token.clone().map(RemoteAuth::bearer),
         target: interface.agent_id.clone(),
         ..Default::default()
     };
+    set_a2a_server_id(&mut endpoint, &source.name);
 
     Ok(AgentSpec {
         id: interface
@@ -287,7 +288,7 @@ fn slugify_agent_name(name: &str) -> String {
     }
 }
 
-fn discovery_url_for_source(base_url: &str) -> Result<String, String> {
+pub fn a2a_discovery_url(base_url: &str) -> Result<String, String> {
     let mut url = reqwest::Url::parse(base_url).map_err(|e| e.to_string())?;
     url.set_path("/.well-known/agent-card.json");
     url.set_query(None);
@@ -516,7 +517,7 @@ mod tests {
 
     #[test]
     fn discovery_url_uses_origin_root() {
-        let url = discovery_url_for_source("https://api.example.com/v1/a2a").unwrap();
+        let url = a2a_discovery_url("https://api.example.com/v1/a2a").unwrap();
         assert_eq!(url, "https://api.example.com/.well-known/agent-card.json");
     }
 

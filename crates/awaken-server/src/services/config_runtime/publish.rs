@@ -9,6 +9,7 @@ impl ConfigRuntimeManager {
         managed: ManagedConfigSnapshot,
     ) -> Result<u64, ConfigRuntimeError> {
         let prepared_skills = self.prepare_skill_specs(&managed.skills)?;
+        let discovered_agents = self.discover_a2a_agents(&managed.a2a_servers).await;
         let prepared_mcp = self.prepare_mcp_registry(&managed.mcp_servers).await?;
         let provider_capabilities = provider_capability_discovery::discover_provider_capabilities(
             &managed.providers,
@@ -30,6 +31,7 @@ impl ConfigRuntimeManager {
                 agents: &managed.agents,
                 tool_specs: &managed.tools,
                 dynamic_tools: prepared_mcp.tool_registry.clone(),
+                discovered_agents,
                 provider_capabilities: &staged_capabilities.resolved,
             }) {
                 Ok(candidate) => candidate,

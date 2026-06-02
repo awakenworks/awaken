@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent_spec_patch::{AgentSpecPatch, merge_agent_spec};
 use crate::registry_spec::{
-    AgentSpec, BackendConfigError, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec,
+    A2aServerSpec, AgentSpec, BackendConfigError, McpServerSpec, ModelPoolSpec, ModelSpec,
+    ProviderSpec,
 };
 use crate::skill_spec::SkillSpec;
 use crate::skill_spec_patch::{SkillSpecPatch, merge_skill_spec};
@@ -124,6 +125,14 @@ impl ConfigRecordMerge for ModelPoolSpec {
 }
 
 impl ConfigRecordMerge for McpServerSpec {
+    type Patch = NoConfigPatch;
+
+    fn merge_patch(self, _patch: NoConfigPatch) -> Result<Self, ConfigRecordError> {
+        Ok(self)
+    }
+}
+
+impl ConfigRecordMerge for A2aServerSpec {
     type Patch = NoConfigPatch;
 
     fn merge_patch(self, _patch: NoConfigPatch) -> Result<Self, ConfigRecordError> {

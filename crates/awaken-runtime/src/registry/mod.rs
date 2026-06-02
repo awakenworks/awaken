@@ -16,7 +16,9 @@ pub mod traits;
 
 pub use awaken_runtime_contract::registry_spec::AgentSpec;
 #[cfg(feature = "a2a")]
-pub use composite::{CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource};
+pub use composite::{
+    CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource, a2a_discovery_url,
+};
 pub use config::AgentSystemConfig;
 pub use diagnostics::{
     RegistryDiagnostic, RegistryDiagnosticSeverity, RegistryResourceRef, RegistryValidationError,

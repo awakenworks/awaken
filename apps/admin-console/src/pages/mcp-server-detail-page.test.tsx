@@ -67,7 +67,7 @@ describe("McpServerDetailPage", () => {
         if (href.endsWith("/v1/config/agents")) {
           return jsonResponse({ namespace: "agents", items: [], offset: 0, limit: 100 });
         }
-        if (href.endsWith("/v1/mcp-servers/my-server/status")) {
+        if (href.endsWith("/v1/mcp-servers/my-server/inventory")) {
           await pendingStatus;
         }
         return { ok: false, status: 404, text: async () => JSON.stringify({ error: "missing" }) };

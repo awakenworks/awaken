@@ -18,6 +18,7 @@ import { type AuditEvent, formatActor, summarizeChange } from "@/lib/audit-log";
 import { AgentPreviewPanel } from "@/components/agent-preview-panel";
 import { AdminAssistantLockedToolsSection } from "@/components/admin-assistant-locked-tools-section";
 import { AgentFrontendIntegrationCard } from "@/components/agent-frontend-integration-card";
+import { EditorSourceBadge } from "./agent-editor/editor-source-badge";
 import {
   AWAKEN_BACKEND_KIND,
   BasicsPanel,
@@ -33,6 +34,7 @@ import { ContextPolicySection } from "./agent-editor/panels/context-policy-secti
 import { DelegatesPanel } from "./agent-editor/panels/delegates-panel";
 import { McpServersPanel } from "./agent-editor/panels/mcp-servers-panel";
 import { PluginsPanel } from "./agent-editor/panels/plugins-panel";
+import { RemoteA2aAgentReadOnlyPage } from "./agent-editor/remote-a2a-readonly-page";
 import { RemoteEndpointReadonlySection } from "./agent-editor/panels/remote-endpoint-readonly-section";
 import { SkillsPanel } from "./agent-editor/panels/skills-panel";
 import { useToast } from "@/components/toast-provider";
@@ -47,6 +49,7 @@ import {
 } from "@/lib/editor-tabs";
 import { pluginConfigEntryKey } from "@/lib/plugin-config";
 import { adminRoutes } from "@/lib/routes";
+import { a2aServerIdForAgent } from "@/lib/a2a-agent";
 import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
 import {
   useConfigListQuery,
@@ -201,6 +204,9 @@ export function AgentEditorPage() {
   useUnsavedChangesGuard({ enabled: isDirty });
 
   const sourceState: ConfigSourceState | null = agentMeta ? deriveSourceState(agentMeta) : null;
+  const a2aServerId = a2aServerIdForAgent(spec);
+  const isRemoteA2aAgent =
+    !isNew && (spec.endpoint?.backend === "a2a" || Boolean(spec.registry));
 
   useEffect(() => {
     if (capabilitiesQuery.error) {
@@ -636,6 +642,16 @@ export function AgentEditorPage() {
       </div>
     );
   }
+  if (isRemoteA2aAgent) {
+    return (
+      <RemoteA2aAgentReadOnlyPage
+        spec={spec}
+        sourceState={sourceState}
+        a2aServerId={a2aServerId}
+        agentMetaError={agentMetaError}
+      />
+    );
+  }
 
   return (
     <div className="mx-auto w-full max-w-[96rem] 2xl:max-w-none">
@@ -999,30 +1015,6 @@ function formatDiffValue(value: unknown, redactedValueChanged = false): string {
   // a future code path that forgets shouldn't end up dumping secrets here.
   const rendered = JSON.stringify(redactSecretsForDisplay(value), null, 2);
   return redactedValueChanged ? `${rendered}\n(changed)` : rendered;
-}
-
-function EditorSourceBadge({ state }: { state: ConfigSourceState }) {
-  const { t } = useTranslation();
-  if (state === "builtin") {
-    return (
-      <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-fg-soft">
-        {t("agents.source.builtin")}
-      </span>
-    );
-  }
-  if (state === "customized") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
-        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-        {t("agents.source.customized")}
-      </span>
-    );
-  }
-  return (
-    <span className="rounded-full bg-soft px-2 py-0.5 text-xs font-medium text-fg">
-      {t("agents.source.userDefined")}
-    </span>
-  );
 }
 
 function StickyEditorHeader({

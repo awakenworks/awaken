@@ -435,6 +435,77 @@ pub struct RemoteEndpoint {
     pub options: BTreeMap<String, Value>,
 }
 
+/// Named A2A server connection profile used by admin/control-plane surfaces.
+///
+/// Agents still execute through [`RemoteEndpoint`]. This spec stores reusable
+/// endpoint defaults so operators can select a remote A2A server in the Admin
+/// Console instead of retyping the same base URL and auth for each agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct A2aServerSpec {
+    /// Unique server identifier.
+    pub id: String,
+    /// Base URL of the remote A2A endpoint.
+    pub base_url: String,
+    /// Optional authentication forwarded to the remote endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<RemoteAuth>,
+    /// Default remote agent/card target for agents that reference this server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// Request timeout in milliseconds.
+    #[serde(default = "default_timeout")]
+    pub timeout_ms: u64,
+    /// Backend-specific options copied into `RemoteEndpoint.options`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, Value>,
+}
+
+impl Default for A2aServerSpec {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            base_url: String::new(),
+            auth: None,
+            target: None,
+            timeout_ms: default_timeout(),
+            options: BTreeMap::new(),
+        }
+    }
+}
+
+impl A2aServerSpec {
+    #[must_use]
+    pub fn to_endpoint(&self, target_override: Option<String>) -> RemoteEndpoint {
+        let mut endpoint = RemoteEndpoint {
+            backend: "a2a".into(),
+            base_url: self.base_url.clone(),
+            auth: self.auth.clone(),
+            target: target_override.or_else(|| self.target.clone()),
+            timeout_ms: self.timeout_ms,
+            options: self.options.clone(),
+        };
+        set_a2a_server_id(&mut endpoint, &self.id);
+        endpoint
+    }
+}
+
+pub const A2A_SERVER_ID_OPTION: &str = "a2a_server_id";
+
+pub fn a2a_server_id(endpoint: &RemoteEndpoint) -> Option<&str> {
+    endpoint
+        .options
+        .get(A2A_SERVER_ID_OPTION)
+        .and_then(Value::as_str)
+}
+
+pub fn set_a2a_server_id(endpoint: &mut RemoteEndpoint, server_id: &str) {
+    endpoint.options.insert(
+        A2A_SERVER_ID_OPTION.to_string(),
+        Value::String(server_id.to_string()),
+    );
+}
+
 impl Default for RemoteEndpoint {
     fn default() -> Self {
         Self {

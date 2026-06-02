@@ -223,6 +223,21 @@ export interface McpServerRecord extends Omit<McpServerSpec, "env"> {
   env_keys?: string[];
 }
 
+export interface A2aServerSpec {
+  id: string;
+  base_url: string;
+  auth?: RemoteAuth | null;
+  target?: string | null;
+  timeout_ms?: number;
+  options?: Record<string, unknown>;
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface A2aServerRecord extends Omit<A2aServerSpec, "auth"> {
+  has_auth?: boolean;
+}
+
 export interface PluginInfo {
   id: string;
   config_schemas: Array<{
@@ -347,6 +362,64 @@ export interface McpServerStatusResponse {
   transport_reconnect_count?: number;
   /** Unix seconds, omitted before first successful initialize. */
   last_init_at?: number | null;
+}
+
+export interface McpPromptDefinition {
+  name: string;
+  title?: string | null;
+  description?: string | null;
+  arguments?: Array<{ name: string; description?: string | null; required?: boolean }>;
+}
+
+export interface McpResourceDefinition {
+  uri: string;
+  name: string;
+  title?: string | null;
+  description?: string | null;
+  mimeType?: string | null;
+  size?: number | null;
+}
+
+export interface McpServerInventoryResponse extends McpServerStatusResponse {
+  prompts: Array<{ server_name: string; transport_type: string; prompt: McpPromptDefinition }>;
+  resources: Array<{ server_name: string; transport_type: string; resource: McpResourceDefinition }>;
+}
+
+export interface A2aAgentCard {
+  name: string;
+  description: string;
+  supportedInterfaces?: Array<{
+    url: string;
+    protocolBinding: string;
+    protocolVersion: string;
+    agentId?: string | null;
+  }>;
+  provider?: { organization: string; url?: string | null } | null;
+  version: string;
+  documentationUrl?: string | null;
+  capabilities?: Record<string, unknown>;
+  securitySchemes?: Record<string, unknown>;
+  security?: Array<Record<string, string[]>>;
+  defaultInputModes?: string[];
+  defaultOutputModes?: string[];
+  skills?: Array<{
+    id: string;
+    name: string;
+    description?: string | null;
+    tags?: string[];
+    examples?: string[];
+    inputModes?: string[];
+    outputModes?: string[];
+  }>;
+  signatures?: unknown[];
+  iconUrl?: string | null;
+}
+
+export interface A2aServerStatusResponse {
+  connected: boolean;
+  last_error?: string | null;
+  card_url: string;
+  card?: A2aAgentCard | null;
 }
 
 /** Wire-format mirror of `GET /v1/system/info` response. */

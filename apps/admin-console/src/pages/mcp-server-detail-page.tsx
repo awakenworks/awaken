@@ -10,7 +10,7 @@ import { Sparkline } from "@/components/ui/sparkline";
 import { adminRoutes } from "@/lib/routes";
 import { formatRelativeTime } from "@/lib/format-time";
 import { useConfigListQuery, useConfigRecordQuery } from "@/lib/query/hooks/config";
-import { useMcpStatusQuery } from "@/lib/query/hooks/mcp";
+import { useMcpInventoryQuery } from "@/lib/query/hooks/mcp";
 import { agentMentionsMcpServer } from "@/lib/agent-resource-references";
 
 const EMPTY_AGENTS: AgentSpec[] = [];
@@ -30,7 +30,7 @@ export function McpServerDetailPage() {
   const confirm = useConfirmDialog();
   const [copied, setCopied] = useState(false);
   const serverQuery = useConfigRecordQuery<McpServerRecord>("mcp-servers", id);
-  const statusQuery = useMcpStatusQuery(id);
+  const inventoryQuery = useMcpInventoryQuery(id);
   const agentsQuery = useConfigListQuery<AgentSpec>("agents", { enabled: Boolean(id) });
   const restartMutation = useMutation({
     mutationFn: async () => {
@@ -39,7 +39,7 @@ export function McpServerDetailPage() {
     },
     onSuccess: () => {
       toast.push({ message: `Restart triggered for "${id}".`, tone: "success" });
-      void statusQuery.refetch();
+      void inventoryQuery.refetch();
     },
     onError: (err) => {
       toast.push({
@@ -49,7 +49,8 @@ export function McpServerDetailPage() {
     },
   });
   const server = serverQuery.data ?? null;
-  const status = statusQuery.data;
+  const inventory = inventoryQuery.data;
+  const status = inventory;
   const agents = agentsQuery.data?.items ?? EMPTY_AGENTS;
   const notFound = serverQuery.error instanceof ConfigApiError && serverQuery.error.status === 404;
   const error =
@@ -131,9 +132,11 @@ export function McpServerDetailPage() {
 
   const cmd = formatCommand(server);
   const isStdio = server.transport === "stdio";
-  const statusLoading = statusQuery.isPending;
-  const statusError = statusQuery.error ? toStatusErrorMessage(statusQuery.error) : null;
+  const statusLoading = inventoryQuery.isPending;
+  const statusError = inventoryQuery.error ? toStatusErrorMessage(inventoryQuery.error) : null;
   const statusTools = status?.tools ?? [];
+  const statusPrompts = status?.prompts ?? [];
+  const statusResources = status?.resources ?? [];
   const isConnected = status?.connected === true;
   const lastAttempt = status?.last_attempt_at ? new Date(status.last_attempt_at * 1000) : null;
   const lastSuccess = status?.last_success_at ? new Date(status.last_success_at * 1000) : null;
@@ -191,6 +194,8 @@ export function McpServerDetailPage() {
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <Pill tone={statusPillTone}>{statusPillLabel}</Pill>
           <Pill tone="neutral">{statusTools.length} tools exposed</Pill>
+          <Pill tone="neutral">{statusPrompts.length} prompts exposed</Pill>
+          <Pill tone="neutral">{statusResources.length} resources exposed</Pill>
           <Pill tone={usedByAgents.length > 0 ? "info" : "neutral"}>
             used by {usedByAgents.length} agent{usedByAgents.length === 1 ? "" : "s"}
           </Pill>
@@ -313,6 +318,55 @@ export function McpServerDetailPage() {
                 {tool.description && (
                   <div className="mt-0.5 text-xs text-fg-soft">{tool.description}</div>
                 )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Prompts exposed */}
+      <section className="mt-4 rounded-sm border border-line bg-surface p-5 shadow-card">
+        <div className="flex items-baseline justify-between">
+          <h3 className="text-sm font-semibold text-fg-strong">Prompts exposed</h3>
+          <span className="font-mono text-xs text-fg-faint">{statusPrompts.length}</span>
+        </div>
+        {statusPrompts.length === 0 ? (
+          <p className="mt-2 text-sm text-fg-soft">{toolsEmptyLabel}</p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {statusPrompts.map(({ prompt }) => (
+              <li key={prompt.name} className="rounded-sm border border-line bg-soft px-3 py-2">
+                <div className="font-mono text-sm text-fg-strong">
+                  {prompt.title ?? prompt.name}
+                </div>
+                {prompt.description ? (
+                  <div className="mt-0.5 text-xs text-fg-soft">{prompt.description}</div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Resources exposed */}
+      <section className="mt-4 rounded-sm border border-line bg-surface p-5 shadow-card">
+        <div className="flex items-baseline justify-between">
+          <h3 className="text-sm font-semibold text-fg-strong">Resources exposed</h3>
+          <span className="font-mono text-xs text-fg-faint">{statusResources.length}</span>
+        </div>
+        {statusResources.length === 0 ? (
+          <p className="mt-2 text-sm text-fg-soft">{toolsEmptyLabel}</p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {statusResources.map(({ resource }) => (
+              <li key={resource.uri} className="rounded-sm border border-line bg-soft px-3 py-2">
+                <div className="font-mono text-sm text-fg-strong">
+                  {resource.title ?? resource.name}
+                </div>
+                <div className="mt-0.5 break-all text-xs text-fg-soft">{resource.uri}</div>
+                {resource.description ? (
+                  <div className="mt-0.5 text-xs text-fg-soft">{resource.description}</div>
+                ) : null}
               </li>
             ))}
           </ul>

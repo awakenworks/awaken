@@ -30,9 +30,12 @@ use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+mod a2a_discovery;
 #[cfg(test)]
 mod credential_tests;
+mod discovered_agents;
 mod managed_config;
+mod mcp_inventory;
 mod provider_cache;
 mod provider_capability_discovery;
 mod publish;
@@ -42,13 +45,16 @@ mod skill_publish;
 mod skill_tests;
 mod versioned_publish;
 
+use discovered_agents::{AgentSpecRegistryWithDiscovery, DiscoveredAgentRegistry};
 use managed_config::ManagedConfigSnapshot;
+pub use mcp_inventory::McpServerInventory;
 
 const CONFIG_LOAD_PAGE_SIZE: usize = 1024;
 
 const NS_AGENTS: &str = "agents";
 const NS_MODELS: &str = "models";
 const NS_PROVIDERS: &str = "providers";
+const NS_A2A_SERVERS: &str = "a2a-servers";
 const NS_MCP_SERVERS: &str = "mcp-servers";
 const NS_TOOLS: &str = "tools";
 const NS_SKILLS: &str = "skills";
@@ -77,56 +83,6 @@ pub enum ConfigRuntimeError {
     VersionedRegistry(String),
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),
-}
-
-/// Holds A2A-discovered agent specs (those with `endpoint` or `registry`
-/// set). Built once from the runtime's pre-apply registry; subsequent
-/// `ConfigRuntimeManager::apply()` calls overlay these on top of the
-/// ConfigStore-derived registry. Pure code-defined regular agents flow
-/// only via ConfigStore and do NOT appear here.
-#[derive(Default)]
-struct DiscoveredAgentRegistry {
-    exact: HashMap<String, AgentSpec>,
-    plain: HashMap<String, AgentSpec>,
-}
-
-impl DiscoveredAgentRegistry {
-    fn from_registry(registry: Arc<dyn AgentSpecRegistry>) -> Option<Arc<dyn AgentSpecRegistry>> {
-        let mut exact = HashMap::new();
-        let mut plain = HashMap::new();
-
-        for id in registry.agent_ids() {
-            let Some(spec) = registry.get_agent(&id) else {
-                continue;
-            };
-            if !spec.uses_remote_backend() && spec.registry.is_none() {
-                continue;
-            }
-            plain.entry(spec.id.clone()).or_insert_with(|| spec.clone());
-            exact.insert(id, spec);
-        }
-
-        if exact.is_empty() {
-            None
-        } else {
-            Some(Arc::new(Self { exact, plain }) as Arc<dyn AgentSpecRegistry>)
-        }
-    }
-}
-
-impl AgentSpecRegistry for DiscoveredAgentRegistry {
-    fn get_agent(&self, id: &str) -> Option<AgentSpec> {
-        self.exact
-            .get(id)
-            .cloned()
-            .or_else(|| self.plain.get(id).cloned())
-    }
-
-    fn agent_ids(&self) -> Vec<String> {
-        let mut ids: Vec<_> = self.exact.keys().cloned().collect();
-        ids.sort();
-        ids
-    }
 }
 
 macro_rules! overlay_registry {
@@ -158,11 +114,6 @@ macro_rules! overlay_registry {
     };
 }
 
-// AgentSpecRegistryWithDiscovery: ConfigStore-side agents (base) ⊕
-// runtime-discovered remote agents (overlay). Resolves a given id by
-// preferring base; falls through to discovery only if base does not
-// contain the id.
-overlay_registry!(AgentSpecRegistryWithDiscovery, AgentSpecRegistry, get_agent -> Option<AgentSpec>, agent_ids);
 overlay_registry!(OverlayToolRegistry, ToolRegistry, get_tool -> Option<Arc<dyn server_contract::contract::tool::Tool>>, tool_ids);
 
 #[derive(Clone)]
@@ -249,6 +200,18 @@ pub trait ManagedMcpRegistry: Send + Sync {
     /// wouldn't surface to admin/observability consumers.
     async fn server_status(&self, _server_name: &str) -> Option<McpServerStatusSnapshot> {
         None
+    }
+    async fn server_prompts(
+        &self,
+        _server_name: &str,
+    ) -> Result<Vec<awaken_ext_mcp::McpPromptEntry>, ConfigRuntimeError> {
+        Ok(Vec::new())
+    }
+    async fn server_resources(
+        &self,
+        _server_name: &str,
+    ) -> Result<Vec<awaken_ext_mcp::McpResourceEntry>, ConfigRuntimeError> {
+        Ok(Vec::new())
     }
     async fn reconnect(&self, server_name: &str) -> Result<(), ConfigRuntimeError> {
         Err(ConfigRuntimeError::InvalidConfig(format!(
@@ -438,6 +401,36 @@ impl ManagedMcpRegistry for RealManagedMcpRegistry {
 
     async fn server_status(&self, server_name: &str) -> Option<McpServerStatusSnapshot> {
         self.manager.server_status_snapshot(server_name).await.ok()
+    }
+
+    async fn server_prompts(
+        &self,
+        server_name: &str,
+    ) -> Result<Vec<awaken_ext_mcp::McpPromptEntry>, ConfigRuntimeError> {
+        let prompts = self
+            .manager
+            .list_prompts()
+            .await
+            .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
+        Ok(prompts
+            .into_iter()
+            .filter(|entry| entry.server_name == server_name)
+            .collect())
+    }
+
+    async fn server_resources(
+        &self,
+        server_name: &str,
+    ) -> Result<Vec<awaken_ext_mcp::McpResourceEntry>, ConfigRuntimeError> {
+        let resources = self
+            .manager
+            .list_resources()
+            .await
+            .map_err(|error| ConfigRuntimeError::InvalidConfig(error.to_string()))?;
+        Ok(resources
+            .into_iter()
+            .filter(|entry| entry.server_name == server_name)
+            .collect())
     }
 
     async fn reconnect(&self, server_name: &str) -> Result<(), ConfigRuntimeError> {
@@ -2162,6 +2155,7 @@ mod tests {
                 models: Vec::new(),
                 pools: Vec::new(),
                 agents: Vec::new(),
+                a2a_servers: Vec::new(),
                 mcp_servers: vec![McpServerSpec {
                     id: "demo".to_string(),
                     transport: McpTransportKind::Http,

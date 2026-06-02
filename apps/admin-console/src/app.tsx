@@ -47,6 +47,11 @@ const McpServersPage = lazy(async () => {
   return { default: module.McpServersPage };
 });
 
+const A2aServersPage = lazy(async () => {
+  const module = await import("./pages/a2a-servers-page");
+  return { default: module.A2aServersPage };
+});
+
 const McpServerDetailPage = lazy(async () => {
   const module = await import("./pages/mcp-server-detail-page");
   return { default: module.McpServerDetailPage };
@@ -182,6 +187,14 @@ export function appRoutes() {
           element={
             <RouteLoader>
               <ProvidersPage />
+            </RouteLoader>
+          }
+        />
+        <Route
+          path="a2a-servers"
+          element={
+            <RouteLoader>
+              <A2aServersPage />
             </RouteLoader>
           }
         />

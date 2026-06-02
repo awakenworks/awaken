@@ -1,3 +1,4 @@
+export { a2aApi } from "./a2a";
 export { agentsApi, type AgentsRuntimeStatsResult } from "./agents";
 export { adminAssistantApi } from "./admin-assistant";
 export { auditApi } from "./audit";

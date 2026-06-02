@@ -1511,6 +1511,109 @@ async fn mcp_servers_are_redacted_and_publish_live_tools() {
 }
 
 #[tokio::test]
+async fn a2a_servers_redact_preserve_clear_auth_and_validate_url() {
+    let app = make_app().await;
+
+    let (status, invalid) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/a2a-servers",
+        Some(json!({
+            "id": "invalid",
+            "base_url": "not a url",
+            "timeout_ms": 50
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        invalid.to_string().contains("base_url"),
+        "validation error should explain the invalid URL: {invalid}"
+    );
+
+    let (status, created) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/a2a-servers",
+        Some(json!({
+            "id": "partner",
+            "base_url": "http://127.0.0.1:9",
+            "timeout_ms": 50,
+            "auth": {
+                "type": "bearer",
+                "token": "a2a-secret-token"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(created.get("auth").is_none());
+    assert_eq!(created["has_auth"], true);
+
+    let (status, fetched) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/config/a2a-servers/partner",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(fetched.get("auth").is_none());
+    assert_eq!(fetched["has_auth"], true);
+
+    let (status, updated) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/config/a2a-servers/partner",
+        Some(json!({
+            "id": "partner",
+            "base_url": "http://127.0.0.1:9/a2a",
+            "timeout_ms": 75,
+            "has_auth": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(updated.get("auth").is_none());
+    assert_eq!(updated["has_auth"], true);
+
+    let stored = ConfigStore::get(app.store.as_ref(), "a2a-servers", "partner")
+        .await
+        .expect("read raw a2a server config")
+        .expect("a2a server config should exist");
+    let stored = awaken_server_contract::ConfigRecord::<serde_json::Value>::from_value(stored)
+        .expect("decode envelope")
+        .spec;
+    assert_eq!(stored["auth"]["token"], "a2a-secret-token");
+    assert_eq!(stored["base_url"], "http://127.0.0.1:9/a2a");
+
+    let (status, cleared) = request_json(
+        &app.router,
+        Method::PUT,
+        "/v1/config/a2a-servers/partner",
+        Some(json!({
+            "id": "partner",
+            "base_url": "http://127.0.0.1:9",
+            "timeout_ms": 50,
+            "auth": null
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(cleared.get("auth").is_none());
+    assert!(cleared.get("has_auth").is_none());
+
+    let stored = ConfigStore::get(app.store.as_ref(), "a2a-servers", "partner")
+        .await
+        .expect("read raw a2a server config")
+        .expect("a2a server config should exist");
+    let stored = awaken_server_contract::ConfigRecord::<serde_json::Value>::from_value(stored)
+        .expect("decode envelope")
+        .spec;
+    assert!(stored.get("auth").map(Value::is_null).unwrap_or(true));
+}
+
+#[tokio::test]
 async fn delete_mcp_server_is_blocked_when_skill_references_its_tool() {
     let app = make_app().await;
 

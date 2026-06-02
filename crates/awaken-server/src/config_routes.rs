@@ -1,3 +1,4 @@
+use awaken_runtime::registry::a2a_discovery_url;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -111,7 +112,12 @@ pub fn config_routes() -> Router<ConfigRoutesState> {
         )
         .route("/v1/providers/:id/test", post(test_provider_connection))
         .route("/v1/mcp-servers/:id/status", get(get_mcp_server_status))
+        .route(
+            "/v1/mcp-servers/:id/inventory",
+            get(get_mcp_server_inventory),
+        )
         .route("/v1/mcp-servers/:id/restart", post(post_mcp_server_restart))
+        .route("/v1/a2a-servers/:id/status", get(get_a2a_server_status))
         .route("/v1/audit-log", get(list_audit_log))
 }
 
@@ -544,6 +550,105 @@ async fn get_mcp_server_status(
         "session_generation": status.session_generation,
         "transport_reconnect_count": status.transport_reconnect_count,
         "last_init_at": status.last_init_at.and_then(systime_to_secs),
+    })))
+}
+
+async fn get_mcp_server_inventory(
+    State(state): State<ConfigRoutesState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    ensure_admin_auth(&state.admin, &headers)?;
+    let inventory = state
+        .config
+        .runtime_manager
+        .mcp_server_inventory(&id)
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("mcp-server/{id}")))?;
+
+    Ok(Json(json!({
+        "connected": inventory.status.connected,
+        "last_error": inventory.status.last_error,
+        "consecutive_failures": inventory.status.consecutive_failures,
+        "last_attempt_at": inventory.status.last_attempt_at.and_then(systime_to_secs),
+        "last_success_at": inventory.status.last_success_at.and_then(systime_to_secs),
+        "reconnecting": inventory.status.reconnecting,
+        "permanently_failed": inventory.status.permanently_failed,
+        "session_generation": inventory.status.session_generation,
+        "transport_reconnect_count": inventory.status.transport_reconnect_count,
+        "last_init_at": inventory.status.last_init_at.and_then(systime_to_secs),
+        "tools": inventory.status.tools.iter().map(|t| json!({
+            "name": t.name,
+            "description": t.description,
+        })).collect::<Vec<_>>(),
+        "prompts": inventory.prompts.iter().map(|entry| json!({
+            "server_name": entry.server_name,
+            "transport_type": entry.transport_type.to_string(),
+            "prompt": entry.prompt,
+        })).collect::<Vec<_>>(),
+        "resources": inventory.resources.iter().map(|entry| json!({
+            "server_name": entry.server_name,
+            "transport_type": entry.transport_type.to_string(),
+            "resource": entry.resource,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+async fn get_a2a_server_status(
+    State(state): State<ConfigRoutesState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    ensure_admin_auth(&state.admin, &headers)?;
+    let service = ConfigService::new(&state).map_err(map_service_error)?;
+    let spec = service
+        .a2a_server_spec(&id)
+        .await
+        .map_err(map_service_error)?
+        .ok_or_else(|| ApiError::NotFound(format!("a2a-server/{id}")))?;
+    let url = a2a_discovery_url(&spec.base_url)
+        .map_err(|error| ApiError::BadRequest(format!("invalid A2A base_url: {error}")))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(spec.timeout_ms))
+        .build()
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    let mut request = client.get(&url);
+    if let Some(token) = spec.auth.as_ref().and_then(|auth| auth.param_str("token")) {
+        request = request.bearer_auth(token);
+    }
+    let response_result = request
+        .send()
+        .await
+        .and_then(|response| response.error_for_status());
+    let card = match response_result {
+        Ok(response) => match response.json::<awaken_protocol_a2a::AgentCard>().await {
+            Ok(card) => card,
+            Err(error) => {
+                return Ok(Json(json!({
+                    "connected": false,
+                    "last_error": format!("failed to decode A2A agent card: {error}"),
+                    "card_url": url,
+                    "card": null,
+                })));
+            }
+        },
+        Err(error) => {
+            return Ok(Json(json!({
+                "connected": false,
+                "last_error": error.to_string(),
+                "card_url": url,
+                "card": null,
+            })));
+        }
+    };
+
+    Ok(Json(json!({
+        "connected": true,
+        "last_error": null,
+        "card_url": url,
+        "card": card,
     })))
 }
 

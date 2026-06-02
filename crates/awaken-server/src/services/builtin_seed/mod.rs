@@ -291,6 +291,7 @@ fn builtin_spec_to_value(spec: &BuiltinSpec) -> Result<serde_json::Value, serde_
         BuiltinSpec::Provider(s) => serde_json::to_value(s),
         BuiltinSpec::Model(s) => serde_json::to_value(s),
         BuiltinSpec::ModelPool(s) => serde_json::to_value(s),
+        BuiltinSpec::A2aServer(s) => serde_json::to_value(s),
         BuiltinSpec::McpServer(s) => serde_json::to_value(s),
         BuiltinSpec::Tool(s) => serde_json::to_value(s),
         BuiltinSpec::Skill(s) => serde_json::to_value(s),

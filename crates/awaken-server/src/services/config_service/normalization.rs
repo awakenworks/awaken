@@ -1,4 +1,6 @@
-use awaken_server_contract::{AgentSpec, ConfigRecord, McpServerSpec, SkillSpec, ToolSpec};
+use awaken_server_contract::{
+    A2aServerSpec, AgentSpec, ConfigRecord, McpServerSpec, SkillSpec, ToolSpec,
+};
 use serde_json::{Map, Value, json};
 
 use crate::services::config_envelope::{apply_overrides, unwrap_spec};
@@ -39,6 +41,11 @@ impl ConfigService {
                 object.remove("has_env");
                 object.remove("env_keys");
                 self.normalize_mcp_server_payload(path_id, &mut object)
+                    .await?;
+            }
+            ConfigNamespace::A2aServers => {
+                object.remove("has_auth");
+                self.normalize_a2a_server_payload(path_id, &id, &mut object)
                     .await?;
             }
             ConfigNamespace::Agents
@@ -106,6 +113,41 @@ impl ConfigService {
                     )
                 };
                 material_result.map_err(ConfigServiceError::InvalidPayload)?;
+            }
+            ConfigNamespace::A2aServers => {
+                let spec: A2aServerSpec = from_value(body)?;
+                if spec.id.trim().is_empty() {
+                    return Err(ConfigServiceError::InvalidPayload(
+                        "a2a server id cannot be empty".into(),
+                    ));
+                }
+                if spec.base_url.trim().is_empty() {
+                    return Err(ConfigServiceError::InvalidPayload(
+                        "a2a server requires a non-empty base_url".into(),
+                    ));
+                }
+                let parsed_url = reqwest::Url::parse(&spec.base_url).map_err(|error| {
+                    ConfigServiceError::InvalidPayload(format!(
+                        "a2a server base_url must be a valid URL: {error}"
+                    ))
+                })?;
+                if !matches!(parsed_url.scheme(), "http" | "https") {
+                    return Err(ConfigServiceError::InvalidPayload(
+                        "a2a server base_url must use http or https".into(),
+                    ));
+                }
+                if spec.timeout_ms == 0 {
+                    return Err(ConfigServiceError::InvalidPayload(
+                        "a2a server timeout_ms must be greater than 0".into(),
+                    ));
+                }
+                if let Some(auth) = spec.auth.as_ref()
+                    && auth.auth_type != "bearer"
+                {
+                    return Err(ConfigServiceError::InvalidPayload(
+                        "a2a server auth currently supports only bearer tokens".into(),
+                    ));
+                }
             }
             ConfigNamespace::McpServers => {
                 let spec: McpServerSpec = from_value(body)?;

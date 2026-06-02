@@ -21,6 +21,7 @@ pub(super) struct RegistryCompileInput<'a> {
     pub agents: &'a [AgentSpec],
     pub tool_specs: &'a [awaken_server_contract::ToolSpec],
     pub dynamic_tools: Option<Arc<dyn ToolRegistry>>,
+    pub discovered_agents: Option<Arc<dyn AgentSpecRegistry>>,
     pub provider_capabilities: &'a HashMap<String, HashMap<String, ModelCapabilityPatch>>,
 }
 
@@ -36,6 +37,7 @@ impl ConfigRuntimeManager {
             agents,
             tool_specs,
             dynamic_tools,
+            discovered_agents,
             provider_capabilities,
         } = input;
         let mut provider_registry = MapProviderRegistry::new();
@@ -88,11 +90,10 @@ impl ConfigRuntimeManager {
         }
 
         let local_agents: Arc<dyn AgentSpecRegistry> = Arc::new(local_agents);
-        let agents = match &self.discovered_agents {
-            Some(fallback) => Arc::new(AgentSpecRegistryWithDiscovery::new(
-                local_agents,
-                Arc::clone(fallback),
-            )) as Arc<dyn AgentSpecRegistry>,
+        let discovered_agents = discovered_agents.or_else(|| self.discovered_agents.clone());
+        let agents = match discovered_agents {
+            Some(fallback) => Arc::new(AgentSpecRegistryWithDiscovery::new(local_agents, fallback))
+                as Arc<dyn AgentSpecRegistry>,
             None => local_agents,
         };
 

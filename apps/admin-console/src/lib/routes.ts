@@ -8,6 +8,8 @@ export const adminRoutes = {
   skills: "/skills",
   models: "/models",
   providers: "/providers",
+  a2aServers: "/a2a-servers",
+  a2aServer: (id: string) => `/a2a-servers/${encodeURIComponent(id)}`,
   mcpServers: "/mcp-servers",
   mcpServer: (id: string) => `/mcp-servers/${encodeURIComponent(id)}`,
   skill: (id: string) => `/skills/${encodeURIComponent(id)}`,

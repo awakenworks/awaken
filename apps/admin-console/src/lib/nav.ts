@@ -47,6 +47,7 @@ export const navGroups: (NavGroup & { groupKey: string })[] = [
     groupKey: "nav.resources",
     label: "Resources",
     items: [
+      { id: "a2a-servers", path: adminRoutes.a2aServers, label: "A2A Servers", labelKey: "nav.items.a2a" } as NavItemKeyed,
       { id: "mcp-servers", path: adminRoutes.mcpServers, label: "MCP Servers", healthSource: "mcp", labelKey: "nav.items.mcp" } as NavItemKeyed,
       { id: "skills", path: adminRoutes.skills, label: "Skills", badge: "ro", labelKey: "nav.items.skills" } as NavItemKeyed,
       { id: "tools", path: adminRoutes.tools, label: "Tools", labelKey: "nav.items.tools" } as NavItemKeyed,
@@ -131,6 +132,14 @@ export function resolveBreadcrumbs(pathname: string): BreadcrumbCrumb[] {
       { label: "Resources", labelKey: "nav.resources" },
       { label: "MCP Servers", labelKey: "nav.items.mcp", path: adminRoutes.mcpServers },
       { label: decodeURIComponent(mcpMatch[1]) },
+    ];
+  }
+  const a2aMatch = pathname.match(/^\/a2a-servers\/([^/]+)$/);
+  if (a2aMatch) {
+    return [
+      { label: "Resources", labelKey: "nav.resources" },
+      { label: "A2A Servers", labelKey: "nav.items.a2a", path: adminRoutes.a2aServers },
+      { label: decodeURIComponent(a2aMatch[1]) },
     ];
   }
   const skillMatch = pathname.match(/^\/skills\/([^/]+)$/);

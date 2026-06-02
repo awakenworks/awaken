@@ -1,12 +1,12 @@
 use awaken_server_contract::{
-    AgentSpec, ConfigRecord, ConfigRevisionRef, McpServerSpec, ModelPoolSpec, ModelSpec,
-    ProviderSpec, SkillSpec, ToolSpec, validate_unique_model_ids,
+    A2aServerSpec, AgentSpec, ConfigRecord, ConfigRevisionRef, McpServerSpec, ModelPoolSpec,
+    ModelSpec, ProviderSpec, SkillSpec, ToolSpec, validate_unique_model_ids,
 };
 use serde_json::Value;
 
 use super::{
-    ConfigRuntimeError, ConfigRuntimeManager, NS_AGENTS, NS_MCP_SERVERS, NS_MODELS, NS_PROVIDERS,
-    NS_SKILLS, NS_TOOLS, deserialize_namespace, fingerprint_config,
+    ConfigRuntimeError, ConfigRuntimeManager, NS_A2A_SERVERS, NS_AGENTS, NS_MCP_SERVERS, NS_MODELS,
+    NS_PROVIDERS, NS_SKILLS, NS_TOOLS, deserialize_namespace, fingerprint_config,
 };
 
 /// Config-store namespace for model pools. Defined here (its only consumer)
@@ -19,6 +19,7 @@ pub(crate) struct ManagedConfigSnapshot {
     pub(crate) models: Vec<ModelSpec>,
     pub(crate) pools: Vec<ModelPoolSpec>,
     pub(crate) agents: Vec<AgentSpec>,
+    pub(crate) a2a_servers: Vec<A2aServerSpec>,
     pub(crate) mcp_servers: Vec<McpServerSpec>,
     pub(crate) tools: Vec<ToolSpec>,
     pub(crate) skills: Vec<SkillSpec>,
@@ -34,6 +35,7 @@ impl ConfigRuntimeManager {
         let model_values = self.load_namespace_entries(NS_MODELS).await?;
         let pool_values = self.load_namespace_entries(NS_MODEL_POOLS).await?;
         let agent_values = self.load_namespace_entries(NS_AGENTS).await?;
+        let a2a_values = self.load_namespace_entries(NS_A2A_SERVERS).await?;
         let mcp_values = self.load_namespace_entries(NS_MCP_SERVERS).await?;
         let tool_values = self.load_namespace_entries(NS_TOOLS).await?;
         let skill_values = self.load_namespace_entries(NS_SKILLS).await?;
@@ -43,6 +45,7 @@ impl ConfigRuntimeManager {
             (NS_MODELS, &model_values),
             (NS_MODEL_POOLS, &pool_values),
             (NS_AGENTS, &agent_values),
+            (NS_A2A_SERVERS, &a2a_values),
             (NS_MCP_SERVERS, &mcp_values),
             (NS_TOOLS, &tool_values),
             (NS_SKILLS, &skill_values),
@@ -52,6 +55,8 @@ impl ConfigRuntimeManager {
         source_config_revisions.extend(config_revision_refs(NS_MODELS, &model_values)?);
         source_config_revisions.extend(config_revision_refs(NS_MODEL_POOLS, &pool_values)?);
         source_config_revisions.extend(config_revision_refs(NS_AGENTS, &agent_values)?);
+        source_config_revisions.extend(config_revision_refs(NS_A2A_SERVERS, &a2a_values)?);
+        source_config_revisions.extend(config_revision_refs(NS_MCP_SERVERS, &mcp_values)?);
         source_config_revisions.extend(config_revision_refs(NS_TOOLS, &tool_values)?);
         source_config_revisions.extend(config_revision_refs(NS_SKILLS, &skill_values)?);
 
@@ -64,6 +69,7 @@ impl ConfigRuntimeManager {
             models,
             pools: deserialize_namespace(&pool_values)?,
             agents: deserialize_namespace(&agent_values)?,
+            a2a_servers: deserialize_namespace(&a2a_values)?,
             mcp_servers: deserialize_namespace(&mcp_values)?,
             tools: deserialize_namespace(&tool_values)?,
             skills: deserialize_namespace(&skill_values)?,

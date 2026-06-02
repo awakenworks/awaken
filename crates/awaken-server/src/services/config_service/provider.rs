@@ -254,6 +254,15 @@ impl ConfigService {
                 Ok(Value::Object(object))
             }
             ConfigNamespace::Agents => Ok(crate::services::audit_log::redact_secrets(value)),
+            ConfigNamespace::A2aServers => {
+                let mut object = into_object(value)?;
+                let has_auth = object.get("auth").is_some_and(|value| !value.is_null());
+                object.remove("auth");
+                if has_auth {
+                    object.insert("has_auth".into(), Value::Bool(true));
+                }
+                Ok(Value::Object(object))
+            }
             ConfigNamespace::Models | ConfigNamespace::ModelPools | ConfigNamespace::Skills => {
                 Ok(value)
             }

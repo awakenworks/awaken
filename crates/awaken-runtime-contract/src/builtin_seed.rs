@@ -8,7 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::registry_spec::{AgentSpec, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec};
+use crate::registry_spec::{
+    A2aServerSpec, AgentSpec, McpServerSpec, ModelPoolSpec, ModelSpec, ProviderSpec,
+};
 use crate::skill_spec::SkillSpec;
 use crate::tool_spec::ToolSpec;
 
@@ -25,6 +27,7 @@ pub enum BuiltinSpec {
     Provider(ProviderSpec),
     Model(ModelSpec),
     ModelPool(ModelPoolSpec),
+    A2aServer(A2aServerSpec),
     McpServer(McpServerSpec),
     Tool(ToolSpec),
     Skill(SkillSpec),
@@ -49,6 +52,11 @@ impl BuiltinSpec {
     /// Wrap a `ModelPoolSpec`.
     pub fn model_pool(spec: ModelPoolSpec) -> Self {
         Self::ModelPool(spec)
+    }
+
+    /// Wrap an `A2aServerSpec`.
+    pub fn a2a_server(spec: A2aServerSpec) -> Self {
+        Self::A2aServer(spec)
     }
 
     /// Wrap a `McpServerSpec`.
@@ -76,6 +84,7 @@ impl BuiltinSpec {
             Self::Provider(_) => "providers",
             Self::Model(_) => "models",
             Self::ModelPool(_) => "model-pools",
+            Self::A2aServer(_) => "a2a-servers",
             Self::McpServer(_) => "mcp-servers",
             Self::Tool(_) => "tools",
             Self::Skill(_) => "skills",
@@ -89,6 +98,7 @@ impl BuiltinSpec {
             Self::Provider(s) => &s.id,
             Self::Model(s) => &s.id,
             Self::ModelPool(s) => &s.id,
+            Self::A2aServer(s) => &s.id,
             Self::McpServer(s) => &s.id,
             Self::Tool(s) => &s.id,
             Self::Skill(s) => &s.id,

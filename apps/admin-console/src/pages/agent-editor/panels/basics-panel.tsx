@@ -1,7 +1,9 @@
 import { useMemo } from "react";
+import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import type { AgentBackendSpec, AgentSpec, Capabilities } from "@/lib/config-api";
 import { Field } from "@/components/form-components";
+import { adminRoutes } from "@/lib/routes";
 import {
   REASONING_EFFORT_PRESETS,
   reasoningEffortMode,
@@ -217,6 +219,19 @@ export function BasicsPanel({
               locally-defined agent.
             </span>
           </span>
+        </div>
+      ) : null}
+      {isNew ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-sm border border-line bg-soft px-3 py-2 text-xs text-fg-soft">
+          <span>
+            A2A agents are discovered from A2A servers and appear in the Agents list automatically.
+          </span>
+          <Link
+            to={adminRoutes.a2aServers}
+            className="rounded-sm border border-line-strong bg-surface px-2 py-1 font-medium text-fg transition hover:bg-muted"
+          >
+            Connect A2A server
+          </Link>
         </div>
       ) : null}
       <div className="mt-4 grid gap-4 md:grid-cols-2">

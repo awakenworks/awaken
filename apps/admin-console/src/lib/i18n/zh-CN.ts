@@ -20,6 +20,7 @@ export const zhCN: Dict = {
       agents: "智能体",
       models: "模型",
       providers: "供应商",
+      a2a: "A2A 服务",
       mcp: "MCP 服务",
       skills: "技能",
       tools: "工具",

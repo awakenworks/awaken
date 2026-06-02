@@ -21,6 +21,7 @@ export const en = {
       agents: "Agents",
       models: "Models",
       providers: "Providers",
+      a2a: "A2A Servers",
       mcp: "MCP Servers",
       skills: "Skills",
       tools: "Tools",

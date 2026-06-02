@@ -1,4 +1,5 @@
 import { agentsApi } from "./agents";
+import { a2aApi } from "./a2a";
 import { auditApi } from "./audit";
 import { capabilitiesApi } from "./capabilities";
 import { configResourceApi } from "./config-resource";
@@ -9,6 +10,7 @@ import { toolsApi } from "./tools";
 
 export const configApi = {
   ...configResourceApi,
+  ...a2aApi,
   ...capabilitiesApi,
   ...providersApi,
   ...mcpApi,

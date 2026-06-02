@@ -55,9 +55,10 @@ pub use tool_spec_patch::{ToolSpecPatch, merge_tool_spec};
 
 // ── registry spec (AgentSpec, PluginConfigKey) ──
 pub use registry_spec::{
-    AgentSpec, HomeStrategy, McpRestartPolicy, McpServerSpec, McpTransportKind, Modalities,
-    Modality, ModelPoolSpec, ModelSpec, PluginConfigKey, PoolMemberRole, PoolMemberSpec,
-    PoolRoutingPolicy, PoolSwitchPolicy, ProviderSpec, StickyScope,
+    A2A_SERVER_ID_OPTION, A2aServerSpec, AgentSpec, HomeStrategy, McpRestartPolicy, McpServerSpec,
+    McpTransportKind, Modalities, Modality, ModelPoolSpec, ModelSpec, PluginConfigKey,
+    PoolMemberRole, PoolMemberSpec, PoolRoutingPolicy, PoolSwitchPolicy, ProviderSpec, StickyScope,
+    a2a_server_id, set_a2a_server_id,
 };
 
 // ── skill spec ──
