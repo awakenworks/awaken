@@ -522,6 +522,7 @@ impl RunDispatch {
     }
 
     pub fn mark_superseded(&mut self, now: u64, reason: Option<&str>) -> Result<(), StorageError> {
+        self.require_status(RunDispatchStatus::Queued, "supersede")?;
         self.status = RunDispatchStatus::Superseded;
         self.completed_at = Some(now);
         self.updated_at = now;
@@ -529,6 +530,7 @@ impl RunDispatch {
             self.last_error = Some(reason.to_string());
         }
         self.clear_claim_fields();
+        self.clear_runtime_projection();
         self.validate_for_persist()
     }
 
@@ -539,7 +541,24 @@ impl RunDispatch {
         reason: Option<&str>,
     ) -> Result<(), StorageError> {
         self.dispatch_epoch = epoch;
-        self.mark_superseded(now, reason)
+        match self.status {
+            RunDispatchStatus::Queued => self.mark_superseded(now, reason),
+            RunDispatchStatus::Claimed => {
+                self.status = RunDispatchStatus::Superseded;
+                self.completed_at = Some(now);
+                self.updated_at = now;
+                if let Some(reason) = reason {
+                    self.last_error = Some(reason.to_string());
+                }
+                self.clear_claim_fields();
+                self.clear_runtime_projection();
+                self.validate_for_persist()
+            }
+            _ => Err(StorageError::Validation(format!(
+                "dispatch '{}' must be Queued or Claimed before epoch supersede",
+                self.dispatch_id
+            ))),
+        }
     }
 
     pub fn mark_dead_letter(&mut self, now: u64, error: &str) -> Result<(), StorageError> {
@@ -570,6 +589,7 @@ impl RunDispatch {
             self.status = RunDispatchStatus::Queued;
             self.available_at = retry_at;
             self.completed_at = None;
+            self.clear_runtime_projection();
         }
         self.validate_for_persist()
     }
@@ -584,6 +604,12 @@ impl RunDispatch {
         self.available_at = now;
         self.updated_at = now;
         self.clear_claim_fields();
+        // A lease expiry abandons the in-flight attempt without a terminal run
+        // result, so the runtime projection (e.g. run_status=Running,
+        // dispatch_instance_id) is stale on every outcome — retry and the
+        // max-attempt dead-letter alike. Clear it unconditionally so a terminal
+        // DeadLetter dispatch can never project the abandoned attempt as Running.
+        self.clear_runtime_projection();
         if self.attempt_count >= self.max_attempts {
             self.status = RunDispatchStatus::DeadLetter;
             self.last_error = Some(max_attempts_error.to_string());
@@ -612,6 +638,14 @@ impl RunDispatch {
         self.claim_token = None;
         self.claimed_by = None;
         self.lease_until = None;
+    }
+
+    fn clear_runtime_projection(&mut self) {
+        self.dispatch_instance_id = None;
+        self.run_status = None;
+        self.termination = None;
+        self.run_response = None;
+        self.run_error = None;
     }
 
     fn require_status(
@@ -716,6 +750,17 @@ impl RunDispatch {
         if self.completed_at.is_some() {
             return Err(StorageError::Validation(format!(
                 "Queued dispatch '{}' must not carry completed_at",
+                self.dispatch_id
+            )));
+        }
+        if self.dispatch_instance_id.is_some()
+            || self.run_status.is_some()
+            || self.termination.is_some()
+            || self.run_response.is_some()
+            || self.run_error.is_some()
+        {
+            return Err(StorageError::Validation(format!(
+                "Queued dispatch '{}' must not carry runtime result fields",
                 self.dispatch_id
             )));
         }
@@ -1581,407 +1626,5 @@ impl MailboxStore for ScopedMailboxStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── Property-based tests ──
-
-    mod proptest_mailbox {
-        use super::*;
-        use proptest::prelude::*;
-
-        fn arb_dispatch_status() -> impl Strategy<Value = RunDispatchStatus> {
-            prop_oneof![
-                Just(RunDispatchStatus::Queued),
-                Just(RunDispatchStatus::Claimed),
-                Just(RunDispatchStatus::Acked),
-                Just(RunDispatchStatus::Cancelled),
-                Just(RunDispatchStatus::Superseded),
-                Just(RunDispatchStatus::DeadLetter),
-            ]
-        }
-
-        fn arb_dispatch() -> impl Strategy<Value = RunDispatch> {
-            (
-                arb_dispatch_status(),
-                0u32..100,
-                0u64..u64::MAX,
-                0u64..u64::MAX,
-                0u8..=255u8,
-                1u32..20,
-                0u64..1_000_000,
-            )
-                .prop_map(
-                    |(
-                        status,
-                        attempt_count,
-                        created_at,
-                        available_at,
-                        priority,
-                        max_attempts,
-                        dispatch_epoch,
-                    )| {
-                        let claim_token = match status {
-                            RunDispatchStatus::Claimed => Some("token-123".to_string()),
-                            _ => None,
-                        };
-                        let claimed_by = match status {
-                            RunDispatchStatus::Claimed => Some("consumer-1".to_string()),
-                            _ => None,
-                        };
-                        RunDispatch {
-                            dispatch_id: "dispatch-prop".to_string(),
-                            thread_id: "thread-prop".to_string(),
-                            run_id: "run-prop".to_string(),
-                            priority,
-                            dedupe_key: None,
-                            dispatch_epoch,
-                            status,
-                            available_at,
-                            attempt_count,
-                            max_attempts,
-                            last_error: None,
-                            claim_token,
-                            claimed_by,
-                            lease_until: if status == RunDispatchStatus::Claimed {
-                                Some(created_at.saturating_add(30_000))
-                            } else {
-                                None
-                            },
-                            dispatch_instance_id: None,
-                            run_status: None,
-                            termination: None,
-                            run_response: None,
-                            run_error: None,
-                            completed_at: None,
-                            created_at,
-                            updated_at: created_at,
-                        }
-                    },
-                )
-        }
-
-        proptest! {
-            #[test]
-            fn terminal_status_is_terminal(status in arb_dispatch_status()) {
-                let expected_terminal = matches!(
-                    status,
-                    RunDispatchStatus::Acked
-                    | RunDispatchStatus::Cancelled
-                    | RunDispatchStatus::Superseded
-                    | RunDispatchStatus::DeadLetter
-                );
-                prop_assert_eq!(status.is_terminal(), expected_terminal);
-            }
-
-            #[test]
-            fn claimed_dispatch_always_has_claim_token(dispatch in arb_dispatch()) {
-                if dispatch.status == RunDispatchStatus::Claimed {
-                    prop_assert!(
-                        dispatch.claim_token.is_some(),
-                        "Claimed dispatch must have a claim_token"
-                    );
-                }
-            }
-
-            #[test]
-            fn queued_dispatch_never_has_claim_token(dispatch in arb_dispatch()) {
-                if dispatch.status == RunDispatchStatus::Queued {
-                    prop_assert!(
-                        dispatch.claim_token.is_none(),
-                        "Queued dispatch must not have a claim_token"
-                    );
-                }
-            }
-
-            #[test]
-            fn run_dispatch_serde_roundtrip(dispatch in arb_dispatch()) {
-                let json = serde_json::to_string(&dispatch).unwrap();
-                let parsed: RunDispatch = serde_json::from_str(&json).unwrap();
-                prop_assert_eq!(parsed.dispatch_id, dispatch.dispatch_id);
-                prop_assert_eq!(parsed.status, dispatch.status);
-                prop_assert_eq!(parsed.attempt_count, dispatch.attempt_count);
-                prop_assert_eq!(parsed.priority, dispatch.priority);
-                prop_assert_eq!(parsed.dispatch_epoch, dispatch.dispatch_epoch);
-                prop_assert_eq!(parsed.claim_token, dispatch.claim_token);
-                prop_assert_eq!(parsed.available_at, dispatch.available_at);
-                prop_assert_eq!(parsed.max_attempts, dispatch.max_attempts);
-            }
-
-            #[test]
-            fn run_dispatch_status_serde_roundtrip_prop(status in arb_dispatch_status()) {
-                let json = serde_json::to_string(&status).unwrap();
-                let parsed: RunDispatchStatus = serde_json::from_str(&json).unwrap();
-                prop_assert_eq!(parsed, status);
-            }
-        }
-    }
-
-    #[test]
-    fn is_terminal_returns_true_for_terminal_states() {
-        assert!(RunDispatchStatus::Acked.is_terminal());
-        assert!(RunDispatchStatus::Cancelled.is_terminal());
-        assert!(RunDispatchStatus::Superseded.is_terminal());
-        assert!(RunDispatchStatus::DeadLetter.is_terminal());
-    }
-
-    #[test]
-    fn is_terminal_returns_false_for_non_terminal_states() {
-        assert!(!RunDispatchStatus::Queued.is_terminal());
-        assert!(!RunDispatchStatus::Claimed.is_terminal());
-    }
-
-    fn make_run_dispatch() -> RunDispatch {
-        RunDispatch {
-            dispatch_id: "dispatch-001".to_string(),
-            thread_id: "thread-abc".to_string(),
-            run_id: "run-001".to_string(),
-            priority: 128,
-            dedupe_key: Some("req-xyz".to_string()),
-            dispatch_epoch: 1,
-            status: RunDispatchStatus::Queued,
-            available_at: 1000,
-            attempt_count: 0,
-            max_attempts: 5,
-            last_error: None,
-            claim_token: None,
-            claimed_by: None,
-            lease_until: None,
-            dispatch_instance_id: None,
-            run_status: None,
-            termination: None,
-            run_response: None,
-            run_error: None,
-            completed_at: None,
-            created_at: 1000,
-            updated_at: 1000,
-        }
-    }
-
-    #[test]
-    fn run_dispatch_serde_roundtrip() {
-        let dispatch = make_run_dispatch();
-        let json = serde_json::to_string(&dispatch).unwrap();
-        let parsed: RunDispatch = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(parsed.dispatch_id, "dispatch-001");
-        assert_eq!(parsed.thread_id, "thread-abc");
-        assert_eq!(parsed.run_id, "run-001");
-        assert_eq!(parsed.priority, 128);
-        assert_eq!(parsed.dedupe_key.as_deref(), Some("req-xyz"));
-        assert_eq!(parsed.dispatch_epoch, 1);
-        assert_eq!(parsed.status, RunDispatchStatus::Queued);
-        assert_eq!(parsed.available_at, 1000);
-        assert_eq!(parsed.attempt_count, 0);
-        assert_eq!(parsed.max_attempts, 5);
-        assert!(parsed.last_error.is_none());
-        assert!(parsed.claim_token.is_none());
-        assert!(parsed.claimed_by.is_none());
-        assert!(parsed.lease_until.is_none());
-        assert!(parsed.dispatch_instance_id.is_none());
-        assert!(parsed.run_status.is_none());
-        assert!(parsed.termination.is_none());
-        assert!(parsed.run_response.is_none());
-        assert!(parsed.run_error.is_none());
-        assert!(parsed.completed_at.is_none());
-        assert_eq!(parsed.created_at, 1000);
-        assert_eq!(parsed.updated_at, 1000);
-    }
-
-    #[test]
-    fn run_dispatch_runtime_trace_serde_roundtrip() {
-        use super::super::lifecycle::TerminationReason;
-
-        let mut dispatch = make_run_dispatch();
-        dispatch
-            .claim("worker", "token", 1500, 1000)
-            .expect("claim should be valid");
-        dispatch
-            .record_run_result(
-                &RunDispatchResult {
-                    run_id: "run-001".into(),
-                    dispatch_instance_id: "dispatch-1".into(),
-                    status: RunStatus::Done,
-                    termination: Some(TerminationReason::NaturalEnd),
-                    response: Some("done".into()),
-                    error: None,
-                },
-                2000,
-            )
-            .expect("run result should be valid");
-
-        let json = serde_json::to_string(&dispatch).unwrap();
-        let parsed: RunDispatch = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.run_id(), "run-001");
-        assert_eq!(parsed.dispatch_instance_id(), Some("dispatch-1"));
-        assert_eq!(parsed.run_status(), Some(RunStatus::Done));
-        assert_eq!(parsed.termination(), Some(&TerminationReason::NaturalEnd));
-        assert_eq!(parsed.run_response(), Some("done"));
-        assert_eq!(parsed.completed_at(), Some(2000));
-        assert_eq!(parsed.status(), RunDispatchStatus::Claimed);
-    }
-
-    #[test]
-    fn run_dispatch_transition_api_enforces_lifecycle_shape() {
-        let mut dispatch = RunDispatch::queued("dispatch-001", "thread-abc", "run-001", 1000)
-            .with_dedupe_key(Some("req-xyz".to_string()));
-
-        assert_eq!(dispatch.status(), RunDispatchStatus::Queued);
-        assert!(dispatch.claim_token().is_none());
-
-        dispatch
-            .claim("consumer-1", "claim-1", 2000, 1100)
-            .expect("queued dispatch can be claimed");
-        assert_eq!(dispatch.status(), RunDispatchStatus::Claimed);
-        assert_eq!(dispatch.claimed_by(), Some("consumer-1"));
-        assert_eq!(dispatch.claim_token(), Some("claim-1"));
-        assert_eq!(dispatch.lease_until(), Some(2000));
-
-        dispatch.mark_acked(3000).expect("claimed dispatch can ack");
-        assert_eq!(dispatch.status(), RunDispatchStatus::Acked);
-        assert!(dispatch.claim_token().is_none());
-        assert!(dispatch.claimed_by().is_none());
-        assert!(dispatch.lease_until().is_none());
-        assert_eq!(dispatch.completed_at(), Some(3000));
-    }
-
-    #[test]
-    fn run_dispatch_transition_api_rejects_claiming_terminal_dispatch() {
-        let mut dispatch = RunDispatch::queued("dispatch-001", "thread-abc", "run-001", 1000);
-        dispatch
-            .mark_cancelled(2000)
-            .expect("queued dispatch can be cancelled");
-
-        let error = dispatch
-            .claim("consumer-1", "claim-1", 3000, 2500)
-            .unwrap_err();
-        assert!(
-            matches!(error, StorageError::Validation(ref message) if message.contains("must be Queued")),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn run_dispatch_transition_api_rejects_terminalizing_unclaimed_dispatch() {
-        let mut dispatch = RunDispatch::queued("dispatch-001", "thread-abc", "run-001", 1000);
-
-        let error = dispatch.mark_acked(2000).unwrap_err();
-        assert!(
-            matches!(error, StorageError::Validation(ref message) if message.contains("must be Claimed")),
-            "unexpected ack error: {error}"
-        );
-
-        let error = dispatch.mark_dead_letter(2000, "failed").unwrap_err();
-        assert!(
-            matches!(error, StorageError::Validation(ref message) if message.contains("must be Claimed")),
-            "unexpected dead-letter error: {error}"
-        );
-
-        let error = dispatch
-            .mark_nack_result(2000, 3000, "retry later")
-            .unwrap_err();
-        assert!(
-            matches!(error, StorageError::Validation(ref message) if message.contains("must be Claimed")),
-            "unexpected nack error: {error}"
-        );
-
-        let error = dispatch.mark_expired_lease(2000, "expired").unwrap_err();
-        assert!(
-            matches!(error, StorageError::Validation(ref message) if message.contains("must be Claimed")),
-            "unexpected expired-lease error: {error}"
-        );
-    }
-
-    #[test]
-    fn run_dispatch_transition_api_rejects_cancelling_claimed_dispatch() {
-        let mut dispatch = RunDispatch::queued("dispatch-001", "thread-abc", "run-001", 1000);
-        dispatch
-            .claim("consumer-1", "claim-1", 2000, 1100)
-            .expect("queued dispatch can be claimed");
-
-        let error = dispatch.mark_cancelled(2000).unwrap_err();
-        assert!(
-            matches!(error, StorageError::Validation(ref message) if message.contains("must be Queued")),
-            "unexpected cancel error: {error}"
-        );
-    }
-
-    #[test]
-    fn run_dispatch_result_serde_roundtrip() {
-        use super::super::lifecycle::TerminationReason;
-
-        let result = RunDispatchResult {
-            run_id: "run-1".into(),
-            dispatch_instance_id: "dispatch-1".into(),
-            status: RunStatus::Done,
-            termination: Some(TerminationReason::Blocked("needs approval".into())),
-            response: None,
-            error: Some("needs approval".into()),
-        };
-
-        let json = serde_json::to_string(&result).unwrap();
-        let parsed: RunDispatchResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, result);
-    }
-
-    #[test]
-    fn run_dispatch_status_serde_roundtrip() {
-        for status in [
-            RunDispatchStatus::Queued,
-            RunDispatchStatus::Claimed,
-            RunDispatchStatus::Acked,
-            RunDispatchStatus::Cancelled,
-            RunDispatchStatus::Superseded,
-            RunDispatchStatus::DeadLetter,
-        ] {
-            let json = serde_json::to_string(&status).unwrap();
-            let parsed: RunDispatchStatus = serde_json::from_str(&json).unwrap();
-            assert_eq!(parsed, status);
-        }
-    }
-
-    #[test]
-    fn mailbox_interrupt_serde_roundtrip() {
-        let interrupt = MailboxInterrupt {
-            new_dispatch_epoch: 5,
-            active_dispatch: Some(make_run_dispatch()),
-            superseded_count: 3,
-        };
-        let json = serde_json::to_string(&interrupt).unwrap();
-        let parsed: MailboxInterrupt = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.new_dispatch_epoch, 5);
-        assert!(parsed.active_dispatch.is_some());
-        assert_eq!(parsed.superseded_count, 3);
-    }
-
-    #[test]
-    fn mailbox_interrupt_ignores_detailed_payload_for_legacy_summary() {
-        let json = serde_json::json!({
-            "new_dispatch_epoch": 5,
-            "active_dispatch": null,
-            "superseded_count": 3,
-            "superseded_dispatches": [make_run_dispatch()]
-        });
-        let parsed: MailboxInterrupt = serde_json::from_value(json).unwrap();
-        assert_eq!(parsed.new_dispatch_epoch, 5);
-        assert!(parsed.active_dispatch.is_none());
-        assert_eq!(parsed.superseded_count, 3);
-    }
-
-    #[test]
-    fn mailbox_interrupt_details_serde_roundtrip() {
-        let details = MailboxInterruptDetails {
-            new_dispatch_epoch: 5,
-            active_dispatch: Some(make_run_dispatch()),
-            superseded_count: 3,
-            superseded_dispatches: vec![make_run_dispatch()],
-        };
-        let json = serde_json::to_string(&details).unwrap();
-        let parsed: MailboxInterruptDetails = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.new_dispatch_epoch, 5);
-        assert!(parsed.active_dispatch.is_some());
-        assert_eq!(parsed.superseded_count, 3);
-        assert_eq!(parsed.superseded_dispatches.len(), 1);
-        assert_eq!(parsed.summary().superseded_count, 3);
-    }
-}
+#[path = "mailbox_tests.rs"]
+mod tests;

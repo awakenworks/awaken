@@ -222,6 +222,12 @@ pub async fn nack_returns_to_queued<S: MailboxStore>(store: &S) {
         .unwrap();
     let token = claimed[0].claim_token().unwrap().to_string();
 
+    // Record an in-flight runtime projection so the requeue must drop it.
+    store
+        .record_dispatch_start("d1", &token, "attempt-1", 1500)
+        .await
+        .unwrap();
+
     store
         .nack("d1", &token, 3000, "transient error", 2000)
         .await
@@ -235,6 +241,9 @@ pub async fn nack_returns_to_queued<S: MailboxStore>(store: &S) {
     assert!(loaded.claimed_by().is_none());
     assert!(loaded.lease_until().is_none());
     assert_eq!(loaded.last_error(), Some("transient error"));
+    // A requeued dispatch must not carry the abandoned attempt's projection.
+    assert!(loaded.run_status().is_none());
+    assert!(loaded.dispatch_instance_id().is_none());
 }
 
 /// `nack()` dead-letters a dispatch once `attempt_count` reaches `max_attempts`.
@@ -595,8 +604,16 @@ pub async fn reclaim_expired_leases_dead_letters_at_max_attempts<S: MailboxStore
     dispatch = dispatch.with_max_attempts(1);
     store.enqueue(&dispatch).await.unwrap();
 
-    store
+    let claimed = store
         .claim("t-reclaim-max", "consumer-1", 100, 1000, 1)
+        .await
+        .unwrap();
+    let token = claimed[0].claim_token().unwrap().to_string();
+
+    // The attempt records a Running runtime projection before the lease lapses.
+    // Dead-lettering it must not persist that abandoned attempt as still Running.
+    store
+        .record_dispatch_start("d1", &token, "attempt-1", 1050)
         .await
         .unwrap();
 
@@ -610,6 +627,14 @@ pub async fn reclaim_expired_leases_dead_letters_at_max_attempts<S: MailboxStore
     assert_eq!(loaded.status(), RunDispatchStatus::DeadLetter);
     assert_eq!(loaded.attempt_count(), 1);
     assert_claim_fields_clear(&loaded);
+    assert!(
+        loaded.run_status().is_none(),
+        "dead-lettered dispatch must not retain a Running runtime projection"
+    );
+    assert!(
+        loaded.dispatch_instance_id().is_none(),
+        "dead-lettered dispatch must not retain a stale dispatch_instance_id"
+    );
 }
 
 /// Concurrent maintenance sweeps are idempotent: only one worker may
