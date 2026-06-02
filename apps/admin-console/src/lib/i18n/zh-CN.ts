@@ -166,6 +166,11 @@ export const zhCN: Dict = {
       toEnable: "如需启用：{{hint}}",
       see: "参见 {{doc}}",
     },
+    capabilities: {
+      routeAbsentTitle: "未暴露能力接口",
+      routeAbsentHint:
+        "服务器对 /v1/capabilities 返回 404——可能是旧构建或路由配置异常；能力计数当前不可信。",
+    },
     agentActivity: {
       title: "智能体活动",
       window: "窗口：{{window}}",
