@@ -164,6 +164,24 @@ export function McpServerDetailPage() {
         : isConnected
           ? "no tools advertised"
           : "not connected";
+  const promptsEmptyLabel = statusLoading
+    ? "loading prompts"
+    : statusError
+      ? "status query failed"
+      : status === null
+        ? "status unavailable"
+        : isConnected
+          ? "no prompts advertised"
+          : "not connected";
+  const resourcesEmptyLabel = statusLoading
+    ? "loading resources"
+    : statusError
+      ? "status query failed"
+      : status === null
+        ? "status unavailable"
+        : isConnected
+          ? "no resources advertised"
+          : "not connected";
 
   return (
     <div className="mx-auto w-full max-w-5xl 2xl:max-w-none p-6 md:p-8">
@@ -331,7 +349,7 @@ export function McpServerDetailPage() {
           <span className="font-mono text-xs text-fg-faint">{statusPrompts.length}</span>
         </div>
         {statusPrompts.length === 0 ? (
-          <p className="mt-2 text-sm text-fg-soft">{toolsEmptyLabel}</p>
+          <p className="mt-2 text-sm text-fg-soft">{promptsEmptyLabel}</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {statusPrompts.map(({ prompt }) => (
@@ -355,7 +373,7 @@ export function McpServerDetailPage() {
           <span className="font-mono text-xs text-fg-faint">{statusResources.length}</span>
         </div>
         {statusResources.length === 0 ? (
-          <p className="mt-2 text-sm text-fg-soft">{toolsEmptyLabel}</p>
+          <p className="mt-2 text-sm text-fg-soft">{resourcesEmptyLabel}</p>
         ) : (
           <ul className="mt-3 space-y-2">
             {statusResources.map(({ resource }) => (
