@@ -134,14 +134,6 @@ export function resolveBreadcrumbs(pathname: string): BreadcrumbCrumb[] {
       { label: decodeURIComponent(mcpMatch[1]) },
     ];
   }
-  const a2aMatch = pathname.match(/^\/a2a-servers\/([^/]+)$/);
-  if (a2aMatch) {
-    return [
-      { label: "Resources", labelKey: "nav.resources" },
-      { label: "A2A Servers", labelKey: "nav.items.a2a", path: adminRoutes.a2aServers },
-      { label: decodeURIComponent(a2aMatch[1]) },
-    ];
-  }
   const skillMatch = pathname.match(/^\/skills\/([^/]+)$/);
   if (skillMatch) {
     return [

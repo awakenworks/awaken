@@ -7,6 +7,8 @@ use awaken_runtime_contract::contract::commit_coordinator::CommitCoordinator;
 use awaken_runtime_contract::contract::executor::LlmExecutor;
 use awaken_runtime_contract::contract::tool::Tool;
 use awaken_runtime_contract::registry_spec::{AgentSpec, ModelPoolSpec, ModelSpec};
+#[cfg(feature = "a2a")]
+use awaken_runtime_contract::registry_spec::{RemoteAuth, RemoteEndpoint};
 
 #[cfg(feature = "a2a")]
 use crate::backend::ExecutionBackendFactory;
@@ -232,11 +234,14 @@ impl AgentRuntimeBuilder {
         base_url: impl Into<String>,
         bearer_token: Option<String>,
     ) -> Self {
-        self.remote_sources.push(RemoteAgentSource {
-            name: name.into(),
-            base_url: base_url.into(),
-            bearer_token,
-        });
+        self.remote_sources.push(RemoteAgentSource::from_endpoint(
+            name,
+            RemoteEndpoint {
+                base_url: base_url.into(),
+                auth: bearer_token.map(RemoteAuth::bearer),
+                ..Default::default()
+            },
+        ));
         self
     }
 

@@ -17,5 +17,7 @@ export function useA2aStatusQuery(id: string | undefined) {
       }
     },
     enabled: Boolean(id),
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
   });
 }

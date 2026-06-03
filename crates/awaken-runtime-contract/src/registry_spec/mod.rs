@@ -454,7 +454,7 @@ pub struct A2aServerSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// Request timeout in milliseconds.
-    #[serde(default = "default_timeout")]
+    #[serde(default = "default_a2a_server_timeout")]
     pub timeout_ms: u64,
     /// Backend-specific options copied into `RemoteEndpoint.options`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -468,11 +468,14 @@ impl Default for A2aServerSpec {
             base_url: String::new(),
             auth: None,
             target: None,
-            timeout_ms: default_timeout(),
+            timeout_ms: default_a2a_server_timeout(),
             options: BTreeMap::new(),
         }
     }
 }
+
+pub const A2A_SERVER_DEFAULT_TIMEOUT_MS: u64 = 10_000;
+pub const A2A_SERVER_MAX_TIMEOUT_MS: u64 = 30_000;
 
 impl A2aServerSpec {
     #[must_use]
@@ -525,6 +528,10 @@ fn default_remote_backend() -> String {
 
 fn default_timeout() -> u64 {
     300_000
+}
+
+fn default_a2a_server_timeout() -> u64 {
+    A2A_SERVER_DEFAULT_TIMEOUT_MS
 }
 
 #[derive(Debug, Deserialize)]

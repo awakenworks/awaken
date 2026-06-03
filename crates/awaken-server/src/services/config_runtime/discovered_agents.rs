@@ -40,10 +40,20 @@ impl DiscoveredAgentRegistry {
         entries: impl IntoIterator<Item = (String, AgentSpec)>,
     ) -> Option<Arc<dyn AgentSpecRegistry>> {
         let mut exact = HashMap::new();
-        let mut plain = HashMap::new();
+        let mut plain: HashMap<String, AgentSpec> = HashMap::new();
 
         for (id, spec) in entries {
-            plain.entry(spec.id.clone()).or_insert_with(|| spec.clone());
+            if let Some(existing) = plain.get(&spec.id) {
+                tracing::warn!(
+                    agent_id = %spec.id,
+                    existing_registry = ?existing.registry,
+                    duplicate_registry = ?spec.registry,
+                    namespaced_id = %id,
+                    "duplicate discovered A2A agent plain id; first plain lookup wins, use namespaced id to disambiguate"
+                );
+            } else {
+                plain.insert(spec.id.clone(), spec.clone());
+            }
             exact.insert(id, spec);
         }
 
@@ -97,5 +107,53 @@ impl AgentSpecRegistry for AgentSpecRegistryWithDiscovery {
         ids.sort();
         ids.dedup();
         ids
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_plain_agent_id_keeps_namespaced_entries_and_first_plain_lookup() {
+        let registry = DiscoveredAgentRegistry::from_entries([
+            (
+                "first/assistant".to_string(),
+                AgentSpec {
+                    id: "assistant".to_string(),
+                    registry: Some("first".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "second/assistant".to_string(),
+                AgentSpec {
+                    id: "assistant".to_string(),
+                    registry: Some("second".to_string()),
+                    ..Default::default()
+                },
+            ),
+        ])
+        .expect("registry should be built");
+
+        assert_eq!(
+            registry
+                .get_agent("assistant")
+                .and_then(|spec| spec.registry),
+            Some("first".to_string())
+        );
+        assert_eq!(
+            registry
+                .get_agent("second/assistant")
+                .and_then(|spec| spec.registry),
+            Some("second".to_string())
+        );
+        assert_eq!(
+            registry.agent_ids(),
+            vec![
+                "first/assistant".to_string(),
+                "second/assistant".to_string()
+            ]
+        );
     }
 }

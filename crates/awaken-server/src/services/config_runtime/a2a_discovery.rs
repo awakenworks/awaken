@@ -22,14 +22,10 @@ impl ConfigRuntimeManager {
         for server in servers {
             let local = Arc::new(MapAgentSpecRegistry::new()) as Arc<dyn AgentSpecRegistry>;
             let mut composite = CompositeAgentSpecRegistry::new(local).with_local_name("config");
-            composite.add_remote(RemoteAgentSource {
-                name: server.id.clone(),
-                base_url: server.base_url.clone(),
-                bearer_token: server
-                    .auth
-                    .as_ref()
-                    .and_then(|auth| auth.param_str("token").map(str::to_owned)),
-            });
+            composite.add_remote(RemoteAgentSource::from_endpoint(
+                server.id.clone(),
+                server.to_endpoint(None),
+            ));
 
             match composite.discover().await {
                 Ok(()) => {

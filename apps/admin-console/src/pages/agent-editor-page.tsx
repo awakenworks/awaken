@@ -49,7 +49,7 @@ import {
 } from "@/lib/editor-tabs";
 import { pluginConfigEntryKey } from "@/lib/plugin-config";
 import { adminRoutes } from "@/lib/routes";
-import { a2aServerIdForAgent } from "@/lib/a2a-agent";
+import { a2aServerIdForAgent, isDiscoveredA2aAgent } from "@/lib/a2a-agent";
 import { useCapabilitiesQuery } from "@/lib/query/hooks/capabilities";
 import {
   useConfigListQuery,
@@ -205,8 +205,7 @@ export function AgentEditorPage() {
 
   const sourceState: ConfigSourceState | null = agentMeta ? deriveSourceState(agentMeta) : null;
   const a2aServerId = a2aServerIdForAgent(spec);
-  const isRemoteA2aAgent =
-    !isNew && (spec.endpoint?.backend === "a2a" || Boolean(spec.registry));
+  const isRemoteA2aAgent = !isNew && isDiscoveredA2aAgent(spec);
 
   useEffect(() => {
     if (capabilitiesQuery.error) {

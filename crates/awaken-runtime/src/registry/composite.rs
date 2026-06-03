@@ -8,13 +8,16 @@
 //! all sources with local taking precedence.
 
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use parking_lot::RwLock;
 
 use awaken_protocol_a2a::{AgentCard, AgentInterface};
 use awaken_runtime_contract::registry_spec::{
-    AgentBackendSpec, AgentSpec, RemoteAuth, RemoteEndpoint, set_a2a_server_id,
+    A2A_SERVER_MAX_TIMEOUT_MS, AgentBackendSpec, AgentSpec, RemoteEndpoint, set_a2a_server_id,
 };
 
 use super::traits::AgentSpecRegistry;
@@ -36,6 +39,120 @@ pub enum DiscoveryError {
     UnsupportedInterface { url: String, message: String },
 }
 
+pub const A2A_DISCOVERY_RESPONSE_MAX_BYTES: usize = 256 * 1024;
+
+#[must_use]
+pub fn clamp_a2a_timeout_ms(timeout_ms: u64) -> u64 {
+    timeout_ms.clamp(1, A2A_SERVER_MAX_TIMEOUT_MS)
+}
+
+fn a2a_http_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("A2A HTTP client must build")
+        })
+        .clone()
+}
+
+async fn validate_a2a_outbound_url(url: &reqwest::Url) -> Result<(), DiscoveryError> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(DiscoveryError::HttpError {
+            url: url.to_string(),
+            message: "A2A discovery URL must use http or https".into(),
+        });
+    }
+    let host = url.host_str().ok_or_else(|| DiscoveryError::HttpError {
+        url: url.to_string(),
+        message: "A2A discovery URL must include a host".into(),
+    })?;
+    if is_blocked_host_name(host) {
+        return Err(DiscoveryError::HttpError {
+            url: url.to_string(),
+            message: "A2A discovery URL host is not allowed".into(),
+        });
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        reject_private_ip(url, ip)?;
+        return Ok(());
+    }
+
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| DiscoveryError::HttpError {
+            url: url.to_string(),
+            message: "A2A discovery URL must include a resolvable port".into(),
+        })?;
+    let addresses = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| DiscoveryError::HttpError {
+            url: url.to_string(),
+            message: format!("failed to resolve A2A discovery host: {error}"),
+        })?
+        .collect::<Vec<SocketAddr>>();
+    if addresses.is_empty() {
+        return Err(DiscoveryError::HttpError {
+            url: url.to_string(),
+            message: "A2A discovery host resolved no addresses".into(),
+        });
+    }
+    for address in addresses {
+        reject_private_ip(url, address.ip())?;
+    }
+    Ok(())
+}
+
+fn is_blocked_host_name(host: &str) -> bool {
+    let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+    normalized == "localhost" || normalized.ends_with(".localhost")
+}
+
+fn reject_private_ip(url: &reqwest::Url, ip: IpAddr) -> Result<(), DiscoveryError> {
+    if is_private_or_special_ip(ip) {
+        Err(DiscoveryError::HttpError {
+            url: url.to_string(),
+            message: format!("A2A discovery URL resolves to a non-public address: {ip}"),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn is_private_or_special_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_private_or_special_ipv4(ip),
+        IpAddr::V6(ip) => is_private_or_special_ipv6(ip),
+    }
+}
+
+fn is_private_or_special_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    a == 0
+        || a == 10
+        || a == 127
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 168)
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 192 && b == 0 && c == 2)
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+        || (224..=255).contains(&a)
+}
+
+fn is_private_or_special_ipv6(ip: Ipv6Addr) -> bool {
+    ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.segments()[0] & 0xfe00 == 0xfc00
+        || ip.segments()[0] & 0xffc0 == 0xfe80
+        || ip.segments()[0] & 0xff00 == 0xff00
+}
+
 // ---------------------------------------------------------------------------
 // RemoteAgentSource
 // ---------------------------------------------------------------------------
@@ -45,10 +162,25 @@ pub enum DiscoveryError {
 pub struct RemoteAgentSource {
     /// Name of this registry source (e.g., "cloud", "internal", "partner").
     pub name: String,
-    /// Base URL of the remote A2A server.
-    pub base_url: String,
-    /// Optional bearer token for authentication.
-    pub bearer_token: Option<String>,
+    /// Endpoint defaults copied from the configured A2A server.
+    pub endpoint: RemoteEndpoint,
+}
+
+impl RemoteAgentSource {
+    #[must_use]
+    pub fn from_endpoint(name: impl Into<String>, endpoint: RemoteEndpoint) -> Self {
+        Self {
+            name: name.into(),
+            endpoint,
+        }
+    }
+
+    fn bearer_token(&self) -> Option<&str> {
+        self.endpoint
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.param_str("token"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -70,8 +202,6 @@ pub struct CompositeAgentSpecRegistry {
     remote_endpoints: Vec<RemoteAgentSource>,
     /// Cached remote agent specs: agent_id → (source_name, AgentSpec).
     cache: RwLock<HashMap<String, (String, AgentSpec)>>,
-    /// HTTP client for fetching agent cards.
-    client: reqwest::Client,
 }
 
 impl CompositeAgentSpecRegistry {
@@ -82,7 +212,6 @@ impl CompositeAgentSpecRegistry {
             local,
             remote_endpoints: Vec::new(),
             cache: RwLock::new(HashMap::new()),
-            client: reqwest::Client::new(),
         }
     }
 
@@ -106,47 +235,12 @@ impl CompositeAgentSpecRegistry {
         let mut new_cache: HashMap<String, (String, AgentSpec)> = HashMap::new();
 
         for source in &self.remote_endpoints {
-            let url = a2a_discovery_url(&source.base_url).map_err(|message| {
-                DiscoveryError::HttpError {
-                    url: source.base_url.clone(),
-                    message,
-                }
-            })?;
-
-            let mut request = self.client.get(&url);
-            if let Some(ref token) = source.bearer_token {
-                request = request.bearer_auth(token);
-            }
-
-            let response = request
-                .send()
-                .await
-                .map_err(|e| DiscoveryError::HttpError {
-                    url: url.clone(),
-                    message: e.to_string(),
-                })?;
-
-            let response = response
-                .error_for_status()
-                .map_err(|e| DiscoveryError::HttpError {
-                    url: url.clone(),
-                    message: e.to_string(),
-                })?;
-
-            let card: AgentCard =
-                response
-                    .json()
-                    .await
-                    .map_err(|e| DiscoveryError::DecodeError {
-                        url: url.clone(),
-                        message: e.to_string(),
-                    })?;
-
+            let (url, card) = fetch_a2a_agent_card(source).await?;
             let spec = agent_card_to_spec(&card, source, &url)?;
             tracing::info!(
                 agent_id = %spec.id,
                 source = %source.name,
-                base_url = %source.base_url,
+                base_url = %source.endpoint.base_url,
                 "discovered remote agent"
             );
             let cache_key = format!("{}/{}", source.name, spec.id);
@@ -165,6 +259,100 @@ impl CompositeAgentSpecRegistry {
         *cache = new_cache;
         Ok(())
     }
+}
+
+pub async fn fetch_a2a_agent_card(
+    source: &RemoteAgentSource,
+) -> Result<(String, AgentCard), DiscoveryError> {
+    fetch_a2a_agent_card_with_policy(source, true).await
+}
+
+async fn fetch_a2a_agent_card_with_policy(
+    source: &RemoteAgentSource,
+    enforce_url_policy: bool,
+) -> Result<(String, AgentCard), DiscoveryError> {
+    let url = a2a_discovery_url(&source.endpoint.base_url).map_err(|message| {
+        DiscoveryError::HttpError {
+            url: source.endpoint.base_url.clone(),
+            message,
+        }
+    })?;
+    let parsed_url = reqwest::Url::parse(&url).map_err(|error| DiscoveryError::HttpError {
+        url: url.clone(),
+        message: error.to_string(),
+    })?;
+    if enforce_url_policy {
+        validate_a2a_outbound_url(&parsed_url).await?;
+    }
+
+    let mut request = a2a_http_client()
+        .get(parsed_url)
+        .timeout(Duration::from_millis(clamp_a2a_timeout_ms(
+            source.endpoint.timeout_ms,
+        )));
+    if let Some(token) = source.bearer_token() {
+        request = request.bearer_auth(token);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| DiscoveryError::HttpError {
+            url: url.clone(),
+            message: e.to_string(),
+        })?;
+
+    let response = response
+        .error_for_status()
+        .map_err(|e| DiscoveryError::HttpError {
+            url: url.clone(),
+            message: e.to_string(),
+        })?;
+
+    let card = decode_limited_agent_card(response, &url).await?;
+    Ok((url, card))
+}
+
+async fn decode_limited_agent_card(
+    mut response: reqwest::Response,
+    url: &str,
+) -> Result<AgentCard, DiscoveryError> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > A2A_DISCOVERY_RESPONSE_MAX_BYTES as u64)
+    {
+        return Err(DiscoveryError::DecodeError {
+            url: url.to_string(),
+            message: format!(
+                "A2A agent card response exceeds {} bytes",
+                A2A_DISCOVERY_RESPONSE_MAX_BYTES
+            ),
+        });
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| DiscoveryError::HttpError {
+            url: url.to_string(),
+            message: error.to_string(),
+        })?
+    {
+        if body.len().saturating_add(chunk.len()) > A2A_DISCOVERY_RESPONSE_MAX_BYTES {
+            return Err(DiscoveryError::DecodeError {
+                url: url.to_string(),
+                message: format!(
+                    "A2A agent card response exceeds {} bytes",
+                    A2A_DISCOVERY_RESPONSE_MAX_BYTES
+                ),
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice::<AgentCard>(&body).map_err(|error| DiscoveryError::DecodeError {
+        url: url.to_string(),
+        message: error.to_string(),
+    })
 }
 
 impl AgentSpecRegistry for CompositeAgentSpecRegistry {
@@ -229,13 +417,13 @@ fn agent_card_to_spec(
             ),
         })?;
 
-    let mut endpoint = RemoteEndpoint {
-        backend: "a2a".into(),
-        base_url: interface.url.clone(),
-        auth: source.bearer_token.clone().map(RemoteAuth::bearer),
-        target: interface.agent_id.clone(),
-        ..Default::default()
-    };
+    let mut endpoint = source.endpoint.clone();
+    endpoint.backend = "a2a".into();
+    endpoint.base_url = interface.url.clone();
+    endpoint.target = endpoint
+        .target
+        .clone()
+        .or_else(|| interface.agent_id.clone());
     set_a2a_server_id(&mut endpoint, &source.name);
 
     Ok(AgentSpec {
@@ -302,6 +490,9 @@ pub fn a2a_discovery_url(base_url: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use awaken_runtime_contract::registry_spec::RemoteAuth;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     use super::*;
     use crate::registry::memory::MapAgentSpecRegistry;
 
@@ -448,11 +639,19 @@ mod tests {
             signatures: Vec::new(),
             icon_url: None,
         };
-        let source = RemoteAgentSource {
-            name: "cloud".into(),
-            base_url: "https://test.example.com".into(),
-            bearer_token: Some("tok-123".into()),
-        };
+        let mut options = std::collections::BTreeMap::new();
+        options.insert("region".into(), serde_json::json!("us-east"));
+        let source = RemoteAgentSource::from_endpoint(
+            "cloud",
+            RemoteEndpoint {
+                base_url: "https://test.example.com".into(),
+                auth: Some(RemoteAuth::bearer("tok-123")),
+                target: Some("configured-target".into()),
+                timeout_ms: 12_345,
+                options,
+                ..Default::default()
+            },
+        );
 
         let spec = agent_card_to_spec(
             &card,
@@ -468,6 +667,14 @@ mod tests {
         let endpoint = spec.endpoint.unwrap();
         assert_eq!(endpoint.backend, "a2a");
         assert_eq!(endpoint.base_url, "https://test.example.com/v1/a2a");
+        assert_eq!(endpoint.timeout_ms, 12_345);
+        assert_eq!(
+            endpoint
+                .options
+                .get("region")
+                .and_then(serde_json::Value::as_str),
+            Some("us-east")
+        );
         assert_eq!(
             endpoint
                 .auth
@@ -475,23 +682,112 @@ mod tests {
                 .and_then(|auth| auth.param_str("token")),
             Some("tok-123")
         );
-        assert_eq!(endpoint.target.as_deref(), Some("test-agent"));
+        assert_eq!(endpoint.target.as_deref(), Some("configured-target"));
     }
 
     #[test]
     fn add_remote_sources() {
         let mut composite = CompositeAgentSpecRegistry::new(make_local_registry());
-        composite.add_remote(RemoteAgentSource {
-            name: "cloud".into(),
-            base_url: "https://a.example.com".into(),
-            bearer_token: None,
-        });
-        composite.add_remote(RemoteAgentSource {
-            name: "partner".into(),
-            base_url: "https://b.example.com".into(),
-            bearer_token: Some("tok".into()),
-        });
+        composite.add_remote(RemoteAgentSource::from_endpoint(
+            "cloud",
+            RemoteEndpoint {
+                base_url: "https://a.example.com".into(),
+                ..Default::default()
+            },
+        ));
+        composite.add_remote(RemoteAgentSource::from_endpoint(
+            "partner",
+            RemoteEndpoint {
+                base_url: "https://b.example.com".into(),
+                auth: Some(RemoteAuth::bearer("tok")),
+                ..Default::default()
+            },
+        ));
         assert_eq!(composite.remote_endpoints.len(), 2);
+    }
+
+    #[test]
+    fn a2a_timeout_is_clamped_to_safe_bounds() {
+        assert_eq!(clamp_a2a_timeout_ms(0), 1);
+        assert_eq!(clamp_a2a_timeout_ms(1234), 1234);
+        assert_eq!(
+            clamp_a2a_timeout_ms(A2A_SERVER_MAX_TIMEOUT_MS + 1),
+            A2A_SERVER_MAX_TIMEOUT_MS
+        );
+    }
+
+    #[tokio::test]
+    async fn a2a_outbound_policy_rejects_private_and_local_hosts() {
+        for raw in [
+            "http://localhost/.well-known/agent-card.json",
+            "http://127.0.0.1/.well-known/agent-card.json",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]/.well-known/agent-card.json",
+        ] {
+            let url = reqwest::Url::parse(raw).expect("test URL parses");
+            validate_a2a_outbound_url(&url)
+                .await
+                .expect_err("private/local A2A discovery URL must be rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn a2a_agent_card_decode_errors_are_reported_as_disconnected_status_inputs() {
+        let base_url = serve_http_response(200, b"not-json".to_vec()).await;
+        let source = RemoteAgentSource::from_endpoint(
+            "local-test",
+            RemoteEndpoint {
+                base_url,
+                timeout_ms: 1_000,
+                ..Default::default()
+            },
+        );
+
+        let err = fetch_a2a_agent_card_with_policy(&source, false)
+            .await
+            .expect_err("invalid JSON must not decode as an agent card");
+        assert!(matches!(err, DiscoveryError::DecodeError { .. }));
+    }
+
+    #[tokio::test]
+    async fn a2a_agent_card_response_size_is_limited() {
+        let base_url =
+            serve_http_response(200, vec![b'{'; A2A_DISCOVERY_RESPONSE_MAX_BYTES + 1]).await;
+        let source = RemoteAgentSource::from_endpoint(
+            "local-test",
+            RemoteEndpoint {
+                base_url,
+                timeout_ms: 1_000,
+                ..Default::default()
+            },
+        );
+
+        let err = fetch_a2a_agent_card_with_policy(&source, false)
+            .await
+            .expect_err("oversized A2A agent cards must be rejected");
+        assert!(err.to_string().contains("exceeds"));
+    }
+
+    async fn serve_http_response(status: u16, body: Vec<u8>) -> String {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind test HTTP listener");
+        let address = listener.local_addr().expect("read listener address");
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept HTTP request");
+            let mut buffer = [0_u8; 1024];
+            let _ = stream.read(&mut buffer).await.expect("read HTTP request");
+            let response = format!(
+                "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write HTTP headers");
+            stream.write_all(&body).await.expect("write HTTP body");
+        });
+        format!("http://{address}/a2a")
     }
 
     #[test]

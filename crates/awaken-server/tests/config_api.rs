@@ -1531,6 +1531,23 @@ async fn a2a_servers_redact_preserve_clear_auth_and_validate_url() {
         "validation error should explain the invalid URL: {invalid}"
     );
 
+    let (status, invalid_timeout) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/a2a-servers",
+        Some(json!({
+            "id": "invalid-timeout",
+            "base_url": "https://partner.example.com",
+            "timeout_ms": 30_001
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        invalid_timeout.to_string().contains("timeout_ms"),
+        "validation error should explain the timeout limit: {invalid_timeout}"
+    );
+
     let (status, created) = request_json(
         &app.router,
         Method::POST,
@@ -1611,6 +1628,41 @@ async fn a2a_servers_redact_preserve_clear_auth_and_validate_url() {
         .expect("decode envelope")
         .spec;
     assert!(stored.get("auth").map(Value::is_null).unwrap_or(true));
+}
+
+#[tokio::test]
+async fn a2a_status_rejects_private_hosts_without_500() {
+    let app = make_app().await;
+
+    let (status, created) = request_json(
+        &app.router,
+        Method::POST,
+        "/v1/config/a2a-servers",
+        Some(json!({
+            "id": "status-private",
+            "base_url": "http://127.0.0.1:9",
+            "timeout_ms": 50
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {created}");
+
+    let (status, body) = request_json(
+        &app.router,
+        Method::GET,
+        "/v1/a2a-servers/status-private/status",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["connected"], false);
+    assert!(
+        body["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("non-public"),
+        "private host should be reported as an unavailable remote, not a backend error: {body}"
+    );
 }
 
 #[tokio::test]

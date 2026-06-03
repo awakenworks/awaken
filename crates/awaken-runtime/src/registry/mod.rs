@@ -18,6 +18,7 @@ pub use awaken_runtime_contract::registry_spec::AgentSpec;
 #[cfg(feature = "a2a")]
 pub use composite::{
     CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource, a2a_discovery_url,
+    fetch_a2a_agent_card,
 };
 pub use config::AgentSystemConfig;
 pub use diagnostics::{

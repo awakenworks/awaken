@@ -1,10 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router";
-import {
-  type A2aAgentCard,
-  type A2aServerRecord,
-  type A2aServerSpec,
-} from "@/lib/config-api";
+import { type A2aAgentCard, type A2aServerRecord, type A2aServerSpec } from "@/lib/config-api";
 import { Field } from "@/components/form-components";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SecretField, SecretStatusPill } from "@/components/ui/secret-field";
@@ -15,10 +11,13 @@ import { useA2aStatusQuery } from "@/lib/query/hooks/a2a";
 
 type AuthMode = "preserve" | "replace" | "clear";
 
+const DEFAULT_A2A_TIMEOUT_MS = 10_000;
+const MAX_A2A_TIMEOUT_MS = 30_000;
+
 const EMPTY_SERVER: A2aServerRecord = {
   id: "",
   base_url: "",
-  timeout_ms: 300_000,
+  timeout_ms: DEFAULT_A2A_TIMEOUT_MS,
   options: {},
 };
 
@@ -34,7 +33,7 @@ export function A2aServersPage() {
         id: draft.id.trim(),
         base_url: draft.base_url.trim(),
         target: draft.target?.trim() || undefined,
-        timeout_ms: Number(draft.timeout_ms) || 300_000,
+        timeout_ms: Number(draft.timeout_ms) || DEFAULT_A2A_TIMEOUT_MS,
         options: parseJsonObject<Record<string, unknown>>(optionsDraft, "Options JSON"),
       };
       if (authMode === "replace") {
@@ -154,9 +153,7 @@ export function A2aServersPage() {
                 aria-invalid={Boolean(errors.base_url)}
                 onChange={(event) => {
                   const value = event.target.value;
-                  crud.setDraft((current) =>
-                    current ? { ...current, base_url: value } : current,
-                  );
+                  crud.setDraft((current) => (current ? { ...current, base_url: value } : current));
                   if (errors.base_url) {
                     setErrors((current) => ({ ...current, base_url: undefined }));
                   }
@@ -169,11 +166,15 @@ export function A2aServersPage() {
               <input
                 type="number"
                 min={1}
-                value={Number(crud.draft.timeout_ms ?? 300_000)}
+                max={MAX_A2A_TIMEOUT_MS}
+                value={Number(crud.draft.timeout_ms ?? DEFAULT_A2A_TIMEOUT_MS)}
                 onChange={(event) =>
                   crud.setDraft((current) =>
                     current
-                      ? { ...current, timeout_ms: Number(event.target.value) || 300_000 }
+                      ? {
+                          ...current,
+                          timeout_ms: Number(event.target.value) || DEFAULT_A2A_TIMEOUT_MS,
+                        }
                       : current,
                   )
                 }

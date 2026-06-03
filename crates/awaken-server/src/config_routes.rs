@@ -1,4 +1,11 @@
-use awaken_runtime::registry::a2a_discovery_url;
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use awaken_runtime::registry::{RemoteAgentSource, fetch_a2a_agent_card};
+use awaken_server_contract::A2aServerSpec;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -23,6 +30,19 @@ use crate::services::config_service::{
 };
 
 const TOOLS_NAMESPACE: &str = "tools";
+const A2A_STATUS_CACHE_TTL: Duration = Duration::from_secs(15);
+const A2A_STATUS_CACHE_MAX_ENTRIES: usize = 1024;
+
+#[derive(Clone)]
+struct A2aStatusCacheEntry {
+    stored_at: Instant,
+    value: Value,
+}
+
+fn a2a_status_cache() -> &'static Mutex<HashMap<String, A2aStatusCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, A2aStatusCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Deserialize)]
 struct ListParams {
@@ -607,49 +627,73 @@ async fn get_a2a_server_status(
         .await
         .map_err(map_service_error)?
         .ok_or_else(|| ApiError::NotFound(format!("a2a-server/{id}")))?;
-    let url = a2a_discovery_url(&spec.base_url)
-        .map_err(|error| ApiError::BadRequest(format!("invalid A2A base_url: {error}")))?;
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(spec.timeout_ms))
-        .build()
-        .map_err(|error| ApiError::Internal(error.to_string()))?;
-    let mut request = client.get(&url);
-    if let Some(token) = spec.auth.as_ref().and_then(|auth| auth.param_str("token")) {
-        request = request.bearer_auth(token);
+    let cache_key = a2a_status_cache_key(&spec);
+    if let Some(value) = a2a_status_cache_get(&cache_key) {
+        return Ok(Json(value));
     }
-    let response_result = request
-        .send()
-        .await
-        .and_then(|response| response.error_for_status());
-    let card = match response_result {
-        Ok(response) => match response.json::<awaken_protocol_a2a::AgentCard>().await {
-            Ok(card) => card,
-            Err(error) => {
-                return Ok(Json(json!({
-                    "connected": false,
-                    "last_error": format!("failed to decode A2A agent card: {error}"),
-                    "card_url": url,
-                    "card": null,
-                })));
-            }
-        },
-        Err(error) => {
-            return Ok(Json(json!({
-                "connected": false,
-                "last_error": error.to_string(),
-                "card_url": url,
-                "card": null,
-            })));
-        }
-    };
 
-    Ok(Json(json!({
-        "connected": true,
-        "last_error": null,
-        "card_url": url,
-        "card": card,
-    })))
+    let source = RemoteAgentSource::from_endpoint(spec.id.clone(), spec.to_endpoint(None));
+    let value = match fetch_a2a_agent_card(&source).await {
+        Ok((url, card)) => json!({
+            "connected": true,
+            "last_error": null,
+            "card_url": url,
+            "card": card,
+        }),
+        Err(error) => json!({
+            "connected": false,
+            "last_error": error.to_string(),
+            "card_url": null,
+            "card": null,
+        }),
+    };
+    a2a_status_cache_put(cache_key, value.clone());
+    Ok(Json(value))
+}
+
+fn a2a_status_cache_get(key: &str) -> Option<Value> {
+    let mut cache = a2a_status_cache().lock().ok()?;
+    let entry = cache.get(key)?;
+    if entry.stored_at.elapsed() <= A2A_STATUS_CACHE_TTL {
+        return Some(entry.value.clone());
+    }
+    cache.remove(key);
+    None
+}
+
+fn a2a_status_cache_put(key: String, value: Value) {
+    if let Ok(mut cache) = a2a_status_cache().lock() {
+        if cache.len() >= A2A_STATUS_CACHE_MAX_ENTRIES {
+            cache.retain(|_, entry| entry.stored_at.elapsed() <= A2A_STATUS_CACHE_TTL);
+        }
+        if cache.len() >= A2A_STATUS_CACHE_MAX_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(
+            key,
+            A2aStatusCacheEntry {
+                stored_at: Instant::now(),
+                value,
+            },
+        );
+    }
+}
+
+fn a2a_status_cache_key(spec: &A2aServerSpec) -> String {
+    let mut auth_hash = DefaultHasher::new();
+    if let Some(token) = spec.auth.as_ref().and_then(|auth| auth.param_str("token")) {
+        token.hash(&mut auth_hash);
+    }
+    let options = serde_json::to_string(&spec.options).unwrap_or_default();
+    format!(
+        "{}|{}|{}|{:?}|{}|{}",
+        spec.id,
+        spec.base_url,
+        spec.timeout_ms,
+        spec.target,
+        options,
+        auth_hash.finish()
+    )
 }
 
 fn systime_to_secs(t: std::time::SystemTime) -> Option<u64> {

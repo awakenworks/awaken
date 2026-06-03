@@ -1,3 +1,4 @@
+use awaken_server_contract::registry_spec::A2A_SERVER_MAX_TIMEOUT_MS;
 use awaken_server_contract::{
     A2aServerSpec, AgentSpec, ConfigRecord, McpServerSpec, SkillSpec, ToolSpec,
 };
@@ -140,6 +141,11 @@ impl ConfigService {
                     return Err(ConfigServiceError::InvalidPayload(
                         "a2a server timeout_ms must be greater than 0".into(),
                     ));
+                }
+                if spec.timeout_ms > A2A_SERVER_MAX_TIMEOUT_MS {
+                    return Err(ConfigServiceError::InvalidPayload(format!(
+                        "a2a server timeout_ms must be less than or equal to {A2A_SERVER_MAX_TIMEOUT_MS}"
+                    )));
                 }
                 if let Some(auth) = spec.auth.as_ref()
                     && auth.auth_type != "bearer"
