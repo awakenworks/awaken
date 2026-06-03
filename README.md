@@ -12,6 +12,11 @@ Docs: [Awaken docs](https://awakenworks.github.io/awaken) · [中文文档](http
   <img src="./docs/assets/demo.svg" alt="Awaken demo — managed agent run with tool calls, approval, and trace" width="800">
 </p>
 
+<p align="center">
+  <img src="./docs/assets/awaken-demo.gif" alt="Awaken admin console — connect Gemini, build an agent with the AI assistant, test in the sandbox, trace and evaluate" width="800"><br>
+  <em>Admin console, end to end on real Gemini: connect the model, describe an agent to the AI assistant, test it in the sandbox, then trace &amp; evaluate.</em>
+</p>
+
 ## 30-second version
 
 Run the local server and console:

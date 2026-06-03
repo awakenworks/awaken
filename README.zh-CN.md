@@ -12,6 +12,11 @@
   <img src="./docs/assets/demo.svg" alt="Awaken 演示 — 托管 Agent run、工具调用、审批与 trace" width="800">
 </p>
 
+<p align="center">
+  <img src="./docs/assets/awaken-demo-zh.gif" alt="Awaken 控制台 — 接入 Gemini、用 AI 助手构建智能体、沙盒测试、追踪与评测" width="800"><br>
+  <em>控制台端到端演示(真实 Gemini):接入模型 → 用 AI 助手描述并生成智能体 → 沙盒测试 → 追踪与评测。</em>
+</p>
+
 ## 30 秒看懂
 
 启动本地 server 和控制台：
