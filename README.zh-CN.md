@@ -13,8 +13,8 @@
 </p>
 
 <p align="center">
-  <img src="./docs/assets/awaken-demo-zh.gif" alt="Awaken 控制台 — 接入 Gemini、用 AI 助手构建智能体、沙盒测试、追踪与评测" width="800"><br>
-  <em>控制台端到端演示(真实 Gemini):接入模型 → 用 AI 助手描述并生成智能体 → 沙盒测试 → 追踪与评测。</em>
+  <img src="./docs/assets/awaken-demo-zh.gif" alt="Awaken 控制台 — 接入 Gemini、用 AI 助手构建智能体、沙盒实时测试" width="800"><br>
+  <em>真实 Gemini 控制台演示:接入模型 → 用 AI 助手描述并生成智能体 → 沙盒实时测试。</em>
 </p>
 
 ## 30 秒看懂

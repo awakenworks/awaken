@@ -13,8 +13,8 @@ Docs: [Awaken docs](https://awakenworks.github.io/awaken) · [中文文档](http
 </p>
 
 <p align="center">
-  <img src="./docs/assets/awaken-demo.gif" alt="Awaken admin console — connect Gemini, build an agent with the AI assistant, test in the sandbox, trace and evaluate" width="800"><br>
-  <em>Admin console, end to end on real Gemini: connect the model, describe an agent to the AI assistant, test it in the sandbox, then trace &amp; evaluate.</em>
+  <img src="./docs/assets/awaken-demo.gif" alt="Awaken admin console — connect Gemini, build an agent with the AI assistant, then test it live in the sandbox" width="800"><br>
+  <em>Real Gemini in the admin console: connect a model, describe an agent to the built-in AI assistant, then test it live in the sandbox.</em>
 </p>
 
 ## 30-second version
