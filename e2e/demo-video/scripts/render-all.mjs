@@ -27,9 +27,21 @@ for (const l of LOCALES) {
     continue;
   }
   const common = `--public-dir="${pub}" --props="${props}"`;
-  run(`npx remotion render ${ENTRY} DemoLong "${OUT}/awaken-demo-${l.key}.mp4" ${common}`);
-  run(`npx remotion render ${ENTRY} DemoHighlight "${OUT}/awaken-demo-${l.key}-highlight.mp4" ${common}`);
-  run(`npx remotion render ${ENTRY} DemoHighlight "${OUT}/awaken-demo-${l.key}.gif" ${common} --codec=gif --every-nth-frame=2`);
+  const long = `${OUT}/awaken-demo-${l.key}.mp4`;
+  const highlight = `${OUT}/awaken-demo-${l.key}-highlight.mp4`;
+  const gif = `${OUT}/awaken-demo-${l.key}.gif`;
+  const palette = `${OUT}/_palette-${l.key}.png`;
+
+  run(`npx remotion render ${ENTRY} DemoLong "${long}" ${common}`);
+  run(`npx remotion render ${ENTRY} DemoHighlight "${highlight}" ${common}`);
+
+  // GIF via ffmpeg palettegen from the highlight MP4 — far smaller and sharper
+  // than the raw gif codec. Sped up 3x + 560px/10fps/128-color to land a
+  // compact, README-friendly teaser (~7 MB) instead of a 50s full-size loop.
+  const filt = 'setpts=PTS/3.0,fps=10,scale=560:-1:flags=lanczos';
+  run(`ffmpeg -y -loglevel error -i "${highlight}" -vf "${filt},palettegen=max_colors=128:stats_mode=diff" "${palette}"`);
+  run(`ffmpeg -y -loglevel error -i "${highlight}" -i "${palette}" -lavfi "${filt}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=4" "${gif}"`);
+
   rendered += 1;
 }
 
