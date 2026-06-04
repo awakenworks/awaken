@@ -26,13 +26,17 @@ export const ShotView: React.FC<{ shot: Shot; srcWidth: number; srcHeight: numbe
 
   const scaleX = width / srcWidth;
   const scaleY = height / srcHeight;
-  const progress = interpolate(frame, [0, durationInFrames], [0, 1], {
-    extrapolateRight: 'clamp',
-  });
 
-  let transform = `scale(${interpolate(progress, [0, 1], [1, 1.04])})`;
-  let transformOrigin = 'center center';
+  // Shots are static by default — a stable, crisp screenshot. Motion comes from
+  // the cursor pop, click ripple, captions, and the crossfade between shots.
+  // Only when a `focus` rect is set do we do a gentle, purposeful zoom toward
+  // that region (none are emitted today, so the frame stays still).
+  let transform: string | undefined;
+  let transformOrigin: string | undefined;
   if (shot.focus) {
+    const progress = interpolate(frame, [0, durationInFrames], [0, 1], {
+      extrapolateRight: 'clamp',
+    });
     const cxPct = (((shot.focus.x + shot.focus.w / 2) * scaleX) / width) * 100;
     const cyPct = (((shot.focus.y + shot.focus.h / 2) * scaleY) / height) * 100;
     transformOrigin = `${cxPct}% ${cyPct}%`;
