@@ -207,9 +207,12 @@ export function initCapture(): void {
   pendingCaption = undefined;
 }
 
-/** Tell the recorder which scene upcoming shots belong to. */
+/** Tell the recorder which scene upcoming shots belong to. Resets the persisted
+ *  caption so a new scene's first (nav) shot never inherits the prior scene's
+ *  caption. */
 export function setCurrentScene(name: string): void {
   currentScene = name;
+  pendingCaption = undefined;
 }
 
 /** Centered 2x-pixel cursor target for a selector, or undefined if not found. */

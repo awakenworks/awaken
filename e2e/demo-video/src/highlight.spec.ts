@@ -19,27 +19,43 @@ describe('selectHighlight', () => {
 });
 
 describe('selectGifShots', () => {
-  it('picks the last captioned image shot per highlight scene with a long hold', () => {
+  it('keeps real captions, drops cursor-only frames, and shows intro + payoff per scene', () => {
     const shots = [
       sc('01-intro', 'x.png', 'skip me'),
-      sc('02-providers', 'a.png', 'open'),
-      sc('02-providers', 'b.png', 'Connection OK'),
-      sc('09-sandbox', 'c.png'),
-      sc('09-sandbox', 'd.png', 'tool card'),
+      sc('02-providers', 'a.png', 'Providers'),
+      sc('02-providers', 'b.png', 'Adapter: vertex'),
+      sc('02-providers', 'c.png', 'Test connection'),
+      sc('02-providers', 'd.png', 'Connection OK'),
+      { scene: '09-sandbox', index: 0, hold: 2, image: 'cur.png' }, // cursor-only, no caption
+      // nav/click frame carrying a bled caption from the previous scene:
+      { scene: '09-sandbox', index: 0, hold: 2, image: 'nav.png', caption: 'Connection OK', click: true },
+      sc('09-sandbox', 'e.png', 'Sandbox'),
+      sc('09-sandbox', 'f.png', 'tool card'),
     ];
-    const out = selectGifShots(shots, 2.4);
-    expect(out.map((x) => x.scene)).toEqual(['02-providers', '09-sandbox']);
-    expect(out[0].caption).toBe('Connection OK');
-    expect(out[1].caption).toBe('tool card');
-    expect(out[0].hold).toBe(2.4);
+    const out = selectGifShots(shots, 1.5, 1.18, 3);
+    // 02 has 4 captioned beats -> first + final two; real captions preserved
+    expect(out.filter((s) => s.scene === '02-providers').map((s) => s.caption)).toEqual([
+      'Providers',
+      'Test connection',
+      'Connection OK',
+    ]);
+    // 09 has the cursor-only frame dropped -> both captioned beats kept
+    expect(out.filter((s) => s.scene === '09-sandbox').map((s) => s.caption)).toEqual([
+      'Sandbox',
+      'tool card',
+    ]);
+    expect(out[0].zoom).toBe(1.18);
+    expect(out[0].hold).toBe(1.5);
     expect(out[0].cursor).toBeUndefined();
   });
 
-  it('applies narration caption overrides and a constant zoom', () => {
-    const shots = [sc('02-providers', 'a.png', 'Connection OK')];
-    const out = selectGifShots(shots, 2.2, { '02-providers': '1 · Connect a real model' }, 1.18);
-    expect(out[0].caption).toBe('1 · Connect a real model');
-    expect(out[0].zoom).toBe(1.18);
-    expect(out[0].hold).toBe(2.2);
+  it('dedupes consecutive duplicate captions', () => {
+    const shots = [
+      sc('02-providers', 'a.png', 'reply'),
+      sc('02-providers', 'b.png', 'reply'),
+      sc('02-providers', 'c.png', 'done'),
+    ];
+    const out = selectGifShots(shots, 1.5, 1.18, 5);
+    expect(out.map((s) => s.caption)).toEqual(['reply', 'done']);
   });
 });

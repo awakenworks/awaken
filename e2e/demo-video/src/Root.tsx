@@ -2,7 +2,7 @@ import React from 'react';
 import { Composition } from 'remotion';
 import { Demo, TRANSITION_FRAMES } from './Demo';
 import { parseManifest, type Manifest, type Shot } from './manifest-types';
-import { selectHighlight, selectGifShots, gifNarration } from './highlight';
+import { selectHighlight, selectGifShots } from './highlight';
 import { totalDurationInFrames } from './timing';
 
 const FPS = 30;
@@ -60,7 +60,7 @@ export const RemotionRoot: React.FC = () => (
       durationInFrames={1}
       defaultProps={stub}
       calculateMetadata={({ props }) =>
-        metaFor(props, (m) => selectGifShots(m.shots, 2.2, gifNarration(m.locale), 1.18))
+        metaFor(props, (m) => selectGifShots(m.shots, 1.6, 1.18))
       }
     />
   </>

@@ -15,56 +15,46 @@ export function selectHighlight(shots: Shot[], scenes: string[] = HIGHLIGHT_SCEN
 }
 
 /**
- * Numbered "build -> test -> ship" narration for the GIF, so the highlight
- * beats read as one continuous flow rather than five disconnected snapshots.
- */
-export const GIF_NARRATION: Record<string, { en: string; zh: string }> = {
-  '02-providers': { en: '1 · Connect a real model', zh: '① 接入真实模型' },
-  '04-assistant-create-agent': { en: '2 · Describe it — AI builds the agent', zh: '② 描述需求，AI 自动构建' },
-  '06-mcp': { en: '3 · Plug in tools over MCP', zh: '③ 通过 MCP 接入工具' },
-  '09-sandbox': { en: '4 · Test it live in the sandbox', zh: '④ 沙盒里实时测试' },
-  '12-eval': { en: '5 · Evaluate & ship', zh: '⑤ 评测并上线' },
-};
-
-/** Localized narration map (scene -> caption) for a given locale. */
-export function gifNarration(locale: 'en' | 'zh-CN'): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [scene, pair] of Object.entries(GIF_NARRATION)) {
-    out[scene] = locale === 'zh-CN' ? pair.zh : pair.en;
-  }
-  return out;
-}
-
-/**
- * One enlarged, readable "payoff" beat per highlight scene for the GIF: the
- * last caption-bearing image shot of each scene, held long enough to read,
- * captioned with the continuous numbered narration, and zoomed in a touch so
- * the UI is legible at small GIF sizes. Far fewer, slower beats than the full
- * highlight — a looping GIF that tells the build->test->ship story.
+ * The GIF beats: a faithful, condensed cut of the highlight that keeps the
+ * REAL video captions (so the GIF corresponds to the video) and shows several
+ * beats per step (intro + payoff) so each step's story is complete — not a
+ * single disconnected snapshot. Per scene we keep the narrated beats (image +
+ * caption), drop transient cursor-only frames and consecutive duplicate
+ * captions, and trim to the first beat plus the final payoff beats. Beats are
+ * held long enough to read and zoomed a touch so the UI is legible.
  */
 export function selectGifShots(
   shots: Shot[],
-  holdSeconds = 2.4,
-  captions?: Record<string, string>,
+  holdSeconds = 1.5,
   zoom?: number,
+  maxPerScene = 3,
   scenes: string[] = HIGHLIGHT_SCENES,
 ): Shot[] {
   const out: Shot[] = [];
   for (const scene of scenes) {
-    const inScene = shots.filter((s) => s.scene === scene && s.image);
-    if (inScene.length === 0) continue;
-    const captioned = inScene.filter((s) => s.caption);
-    const pool = captioned.length > 0 ? captioned : inScene;
-    const pick = pool[pool.length - 1];
-    out.push({
-      ...pick,
-      hold: holdSeconds,
-      transition: 'fade',
-      cursor: undefined,
-      click: false,
-      caption: captions?.[scene] ?? pick.caption,
-      zoom: zoom ?? pick.zoom,
-    });
+    // Narration beats only: scene-title / caption / payoff shots. Exclude
+    // `click` frames (nav + button presses) — those are transient interactions
+    // whose caption is the persisted one from the previous beat/scene, so they
+    // would show a caption that doesn't match the frame.
+    const beats = shots.filter((s) => s.scene === scene && s.image && s.caption && !s.click);
+    // Drop consecutive duplicate captions (e.g. "reply…" then "reply").
+    const dedup = beats.filter((b, i) => i === 0 || b.caption !== beats[i - 1].caption);
+    if (dedup.length === 0) continue;
+    // Intro beat + the final payoff beats, so each step reads intent -> result.
+    const chosen =
+      dedup.length <= maxPerScene
+        ? dedup
+        : [dedup[0], ...dedup.slice(dedup.length - (maxPerScene - 1))];
+    for (const b of chosen) {
+      out.push({
+        ...b,
+        hold: holdSeconds,
+        transition: 'fade',
+        cursor: undefined,
+        click: false,
+        zoom: zoom ?? b.zoom,
+      });
+    }
   }
   return out;
 }
