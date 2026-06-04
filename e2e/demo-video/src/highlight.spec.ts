@@ -34,4 +34,12 @@ describe('selectGifShots', () => {
     expect(out[0].hold).toBe(2.4);
     expect(out[0].cursor).toBeUndefined();
   });
+
+  it('applies narration caption overrides and a constant zoom', () => {
+    const shots = [sc('02-providers', 'a.png', 'Connection OK')];
+    const out = selectGifShots(shots, 2.2, { '02-providers': '1 · Connect a real model' }, 1.18);
+    expect(out[0].caption).toBe('1 · Connect a real model');
+    expect(out[0].zoom).toBe(1.18);
+    expect(out[0].hold).toBe(2.2);
+  });
 });

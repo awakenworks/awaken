@@ -40,7 +40,7 @@ for (const l of LOCALES) {
   // payoff beat per scene, ~2.4s each) and palette it at NORMAL speed — so each
   // scene's intent is legible in the loop instead of flashing past. 560px/12fps.
   run(`npx remotion render ${ENTRY} DemoGif "${gifSrc}" ${common}`);
-  const filt = 'fps=12,scale=560:-1:flags=lanczos';
+  const filt = 'fps=12,scale=820:-1:flags=lanczos';
   run(`ffmpeg -y -loglevel error -i "${gifSrc}" -vf "${filt},palettegen=max_colors=128:stats_mode=diff" "${palette}"`);
   run(`ffmpeg -y -loglevel error -i "${gifSrc}" -i "${palette}" -lavfi "${filt}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=4" "${gif}"`);
 

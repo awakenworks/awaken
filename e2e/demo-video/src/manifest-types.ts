@@ -14,6 +14,9 @@ export interface Shot {
   transition?: Transition;
   title?: string;
   subtitle?: string;
+  /** Constant (non-animated) zoom factor, centered. Used by the GIF beats to
+   *  enlarge the content; absent on the MP4 shots (which stay 1:1). */
+  zoom?: number;
 }
 
 export interface Manifest {

@@ -29,11 +29,15 @@ export const ShotView: React.FC<{ shot: Shot; srcWidth: number; srcHeight: numbe
 
   // Shots are static by default — a stable, crisp screenshot. Motion comes from
   // the cursor pop, click ripple, captions, and the crossfade between shots.
-  // Only when a `focus` rect is set do we do a gentle, purposeful zoom toward
-  // that region (none are emitted today, so the frame stays still).
+  // `zoom` is a constant (non-animated) enlargement used by the GIF beats to
+  // make content legible at small sizes; `focus` (if ever set) does a gentle
+  // animated push toward a region. Neither is set on the MP4 shots.
   let transform: string | undefined;
   let transformOrigin: string | undefined;
-  if (shot.focus) {
+  if (shot.zoom && shot.zoom !== 1) {
+    transform = `scale(${shot.zoom})`;
+    transformOrigin = 'center center';
+  } else if (shot.focus) {
     const progress = interpolate(frame, [0, durationInFrames], [0, 1], {
       extrapolateRight: 'clamp',
     });
