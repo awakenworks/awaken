@@ -44,6 +44,15 @@ function C(en: string, zh: string) {
   return { en, zh };
 }
 
+// Known-good `default` provider + model, captured at scene 02 (where the live
+// connection test proves they point at real Vertex). The AI assistant in scene
+// 04 can repoint the shared `default` binding to the seed's offline `scripted`
+// provider, which would make the live eval (scene 12) fail with "unsupported
+// provider adapter: scripted". We restore these right before the eval so it is
+// deterministic regardless of what the assistant did.
+let savedProviderDefault: unknown = null;
+let savedModelDefault: unknown = null;
+
 const sceneResults: { name: string; ok: boolean; error?: string }[] = [];
 
 // QA instrumentation: capture every failed network response + console error,
@@ -244,6 +253,24 @@ async function api(
   });
 }
 
+/**
+ * Restore the known-good vertex `default` provider + model captured in scene 02.
+ * The AI assistant (scene 04) can repoint the shared `default` binding to the
+ * seed's offline `scripted` provider; calling this after the assistant and
+ * before the eval keeps the sandbox, tracing, and live eval on real Gemini.
+ * ConfigStore may return a bare spec or a {spec, meta} envelope — PUT wants the
+ * bare spec, so unwrap `.spec` when present.
+ */
+async function restoreVertexDefault(page: Page) {
+  const unwrap = (v: any) => (v && typeof v === 'object' && v.spec ? v.spec : v);
+  if (savedProviderDefault) {
+    await api(page, 'PUT', '/v1/config/providers/default', unwrap(savedProviderDefault)).catch(() => {});
+  }
+  if (savedModelDefault) {
+    await api(page, 'PUT', '/v1/config/models/default', unwrap(savedModelDefault)).catch(() => {});
+  }
+}
+
 test('awaken admin console — full guided demo', async ({ page }) => {
   test.setTimeout(1_200_000);
   initCapture();
@@ -300,6 +327,14 @@ test('awaken admin console — full guided demo', async ({ page }) => {
     await shot(page, { caption: tr(C('Connection OK', '连接正常')) });
     await clickByName(page, 'button', 'Cancel').catch(() => {});
     await beat(page, 500);
+    // Stash the known-good (vertex) default provider+model now that the
+    // connection test has proven they are live. Restored before the eval.
+    savedProviderDefault = await api(page, 'GET', '/v1/config/providers/default')
+      .then((r) => (r.ok() ? r.json() : null))
+      .catch(() => null);
+    savedModelDefault = await api(page, 'GET', '/v1/config/models/default')
+      .then((r) => (r.ok() ? r.json() : null))
+      .catch(() => null);
   });
 
   // ───────────────────────────── Scene 3: Models (gemini-2.5-pro) ────────
@@ -375,6 +410,10 @@ test('awaken admin console — full guided demo', async ({ page }) => {
         max_rounds: 4,
       });
     }
+    // The assistant may have repointed the shared `default` binding to the
+    // offline scripted provider while building the agent. Heal it now so the
+    // sandbox, tracing, and eval scenes all run on real Gemini.
+    await restoreVertexDefault(page);
     await beat(page, 2000);
   });
 
@@ -641,6 +680,10 @@ test('awaken admin console — full guided demo', async ({ page }) => {
     await page.getByRole('button', { name: Lboth('Run') }).first().hover().catch(() => {});
     await page.getByRole('button', { name: Lboth('Run') }).first().click().catch(() => {});
     await caption(page, tr(C('Running a live eval on Gemini…', '在 Gemini 上运行实时评测…')));
+    // Self-heal the vertex default binding right before the eval (see
+    // restoreVertexDefault) so the live run never hits the scripted adapter.
+    await restoreVertexDefault(page);
+    await beat(page, 800);
     // Guarantee a PASSING live eval run to view. Re-runs the fixture against
     // the agent on real Gemini; retries on transient inference/auth (401)
     // failures so the scene never shows a red result.
