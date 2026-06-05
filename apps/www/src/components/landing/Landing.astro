@@ -26,6 +26,7 @@ const t = <T,>(en: T, zh: T): T => (locale === "zh-CN" ? zh : en);
 
 const baseUrl = import.meta.env.BASE_URL.replace(/\/$/, "");
 const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
+const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" : "awaken-demo.gif"}`;
 ---
 
 <div class="landing-page">
@@ -237,6 +238,22 @@ const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
           <a href={`${docsBase}/how-to/use-admin-console/`}>{t("Open console guide →", "打开控制台指南 →")}</a>
         </div>
       </div>
+      <figure class="console-demo">
+        <img
+          src={demoGif}
+          width="900"
+          loading="lazy"
+          alt={t(
+            "Awaken admin console walkthrough — connect Gemini on Vertex, build an agent by hand, run a live eval",
+            "Awaken 管理控制台走查 —— 接入 Vertex 上的 Gemini、手动构建 agent、运行实时评测",
+          )}
+        />
+        <figcaption>
+          {t("Recorded against a live Gemini backend.", "录制于真实 Gemini 后端。")}
+          {" "}
+          <a href={`${docsBase}/how-to/use-admin-console/`}>{t("Try it →", "动手试试 →")}</a>
+        </figcaption>
+      </figure>
       <div class="console-grid">
         <div class="console-shot" aria-label={t("Admin Console preview", "管理控制台预览")}>
           <div class="titlebar">

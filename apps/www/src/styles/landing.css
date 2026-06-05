@@ -436,6 +436,23 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
 }
 
 /* ============ admin console preview ============ */
+.landing-page .console-demo {
+  margin: 0 0 24px;
+  text-align: center;
+}
+.landing-page .console-demo img {
+  width: 100%;
+  max-width: 900px;
+  height: auto;
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-lg);
+  box-shadow: var(--aw-shadow-card-lift);
+}
+.landing-page .console-demo figcaption {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--aw-text-muted);
+}
 .landing-page .console-grid {
   display: grid;
   grid-template-columns: 1.4fr 1fr;
