@@ -120,6 +120,27 @@
         }
       },
       {
+        "label": "Build an Agent with the Admin Assistant",
+        "slug": "how-to/build-an-agent-with-the-assistant",
+        "translations": {
+          "zh-CN": "用 Admin Assistant 构建 Agent"
+        }
+      },
+      {
+        "label": "Connect an A2A Server",
+        "slug": "how-to/connect-an-a2a-server",
+        "translations": {
+          "zh-CN": "接入 A2A Server"
+        }
+      },
+      {
+        "label": "Capture a Dataset and Run an Eval",
+        "slug": "how-to/capture-a-dataset-and-run-an-eval",
+        "translations": {
+          "zh-CN": "采集数据集并运行评测"
+        }
+      },
+      {
         "label": "Configure Agent Behavior",
         "slug": "how-to/configure-agent-behavior",
         "translations": {

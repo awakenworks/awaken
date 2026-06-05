@@ -43,6 +43,13 @@ The console is a thin browser control plane over the running server. The
 screenshots below show the current high-value workflow: inspect system state,
 edit an agent, and compare agent catalog health before running traffic.
 
+<figure class="screenshot">
+  <a href="/awaken/assets/awaken-demo.gif">
+    <img src="/awaken/assets/awaken-demo.gif" alt="Animated walkthrough: connect Gemini on Vertex, build an agent by hand, and run a live eval." loading="lazy" />
+  </a>
+  <figcaption>The full flow in motion — recorded against a live Gemini backend.</figcaption>
+</figure>
+
 <div class="screenshot-grid">
   <figure class="screenshot">
     <a href="/awaken/assets/admin-console/01-dashboard.png">
@@ -71,7 +78,7 @@ The left sidebar groups every screen by intent:
 | Group | What lives here |
 |---|---|
 | **Agents** | Agents — create/edit agent specs and open per-agent dashboards. |
-| **Resources** | MCP Servers, Skills, Tools — runtime dependencies and discovered capabilities. |
+| **Resources** | MCP Servers, A2A Servers, Skills, Tools — runtime dependencies, remote agents, and discovered capabilities. |
 | **Infrastructure** | Providers and Models — upstream connectivity plus stable model ids and capability metadata. |
 | **Observe** | Dashboard, Audit Log, Datasets, Eval Runs, Eval Reports — operational views and evaluation records. |
 
@@ -100,6 +107,10 @@ Open the **Dashboard** (it's the default landing page). Key panels:
   subsystems (config store, audit log, runtime stats) are wired in.
 
 ## Edit an agent
+
+To create one, click **+ New Agent** for a blank editor, or describe it to the
+[Admin Assistant](/awaken/how-to/build-an-agent-with-the-assistant/) and let it
+draft the spec. To edit an existing agent:
 
 1. Click **Agents** in the sidebar.
 2. Use the **filter chips** to narrow by `model`, `plugin`, or `modified
@@ -163,6 +174,20 @@ and adapter actually reach the upstream.
 4. Click **Restart** to trigger `POST /v1/mcp-servers/:id/restart`.
    The button is disabled while a restart is in flight; an audit
    `restart` event is emitted on success.
+
+## Connect an A2A server
+
+Open **A2A Servers** and click **New A2A server** to register a remote
+agent service by **Base URL**. Awaken discovers its agent card and lists the
+remote agents alongside your own, ready to delegate to. See
+[Connect an A2A Server](/awaken/how-to/connect-an-a2a-server/).
+
+## Capture datasets and run evals
+
+The **Datasets**, **Eval Runs**, and **Eval Reports** screens turn real traces
+into regression fixtures, run them against an agent on a real or scripted model,
+and show per-fixture pass/fail with baseline diffs. See
+[Capture a Dataset and Run an Eval](/awaken/how-to/capture-a-dataset-and-run-an-eval/).
 
 ## Restore a previous version
 
@@ -293,5 +318,8 @@ tokens drive the console and docs.
 ## Related
 
 - [Admin Console surface inventory](/awaken/reference/admin-console/)
+- [Build an Agent with the Admin Assistant](/awaken/how-to/build-an-agent-with-the-assistant/)
+- [Connect an A2A Server](/awaken/how-to/connect-an-a2a-server/)
+- [Capture a Dataset and Run an Eval](/awaken/how-to/capture-a-dataset-and-run-an-eval/)
 - [HTTP API](/awaken/reference/http-api/)
 - [Enable Observability](/awaken/how-to/enable-observability/)
