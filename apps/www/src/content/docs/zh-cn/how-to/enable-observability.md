@@ -70,14 +70,23 @@ let obs_plugin = ObservabilityPlugin::new(OtelMetricsSink::new(tracer));
 3. 如果需要，也可以实现自定义 sink：
 
 ```rust
-use awaken::ext_observability::{MetricsSink, GenAISpan, ToolSpan, AgentMetrics};
+use awaken::ext_observability::{AgentMetrics, MetricsEvent, MetricsSink};
 
 struct MySink;
 
 impl MetricsSink for MySink {
-    fn on_inference(&self, span: &GenAISpan) {}
-    fn on_tool(&self, span: &ToolSpan) {}
-    fn on_run_end(&self, metrics: &AgentMetrics) {}
+    // `record` 必须实现;`flush` / `shutdown` / `flush_run` 默认返回 Ok(())。
+    fn record(&self, event: &MetricsEvent) {
+        match event {
+            MetricsEvent::Inference(span) => { /* 转发 inference span */ }
+            MetricsEvent::Tool(span) => { /* 转发 tool span */ }
+            _ => {}
+        }
+    }
+
+    fn on_run_end(&self, metrics: &AgentMetrics) {
+        // 输出聚合的 run 汇总
+    }
 }
 ```
 

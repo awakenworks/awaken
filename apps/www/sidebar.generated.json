@@ -254,6 +254,13 @@
         }
       },
       {
+        "label": "Deploy to Production",
+        "slug": "how-to/deploy-to-production",
+        "translations": {
+          "zh-CN": "部署到生产"
+        }
+      },
+      {
         "label": "Integrate AI SDK Frontend",
         "slug": "how-to/integrate-ai-sdk-frontend",
         "translations": {

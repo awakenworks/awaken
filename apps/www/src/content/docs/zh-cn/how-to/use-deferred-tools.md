@@ -199,7 +199,8 @@ DiscBetaParams 的关键参数：
 这些参数位于 `DeferredToolsConfig.disc_beta` 下：
 
 ```rust
-use awaken_ext_deferred_tools::{DeferredToolsConfig, DiscBetaParams};
+use awaken_ext_deferred_tools::DeferredToolsConfig;
+use awaken_ext_deferred_tools::config::DiscBetaParams;
 
 let config = DeferredToolsConfig {
     disc_beta: DiscBetaParams {

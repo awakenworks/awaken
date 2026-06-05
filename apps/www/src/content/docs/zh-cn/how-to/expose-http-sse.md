@@ -79,7 +79,7 @@ let state = ServerState::new(
 ```rust
 use awaken::server::routes::build_router;
 
-let app = build_router().with_state(state);
+let app = build_router(&state); // 接收 &ServerState,返回已绑定 state 的 Router
 ```
 
 `build_router()` 会注册：

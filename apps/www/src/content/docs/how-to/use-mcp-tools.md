@@ -93,7 +93,7 @@ registers the discovered tools as plugin tools. `plugin_ids` must contain
 ```rust
 use std::time::Duration;
 
-manager.start_periodic_refresh(Duration::from_secs(60));
+let _ = manager.start_periodic_refresh(Duration::from_secs(60)); // returns Result<(), McpError>
 ```
 
 Periodic refresh updates the manager registry. New runs resolve the agent again

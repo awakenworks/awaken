@@ -30,7 +30,7 @@ Server 启动时也会校验暴露的 admin surface。只要 config、eval 或 t
 | Canonical event 路由 | 接入 `EventModuleState` | 由 event store 可用性决定行为 |
 | System 路由 | 始终挂载 | admin bearer + admin scope |
 | Config 与 capabilities | `AdminApiConfig.expose_config_routes` 且接入 `ConfigStore` | admin bearer + admin scope |
-| Admin run summary/runtime stats | `AdminApiConfig.expose_config_routes` | admin bearer + admin scope |
+| Admin run summary/runtime stats | 无条件挂载(不受 `expose_config_routes` 门控) | admin bearer + admin scope |
 | Eval 路由 | `AdminApiConfig.expose_eval_routes` 且接入 config/eval modules | admin bearer + admin scope |
 | Trace 路由 | `AdminApiConfig.expose_trace_routes` 且接入 trace module | admin bearer + admin scope |
 | Metrics | 始终挂载 | 部署边界 |

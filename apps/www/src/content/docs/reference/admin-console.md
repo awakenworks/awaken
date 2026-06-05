@@ -174,6 +174,20 @@ When the server is wired with a versioned registry store, published runtime
 registry snapshots are immutable and durable runs carry a `resolution_id` so
 resume and replay can reselect the same graph.
 
+## REST-only Features (No Console UI Yet)
+
+The console focuses on **configuration**. Some surfaces are intentionally
+REST-only today — drive them from `curl` or your own scripts with the same admin
+bearer token (see the [HTTP API](/awaken/reference/http-api/) for request shapes):
+
+| Surface | What | Endpoints |
+|---|---|---|
+| Threads & runs | list / create / cancel / inspect messages | `/v1/threads`, `/v1/runs` |
+| HITL decisions | resume / cancel a suspended tool call | `POST /v1/runs/:id/decision` |
+| Mailbox | peek / push inter-agent dispatches | mailbox routes |
+| Skill CRUD | the console lists skills but does not edit them | `/v1/config/skills` |
+| Config diagnostics | registry-wide validation report (no screen renders it yet) | `GET /v1/config/diagnostics` |
+
 ## Scope
 
 `scope_id` is shown as read-only system metadata. The browser does not choose

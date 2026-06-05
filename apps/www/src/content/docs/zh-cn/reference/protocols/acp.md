@@ -20,9 +20,9 @@ Awaken-backed 进程，然后通过 stdin/stdout 交换 ACP JSON-RPC 消息。
 ## Session 行为
 
 - `initialize` 返回请求的协议版本、`awaken-acp` agent info，以及 text、image、audio、embedded-context prompt capability。
-- `newSession` 要求 `cwd` 是绝对路径。请求里的 `mcpServers` 会被拒绝；MCP server 应通过 Awaken 配置注册。
+- `session/new` 要求 `cwd` 是绝对路径。请求里的 `mcpServers` 会被拒绝；MCP server 应通过 Awaken 配置注册。
 - 如果存在 `default` agent，适配器会选择它；否则 runtime 必须只注册一个 agent。
-- 每个 ACP session 映射到一个新的 Awaken thread id。`prompt` 会把用户内容追加到该 thread，并通过 `AgentRuntime` 执行选中的 agent。
+- 每个 ACP session 映射到一个新的 Awaken thread id。`session/prompt` 会把用户内容追加到该 thread，并通过 `AgentRuntime` 执行选中的 agent。
 - 工具权限请求会转发给 ACP client，并转换回 Awaken HITL resume decision。
 
 ## 与 HTTP 适配器的关系

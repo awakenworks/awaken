@@ -228,7 +228,7 @@ pub struct AuditPlugin;
 
 impl Plugin for AuditPlugin {
     fn descriptor(&self) -> PluginDescriptor {
-        PluginDescriptor::new("audit", "Audit logging via effects")
+        PluginDescriptor { name: "audit" }
     }
 
     fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {

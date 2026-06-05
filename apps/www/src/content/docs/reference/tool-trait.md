@@ -106,6 +106,8 @@ Errors returned from `validate_args` or `execute`. Unlike `ToolResult::Error`
 pub enum ToolError {
     InvalidArguments(String),
     ExecutionFailed(String),
+    Timeout(String),
+    Cancelled(String),
     Denied(String),
     NotFound(String),
     Internal(String),

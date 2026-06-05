@@ -81,7 +81,7 @@ let state = ServerState::new(
 ```rust
 use awaken::server::routes::build_router;
 
-let app = build_router().with_state(state);
+let app = build_router(&state); // takes &ServerState, returns a state-bound Router
 ```
 
 `build_router` registers all route groups:

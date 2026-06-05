@@ -10,10 +10,15 @@ programmatically via builder methods.
 ```rust
 pub struct AgentSpec {
     pub id: String,
+    pub description: Option<String>,                 // UI / catalog / delegate-tool text
+    pub backend: AgentBackendSpec,                   // canonical execution backend;
+                                                     //   legacy model_id/system_prompt/
+                                                     //   endpoint normalize into it
     pub model_id: String,                            // model registry id
     pub system_prompt: String,
     pub max_rounds: usize,                          // default: 16
     pub max_continuation_retries: usize,            // default: 2
+    pub stop_conditions: Vec<StopConditionSpec>,     // declarative stop policies
     pub context_policy: Option<ContextWindowPolicy>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub plugin_ids: Vec<String>,
@@ -432,8 +437,10 @@ pub struct RemoteEndpoint {
 }
 
 pub struct RemoteAuth {
-    pub r#type: String,
-    // backend-specific auth fields, e.g. { "token": "..." } for bearer
+    #[serde(rename = "type")]
+    pub auth_type: String,                 // wire key is "type"
+    #[serde(flatten)]
+    pub params: BTreeMap<String, Value>,   // e.g. { "token": "..." } for bearer
 }
 ```
 

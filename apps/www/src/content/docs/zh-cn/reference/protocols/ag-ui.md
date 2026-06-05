@@ -24,10 +24,13 @@ POST /v1/ag-ui/run
 
 | 字段 | 类型 | 必填 | 说明 |
 |-------|------|------|------|
-| `messages` | `AgUiMessage[]` | 是 | 聊天消息，使用 `role` 和 `content` |
+| `messages` | `AgUiMessage[]` | 是 | 聊天消息。`content` 是 JSON 值(字符串或结构化/多模态片段),不只是字符串。 |
 | `threadId` | `string` | 否 | 继续已有 thread |
 | `agentId` | `string` | 否 | 指定目标 agent |
-| `context` | `object` | 否 | 前端上下文透传 |
+| `state` | `object` | 否 | 转发给 run 的前端 state。 |
+| `context` | `object` | 否 | 合并进 `state`(对象合并;标量 key 以 `state` 为准)后转发给 run。 |
+| `resume` | `object` | 否 | HITL resume 负载:`interruptId` + `payload`。 |
+| `tools` | `AgUiToolDefinition[]` | 否 | 前端工具定义(`name` / `description` / `parameters`)。 |
 
 ### 响应
 

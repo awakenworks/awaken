@@ -106,21 +106,22 @@ let runtime = AgentRuntimeBuilder::new()
 3. Implement a custom sink (optional).
 
 ```rust
-use awaken::ext_observability::{MetricsSink, GenAISpan, ToolSpan, AgentMetrics};
+use awaken::ext_observability::{AgentMetrics, MetricsEvent, MetricsSink};
 
 struct MySink;
 
 impl MetricsSink for MySink {
-    fn on_inference(&self, span: &GenAISpan) {
-        // forward to your metrics system
-    }
-
-    fn on_tool(&self, span: &ToolSpan) {
-        // forward to your metrics system
+    // `record` is required; `flush` / `shutdown` / `flush_run` have Ok(()) defaults.
+    fn record(&self, event: &MetricsEvent) {
+        match event {
+            MetricsEvent::Inference(span) => { /* forward the inference span */ }
+            MetricsEvent::Tool(span) => { /* forward the tool span */ }
+            _ => {}
+        }
     }
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
-        // emit summary metrics
+        // emit aggregated run summary
     }
 }
 ```

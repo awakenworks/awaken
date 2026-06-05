@@ -9,10 +9,15 @@ title: "配置"
 ```rust
 pub struct AgentSpec {
     pub id: String,
+    pub description: Option<String>,                 // UI / 目录 / 委派工具文案
+    pub backend: AgentBackendSpec,                   // 规范化执行后端;legacy 的
+                                                     //   model_id/system_prompt/endpoint
+                                                     //   会归一化进它
     pub model_id: String,                            // model registry id
     pub system_prompt: String,
     pub max_rounds: usize,
     pub max_continuation_retries: usize,
+    pub stop_conditions: Vec<StopConditionSpec>,     // 声明式停止策略
     pub context_policy: Option<ContextWindowPolicy>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub plugin_ids: Vec<String>,
@@ -382,8 +387,10 @@ pub struct RemoteEndpoint {
 }
 
 pub struct RemoteAuth {
-    pub r#type: String,
-    // backend 专有认证字段，例如 bearer 用 { "token": "..." }
+    #[serde(rename = "type")]
+    pub auth_type: String,                 // 线上 key 为 "type"
+    #[serde(flatten)]
+    pub params: BTreeMap<String, Value>,   // 例如 bearer 用 { "token": "..." }
 }
 ```
 

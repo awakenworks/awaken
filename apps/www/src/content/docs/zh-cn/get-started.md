@@ -62,7 +62,8 @@ export OPENAI_ADAPTER=openai
 
 1. 阅读 [使用管理控制台](/awaken/zh-cn/how-to/use-admin-console/)，理解浏览器工作流：
    配置模型、创建 Agent、预览草稿，并发布下一版 runtime snapshot。
-2. 需要 React 前端时，阅读 [AI SDK 前端集成](/awaken/zh-cn/how-to/integrate-ai-sdk-frontend/)。
+2. 配好真实模型后,阅读 [用 Admin Assistant 构建 Agent](/awaken/zh-cn/how-to/build-an-agent-with-the-assistant/),用自然语言描述即可生成 Agent。
+3. 需要 React 前端时，阅读 [AI SDK 前端集成](/awaken/zh-cn/how-to/integrate-ai-sdk-frontend/)。
 3. 阅读 [第一个 Agent](/awaken/zh-cn/tutorials/first-agent/)，理解最小进程内 runtime。
 4. 阅读 [第一个 Tool](/awaken/zh-cn/tutorials/first-tool/)，理解 tool schema、执行流程和状态写入。
 5. 进入 [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)，把示例整理成可复用的工程基线。
@@ -73,3 +74,4 @@ export OPENAI_ADAPTER=openai
 - 需要调优或运营已保存的 Agent 时，进入 [调优与运营](/awaken/zh-cn/operate/)。
 - 需要 HTTP 或前端集成时，进入 [服务与集成](/awaken/zh-cn/serve-and-integrate/)。
 - 需要持久化时，进入 [状态与存储](/awaken/zh-cn/state-and-storage/)。
+- 准备上线时，进入 [部署到生产](/awaken/zh-cn/how-to/deploy-to-production/)。

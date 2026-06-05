@@ -89,7 +89,7 @@ agent。
 ```rust
 use std::time::Duration;
 
-manager.start_periodic_refresh(Duration::from_secs(60));
+let _ = manager.start_periodic_refresh(Duration::from_secs(60)); // 返回 Result<(), McpError>
 ```
 
 周期刷新会更新 manager registry。新的 run 会重新解析 agent 并看到最新 snapshot；

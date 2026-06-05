@@ -5,6 +5,11 @@ description: "Awaken provides four layers of state management, each designed for
 
 Awaken provides four layers of state management, each designed for a different combination of scope, access pattern, and lifecycle. This page explains when and how to use each layer.
 
+> This page is the **"which layer do I use"** guide. For the engine internals
+> behind these layers — the `StateKey` trait, snapshot isolation, merge
+> strategies, and the mutation lifecycle — see
+> [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/).
+
 ## Overview
 
 | Layer | Trait | Scope | Access | Lifecycle | Primary Use Case |

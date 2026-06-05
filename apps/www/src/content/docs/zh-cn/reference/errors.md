@@ -38,11 +38,13 @@ pub enum StateError {
 pub enum ToolError {
     InvalidArguments(String),
     ExecutionFailed(String),
+    /// 工具执行超过截止时间。
+    Timeout(String),
+    /// 工具执行被取消(run 取消、suspend cancel)。
+    Cancelled(String),
     Denied(String),
     NotFound(String),
     Internal(String),
-    /// 工具执行被取消(run 取消、超时、suspend cancel)。
-    Cancelled(String),
 }
 ```
 

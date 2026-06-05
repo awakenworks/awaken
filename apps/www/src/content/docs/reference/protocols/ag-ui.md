@@ -24,10 +24,13 @@ POST /v1/ag-ui/run
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `messages` | `AgUiMessage[]` | yes | Chat messages with `role` and `content` strings. |
+| `messages` | `AgUiMessage[]` | yes | Chat messages. `content` is a JSON value (string or structured/multimodal parts), not only a string. |
 | `threadId` | `string` | no | Existing thread. Omit to create a new thread. |
 | `agentId` | `string` | no | Target agent. Uses the default agent when omitted. |
-| `context` | `object` | no | CopilotKit context forwarding (reserved). |
+| `state` | `object` | no | Frontend state forwarded to the run. |
+| `context` | `object` | no | Merged into `state` (object-merge; `state` wins for scalar keys) and forwarded to the run. |
+| `resume` | `object` | no | HITL resume payload: `interruptId` + `payload`. |
+| `tools` | `AgUiToolDefinition[]` | no | Frontend tool definitions (`name` / `description` / `parameters`). |
 
 ### Response
 

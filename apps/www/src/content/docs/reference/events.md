@@ -153,21 +153,21 @@ fn new(seq: u64, timestamp: impl Into<String>, event: AgentEvent) -> Self
 
 ## RunInput
 
-Input to start or resume a run.
+Input that starts a run. Serialized as `{ "kind": "...", "value": ... }`.
 
 ```rust
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum RunInput {
-    /// A new user message to process.
-    UserMessage { text: String },
-    /// Resume a suspended run with a decision.
-    ResumeDecision {
-        tool_call_id: String,
-        action: ResumeDecisionAction,
-        payload: Value,       // omitted when null
-    },
+    /// Append and process new messages.
+    NewMessages(Vec<Message>),
+    /// Replay an already-persisted input snapshot (id-addressed messages,
+    /// optional range / context policy / compacted snapshot).
+    AlreadyPersisted(RunInputSnapshot),
 }
 ```
+
+Resuming a *suspended* run is a separate operation: submit a decision
+(`ResumeDecisionAction`) to the run decision endpoint, not a `RunInput`.
 
 ## RunOutput
 

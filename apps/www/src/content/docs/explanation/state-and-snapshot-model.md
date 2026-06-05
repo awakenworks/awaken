@@ -5,6 +5,10 @@ description: "Awaken uses a typed state engine with snapshot isolation. This pag
 
 Awaken uses a typed state engine with snapshot isolation. This page explains the state primitives, scoping rules, merge strategies, and the mutation lifecycle.
 
+> This page covers the **engine mechanics**. For *which* of the four layers to
+> reach for (run / thread / shared / profile) and when, start with
+> [State Management](/awaken/explanation/state-management/).
+
 ## StateKey Trait
 
 Every piece of runtime state is declared as a type implementing `StateKey`:

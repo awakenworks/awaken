@@ -33,7 +33,7 @@ should be protected by the embedder's deployment boundary.
 | Canonical event routes | `EventModuleState` is wired | Event-store availability controls behavior |
 | System routes | Always mounted | Admin bearer + admin scope |
 | Config and capabilities | `AdminApiConfig.expose_config_routes` and `ConfigStore` wiring | Admin bearer + admin scope |
-| Admin run summary/runtime stats | `AdminApiConfig.expose_config_routes` | Admin bearer + admin scope |
+| Admin run summary/runtime stats | Mounted unconditionally (not gated by `expose_config_routes`) | Admin bearer + admin scope |
 | Eval routes | `AdminApiConfig.expose_eval_routes` plus config/eval module wiring | Admin bearer + admin scope |
 | Trace routes | `AdminApiConfig.expose_trace_routes` plus trace module wiring | Admin bearer + admin scope |
 | Metrics | Always mounted | Deployment boundary |

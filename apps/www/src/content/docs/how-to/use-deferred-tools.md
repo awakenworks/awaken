@@ -220,7 +220,8 @@ Key parameters in `DiscBetaParams`:
 These live under `DeferredToolsConfig.disc_beta`:
 
 ```rust
-use awaken_ext_deferred_tools::{DeferredToolsConfig, DiscBetaParams};
+use awaken_ext_deferred_tools::DeferredToolsConfig;
+use awaken_ext_deferred_tools::config::DiscBetaParams;
 
 let config = DeferredToolsConfig {
     disc_beta: DiscBetaParams {

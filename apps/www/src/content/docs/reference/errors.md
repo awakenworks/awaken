@@ -47,11 +47,13 @@ the failure back to the LLM).
 pub enum ToolError {
     InvalidArguments(String),
     ExecutionFailed(String),
+    /// Tool execution exceeded its deadline.
+    Timeout(String),
+    /// Tool execution cancelled (run cancelled, suspend cancel).
+    Cancelled(String),
     Denied(String),
     NotFound(String),
     Internal(String),
-    /// Tool execution cancelled (run cancelled, timeout, suspend cancel).
-    Cancelled(String),
 }
 ```
 
