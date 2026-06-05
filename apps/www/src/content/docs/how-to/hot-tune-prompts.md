@@ -5,6 +5,11 @@ description: "The config-first inner loop: edit a prompt, reminder, or permissio
 
 The Awaken runtime separates tools (Rust) from prompts, reminders, permissions, and skill catalogs (config). This page shows the loop you actually use to iterate on the config side, without rebuilding the binary.
 
+> This page is just the **edit → run → verify** inner loop. For the full editable
+> surface — providers, models, pools, plugin sections, context policy — see
+> [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) (the
+> canonical "tune at runtime" reference).
+
 ## Goal
 
 Change an agent's behaviour mid-flight and verify the change on the very next run.

@@ -84,6 +84,7 @@ only as read-only UI context.
 2. [Integrate AI SDK Frontend](/awaken/how-to/integrate-ai-sdk-frontend/) for React clients that speak AI SDK v6.
 3. [Integrate CopilotKit (AG-UI)](/awaken/how-to/integrate-copilotkit-ag-ui/) for CopilotKit frontends.
 4. [Use the Admin Console](/awaken/how-to/use-admin-console/) when operators should tune agents through the browser.
+5. [Deploy to Production](/awaken/how-to/deploy-to-production/) to harden the server: durable stores, TLS, secrets, and health probes.
 
 ## Reference pages to pair with this section
 

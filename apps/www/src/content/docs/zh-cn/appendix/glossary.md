@@ -1,5 +1,6 @@
 ---
 title: "术语表"
+description: "Awaken 核心术语的中英定义 —— runtime、agent、thread、run、phase、state、effects、mailbox、registry。"
 ---
 
 | 术语 | 中文 | 说明 |
@@ -45,3 +46,7 @@ title: "术语表"
 | `TokenUsage` | 令牌用量 | LLM 推理返回的 token 统计。 |
 | `ExecutionEnv` | 执行环境 | 解析后组装出来的 hook、tool、handler 集合。 |
 | `CommitHook` | 提交钩子 | 状态提交到存储时触发的 hook。 |
+| `Effect` | 副作用 | hook 发出的类型化副作用(`EffectSpec`),在状态提交后由注册的 `TypedEffectHandler` 应用。 |
+| `ScheduledAction` | 计划动作 | runtime 调度并可确定性重放的未来动作(`ScheduledActionSpec`)。 |
+| `Mailbox` | 信箱 | 支撑跨 agent 派发、挂起/恢复与后台 run 的持久队列。 |
+| `CancellationToken` | 取消令牌 | 贯穿一次 run、用于发起协作式取消的 token。 |

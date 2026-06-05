@@ -70,10 +70,45 @@
         }
       },
       {
+        "label": "Report Tool Progress",
+        "slug": "how-to/report-tool-progress",
+        "translations": {
+          "zh-CN": "上报 Tool 进度"
+        }
+      },
+      {
         "label": "Add a Plugin",
         "slug": "how-to/add-a-plugin",
         "translations": {
           "zh-CN": "添加 Plugin"
+        }
+      },
+      {
+        "label": "Use MCP Tools",
+        "slug": "how-to/use-mcp-tools",
+        "translations": {
+          "zh-CN": "使用 MCP Tools"
+        }
+      },
+      {
+        "label": "Use Deferred Tools",
+        "slug": "how-to/use-deferred-tools",
+        "translations": {
+          "zh-CN": "使用延迟加载工具"
+        }
+      },
+      {
+        "label": "Use Skills Subsystem",
+        "slug": "how-to/use-skills-subsystem",
+        "translations": {
+          "zh-CN": "使用 Skills 子系统"
+        }
+      },
+      {
+        "label": "Use Reminder Plugin",
+        "slug": "how-to/use-reminder-plugin",
+        "translations": {
+          "zh-CN": "使用 Reminder 插件"
         }
       },
       {
@@ -95,6 +130,20 @@
         "slug": "how-to/invoke-sub-agent-from-tool",
         "translations": {
           "zh-CN": "在工具里调用 Sub-Agent"
+        }
+      },
+      {
+        "label": "Recover Streaming LLMs",
+        "slug": "how-to/recover-streaming-llms",
+        "translations": {
+          "zh-CN": "流式 LLM 错误恢复"
+        }
+      },
+      {
+        "label": "Testing Strategy",
+        "slug": "how-to/testing-strategy",
+        "translations": {
+          "zh-CN": "测试策略"
         }
       }
     ]
@@ -127,20 +176,6 @@
         }
       },
       {
-        "label": "Connect an A2A Server",
-        "slug": "how-to/connect-an-a2a-server",
-        "translations": {
-          "zh-CN": "接入 A2A Server"
-        }
-      },
-      {
-        "label": "Capture a Dataset and Run an Eval",
-        "slug": "how-to/capture-a-dataset-and-run-an-eval",
-        "translations": {
-          "zh-CN": "采集数据集并运行评测"
-        }
-      },
-      {
         "label": "Configure Agent Behavior",
         "slug": "how-to/configure-agent-behavior",
         "translations": {
@@ -155,45 +190,10 @@
         }
       },
       {
-        "label": "Use MCP Tools",
-        "slug": "how-to/use-mcp-tools",
-        "translations": {
-          "zh-CN": "使用 MCP Tools"
-        }
-      },
-      {
-        "label": "Use Skills Subsystem",
-        "slug": "how-to/use-skills-subsystem",
-        "translations": {
-          "zh-CN": "使用 Skills 子系统"
-        }
-      },
-      {
-        "label": "Use Reminder Plugin",
-        "slug": "how-to/use-reminder-plugin",
-        "translations": {
-          "zh-CN": "使用 Reminder 插件"
-        }
-      },
-      {
-        "label": "Use Deferred Tools",
-        "slug": "how-to/use-deferred-tools",
-        "translations": {
-          "zh-CN": "使用延迟加载工具"
-        }
-      },
-      {
         "label": "Optimize Context Window",
         "slug": "how-to/optimize-context-window",
         "translations": {
           "zh-CN": "优化上下文窗口"
-        }
-      },
-      {
-        "label": "Enable Tool Permission HITL",
-        "slug": "how-to/enable-tool-permission-hitl",
-        "translations": {
-          "zh-CN": "启用工具权限 HITL"
         }
       },
       {
@@ -204,31 +204,31 @@
         }
       },
       {
+        "label": "Enable Tool Permission HITL",
+        "slug": "how-to/enable-tool-permission-hitl",
+        "translations": {
+          "zh-CN": "启用工具权限 HITL"
+        }
+      },
+      {
+        "label": "Connect an A2A Server",
+        "slug": "how-to/connect-an-a2a-server",
+        "translations": {
+          "zh-CN": "接入 A2A Server"
+        }
+      },
+      {
+        "label": "Capture a Dataset and Run an Eval",
+        "slug": "how-to/capture-a-dataset-and-run-an-eval",
+        "translations": {
+          "zh-CN": "采集数据集并运行评测"
+        }
+      },
+      {
         "label": "Enable Observability",
         "slug": "how-to/enable-observability",
         "translations": {
           "zh-CN": "启用可观测性"
-        }
-      },
-      {
-        "label": "Report Tool Progress",
-        "slug": "how-to/report-tool-progress",
-        "translations": {
-          "zh-CN": "上报 Tool 进度"
-        }
-      },
-      {
-        "label": "Testing Strategy",
-        "slug": "how-to/testing-strategy",
-        "translations": {
-          "zh-CN": "测试策略"
-        }
-      },
-      {
-        "label": "Recover Streaming LLMs",
-        "slug": "how-to/recover-streaming-llms",
-        "translations": {
-          "zh-CN": "流式 LLM 错误恢复"
         }
       }
     ]
@@ -254,13 +254,6 @@
         }
       },
       {
-        "label": "Deploy to Production",
-        "slug": "how-to/deploy-to-production",
-        "translations": {
-          "zh-CN": "部署到生产"
-        }
-      },
-      {
         "label": "Integrate AI SDK Frontend",
         "slug": "how-to/integrate-ai-sdk-frontend",
         "translations": {
@@ -272,6 +265,13 @@
         "slug": "how-to/integrate-copilotkit-ag-ui",
         "translations": {
           "zh-CN": "集成 CopilotKit（AG-UI）"
+        }
+      },
+      {
+        "label": "Deploy to Production",
+        "slug": "how-to/deploy-to-production",
+        "translations": {
+          "zh-CN": "部署到生产"
         }
       }
     ]
@@ -305,11 +305,17 @@
       },
       {
         "label": "Use NATS Stores",
-        "slug": "how-to/use-nats-stores"
+        "slug": "how-to/use-nats-stores",
+        "translations": {
+          "zh-CN": "使用 NATS Store"
+        }
       },
       {
         "label": "Use Shared State",
-        "slug": "how-to/use-shared-state"
+        "slug": "how-to/use-shared-state",
+        "translations": {
+          "zh-CN": "使用 Shared State"
+        }
       },
       {
         "label": "State Keys",
@@ -356,7 +362,10 @@
       },
       {
         "label": "State Management",
-        "slug": "explanation/state-management"
+        "slug": "explanation/state-management",
+        "translations": {
+          "zh-CN": "状态管理"
+        }
       },
       {
         "label": "State and Snapshot Model",
@@ -442,6 +451,20 @@
         }
       },
       {
+        "label": "Cancellation",
+        "slug": "reference/cancellation",
+        "translations": {
+          "zh-CN": "取消"
+        }
+      },
+      {
+        "label": "Tool Execution Modes",
+        "slug": "reference/tool-execution-modes",
+        "translations": {
+          "zh-CN": "工具执行模式"
+        }
+      },
+      {
         "label": "HTTP API",
         "slug": "reference/http-api"
       },
@@ -506,20 +529,6 @@
         "slug": "reference/protocols/acp",
         "translations": {
           "zh-CN": "ACP 协议"
-        }
-      },
-      {
-        "label": "Cancellation",
-        "slug": "reference/cancellation",
-        "translations": {
-          "zh-CN": "取消"
-        }
-      },
-      {
-        "label": "Tool Execution Modes",
-        "slug": "reference/tool-execution-modes",
-        "translations": {
-          "zh-CN": "工具执行模式"
         }
       }
     ]

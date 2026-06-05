@@ -17,22 +17,24 @@ same control plane for CI or internal tooling.
 1. [Use the Admin Console](/awaken/how-to/use-admin-console/) to connect a
    running server, configure provider-backed models, create agents, preview
    drafts, and publish the next registry snapshot.
-2. [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) and
+2. [Build an Agent with the Admin Assistant](/awaken/how-to/build-an-agent-with-the-assistant/)
+   to draft an agent from a natural-language description once a model is live.
+3. [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) and
    [Hot-Tune Prompts](/awaken/how-to/hot-tune-prompts/) for the full editable
    surface.
-3. [Use MCP Tools](/awaken/how-to/use-mcp-tools/), [Use Skills Subsystem](/awaken/how-to/use-skills-subsystem/),
-   [Use Reminder Plugin](/awaken/how-to/use-reminder-plugin/), and
-   [Use Deferred Tools](/awaken/how-to/use-deferred-tools/) when the agent needs
-   discoverable or delayed capabilities.
-4. [Enable Observability](/awaken/how-to/enable-observability/) and
-   [Report Tool Progress](/awaken/how-to/report-tool-progress/) to make runs,
+4. [Connect an A2A Server](/awaken/how-to/connect-an-a2a-server/) to bring remote
+   agents into the catalog, then
+   [Capture a Dataset and Run an Eval](/awaken/how-to/capture-a-dataset-and-run-an-eval/)
+   to score behavior before you ship a change.
+5. [Enable Observability](/awaken/how-to/enable-observability/) to make runs,
    tools, and providers visible.
-5. [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) and
+6. [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) and
    [Configure Stop Policies](/awaken/how-to/configure-stop-policies/) to keep
    agent behavior bounded and reviewable.
-6. [Testing Strategy](/awaken/how-to/testing-strategy/) and
-   [Recover Streaming LLMs](/awaken/how-to/recover-streaming-llms/) cover
-   regression confidence and provider failure handling.
+
+Tool, plugin, MCP, skills, and reminder *capabilities* are built in code — see
+[Develop Agents](/awaken/build-agents/). This section tunes and runs what you
+built.
 
 ## Replay and eval loop
 

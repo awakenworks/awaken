@@ -1,5 +1,6 @@
 ---
 title: "Config"
+description: "Reference for the managed configuration types: AgentSpec, provider/model/pool specs, context and compaction policies, server/mailbox/eval config, and plugin config keys."
 ---
 
 ## AgentSpec
@@ -409,17 +410,10 @@ pub enum ReasoningEffort {
 ## PluginConfigKey trait
 
 Binds a string key to a typed configuration struct at compile time.
-
-```rust
-pub trait PluginConfigKey: 'static + Send + Sync {
-    const KEY: &'static str;
-    type Config: Default + Clone + Serialize + DeserializeOwned
-        + schemars::JsonSchema + Send + Sync + 'static;
-}
-```
-
-Implementations register typed sections in `AgentSpec::sections`. Plugins read
-their configuration via `agent_spec.config::<MyConfigKey>()`.
+Implementations register typed sections in `AgentSpec::sections`; plugins read
+their configuration via `agent_spec.config::<MyConfigKey>()`. The trait
+definition, schema declaration, and a worked example live in
+[Custom plugin configuration](#custom-plugin-configuration).
 
 ## RemoteEndpoint
 
@@ -864,7 +858,7 @@ Its agent config section key is `deferred_tools`, bound by
 | `disc_beta.thresh_mult` | `number` | `0.5` | Multiplier applied to the breakeven frequency threshold |
 | `disc_beta.gamma` | `number` | `2000.0` | Estimated token cost of one `ToolSearch` call |
 
-See [Use Deferred Tools](../how-to/use-deferred-tools.md) for the activation
+See [Use Deferred Tools](/awaken/how-to/use-deferred-tools/) for the activation
 heuristic, `ToolSearch` behavior, and the full DiscBeta probability model.
 
 ## ConfigStore
@@ -901,7 +895,7 @@ Built-in implementations:
 
 ## Related
 
-- [Build an Agent](../how-to/build-an-agent.md)
-- [Configure Agent Behavior](../how-to/configure-agent-behavior.md)
-- [HTTP API](./http-api.md)
-- [Provider and Model Configuration](./provider-model-config.md)
+- [Build an Agent](/awaken/how-to/build-an-agent/)
+- [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/)
+- [HTTP API](/awaken/reference/http-api/)
+- [Provider and Model Configuration](/awaken/reference/provider-model-config/)

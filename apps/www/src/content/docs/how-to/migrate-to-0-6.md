@@ -3,6 +3,9 @@ title: "Migrate From 0.5 to 0.6"
 description: "0.6.0 splits the contract surface and narrows the runtime commit boundary. This guide maps the public API, wire, and storage changes from 0.5.0."
 ---
 
+> **New to Awaken? Skip this page.** It only matters when upgrading an existing
+> 0.5 codebase. Start at [Get Started](/awaken/get-started/) instead.
+
 0.6.0 is a breaking release for users who implement storage, commit
 coordinators, or import low-level contract types directly. The high-level
 runtime builder and common tool APIs are still available through `awaken` and

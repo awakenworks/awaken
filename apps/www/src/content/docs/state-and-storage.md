@@ -38,8 +38,9 @@ producing-run filters.
 ## Recommended order
 
 1. [Use File Store](/awaken/how-to/use-file-store/) or [Use Postgres Store](/awaken/how-to/use-postgres-store/) to choose a persistence backend.
-2. [State Keys](/awaken/reference/state-keys/) and [Thread Model](/awaken/reference/thread-model/) to understand state layout and lifecycle.
-3. [Optimize Context Window](/awaken/how-to/optimize-context-window/) when context size starts to matter.
+2. [Use NATS Stores](/awaken/how-to/use-nats-stores/) for a distributed mailbox and buffered thread writes across replicas.
+3. [State Keys](/awaken/reference/state-keys/) and [Thread Model](/awaken/reference/thread-model/) to understand state layout and lifecycle.
+4. [Use Shared State](/awaken/how-to/use-shared-state/) to share persistent state across threads and agent types.
 
 Current built-in stores cover memory, file, PostgreSQL, SQLite mailbox, and
 NATS JetStream. Use the smallest backend that covers the durability boundary

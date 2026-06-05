@@ -123,42 +123,10 @@ impl Tool for GreetTool {
 
 ```rust
 use std::sync::Arc;
-use async_trait::async_trait;
-use serde_json::{json, Value};
-use awaken::{KeyScope, MergeStrategy, StateKey};
-use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::engine::GenaiExecutor;
-use awaken::registry_spec::ModelSpec;
-use awaken::registry_spec::AgentSpec;
+use awaken::registry_spec::{AgentSpec, ModelSpec};
 use awaken::AgentRuntimeBuilder;
-
-struct GreetCount;
-
-impl StateKey for GreetCount {
-    const KEY: &'static str = "greet_count";
-    const MERGE: MergeStrategy = MergeStrategy::Commutative;
-    const SCOPE: KeyScope = KeyScope::Run;
-
-    type Value = u32;
-    type Update = u32;
-
-    fn apply(value: &mut Self::Value, update: Self::Update) {
-        *value += update;
-    }
-}
-
-struct GreetTool;
-
-#[async_trait]
-impl Tool for GreetTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("greet", "Greet", "Greet a user by name")
-    }
-
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolResult::success("greet", json!({})).into())
-    }
-}
+// `GreetCount` 和 `GreetTool` 是步骤 1–2 里的完整定义。
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let agent_spec = AgentSpec::new("assistant")
@@ -182,45 +150,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use std::sync::Arc;
-use async_trait::async_trait;
-use serde_json::{json, Value};
-use awaken::{KeyScope, MergeStrategy, StateKey};
 use awaken::contract::message::Message;
 use awaken::contract::event_sink::VecEventSink;
-use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::engine::GenaiExecutor;
-use awaken::registry_spec::ModelSpec;
-use awaken::registry_spec::AgentSpec;
-use awaken::AgentRuntimeBuilder;
-use awaken::RunActivation;
-
-struct GreetCount;
-
-impl StateKey for GreetCount {
-    const KEY: &'static str = "greet_count";
-    const MERGE: MergeStrategy = MergeStrategy::Commutative;
-    const SCOPE: KeyScope = KeyScope::Run;
-
-    type Value = u32;
-    type Update = u32;
-
-    fn apply(value: &mut Self::Value, update: Self::Update) {
-        *value += update;
-    }
-}
-
-struct GreetTool;
-
-#[async_trait]
-impl Tool for GreetTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("greet", "Greet", "Greet a user by name")
-    }
-
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolResult::success("greet", json!({})).into())
-    }
-}
+use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::{AgentRuntimeBuilder, RunActivation};
+// `GreetCount` 和 `GreetTool` 是步骤 1–2 里的完整定义。
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

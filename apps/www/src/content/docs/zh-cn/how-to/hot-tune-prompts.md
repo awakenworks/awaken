@@ -5,6 +5,10 @@ description: "配置先行的内循环:通过配置 API 改 prompt / reminder / 
 
 Awaken runtime 把工具(Rust)与 prompt、reminder、permission、skill 目录(配置)严格分开。本文展示你实际用来迭代配置侧的循环 —— 不重新构建二进制。
 
+> 本页只讲**改 → 跑 → 验证**这个内循环。完整可编辑面(provider、model、pool、plugin
+> section、context policy)见 [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/)
+> —— 它是 canonical 的"运行时调优"参考。
+
 ## 目标
 
 中途改 agent 行为,在下一个 run 立刻验证生效。

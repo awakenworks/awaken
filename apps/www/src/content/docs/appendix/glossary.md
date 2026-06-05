@@ -1,5 +1,6 @@
 ---
 title: "Glossary"
+description: "Definitions of the core Awaken terms — runtime, agent, thread, run, phase, state, effects, mailbox, registry — in English and Chinese."
 ---
 
 | Term | 中文 | Description |
@@ -26,7 +27,7 @@ title: "Glossary"
 | `TerminationReason` | 终止原因 | Why a run ended (NaturalEnd, Stopped, Error, etc.). |
 | `SuspendTicket` | 挂起票据 | Suspension payload with pending call and resume mode. |
 | `RunDispatch` | 邮箱任务 | Durable dispatch entry for async/HITL workflows. |
-| `RunActivation` | Run activation | Input to start a run: messages, thread ID, agent ID. |
+| `RunActivation` | 运行激活 | Input to start a run: messages, thread ID, agent ID. |
 | `MergeStrategy` | 合并策略 | How parallel state mutations are reconciled: Exclusive (conflict = error) or Commutative (order-independent). |
 | `KeyScope` | 键作用域 | Lifetime of a state key: Run (per-execution) or Thread (persisted across runs). |
 | `StateMap` | 状态映射 | Type-safe heterogeneous map backing Snapshot. |
@@ -45,3 +46,7 @@ title: "Glossary"
 | `TokenUsage` | 令牌用量 | Token consumption report from LLM inference. |
 | `ExecutionEnv` | 执行环境 | Assembled runtime environment holding hooks, handlers, tools, and plugins. |
 | `CommitHook` | 提交钩子 | Hook invoked when state is committed to storage. |
+| `Effect` | 副作用 | Typed side-effect (`EffectSpec`) emitted by a hook and applied by a registered `TypedEffectHandler` after state commit. |
+| `ScheduledAction` | 计划动作 | A future action (`ScheduledActionSpec`) the runtime schedules and replays deterministically. |
+| `Mailbox` | 信箱 | Durable queue backing inter-agent dispatch, suspend/resume, and background runs. |
+| `CancellationToken` | 取消令牌 | Cooperative token threaded through a run to request cooperative cancellation. |

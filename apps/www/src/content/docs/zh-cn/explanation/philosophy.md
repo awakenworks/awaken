@@ -38,10 +38,10 @@ Awaken 围绕三条准则构建。每一条都是硬边界,不是建议。三条
 
 Runtime 提供一等模块来承载:
 
-- 每个 phase、每次工具调用、每次 LLM 调用的 OpenTelemetry GenAI traces。
+- 每个 phase、每次工具调用、每次 LLM 调用的 OpenTelemetry GenAI traces([启用可观测性](/awaken/zh-cn/how-to/enable-observability/))。
 - 管理控制台可查询的持久化 trace store（需要接入 trace store 并开启 trace routes）。
-- 自带 fixture 回放、打分、baseline 对比的 Eval 框架。
-- Permission gate + mailbox 实现的 HITL 挂起 / 恢复。
+- 自带 fixture 回放、打分、baseline 对比的 Eval 框架([采集数据集并运行评测](/awaken/zh-cn/how-to/capture-a-dataset-and-run-an-eval/))。
+- Permission gate + mailbox 实现的 HITL 挂起 / 恢复([HITL 与 Mailbox](/awaken/zh-cn/explanation/hitl-and-mailbox/))。
 
 它们接入 runtime 与 server 的模块表面，而不是独立 sidecar。Day-one 项目使用和更大部署相同的执行、配置、权限与重放表面；需要存储后端的能力由部署显式开启。
 

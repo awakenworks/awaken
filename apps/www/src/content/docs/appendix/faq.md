@@ -1,5 +1,6 @@
 ---
 title: "FAQ"
+description: "Common questions about Awaken: when to use the runtime vs the server, choosing a protocol, providers and models, state, and operations."
 ---
 
 ## Which LLM providers are supported?

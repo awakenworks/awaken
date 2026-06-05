@@ -1,5 +1,6 @@
 ---
 title: "配置"
+description: "受管配置类型参考:AgentSpec、provider/model/pool spec、上下文与 compaction 策略、server/mailbox/eval 配置,以及 plugin config key。"
 ---
 
 ## AgentSpec
@@ -362,15 +363,9 @@ pub enum ReasoningEffort {
 
 ## PluginConfigKey trait
 
-把配置 section 名称和 Rust 配置结构绑定在一起：
-
-```rust
-pub trait PluginConfigKey: 'static + Send + Sync {
-    const KEY: &'static str;
-    type Config: Default + Clone + Serialize + DeserializeOwned
-        + schemars::JsonSchema + Send + Sync + 'static;
-}
-```
+在编译期把一个字符串 key 绑定到类型化配置结构;实现会把类型化 section 注册进
+`AgentSpec::sections`,插件通过 `agent_spec.config::<MyConfigKey>()` 读取。trait 定义、
+schema 声明与完整示例见 [自定义插件配置](#自定义插件配置)。
 
 ## RemoteEndpoint
 
@@ -762,7 +757,7 @@ section key 是 `deferred_tools`，由 `DeferredToolsConfigKey` 绑定。该 cra
 | `disc_beta.gamma` | `number` | `2000.0` | 一次 `ToolSearch` 调用的估算 token 成本 |
 
 自动启用启发式、`ToolSearch` 行为以及完整 DiscBeta 概率模型见
-[使用延迟加载工具](../how-to/use-deferred-tools.md)。
+[使用延迟加载工具](/awaken/zh-cn/how-to/use-deferred-tools/)。
 
 ## ConfigStore
 
@@ -798,7 +793,7 @@ pub trait ConfigStore: Send + Sync {
 
 ## 相关
 
-- [构建 Agent](../how-to/build-an-agent.md)
-- [通过配置调优 Agent 行为](../how-to/configure-agent-behavior.md)
-- [HTTP API](./http-api.md)
-- [Provider 与 Model 配置](./provider-model-config.md)
+- [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)
+- [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/)
+- [HTTP API](/awaken/zh-cn/reference/http-api/)
+- [Provider 与 Model 配置](/awaken/zh-cn/reference/provider-model-config/)

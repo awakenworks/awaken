@@ -16,7 +16,7 @@ Awaken exposes this through one helper function plus the normal `Tool::execute` 
 ```toml
 [dependencies]
 awaken = { git = "https://github.com/AwakenWorks/awaken" }
-awaken-runtime = "0.5"
+awaken-runtime = { git = "https://github.com/AwakenWorks/awaken" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

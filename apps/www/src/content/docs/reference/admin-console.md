@@ -1,44 +1,17 @@
 ---
 title: "Admin Console Surface"
-description: "Technical inventory of the Awaken Admin Console screens, widgets, and server APIs."
+description: "Technical inventory of the Awaken Admin Console screens, widgets, and the server APIs each one calls."
 ---
 
 This page is the technical inventory for the Admin Console surface. Start with
 [Use the Admin Console](/awaken/how-to/use-admin-console/) for the operator
-workflow; use this page when you need screen coverage, endpoint mapping, and
-lower-level behavior details.
+workflow; use this page when you need screen coverage and endpoint mapping.
 
 The Admin Console is the browser control plane for a running `awaken-server`:
 configure providers and models, edit prompts and tool descriptions, assign MCP
 tools, tune reminders and deferred-tool policy, preview a draft, then publish
-the next registry snapshot.
-
-## Start It
-
-For a local server with deterministic scripted replies:
-
-```sh
-AWAKEN_HTTP_ADDR=127.0.0.1:38080 \
-AWAKEN_ADMIN_API_BEARER_TOKEN=dev-token \
-AWAKEN_STORAGE_DIR=./target/admin-sessions \
-cargo run -p ai-sdk-starter-agent
-```
-
-In another terminal:
-
-```sh
-pnpm install
-pnpm --filter awaken-admin-console dev
-```
-
-Open `http://127.0.0.1:3002`, click the token pill in the top bar, and paste
-`dev-token`. The backend URL defaults to `http://127.0.0.1:38080`; set
-`VITE_BACKEND_URL` when the server runs elsewhere.
-
-No model key is required for the scripted path. To use a real OpenAI-compatible
-provider from boot, set `OPENAI_API_KEY` and optionally `OPENAI_BASE_URL`,
-`OPENAI_ADAPTER`, and `AGENT_MODEL` before starting the server. Use
-`AWAKEN_SEED_PROFILE=demo` only when you want sample agents and demo tools.
+the next registry snapshot. Starting the server + console is covered in
+[Use the Admin Console](/awaken/how-to/use-admin-console/#prerequisites).
 
 ## Screenshots
 
@@ -67,87 +40,38 @@ surface shows a disabled or unavailable notice.
   </figure>
 </div>
 
-## First Setup
+## Screens and endpoints
 
-1. **Connect the backend.** Paste the admin bearer token when the top bar asks
-   for it. The status pill turns green when `/v1/capabilities` is reachable.
-2. **Configure a provider.** Providers hold endpoint, adapter, credentials,
-   timeout, and provider-specific options. Use **Test** before relying on it.
-3. **Configure a model.** Models give agents a stable `model_id` and describe
-   the upstream model, modalities, context limits, pricing, and capabilities.
-   Use model pools through the config API when you need weighted routing,
-   sticky selection, or fallback across multiple models.
-4. **Unlock Admin Assistant.** The built-in Admin Assistant becomes available
-   after the first provider-backed model is configured. Its tools are locked by
-   the server and do not appear in the normal tool registry. It can read
-   platform capabilities, create/publish an AgentSpec, draft without publishing,
-   and validate a draft.
-5. **MCP-only setups are full configuration mode.** You can configure MCP
-   servers and assign their tools to agents, but chat and preview surfaces still
-   need a model executor.
+Each screen is a thin client over admin REST routes (all behind the admin bearer
+token). For request/response shapes see the
+[HTTP API](/awaken/reference/http-api/).
+
+| Screen | Reads / writes |
+|---|---|
+| Dashboard | `GET /v1/capabilities`, `/v1/system/info`, `/v1/audit-log`, `/v1/runs/summary`, runtime stats |
+| Agents (list + editor) | `GET/POST/PUT /v1/config/agents`, validate `POST /v1/config/agents/validate`, draft preview `POST /v1/ai-sdk/agent-previews/runs`, restore `POST /v1/config/agents/:id/restore`, stats `GET /v1/agents/:id/runtime-stats` |
+| Providers | `GET/POST/PUT/DELETE /v1/config/providers`, test `POST /v1/providers/:id/test` |
+| Models | `GET/POST/PUT/DELETE /v1/config/models` |
+| MCP Servers | `…/config/mcp-servers`, restart `POST /v1/mcp-servers/:id/restart`, inventory `GET /v1/mcp-servers/:id/inventory` |
+| A2A Servers | `…/config/a2a-servers`, status `GET /v1/a2a-servers/:id/status` |
+| Skills / Tools | `GET /v1/config/skills` (read-only), tool catalog from `/v1/capabilities` |
+| Admin Assistant | run `POST /v1/admin/assistant/runs`, policy `GET/PUT /v1/admin/assistant/config` |
+| Audit Log | `GET /v1/audit-log` |
+| Datasets / Eval Runs | `…/eval/datasets` (+ `/:id/items`), `…/eval/runs` (+ `/:id`) |
+| Eval Reports | offline NDJSON upload (no backend call) |
+
+The provider→model→agent setup workflow, the editor tabs, and wiring a saved
+agent to a frontend are covered in the how-tos:
+[Use the Admin Console](/awaken/how-to/use-admin-console/),
+[Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/), and
+[AI SDK frontend integration](/awaken/how-to/integrate-ai-sdk-frontend/).
 
 Provider credentials and MCP credentials are intentionally separate. Providers
-feed model execution. MCP server credentials belong to that MCP transport
+feed model execution; MCP server credentials belong to that MCP transport
 (`env` for stdio, URL/config for HTTP), and agent access is controlled through
-tool selection plus optional permission rules.
-
-## Create And Tune An Agent
-
-Open **Agents**, then **New Agent**.
-
-1. In **Basics**, set the agent id, model, max rounds, reasoning effort, and
-   system prompt.
-2. In **Tools**, choose all tools or a custom set. Built-in, plugin, and MCP
-   tools appear together, and tool description overrides are visible where a
-   tool supports them.
-3. In **Skills**, choose which skills the agent can see. Skills inject catalog
-   guidance and activate through the `skill` tool; there is no separate
-   `SkillSearch` tool today.
-4. In **Delegates**, choose explicit sub-agents. Delegates become delegate
-   tools during resolution; there is no separate `AgentSearch` tool today.
-5. In **Plugins**, enable policies such as permission, reminder, generative UI,
-   and deferred tools. A stored plugin section is inactive until the plugin is
-   enabled.
-6. Use **Validate** to check the draft without saving.
-7. Use the right-side preview chat to test the unsaved draft.
-8. **Save** publishes the validated config so new runs use the next registry
-   snapshot.
-
-The tuning surface is meant to be broad but still safe: prompts, tool
-descriptions, system reminders, ToolSearch/deferred-tool policy, skill metadata,
-delegates, plugin sections, model selection, and provider config are editable
-online. New executable tools, provider factories, stores, and plugins remain
-Rust code.
-
-## Connect The Saved Agent To A Frontend
-
-After an agent is saved, the editor shows a **Frontend integration** card in the
-right column. It points to the agent-scoped protocol routes:
-
-```text
-POST /v1/ai-sdk/agents/<agent_id>/runs
-POST /v1/ag-ui/agents/<agent_id>/runs
-```
-
-AI SDK v6 example:
-
-```ts
-import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
-
-const { messages, sendMessage } = useChat({
-  transport: new DefaultChatTransport({
-    api: "http://127.0.0.1:38080/v1/ai-sdk/agents/support-agent/runs",
-  }),
-});
-```
-
-Use the generic `/v1/ai-sdk/chat` route when the client should choose an agent
-per request with `agent_id`. Use the agent-scoped route when a UI is bound to
-one saved agent. See [AI SDK frontend integration](/awaken/how-to/integrate-ai-sdk-frontend/),
-[AI SDK v6 reference](/awaken/reference/protocols/ai-sdk-v6/), and
-[CopilotKit / AG-UI integration](/awaken/how-to/integrate-copilotkit-ag-ui/).
-For route-level details, use the [HTTP API reference](/awaken/reference/http-api/).
+tool selection plus optional permission rules. The Admin Assistant unlocks only
+after the first provider-backed model is configured; its tools are server-locked
+and do not appear in the normal tool registry.
 
 ## Operate, Trace, And Evaluate
 
@@ -155,7 +79,7 @@ For route-level details, use the [HTTP API reference](/awaken/reference/http-api
   optional runtime stats, and read-only `scope_id`.
 - **Recent runs** on a saved agent opens persisted traces when trace routes are
   enabled.
-- **Datasets** can capture trace fixtures for evaluation.
+- **Datasets** capture trace fixtures for evaluation.
 - **Eval Runs** execute datasets against configured agents and models.
 - **Eval Reports** view NDJSON reports and baseline diffs in the browser.
 
@@ -197,7 +121,6 @@ auth/provider layer and display the resolved value in the console.
 
 ## Related
 
-- [Get Started](/awaken/get-started/) - start a local server and console
+- [Use the Admin Console](/awaken/how-to/use-admin-console/) - operator walkthrough
 - [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) - full tuning surface
-- [Use the Admin Console](/awaken/how-to/use-admin-console/) - longer operator walkthrough
 - [HTTP API](/awaken/reference/http-api/) - request and response reference

@@ -7,6 +7,19 @@ The `awaken` crate is the public facade for the Awaken agent framework. It
 re-exports runtime contracts, server contracts, runtime APIs, stores, and
 extensions so downstream code can start with one dependency.
 
+## Reference map
+
+| Area | Pages |
+|---|---|
+| **Core API** | [Tool Trait](/awaken/reference/tool-trait/) · [Events](/awaken/reference/events/) · [Errors](/awaken/reference/errors/) · [Config](/awaken/reference/config/) · [Provider & Model Config](/awaken/reference/provider-model-config/) |
+| **Behavior** | [Scheduled Actions](/awaken/reference/scheduled-actions/) · [Effects](/awaken/reference/effects/) · [Cancellation](/awaken/reference/cancellation/) · [Tool Execution Modes](/awaken/reference/tool-execution-modes/) |
+| **State** | [State Keys](/awaken/reference/state-keys/) · [Thread Model](/awaken/reference/thread-model/) |
+| **Surfaces** | [HTTP API](/awaken/reference/http-api/) · [Admin Console Surface](/awaken/reference/admin-console/) |
+| **Protocols** | [AI SDK v6](/awaken/reference/protocols/ai-sdk-v6/) · [AG-UI](/awaken/reference/protocols/ag-ui/) · [A2A](/awaken/reference/protocols/a2a/) · [MCP HTTP](/awaken/reference/protocols/mcp/) · [ACP](/awaken/reference/protocols/acp/) |
+
+The rest of this page is the crate **facade map** — which `awaken::*` path
+re-exports which underlying crate.
+
 ## Module re-exports
 
 | Facade path | Source crate | Contents |

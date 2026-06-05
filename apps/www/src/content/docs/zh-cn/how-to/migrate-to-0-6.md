@@ -3,6 +3,9 @@ title: "从 0.5 迁移到 0.6"
 description: "0.6.0 拆分 contract surface，并收窄 runtime commit 边界。本文说明从 0.5.0 升级时的公开 API、wire 行为与存储行为变化。"
 ---
 
+> **新用户可跳过本页。** 它只在升级已有 0.5 代码库时才相关。新手请从
+> [快速上手](/awaken/zh-cn/get-started/) 开始。
+
 0.6.0 对实现 storage、commit coordinator，或直接导入底层 contract 类型的用户是 breaking release。高层 runtime builder 和常用 tool API 仍然可以通过 `awaken` 与 `awaken::prelude::*` 使用，但若干 0.5 contract 路径和 public field 已变化。
 
 ## Contract Crate 拆分

@@ -188,7 +188,7 @@ flowchart LR
 
 ## 另见
 
-- [架构](./architecture.md) -- 系统分层与请求序列
-- [Run 生命周期与阶段](./run-lifecycle-and-phases.md) -- 解析之后发生什么
-- [工具与插件边界](./tool-and-plugin-boundary.md) -- 何时使用工具 vs 插件
-- [设计权衡](./design-tradeoffs.md) -- 关键决策的理由
+- [架构](/awaken/zh-cn/explanation/architecture/) -- 系统分层与请求序列
+- [Run 生命周期与阶段](/awaken/zh-cn/explanation/run-lifecycle-and-phases/) -- 解析之后发生什么
+- [工具与插件边界](/awaken/zh-cn/explanation/tool-and-plugin-boundary/) -- 何时使用工具 vs 插件
+- [设计权衡](/awaken/zh-cn/explanation/design-tradeoffs/) -- 关键决策的理由

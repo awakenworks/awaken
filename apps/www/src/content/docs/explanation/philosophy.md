@@ -38,10 +38,10 @@ There is no "ops UI" sub-project, no shadow YAML in production, no out-of-band c
 
 The runtime provides first-class modules for:
 
-- OpenTelemetry GenAI traces per phase, per tool, per LLM call.
+- OpenTelemetry GenAI traces per phase, per tool, per LLM call ([Enable Observability](/awaken/how-to/enable-observability/)).
 - A persistent trace store the admin console queries when a trace store and trace routes are enabled.
-- An eval framework with fixture replay, scoring, baseline diffing.
-- HITL via the permission gate + mailbox suspend/resume.
+- An eval framework with fixture replay, scoring, baseline diffing ([Capture a Dataset and Run an Eval](/awaken/how-to/capture-a-dataset-and-run-an-eval/)).
+- HITL via the permission gate + mailbox suspend/resume ([HITL and Mailbox](/awaken/explanation/hitl-and-mailbox/)).
 
 They plug into the runtime and server module surface instead of living as separate sidecars. Day-one projects use the same execution, config, permission, and replay surfaces as larger deployments; storage-backed features are enabled explicitly where the deployment owns the backend.
 

@@ -13,18 +13,17 @@ delegate、reminder、deferred-tool 策略、权限规则、trace、dataset 和 
 
 1. 先用 [管理控制台](/awaken/zh-cn/how-to/use-admin-console/) 连接运行中的 server，
    配置 provider-backed model，创建 Agent，预览草稿，并发布下一版 registry snapshot。
-2. 用 [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/) 和
+2. 配好模型后,用 [用 Admin Assistant 构建 Agent](/awaken/zh-cn/how-to/build-an-agent-with-the-assistant/) 以自然语言描述起草 Agent。
+3. 用 [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/) 和
    [在线调优 Prompt](/awaken/zh-cn/how-to/hot-tune-prompts/) 理解完整可编辑表面。
-3. 当 Agent 需要可发现或延迟加载能力时，接入 [MCP Tools](/awaken/zh-cn/how-to/use-mcp-tools/)、
-   [Skills 子系统](/awaken/zh-cn/how-to/use-skills-subsystem/)、
-   [Reminder 插件](/awaken/zh-cn/how-to/use-reminder-plugin/) 和
-   [延迟加载工具](/awaken/zh-cn/how-to/use-deferred-tools/)。
-4. 通过 [可观测性](/awaken/zh-cn/how-to/enable-observability/) 和
-   [上报 Tool 进度](/awaken/zh-cn/how-to/report-tool-progress/) 把 run、tool 和 provider 变得可见。
-5. 用 [工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/) 和
+4. 用 [接入 A2A Server](/awaken/zh-cn/how-to/connect-an-a2a-server/) 把远程 agent 纳入目录,再用
+   [采集数据集并运行评测](/awaken/zh-cn/how-to/capture-a-dataset-and-run-an-eval/) 在上线前给行为打分。
+5. 通过 [可观测性](/awaken/zh-cn/how-to/enable-observability/) 把 run、tool 和 provider 变得可见。
+6. 用 [工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/) 和
    [停止策略](/awaken/zh-cn/how-to/configure-stop-policies/) 约束行为并引入人工审核。
-6. [测试策略](/awaken/zh-cn/how-to/testing-strategy/) 和
-   [流式 LLM 错误恢复](/awaken/zh-cn/how-to/recover-streaming-llms/) 覆盖回归信心与 provider 故障处理。
+
+工具、插件、MCP、skills、reminder 等**能力**是在代码里构建的 —— 见
+[开发 Agent](/awaken/zh-cn/build-agents/)。本节负责调优和运行你构建出来的东西。
 
 ## 重放与 Eval 循环
 

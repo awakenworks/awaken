@@ -6,6 +6,18 @@ description: "awaken crate 是 Awaken 的公开门面。它重新导出 runtime 
 `awaken` crate 是 Awaken 的公开门面。它重新导出 runtime contract、server
 contract、runtime API、stores 和扩展 crate，让下游可以从一个依赖开始。
 
+## 参考地图
+
+| 领域 | 页面 |
+|---|---|
+| **核心 API** | [Tool Trait](/awaken/zh-cn/reference/tool-trait/) · [事件](/awaken/zh-cn/reference/events/) · [错误](/awaken/zh-cn/reference/errors/) · [配置](/awaken/zh-cn/reference/config/) · [Provider 与 Model 配置](/awaken/zh-cn/reference/provider-model-config/) |
+| **行为** | [Scheduled Actions](/awaken/zh-cn/reference/scheduled-actions/) · [Effects](/awaken/zh-cn/reference/effects/) · [取消](/awaken/zh-cn/reference/cancellation/) · [工具执行模式](/awaken/zh-cn/reference/tool-execution-modes/) |
+| **状态** | [状态键](/awaken/zh-cn/reference/state-keys/) · [线程模型](/awaken/zh-cn/reference/thread-model/) |
+| **表面** | [HTTP API](/awaken/zh-cn/reference/http-api/) · [管理控制台界面清单](/awaken/zh-cn/reference/admin-console/) |
+| **协议** | [AI SDK v6](/awaken/zh-cn/reference/protocols/ai-sdk-v6/) · [AG-UI](/awaken/zh-cn/reference/protocols/ag-ui/) · [A2A](/awaken/zh-cn/reference/protocols/a2a/) · [MCP HTTP](/awaken/zh-cn/reference/protocols/mcp/) · [ACP](/awaken/zh-cn/reference/protocols/acp/) |
+
+本页其余部分是 crate **门面地图** —— 哪个 `awaken::*` 路径重导出哪个底层 crate。
+
 ## 模块再导出
 
 | 门面路径 | 来源 crate | 内容 |

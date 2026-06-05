@@ -1,5 +1,6 @@
 ---
 title: "常见问题"
+description: "关于 Awaken 的常见问题:何时用 runtime 还是 server、如何选协议、provider 与 model、state,以及运维。"
 ---
 
 ## 支持哪些 LLM provider？

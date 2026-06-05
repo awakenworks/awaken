@@ -11,40 +11,7 @@ description: "Awaken — 用 Rust 写一次 Agent 能力，把行为调优交给
 本站依赖示例跟随当前 main 分支 API。在下一个 crates.io 版本发布前，请使用示例中的
 git dependency；从已发布 `0.5` 版本线升级时，请同时阅读迁移指南。
 
-## 两种编程模式
-
-Awaken 既可以作为进程内 library，也可以作为服务运行。两种模式使用同一个
-`AgentRuntime`、`RunActivation`、`AgentSpec`、工具、插件和事件流；差别在于
-谁负责 IO 边界和配置控制面。
-
-| 模式 | 运行方式 | 适合场景 |
-|---|---|---|
-| 进程内 runtime | 你的 Rust 进程用 `AgentRuntimeBuilder` 构造 `AgentRuntime`，在代码里注册 tools / providers / plugins，然后直接调用 `runtime.run_to_completion(...)` 或 `runtime.run(..., EventSink)`。 | CLI、后台 worker、测试，或本身已经管理 IO 边界的应用服务。 |
-| Server 控制面 | `awaken-server` 持有 `Arc<AgentRuntime>`，通过 mailbox 持久化分发 run，并暴露 HTTP/SSE 以及 AI SDK、AG-UI、A2A、MCP、ACP 适配器。普通 `/v1/config/*` 写入会校验配置、编译候选 registry，并把发布后的 snapshot 热替换给后续 run。 | 共享 agent 后端、浏览器前端、在线管理 providers / models / agents、审计、HITL、Eval 和运维控制。 |
-
-进程内 runtime 模式仍然是标准 Rust async library 使用方式，不是 `no_std` 或无
-Tokio 的嵌入式设备目标。`awaken-runtime` 当前依赖 Tokio 来处理 timer、timeout、
-异步协调和 HTTP/provider 执行。
-
-当前 IO/runtime 边界：
-
-| 组件 | Tokio / IO 画像 |
-|---|---|
-| `awaken-runtime` | 需要 Tokio。phase loop 是进程内执行，但 crate 内包含 `genai` / `reqwest` provider 路径，以及基于 Tokio 的 timeout、retry、后台任务机制。 |
-| `awaken-runtime-contract` / `awaken-server-contract` | 主要是 contract/type surface，适合作 API 边界；但目标仍然是 `std` Rust crate，不是 `no_std` 嵌入式目标。 |
-| Permission、Reminder、Deferred Tools、Generative UI | 主要是进程内 policy/state/event 逻辑，但依赖 runtime contract/runtime 栈，因此继承 Tokio/std 假设。 |
-| MCP 与 Skills | 具备 IO 能力：MCP 使用 network/stdio/process transport；Skills 可以从磁盘读取 skill package、启动配置命令，并可选注册 MCP tools。 |
-| Observability | 内存记录是本地逻辑；OTLP/file/metrics exporter 会引入外部 IO。 |
-| Stores 与 Server | 明确的 IO 层：memory/file/PostgreSQL/SQLite/NATS stores、HTTP routes、SSE、mailbox workers 和 protocol replay。 |
-
-两种模式里，Rust 代码负责可执行能力：`Tool` 实现、插件、provider factory、store、backend factory。托管配置负责 agent 行为：提示词、工具描述覆盖、system reminders、`model_id`、model pool、允许/排除工具、插件 sections、MCP servers、skills、delegates 与权限规则。管理控制台只是 server 模式上的浏览器界面，不替代 runtime 本身。
-
-Server 模式补上直接调用 runtime 时需要应用自己做的部分：HTTP/SSE、协议适配、
-mailbox 派发、可恢复的后台 run、托管配置发布、版本恢复、审计、scoped stores
-和管理控制台调优。Runtime 模式是开发者 library；Server 模式是围绕这套 library
-构建出来的运行产品面。
-
-三条设计准则决定其它一切:
+三条设计准则决定其它一切。
 
 ## 1 — 工具落在代码,提示词落在配置
 
@@ -82,6 +49,24 @@ run 会携带 `resolution_id`，用于 resume/replay 时重新选择同一个 gr
 - **一套后端，多种协议适配器。** 单 runtime 同时承接 AI SDK v6、AG-UI(CopilotKit)、A2A、MCP HTTP 与 ACP stdio。客户端协议选择不渗透到 agent 代码。
 - **权限裁决是 runtime primitive。** `Gate` phase 在工具决策与工具执行之间运行;`Allow` / `Deny` / `Ask` 规则匹配工具名 + 参数;`Ask` 通过 mailbox 挂起,回应后恢复。
 - **生成式 UI 是流式 primitive。** Agent 在同一条事件流上 emit A2UI / JSON Render / OpenUI Lang。前端无需为每个工具写胶水。
+
+## 两种编程模式
+
+Awaken 既可以作为进程内 library，也可以作为服务运行。两种模式使用同一个
+`AgentRuntime`、`RunActivation`、`AgentSpec`、工具、插件和事件流；差别在于
+谁负责 IO 边界和配置控制面。
+
+| 模式 | 运行方式 | 适合场景 |
+|---|---|---|
+| 进程内 runtime | 你的 Rust 进程用 `AgentRuntimeBuilder` 构造 `AgentRuntime`，在代码里注册 tools / providers / plugins，然后直接调用 `runtime.run_to_completion(...)` 或 `runtime.run(..., EventSink)`。 | CLI、后台 worker、测试，或本身已经管理 IO 边界的应用服务。 |
+| Server 控制面 | `awaken-server` 持有 `Arc<AgentRuntime>`，通过 mailbox 持久化分发 run，并暴露 HTTP/SSE 以及 AI SDK、AG-UI、A2A、MCP、ACP 适配器。普通 `/v1/config/*` 写入会校验配置、编译候选 registry，并把发布后的 snapshot 热替换给后续 run。 | 共享 agent 后端、浏览器前端、在线管理 providers / models / agents、审计、HITL、Eval 和运维控制。 |
+
+两种模式里，Rust 代码负责可执行能力(`Tool` 实现、插件、provider factory、store、backend factory);托管配置负责 agent 行为(提示词、工具描述覆盖、reminders、`model_id`、model pool、允许/排除工具、插件 sections、MCP servers、skills、delegates、权限规则)。管理控制台只是 server 模式上的浏览器界面,不替代 runtime。Server 模式补上直接调用 runtime 时需要应用自己做的部分:HTTP/SSE、协议适配、mailbox 派发、可恢复后台 run、托管配置发布、版本恢复、审计、scoped stores。
+
+进程内模式仍然是标准 Tokio/`std` async library,**不是** `no_std` 或无 Tokio 的嵌入式
+目标:`awaken-runtime` 依赖 Tokio 处理 timer、timeout 与 provider 执行。`*-contract`
+crate 只是 `std` 类型面;MCP、Skills、Stores、Observability exporter 与 Server 才是
+明确的 IO 层。
 
 ## Crate 概览
 
