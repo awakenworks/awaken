@@ -8,6 +8,11 @@ Build agent capability in Rust. Tune prompts, models, permissions, skills, and e
 
 Docs: [Awaken docs](https://awakenworks.github.io/awaken) · [中文文档](https://awakenworks.github.io/awaken/zh-cn) · [Changelog](./CHANGELOG.md). MSRV: Rust 1.93. The published crate is `awaken`; `awaken-agent` is a compatibility republish from when the project shipped under that name.
 
+<p align="center">
+  <img src="./docs/assets/awaken-demo.gif" alt="Awaken admin console — connect Gemini, build an agent with the AI assistant, then test it live in the sandbox" width="800"><br>
+  <em>Real Gemini in the Admin Console: connect a model, describe an agent, tune it, and run a live eval.</em>
+</p>
+
 ## 30-second version
 
 Start the local server and Admin Console:

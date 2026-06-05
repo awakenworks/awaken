@@ -7,7 +7,9 @@
     "test:interop": "playwright test -c playwright.interop.config.ts",
     "test:admin": "env -u NO_COLOR -u FORCE_COLOR playwright test -c playwright.admin.config.ts",
     "test:visual": "env -u NO_COLOR -u FORCE_COLOR playwright test -c playwright.visual.config.ts",
-    "test:headed": "playwright test --headed"
+    "test:headed": "playwright test --headed",
+    "record:demo": "env -u NO_COLOR -u FORCE_COLOR playwright test -c playwright.demo.config.ts",
+    "capture:demo": "env -u NO_COLOR -u FORCE_COLOR playwright test -c playwright.demo.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0"

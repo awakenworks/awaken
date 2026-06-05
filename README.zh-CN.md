@@ -8,6 +8,11 @@
 
 在线文档：[Awaken docs（英文）](https://awakenworks.github.io/awaken) · [中文文档](https://awakenworks.github.io/awaken/zh-cn) · [Changelog](./CHANGELOG.md)。MSRV：Rust 1.93。发布的 crate 是 `awaken`；`awaken-agent` 是早期同名发布期的兼容包。
 
+<p align="center">
+  <img src="./docs/assets/awaken-demo-zh.gif" alt="Awaken 控制台 — 接入 Gemini、用 AI 助手构建智能体、沙盒实时测试" width="800"><br>
+  <em>真实 Gemini 控制台演示：接入模型，描述 Agent，调优并运行实时评测。</em>
+</p>
+
 ## 30 秒看懂
 
 启动本地 server 和 Admin Console：
