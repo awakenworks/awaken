@@ -5,7 +5,21 @@ description: "当工具需要把工作委托给另一个 agent，并且要精确
 
 当工具需要把工作委托给另一个 agent，**并且**需要精确控制哪些父 state 流入子 run、哪些子 state 流回父 store 时，使用本页。
 
+## 目的
+
+本指南把另一个 agent 当作独立工具来使用：父 agent 调用它，接收结果，并显式决定哪些 state 可以跨边界。这比让两个 agent 共享同一份可变上下文更好，因为状态、输出和 state export 是三套独立策略。
+
 Awaken 用一个辅助函数加上你已经熟悉的 `Tool::execute` 模式来覆盖这个场景。框架不引入 hook、phase 或 strategy 类型——state 传递就是写在 `execute` 里的普通 Rust 代码。
+
+## Agent 作为独立工具
+
+当 child 以工具形式暴露给父 agent 时，要把三条通道分开：
+
+- `BackendRunResult.status` 是 child 的生命周期状态。
+- `ToolOutput.result` 是父工具报告给父 LLM 的语义结果。
+- `ToolOutput.command` 是唯一把解码后的 child state 写回父 store 的通道。
+
+这种拆分让父侧可以把 child failure 作为语义结果呈现、严格让 tool 失败，或只导出诊断 state。同时 state 传递也更可审计：父 → 子用 `initial_state_seed`；子 → 父解码 `BackendRunResult.state` 并发出类型化 `StateCommand`。
 
 ## 前置条件
 

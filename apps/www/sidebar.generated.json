@@ -86,6 +86,64 @@
         ]
       },
       {
+        "label": "State, Context & Storage",
+        "translations": {
+          "zh-CN": "状态、上下文与存储"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "State & Storage Overview",
+            "slug": "state-and-storage",
+            "translations": {
+              "zh-CN": "状态与存储概览"
+            }
+          },
+          {
+            "label": "State Management",
+            "slug": "explanation/state-management",
+            "translations": {
+              "zh-CN": "状态管理"
+            }
+          },
+          {
+            "label": "State and Snapshot Model",
+            "slug": "explanation/state-and-snapshot-model",
+            "translations": {
+              "zh-CN": "状态与快照模型"
+            }
+          },
+          {
+            "label": "Use Shared State",
+            "slug": "how-to/use-shared-state",
+            "translations": {
+              "zh-CN": "使用 Shared State"
+            }
+          },
+          {
+            "label": "Use File Store",
+            "slug": "how-to/use-file-store",
+            "translations": {
+              "zh-CN": "使用文件存储"
+            }
+          },
+          {
+            "label": "Use Postgres Store",
+            "slug": "how-to/use-postgres-store",
+            "translations": {
+              "zh-CN": "使用 Postgres 存储"
+            }
+          },
+          {
+            "label": "Use NATS Stores",
+            "slug": "how-to/use-nats-stores",
+            "translations": {
+              "zh-CN": "使用 NATS Store"
+            }
+          }
+        ]
+      },
+      {
         "label": "Tooling & Extensions",
         "translations": {
           "zh-CN": "工具与扩展"
@@ -136,6 +194,20 @@
         },
         "collapsed": true,
         "items": [
+          {
+            "label": "Multi-Agent Patterns",
+            "slug": "explanation/multi-agent-patterns",
+            "translations": {
+              "zh-CN": "多智能体模式"
+            }
+          },
+          {
+            "label": "HITL and Mailbox",
+            "slug": "explanation/hitl-and-mailbox",
+            "translations": {
+              "zh-CN": "HITL 与 Mailbox"
+            }
+          },
           {
             "label": "Use Agent Handoff",
             "slug": "how-to/use-agent-handoff",
@@ -331,67 +403,6 @@
     ]
   },
   {
-    "label": "State & Storage",
-    "translations": {
-      "zh-CN": "状态与存储"
-    },
-    "items": [
-      {
-        "label": "Overview",
-        "slug": "state-and-storage",
-        "translations": {
-          "zh-CN": "概览"
-        }
-      },
-      {
-        "label": "Stores",
-        "translations": {
-          "zh-CN": "存储后端"
-        },
-        "collapsed": true,
-        "items": [
-          {
-            "label": "Use File Store",
-            "slug": "how-to/use-file-store",
-            "translations": {
-              "zh-CN": "使用文件存储"
-            }
-          },
-          {
-            "label": "Use Postgres Store",
-            "slug": "how-to/use-postgres-store",
-            "translations": {
-              "zh-CN": "使用 Postgres 存储"
-            }
-          },
-          {
-            "label": "Use NATS Stores",
-            "slug": "how-to/use-nats-stores",
-            "translations": {
-              "zh-CN": "使用 NATS Store"
-            }
-          }
-        ]
-      },
-      {
-        "label": "State Usage",
-        "translations": {
-          "zh-CN": "状态使用"
-        },
-        "collapsed": true,
-        "items": [
-          {
-            "label": "Use Shared State",
-            "slug": "how-to/use-shared-state",
-            "translations": {
-              "zh-CN": "使用 Shared State"
-            }
-          }
-        ]
-      }
-    ]
-  },
-  {
     "label": "Concepts",
     "translations": {
       "zh-CN": "概念与架构"
@@ -430,52 +441,6 @@
             "slug": "explanation/agent-resolution",
             "translations": {
               "zh-CN": "智能体解析"
-            }
-          }
-        ]
-      },
-      {
-        "label": "State",
-        "translations": {
-          "zh-CN": "状态"
-        },
-        "collapsed": true,
-        "items": [
-          {
-            "label": "State Management",
-            "slug": "explanation/state-management",
-            "translations": {
-              "zh-CN": "状态管理"
-            }
-          },
-          {
-            "label": "State and Snapshot Model",
-            "slug": "explanation/state-and-snapshot-model",
-            "translations": {
-              "zh-CN": "状态与快照模型"
-            }
-          }
-        ]
-      },
-      {
-        "label": "Control Plane",
-        "translations": {
-          "zh-CN": "控制面"
-        },
-        "collapsed": true,
-        "items": [
-          {
-            "label": "HITL and Mailbox",
-            "slug": "explanation/hitl-and-mailbox",
-            "translations": {
-              "zh-CN": "HITL 与 Mailbox"
-            }
-          },
-          {
-            "label": "Multi-Agent Patterns",
-            "slug": "explanation/multi-agent-patterns",
-            "translations": {
-              "zh-CN": "多智能体模式"
             }
           }
         ]

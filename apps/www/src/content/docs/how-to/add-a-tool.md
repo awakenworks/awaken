@@ -5,6 +5,10 @@ description: "Use this when you need to expose a custom capability to the agent 
 
 Use this when you need to expose a custom capability to the agent by implementing the `Tool` trait.
 
+## Purpose
+
+Tools are the code boundary for actions the model may request but must not implement itself. Keeping capabilities behind typed descriptors, argument validation, and `ToolOutput` is better than prompt-only instructions because the runtime can validate inputs, stream results, and commit state through one controlled channel.
+
 ## Prerequisites
 
 - `awaken` crate added to `Cargo.toml`

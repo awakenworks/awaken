@@ -80,6 +80,115 @@ Mailbox 是 run 激活的持久化 dispatch 队列。无论是 streaming、backg
 `RunDispatch` 负责 delivery、lease、retry 和队列审计；run 的业务事实保存在
 `RunRecord` 上。
 
+## Agent 消息路由
+
+Awaken 保留两条明确的消息路径：
+
+| 路径 | 代码表面 | 适用场景 | 交付边界 |
+|---|---|---|---|
+| 实时 child inbox | `BackgroundTaskManager::spawn_agent_with_context(...)` + `SendMessageTool` 的 `relation: "child"` | 父 agent 和后台 child agent 在同一进程内，需要低延迟通信 | 进程内 inbox；task id/name 必须解析为拥有该 thread 的 live child task |
+| 持久 mailbox | `Mailbox::submit(...)`、`submit_background(...)`、HTTP `/v1/threads/:id/mailbox`、A2A `message:send`、MCP HTTP mailbox tools，或 host 为 `SendMessageTool` 的 `parent` / `agent` 提供的 `DurableMessageSink` | agent、协议入口或 worker 可能位于不同 thread、进程或副本 | 持久 `RunDispatch`；由一个 mailbox worker 通过 lease、retry 和 recovery 认领执行 |
+
+内部后台 agent 消息留在 live inbox，避免不必要的持久队列成本。外部协议消息和跨 thread agent 消息进入 mailbox，让分布式 worker 可以安全认领并执行。`SendMessageTool` 不引入第三种 transport：`child` 走 manager inbox，`parent` 和 `agent` 需要 host 提供 durable sink，并由 host 映射到 mailbox dispatch 或其他持久 transport。
+
+## 分布式 dispatch 保证
+
+Mailbox 是分布式处理边界。它把请求存储（`RunRecord.request` + thread message log）和交付（`RunDispatch`）分开，因此任意 worker 在认领 dispatch 后都能重建 activation。正确的 store 必须提供 durable enqueue、单赢家原子 claim、claim-token 校验、lease extension、lease recovery、interrupt epoch bump，以及队列/结果投影更新。NATS mailbox 使用 JetStream/KV 做多副本 ownership 和 wakeup；SQLite mailbox 是单节点持久；in-memory mailbox 只在进程内有效。
+
+## Pending message steering
+
+当 mailbox 通过 `Mailbox::new_with_pending_thread_run_store(...)` 构建时，用户消息会先以 `PendingMessageRecord` 形式暂存在同一个拥有 thread message 与 run record 的后端里。pending record 表示「已投递但尚未写入 committed history」。runtime 在明确边界上 freeze pending record，把被选中的消息追加进历史，并在同一个后端事务里更新 `RunRecord.input`。
+
+`DeliveryMode` 决定 pending message 何时、如何被消费：
+
+| 字段 | 代码行为 |
+|---|---|
+| `boundary` | `Interrupt`、`NextStep`、`OnNaturalEnd`、`ResumeInput` 或 `NewRun`。除 `ResumeInput` 必须精确匹配外，较早边界可以通过 `DeliveryBoundary::eligible_at` 逐级落到较晚边界。 |
+| `granularity` | `Batch` 消费所有 eligible records；`One` 在第一个 eligible record 后停止。 |
+| `barrier` | 阻止跳过该 pending record 处理后续记录；foreground interrupt preflight 会在取消 active run 前返回 `DeliveryBlockedByBarrier`。 |
+| `target_run_id` | 限定 active-run delivery 只能被指定 run 消费。`submit_live_then_queue(..., expected_run_id)` 也用它避免 steer 到 stale run。 |
+| `fallback_to_new_run` | 允许 active-run pending 在目标 run 先结束时落到 `NewRun`。targeted live steering 使用 `false`；普通 queued record 默认是 `true`。 |
+
+Mailbox 为需要在 freeze 前展示 review queue 的 host 暴露了带乐观锁的 pending 编辑操作：
+
+- `update_pending_message_checked(thread_id, pending_id, expected_revision, message)`：在 record revision 保护下编辑消息内容。
+- `retract_pending_message_checked(thread_id, pending_id, expected_revision)`：在消费前撤回 pending entry。
+- `reorder_pending_messages_checked(thread_id, expected_queue_revision, ordered_pending_ids)`：在 queue revision 保护下调整 pending 顺序。
+
+pending record 一旦 freeze/consume，这些编辑会失败，不会改写 committed history。freeze retry 会使用 pending selection conflict 和 message-version check，因此并发 edit、reorder 或 retract 不会在 `RunRecord.input` 里留下 phantom trigger id。
+
+### 选择处理方式
+
+HTTP `POST /v1/threads/:id/messages` 与 `POST /v1/runs/:id/inputs` 会映射到 `RunControlService` 的 input modes：
+
+| Mode | 效果 |
+|---|---|
+| `queue` | 创建 durable mailbox dispatch。有 pending store 时，submit 会在准备 dispatch 时原子 append + freeze `NewRun` pending。 |
+| `live_then_queue` / `steer` | 先尝试 steer active run。有 pending store 时，消息会作为 targeted `NextStep` pending 暂存，并向 active run 发送 `PendingBoundaryWake`；如果本地或远端 subscriber 没有接收 wake，会清理这次 pending append 并回退到 durable dispatch。 |
+| `interrupt_then_queue` | bump dispatch epoch、supersede queued work、取消 active run，然后排队新输入。foreground interrupt preflight 会在前序 pending barrier 阻塞交付时拒绝取消。 |
+| `resume_open_run` | 继续 thread 的 reusable waiting run。新的用户输入会作为指向该 run 的 `ResumeInput` pending 暂存，避免无关的 `NewRun` pending 被折进等待中的 run。 |
+
+在 runtime boundary 上，`MailboxPendingBoundaryHandler` 让 loop 可以为 `NextStep`、`OnNaturalEnd` 或其他支持的边界继续 stage/freeze pending messages。这就是动态 steering 既可编辑、又 crash-safe，同时还能交给分布式 worker 处理最终 dispatch 的机制。
+
+### 代码参考
+
+仓库里已经有这些路径的可执行覆盖。接 host integration 时，优先参考这些测试：
+
+- `crates/awaken-server/src/mailbox/pending_delivery_tests.rs` —— pending edit、reorder、retract 和 freeze。
+- `crates/awaken-server/src/mailbox/tests.rs` —— 本地与远端 `submit_live_then_queue` steering。
+- `crates/awaken-server/src/routes_test.rs` —— HTTP `mode: "steer"` alias 解析。
+
+freeze 前的 pending review queue（生产 submit 会通过 mailbox submit path 暂存 pending；测试里用内部 `deliver` helper 构造同等状态）：
+
+```rust
+use awaken::contract::message::{Message, pending_queue_revision};
+
+let pending = pending_store
+    .load_pending_message_records("thread-edit-pending")
+    .await?;
+let queue_revision = pending_queue_revision(&pending);
+
+mailbox
+    .update_pending_message_checked(
+        "thread-edit-pending",
+        &pending[0].pending_id,
+        Some(pending[0].revision),
+        Message::user("edited").with_id(pending[0].pending_id.clone()),
+    )
+    .await?;
+
+mailbox
+    .reorder_pending_messages_checked(
+        "thread-edit-pending",
+        Some(queue_revision),
+        &[pending[1].pending_id.clone(), pending[0].pending_id.clone()],
+    )
+    .await?;
+
+mailbox
+    .retract_pending_message_checked(
+        "thread-edit-pending",
+        &pending[1].pending_id,
+        Some(pending[1].revision),
+    )
+    .await?;
+```
+
+先 steer active run；live delivery 不可用时再回退到队列：
+
+```rust
+let result = mailbox
+    .submit_live_then_queue(
+        RunActivation::new("thread-live-steer", vec![Message::user("live steer")])
+            .with_agent_id("agent"),
+        Some(active_run_id),
+    )
+    .await?;
+
+assert_eq!(result.status, MailboxDispatchStatus::Running);
+assert_eq!(result.run_id, active_run_id);
+```
+
 ### RunDispatch
 
 ```rust

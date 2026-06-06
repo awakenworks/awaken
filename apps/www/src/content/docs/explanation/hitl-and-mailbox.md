@@ -105,6 +105,115 @@ system as a `RunDispatch`.
 `RunDispatch` owns delivery, lease, retry, and queue-audit state. The run's
 business truth lives on `RunRecord`.
 
+## Agent message routing
+
+Awaken uses two message paths and keeps them explicit:
+
+| Path | Code surface | Use when | Delivery boundary |
+|---|---|---|---|
+| Live child inbox | `BackgroundTaskManager::spawn_agent_with_context(...)` plus `SendMessageTool` with `relation: "child"` | Parent and background child agent run in the same process and need low-latency messages | In-process inbox; task id/name must resolve to a live child task on the owning thread |
+| Durable mailbox | `Mailbox::submit(...)`, `submit_background(...)`, HTTP `/v1/threads/:id/mailbox`, A2A `message:send`, MCP HTTP mailbox tools, or a host-provided `DurableMessageSink` for `SendMessageTool` `parent` / `agent` | Agents, protocols, or workers may be on different threads, processes, or replicas | Persistent `RunDispatch`; claimed by one mailbox worker with leases, retries, and recovery |
+
+Internal background-agent messages stay on the live inbox so they do not pay durable queue cost. External protocol messages and cross-thread agent messages enter the mailbox so distributed workers can claim and execute them safely. `SendMessageTool` does not invent a third transport: `child` routes to the manager inbox, while `parent` and `agent` require the host to provide a durable sink that maps to mailbox dispatch or another persistent transport.
+
+## Distributed dispatch guarantees
+
+The mailbox is the distributed processing boundary. It separates request storage (`RunRecord.request` plus thread message logs) from delivery (`RunDispatch`) so any worker can reconstruct the activation after claiming a dispatch. Correct stores must provide durable enqueue, atomic claim with a single winner, claim-token validation, lease extension, lease recovery, interrupt epoch bumps, and queue/result projection updates. NATS mailbox uses JetStream/KV for multi-replica ownership and wakeups; SQLite mailbox is durable but single-node; in-memory mailbox is process-local.
+
+## Pending message steering
+
+When the mailbox is built with `Mailbox::new_with_pending_thread_run_store(...)`, user messages are first staged as `PendingMessageRecord` values in the same backend that owns thread messages and run records. A pending record is delivered but not yet appended to committed history. The runtime freezes pending records at an explicit boundary, appends the selected messages, and updates the `RunRecord` input in one backend transaction.
+
+`DeliveryMode` controls when and how a pending message is consumed:
+
+| Field | Code behavior |
+|---|---|
+| `boundary` | `Interrupt`, `NextStep`, `OnNaturalEnd`, `ResumeInput`, or `NewRun`. Earlier boundaries can fall through to later boundaries through `DeliveryBoundary::eligible_at`, except `ResumeInput`, which is exact-match only. |
+| `granularity` | `Batch` consumes all eligible records; `One` stops after the first eligible record. |
+| `barrier` | Prevents later pending records from being skipped across the barrier; foreground interrupt preflight reports `DeliveryBlockedByBarrier` before cancelling the active run. |
+| `target_run_id` | Restricts active-run delivery to a specific run. `submit_live_then_queue(..., expected_run_id)` also uses this to avoid steering a stale run. |
+| `fallback_to_new_run` | Allows active-run pending to become `NewRun` work if the target run ends first. Targeted live steering uses `false`; ordinary queued records default to `true`. |
+
+The mailbox exposes checked pending-edit operations for hosts that present a review queue before freeze:
+
+- `update_pending_message_checked(thread_id, pending_id, expected_revision, message)` edits message content under an optimistic record revision.
+- `retract_pending_message_checked(thread_id, pending_id, expected_revision)` removes a pending entry before it is consumed.
+- `reorder_pending_messages_checked(thread_id, expected_queue_revision, ordered_pending_ids)` changes pending order under an optimistic queue revision.
+
+After a pending record is frozen/consumed these edits fail instead of rewriting committed history. Freeze retries use pending selection conflicts and message-version checks so concurrent edits, reorders, or retracts do not leave phantom trigger ids in `RunRecord.input`.
+
+### Choosing the handling mode
+
+HTTP `POST /v1/threads/:id/messages` and `POST /v1/runs/:id/inputs` map to `RunControlService` input modes:
+
+| Mode | Effect |
+|---|---|
+| `queue` | Create a durable mailbox dispatch. With a pending store, submit appends and freezes `NewRun` pending atomically while preparing the dispatch. |
+| `live_then_queue` / `steer` | Try to steer the active run first. With a pending store, messages are staged as targeted `NextStep` pending and the active run receives `PendingBoundaryWake`; if no local or remote subscriber accepts the wake, the pending append is cleaned up and the request falls back to a durable dispatch. |
+| `interrupt_then_queue` | Bump the dispatch epoch, supersede queued work, cancel the active run, then queue the new input. Foreground interrupt preflight refuses to cancel when an earlier pending barrier blocks delivery. |
+| `resume_open_run` | Continue the thread's reusable waiting run. Fresh user input is staged as `ResumeInput` targeted to that run so unrelated `NewRun` pending stays queued for later. |
+
+At runtime boundaries, `MailboxPendingBoundaryHandler` lets the loop stage and freeze additional pending messages for `NextStep`, `OnNaturalEnd`, or other supported boundaries. This is the mechanism that makes dynamic steering editable and crash-safe while still allowing distributed workers to process the final dispatch.
+
+### Code references
+
+The repository keeps executable coverage for these paths. Use these tests as the closest working examples when wiring a host integration:
+
+- `crates/awaken-server/src/mailbox/pending_delivery_tests.rs` — pending edit, reorder, retract, and freeze.
+- `crates/awaken-server/src/mailbox/tests.rs` — local and remote `submit_live_then_queue` steering.
+- `crates/awaken-server/src/routes_test.rs` — HTTP `mode: "steer"` alias parsing.
+
+Pending review queue before freeze (production submits stage pending through mailbox submit paths; the test uses the internal `deliver` helper to set up the same state):
+
+```rust
+use awaken::contract::message::{Message, pending_queue_revision};
+
+let pending = pending_store
+    .load_pending_message_records("thread-edit-pending")
+    .await?;
+let queue_revision = pending_queue_revision(&pending);
+
+mailbox
+    .update_pending_message_checked(
+        "thread-edit-pending",
+        &pending[0].pending_id,
+        Some(pending[0].revision),
+        Message::user("edited").with_id(pending[0].pending_id.clone()),
+    )
+    .await?;
+
+mailbox
+    .reorder_pending_messages_checked(
+        "thread-edit-pending",
+        Some(queue_revision),
+        &[pending[1].pending_id.clone(), pending[0].pending_id.clone()],
+    )
+    .await?;
+
+mailbox
+    .retract_pending_message_checked(
+        "thread-edit-pending",
+        &pending[1].pending_id,
+        Some(pending[1].revision),
+    )
+    .await?;
+```
+
+Steer an active run first, then fall back to queue if live delivery is unavailable:
+
+```rust
+let result = mailbox
+    .submit_live_then_queue(
+        RunActivation::new("thread-live-steer", vec![Message::user("live steer")])
+            .with_agent_id("agent"),
+        Some(active_run_id),
+    )
+    .await?;
+
+assert_eq!(result.status, MailboxDispatchStatus::Running);
+assert_eq!(result.run_id, active_run_id);
+```
+
 ### RunDispatch
 
 ```rust

@@ -1,9 +1,21 @@
 ---
 title: "Multi-Agent Patterns"
-description: "Awaken supports multiple patterns for composing agents. This page describes delegation, remote agents, sub-agent execution, and handoff."
+description: "Awaken supports multiple patterns for composing agents. This page describes delegation, remote agents, background agents, messaging, sub-agent execution, and handoff."
 ---
 
-Awaken supports multiple patterns for composing agents. This page describes delegation, remote agents, sub-agent execution, and handoff.
+Awaken supports multiple patterns for composing agents. This page describes delegation, remote agents, background agents, agent-to-agent communication, sub-agent execution, and handoff.
+
+## Purpose
+
+Use this page to choose the composition model before writing code. The best pattern is the one that makes ownership, return paths, state movement, and cancellation explicit; that is safer than treating every specialist as another prompt in the same hidden context.
+
+| Pattern | Purpose | Why this is better |
+|---|---|---|
+| Delegate agent as a tool | Run a specialist and return a bounded result to the parent | The parent sees a normal tool result and keeps final control. |
+| Programmatic sub-agent | Let custom Rust decide seed/export, streaming, and status policy | State flow is typed and auditable instead of implicit. |
+| Background task or background agent | Keep long work alive across step boundaries | The loop can wait, cancel, resume, and ingest inbox events. |
+| `send_message` communication | Let independent agents exchange messages | Routing is explicit: live child inbox or durable mailbox. |
+| Handoff | Let another agent take over the current thread | Conversation and state stay continuous without spawning a parallel run. |
 
 ## Agent Delegation via AgentSpec.delegates
 
@@ -75,6 +87,24 @@ available for read-back when the backend returns a result.
 Backend implementors should use `BackendProfile` for typed capabilities such as
 continuation, persistence, waits, transcript shape, and output shape. Parent →
 child state seed remains a local-execution rule outside that profile.
+
+## Background Tasks and Background Agents
+
+Use a background task when work should continue outside the current model step: polling an external job, watching an event stream, running long analysis, or waiting for human/system input. Register `BackgroundTaskPlugin` and use `BackgroundTaskManager::spawn(...)` from a tool. The manager persists task metadata in `BackgroundTaskStateKey`, exposes cancellation, and emits completion/custom events into the owning thread inbox.
+
+Use a background agent when the long-running task is itself an agent loop that should stay addressable. `BackgroundTaskManager::spawn_agent_with_context(...)` creates a `sub_agent` task with an inbox, so the parent can send follow-up messages while the child is still running. This is better than synchronous delegation when the child may need multiple turns, late data, or cancellation after the parent has already moved on.
+
+Background work is not a substitute for domain state transfer. Treat task status as lifecycle metadata; pass business state through typed `StateKey` seed/export policies when the parent and child must share structured state.
+
+## Agent-to-Agent Communication
+
+Expose `SendMessageTool` when agents need to communicate without merging their execution contexts. The tool uses one schema and selects the transport by recipient:
+
+- `child` sends to a live background child task inbox by name or task ID.
+- `parent` sends to the parent thread through the host's durable message sink.
+- `agent` sends to another thread/agent through the same durable sink.
+
+This is better than sharing mutable memory because each message has an explicit recipient, sender, receipt, and failure mode. Use live child messaging for low-latency in-process coordination; use mailbox-backed durable messaging when the recipient may be on another thread, process, or worker.
 
 ## Sub-Agent Patterns
 

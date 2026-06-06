@@ -85,7 +85,7 @@ Server 启动时也会校验暴露的 admin surface。只要 config、eval 或 t
 | `GET` | `/v1/threads/:id/runs/active` | 获取该 thread 当前活动 run（如有） |
 | `GET` | `/v1/threads/:id/runs/latest` | 获取该 thread 最新 run |
 
-`POST /v1/threads/:id/messages` 与 `POST /v1/runs/:id/inputs` 支持可选的 `mode` 字段。`queue` 会追加持久化 mailbox dispatch；`live_then_queue` 会先尝试把消息投递给活动 run，live 投递不可用时再排队；`steer` 是 `live_then_queue` 的别名；`interrupt_then_queue` 会先取消活动 run 再排队；`resume_open_run` 会继续可恢复的等待中 run。
+`POST /v1/threads/:id/messages` 与 `POST /v1/runs/:id/inputs` 支持可选的 `mode` 字段。`queue` 会追加持久化 mailbox dispatch；`live_then_queue` 会先尝试把消息投递给活动 run，live 投递不可用时再排队；`steer` 是 `live_then_queue` 的别名；`interrupt_then_queue` 会先取消活动 run 再排队；`resume_open_run` 会继续可恢复的等待中 run。当 server 接入 pending thread/run store 时，这些输入会先按明确 delivery boundary（`NewRun`、`NextStep`、`Interrupt` 或 `ResumeInput`）暂存为 pending messages，再 freeze 到 committed history。
 
 Thread 列表 cursor 是 opaque token，并绑定到生成它的 query 形状。裸数字 cursor 只在没有任何筛选条件的 thread listing 中继续接受。带 resource、lineage 等筛选的列表必须使用同一 query 返回的 `next_cursor` 继续翻页。Backend scope filter 不是 HTTP 参数；scoped store wrapper 会根据 `ScopeContext` 在服务端内部注入。
 

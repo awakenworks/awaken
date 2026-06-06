@@ -5,6 +5,10 @@ description: "当你需要在同一个 run、同一条 thread 内切换到另一
 
 当你需要在同一个 run、同一条 thread 内切换到另一个已注册 agent ID，而不终止 run 或创建新 thread 时，使用本页。
 
+## 目的
+
+handoff 的目的不是拆分子任务，而是在同一段对话中安全切换 active agent。这样比启动另一个 agent 再复制上下文更好：thread history、thread state、run lifecycle 都保持连续，切换只发生在 loop 的安全 step 边界。
+
 ## 前置条件
 
 - 已添加 `awaken`

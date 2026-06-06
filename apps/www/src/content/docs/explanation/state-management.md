@@ -19,6 +19,18 @@ Awaken provides four layers of state management, each designed for a different c
 | Shared State | `ProfileKey` + `StateScope` | Dynamic (global, parent thread, agent type, custom) | Async (`ProfileAccess`) | Persistent in `ProfileStore` | Cross-boundary sharing, global config |
 | Profile State | `ProfileKey` + `key: &str` | Per-key (agent/system) | Async (`ProfileAccess`) | Persistent in `ProfileStore` | User/agent preferences, locale |
 
+## Plugin context and commands
+
+Plugins do not mutate state or prompts directly. A phase hook receives `PhaseContext`, which carries the active `AgentSpec`, `RunIdentity`, current messages, a frozen `Snapshot`, optional `ProfileAccess`, and phase-specific fields such as tool call data or LLM response. The hook returns a `StateCommand`.
+
+`StateCommand` is the single command channel for plugin and tool side effects:
+
+- `patch` updates registered `StateKey` values through `MutationBatch`.
+- `scheduled_actions` asks runtime handlers to do runtime-owned work.
+- `effects` dispatches terminal side effects to registered effect handlers.
+
+For context injection, plugins schedule `AddContextMessage` with a `ContextMessage`. The runtime handler writes accepted messages to `ContextMessageStore`, updates `ContextThrottleState`, and the loop inserts messages into the system, session, conversation, or suffix-system band before inference. This is better than editing prompts in-place because context injection is keyed, ordered, throttled, and cleared by the loop.
+
 ## Run State
 
 Run state is the most transient layer. It lives entirely in memory, is accessed synchronously through a `Snapshot`, and is cleared to its default value when a new run begins.

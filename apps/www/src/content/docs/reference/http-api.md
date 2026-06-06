@@ -94,7 +94,10 @@ optional `mode` field. `queue` appends a durable mailbox dispatch,
 `live_then_queue` first tries to deliver the messages to the active run and
 queues only when live delivery is unavailable, `steer` is an alias for
 `live_then_queue`, `interrupt_then_queue` cancels the active run before
-queueing, and `resume_open_run` continues a resumable waiting run.
+queueing, and `resume_open_run` continues a resumable waiting run. When the
+server is wired with a pending thread/run store, these inputs are staged as
+pending messages with explicit delivery boundaries (`NewRun`, `NextStep`,
+`Interrupt`, or `ResumeInput`) before they are frozen into committed history.
 
 Thread list cursors are opaque and bound to the query shape that produced
 them. A bare numeric cursor is accepted only for unfiltered thread listings.

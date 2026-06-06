@@ -77,6 +77,23 @@ not exposed that store or route yet.
 | Dataset/eval pages disabled | Eval dataset and run stores |
 | No external telemetry spans | OTel exporter and collector configuration |
 
+## Developer wiring references
+
+When building a custom observability backend, keep the UI flow above tied to
+the code surfaces that feed it:
+
+- `MetricsSink` receives runtime metrics; use `CompositeSink` or `BatchingSink`
+  when one run should feed several destinations.
+- `TraceStore` backs recent runs, trace drawers, and dataset fixture curation.
+- `RuntimeStatsRegistry` feeds per-agent counts, latency, and error signals.
+- `SamplingPolicy` controls which spans are retained before they reach durable
+  storage.
+
+Code references: `crates/awaken-ext-observability/src/sink.rs`,
+`crates/awaken-ext-observability/src/trace_store/`,
+`crates/awaken-ext-observability/tests/observability_integration.rs`, and
+`crates/awaken-ext-observability/tests/wiring_integration.rs`.
+
 ## API references for automation
 
 - [Admin Console surface inventory](/awaken/reference/admin-console/)

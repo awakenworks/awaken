@@ -78,6 +78,20 @@ deployments should derive `ScopeContext` from authenticated request state, let
 server scoped stores apply backend filters, and expose the resolved `scope_id`
 only as read-only UI context.
 
+## Code references
+
+Use these references when wiring a host application:
+
+- `crates/awaken-doctest/examples/http_app_builder.rs` -- offline example for
+  `AgentRuntime` → `Mailbox` → `ServerState`.
+- `crates/awaken-server/src/app.rs` -- `ServerState` builders for config,
+  trace, event, eval, admin, runtime stats, scope, and A2A push relay modules.
+- `crates/awaken-server/src/app/modules.rs` -- module-specific state structs
+  and the route surfaces they enable.
+- `crates/awaken-server/tests/http_api.rs` and
+  `crates/awaken-server/tests/transport_tests.rs` -- route and transport smoke
+  coverage for served runs.
+
 ## Start here
 
 1. [Expose HTTP SSE](/awaken/how-to/expose-http-sse/) to put the runtime behind HTTP and streaming endpoints.

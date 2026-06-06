@@ -95,6 +95,17 @@ let _ = manager.start_periodic_refresh(Duration::from_secs(60)); // 返回 Resul
 周期刷新会更新 manager registry。新的 run 会重新解析 agent 并看到最新 snapshot；
 正在运行中的 run 保持其解析时的工具集。
 
+## 高级开发 hook
+
+优先使用上面的 manager。只有 host 需要自定义 wire 或策略时，才下探到底层：
+
+- 为非标准传输实现 `McpToolTransport`；
+- MCP server 要求客户端代为 sampling 时，提供 `SamplingHandlerFactory`；
+- MCP tools 返回 UI 或 resource references 时，参考 `McpToolRegistryManager` 的
+  resource-reading 覆盖；
+- refresh 与 registry snapshot 要显式处理，避免 in-flight run 看到变化中的
+  tool catalog。
+
 ## 验证
 
 1. 运行 agent，并让它调用来自 MCP server 的工具
@@ -114,6 +125,7 @@ let _ = manager.start_periodic_refresh(Duration::from_secs(60)); // 返回 Resul
 ## 相关示例
 
 - `crates/awaken-ext-mcp/tests/`
+- `crates/awaken-doctest/examples/mcp_server_spec.rs`
 
 ## 关键文件
 
@@ -122,6 +134,7 @@ let _ = manager.start_periodic_refresh(Duration::from_secs(60)); // 返回 Resul
 - `crates/awaken-ext-mcp/src/config.rs`
 - `crates/awaken-ext-mcp/src/plugin.rs`
 - `crates/awaken-ext-mcp/src/transport.rs`
+- `crates/awaken-ext-mcp/src/sampling.rs`
 - `crates/awaken-ext-mcp/tests/mcp_tests.rs`
 
 ## 相关

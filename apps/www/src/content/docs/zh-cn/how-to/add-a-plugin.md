@@ -5,6 +5,12 @@ description: "当你需要通过 state key、phase hook、scheduled action 或 e
 
 当你需要通过 state key、phase hook、scheduled action 或 effect handler 扩展 agent 生命周期时，使用本页。
 
+## 目的
+
+Plugin 用于参与 agent 生命周期的行为，而不是只处理某一次 tool call。它比把 hook 分散在多个 tool 中更好，因为 state key、phase hook 和 effect handler 会被统一注册、在 build 时校验，并在每次 run 中一致应用。
+
+当 context 依赖 runtime state 时，也应通过 plugin 管理。hook 从 `PhaseContext` 读取输入，返回 `StateCommand`，并调度 `AddContextMessage`，不要直接改 prompt。之后由 loop 统一负责 context 节流、排序和清理。
+
 ## 前置条件
 
 - 已在 `Cargo.toml` 中添加 `awaken`
@@ -122,6 +128,20 @@ let runtime = AgentRuntimeBuilder::new()
 `plugin_ids` 负责加载插件；`with_hook_filter` 只过滤已经加载的插件所提供的
 hook、tool 和 request transform。
 
+## 注入 context 和控制工具
+
+当 plugin 需要改变模型看到的内容时，返回命令，不要直接改 prompt 或 store：
+
+- 通过 `PhaseContext` 读取不可变 snapshot；
+- 返回 `StateCommand`；
+- 用 `AddContextMessage` 注入面向模型的上下文；
+- 用 `IncludeOnlyTools` 或 `ExcludeTool` 收窄可用工具；
+- 当 plugin 拥有该策略时，用 `InferenceOverrideState` 调整推理参数。
+
+这比在 hook 中直接修改共享状态更好，因为 loop 统一负责排序、节流、冲突处理和
+commit 时机。命令类型参考
+`crates/awaken-runtime/src/agent/state/loop_actions.rs`。
+
 ## 验证
 
 运行 agent 后查看状态快照，确认 `audit_log` 中出现了 hook 写入的条目。
@@ -137,6 +157,14 @@ hook、tool 和 request transform。
 ## 相关示例
 
 `crates/awaken-ext-observability/`
+
+## 代码参考
+
+- `crates/awaken-doctest/examples/plugin_registrar.rs` —— 最小 `Plugin` trait 实现。
+- `crates/awaken-doctest/examples/state_command.rs` —— 带 mutation、effect 和 scheduled action 的 `StateCommand`。
+- `crates/awaken-doctest/examples/effect_spec.rs` —— typed effect spec 形状。
+- `crates/awaken-doctest/examples/scheduled_action.rs` —— scheduled action spec 与 handler 形状。
+- `crates/awaken-runtime/src/agent/state/loop_actions.rs` —— context message、tool filter 与 inference override state commands。
 
 ## 关键文件
 

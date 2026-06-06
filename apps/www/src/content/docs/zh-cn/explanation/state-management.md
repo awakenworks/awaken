@@ -19,6 +19,18 @@ Awaken 提供四层状态管理,各自面向不同的作用域、访问方式与
 | Shared State | `ProfileKey` + `StateScope` | 动态(全局、父 thread、agent 类型、自定义) | 异步(`ProfileAccess`) | 持久化于 `ProfileStore` | 跨边界共享、全局配置 |
 | Profile State | `ProfileKey` + `key: &str` | 按 key(agent/system) | 异步(`ProfileAccess`) | 持久化于 `ProfileStore` | 用户/agent 偏好、locale |
 
+## 插件上下文与命令
+
+Plugin 不直接修改 state 或 prompt。phase hook 会收到 `PhaseContext`，其中包含 active `AgentSpec`、`RunIdentity`、当前 messages、冻结的 `Snapshot`、可选 `ProfileAccess`，以及 tool call 数据或 LLM response 等 phase-specific 字段。hook 返回 `StateCommand`。
+
+`StateCommand` 是 plugin 和 tool 表达副作用的唯一命令通道：
+
+- `patch` 通过 `MutationBatch` 更新已注册的 `StateKey`。
+- `scheduled_actions` 请求 runtime handler 执行 runtime-owned 工作。
+- `effects` 把终态副作用分发给已注册的 effect handler。
+
+做 context 注入时，plugin 通过 `AddContextMessage` 调度一个 `ContextMessage`。runtime handler 会把接受的消息写入 `ContextMessageStore`、更新 `ContextThrottleState`，然后 loop 在 inference 前把消息插入 system、session、conversation 或 suffix-system band。这样比直接改 prompt 更好，因为注入内容有 key、顺序、节流和清理规则，且由 loop 统一执行。
+
 ## Run State
 
 Run state 是最瞬时的一层。它完全存在内存中,通过 `Snapshot` 同步访问,并在新 run 开始时

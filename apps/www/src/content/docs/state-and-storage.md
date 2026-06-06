@@ -1,14 +1,20 @@
 ---
 title: "State & Storage"
-description: "This path is for teams moving beyond stateless demos."
+description: "Build-agent guidance for wiring runtime state, config, mailbox jobs, profile/shared state, and persistence backends."
 ---
 
-This path is for teams moving beyond stateless demos.
+This Build Agents section is for teams moving beyond stateless demos.
+
+## Purpose
+
+State and storage are development choices because they define what a built agent can safely remember, resume, tune, and distribute. Wire these boundaries before exposing the agent to operators: managed config, mailbox dispatch, thread state, profile state, and event history all depend on stores that code must register.
 
 ## Use this section to decide
 
 - where thread and run data should live
 - where runtime config, mailbox jobs, and profile/shared state should live
+- which state belongs in `StateKey`, `Thread` state, `ProfileKey`, or external storage
+- which context should be injected through plugins instead of hard-coded into prompts
 - how state is keyed and merged
 - how much context should reach the model each turn
 - how to model parent–child threads when sub-agents create their own threads
@@ -37,10 +43,11 @@ producing-run filters.
 
 ## Recommended order
 
-1. [Use File Store](/awaken/how-to/use-file-store/) or [Use Postgres Store](/awaken/how-to/use-postgres-store/) to choose a persistence backend.
-2. [Use NATS Stores](/awaken/how-to/use-nats-stores/) for a distributed mailbox and buffered thread writes across replicas.
-3. [State Keys](/awaken/reference/state-keys/) and [Thread Model](/awaken/reference/thread-model/) to understand state layout and lifecycle.
-4. [Use Shared State](/awaken/how-to/use-shared-state/) to share persistent state across threads and agent types.
+1. [State Management](/awaken/explanation/state-management/) to choose run, thread, shared, or profile state.
+2. [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/) to understand plugin-managed `PhaseContext`, `StateCommand`, and snapshot mutation.
+3. [Use File Store](/awaken/how-to/use-file-store/) or [Use Postgres Store](/awaken/how-to/use-postgres-store/) to choose a persistence backend.
+4. [Use NATS Stores](/awaken/how-to/use-nats-stores/) for a distributed mailbox and buffered thread writes across replicas.
+5. [Use Shared State](/awaken/how-to/use-shared-state/) to share persistent state across threads and agent types.
 
 Current built-in stores cover memory, file, PostgreSQL, SQLite mailbox, and
 NATS JetStream. Use the smallest backend that covers the durability boundary
@@ -84,6 +91,23 @@ The runtime commit outcome is intentionally narrow: `ThreadCommitOutcome`
 represents runtime commit success/failure only. Server-side implementations
 that need canonical event ids, server event ids, or outbox ids should use the
 server-contract staged outcome.
+
+## When building a custom store
+
+Implement only the boundary you need, and keep runtime writes behind the
+coordinator that owns the same backing data:
+
+- `ThreadRunStore` for thread messages, run records, projections, and checkpoint reads.
+- `CommitCoordinator` for durable runtime writes; do not write runtime checkpoints through an unrelated handle.
+- `ConfigStore` and `VersionedRegistryStore` for managed config, publication, restore, and pinned registry replay.
+- `ProfileStore` or shared-state stores for cross-run memory.
+- `MailboxStore` plus `PendingMessageStore` for resumable dispatch, HITL, and pending input steering.
+
+Use existing stores and tests as the contract examples before adding a new
+backend: `crates/awaken-doctest/examples/thread_store_trait.rs`,
+`crates/awaken-stores/src/memory/`, `crates/awaken-stores/src/postgres.rs`,
+`crates/awaken-stores/src/pending_message_store.rs`, and
+`crates/awaken-stores/tests/`.
 
 ## Mailbox backend choice
 

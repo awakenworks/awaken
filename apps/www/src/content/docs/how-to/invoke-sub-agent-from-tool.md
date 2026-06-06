@@ -5,7 +5,21 @@ description: "Use this when a tool needs to delegate work to another agent and c
 
 Use this when a tool needs to delegate work to another agent **and** control exactly which parent state flows into the child run and which child state flows back into the parent store.
 
+## Purpose
+
+This guide treats another agent as an independent tool: the parent calls it, receives a result, and explicitly decides which state crosses the boundary. This is better than letting two agents share one mutable context because status, output, and state export remain separate policies.
+
 Awaken exposes this through one helper function plus the normal `Tool::execute` shape you already know. The framework does not introduce hooks, phases, or strategy types — state passing is plain Rust code inside your `execute` method.
+
+## Agent as an independent tool
+
+When the child is exposed as a tool, keep three channels separate:
+
+- `BackendRunResult.status` is the child's lifecycle status.
+- `ToolOutput.result` is what the parent tool reports to the parent LLM.
+- `ToolOutput.command` is the only channel that writes decoded child state back to the parent store.
+
+This separation lets the parent surface a child failure as a semantic result, fail the tool strictly, or export only diagnostic state. It also keeps state passing auditable: parent → child uses `initial_state_seed`; child → parent decodes `BackendRunResult.state` and emits a typed `StateCommand`.
 
 ## Prerequisites
 

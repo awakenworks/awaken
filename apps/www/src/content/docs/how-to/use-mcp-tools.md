@@ -99,6 +99,19 @@ let _ = manager.start_periodic_refresh(Duration::from_secs(60)); // returns Resu
 Periodic refresh updates the manager registry. New runs resolve the agent again
 and see the latest snapshot; in-flight runs keep the tool set they resolved with.
 
+## Advanced development hooks
+
+Use the higher-level manager first. Drop lower only when the host needs a custom
+wire or policy:
+
+- implement `McpToolTransport` for a non-standard transport;
+- provide a `SamplingHandlerFactory` when the MCP server asks the client to
+  sample through the host model provider;
+- use resource-reading coverage in `McpToolRegistryManager` when MCP tools
+  return UI or resource references;
+- keep refresh and registry snapshots explicit so in-flight runs do not see a
+  changing tool catalog.
+
 ## Verify
 
 1. Run the agent and ask it to use a tool provided by the MCP server.
@@ -118,6 +131,7 @@ and see the latest snapshot; in-flight runs keep the tool set they resolved with
 ## Related Example
 
 - `crates/awaken-ext-mcp/tests/`
+- `crates/awaken-doctest/examples/mcp_server_spec.rs`
 
 ## Key Files
 
@@ -128,6 +142,7 @@ and see the latest snapshot; in-flight runs keep the tool set they resolved with
 | `crates/awaken-ext-mcp/src/config.rs` | `McpServerConnectionConfig` transport types |
 | `crates/awaken-ext-mcp/src/plugin.rs` | `McpPlugin` integration with awaken plugin system |
 | `crates/awaken-ext-mcp/src/transport.rs` | `McpToolTransport` trait and transport helpers |
+| `crates/awaken-ext-mcp/src/sampling.rs` | sampling handler traits and defaults |
 | `crates/awaken-ext-mcp/tests/mcp_tests.rs` | Integration tests |
 
 ## Related

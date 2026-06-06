@@ -5,6 +5,12 @@ description: "Use this when you need to extend the agent lifecycle with state ke
 
 Use this when you need to extend the agent lifecycle with state keys, phase hooks, scheduled actions, or effect handlers.
 
+## Purpose
+
+Plugins are for behavior that must participate in the agent lifecycle, not just a single tool call. This is better than scattering hooks through tools because state keys, phase hooks, and effect handlers are registered once, validated at build time, and applied consistently across runs.
+
+Use plugins to manage model context when the context depends on runtime state. Read inputs from `PhaseContext`, return a `StateCommand`, and schedule `AddContextMessage` instead of mutating prompts directly. The loop then owns context throttling, ordering, and cleanup.
+
 ## Prerequisites
 
 - `awaken` crate added to `Cargo.toml`
@@ -176,6 +182,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `plugin_ids` loads the plugin for the agent. `with_hook_filter` only filters the
 hooks, tools, and request transforms from plugins that have already been loaded.
 
+## Inject context and steer tools
+
+When a plugin needs to change what the model sees, return commands instead of
+editing prompts or stores directly:
+
+- read the immutable snapshot through `PhaseContext`;
+- return a `StateCommand`;
+- add model-facing context with `AddContextMessage`;
+- narrow tool availability with `IncludeOnlyTools` or `ExcludeTool`;
+- adjust inference knobs with `InferenceOverrideState` when the plugin owns
+  that policy.
+
+This is better than mutating shared state from a hook because the loop owns
+ordering, throttling, conflict handling, and commit timing. See
+`crates/awaken-runtime/src/agent/state/loop_actions.rs` for the command types.
+
 ## Verify
 
 Run the agent and inspect the state snapshot. The `audit_log` key should contain entries added by the hook after each inference phase.
@@ -191,6 +213,14 @@ Run the agent and inspect the state snapshot. The `audit_log` key should contain
 ## Related Example
 
 `crates/awaken-ext-observability/` -- the built-in observability plugin registers phase hooks and state keys.
+
+## Code References
+
+- `crates/awaken-doctest/examples/plugin_registrar.rs` -- minimal `Plugin` trait implementation.
+- `crates/awaken-doctest/examples/state_command.rs` -- `StateCommand` with mutations, effects, and scheduled actions.
+- `crates/awaken-doctest/examples/effect_spec.rs` -- typed effect spec shape.
+- `crates/awaken-doctest/examples/scheduled_action.rs` -- scheduled action spec and handler shape.
+- `crates/awaken-runtime/src/agent/state/loop_actions.rs` -- context message, tool filter, and inference override state commands.
 
 ## Key Files
 

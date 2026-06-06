@@ -81,3 +81,12 @@ Endpoint details belong in the references. For automation, see:
 - [HTTP API](/awaken/reference/http-api/)
 - [Admin Console surface inventory](/awaken/reference/admin-console/)
 - [Enable Observability](/awaken/how-to/enable-observability/)
+
+## Code references
+
+Use these when implementing custom eval or replay flows:
+
+- `crates/awaken-eval/src/runtime_replayer.rs` -- scripted/live replay and revise-on-fail support.
+- `crates/awaken-eval/src/dataset.rs` -- dataset and fixture data model.
+- `crates/awaken-eval/src/judge.rs` -- judge configuration and LLM-backed judging.
+- `crates/awaken-eval/tests/eval_integration.rs` -- replay, judge, and report coverage.

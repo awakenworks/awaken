@@ -73,3 +73,12 @@ fixtures 含 provider scripts 时使用 scripted mode。只有当你明确要调
 - [HTTP API](/awaken/zh-cn/reference/http-api/)
 - [管理控制台界面清单](/awaken/zh-cn/reference/admin-console/)
 - [启用可观测性](/awaken/zh-cn/how-to/enable-observability/)
+
+## 代码参考
+
+实现自定义 eval 或 replay 流程时参考：
+
+- `crates/awaken-eval/src/runtime_replayer.rs` —— scripted/live replay 与 revise-on-fail 支持。
+- `crates/awaken-eval/src/dataset.rs` —— dataset 和 fixture 数据模型。
+- `crates/awaken-eval/src/judge.rs` —— judge 配置与 LLM-backed judging。
+- `crates/awaken-eval/tests/eval_integration.rs` —— replay、judge 和 report 覆盖。

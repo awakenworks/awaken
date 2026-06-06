@@ -6,6 +6,10 @@ description: "Use this when you need to switch to another registered agent ID wi
 Use this when you need to switch to another registered agent ID within the same
 thread and run, without terminating the run or spawning a new thread.
 
+## Purpose
+
+Handoff is for changing the active agent, not for decomposing a subtask. It is better than spawning another agent and copying context because thread history, thread state, and run lifecycle stay continuous, and the switch happens only at a safe step boundary in the loop.
+
 ## Prerequisites
 
 - `awaken` crate added to `Cargo.toml`

@@ -5,6 +5,10 @@ description: "Use this when you need to assemble an agent with tools, persistenc
 
 Use this when you need to assemble an agent with tools, persistence, and a provider into a running `AgentRuntime`.
 
+## Purpose
+
+This page defines the runtime boundary: what the agent can execute, which model it can call, where state is persisted, and which behavior remains configurable later. Putting these choices in the builder makes startup validation fail fast instead of letting a user discover missing tools or providers mid-run.
+
 ## Prerequisites
 
 - `awaken` crate added to `Cargo.toml`
@@ -83,6 +87,12 @@ let builder = builder
     .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
     .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"));
 ```
+
+For a custom model client, implement `LlmExecutor` and register it with
+`with_provider`. In server-managed config, provide a `ProviderExecutorFactory`
+so `ProviderSpec` records can be materialized into live executors. Keep retry
+and model failover outside the provider implementation: retry is applied during
+resolution, and provider failover belongs in `ModelPoolSpec`.
 
 4. Attach persistence.
 
@@ -178,6 +188,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+8. Wire background work only when the agent needs it.
+
+Use the background extension when a tool starts work that may finish after the current model step, or when a child agent should keep an inbox open for follow-up messages. This is better than spawning an untracked task because the task gets a stable ID, cancellation token, persisted status, parent lineage, and inbox events that the loop can resume from.
+
+```rust
+use std::sync::Arc;
+use awaken::extensions::background::{
+    BackgroundTaskManager, BackgroundTaskPlugin, SendMessageTool,
+};
+
+let background = Arc::new(BackgroundTaskManager::new());
+let background_plugin = Arc::new(BackgroundTaskPlugin::new(background.clone()));
+
+let builder = builder
+    .with_plugin("background_tasks", background_plugin)
+    // Register SendMessageTool when your host provides a DurableMessageSink
+    // for cross-thread or cross-process agent messages.
+    .with_tool("send_message", Arc::new(SendMessageTool::new(background, durable_sink)));
+```
+
+Inside a tool, use `BackgroundTaskManager::spawn(...)` for ordinary background work and `spawn_agent_with_context(...)` when the background task runs another agent loop with its own inbox. Keep state exchange explicit: task status lives in `BackgroundTaskStateKey`; parent ↔ child domain state should still use typed `StateKey` seed/export rules from [Invoke a Sub-Agent from a Tool](/awaken/how-to/invoke-sub-agent-from-tool/).
+
 ## Verify
 
 Call the `/health` endpoint (if using the server feature) or inspect the returned `AgentRunResult` to confirm the agent loop completed without errors.
@@ -193,6 +225,14 @@ Call the `/health` endpoint (if using the server feature) or inspect the returne
 ## Related Example
 
 `examples/src/research/` -- a research agent with search and report-writing tools.
+
+## Code References
+
+- `crates/awaken-doctest/examples/http_app_builder.rs` -- canonical `AgentRuntime` → `Mailbox` → `ServerState` wiring.
+- `crates/awaken/tests/readme_quickstart.rs` -- small custom `LlmExecutor` used by the README path.
+- `crates/awaken-server/tests/config_api.rs` and `crates/awaken-server/tests/config_backends.rs` -- `ProviderExecutorFactory`, managed provider config, and model-pool coverage.
+- `crates/awaken-runtime/tests/background_task_lifecycle.rs` -- background task, background agent, inbox, cancellation, and status propagation.
+- `crates/awaken-runtime/tests/child_agent_seed.rs` -- parent → child state seed and child → parent state export rules.
 
 ## Key Files
 

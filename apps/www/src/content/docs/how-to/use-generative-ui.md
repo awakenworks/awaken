@@ -5,6 +5,10 @@ description: "Use this when you want the agent to send declarative UI components
 
 Use this when you want the agent to send declarative UI components to a frontend -- for example, rendering a form, a data table, or an interactive card without the frontend knowing the layout in advance.
 
+## Purpose
+
+Generative UI gives the agent a structured visual output channel instead of forcing every interaction into plain text. This is better when users need forms, tables, or cards because the frontend receives validated UI documents while the agent still runs through normal tools, streams, and permissions.
+
 Awaken currently supports two integration styles:
 
 - A2UI tool calls through `A2uiPlugin` and the `render_a2ui` tool, covered below.

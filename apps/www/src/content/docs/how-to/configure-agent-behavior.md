@@ -7,6 +7,10 @@ Use managed configuration when the same server binary should host multiple agent
 profiles, switch models, tune prompts, adjust permissions, or change plugin
 behavior without rebuilding Rust code.
 
+## Purpose
+
+Configuration is for behavior that should change after the runtime capability already exists in code. This is better than rebuilding for every prompt, tool filter, or permission tweak because operators can validate, preview, save, and restore behavior without changing the executable boundary.
+
 This page is **UI first**. The Admin Console is the safest way to make one
 change, validate it, preview behavior, and save the next runtime snapshot. Use
 API references when you need to automate the same workflow.
