@@ -5,9 +5,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::backend::{
-    BackendControl, BackendDelegatePolicy, BackendDelegateRunRequest, BackendParentContext,
-    ExecutionBackend, execute_resolved_delegate_execution,
+use crate::backend::ExecutionBackend;
+use crate::delegation::{
+    DelegateOutcome, DelegateParent, DelegateRequest, DelegateResult, DelegateRunner,
+    ResolverDelegateRunner,
 };
 use crate::registry::{AgentResolver, ResolvedBackendAgent};
 use crate::resolution::ExecutionPlan;
@@ -32,8 +33,9 @@ pub struct AgentTool {
     agent_id: String,
     /// Human-readable description for the LLM.
     description: String,
-    /// Execution resolver used to build the canonical execution plan at call time.
-    resolver: Arc<dyn AgentResolver>,
+    /// Delegation mechanism (the narrow port). The tool never touches the
+    /// execution backend directly — it declares intent through this runner.
+    runner: Arc<dyn DelegateRunner>,
 }
 
 impl AgentTool {
@@ -73,15 +75,15 @@ impl AgentTool {
     ) -> Self {
         let agent_id = agent_id.into();
         let description = description.into();
-        Self {
-            agent_id: agent_id.clone(),
-            description: description.clone(),
-            resolver: Arc::new(FixedAgentResolver::non_local(
+        Self::with_execution_resolver(
+            agent_id.clone(),
+            description.clone(),
+            Arc::new(FixedAgentResolver::non_local(
                 &agent_id,
                 &description,
                 backend,
             )),
-        }
+        )
     }
 
     pub fn with_execution_resolver(
@@ -89,10 +91,27 @@ impl AgentTool {
         description: impl Into<String>,
         resolver: Arc<dyn AgentResolver>,
     ) -> Self {
+        Self::with_runner(
+            agent_id,
+            description,
+            Arc::new(ResolverDelegateRunner::new(resolver)),
+        )
+    }
+
+    /// Create a tool directly from a delegation runner (the narrow port).
+    ///
+    /// Crate-internal: the `DelegateRunner` seam is not part of the public
+    /// facade (A-G10). Public construction goes through the resolver/backend
+    /// constructors above.
+    pub(crate) fn with_runner(
+        agent_id: impl Into<String>,
+        description: impl Into<String>,
+        runner: Arc<dyn DelegateRunner>,
+    ) -> Self {
         Self {
             agent_id: agent_id.into(),
             description: description.into(),
-            resolver,
+            runner,
         }
     }
 
@@ -160,86 +179,72 @@ impl Tool for AgentTool {
             None => Arc::new(NullEventSink),
         };
 
-        let resolved = match self.resolver.resolve_execution(&self.agent_id) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                let message = format!("delegation to {} failed: {error}", self.agent_id);
-                ctx.report_progress(ProgressStatus::Failed, Some(&message), None)
-                    .await;
-                return Ok(ToolResult::error(&tool_id, error.to_string()).into());
-            }
-        };
-
-        let request = BackendDelegateRunRequest {
-            agent_id: &self.agent_id,
-            new_messages: messages.clone(),
+        let request = DelegateRequest {
+            agent_id: self.agent_id.clone(),
             messages,
-            sink,
-            resolver: self.resolver.as_ref(),
-            parent: BackendParentContext {
-                parent_run_id: Some(ctx.run_identity.run_id.clone()),
-                parent_thread_id: Some(ctx.run_identity.thread_id.clone()),
-                parent_tool_call_id: Some(ctx.call_id.clone()),
+            parent: DelegateParent {
+                run_id: Some(ctx.run_identity.run_id.clone()),
+                thread_id: Some(ctx.run_identity.thread_id.clone()),
+                tool_call_id: Some(ctx.call_id.clone()),
             },
-            control: BackendControl::default(),
-            policy: BackendDelegatePolicy::default(),
-            state_seed: None,
+            sink,
         };
 
-        let execution = execute_resolved_delegate_execution(&resolved, request).await;
-
-        match execution {
+        match self.runner.run(request).await {
             Ok(result) => {
-                let progress_status = match result.status {
-                    crate::backend::BackendRunStatus::Completed => ProgressStatus::Done,
-                    crate::backend::BackendRunStatus::Cancelled => ProgressStatus::Cancelled,
-                    crate::backend::BackendRunStatus::WaitingInput(_)
-                    | crate::backend::BackendRunStatus::WaitingAuth(_)
-                    | crate::backend::BackendRunStatus::Suspended(_) => ProgressStatus::Pending,
-                    crate::backend::BackendRunStatus::Timeout
-                    | crate::backend::BackendRunStatus::Failed(_) => ProgressStatus::Failed,
+                let progress_status = match result.outcome {
+                    DelegateOutcome::Completed => ProgressStatus::Done,
+                    DelegateOutcome::Cancelled => ProgressStatus::Cancelled,
+                    DelegateOutcome::WaitingInput
+                    | DelegateOutcome::WaitingAuth
+                    | DelegateOutcome::Suspended => ProgressStatus::Pending,
+                    DelegateOutcome::Timeout | DelegateOutcome::Failed => ProgressStatus::Failed,
                 };
-                let progress_message = match &result.status {
-                    crate::backend::BackendRunStatus::Completed => {
+                let progress_message = match result.outcome {
+                    DelegateOutcome::Completed => {
                         format!("delegation to {} completed", self.agent_id)
                     }
-                    crate::backend::BackendRunStatus::Cancelled => {
+                    DelegateOutcome::Cancelled => {
                         format!("delegation to {} cancelled", self.agent_id)
                     }
-                    crate::backend::BackendRunStatus::Failed(message) => {
-                        format!("delegation to {} failed: {message}", self.agent_id)
+                    DelegateOutcome::Failed => {
+                        format!(
+                            "delegation to {} failed: {}",
+                            self.agent_id,
+                            result.status_message.as_deref().unwrap_or("failed")
+                        )
                     }
-                    crate::backend::BackendRunStatus::WaitingInput(message) => {
+                    DelegateOutcome::WaitingInput => {
                         format!(
                             "delegation to {} waiting for input: {}",
                             self.agent_id,
-                            message.as_deref().unwrap_or("input required")
+                            result.status_message.as_deref().unwrap_or("input required")
                         )
                     }
-                    crate::backend::BackendRunStatus::WaitingAuth(message) => {
+                    DelegateOutcome::WaitingAuth => {
                         format!(
                             "delegation to {} waiting for auth: {}",
                             self.agent_id,
-                            message.as_deref().unwrap_or("auth required")
+                            result.status_message.as_deref().unwrap_or("auth required")
                         )
                     }
-                    crate::backend::BackendRunStatus::Suspended(message) => {
+                    DelegateOutcome::Suspended => {
                         format!(
                             "delegation to {} suspended: {}",
                             self.agent_id,
-                            message.as_deref().unwrap_or("suspended")
+                            result.status_message.as_deref().unwrap_or("suspended")
                         )
                     }
-                    crate::backend::BackendRunStatus::Timeout => {
+                    DelegateOutcome::Timeout => {
                         format!("delegation to {} timed out", self.agent_id)
                     }
                 };
                 ctx.report_progress(progress_status, Some(&progress_message), None)
                     .await;
 
-                let child_run_id = result.run_id.clone();
+                let child_run_id = result.child_run_id.clone();
                 let mut tool_result =
-                    tool_result_from_backend(&tool_id, result, progress_message, &args, ctx);
+                    tool_result_from_delegate(&tool_id, &result, progress_message, &args, ctx);
                 if let Some(ref child_run_id) = child_run_id {
                     tool_result = tool_result.with_metadata(
                         "child_run_id",
@@ -261,74 +266,68 @@ impl Tool for AgentTool {
     }
 }
 
-fn tool_result_from_backend(
+fn tool_result_from_delegate(
     tool_id: &str,
-    result: crate::backend::BackendRunResult,
+    result: &DelegateResult,
     message: String,
     args: &Value,
     ctx: &ToolCallContext,
 ) -> ToolResult {
-    let status = result.status.clone();
     let payload = json!({
         "agent_id": result.agent_id.clone(),
-        "status": status.to_string(),
+        "status": result.status_label.clone(),
         "response": result.response.clone(),
         "output": result.output.clone(),
         "steps": result.steps,
     });
 
-    match status {
-        crate::backend::BackendRunStatus::Completed => ToolResult::success(tool_id, payload),
-        crate::backend::BackendRunStatus::WaitingInput(_)
-        | crate::backend::BackendRunStatus::WaitingAuth(_)
-        | crate::backend::BackendRunStatus::Suspended(_) => ToolResult {
+    match result.outcome {
+        DelegateOutcome::Completed => ToolResult::success(tool_id, payload),
+        DelegateOutcome::WaitingInput
+        | DelegateOutcome::WaitingAuth
+        | DelegateOutcome::Suspended => ToolResult {
             tool_name: tool_id.to_string(),
             status: ToolStatus::Pending,
             data: payload,
             message: Some(message),
             suspension: Some(Box::new(delegate_suspend_ticket(
-                tool_id, &status, &result, args, ctx,
+                tool_id, result, args, ctx,
             ))),
             metadata: Default::default(),
         },
-        crate::backend::BackendRunStatus::Cancelled
-        | crate::backend::BackendRunStatus::Timeout
-        | crate::backend::BackendRunStatus::Failed(_) => ToolResult {
-            tool_name: tool_id.to_string(),
-            status: ToolStatus::Error,
-            data: payload,
-            message: Some(message),
-            suspension: None,
-            metadata: Default::default(),
-        },
+        DelegateOutcome::Cancelled | DelegateOutcome::Timeout | DelegateOutcome::Failed => {
+            ToolResult {
+                tool_name: tool_id.to_string(),
+                status: ToolStatus::Error,
+                data: payload,
+                message: Some(message),
+                suspension: None,
+                metadata: Default::default(),
+            }
+        }
     }
 }
 
 fn delegate_suspend_ticket(
     tool_id: &str,
-    status: &crate::backend::BackendRunStatus,
-    result: &crate::backend::BackendRunResult,
+    result: &DelegateResult,
     args: &Value,
     ctx: &ToolCallContext,
 ) -> SuspendTicket {
-    let (action, fallback_message) = match status {
-        crate::backend::BackendRunStatus::WaitingInput(_) => {
-            ("agent_delegate:input_required", "input required")
-        }
-        crate::backend::BackendRunStatus::WaitingAuth(_) => {
-            ("agent_delegate:auth_required", "auth required")
-        }
-        crate::backend::BackendRunStatus::Suspended(_) => ("agent_delegate:suspended", "suspended"),
+    let (action, fallback_message) = match result.outcome {
+        DelegateOutcome::WaitingInput => ("agent_delegate:input_required", "input required"),
+        DelegateOutcome::WaitingAuth => ("agent_delegate:auth_required", "auth required"),
+        DelegateOutcome::Suspended => ("agent_delegate:suspended", "suspended"),
         _ => ("agent_delegate:pending", "pending"),
     };
-    let reason = status_message(status).unwrap_or(fallback_message);
+    let reason = result.status_message.as_deref().unwrap_or(fallback_message);
     let pending_id = if ctx.call_id.trim().is_empty() {
         tool_id.to_string()
     } else {
         ctx.call_id.clone()
     };
     let suspension_id = result
-        .run_id
+        .child_run_id
         .as_ref()
         .filter(|run_id| !run_id.trim().is_empty())
         .map(|run_id| format!("delegate_run:{run_id}"))
@@ -340,8 +339,8 @@ fn delegate_suspend_ticket(
             message: reason.to_string(),
             parameters: json!({
                 "agent_id": result.agent_id.clone(),
-                "backend_status": status.to_string(),
-                "child_run_id": result.run_id.clone(),
+                "backend_status": result.status_label.clone(),
+                "child_run_id": result.child_run_id.clone(),
                 "tool_call_id": pending_id.clone(),
             }),
             response_schema: None,
@@ -349,15 +348,6 @@ fn delegate_suspend_ticket(
         PendingToolCall::new(pending_id, tool_id, args.clone()),
         ToolCallResumeMode::UseDecisionAsToolResult,
     )
-}
-
-fn status_message(status: &crate::backend::BackendRunStatus) -> Option<&str> {
-    match status {
-        crate::backend::BackendRunStatus::WaitingInput(message)
-        | crate::backend::BackendRunStatus::WaitingAuth(message)
-        | crate::backend::BackendRunStatus::Suspended(message) => message.as_deref(),
-        _ => None,
-    }
 }
 
 struct FixedAgentResolver {
@@ -400,5 +390,141 @@ impl AgentResolver for FixedAgentResolver {
 
     fn agent_ids(&self) -> Vec<String> {
         vec![self.execution.spec().id.clone()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::delegation::{DelegateError, DelegateOutcome, DelegateRequest, DelegateResult};
+    use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
+    use awaken_runtime_contract::registry_spec::AgentSpec;
+
+    /// A `DelegateRunner` that returns a fixed outcome, so we can assert the
+    /// tool's `DelegateOutcome` → `ToolResult`/suspension mapping in isolation.
+    struct MockRunner {
+        outcome: DelegateOutcome,
+        status_label: &'static str,
+        status_message: Option<String>,
+        child_run_id: Option<String>,
+    }
+
+    #[async_trait]
+    impl DelegateRunner for MockRunner {
+        async fn run(&self, _request: DelegateRequest) -> Result<DelegateResult, DelegateError> {
+            Ok(DelegateResult {
+                outcome: self.outcome,
+                status_label: self.status_label.to_string(),
+                status_message: self.status_message.clone(),
+                agent_id: "child".into(),
+                response: Some("ok".into()),
+                output: Value::Null,
+                steps: 1,
+                child_run_id: self.child_run_id.clone(),
+            })
+        }
+    }
+
+    fn ctx() -> ToolCallContext {
+        ToolCallContext {
+            call_id: "call-1".into(),
+            tool_name: "agent_run_child".into(),
+            run_identity: RunIdentity::new(
+                "thread-1".into(),
+                None,
+                "run-1".into(),
+                None,
+                "parent".into(),
+                RunOrigin::User,
+            ),
+            agent_spec: Arc::new(AgentSpec::default()),
+            snapshot: crate::state::StateStore::new().snapshot(),
+            activity_sink: None,
+            cancellation_token: None,
+            resume_input: None,
+            suspension_id: None,
+            suspension_reason: None,
+        }
+    }
+
+    fn tool(outcome: DelegateOutcome, label: &'static str, msg: Option<&str>) -> AgentTool {
+        AgentTool::with_runner(
+            "child",
+            "desc",
+            Arc::new(MockRunner {
+                outcome,
+                status_label: label,
+                status_message: msg.map(str::to_string),
+                child_run_id: Some("run-7".into()),
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn completed_maps_to_success() {
+        let out = tool(DelegateOutcome::Completed, "completed", None)
+            .execute(json!({"prompt": "hi"}), &ctx())
+            .await
+            .unwrap();
+        assert!(matches!(out.result.status, ToolStatus::Success));
+        assert_eq!(out.result.data["status"], "completed");
+        assert!(out.result.suspension.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_maps_to_error() {
+        let out = tool(DelegateOutcome::Failed, "failed", Some("boom"))
+            .execute(json!({"prompt": "hi"}), &ctx())
+            .await
+            .unwrap();
+        assert!(matches!(out.result.status, ToolStatus::Error));
+        assert!(out.result.suspension.is_none());
+    }
+
+    #[tokio::test]
+    async fn waiting_input_maps_to_pending_suspension() {
+        let out = tool(
+            DelegateOutcome::WaitingInput,
+            "waiting_input",
+            Some("need x"),
+        )
+        .execute(json!({"prompt": "hi"}), &ctx())
+        .await
+        .unwrap();
+        assert!(matches!(out.result.status, ToolStatus::Pending));
+        let ticket = out.result.suspension.as_ref().expect("suspension ticket");
+        assert_eq!(ticket.suspension.action, "agent_delegate:input_required");
+        assert_eq!(ticket.suspension.id, "delegate_run:run-7");
+    }
+
+    #[tokio::test]
+    async fn suspended_maps_to_pending_suspension() {
+        let out = tool(DelegateOutcome::Suspended, "suspended", None)
+            .execute(json!({"prompt": "hi"}), &ctx())
+            .await
+            .unwrap();
+        assert!(matches!(out.result.status, ToolStatus::Pending));
+        let ticket = out.result.suspension.as_ref().expect("suspension ticket");
+        assert_eq!(ticket.suspension.action, "agent_delegate:suspended");
+    }
+
+    #[tokio::test]
+    async fn cancelled_maps_to_error() {
+        let out = tool(DelegateOutcome::Cancelled, "cancelled", None)
+            .execute(json!({"prompt": "hi"}), &ctx())
+            .await
+            .unwrap();
+        assert!(matches!(out.result.status, ToolStatus::Error));
+        assert!(out.result.suspension.is_none());
+    }
+
+    #[tokio::test]
+    async fn timeout_maps_to_error() {
+        let out = tool(DelegateOutcome::Timeout, "timeout", None)
+            .execute(json!({"prompt": "hi"}), &ctx())
+            .await
+            .unwrap();
+        assert!(matches!(out.result.status, ToolStatus::Error));
+        assert!(out.result.suspension.is_none());
     }
 }

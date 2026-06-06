@@ -15,6 +15,8 @@ pub mod checkpoint_store;
 pub mod child_agent;
 pub mod context;
 pub mod credentials;
+#[cfg(feature = "a2a")]
+pub(crate) mod delegation;
 pub mod engine;
 mod error;
 pub mod event_buffer;
