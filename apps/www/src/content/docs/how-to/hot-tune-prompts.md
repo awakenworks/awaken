@@ -1,138 +1,76 @@
 ---
 title: "Hot-Tune Prompts"
-description: "The config-first inner loop: edit a prompt, reminder, or permission rule via the config API, and have the next run see it — no rebuild, no restart."
+description: "Tune a saved agent's prompt from the Admin Console: edit Basics, validate, preview with the draft, save, then compare traces or evals."
 ---
 
-The Awaken runtime separates tools (Rust) from prompts, reminders, permissions, and skill catalogs (config). This page shows the loop you actually use to iterate on the config side, without rebuilding the binary.
+Use this when the agent already exists and you want to improve instructions
+without rebuilding the server. The Admin Console is the primary path; API writes
+are for automation after the same change is proven in the UI.
 
-> This page is just the **edit → run → verify** inner loop. For the full editable
-> surface — providers, models, pools, plugin sections, context policy — see
-> [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) (the
-> canonical "tune at runtime" reference).
+## What you click
 
-## Goal
+<figure class="screenshot">
+  <a href="/awaken/assets/admin-console/flow-agent-basics.png">
+    <img src="/awaken/assets/admin-console/flow-agent-basics.png" alt="Agent editor Basics tab with model selection, system prompt, save controls, and preview chat." loading="lazy" />
+  </a>
+  <figcaption>Edit the system prompt in Basics, validate the draft, preview it, then save.</figcaption>
+</figure>
 
-Change an agent's behaviour mid-flight and verify the change on the very next run.
+1. Open **Agents** and choose the agent.
+2. Stay on **Basics**.
+3. Edit **System prompt**. Keep the change narrow: role, constraints, answer
+   shape, tool-use guidance, or refusal policy.
+4. Click **Validate**. Fix any field errors before previewing.
+5. Use the preview chat with a representative prompt. The preview uses the
+   unsaved draft.
+6. Click **Save** when the draft behaves better.
+7. Open **History** or **Audit Log** if you need to compare or restore.
 
-## Prerequisites
+## What to compare
 
-- The Awaken server is running with a `ConfigStore` wired into `ServerState` (see [Expose HTTP SSE](/awaken/how-to/expose-http-sse/)).
-- At least one agent, model, and provider exist in config (see [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/)).
-- Tools you want the agent to call are registered in Rust (`AgentRuntimeBuilder::with_tool`, see [Add a Tool](/awaken/how-to/add-a-tool/)).
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-history.png">
+      <img src="/awaken/assets/admin-console/flow-agent-history.png" alt="Agent editor History tab showing a system_prompt update and restore action." loading="lazy" />
+    </a>
+    <figcaption>History shows the saved prompt change and restore action for the agent.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-eval-run-detail.png">
+      <img src="/awaken/assets/admin-console/flow-eval-run-detail.png" alt="Eval run detail with per-fixture pass and fail results." loading="lazy" />
+    </a>
+    <figcaption>Eval results show whether the prompt improved the behavior you care about.</figcaption>
+  </figure>
+</div>
 
-## The loop
+Use the same scenario before and after the edit:
 
-### 1. Inspect the current spec
+- A preview chat prompt for quick feedback.
+- A saved trace if you need to inspect exact tool calls and model output.
+- A dataset/eval run when the behavior must be repeatable.
 
-```bash
-curl -sS http://localhost:3000/v1/config/agents/research-assistant | jq .
-```
+See [Capture a Dataset and Run an Eval](/awaken/how-to/capture-a-dataset-and-run-an-eval/).
 
-The response is the spec the runtime will hand to the next run that names this `agent_id`.
+## What is safe to tune live
 
-### 2. Edit the part you want to change
-
-PUT the same id with the modified fields. The example below tightens the prompt and narrows the tool surface:
-
-```bash
-curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
-  -H 'content-type: application/json' \
-  -d '{
-    "id": "research-assistant",
-    "model_id": "research-default",
-    "system_prompt": "You are a skeptical research assistant. Refuse to answer without at least two independent peer-reviewed sources; cite each.",
-    "max_rounds": 12,
-    "plugin_ids": ["permission", "reminder"],
-    "allowed_tools": ["web_search", "read_document"],
-    "sections": {
-      "reminder": {
-        "rules": [{
-          "tool": "read_document",
-          "output": "any",
-          "message": {
-            "target": "suffix_system",
-            "content": "If the document is not peer-reviewed, mention that explicitly in your answer."
-          }
-        }]
-      }
-    }
-  }'
-```
-
-The PUT response is the validated published config. The server compiles the change into a candidate registry snapshot, validates section schemas, then publishes — atomically, in one step.
-
-### 3. Run and observe
-
-```bash
-curl -sS -X POST http://localhost:3000/v1/runs \
-  -H 'content-type: application/json' \
-  -d '{
-    "agent_id": "research-assistant",
-    "thread_id": "tune-2",
-    "messages": [{"role": "user", "content": "Find one source on coral bleaching."}]
-  }' | jq -r '.response'
-```
-
-Use a **fresh `thread_id`** to isolate the change from prior-turn context. The new prompt, reminder, and tool surface are all active.
-
-To compare before/after rigorously, run step 3 twice with the same user message — once before the PUT in step 2, once after.
-
-## What you can tune live
-
-Everything below lives in config and reloads on the next run:
-
-| Knob | Where | Effect |
+| Prompt change | UI location | Notes |
 |---|---|---|
-| `system_prompt` | `AgentSpec.system_prompt` | Agent persona / instructions |
-| Tool descriptions | `ToolSpecPatch.description` | Override how existing tools are described to the model |
-| `allowed_tools` / `excluded_tools` | `AgentSpec.*_tools` | Tool whitelist / blacklist |
-| Delegates | `AgentSpec.delegates` | Explicit sub-agent tools exposed during resolution |
-| `max_rounds`, `reasoning_effort` | `AgentSpec.*` | Loop bounds |
-| `context_policy` | `AgentSpec.context_policy` | Context window shaping + compaction |
-| Permission rules | `sections.permission.rules` | Per-tool allow/ask/deny on name + args |
-| Reminder rules | `sections.reminder.rules` | Inject system/conversation messages on tool patterns |
-| Retry policy | `sections.retry` | Backoff and retry limits |
-| Deferred tool gating | `sections.deferred_tools` | Which tools stay eager, load through `ToolSearch`, or re-defer |
-| Compaction summarizer | `sections.compaction` | Summarizer prompt + model + threshold |
-| Generative UI catalog | `sections.generative-ui` | A2UI catalog id + examples |
-| Skill catalog | `/v1/config/skills` or your skill root | Instructions, allowed tools, arguments, and activation metadata |
-| MCP server tools | Remote MCP server | Auto-refreshed on `tools/list_changed` |
+| Role and tone | **Basics → System prompt** | Good first edit; easy to preview. |
+| Output format | **Basics → System prompt** | Pair with eval checks when format matters. |
+| Tool-use guidance | **Basics → System prompt** plus **Tools** | Also narrow allowed tools if wording alone is not enough. |
+| Safety boundaries | **Basics → System prompt** plus **Plugins → Permission** | Use permission rules for tool-level enforcement. |
+| Model choice | **Basics → Model** | Preview again; models can interpret the same prompt differently. |
 
-Anything not in this list is code: new tools, plugins, provider factories, custom `PluginConfigKey` types, and `Tool` trait implementations. ToolSearch is shipped by deferred-tools; skills use catalog injection plus the `skill` activation tool; delegates are explicit, not AgentSearch-discovered.
+Changes affect **new runs after save**. Active runs keep the spec they already
+resolved.
 
-## Trace-driven comparison
+## When to use API instead
 
-The admin console renders the persistent trace store. To validate a tune:
+Use the config API when prompt edits come from CI, migrations, or internal tools.
+Keep the same loop: validate, write, run a representative task, then compare.
 
-1. Note the trace id of the pre-tune run.
-2. PUT the new config.
-3. Re-run with the same user message and a new `thread_id`. Note the new trace id.
-4. Open both traces side-by-side. Compare: tool calls, gate decisions, LLM token counts, total wall time.
+Related references:
 
-Traces include the prompt and section values at run start, so you have a permanent record of what produced each result.
-
-## Active runs vs new runs
-
-The runtime guarantees: **a run that has already started keeps its starting snapshot until it terminates.** This is the contract that makes hot-tuning safe — you cannot accidentally change a long-running agent mid-flight by editing config.
-
-To validate a tune without waiting for active runs to drain, start a new run with a fresh `thread_id`. To rotate all agents onto the new spec, cancel and restart the active runs.
-
-## What you can't tune live
-
-| Change | Requires |
-|---|---|
-| Adding a new Rust tool implementation | Rebuild + redeploy |
-| Adding a new plugin trait implementation | Rebuild + redeploy |
-| Adding a new `PluginConfigKey` schema | Rebuild + redeploy |
-| Swapping the `ConfigStore` backend | Restart |
-
-If the tune you need crosses one of these lines, you're not on the hot-tune path — you're on the build-and-deploy path.
-
-## Related
-
-- [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) — full config surface reference
-- [Add a Tool](/awaken/how-to/add-a-tool/) — what stays in code
-- [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) — `permission` section deep dive
-- [Use Reminder Plugin](/awaken/how-to/use-reminder-plugin/) — `reminder` section deep dive
-- [Use Skills Subsystem](/awaken/how-to/use-skills-subsystem/) — turning on `start_periodic_refresh`
-- [Design Philosophy](/awaken/explanation/philosophy/) — why this split exists
+- [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/)
+- [HTTP API](/awaken/reference/http-api/)
+- [Config reference](/awaken/reference/config/#agentspec)

@@ -1,169 +1,64 @@
 ---
 title: "启用工具权限 HITL"
-description: "当你需要控制 agent 能调用哪些工具，并对敏感操作启用人工审批时，使用本页。"
+description: "在管理控制台中为敏感工具添加 Ask/Allow/Deny 规则，Preview Agent，Save，并在 trace/audit 中审查。"
 ---
 
-当你需要控制 agent 能调用哪些工具，并对敏感操作启用人工审批时，使用本页。
+工具权限 HITL 是治理工作流：决定哪些工具可直接运行，哪些必须询问人工，哪些不应暴露。
+优先使用管理控制台，因为 policy 会和 Agent 草稿放在一起审查。
 
-## 前置条件
+## 你要点击什么
 
-- 已有可运行的 awaken runtime
-- `awaken` 启用了 `permission`
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-permissions.png">
+      <img src="/awaken/assets/admin-console/flow-agent-permissions.png" alt="Agent editor 的 Plugins tab，包含 Permissions、Reminders、deferred_tools 和 Permission rules config card。" loading="lazy" />
+    </a>
+    <figcaption>Agent editor：启用 permission plugin，并为草稿编辑 rules。</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-tools.png">
+      <img src="/awaken/assets/admin-console/flow-agent-tools.png" alt="Agent editor 的 Tools tab，展示 allowed web_search、read_document、filesystem/read_file、summarize 和 excluded delete_file。" loading="lazy" />
+    </a>
+    <figcaption>Agent Tools tab：添加 permission rules 前，确认哪些工具会暴露给模型。</figcaption>
+  </figure>
+</div>
 
-```toml
-[dependencies]
-awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["permission"] }
-tokio = { version = "1", features = ["full"] }
-serde_json = "1"
-```
+1. 打开 **Tools**，确认敏感工具的 id。
+2. 打开 **Agents**，选择目标 Agent。
+3. 在 **Tools** tab，只暴露这个 Agent 应该知道的工具。
+4. 在 **Plugins** tab，启用 permission plugin。
+5. 添加规则：
+   - 安全只读工具用 **Allow**。
+   - 会花钱、写文件、调用外部系统或暴露敏感数据的工具用 **Ask**。
+   - 该 Agent 永远不能调用的工具用 **Deny**。
+6. 点击 **Validate**。
+7. Preview 两个 prompt：一个应直接运行，一个应暂停等待审核。
+8. 两条路径都正确后 Save。
 
-## 步骤
+## 规则检查表
 
-1. 注册 permission 插件：
+| 问题 | UI 检查 |
+|---|---|
+| Agent 是否需要看到这个工具？ | **Tools** tab 的 allow/exclude selection |
+| 工具可用但需要审核？ | **Plugins → Permission → Ask** |
+| 工具应从有效目录中消失？ | **Plugins → Permission → Deny**，或在 **Tools** 中 exclude |
+| 是否需要按参数匹配？ | 添加匹配工具参数的 rule，并 preview 完全相同的 case |
+| 保存后 policy 是否变化？ | **History** 和 **Audit Log** |
 
-```rust
-use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::ext_permission::PermissionPlugin;
-use awaken::registry_spec::ModelSpec;
-use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, Plugin};
+## 验证和运营
 
-let mut agent_spec = AgentSpec::new("my-agent")
-    .with_model_id("gpt-4o-mini")
-    .with_system_prompt("You are a helpful assistant.")
-    .with_hook_filter("permission");
-agent_spec.plugin_ids.push("permission".into());
+<figure class="screenshot">
+  <a href="/awaken/assets/admin-console/flow-agent-history.png">
+    <img src="/awaken/assets/admin-console/flow-agent-history.png" alt="Agent editor 的 History tab，包含 update/create events 和 Restore actions。" loading="lazy" />
+  </a>
+  <figcaption>使用 History 审查 permission-rule 变更，并恢复旧 policy。</figcaption>
+</figure>
 
-let runtime = AgentRuntimeBuilder::new()
-    .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
-    .with_agent_spec(agent_spec)
-    .with_plugin("permission", Arc::new(PermissionPlugin) as Arc<dyn Plugin>)
-    .build()
-    .expect("failed to build runtime");
-```
+保存后，运行一个真实任务或 eval fixture，让它尝试敏感工具。正确的 Ask 规则应在你的
+client/HITL surface 中暂停等待人工。如果模型仍能调用应被阻止的工具，同时收紧 **Tools** allowlist 和 permission rule。
 
-permission 插件会注册一个 `ToolGateHook`，在每次工具真正执行前评估规则。
-`plugin_ids` 负责加载插件；`with_hook_filter("permission")` 在同一个 agent
-加载多个插件时保留 permission hook。
+## 自动化 API 参考
 
-2. 以内联方式定义规则：
-
-```rust
-use awaken::ext_permission::{PermissionRulesConfig, PermissionRuleEntry, ToolPermissionBehavior};
-
-let config = PermissionRulesConfig {
-    default_behavior: ToolPermissionBehavior::Ask,
-    rules: vec![
-        PermissionRuleEntry {
-            tool: "read_file".into(),
-            behavior: ToolPermissionBehavior::Allow,
-            scope: Default::default(),
-        },
-        PermissionRuleEntry {
-            tool: "file_*".into(),
-            behavior: ToolPermissionBehavior::Ask,
-            scope: Default::default(),
-        },
-        PermissionRuleEntry {
-            tool: "delete_*".into(),
-            behavior: ToolPermissionBehavior::Deny,
-            scope: Default::default(),
-        },
-    ],
-};
-```
-
-3. 也可以从 YAML 文件加载：
-
-```yaml
-default_behavior: ask
-rules:
-  - tool: "read_file"
-    behavior: allow
-  - tool: "Bash(npm *)"
-    behavior: allow
-  - tool: "file_*"
-    behavior: ask
-  - tool: "delete_*"
-    behavior: deny
-```
-
-4. 通过 agent spec 激活：
-
-```rust
-use awaken::ext_permission::{
-    PermissionConfigKey, PermissionRulesConfig, PermissionRuleEntry, ToolPermissionBehavior,
-};
-
-let mut agent_spec = AgentSpec::new("my-agent")
-    .with_model_id("gpt-4o-mini")
-    .with_system_prompt("You are a helpful assistant.")
-    .with_hook_filter("permission");
-agent_spec.plugin_ids.push("permission".into());
-
-agent_spec.set_config::<PermissionConfigKey>(PermissionRulesConfig {
-    default_behavior: ToolPermissionBehavior::Ask,
-    rules: vec![
-        PermissionRuleEntry {
-            tool: "read_file".into(),
-            behavior: ToolPermissionBehavior::Allow,
-            scope: Default::default(),
-        },
-    ],
-})?;
-```
-
-5. 理解规则优先级：
-
-1. `Deny`
-2. `Allow`
-3. `Ask`
-
-匹配 DSL 支持：
-
-| Pattern | 匹配方式 |
-|---------|----------|
-| `read_file` | 精确匹配工具名 |
-| `file_*` | 工具名 glob |
-| `mcp__github__*` | MCP 工具 glob |
-| `Bash(npm *)` | 主参数 glob |
-| `Edit(file_path ~ "src/**")` | 命名字段 glob |
-| `Bash(command =~ "(?i)rm")` | 命名字段 regex |
-| `/mcp__(gh\|gl)__.*/` | 工具名 regex |
-
-## 验证
-
-1. 用一个命中 `deny` 的工具测试，调用应在执行前被阻断
-2. 用一个命中 `ask` 的工具测试，run 应进入等待审批状态
-3. 通过 mailbox 接口提交审批
-4. 确认 run 恢复执行
-
-## 常见错误
-
-| 错误 | 原因 | 修复 |
-|---|---|---|
-| 所有工具都被拦住 | `default_behavior: deny` 且无 allow 规则 | 显式给安全工具加 allow |
-| 规则没有生效 | 插件未加载或 hook 被过滤 | 注册 `PermissionPlugin`，在 `plugin_ids` 中加入 `"permission"`，使用 hook filter 时再加 `with_hook_filter("permission")` |
-| pattern 无效 | glob / regex 语法错 | 对照 DSL 语法检查 |
-| ask 一直不恢复 | 没有 mailbox consumer | 让前端或 API 客户端消费审批请求 |
-
-## 相关示例
-
-- `crates/awaken-ext-permission/tests/`
-
-## 关键文件
-
-- `crates/awaken-ext-permission/src/lib.rs`
-- `crates/awaken-ext-permission/src/config.rs`
-- `crates/awaken-ext-permission/src/rules.rs`
-- `crates/awaken-ext-permission/src/plugin/plugin.rs`
-- `crates/awaken-ext-permission/src/plugin/checker.rs`（`PermissionToolGateHook`）
-- `crates/awaken-tool-pattern/`
-
-## 相关
-
-- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
+- [配置参考：AgentSpec sections](/awaken/zh-cn/reference/config/#agentspec)
+- [HTTP API](/awaken/zh-cn/reference/http-api/)
 - [HITL 与 Mailbox](/awaken/zh-cn/explanation/hitl-and-mailbox/)
-- [Tool Trait](/awaken/zh-cn/reference/tool-trait/)

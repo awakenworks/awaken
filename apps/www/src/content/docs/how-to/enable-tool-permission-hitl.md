@@ -1,192 +1,69 @@
 ---
 title: "Enable Tool Permission HITL"
-description: "Use this when you need to control which tools an agent can invoke, with human-in-the-loop approval for sensitive operations."
+description: "Use the Admin Console to add Ask/Allow/Deny rules for sensitive tools, preview the agent, save, and review decisions in traces/audit."
 ---
 
-Use this when you need to control which tools an agent can invoke, with human-in-the-loop approval for sensitive operations.
+Tool permission HITL is a governance workflow: decide which tools may run
+without review, which must ask a human, and which should never be exposed. Use
+the Admin Console first so the policy is visible next to the agent draft.
 
-## Prerequisites
+## What you click
 
-- A working awaken agent runtime (see [First Agent](/awaken/tutorials/first-agent/))
-- Feature `permission` enabled on the `awaken` crate (enabled by default)
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-permissions.png">
+      <img src="/awaken/assets/admin-console/flow-agent-permissions.png" alt="Agent editor Plugins tab with Permissions, Reminders, deferred_tools, and a Permission rules config card." loading="lazy" />
+    </a>
+    <figcaption>Agent editor: enable the permission plugin and edit rules for the draft.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-tools.png">
+      <img src="/awaken/assets/admin-console/flow-agent-tools.png" alt="Agent editor Tools tab showing allowed web_search, read_document, filesystem/read_file, summarize, and excluded delete_file." loading="lazy" />
+    </a>
+    <figcaption>Agent Tools tab: confirm which tools are exposed before adding permission rules.</figcaption>
+  </figure>
+</div>
 
-```toml
-[dependencies]
-awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["permission"] }
-tokio = { version = "1", features = ["full"] }
-serde_json = "1"
-```
+1. Open **Tools** and identify the sensitive tool ids.
+2. Open **Agents** and choose the agent.
+3. On **Tools**, expose only the tools this agent should know about.
+4. On **Plugins**, enable the permission plugin.
+5. Add rules:
+   - **Allow** for safe read-only tools.
+   - **Ask** for tools that can spend money, write files, call external systems,
+     or reveal sensitive data.
+   - **Deny** for tools this agent must never call.
+6. Click **Validate**.
+7. Preview one prompt that should run without asking and one that should suspend
+   for review.
+8. Save when both paths are correct.
 
-## Steps
+## Rule checklist
 
-1. Register the permission plugin.
+| Question | UI check |
+|---|---|
+| Does the agent need to see this tool at all? | **Tools** tab allow/exclude selection |
+| Should the tool be available but reviewed? | **Plugins → Permission → Ask** |
+| Should the tool disappear from the effective catalog? | **Plugins → Permission → Deny** or exclude it in **Tools** |
+| Are argument-sensitive rules needed? | Add a rule that matches the tool arguments, then preview that exact case |
+| Did the policy change after save? | **History** and **Audit Log** |
 
-```rust
-use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::ext_permission::PermissionPlugin;
-use awaken::registry_spec::ModelSpec;
-use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, Plugin};
+## Verify and operate
 
-let mut agent_spec = AgentSpec::new("my-agent")
-    .with_model_id("gpt-4o-mini")
-    .with_system_prompt("You are a helpful assistant.")
-    .with_hook_filter("permission");
-agent_spec.plugin_ids.push("permission".into());
+<figure class="screenshot">
+  <a href="/awaken/assets/admin-console/flow-agent-history.png">
+    <img src="/awaken/assets/admin-console/flow-agent-history.png" alt="Agent editor History tab with update/create events and Restore actions." loading="lazy" />
+  </a>
+  <figcaption>Use History to review permission-rule changes and restore prior policy.</figcaption>
+</figure>
 
-let runtime = AgentRuntimeBuilder::new()
-    .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
-    .with_agent_spec(agent_spec)
-    .with_plugin("permission", Arc::new(PermissionPlugin) as Arc<dyn Plugin>)
-    .build()
-    .expect("failed to build runtime");
-```
+After saving, run a real task or eval fixture that tries the sensitive tool. A
+correct Ask rule should suspend for human review in your client/HITL surface. If
+the model can still call a tool that should be blocked, tighten the **Tools**
+allowlist and the permission rule together.
 
-The plugin registers a `ToolGateHook` that evaluates permission rules before every tool call.
-`plugin_ids` loads the plugin; `with_hook_filter("permission")` keeps its hooks
-active when the agent loads multiple plugins.
+## API references for automation
 
-2. Define permission rules inline.
-
-```rust
-use awaken::ext_permission::{PermissionRulesConfig, PermissionRuleEntry, ToolPermissionBehavior};
-
-let config = PermissionRulesConfig {
-    default_behavior: ToolPermissionBehavior::Ask,
-    rules: vec![
-        PermissionRuleEntry {
-            tool: "read_file".into(),
-            behavior: ToolPermissionBehavior::Allow,
-            scope: Default::default(),
-        },
-        PermissionRuleEntry {
-            tool: "file_*".into(),
-            behavior: ToolPermissionBehavior::Ask,
-            scope: Default::default(),
-        },
-        PermissionRuleEntry {
-            tool: "delete_*".into(),
-            behavior: ToolPermissionBehavior::Deny,
-            scope: Default::default(),
-        },
-    ],
-};
-
-let ruleset = config.into_ruleset().expect("invalid rules");
-```
-
-3. Load rules from a YAML file (alternative).
-
-   Create `permissions.yaml`:
-
-```yaml
-default_behavior: ask
-rules:
-  - tool: "read_file"
-    behavior: allow
-  - tool: "Bash(npm *)"
-    behavior: allow
-  - tool: "file_*"
-    behavior: ask
-  - tool: "delete_*"
-    behavior: deny
-  - tool: "mcp__*"
-    behavior: ask
-```
-
-Load it in code:
-
-```rust
-use awaken::ext_permission::PermissionRulesConfig;
-
-let config = PermissionRulesConfig::from_file("permissions.yaml")
-    .expect("failed to load permissions");
-let ruleset = config.into_ruleset().expect("invalid rules");
-```
-
-4. Configure via agent spec.
-
-   Permission rules can also be embedded in the agent spec using the `permission` plugin config key:
-
-```rust
-use awaken::registry_spec::AgentSpec;
-use awaken::ext_permission::{
-    PermissionConfigKey, PermissionRulesConfig, PermissionRuleEntry, ToolPermissionBehavior,
-};
-
-let mut agent_spec = AgentSpec::new("my-agent")
-    .with_model_id("gpt-4o-mini")
-    .with_system_prompt("You are a helpful assistant.")
-    .with_hook_filter("permission");
-agent_spec.plugin_ids.push("permission".into());
-
-agent_spec.set_config::<PermissionConfigKey>(PermissionRulesConfig {
-    default_behavior: ToolPermissionBehavior::Ask,
-    rules: vec![
-        PermissionRuleEntry {
-            tool: "read_file".into(),
-            behavior: ToolPermissionBehavior::Allow,
-            scope: Default::default(),
-        },
-    ],
-})?;
-```
-
-5. Understand rule evaluation.
-
-   Rules are evaluated with firewall-like priority:
-
-1. **Deny** -- highest priority, blocks the tool call immediately
-2. **Allow** -- permits the tool call without user interaction
-3. **Ask** -- suspends the tool call and waits for human approval
-
-The pattern syntax supports:
-
-| Pattern | Matches |
-|---------|---------|
-| `read_file` | Exact tool name |
-| `file_*` | Glob on tool name |
-| `mcp__github__*` | Glob for MCP-prefixed tools |
-| `Bash(npm *)` | Tool name with primary argument glob |
-| `Edit(file_path ~ "src/**")` | Named field glob |
-| `Bash(command =~ "(?i)rm")` | Named field regex |
-| `/mcp__(gh\|gl)__.*/` | Regex tool name |
-
-## Verify
-
-1. Register a tool that matches a `deny` rule and attempt to invoke it.
-2. The tool call should be blocked before execution, with the run terminating for deny rules.
-3. Register a tool matching an `ask` rule. The run should suspend, waiting for human approval via the mailbox.
-4. Send approval through the mailbox endpoint and confirm the run resumes.
-
-## Common Errors
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| All tools blocked | `default_behavior: deny` with no `allow` rules | Add explicit `allow` rules for safe tools |
-| Rules not evaluated | Plugin not loaded or hook filtered out | Register `PermissionPlugin`, add `"permission"` to `plugin_ids`, and include `with_hook_filter("permission")` when using hook filters |
-| Invalid pattern error | Malformed glob or regex | Check syntax against the pattern table above |
-| Ask rule never resolves | No mailbox consumer | Wire up a frontend or API client to respond to mailbox items |
-
-## Related Example
-
-- `crates/awaken-ext-permission/tests/`
-
-## Key Files
-
-| Path | Purpose |
-|------|---------|
-| `crates/awaken-ext-permission/src/lib.rs` | Module root and public re-exports |
-| `crates/awaken-ext-permission/src/config.rs` | `PermissionRulesConfig` and YAML/JSON loading |
-| `crates/awaken-ext-permission/src/rules.rs` | Pattern syntax, `ToolPermissionBehavior`, rule evaluation |
-| `crates/awaken-ext-permission/src/plugin/plugin.rs` | `PermissionPlugin` registration |
-| `crates/awaken-ext-permission/src/plugin/checker.rs` | `PermissionToolGateHook` (`ToolGate`) |
-| `crates/awaken-tool-pattern/` | Shared glob/regex pattern matching library |
-
-## Related
-
-- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Config reference: AgentSpec sections](/awaken/reference/config/#agentspec)
+- [HTTP API](/awaken/reference/http-api/)
 - [HITL and Mailbox](/awaken/explanation/hitl-and-mailbox/)
-- [Tool Trait Reference](/awaken/reference/tool-trait/)

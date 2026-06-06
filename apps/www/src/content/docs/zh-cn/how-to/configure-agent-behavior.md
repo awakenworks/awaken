@@ -1,319 +1,142 @@
 ---
 title: "通过配置调优 Agent 行为"
-description: "当同一个服务二进制需要承载多个 Agent 配置、切换模型配置或 model pool，或在不改 Rust 代码的情况下调优插件行为时，使用托管配置。新增 Tool、新增 Plugin、自定义 provider factory 仍然放在代码里；provider、model、agent、MCP server 和类型化 section 值放在配置里。"
+description: "优先使用管理控制台：从 Agent editor 调 prompt、model、tools、plugins、permissions、delegates 和 stop policies。API 用于自动化。"
 ---
 
-当同一个服务二进制需要承载多个 Agent 配置、切换模型配置或 model pool，或在不改
-Rust 代码的情况下调优插件行为时，使用托管配置。新增 Tool、新增 Plugin、自定义
-provider factory 仍然放在代码里；provider、model、agent、MCP server 和类型化
-section 值放在配置里。
+当同一个 server binary 需要承载多个 Agent profile、切换 model、调 prompt、调整权限或改变 plugin 行为，而不想重建 Rust 代码时，使用托管配置。
 
-这是“运行时调优”的主参考。工具写好、runtime 启动后，大部分行为变化都应该是配置改动：
-system prompt、model 选择、工具描述覆盖、允许工具、reasoning effort、context
-policy、reminder 节奏、ToolSearch / deferred-tool 策略、Skill 激活元数据和
-delegates。同一个 server binary 承载多个 Agent 配置；切换行为是
-`PUT /v1/config/agents/:id` 或在管理控制台 Save，而不是重新部署。
+本页**以 UI 为主**。Admin Console 是最安全的调优入口：一次改一个点，校验草稿，预览行为，再保存下一版 runtime snapshot。需要自动化同一流程时，再看 API 参考。
 
-本文假设服务端已经把 `ConfigStore` 接入 `ServerState`，并且要引用的插件已经注册到 runtime plugin registry。
+## 开始前
 
-## 配置层级
+- Runtime 能力已经在代码中接入：server 已注册 tools、providers、stores 和 plugins。
+- Admin Console 能连接 server，topbar 显示 **Connected**。
+- 如果要 live model call，至少配置了一个 provider 和 model。
 
-| 层级 | 位置 | 用途 |
+需要从头连接控制台时，先看 [使用管理控制台](/awaken/zh-cn/how-to/use-admin-console/)。
+
+## UI-first 调优地图
+
+打开 **Agents**，新建 Agent 或打开已有 Agent。
+
+| 编辑区域 | 在这里调 | 适用场景 |
 |---|---|---|
-| Provider | `/v1/config/providers/{id}` | Adapter、API key 来源、base URL、timeout |
-| Model config | `/v1/config/models/{id}` | 稳定 model id -> `ModelSpec`（provider id、上游模型名、capabilities、定价） |
-| Model pool | `/v1/config/model-pools/{id}` | 稳定 pool id -> 有序 `ModelSpec` 成员、粘性路由与故障切换策略 |
-| Agent | `/v1/config/agents/{id}` | Prompt、稳定 `model_id`、轮数、工具、插件、上下文策略 |
-| Tool override | `/v1/config/tools/{id}/overrides` | runtime-safe 的工具描述覆盖 |
-| MCP server | `/v1/config/mcp-servers/{id}` | 外部 MCP server 连接 |
-| Skill | `/v1/config/skills/{id}` | 可复用指令、参数与允许工具集合 |
-| Plugin section | `AgentSpec.sections` | 按 `PluginConfigKey::KEY` 归档的每 Agent 类型化配置 |
-| Runtime code | `AgentRuntimeBuilder` | 注册工具、provider factory、插件、backend |
+| **Basics** | Model、max rounds、reasoning effort、system prompt | 改性格、指令风格、模型或 run 边界。 |
+| **Tools** | Allowed tools、excluded tools、source filters | 暴露或隐藏能力，不改代码。 |
+| **Plugins** | Plugin 启用状态和 plugin-backed sections | 调权限、reminder、generative UI、deferred tools 或其他 plugin 行为。 |
+| **Delegates** | Agent handoff targets | 允许当前 Agent 把控制权交给其他已注册 Agent。 |
+| **Advanced** | Raw JSON preview | 保存前审查最终 spec。 |
+| **History** | 历史 revision 和 restore actions | 对比或回滚已保存变更。 |
 
-托管配置 runtime 支持的 provider adapter 会在 `GET /v1/capabilities` 的
-`supported_adapters` 中返回。该列表由当前链接的 `genai` 版本在运行时推导；
-上游 dependency 支持新 adapter 后，这里会随之出现。
+<figure class="screenshot">
+  <a href="/awaken/assets/admin-console/02-agent-editor.png">
+    <img src="/awaken/assets/admin-console/02-agent-editor.png" alt="Agent editor，包含 model 选择、system prompt、tools、plugins、delegates、history、save controls 和 preview chat。" loading="lazy" />
+  </a>
+  <figcaption>Agent editor 是主要调优界面：一次编辑一个 tab，先 Validate，再 Preview，最后 Save。</figcaption>
+</figure>
 
-## 解析模型
+## 安全编辑循环
 
-本地 Agent 执行通过稳定注册表 ID 解析 model 与 provider：
+1. 一次只改一个行为维度。
+2. 点击 **Validate**。先修复 validation errors，再 preview。
+3. 用右侧 preview chat 跑代表性 prompt。
+4. Preview 符合预期后再保存。
+5. 跑真实任务或 eval fixture。
+6. 如果行为退化，用 **History → Restore** 恢复并保存已知可用版本。
 
-```text
-AgentSpec.model_id
-  -> ModelSpec { provider_id, upstream_model }
-  -> ProviderSpec { adapter, api_key, base_url, timeout_secs }
-  -> LlmExecutor
-```
+保存后的变更只影响**新的 run**。正在运行的任务继续使用它已经解析到的 spec。
 
-`AgentSpec.model_id` 不是上游 provider 模型名。它是 Agent 和客户端使用的稳定 `ModelSpec.id`。`ModelSpec.upstream_model` 才是发送给 provider API 的模型字符串。
+## 常见调优任务
 
-配置写入会先编译成候选 registry snapshot 并完成校验，然后再发布。新的 run 使用最新发布的 snapshot。已经开始的 run 保持启动时绑定的 snapshot。Audit-log restore 是例外：它只把恢复出的 payload 写入 editing store；当它应该对新 run 生效时，再通过普通 Save / PUT 发布。
+### 改 prompt 或 model
 
-如果部署使用 `VersionedRegistryStore`，已发布 runtime snapshot 是不可变的，
-durable run 会携带 `resolution_id`，用于 resume/replay 时重新选择同一个已发布
-graph。Record revision 与 audit restore 让配置历史可追溯；这和“手动把某个
-editing-store 版本 pin 为生产版本”不是同一件事。
+使用 **Basics**：
 
-Endpoint-backed Agent 会跳过本地 provider、model、plugin 和 tool 解析链，改由选中的远程 backend 执行其 `endpoint` 配置。
+1. 选择目标 model id。
+2. 编辑 system prompt。
+3. 如果模型需要不同边界，调整 max rounds 或 reasoning effort。
+4. Validate，Preview，然后 Save。
 
-## 最小托管配置
+如果主要是在调 prompt，搭配 [在线调优 Prompt](/awaken/zh-cn/how-to/hot-tune-prompts/) 阅读。
 
-创建或更新 provider。省略 `api_key` 时，provider adapter 会使用自身环境变量。将 `api_key` 设为 `null` 或 `""` 会清除已保存 key。
+### 收窄工具目录
 
-```bash
-curl -sS -X PUT http://localhost:3000/v1/config/providers/anthropic-prod \
-  -H 'content-type: application/json' \
-  -d '{
-    "id": "anthropic-prod",
-    "adapter": "anthropic",
-    "base_url": null,
-    "timeout_secs": 300
-  }'
-```
+使用 **Tools**：
 
-创建一个把稳定 model id 绑定到该 provider 的 `ModelSpec`：
+1. 选择 **All tools** 获得广泛访问，或选择 **Custom selection** 做显式控制。
+2. 用 source filters 找 built-in、plugin 或 MCP tools。
+3. 把敏感工具加入 excluded list，或配合 permission rules。
+4. Validate，并分别 preview 应该调用和不应该调用该工具的场景。
 
-```bash
-curl -sS -X PUT http://localhost:3000/v1/config/models/research-default \
-  -H 'content-type: application/json' \
-  -d '{
-    "id": "research-default",
-    "provider_id": "anthropic-prod",
-    "upstream_model": "claude-sonnet-4-20250514"
-  }'
-```
+### 加人工审批
 
-如果需要 provider 或 quota 故障切换，可以再添加一个 `ModelSpec`，创建
-`ModelPoolSpec`，然后让 Agent 指向 pool id，而不是单个 model id：
+使用 **Plugins** 和 permission editor：
 
-```bash
-curl -sS -X PUT http://localhost:3000/v1/config/models/research-fallback \
-  -H 'content-type: application/json' \
-  -d '{
-    "id": "research-fallback",
-    "provider_id": "anthropic-prod",
-    "upstream_model": "claude-3-5-haiku-20241022"
-  }'
+1. 给 Agent 启用 permission plugin。
+2. 为敏感工具名和参数添加 Ask/Allow/Deny rules。
+3. Validate、Save，然后运行一个应该暂停等待审核的场景。
 
-curl -sS -X PUT http://localhost:3000/v1/config/model-pools/research-pool \
-  -H 'content-type: application/json' \
-  -d '{
-    "id": "research-pool",
-    "members": [
-      { "model_id": "research-default", "weight": 3 },
-      { "model_id": "research-fallback", "role": "failover_only" }
-    ],
-    "routing": {
-      "home": "deterministic",
-      "sticky_scope": "thread"
-    },
-    "switch": {
-      "on_circuit_open": true,
-      "on_quota": true,
-      "quota_retry_after_threshold_secs": 10,
-      "max_switches_per_session": 2
-    }
-  }'
-```
+见 [启用工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/)。
 
-创建引用该稳定 model 或 pool id 的 Agent：
+### 加 reminders 或 deferred tools
 
-```bash
-curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
-  -H 'content-type: application/json' \
-  -d '{
-    "id": "research-assistant",
-    "model_id": "research-pool",
-    "system_prompt": "You help with source-grounded research. Ask before using destructive tools.",
-    "max_rounds": 12,
-    "reasoning_effort": "medium",
-    "plugin_ids": ["permission"],
-    "allowed_tools": ["web_search", "read_document", "summarize"],
-    "context_policy": {
-      "max_context_tokens": 120000,
-      "max_output_tokens": 8192,
-      "min_recent_messages": 8,
-      "enable_prompt_cache": true,
-      "autocompact_threshold": 90000,
-      "compaction_mode": "keep_recent_raw_suffix",
-      "compaction_raw_suffix_messages": 2
-    }
-  }'
-```
+使用 **Plugins**：
 
-## 用 sections 调优
+- Reminder rules 会在匹配工具调用后注入上下文。
+- Deferred-tool policy 会把大体量工具 schema 延后到更可能需要时再暴露。
 
-`AgentSpec.sections` 承载类型化插件或解析器配置。key 是 `PluginConfigKey::KEY` 声明的稳定字符串；value 必须匹配读取该 key 的消费者 schema。
+一次只改一个 plugin section，然后用能触发该 plugin 的场景 preview。
 
-```json
-{
-  "sections": {
-    "retry": {
-      "max_retries": 2,
-      "backoff_base_ms": 500
-    },
-    "permission": {
-      "default_behavior": "ask",
-      "rules": [
-        { "tool": "read_document", "behavior": "allow" },
-        { "tool": "web_search", "behavior": "ask" },
-        { "tool": "delete_*", "behavior": "deny" }
-      ]
-    },
-    "reminder": {
-      "rules": [
-        {
-          "tool": "Edit(file_path ~ '*.toml')",
-          "output": "any",
-          "message": {
-            "target": "suffix_system",
-            "content": "You edited a TOML file. Run cargo check before finishing."
-          }
-        }
-      ]
-    },
-    "generative-ui": {
-      "catalog_id": "https://a2ui.org/specification/v0_8/standard_catalog_definition.json",
-      "examples": "Use compact components for status summaries and forms."
-    },
-    "deferred_tools": {
-      "enabled": true,
-      "default_mode": "deferred",
-      "rules": [
-        { "tool": "summarize", "mode": "eager" }
-      ],
-      "beta_overhead": 1136.0
-    },
-    "compaction": {
-      "summarizer_system_prompt": "You are a conversation summarizer. Preserve decisions, facts, tool results, and unresolved tasks.",
-      "summarizer_user_prompt": "Update the cumulative conversation summary.\n\n<existing-summary>\n{previous_summary}\n</existing-summary>\n\n<new-conversation>\n{messages}\n</new-conversation>",
-      "summary_max_tokens": 1024,
-      "summary_model": "claude-3-haiku",
-      "min_savings_ratio": 0.3
-    }
-  }
-}
-```
+### Delegate 给另一个 Agent
 
-常用 key：
+使用 **Delegates**：
 
-| Key | 消费方 | 说明 |
-|---|---|---|
-| `retry` | Resolver | 所选模型或 pool member 的 retry/backoff 策略。 |
-| `permission` | Permission plugin | 默认 allow/ask/deny 行为和有序工具规则。 |
-| `reminder` | Reminder plugin | 按工具和输出匹配并注入 system 或 conversation context 的规则。 |
-| `generative-ui` | Generative UI plugin | A2UI catalog id、examples 或完整 prompt instructions。 |
-| `deferred_tools` | Deferred tools plugin | 决定哪些 schema 保持 eager、哪些通过 `ToolSearch` 查找、已提升工具何时重新延迟。 |
-| `skills` | Skills discovery plugin | 可选 Skill allowlist，用于注入给模型看的 skill catalog；Skill 内容与激活元数据在 `SkillSpec`。 |
-| `compaction` | Context compaction plugin | 摘要 prompt、摘要模型和可接受的节省阈值。 |
+1. 选择当前 Agent 允许 hand off 的目标 Agent。
+2. 确保每个 delegate 自己也配置了 model/tools。
+3. Preview 一个应该触发 handoff 的场景。
 
-`context_policy` 是 `AgentSpec` 顶层字段，不是 section。设置它会启用上下文 transform 和上下文压缩。可选的 `compaction` section 只用于调优压缩时使用的 summarizer。
+见 [使用 Agent Handoff](/awaken/zh-cn/how-to/use-agent-handoff/) 和
+[多智能体模式](/awaken/zh-cn/explanation/multi-agent-patterns/)。
 
-`plugin_ids` 和 section key 不同。`plugin_ids` 使用插件注册表 ID，例如 `permission`、`reminder`、`ext-deferred-tools`。`deferred_tools` section key 是 deferred tools 插件的配置 key。
-使用插件 section 时，需要保证对应插件 id 已经写入 `plugin_ids`。`retry` 由 resolver 读取；当
-`context_policy` 启用内置上下文压缩插件时，`compaction` 可用。
+### 约束长任务行为
 
-有些插件也接受构造期默认值。例如 `ReminderPlugin::new(rules)` 会安装全局默认 reminder 规则；每个 Agent 的 `reminder` section 则通过 `ReminderConfigKey` 校验，并在运行时追加到默认规则之后。全局基线用构造期默认值，单个 Agent 的调优用 `AgentSpec.sections`。
+使用 **Basics** 和可用的 stop-policy 设置：
 
-当前只有 deferred-tools 插件实现了 ToolSearch。Skill 通过 catalog 注入并由
-`skill` 工具激活，没有单独的 `SkillSearch` 工具。Sub-agent 通过
-`AgentSpec.delegates` 显式声明，没有单独的 `AgentSearch` 工具。
+- 降低 max rounds，避免无限循环。
+- 为 token、elapsed time、error frequency 或 round count 配置显式停止策略。
+- 配合 eval，确认边界不会截断有效任务。
 
-常规 Agent 应保持 `active_hook_filter` 为空。非空 filter 会禁用未列入 descriptor 名称的插件 hooks、插件工具和 request transforms；它主要用于有意收窄某个 Agent 的活跃行为。
+见 [配置停止策略](/awaken/zh-cn/how-to/configure-stop-policies/)。
 
-## 调优流程
+## 何时改用 API
 
-1. 先确定稳定的 `providers`、`models` 和 `agents` id。客户端按 agent id 调用，Agent 按稳定的 `ModelSpec.id` 引用模型。
-2. 同 provider 内切换模型时改 `ModelSpec.upstream_model`。需要切换 provider 时，使用另一个 `ModelSpec` 或 `ModelPoolSpec`。
-3. 用 `system_prompt`、`max_rounds`、`max_continuation_retries`、`reasoning_effort` 和 `context_policy` 调整整体循环行为。
-4. 用 `allowed_tools` 和 `excluded_tools` 限制可见工具。
-5. 用 `permission` 规则处理运行时 allow/ask/deny 决策。
-6. 用 `model-pools` 配置 fallback 成员；用 `retry` 调整每个成员的重试策略。
-7. 只有需要对应行为时，才添加 `reminder`、`generative-ui`、`deferred_tools` 和 `compaction` section。
-8. 通过 `/v1/config/*` 发布配置；写入成功后，新建 run 才会使用新的 snapshot。
+当变更来自 CI、部署自动化、迁移脚本或内部工具时，直接使用 `/v1/config/*`。仍然保持同样流程：校验草稿，写入，再运行/评测行为。
+
+相关参考：
+
+- [HTTP API](/awaken/zh-cn/reference/http-api/) — endpoint 形态。
+- [配置](/awaken/zh-cn/reference/config/) — `AgentSpec`、plugin sections、model/provider config。
+- [管理控制台界面清单](/awaken/zh-cn/reference/admin-console/) — UI 到 API 的映射。
 
 ## 兼容性规则
 
-- 对外保持 `AgentSpec.id`、`ModelSpec.id` 和 `ProviderSpec.id` 稳定。
-- 使用 canonical 字段：`model_id`、`provider_id`、`upstream_model`。旧的 `model`、`provider` 不是托管配置字段。
-- 将 `InferenceOverride.upstream_model` 视为同 provider 内的覆盖。它不会重新解析 `AgentSpec.model_id`，也不能切换 provider executor；model pool backed agent 会拒绝这个覆盖。
-- 生成配置前查询 `/v1/config/{namespace}/$schema`，并通过 `/v1/capabilities` 查看插件 `config_schemas`。`AgentSpec`、`ModelSpec` 和多个 section 类型会拒绝未知字段。
-- 只要插件已注册且 section value 匹配 schema，新增 section 属于兼容变更。不合法 section 会在 runtime snapshot 发布前失败。
-- 移除 plugin id 但保留对应 section 不会激活该插件；未被消费的 section key 会作为可能的拼写错误记录日志。
-- 已经开始的 run 保持启动时的 snapshot。验证配置变更时，应在写入成功后新建 run。
+对新 run 安全的改动：
 
-## 验证循环 —— 改、跑、看
+- Prompt 文本和工具描述。
+- Model id、reasoning effort、max rounds 和 stop policies。
+- Allowed/excluded tools 和 delegates。
+- Plugin config sections，如 permission、reminder、generative UI、deferred-tool policy。
 
-只有配置真的落到下一个 run,配置面才有意义。下面是验证步骤。服务全程不重启。
+需要谨慎：
 
-### 1. 用原 prompt 跑一次
-
-```bash
-curl -sS -X POST http://localhost:3000/v1/runs \
-  -H 'content-type: application/json' \
-  -d '{
-    "agent_id": "research-assistant",
-    "thread_id": "verify-thread",
-    "messages": [{"role": "user", "content": "找一篇关于珊瑚白化的同行评审文献。"}]
-  }' | jq -r '.response'
-```
-
-留意回答的口吻、引用方式与工具选择。
-
-### 2. 只改 prompt —— 同一 id,不重启
-
-```bash
-curl -sS -X PUT http://localhost:3000/v1/config/agents/research-assistant \
-  -H 'content-type: application/json' \
-  -d '{
-    "id": "research-assistant",
-    "model_id": "research-default",
-    "system_prompt": "你是一个怀疑型研究助理。没有至少两篇独立同行评审文献时拒绝回答;每条都要附引用。",
-    "max_rounds": 12,
-    "plugin_ids": ["permission"],
-    "allowed_tools": ["web_search", "read_document", "summarize"]
-  }'
-```
-
-PUT 返回校验通过、已发布的配置。没有 build、没有重新部署、没有 SIGHUP。
-
-### 3. 再跑一次 —— 观察变化
-
-```bash
-curl -sS -X POST http://localhost:3000/v1/runs \
-  -H 'content-type: application/json' \
-  -d '{
-    "agent_id": "research-assistant",
-    "thread_id": "verify-thread-2",
-    "messages": [{"role": "user", "content": "找一篇关于珊瑚白化的同行评审文献。"}]
-  }' | jq -r '.response'
-```
-
-新 run 用的是步骤 2 发布的 snapshot。对比两次回答 —— 第二次应该要求两个源、拒绝单源回答。
-
-用全新 `thread_id` 排除前轮上下文残留;唯一变量是 prompt 改动。
-
-### 哪些字段可以中途改
-
-| 改动 | 进行中的 run | 下一个 run |
-|---|---|---|
-| `system_prompt` | 保持旧 prompt | 新 prompt |
-| `allowed_tools` / `excluded_tools` | 保持旧集合 | 新集合 |
-| `max_rounds`、`reasoning_effort` | 保持旧值 | 新值 |
-| `model_id`(只换 binding) | 保持旧 binding | 新 binding |
-| `plugin_ids`(新增) | 保持旧集合 | 下一轮起新插件生效 |
-| `plugin_ids`(移除) | 保持旧集合 | 被移除插件的 hook 停止触发 |
-| `sections.<plugin>`(由 `PluginConfigKey` 校验) | 保持旧值 | 新的按 key 校验后的值 |
-
-**已经开始的 run 永远跑完启动时的 snapshot** —— 这是契约。要不等 run drain 就验证改动,用全新 `thread_id` 起一个新 run。
+- 移除 active workflow 依赖的 tools 或 plugins。
+- 重命名被 clients、delegates、eval datasets 或示例引用的 id。
+- 未先测试 provider 就改变 provider credentials。
 
 ## 相关
 
-- [Provider 与 Model 配置](/awaken/zh-cn/reference/provider-model-config/)
-- [配置](/awaken/zh-cn/reference/config/)
-- [HTTP API](/awaken/zh-cn/reference/http-api/)
+- [使用管理控制台](/awaken/zh-cn/how-to/use-admin-console/)
 - [在线调优 Prompt](/awaken/zh-cn/how-to/hot-tune-prompts/)
 - [启用工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/)
-- [使用 Reminder 插件](/awaken/zh-cn/how-to/use-reminder-plugin/)
-- [使用延迟加载工具](/awaken/zh-cn/how-to/use-deferred-tools/)
-- [优化上下文窗口](/awaken/zh-cn/how-to/optimize-context-window/)
+- [采集数据集并运行评测](/awaken/zh-cn/how-to/capture-a-dataset-and-run-an-eval/)
+- [配置参考](/awaken/zh-cn/reference/config/)

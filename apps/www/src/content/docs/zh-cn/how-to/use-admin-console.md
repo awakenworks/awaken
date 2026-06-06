@@ -1,18 +1,20 @@
 ---
 title: "使用管理控制台"
-description: "管理控制台是 Awaken server 的主要调优和运营 UI。本文说明操作者最常用的浏览器工作流。"
+description: "从浏览器运营 Awaken：连接 server、调优 Agent、校验草稿、检查 trace、运行 eval，并恢复历史版本。"
 ---
 
-管理控制台是 Awaken server 的主要调优和运营 UI。runtime 能力已经在代码里实现后，
-可以在这里配置 provider 和 model、创建 Agent、调优 prompt 和工具描述、分配 MCP
-工具、激活 Skill 与 delegate、检查 trace、沉淀 dataset，并在浏览器中运行 eval。
-完整界面清单见[管理控制台界面清单](/awaken/zh-cn/reference/admin-console/)。
+Admin Console 是 Awaken server 的主要调优与运营 UI。Runtime 能力在代码里实现后，
+可以在浏览器里配置 provider/model、创建 Agent、调 prompt 和工具描述、分配 tools / skills / delegates、预览草稿、检查 trace、采集 dataset、运行 eval，并审查 audit history。
+
+本指南重点写**界面怎么操作**。Endpoint 形态和 screen 到 route 的映射，请看
+[HTTP API](/awaken/zh-cn/reference/http-api/)、[配置](/awaken/zh-cn/reference/config/) 和
+[管理控制台界面清单](/awaken/zh-cn/reference/admin-console/)。
 
 ## 前置条件
 
-- 浏览器可以访问正在运行的 `awaken-server`。默认后端 URL 是 `http://127.0.0.1:38080`。
-- 已配置 admin bearer token：`AWAKEN_ADMIN_API_BEARER_TOKEN` 环境变量，或 server config 中的 `AdminApiConfig.bearer_token`。
-- 本地运行 `apps/admin-console` dev server，或部署生产构建。
+- 一个运行中的 `awaken-server`。Starter 默认 URL 是 `http://127.0.0.1:38080`。
+- Server 上配置好的 admin bearer token。
+- 本地运行的 Admin Console dev server，或部署环境提供的生产构建。
 
 ```sh
 # Terminal 1 — runtime
@@ -25,210 +27,187 @@ pnpm --filter awaken-admin-console dev
 # → http://127.0.0.1:3002
 ```
 
-首次打开控制台时，右上角 topbar pill 会显示 **Token missing**。点击它，粘贴 token 并保存；连通后会显示 **Connected**。
+打开控制台，点击右上角 token pill，填入 `dev-token` 并保存。状态会从
+**Token missing** 变成 **Connected**。
 
 ## 界面概览
 
-控制台是运行中 server 上的一层浏览器控制面。下面几张截图对应当前最核心的
-工作流：检查系统状态、编辑 agent、在运行流量前查看 agent catalog 与统计。
-
 <figure class="screenshot">
   <a href="/awaken/assets/awaken-demo-zh.gif">
-    <img src="/awaken/assets/awaken-demo-zh.gif" alt="动态走查:接入 Vertex 上的 Gemini、手动构建 agent、运行实时评测。" loading="lazy" />
+    <img src="/awaken/assets/awaken-demo-zh.gif" alt="动画演示：接入 Vertex 上的 Gemini、手动构建 agent、运行实时评测。" loading="lazy" />
   </a>
-  <figcaption>完整流程的动态演示 —— 录制于真实 Gemini 后端。</figcaption>
+  <figcaption>完整流程录屏 —— 录制于真实 Gemini 后端。</figcaption>
 </figure>
 
 <div class="screenshot-grid">
   <figure class="screenshot">
     <a href="/awaken/assets/admin-console/01-dashboard.png">
-      <img src="/awaken/assets/admin-console/01-dashboard.png" alt="管理控制台 Dashboard，展示 live workload、agent activity、最近审计事件、health 状态与当前 scope 元数据。" loading="lazy" />
+      <img src="/awaken/assets/admin-console/01-dashboard.png" alt="管理控制台 dashboard，展示 live workload、agent activity、recent audit events、health status 和 scope metadata。" loading="lazy" />
     </a>
-    <figcaption>Dashboard：计数、当前 scope 与健康状态来自 `/v1/capabilities`、`/v1/system/info`、`/v1/audit-log` 和 runtime stats。</figcaption>
+    <figcaption>Dashboard：workload、health、system metadata 和 recent activity。</figcaption>
   </figure>
   <figure class="screenshot">
     <a href="/awaken/assets/admin-console/02-agent-editor.png">
-      <img src="/awaken/assets/admin-console/02-agent-editor.png" alt="Agent 编辑器，包含模型选择、系统提示、tabs、保存控制和草稿预览聊天。" loading="lazy" />
+      <img src="/awaken/assets/admin-console/02-agent-editor.png" alt="Agent editor，包含 model 选择、system prompt 字段、tabs、save controls 和 draft preview chat。" loading="lazy" />
     </a>
-    <figcaption>Agent editor：Validate 只校验不写入；Save 通过 `/v1/config/agents` 发布。</figcaption>
+    <figcaption>Agent editor：调优、校验、预览、保存。</figcaption>
   </figure>
   <figure class="screenshot">
     <a href="/awaken/assets/admin-console/03-agents-list.png">
-      <img src="/awaken/assets/admin-console/03-agents-list.png" alt="Agents 列表，展示筛选器、模型与插件元数据，以及 runtime inference 统计。" loading="lazy" />
+      <img src="/awaken/assets/admin-console/03-agents-list.png" alt="Agents list，包含 filters、model/plugin metadata 和 runtime inference statistics。" loading="lazy" />
     </a>
-    <figcaption>Agents list：按 model / plugin 过滤；启用 observability 后显示 rolling inference / error / p95 统计。</figcaption>
+    <figcaption>Agents list：按 model/plugin 过滤，并查看 runtime signals。</figcaption>
   </figure>
 </div>
 
 ## 浏览工作区
 
-左侧 sidebar 按意图分组：
+左侧 sidebar 按 operator 意图分组：
 
-| 分组 | 内容 |
+| Group | 内容 |
 |---|---|
-| **Agents** | Agents：创建/编辑 agent specs，并进入 per-agent dashboard |
-| **Resources** | MCP Servers、A2A Servers、Skills、Tools：runtime 依赖、远程 agent 与发现出来的能力 |
-| **Infrastructure** | Providers 和 Models：上游连接、稳定 model id 与能力 metadata |
-| **Observe** | Dashboard、Audit Log、Datasets、Eval Runs、Eval Reports：运行视图与评测记录 |
+| **Agents** | Agent 列表、Agent editor、per-agent dashboard。 |
+| **Infrastructure** | Providers 和 Models。Live run 前先配置上游访问。 |
+| **Resources** | MCP Servers、A2A Servers、Skills、Tools。 |
+| **Observe** | Dashboard、Audit Log、Datasets、Eval Runs、Eval Reports。 |
 
-使用 topbar breadcrumb 确认当前位置并返回上级页面。
+用 topbar breadcrumb 返回父页面。Admin Assistant 是浮动气泡，不是 sidebar 目的地；配置至少一个 provider-backed model 后才真正有用。
 
-Admin Assistant 是全局浮动气泡，不是 sidebar 页面。至少配置一个 provider-backed
-model 后才会启用；未启用时会显示跳转到 Providers 和 Models 的设置入口。
+## 连接并检查系统
 
-## 检查系统状态
+1. 打开控制台并填入 bearer token。
+2. 从 **Dashboard** 开始。
+3. 查看 **Health**：provider 是否缺 key，MCP server 是否失败。
+4. 查看 **System**：version、scope、uptime，以及接入了哪些可选 subsystem。
+5. 点击 stat card 跳转到 Agents、Models、Providers、Skills、MCP Servers 或 Tools。
 
-打开 **Dashboard**：
+如果 **Recent activity** 提示 audit log disabled，server 仍可运行，但 History tab 和 restore 工作流会为空，直到接入 audit logging。
 
-- **Stat cards**：agents、skills、models、providers、MCP servers、tools 的计数，来自 `/v1/capabilities`。
-- **Health**：provider 是否配置 key，MCP server 是自动重启还是手动。
-- **Recent activity**：audit log 启用时显示最近 8 条事件；未启用时显示黄色提示。
-- **System**：server version、当前 `scope_id`、uptime，以及 config store / audit log / runtime stats 是否接入。
+## 创建 Provider 和 Model
+
+1. 打开 **Infrastructure → Providers**。
+2. 创建 provider，填写 adapter、base URL 和凭据。
+3. 点击 provider 行上的 **Test**。Toast 会显示成功、延迟或上游错误。
+4. 打开 **Infrastructure → Models**。
+5. 创建一个指向该 provider 的 model id。Agent 引用的是稳定 model id，而不是原始 provider 凭据。
+
+相关 API：[Provider/Model 配置](/awaken/zh-cn/reference/provider-model-config/) 和
+[HTTP API](/awaken/zh-cn/reference/http-api/)。
 
 ## 编辑 Agent
 
-要新建一个,点击 **+ New Agent** 打开空白编辑器,或把需求描述给
-[Admin Assistant](/awaken/zh-cn/how-to/build-an-agent-with-the-assistant/) 让它起草
-spec。要编辑已有 agent:
+新建 Agent：点击 **Agents → + New Agent**。编辑已有 Agent：点击 Agents list 中的一行。
 
-1. 在 sidebar 点击 **Agents**。
-2. 使用 filter chips 按 model、plugin 或 modified range 缩小范围。Observability registry 接入时，Inferences 列显示真实调用统计。
-3. 点击一行进入编辑器。
-4. 编辑器包含 Basics、Tools、Plugins、Delegates、Advanced、History tabs。
-5. 修改后底部 save bar 会出现：
-   - **Validate** 调用 `POST /v1/config/agents/validate`，只校验不保存。
-   - **Save** / **Save & Publish** 持久化并 apply；下一次请求使用新 spec。
-6. 右侧 preview chat 调用 `POST /v1/ai-sdk/agent-previews/runs`，可以在保存前运行草稿；文本和上传的 image/audio/video/PDF/text 文件会作为 AI SDK message parts 发送给未保存 spec。
-7. 保存后，sandbox 下方会出现 **Frontend integration** 卡片，展示 agent-scoped AI SDK / AG-UI routes，并链接到前端集成、协议和 HTTP API 文档。
+1. **Basics** — 设置 model、max rounds、reasoning effort 和 system prompt。
+2. **Tools** — 选择全部工具，或自定义 allow/exclude。可用 source filter 缩小到 built-in、plugin、MCP tools。
+3. **Plugins** — 启用或关闭 plugin-backed behavior。
+4. **Delegates** — 选择这个 Agent 可以 hand off 给哪些其他 Agent。
+5. **Advanced** — 检查最终 raw JSON。
+6. **History** — audit logging 启用后，可查看历史变更并恢复旧版本。
 
-## 测试 Provider
+编辑后，底部 save bar 会出现：
 
-Providers 列表每行有 **Test** 按钮：
+- **Validate** 只校验草稿，不保存、不应用。
+- **Save** / **Save & Publish** 保存草稿，并让新 run 可以使用。
 
-1. 点击 provider id 旁的 **Test**。
-2. 控制台调用 `POST /v1/providers/:id/test`。
-3. toast 显示 `OK · <latency>ms` 或后端错误文本。
+保存前优先使用右侧 preview chat。它基于未保存草稿运行，方便在发布前调 prompt、tools 和 model 选择。
 
-发布新的 model config 前，先用它确认凭据、adapter 和上游可达性。
+相关 API：[HTTP API](/awaken/zh-cn/reference/http-api/) 中的 `agents` config routes，
+以及 [配置](/awaken/zh-cn/reference/config/#agentspec) 中的 `AgentSpec`。
 
-## 重启 MCP server
+## 安全调优行为
 
-1. 打开 **MCP Servers**，进入已有 server 的编辑页。
-2. 查看 **Live Status**：连接状态、handshake、tool count，以及 restart policy 或失败次数。
-3. `last attempt` / `last success` 显示 manager 是否仍在重试。
-4. 点击 **Restart** 调用 `POST /v1/mcp-servers/:id/restart`；成功时写入 `restart` audit event。
+一次安全调优流程：
 
-## 接入 A2A server
+1. 一次只改一个行为维度：prompt、model、tools、plugin config、permissions、delegates 或 stop policy。
+2. 点击 **Validate**。
+3. 用你关心的场景在 preview chat 里验证。
+4. Preview 符合预期后再保存。
+5. 跑真实任务或 eval fixture，确认 draft preview 之外也符合预期。
+6. 如果结果退化，打开 **History** 恢复上一版。
 
-打开 **A2A Servers**,点击 **New A2A server**,用 **Base URL** 注册一个远程 agent
-服务。Awaken 会发现它的 agent card,把远程 agent 与你自己的一同列出,可直接委派。详见
-[接入 A2A Server](/awaken/zh-cn/how-to/connect-an-a2a-server/)。
+完整 tab-by-tab 调优地图见 [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/)。
 
-## 采集数据集与运行评测
+## 管理资源
 
-**Datasets**、**Eval Runs**、**Eval Reports** 三个界面把真实 trace 变成回归 fixture,
-针对某个 agent 在真实或脚本模型上运行,并展示逐样本通过/失败与基线对比。详见
-[采集数据集并运行评测](/awaken/zh-cn/how-to/capture-a-dataset-and-run-an-eval/)。
+### 重启 MCP server
+
+1. 打开 **Resources → MCP Servers**。
+2. 点击一个 server，并滚动到 **Live Status**。
+3. 查看 connection state、handshake result、tool count 和 retry/failure summary。
+4. 点击 **Restart**。重启进行中按钮会被禁用。
+
+### 接入 A2A server
+
+打开 **Resources → A2A Servers**，点击 **New A2A server**，填入远程 server base URL。Awaken 会发现远程 agent card，并让它们可被 delegation 使用。见 [接入 A2A Server](/awaken/zh-cn/how-to/connect-an-a2a-server/)。
+
+### 查看 Skills 和 Tools
+
+用 **Skills** 和 **Tools** 查看当前 server 发现了什么。Agent 是否能使用它们，仍由 Agent editor 的 Tools、Plugins 和 Delegates tabs 控制。
+
+## 观测 run 并对比行为
+
+有真实流量或 preview run 后，使用 **Observe** 页面：
+
+- **Dashboard** — workload、health 和 recent activity。
+- **Audit Log** — 全局 create/update/delete/restart/restore 历史。
+- **Datasets** — 可回放 fixture。
+- **Eval Runs** — eval job 的执行记录。
+- **Eval Reports** — pass/fail 和 baseline diff。
+
+完整评测流程见 [采集数据集并运行评测](/awaken/zh-cn/how-to/capture-a-dataset-and-run-an-eval/)。
 
 ## 恢复历史版本
 
-Audit log 也是版本历史：
+Awaken 的 audit log 也是版本历史。
 
-1. 打开任意 resource editor（agent / model / provider / MCP server）。
-2. 切到 **History** tab。
-3. 展开事件查看 before/after diff。
+1. 打开 agent、model、provider 或 MCP server editor。
+2. 切换到 **History**。
+3. 展开 event，查看 before/after diff。
 4. 点击 **Restore this version**。
-5. 确认后，控制台调用 `POST /v1/config/:ns/:id/restore`。Restore 是 editing-store 操作：server 会校验恢复出的 payload 并写入 `ConfigStore`，但不会热替换 runtime registry。这样可以把回滚审查和 runtime 生效分开。
-6. 如果要让恢复后的 payload 对新 run 生效，请在确认后再走一次普通配置写入，例如用恢复后的 body 调用 `PUT /v1/config/:ns/:id`。这次写入会走标准 validate + apply pipeline，并写入自己的审计事件。`restore` 事件仍会记录 `restored_from = <event-id>`，保留回滚来源。
+5. 检查 diff 并确认。
+6. 当你准备让新 run 使用恢复后的内容时，Validate 并 Save。
 
-## 浏览 Audit Log
-
-打开 **Audit Log** 查看所有 resource 的事件：
-
-- `since` / `until`：时间范围。
-- `action`：create / update / delete / restart / publish / restore。
-- `resource`：对子串匹配 `<namespace>/<id>`。
-- `actor`：每行显示的 SHA-256 prefix。
-
-点击行可打开 side panel，查看完整 event JSON、before/after diff，以及适用时的 restore 按钮。
+相关 API：[HTTP API](/awaken/zh-cn/reference/http-api/) 中的 restore routes，
+以及 [管理控制台界面清单](/awaken/zh-cn/reference/admin-console/) 中的 audit 行为。
 
 ## 启用可选子系统
 
-控制台会如实降级；启用以下子系统后体验更完整。
+可选 server module 缺失时，控制台会明确降级：
 
-### Audit log
+| 缺失项 | 你会看到 | 启用方式 |
+|---|---|---|
+| Audit log | Dashboard disabled notice、空 Audit Log、空 History tabs | [配置参考](/awaken/zh-cn/reference/config/#auditlogconfig) 和 server wiring |
+| Runtime stats | Agents list 显示 `n/a`；per-agent latency charts 不可用 | [启用可观测性](/awaken/zh-cn/how-to/enable-observability/) |
+| Trace/eval stores | Dataset/eval 页面无法持久化有效记录 | [采集数据集并运行评测](/awaken/zh-cn/how-to/capture-a-dataset-and-run-an-eval/) |
 
-在 `ServerState` 上接入 audit logger：
+## 仍应由 API 自动化的内容
 
-```rust
-use awaken_server::app::AuditLogConfig;
+控制台聚焦配置和 operator review。以下 live execution 或底层控制面更适合 HTTP API 或你自己的工具：
 
-let state = state
-    .with_audit_log_config(AuditLogConfig {
-        retention_days: 90,
-        ..AuditLogConfig::default()
-    })
-    .with_audit_log_from_config();
-```
+- Threads、messages 和 run inspection。
+- Programmatic run create、cancel、interrupt、resume。
+- 自定义 UI 的 HITL decisions。
+- Mailbox inspection 和 dispatch automation。
+- Registry diagnostics 和 bulk config management。
 
-未启用时：Dashboard Recent activity 显示禁用提示，Audit Log 页面只有过滤表单，History tab 为空。
-
-### Runtime stats
-
-接入 observability plugin 和 `RuntimeStatsRegistry`：
-
-```rust
-use awaken_ext_observability::{ObservabilityPlugin, RuntimeStatsRegistry};
-
-let registry = Arc::new(RuntimeStatsRegistry::new());
-let observability = ObservabilityPlugin::new()
-    .with_sink(SharedRegistrySink(Arc::clone(&registry)));
-
-let state = ServerState::new(/* ... */)
-    .with_runtime_stats(registry);
-
-let runtime = AgentRuntimeBuilder::default()
-    .with_plugin("observability", Arc::new(observability))
-    .build();
-```
-
-未启用时：Agents list 显示 banner，Inferences 列为 `n/a`，per-agent latency histogram 不渲染。
-
-完整接入方式见[启用可观测性](/awaken/zh-cn/how-to/enable-observability/)。
-
-## 控制台不覆盖的范围
-
-控制台聚焦**配置**：agents、models、providers、MCP servers、tools、只读 skills、audit log 和 runtime stats。Live execution 相关表面当前走 REST：
-
-- Threads & runs：列出、创建、取消、查看 messages。
-- HITL decisions：提交挂起工具调用的 resume/cancel。
-- Mailbox：查看或推送 inter-agent dispatch。
-- Skill CRUD：控制台列出 skills，但不编辑。
-- Config diagnostics：`GET /v1/config/diagnostics` 返回 registry-wide validation report。
-
-请使用相同 admin bearer token 通过 `curl` 或脚本调用。端点清单见[管理控制台界面清单中的 REST-only 表](/awaken/zh-cn/reference/admin-console/#rest-only-功能)，请求格式见 [HTTP API](/awaken/zh-cn/reference/http-api/)。
-
-## 切换主题
-
-使用 topbar 里的 theme control 选择 light、dark 或 system。选择会持久化到本地，
-并映射到 `data-theme`，因此控制台和文档共用同一套 `--aw-*` design tokens。
+见 [REST-only features matrix](/awaken/zh-cn/reference/admin-console/#rest-only-功能) 和
+[HTTP API reference](/awaken/zh-cn/reference/http-api/)。
 
 ## 排查
 
 | 现象 | 可能原因 | 修复 |
 |---|---|---|
-| Topbar pill 显示 **Token missing** 或 **Token rejected** | bearer token 缺失或错误 | 点击 pill，粘贴 server 配置的 token |
-| Topbar pill 显示 **Backend unreachable** | server 未监听或 URL 错误 | 确认 server 正在 `BACKEND_URL` 上运行；默认 `http://127.0.0.1:38080`，构建时可用 `VITE_BACKEND_URL` 覆盖 |
-| 页面出现 `503` 但仍可加载 | audit / runtime stats 等可选子系统未启用 | 见[启用可选子系统](#启用可选子系统) |
-| Save 失败并提示 “config management API not enabled” | server 没接入 `ConfigStore` | 嵌入方需要调用 `ServerState::with_config_store(...)` |
-| Provider Test 一直返回 “unsupported adapter” | provider 使用 `scripted` adapter | 符合预期；只有真实 adapter 才有有意义的 test path |
-| Sidebar nav health dot 一直 neutral | health badge 只来自 list payload，不会每页都完整 probe | 打开资源详情查看 live `/status` |
+| Topbar 显示 **Token missing** 或 **Token rejected** | Bearer token 缺失或错误 | 点击 pill，填入 server 上配置的 token。 |
+| Topbar 显示 **Backend unreachable** | Server 没启动或 URL 错误 | 确认 server 正在 `BACKEND_URL` 上运行；默认 `http://127.0.0.1:38080`。 |
+| 页面能加载但显示 optional subsystem warnings | Audit/runtime stats/trace/eval stores 未接入 | 在 server 上启用对应 subsystem。 |
+| Save 失败并提示 "config management API not enabled" | 没有接入 config store | 启动带 config management 的 server。 |
+| Provider Test 报 unsupported adapter | Provider 是 scripted 或不可测试 | 对 scripted/demo provider 属于预期；生产前测试真实 adapter。 |
 
 ## 相关
 
-- [管理控制台界面清单](/awaken/zh-cn/reference/admin-console/)
+- [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/)
 - [用 Admin Assistant 构建 Agent](/awaken/zh-cn/how-to/build-an-agent-with-the-assistant/)
-- [接入 A2A Server](/awaken/zh-cn/how-to/connect-an-a2a-server/)
+- [启用工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/)
 - [采集数据集并运行评测](/awaken/zh-cn/how-to/capture-a-dataset-and-run-an-eval/)
-- [HTTP API](/awaken/zh-cn/reference/http-api/)
-- [启用可观测性](/awaken/zh-cn/how-to/enable-observability/)
+- [管理控制台界面清单](/awaken/zh-cn/reference/admin-console/)

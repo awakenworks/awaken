@@ -1,69 +1,83 @@
 ---
 title: "Tune & Operate"
-description: "Use the Admin Console and config plane to tune saved agents, inspect runs, curate traces, and harden production behavior."
+description: "Operate Awaken from the Admin Console first: tune agents, review permissions, inspect traces, run evals, and use API references only for automation."
 ---
 
-This path is for the product surface around a running Awaken server. Developers
-still implement executable capability in Rust, but operators tune the managed
-parts online: prompts, tool descriptions, models, model pools, MCP servers,
-skills, delegates, reminders, deferred-tool policy, permission rules, traces,
-datasets, and evals.
+This section is for people operating a running Awaken server from the browser.
+Treat the **Admin Console** as the primary surface: click through the UI, change
+one thing, validate, preview, save, then compare behavior. Use REST/config APIs
+only when the same operation needs automation.
 
-The Admin Console is the primary UI for this path. The REST config API is the
-same control plane for CI or internal tooling.
+## Start from the console
 
-## Recommended order
+<figure class="screenshot">
+  <a href="/awaken/assets/admin-console/flow-dashboard-health.png">
+    <img src="/awaken/assets/admin-console/flow-dashboard-health.png" alt="Admin Console dashboard showing workload, health, recent audit events, and system metadata." loading="lazy" />
+  </a>
+  <figcaption>Start on Dashboard: confirm the server is connected, healthy, and using the expected scope.</figcaption>
+</figure>
 
-1. [Use the Admin Console](/awaken/how-to/use-admin-console/) to connect a
-   running server, configure provider-backed models, create agents, preview
-   drafts, and publish the next registry snapshot.
-2. [Build an Agent with the Admin Assistant](/awaken/how-to/build-an-agent-with-the-assistant/)
-   to draft an agent from a natural-language description once a model is live.
-3. [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) and
-   [Hot-Tune Prompts](/awaken/how-to/hot-tune-prompts/) for the full editable
-   surface.
-4. [Connect an A2A Server](/awaken/how-to/connect-an-a2a-server/) to bring remote
-   agents into the catalog, then
-   [Capture a Dataset and Run an Eval](/awaken/how-to/capture-a-dataset-and-run-an-eval/)
-   to score behavior before you ship a change.
-5. [Enable Observability](/awaken/how-to/enable-observability/) to make runs,
-   tools, and providers visible.
-6. [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) and
-   [Configure Stop Policies](/awaken/how-to/configure-stop-policies/) to keep
-   agent behavior bounded and reviewable.
+1. Open [Use the Admin Console](/awaken/how-to/use-admin-console/) and connect to
+   the server.
+2. Check **Dashboard → Health** before making changes.
+3. Configure **Providers** and **Models** under **Infrastructure**.
+4. Open **Agents**, edit a draft, click **Validate**, use the preview chat, then
+   **Save**.
+5. Use **Audit Log** and editor **History** whenever you need to review or
+   restore a saved change.
 
-Tool, plugin, MCP, skills, and reminder *capabilities* are built in code — see
-[Develop Agents](/awaken/build-agents/). This section tunes and runs what you
-built.
+## Tune behavior by interaction
 
-## Replay and eval loop
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-basics.png">
+      <img src="/awaken/assets/admin-console/flow-agent-basics.png" alt="Agent editor with Basics, Tools, Plugins, Delegates, Advanced, History, save controls, and preview chat." loading="lazy" />
+    </a>
+    <figcaption>Agent editor: tune prompt, model, tools, plugins, delegates, and limits.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-tools.png">
+      <img src="/awaken/assets/admin-console/flow-agent-tools.png" alt="Agent editor Tools tab with allowed tool checkboxes, excluded delete_file, patterns, and preview chat." loading="lazy" />
+    </a>
+    <figcaption>Agent Tools tab: expose web_search, read_document, and filesystem/read_file while excluding delete_file.</figcaption>
+  </figure>
+</div>
 
-`awaken-eval` replays saved fixtures through `RuntimeReplayer`, scores the
-outputs, and diffs them against NDJSON baselines. Use it for regression checks
-over saved prompts, tool outputs, and provider scripts without paying live
-provider cost. Trace curation helpers can turn captured runs into fixtures;
-live mode remains available when provider drift is the behavior you want to
-measure.
+| Goal | Click path | Guide |
+|---|---|---|
+| Tune prompt/model/tools/plugins/delegates | **Agents → Agent → Basics / Tools / Plugins / Delegates → Validate → Preview → Save** | [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) |
+| Change prompt wording safely | **Agent → Basics → System prompt → Validate → Preview → Save** | [Hot-Tune Prompts](/awaken/how-to/hot-tune-prompts/) |
+| Manage context and compaction | **Agent → Advanced / JSON preview → Validate → Preview long task → Save** | [Optimize Context Window](/awaken/how-to/optimize-context-window/) |
+| Bound loops and runaway work | **Agent → Basics / Advanced → limits and stop policy → Validate → Preview → Save** | [Configure Stop Policies](/awaken/how-to/configure-stop-policies/) |
 
-## Harden the admin and config plane
+## Govern and evaluate by interaction
 
-Two orthogonal levers, both detailed in the
-[config reference](/awaken/reference/config/):
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-history.png">
+      <img src="/awaken/assets/admin-console/flow-agent-history.png" alt="Agent editor History tab with update/create events and View/Restore actions." loading="lazy" />
+    </a>
+    <figcaption>History tab: review saved agent changes and restore a prior version before publishing.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-eval-run-detail.png">
+      <img src="/awaken/assets/admin-console/flow-eval-run-detail.png" alt="Eval run detail page with pass rate and per-fixture results." loading="lazy" />
+    </a>
+    <figcaption>Eval detail: compare behavior with replayable fixtures before accepting a change.</figcaption>
+  </figure>
+</div>
 
-- `AdminApiConfig.bearer_token` (or `AWAKEN_ADMIN_API_BEARER_TOKEN`) protects
-  `/v1/capabilities`, `/v1/config/*`, `/v1/agents*`, `/v1/system/info`,
-  `/v1/audit-log`, and runtime-stats endpoints.
-- `AdminApiConfig.expose_config_routes = false` drops the admin CRUD routes
-  entirely when configuration is owned by an external pipeline.
+| Goal | Click path | Guide |
+|---|---|---|
+| Gate sensitive tools | **Agent → Plugins → Permission rules → Ask / Allow / Deny → Save** | [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/) |
+| Add remote agents for handoff | **Resources → A2A Servers → New A2A server → Refresh card → Save** | [Connect an A2A Server](/awaken/how-to/connect-an-a2a-server/) |
+| Capture and replay behavior | **Observe → Datasets → Eval Runs → Eval Reports** | [Capture a Dataset and Run an Eval](/awaken/how-to/capture-a-dataset-and-run-an-eval/) |
+| Inspect runtime signals | **Dashboard → Agents list → Agent dashboard / Recent runs** | [Enable Observability](/awaken/how-to/enable-observability/) |
 
-For storms of small config writes, set
-`ConfigRuntimeManager::with_min_apply_interval(Duration)` to coalesce
-listener-driven applies; cached `ProviderSpec` executors are reused across
-unchanged specs.
+## API references for automation
 
-## Keep nearby
+Use these when the same operation should be scripted instead of clicked:
 
-- [Errors](/awaken/reference/errors/)
-- [Cancellation](/awaken/reference/cancellation/)
-- [HITL and Mailbox](/awaken/explanation/hitl-and-mailbox/)
-- [Config](/awaken/reference/config/)
+- [HTTP API](/awaken/reference/http-api/) — routes, auth, request/response shapes.
+- [Config](/awaken/reference/config/) — `AgentSpec`, provider/model config, plugin sections.
+- [Admin Console surface inventory](/awaken/reference/admin-console/) — screen-to-endpoint mapping and REST-only surfaces.

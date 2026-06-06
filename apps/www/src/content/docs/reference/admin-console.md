@@ -40,6 +40,105 @@ surface shows a disabled or unavailable notice.
   </figure>
 </div>
 
+### Infrastructure and resources
+
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/providers.png">
+      <img src="/awaken/assets/admin-console/providers.png" alt="Providers screen listing Anthropic, Vertex, and local Ollama providers with adapter, base URL, API key status, and test/edit/delete actions." loading="lazy" />
+    </a>
+    <figcaption>Providers: upstream adapter, credential status, and connection test entry point.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/models.png">
+      <img src="/awaken/assets/admin-console/models.png" alt="Models screen listing stable model ids, provider ids, upstream model names, modalities, context windows, and actions." loading="lazy" />
+    </a>
+    <figcaption>Models: stable runtime ids mapped to provider-backed upstream models.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/mcp-servers.png">
+      <img src="/awaken/assets/admin-console/mcp-servers.png" alt="MCP Servers screen listing filesystem and Linear servers with transport, live status, restart policy, tool count, and actions." loading="lazy" />
+    </a>
+    <figcaption>MCP Servers: transport config, live status, and restart actions.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/mcp-server-detail.png">
+      <img src="/awaken/assets/admin-console/mcp-server-detail.png" alt="MCP server detail screen showing filesystem live status, restart button, command, exposed tools, prompts, and resources." loading="lazy" />
+    </a>
+    <figcaption>MCP detail: handshake, restart, and exposed inventory.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/tools.png">
+      <img src="/awaken/assets/admin-console/tools.png" alt="Tools screen listing built-in and MCP tools with source badges, descriptions, and edit actions." loading="lazy" />
+    </a>
+    <figcaption>Tools: discovered catalog and model-facing descriptions.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/skills.png">
+      <img src="/awaken/assets/admin-console/skills.png" alt="Skills screen listing reusable skill instructions with invocation mode, context mode, allowed tools, and source paths." loading="lazy" />
+    </a>
+    <figcaption>Skills: reusable instructions and allowed tool context.</figcaption>
+  </figure>
+</div>
+
+### Observe and evaluate
+
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/audit-log.png">
+      <img src="/awaken/assets/admin-console/audit-log.png" alt="Audit Log screen showing recent update, publish, restart, and create events with actor, resource, timestamp, and change summary." loading="lazy" />
+    </a>
+    <figcaption>Audit Log: config history, restore context, and operator attribution.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/datasets.png">
+      <img src="/awaken/assets/admin-console/datasets.png" alt="Datasets screen under Observe with dataset list, fixture counts, and create/delete actions." loading="lazy" />
+    </a>
+    <figcaption>Datasets: captured trace fixtures grouped for replay.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/eval-runs.png">
+      <img src="/awaken/assets/admin-console/eval-runs.png" alt="Eval Runs screen listing completed eval jobs with dataset, mode, status, fixture count, and pass/fail summary." loading="lazy" />
+    </a>
+    <figcaption>Eval Runs: execution records for dataset replays.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/eval-run.png">
+      <img src="/awaken/assets/admin-console/eval-run.png" alt="Eval run detail screen with pass rate, failure count, and per-fixture report rows." loading="lazy" />
+    </a>
+    <figcaption>Eval run detail: per-fixture pass/fail output.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/eval-reports.png">
+      <img src="/awaken/assets/admin-console/eval-reports.png" alt="Eval Reports screen with upload cards for a new NDJSON report and an optional baseline report." loading="lazy" />
+    </a>
+    <figcaption>Eval Reports: offline NDJSON review and baseline comparison.</figcaption>
+  </figure>
+</div>
+
+### Assistant and shortcuts
+
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/admin-assistant.png">
+      <img src="/awaken/assets/admin-console/admin-assistant.png" alt="Admin Assistant panel with capability description, suggested agent chips, and an input for describing an agent or asking about config." loading="lazy" />
+    </a>
+    <figcaption>Admin Assistant: guided agent creation and config help.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/a2a-create.png">
+      <img src="/awaken/assets/admin-console/a2a-create.png" alt="Create A2A server form with server id, base URL, timeout, optional target, options JSON, and bearer token controls." loading="lazy" />
+    </a>
+    <figcaption>A2A server setup: remote agent-card discovery configuration.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/cmdk.png">
+      <img src="/awaken/assets/admin-console/cmdk.png" alt="Command palette overlay with search input and quick links to agents, providers, models, tools, and observe screens." loading="lazy" />
+    </a>
+    <figcaption>Command palette: keyboard navigation across console surfaces.</figcaption>
+  </figure>
+</div>
+
 ## Screens and endpoints
 
 Each screen is a thin client over admin REST routes (all behind the admin bearer

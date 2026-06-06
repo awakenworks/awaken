@@ -1,190 +1,58 @@
 ---
 title: "配置停止策略"
-description: "当你需要根据轮数、token 用量、耗时或连续错误来决定 agent run 何时终止时，使用本页。"
+description: "在管理控制台中约束 Agent run：调整 rounds、timeout/token/error/tool-stop policies，Validate，Preview，然后 Save。"
 ---
 
-当你需要根据轮数、token 用量、耗时或连续错误来决定 agent run 何时终止时，使用本页。
+Stop policy 用来防止 Agent 运行得比预期更久。优先在 Agent editor 中配置；只有当同一变更需要自动化时，再直接写 API policy object。
 
-## 前置条件
+## 你要点击什么
 
-- 已添加 `awaken`
-- 了解 `Plugin` 与 `AgentRuntimeBuilder`
+<figure class="screenshot">
+  <a href="/awaken/assets/admin-console/flow-agent-basics.png">
+    <img src="/awaken/assets/admin-console/flow-agent-basics.png" alt="Agent editor 的 Basics tab，展示 max rounds、max continuation retries、reasoning effort、system prompt、保存控件和 preview chat。" loading="lazy" />
+  </a>
+  <figcaption>先在 Basics 中调 max rounds 和 retries；只有需要审查 raw policy 时再打开 Advanced。</figcaption>
+</figure>
 
-## 概览
+1. 打开 **Agents**，选择目标 Agent。
+2. 在 **Basics** 里先设置最常见边界：**max rounds**。
+3. 如果需要更严格条件，打开 **Advanced**，审查 server 暴露的 stop policy 形态。
+4. 点击 **Validate**。
+5. Preview 两个场景：一个应正常完成，一个应触发停止。
+6. 两个场景都符合预期后再 Save。
+7. 对循环或时效敏感行为，运行 eval fixture。
 
-stop policy 会在每次推理步骤结束后判断 run 是否继续。内置策略包括：
+## 选择哪种策略
 
-| 策略 | 触发条件 |
-|---|---|
-| `MaxRoundsPolicy` | 步数超过上限 |
-| `TokenBudgetPolicy` | 输入+输出 token 超过预算 |
-| `TimeoutPolicy` | 墙钟时间超过上限 |
-| `ConsecutiveErrorsPolicy` | 连续推理错误达到阈值 |
-
-## 步骤
-
-1. 以编程方式构造策略：
-
-```rust
-use std::sync::Arc;
-use awaken::policies::{
-    MaxRoundsPolicy, TokenBudgetPolicy, TimeoutPolicy,
-    ConsecutiveErrorsPolicy, StopPolicy,
-};
-
-let policies: Vec<Arc<dyn StopPolicy>> = vec![
-    Arc::new(MaxRoundsPolicy::new(25)),
-    Arc::new(TokenBudgetPolicy::new(100_000)),
-    Arc::new(TimeoutPolicy::new(300_000)),
-    Arc::new(ConsecutiveErrorsPolicy::new(3)),
-];
-```
-
-2. 把 `StopConditionPlugin` 注册到 runtime：
-
-```rust
-use std::sync::Arc;
-use awaken::policies::StopConditionPlugin;
-use awaken::engine::GenaiExecutor;
-use awaken::registry_spec::ModelSpec;
-use awaken::AgentRuntimeBuilder;
-
-let mut spec = spec;
-spec.plugin_ids.push("stop-condition".into());
-
-let runtime = AgentRuntimeBuilder::new()
-    .with_plugin("stop-condition", Arc::new(StopConditionPlugin::new(policies)))
-    .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
-    .build()?;
-```
-
-如果只需要限制轮数，也可以直接用 `MaxRoundsPlugin`：
-
-```rust
-use std::sync::Arc;
-use awaken::policies::MaxRoundsPlugin;
-use awaken::engine::GenaiExecutor;
-use awaken::registry_spec::ModelSpec;
-use awaken::AgentRuntimeBuilder;
-
-let mut spec = spec;
-spec.plugin_ids.push("stop-condition:max-rounds".into());
-
-let runtime = AgentRuntimeBuilder::new()
-    .with_plugin("stop-condition:max-rounds", Arc::new(MaxRoundsPlugin::new(10)))
-    .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
-    .build()?;
-```
-
-自定义 stop-condition 插件必须列在 `AgentSpec.plugin_ids` 中。内置
-`AgentSpec.max_rounds` 保护仍会自动注入；只有需要额外 policy 类型时才使用这些
-插件。
-
-3. 用声明式 `StopConditionSpec`：
-
-```rust
-use awaken::contract::lifecycle::StopConditionSpec;
-use awaken::policies::{policies_from_specs, StopConditionPlugin};
-
-let specs = vec![
-    StopConditionSpec::MaxRounds { rounds: 10 },
-    StopConditionSpec::Timeout { seconds: 300 },
-    StopConditionSpec::TokenBudget { max_total: 100_000 },
-    StopConditionSpec::ConsecutiveErrors { max: 3 },
-];
-
-let policies = policies_from_specs(&specs);
-let plugin = StopConditionPlugin::new(policies);
-```
-
-`StopConditionSpec` 的所有变体都已由 `policies_from_specs` 转换为运行时策略；无效的 `ContentMatch` 正则会 fail-closed，以 `content_match_invalid_regex` 停止。
-
-## StopPolicy Trait
-
-你也可以实现自定义策略：
-
-```rust
-use awaken::policies::{StopPolicy, StopDecision, StopPolicyStats};
-
-pub struct MyCustomPolicy {
-    pub threshold: u64,
-}
-
-impl StopPolicy for MyCustomPolicy {
-    fn id(&self) -> &str {
-        "my_custom"
-    }
-
-    fn evaluate(&self, stats: &StopPolicyStats) -> StopDecision {
-        if stats.total_output_tokens > self.threshold {
-            StopDecision::Stop {
-                code: "my_custom".into(),
-                detail: format!("output tokens {} exceeded {}", stats.total_output_tokens, self.threshold),
-            }
-        } else {
-            StopDecision::Continue
-        }
-    }
-}
-```
-
-## StopPolicyStats
-
-内置 `StopConditionHook` 会为每次评估准备一份 `StopPolicyStats`：
-
-| 字段 | 类型 | 说明 |
+| 风险 | UI 中选择 | 如何验证 |
 |---|---|---|
-| `step_count` | `u32` | 已完成推理步数 |
-| `total_input_tokens` | `u64` | 累计输入 token |
-| `total_output_tokens` | `u64` | 累计输出 token |
-| `elapsed_ms` | `u64` | 从第一步开始经过的毫秒数 |
-| `consecutive_errors` | `u32` | 连续推理错误计数 |
-| `last_tool_names` | `Vec<String>` | 最近一轮里调用的工具名 |
-| `last_response_text` | `String` | 最近一次推理返回的文本 |
+| 重复同一个计划 | 降低 max rounds，或加 loop detection | Preview 一个过去会循环的 prompt |
+| 工具链过长 | 加 timeout 或 tool-stop condition | Preview 一个工具密集任务 |
+| Token 失控 | 加 token budget | 使用长 context/tool output 的 eval fixture |
+| 连续错误 | 加 consecutive-error bound | 用失败工具或 provider 做 preview |
+| 已知终止工具后停止 | 加 stop-on-tool condition | Preview 一个只应调用该工具一次的任务 |
 
-## StopDecision
+## 保存后如何运营
 
-```rust
-pub enum StopDecision {
-    Continue,
-    Stop { code: String, detail: String },
-}
-```
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agents-list.png">
+      <img src="/awaken/assets/admin-console/flow-agents-list.png" alt="Agents list，包含 runtime inference statistics。" loading="lazy" />
+    </a>
+    <figcaption>收紧限制后，观察 run 和 latency signals。</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-history.png">
+      <img src="/awaken/assets/admin-console/flow-agent-history.png" alt="Audit Log 界面，包含 update 和 restore events。" loading="lazy" />
+    </a>
+    <figcaption>如果限制截断了有效任务，用 History 恢复。</figcaption>
+  </figure>
+</div>
 
-任何一个 policy 返回 `Stop`，该 run 就会以 `TerminationReason::Stopped` 结束。
+更严格的 stop policy 可能隐藏有效的多步任务。如果用户反馈过早停止，恢复上一版，或提高边界并重新运行同一个 eval。
 
-## Stop policy 如何进入 agent loop
+## 自动化 API 参考
 
-1. `StopConditionPlugin` 在 `Phase::AfterInference` 注册 hook
-2. 每轮推理结束后，hook 会更新统计状态
-3. 构造 `StopPolicyStats`
-4. 依次调用每个策略的 `evaluate`
-5. 如果有策略返回 `Stop`，则写入 `RunLifecycleUpdate::Done`
-
-`max` 或 `max_total` 设为 `0` 的策略视为禁用，始终返回 `Continue`。
-
-## 常见错误
-
-| 错误 | 原因 | 修复 |
-|---|---|---|
-| run 永远不结束 | 没注册 stop policy，LLM 一直在调工具 | 至少加一个 `MaxRoundsPolicy` |
-| `StateError::KeyAlreadyRegistered` | 同时注册了 `StopConditionPlugin` 和 `MaxRoundsPlugin` | 二选一 |
-| Timeout 提前触发 | `TimeoutPolicy::new()` 传的是毫秒，`StopConditionSpec::Timeout` 是秒 | 注意单位 |
-
-## 关键文件
-
-- `crates/awaken-runtime/src/policies/mod.rs`
-- `crates/awaken-runtime/src/policies/policy.rs`
-- `crates/awaken-runtime/src/policies/plugin.rs`
-- `crates/awaken-runtime/src/policies/state.rs`
-- `crates/awaken-runtime/src/policies/hook.rs`
-- `crates/awaken-runtime-contract/src/contract/lifecycle.rs`
-
-## 相关
-
-- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
-- [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)
+- [配置参考：AgentSpec](/awaken/zh-cn/reference/config/#agentspec)
+- [HTTP API](/awaken/zh-cn/reference/http-api/)
+- [取消](/awaken/zh-cn/reference/cancellation/)

@@ -1,55 +1,79 @@
 ---
 title: "调优与运营"
-description: "通过管理控制台和配置面调优已保存 Agent、检查 run、沉淀 trace、运行 eval，并加固生产行为。"
+description: "优先通过管理控制台运营 Awaken：调 Agent、审权限、查 trace、跑 eval；API 只作为自动化参考。"
 ---
 
-这条路径面向运行中的 Awaken server。开发者仍然在 Rust 中实现可执行能力；运营者
-在线调优托管部分：prompt、工具描述、model、model pool、MCP server、Skill、
-delegate、reminder、deferred-tool 策略、权限规则、trace、dataset 和 eval。
+本节面向在浏览器里操作运行中 Awaken server 的人。把**管理控制台**作为主要入口：
+在 UI 中点击操作，一次只改一个点，Validate，Preview，Save，然后对比行为。只有当
+同一操作需要自动化时，再使用 REST/config API。
 
-管理控制台是这条路径的主要 UI。REST 配置 API 是同一个控制面，可用于 CI 或内部工具。
+## 从控制台开始
 
-## 推荐顺序
+<figure class="screenshot">
+  <a href="/awaken/assets/admin-console/flow-dashboard-health.png">
+    <img src="/awaken/assets/admin-console/flow-dashboard-health.png" alt="Admin Console dashboard，展示 workload、health、recent audit events 和 system metadata。" loading="lazy" />
+  </a>
+  <figcaption>先看 Dashboard：确认 server 已连接、健康，并处在预期 scope。</figcaption>
+</figure>
 
-1. 先用 [管理控制台](/awaken/zh-cn/how-to/use-admin-console/) 连接运行中的 server，
-   配置 provider-backed model，创建 Agent，预览草稿，并发布下一版 registry snapshot。
-2. 配好模型后,用 [用 Admin Assistant 构建 Agent](/awaken/zh-cn/how-to/build-an-agent-with-the-assistant/) 以自然语言描述起草 Agent。
-3. 用 [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/) 和
-   [在线调优 Prompt](/awaken/zh-cn/how-to/hot-tune-prompts/) 理解完整可编辑表面。
-4. 用 [接入 A2A Server](/awaken/zh-cn/how-to/connect-an-a2a-server/) 把远程 agent 纳入目录,再用
-   [采集数据集并运行评测](/awaken/zh-cn/how-to/capture-a-dataset-and-run-an-eval/) 在上线前给行为打分。
-5. 通过 [可观测性](/awaken/zh-cn/how-to/enable-observability/) 把 run、tool 和 provider 变得可见。
-6. 用 [工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/) 和
-   [停止策略](/awaken/zh-cn/how-to/configure-stop-policies/) 约束行为并引入人工审核。
+1. 打开 [使用管理控制台](/awaken/zh-cn/how-to/use-admin-console/) 并连接 server。
+2. 修改前先检查 **Dashboard → Health**。
+3. 在 **Infrastructure** 下配置 **Providers** 和 **Models**。
+4. 打开 **Agents**，编辑草稿，点击 **Validate**，用 preview chat 验证，然后 **Save**。
+5. 需要审查或恢复变更时，用 **Audit Log** 和编辑器里的 **History**。
 
-工具、插件、MCP、skills、reminder 等**能力**是在代码里构建的 —— 见
-[开发 Agent](/awaken/zh-cn/build-agents/)。本节负责调优和运行你构建出来的东西。
+## 通过交互调优行为
 
-## 重放与 Eval 循环
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-basics.png">
+      <img src="/awaken/assets/admin-console/flow-agent-basics.png" alt="Agent editor，包含 Basics、Tools、Plugins、Delegates、Advanced、History、保存控件和 preview chat。" loading="lazy" />
+    </a>
+    <figcaption>Agent editor：调 prompt、model、tools、plugins、delegates 和 limits。</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-tools.png">
+      <img src="/awaken/assets/admin-console/flow-agent-tools.png" alt="Agent editor 的 Tools tab，展示 allowed tool checkboxes、excluded delete_file、patterns 和 preview chat。" loading="lazy" />
+    </a>
+    <figcaption>Agent Tools tab：暴露 web_search、read_document、filesystem/read_file，同时排除 delete_file。</figcaption>
+  </figure>
+</div>
 
-`awaken-eval` 会把保存的 fixture 通过 `RuntimeReplayer` 重放，对输出打分，
-并与 NDJSON baseline 做 diff。它适合用保存的 prompt、tool output 与 provider
-script 做回归检查，不需要重新支付 live provider 成本。Trace curation helper
-可以把捕获到的 run 转成 fixture；当你要测量 provider 漂移本身时，也可以使用
-live mode。
+| 目标 | 点击路径 | 指南 |
+|---|---|---|
+| 调 prompt/model/tools/plugins/delegates | **Agents → Agent → Basics / Tools / Plugins / Delegates → Validate → Preview → Save** | [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/) |
+| 安全改 prompt 文案 | **Agent → Basics → System prompt → Validate → Preview → Save** | [在线调优 Prompt](/awaken/zh-cn/how-to/hot-tune-prompts/) |
+| 管理上下文和压缩 | **Agent → Advanced / JSON preview → Validate → Preview 长任务 → Save** | [优化 Context Window](/awaken/zh-cn/how-to/optimize-context-window/) |
+| 约束循环和失控任务 | **Agent → Basics / Advanced → limits 和 stop policy → Validate → Preview → Save** | [配置停止策略](/awaken/zh-cn/how-to/configure-stop-policies/) |
 
-## 加固 admin 与配置面
+## 通过交互做治理与评测
 
-两个互不相关的开关，详见 [配置参考](/awaken/zh-cn/reference/config/)：
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-history.png">
+      <img src="/awaken/assets/admin-console/flow-agent-history.png" alt="Agent editor 的 History tab，包含 update/create events 和 View/Restore actions。" loading="lazy" />
+    </a>
+    <figcaption>History tab：恢复或发布前，先审查已保存的 Agent 变更。</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-eval-run-detail.png">
+      <img src="/awaken/assets/admin-console/flow-eval-run-detail.png" alt="Eval run 详情页，展示 pass rate 和每个 fixture 的结果。" loading="lazy" />
+    </a>
+    <figcaption>Eval detail：接受变更前，用可重放样本对比行为。</figcaption>
+  </figure>
+</div>
 
-- `AdminApiConfig.bearer_token`（或 `AWAKEN_ADMIN_API_BEARER_TOKEN`）保护
-  `/v1/capabilities`、`/v1/config/*`、`/v1/agents*`、`/v1/system/info`、
-  `/v1/audit-log` 和 runtime-stats 端点。
-- `AdminApiConfig.expose_config_routes = false` 把 admin CRUD 路由整组卸下，
-  适合配置由外部流水线管理的部署。
+| 目标 | 点击路径 | 指南 |
+|---|---|---|
+| 给敏感工具加 gate | **Agent → Plugins → Permission rules → Ask / Allow / Deny → Save** | [启用工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/) |
+| 接入可 handoff 的远程 Agent | **Resources → A2A Servers → New A2A server → Refresh card → Save** | [接入 A2A Server](/awaken/zh-cn/how-to/connect-an-a2a-server/) |
+| 捕获并回放行为 | **Observe → Datasets → Eval Runs → Eval Reports** | [采集数据集并运行评测](/awaken/zh-cn/how-to/capture-a-dataset-and-run-an-eval/) |
+| 查看运行信号 | **Dashboard → Agents list → Agent dashboard / Recent runs** | [启用可观测性](/awaken/zh-cn/how-to/enable-observability/) |
 
-如果配置写入频繁碎小，给 `ConfigRuntimeManager::with_min_apply_interval(Duration)`
-设一个窗口可以把 listener 触发的 apply 合并；hash 未变的 `ProviderSpec` 会
-复用缓存的 executor。
+## 自动化时使用的 API 参考
 
-## 建议搭配阅读
+同一操作需要脚本化，而不是在 UI 里点击时，使用这些参考：
 
-- [错误](/awaken/zh-cn/reference/errors/)
-- [取消](/awaken/zh-cn/reference/cancellation/)
-- [HITL 与 Mailbox](/awaken/zh-cn/explanation/hitl-and-mailbox/)
-- [配置](/awaken/zh-cn/reference/config/)
+- [HTTP API](/awaken/zh-cn/reference/http-api/) — 路由、认证、请求/响应形态。
+- [配置](/awaken/zh-cn/reference/config/) — `AgentSpec`、provider/model config、plugin sections。
+- [管理控制台界面清单](/awaken/zh-cn/reference/admin-console/) — screen 到 endpoint 的映射和 REST-only surface。

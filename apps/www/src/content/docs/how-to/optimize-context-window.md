@@ -1,182 +1,69 @@
 ---
-title: "Optimize the Context Window"
-description: "Use this when you need to control how the runtime manages conversation history to stay within model token limits."
+title: "Optimize Context Window"
+description: "Use the Admin Console to tune context limits and compaction behavior: inspect the agent, adjust policy, validate, preview a long task, then save."
 ---
 
-Use this when you need to control how the runtime manages conversation history to stay within model token limits.
+Context tuning is an operator workflow once the runtime supports the relevant
+policy fields. Use the Admin Console first so you can see the agent, make a
+small edit, validate it, and preview a long conversation before saving.
 
-## Prerequisites
+## What you click
 
-- `awaken` crate added to `Cargo.toml`
-- An agent configured with `AgentSpec`
+<figure class="screenshot">
+  <a href="/awaken/assets/admin-console/flow-agent-advanced.png">
+    <img src="/awaken/assets/admin-console/flow-agent-advanced.png" alt="Agent editor Advanced tab showing context window policy fields, compaction mode, autocompact threshold, and preview chat." loading="lazy" />
+  </a>
+  <figcaption>Open the agent editor, review the draft, then use Advanced/JSON preview for context-policy changes.</figcaption>
+</figure>
 
-## ContextWindowPolicy
+1. Open **Agents** and choose the agent that is hitting context limits.
+2. Check **Basics** for model choice and max rounds. A different model or lower
+   max rounds may solve the issue before policy tuning.
+3. Open **Advanced** and review the final draft shape.
+4. Adjust the context policy fields your server exposes for the agent.
+5. Click **Validate**.
+6. Use preview chat with a long scenario: several turns, tool results, and a
+   final answer that should still remember earlier facts.
+7. Save only after the preview keeps the important context.
+8. For repeatable verification, capture the scenario as a dataset and run an
+   eval.
 
-Every agent has a `ContextWindowPolicy` that controls how conversation history is managed. Set it on your `AgentSpec`:
+## What to tune
 
-```rust
-use awaken::ContextWindowPolicy;
+| Behavior you see | Try in the UI | Confirm with |
+|---|---|---|
+| Agent forgets recent user intent | Increase recent-message retention or lower noisy tool output | Preview chat with the same multi-turn prompt |
+| Prompt grows too large | Enable or lower auto-compaction threshold | Trace/eval with long tool results |
+| Final answer cuts off | Increase output-token limit, or choose a model with a larger output window | Preview answer length and eval output |
+| Long task loops | Pair context tuning with stop policy limits | [Configure Stop Policies](/awaken/how-to/configure-stop-policies/) |
+| Important tool results disappear | Keep a larger raw suffix or summarize only after safe points | Trace detail and eval fixtures |
 
-let policy = ContextWindowPolicy {
-    max_context_tokens: 200_000,
-    max_output_tokens: 16_384,
-    min_recent_messages: 10,
-    enable_prompt_cache: true,
-    autocompact_threshold: Some(100_000),
-    compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
-    compaction_raw_suffix_messages: 2,
-};
-```
+## Observe the result
 
-### Fields
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agents-list.png">
+      <img src="/awaken/assets/admin-console/flow-agents-list.png" alt="Agents list with model metadata and runtime inference statistics." loading="lazy" />
+    </a>
+    <figcaption>Agents list shows runtime signals when stats are wired.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-eval-run-detail.png">
+      <img src="/awaken/assets/admin-console/flow-eval-run-detail.png" alt="Eval run detail page with pass/fail fixture output." loading="lazy" />
+    </a>
+    <figcaption>Eval runs catch regressions in long-context behavior.</figcaption>
+  </figure>
+</div>
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `max_context_tokens` | `usize` | `200_000` | Model's total context window size in tokens |
-| `max_output_tokens` | `usize` | `16_384` | Tokens reserved for model output |
-| `min_recent_messages` | `usize` | `10` | Minimum number of recent messages to always preserve, even if over budget |
-| `enable_prompt_cache` | `bool` | `true` | Whether to enable prompt caching |
-| `autocompact_threshold` | `Option<usize>` | `None` | Token count that triggers auto-compaction. `None` disables auto-compaction |
-| `compaction_mode` | `ContextCompactionMode` | `KeepRecentRawSuffix` | Strategy used when auto-compaction fires |
-| `compaction_raw_suffix_messages` | `usize` | `2` | Number of recent raw messages to preserve in suffix compaction mode |
+Use preview for fast feedback, then use evals for cases that must not regress.
+If the change is worse, restore the previous version from **History** and save
+that known-good draft.
 
-## Truncation
+## API references for automation
 
-When the conversation exceeds the available token budget, the runtime automatically drops the oldest messages to fit. The budget is calculated as:
+Use API writes when context policies are generated by deployment tooling. The
+operator loop stays the same: validate, write, run, compare.
 
-```text
-available = max_context_tokens - max_output_tokens - tool_schema_tokens
-```
-
-### What truncation preserves
-
-- **System messages** are never truncated. All system messages at the start of the history survive regardless of budget.
-- **Recent messages** -- at least `min_recent_messages` history messages are kept, even if they exceed the budget.
-- **Tool call/result pairs** -- the split point is adjusted so that an assistant message with tool calls is never separated from its corresponding tool result messages.
-- **Dangling tool calls** -- after truncation, any orphaned tool calls (whose results were dropped) are patched to prevent invalid message sequences.
-
-### Artifact compaction
-
-Before truncation runs, oversized tool results are compacted automatically. By default, a tool result whose text is at or above 2048 estimated tokens is truncated to a preview of at most 1600 characters or 24 lines, whichever is shorter. The preview includes a compaction indicator showing the original size. Per-agent tuning lives under `sections.context_transform.artifact_compaction` with `threshold_tokens`, `preview_max_chars`, and `preview_max_lines`; all three values must be at least `1`.
-
-Non-tool messages (system, user, assistant) are never subject to artifact compaction.
-
-## Compaction
-
-Compaction summarizes older conversation history into a condensed summary message, reducing token usage while preserving context. Unlike truncation (which drops messages), compaction replaces them with a summary.
-
-### Enabling auto-compaction
-
-Set `autocompact_threshold` to trigger compaction when total message tokens exceed that value:
-
-```rust
-let policy = ContextWindowPolicy {
-    autocompact_threshold: Some(100_000),
-    compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
-    compaction_raw_suffix_messages: 4,
-    ..Default::default()
-};
-```
-
-### ContextCompactionMode
-
-Two strategies are available:
-
-- **`KeepRecentRawSuffix`** (default) -- keeps the most recent `compaction_raw_suffix_messages` messages as raw history. Everything before the compaction boundary is summarized.
-- **`CompactToSafeFrontier`** -- compacts all messages up to the safe frontier (the latest point where all tool call/result pairs are complete).
-
-The compaction boundary is chosen so that no tool call is separated from its result. The boundary finder walks the message history and only places boundaries where all open tool calls have been resolved.
-
-### CompactionConfig
-
-The compaction subsystem is configured through `CompactionConfig`, stored in the agent spec's `sections["compaction"]` and read via `CompactionConfigKey`:
-
-```rust
-use awaken::CompactionConfig;
-
-let config = CompactionConfig {
-    execution_mode: CompactionExecutionMode::Background,
-    summarizer_system_prompt: "You are a conversation summarizer. \
-        Preserve all key facts, decisions, tool results, and action items. \
-        Be concise but complete.".into(),
-    summarizer_user_prompt: "Update the cumulative conversation summary.\n\n\
-        <existing-summary>\n{previous_summary}\n</existing-summary>\n\n\
-        <new-conversation>\n{messages}\n</new-conversation>".into(),
-    summary_max_tokens: Some(1024),
-    summary_model: Some("claude-3-haiku".into()),
-    min_savings_ratio: 0.3,
-    raw_retention: CompactionRawRetention::PreserveDurable,
-};
-```
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `mode` | `CompactionExecutionMode` | `background` | `background` runs summaries asynchronously; `off` disables automatic compaction even when the threshold is set |
-| `summarizer_system_prompt` | `String` | Conversation summarizer prompt | System prompt for the summarizer LLM call |
-| `summarizer_user_prompt` | `String` | Cumulative summary prompt | User prompt template; `{messages}` is replaced with the conversation transcript and `{previous_summary}` with the prior summary when present |
-| `summary_max_tokens` | `Option<u32>` | `None` | Maximum tokens for the summary response |
-| `summary_model` | `Option<String>` | `None` | Upstream model override for summarization on the same resolved provider/executor. If this value matches a registry model id, it must belong to the agent model's provider and is normalized to that model's upstream name |
-| `min_savings_ratio` | `f64` | `0.3` | Minimum token savings ratio (0.0-1.0) to accept a compaction |
-| `raw_retention` | `CompactionRawRetention` | `preserve_durable` | Compaction rewrites the runtime prompt window but preserves original user messages in durable thread/run history |
-
-The compaction pass only runs when the expected savings ratio exceeds `min_savings_ratio`. A minimum gain of 1024 tokens (`MIN_COMPACTION_GAIN_TOKENS`) is also required to justify the summarization LLM call.
-
-### DefaultSummarizer
-
-The built-in `DefaultSummarizer` reads prompts from `CompactionConfig` and supports cumulative summarization. The same `summarizer_user_prompt` template is used for initial and incremental compaction; include `{previous_summary}` when you want the prompt to carry the prior cumulative summary forward.
-
-The transcript renderer filters out `Visibility::Internal` messages before sending to the summarizer, since system-injected context is re-injected each turn and should not be included in summaries.
-
-### Background execution
-
-Compaction does **not** block the inference phase. When the conditions are
-met, `maybe_spawn_compaction` plans the boundary, writes a
-`CompactionInFlight` marker into `CompactionStateKey`, and offloads the
-summarization LLM call to a background task through the agent's
-`BackgroundTaskManager`. The completion event flows back through the owner
-inbox; `try_consume_compaction_event` picks it up and `apply_summary` swaps
-the summary into the message log if the boundary is still present.
-
-Two consequences worth knowing:
-
-- Compaction is single-flight per agent. While `CompactionState::is_compacting`
-  is true, subsequent inference rounds skip planning a new compaction and run
-  with the un-compacted history. Once the swap completes, the next round
-  continues with the summarized prefix.
-- Config-driven local runs automatically attach the built-in summarizer and a
-  per-run `BackgroundTaskManager` when `autocompact_threshold` is set and
-  `mode` is `background`. Custom runtimes that construct `ResolvedAgent`
-  directly must provide both; without either, `maybe_spawn_compaction` is a
-  no-op and the runtime falls back to truncation.
-- The latest user turn is always kept raw in the prompt window. Older user
-  messages can be summarized, but durable thread/run history is preserved.
-- `KeepRecentRawSuffix` keeps `compaction_raw_suffix_messages` at the tail.
-  `CompactToSafeFrontier` rolls the window forward to the latest safe frontier
-  while honoring `min_recent_messages`. Both modes avoid splitting tool
-  call/result pairs.
-
-### Summary storage
-
-Compaction summaries are stored as `<conversation-summary>` tagged internal system messages. On load, `trim_to_compaction_boundary` drops all messages before the latest summary message, so already-summarized history is never re-loaded into the context window.
-
-Compaction boundaries are tracked durably via `CompactionState`, recording the summary text, pre/post token counts, and timestamp for each compaction event.
-
-## Truncation recovery
-
-When the LLM stops due to `MaxTokens` after producing partial text or incomplete tool calls (argument JSON was truncated mid-generation), the runtime can automatically retry by injecting a continuation prompt asking the model to break its work into smaller pieces and continue. The retry count is tracked by `TruncationState` and bounded by a configurable maximum.
-
-## Key Files
-
-- `crates/awaken-runtime-contract/src/contract/inference.rs` -- `ContextWindowPolicy`, `ContextCompactionMode`
-- `crates/awaken-runtime/src/context/transform/mod.rs` -- `ContextTransform` (truncation)
-- `crates/awaken-runtime/src/context/transform/compaction.rs` -- artifact compaction
-- `crates/awaken-runtime/src/context/compaction.rs` -- boundary finding, load-time trimming
-- `crates/awaken-runtime/src/context/summarizer.rs` -- `ContextSummarizer`, `DefaultSummarizer`
-- `crates/awaken-runtime/src/context/plugin.rs` -- `CompactionPlugin`, `CompactionConfig`, `CompactionState`
-- `crates/awaken-runtime/src/context/truncation.rs` -- `TruncationState`, continuation prompts
-
-## Related
-
-- [Build an Agent](/awaken/how-to/build-an-agent/)
-- [Add a Plugin](/awaken/how-to/add-a-plugin/)
-- [State Keys](/awaken/reference/state-keys/)
+- [Config reference: AgentSpec](/awaken/reference/config/#agentspec)
+- [HTTP API](/awaken/reference/http-api/)
+- [Admin Console surface inventory](/awaken/reference/admin-console/)

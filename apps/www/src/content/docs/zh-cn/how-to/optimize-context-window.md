@@ -1,165 +1,62 @@
 ---
-title: "优化上下文窗口"
-description: "当你需要控制运行时如何管理会话历史，以避免超过模型上下文上限时，使用本页。"
+title: "优化 Context Window"
+description: "在管理控制台中调 context limits 和 compaction：检查 Agent、调整 policy、Validate、Preview 长任务，然后 Save。"
 ---
 
-当你需要控制运行时如何管理会话历史，以避免超过模型上下文上限时，使用本页。
+当 runtime 已支持相关 policy 字段后，context 调优就是一个 operator 工作流。优先用管理控制台：
+看到 Agent，做一个小改动，Validate，用长对话预览，再保存。
 
-## 前置条件
+## 你要点击什么
 
-- 已添加 `awaken`
-- 已有一个 `AgentSpec`
+<figure class="screenshot">
+  <a href="/awaken/assets/admin-console/flow-agent-advanced.png">
+    <img src="/awaken/assets/admin-console/flow-agent-advanced.png" alt="Agent editor 的 Advanced tab，展示 context window policy、compaction mode、autocompact threshold 和 preview chat。" loading="lazy" />
+  </a>
+  <figcaption>打开 Agent editor，审查草稿，再用 Advanced/JSON preview 修改 context policy。</figcaption>
+</figure>
 
-## ContextWindowPolicy
+1. 打开 **Agents**，选择遇到 context limit 的 Agent。
+2. 先看 **Basics** 中的 model 和 max rounds。换更大窗口模型或降低 max rounds，可能已经足够。
+3. 打开 **Advanced**，审查最终草稿形态。
+4. 调整该 server 暴露给 Agent 的 context policy 字段。
+5. 点击 **Validate**。
+6. 用长场景在 preview chat 中验证：多轮、工具结果、最终回答仍应记住早期事实。
+7. 只有当 preview 保留了关键信息后再 Save。
+8. 需要可复现验证时，把场景沉淀成 dataset 并运行 eval。
 
-每个 agent 都可以配置 `ContextWindowPolicy`：
+## 调什么
 
-```rust
-use awaken::ContextWindowPolicy;
+| 现象 | 在 UI 中尝试 | 用什么确认 |
+|---|---|---|
+| Agent 忘记最近用户意图 | 提高 recent-message retention，或减少噪音工具输出 | 同一个多轮 prompt 的 preview chat |
+| Prompt 过大 | 启用或降低 auto-compaction threshold | 带长工具结果的 trace/eval |
+| 最终回答被截断 | 提高 output-token limit，或换更大输出窗口模型 | Preview answer length 和 eval output |
+| 长任务循环 | 搭配 stop policy limits | [配置停止策略](/awaken/zh-cn/how-to/configure-stop-policies/) |
+| 重要工具结果消失 | 保留更大的 raw suffix，或只在安全点 summarization | Trace detail 和 eval fixtures |
 
-let policy = ContextWindowPolicy {
-    max_context_tokens: 200_000,
-    max_output_tokens: 16_384,
-    min_recent_messages: 10,
-    enable_prompt_cache: true,
-    autocompact_threshold: Some(100_000),
-    compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
-    compaction_raw_suffix_messages: 2,
-};
-```
+## 观察结果
 
-### 字段
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agents-list.png">
+      <img src="/awaken/assets/admin-console/flow-agents-list.png" alt="Agents list，包含 model metadata 和 runtime inference statistics。" loading="lazy" />
+    </a>
+    <figcaption>接入 stats 后，Agents list 会展示运行信号。</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-eval-run-detail.png">
+      <img src="/awaken/assets/admin-console/flow-eval-run-detail.png" alt="Eval run 详情页，包含 pass/fail fixture output。" loading="lazy" />
+    </a>
+    <figcaption>Eval run 能发现长上下文行为的回归。</figcaption>
+  </figure>
+</div>
 
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `max_context_tokens` | `usize` | `200_000` | 模型上下文总窗口（token 数） |
-| `max_output_tokens` | `usize` | `16_384` | 为模型输出预留的 token |
-| `min_recent_messages` | `usize` | `10` | 始终保留的最近消息数，即使超出预算 |
-| `enable_prompt_cache` | `bool` | `true` | 是否启用 prompt cache |
-| `autocompact_threshold` | `Option<usize>` | `None` | 达到该 token 数时触发自动压缩，`None` 表示禁用 |
-| `compaction_mode` | `ContextCompactionMode` | `KeepRecentRawSuffix` | 自动压缩策略 |
-| `compaction_raw_suffix_messages` | `usize` | `2` | 后缀压缩模式下保留的原始消息数 |
+用 preview 获得快速反馈，再用 eval 覆盖不能回归的场景。如果改坏了，从 **History** 恢复上一版并保存。
 
-## 截断（Truncation）
+## 自动化 API 参考
 
-当消息总量超过预算时，运行时会自动丢弃最旧消息。预算大致为：
+当 context policy 由部署工具生成时，用 API 写入。operator 循环不变：validate、write、run、compare。
 
-```text
-available = max_context_tokens - max_output_tokens - tool_schema_tokens
-```
-
-### 截断时会保留什么
-
-- 所有 system messages
-- 至少 `min_recent_messages` 条最近消息
-- 成对的 tool call / tool result
-- 不会留下悬挂的 tool calls
-
-### Artifact 压缩
-
-在真正截断前，过大的 tool result 会先被压缩成 preview，以减少 token 占用。system / user / assistant 普通消息不会做这种压缩。
-
-## 压缩（Compaction）
-
-压缩不会简单丢消息，而是把更早的历史总结成一条摘要消息。
-
-### 启用自动压缩
-
-```rust
-let policy = ContextWindowPolicy {
-    autocompact_threshold: Some(100_000),
-    compaction_mode: ContextCompactionMode::KeepRecentRawSuffix,
-    compaction_raw_suffix_messages: 4,
-    ..Default::default()
-};
-```
-
-### ContextCompactionMode
-
-- `KeepRecentRawSuffix`：保留最近 N 条原始消息，其余压缩
-- `CompactToSafeFrontier`：压缩到安全边界为止
-
-安全边界的含义是：不会把某条 tool call 和它对应的结果拆开。
-
-### CompactionConfig
-
-压缩子系统通过 `CompactionConfig` 配置：
-
-```rust
-use awaken::CompactionConfig;
-
-let config = CompactionConfig {
-    execution_mode: CompactionExecutionMode::Background,
-    summarizer_system_prompt: "You are a conversation summarizer. \
-        Preserve all key facts, decisions, tool results, and action items. \
-        Be concise but complete.".into(),
-    summarizer_user_prompt: "Update the cumulative conversation summary.\n\n\
-        <existing-summary>\n{previous_summary}\n</existing-summary>\n\n\
-        <new-conversation>\n{messages}\n</new-conversation>".into(),
-    summary_max_tokens: Some(1024),
-    summary_model: Some("claude-3-haiku".into()),
-    min_savings_ratio: 0.3,
-    raw_retention: CompactionRawRetention::PreserveDurable,
-};
-```
-
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `mode` | `CompactionExecutionMode` | `background` | `background` 异步执行摘要；`off` 即使设置阈值也不自动压缩 |
-| `summarizer_system_prompt` | `String` | 内置摘要 prompt | 摘要 LLM 的 system prompt |
-| `summarizer_user_prompt` | `String` | 累积摘要 prompt | 摘要用户 prompt 模板；`{messages}` 会被替换为对话记录，`{previous_summary}` 会在已有摘要时替换为上一次累积摘要 |
-| `summary_max_tokens` | `Option<u32>` | `None` | 摘要响应的最大 token 数 |
-| `summary_model` | `Option<String>` | `None` | 同一已解析 provider/executor 上的上游模型覆盖。若该值匹配 registry model id，则必须与 agent 模型属于同一 provider，并会在解析时规范化为该模型的 upstream name |
-| `min_savings_ratio` | `f64` | `0.3` | 接受一次压缩所需的最低 token 节省比例（0.0-1.0） |
-| `raw_retention` | `CompactionRawRetention` | `preserve_durable` | 压缩只改写运行时 prompt 窗口，原始用户消息仍保留在线程/运行历史中 |
-
-### DefaultSummarizer
-
-内置 `DefaultSummarizer` 会读取 `CompactionConfig`，并支持“在已有摘要上继续增量总结”。初次压缩和增量压缩都会使用同一个 `summarizer_user_prompt` 模板；如果希望 prompt 带上已有累积摘要，请在模板中包含 `{previous_summary}`。
-
-### 后台执行
-
-压缩**不会**阻塞推理 phase。条件满足时，`maybe_spawn_compaction` 会先确定边
-界、把 `CompactionInFlight` 标记写进 `CompactionStateKey`，再通过 agent 的
-`BackgroundTaskManager` 把摘要 LLM 调用 spawn 到后台。完成事件经由 owner inbox
-返回，由 `try_consume_compaction_event` 消费；如果边界依然存在，
-`apply_summary` 会把摘要 swap 到消息日志里。
-
-实践上需要知道两件事：
-
-- 同一 agent 上的压缩是单飞（single-flight）的。`CompactionState::is_compacting`
-  为真时，下一轮推理不会再规划新的压缩，直接以未压缩的历史继续；swap 完成后
-  下一轮才会基于新的摘要前缀继续。
-- config-driven 本地运行在设置了 `autocompact_threshold` 且 `mode` 为
-  `background` 时，会自动挂接内置 summarizer 和每次运行的
-  `BackgroundTaskManager`。直接构造 `ResolvedAgent` 的自定义 runtime 需要自行提供
-  两者；缺少任意一个，`maybe_spawn_compaction` 会 no-op，runtime 退回到 truncation。
-- 最新用户消息始终以原文保留在 prompt 窗口。更早的用户消息可以进入摘要，但
-  durable thread/run history 会保留原文。
-- `KeepRecentRawSuffix` 保留尾部 `compaction_raw_suffix_messages` 条原始消息。
-  `CompactToSafeFrontier` 会滚动到最新安全边界，并遵守 `min_recent_messages`。
-  两种模式都不会切断 tool call/result 对。
-
-### 摘要存储
-
-压缩结果会被保存成带 `<conversation-summary>` 标签的内部 system message。重新加载时，历史中较早的已摘要部分不会再被重新放回上下文窗口。
-
-## 截断恢复
-
-如果 LLM 因 `MaxTokens` 截断，而且已经产生部分文本或生成到一半的 tool call 参数不完整，运行时可以自动注入 continuation prompt 并重试，直到达到最大重试次数。
-
-## 关键文件
-
-- `crates/awaken-runtime-contract/src/contract/inference.rs`
-- `crates/awaken-runtime/src/context/transform/mod.rs`
-- `crates/awaken-runtime/src/context/transform/compaction.rs`
-- `crates/awaken-runtime/src/context/compaction.rs`
-- `crates/awaken-runtime/src/context/summarizer.rs`
-- `crates/awaken-runtime/src/context/plugin.rs`
-- `crates/awaken-runtime/src/context/truncation.rs`
-
-## 相关
-
-- [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)
-- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
-- [状态键](/awaken/zh-cn/reference/state-keys/)
+- [配置参考：AgentSpec](/awaken/zh-cn/reference/config/#agentspec)
+- [HTTP API](/awaken/zh-cn/reference/http-api/)
+- [管理控制台界面清单](/awaken/zh-cn/reference/admin-console/)

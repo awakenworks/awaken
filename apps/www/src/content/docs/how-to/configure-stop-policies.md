@@ -1,210 +1,63 @@
 ---
 title: "Configure Stop Policies"
-description: "Use this when you need to control when an agent run terminates based on round count, token usage, elapsed time, or error frequency."
+description: "Bound agent runs from the Admin Console: adjust rounds, timeout/token/error/tool-stop policies, validate, preview, then save."
 ---
 
-Use this when you need to control when an agent run terminates based on round count, token usage, elapsed time, or error frequency.
+Stop policies keep an agent from running longer than intended. Configure them
+from the agent editor first; use API-level policy objects only when you are
+automating the same change.
 
-## Prerequisites
+## What you click
 
-- `awaken` crate added to `Cargo.toml`
-- Familiarity with `Plugin` and `AgentRuntimeBuilder`
+<figure class="screenshot">
+  <a href="/awaken/assets/admin-console/flow-agent-basics.png">
+    <img src="/awaken/assets/admin-console/flow-agent-basics.png" alt="Agent editor Basics tab with max rounds, max continuation retries, reasoning effort, system prompt, save controls, and preview chat." loading="lazy" />
+  </a>
+  <figcaption>Use Basics for max rounds and retries first; open Advanced only when you need raw policy review.</figcaption>
+</figure>
 
-## Overview
+1. Open **Agents** and choose the agent.
+2. In **Basics**, set the common bound first: **max rounds**.
+3. If the agent needs stricter conditions, open **Advanced** and review the stop
+   policy shape exposed by the server.
+4. Click **Validate**.
+5. Preview two scenarios: one that should complete normally, and one that should
+   stop.
+6. Save only when both scenarios behave correctly.
+7. Run an eval fixture for loops or time-sensitive behavior.
 
-Stop policies evaluate after each inference step and decide whether the run should continue or terminate. The system provides four built-in policies and a trait for custom implementations.
+## Policy choices
 
-Built-in policies:
-
-| Policy | Triggers when |
-|---|---|
-| `MaxRoundsPolicy` | Step count exceeds `max` rounds |
-| `TokenBudgetPolicy` | Total tokens (input + output) exceed `max_total` |
-| `TimeoutPolicy` | Elapsed wall time exceeds `max_ms` milliseconds |
-| `ConsecutiveErrorsPolicy` | Consecutive inference errors reach `max` |
-
-## Steps
-
-1. Create policies programmatically.
-
-```rust
-use std::sync::Arc;
-use awaken::policies::{
-    MaxRoundsPolicy, TokenBudgetPolicy, TimeoutPolicy,
-    ConsecutiveErrorsPolicy, StopPolicy,
-};
-
-let policies: Vec<Arc<dyn StopPolicy>> = vec![
-    Arc::new(MaxRoundsPolicy::new(25)),
-    Arc::new(TokenBudgetPolicy::new(100_000)),
-    Arc::new(TimeoutPolicy::new(300_000)), // 5 minutes in ms
-    Arc::new(ConsecutiveErrorsPolicy::new(3)),
-];
-```
-
-2. Register a `StopConditionPlugin` with the runtime builder.
-
-```rust
-use std::sync::Arc;
-use awaken::policies::StopConditionPlugin;
-use awaken::engine::GenaiExecutor;
-use awaken::registry_spec::ModelSpec;
-use awaken::AgentRuntimeBuilder;
-
-let mut spec = spec;
-spec.plugin_ids.push("stop-condition".into());
-
-let runtime = AgentRuntimeBuilder::new()
-    .with_plugin("stop-condition", Arc::new(StopConditionPlugin::new(policies)))
-    .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
-    .build()?;
-```
-
-For the common case of limiting rounds only, use the convenience wrapper:
-
-```rust
-use std::sync::Arc;
-use awaken::policies::MaxRoundsPlugin;
-use awaken::engine::GenaiExecutor;
-use awaken::registry_spec::ModelSpec;
-use awaken::AgentRuntimeBuilder;
-
-let mut spec = spec;
-spec.plugin_ids.push("stop-condition:max-rounds".into());
-
-let runtime = AgentRuntimeBuilder::new()
-    .with_plugin("stop-condition:max-rounds", Arc::new(MaxRoundsPlugin::new(10)))
-    .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
-    .with_model(ModelSpec::new("claude-sonnet", "anthropic", "claude-sonnet-4-20250514"))
-    .build()?;
-```
-
-Custom stop-condition plugins must be listed in `AgentSpec.plugin_ids`. The
-built-in `AgentSpec.max_rounds` guard is still injected automatically; use these
-plugins when you need additional policy types.
-
-3. Use declarative `StopConditionSpec` values.
-
-The `policies_from_specs` function converts declarative specs into policy instances. This is useful when loading configuration from JSON or YAML.
-
-```rust
-use awaken::contract::lifecycle::StopConditionSpec;
-use awaken::policies::{policies_from_specs, StopConditionPlugin};
-
-let specs = vec![
-    StopConditionSpec::MaxRounds { rounds: 10 },
-    StopConditionSpec::Timeout { seconds: 300 },
-    StopConditionSpec::TokenBudget { max_total: 100_000 },
-    StopConditionSpec::ConsecutiveErrors { max: 3 },
-];
-
-let policies = policies_from_specs(&specs);
-let plugin = StopConditionPlugin::new(policies);
-```
-
-The full set of `StopConditionSpec` variants:
-
-```rust
-pub enum StopConditionSpec {
-    MaxRounds { rounds: usize },
-    Timeout { seconds: u64 },
-    TokenBudget { max_total: usize },
-    ConsecutiveErrors { max: usize },
-    StopOnTool { tool_name: String },
-    ContentMatch { pattern: String },
-    LoopDetection { window: usize },
-}
-```
-
-All variants above are backed by `policies_from_specs`; invalid `ContentMatch` regex patterns fail closed by stopping with `content_match_invalid_regex`.
-
-## The StopPolicy Trait
-
-Implement `StopPolicy` to create custom stop conditions:
-
-```rust
-use awaken::policies::{StopPolicy, StopDecision, StopPolicyStats};
-
-pub struct MyCustomPolicy {
-    pub threshold: u64,
-}
-
-impl StopPolicy for MyCustomPolicy {
-    fn id(&self) -> &str {
-        "my_custom"
-    }
-
-    fn evaluate(&self, stats: &StopPolicyStats) -> StopDecision {
-        if stats.total_output_tokens > self.threshold {
-            StopDecision::Stop {
-                code: "my_custom".into(),
-                detail: format!("output tokens {} exceeded {}", stats.total_output_tokens, self.threshold),
-            }
-        } else {
-            StopDecision::Continue
-        }
-    }
-}
-```
-
-The trait requires `Send + Sync + 'static`. Evaluation must be synchronous -- it is pure computation on the provided stats.
-
-## StopPolicyStats
-
-Every policy receives a `StopPolicyStats` snapshot with fields populated by the internal `StopConditionHook`:
-
-| Field | Type | Description |
+| Risk | UI choice | How to verify |
 |---|---|---|
-| `step_count` | `u32` | Number of inference steps completed so far |
-| `total_input_tokens` | `u64` | Cumulative prompt tokens across all steps |
-| `total_output_tokens` | `u64` | Cumulative completion tokens across all steps |
-| `elapsed_ms` | `u64` | Wall time since the first step, in milliseconds |
-| `consecutive_errors` | `u32` | Current streak of consecutive inference errors (resets on success) |
-| `last_tool_names` | `Vec<String>` | Tool names called in the most recent inference response |
-| `last_response_text` | `String` | Text content of the most recent inference response |
+| Repeating the same plan | Lower max rounds or add loop detection | Preview a prompt that used to loop |
+| Long-running tool chain | Add timeout or tool-stop condition | Preview with a tool-heavy task |
+| Token runaway | Add token budget | Eval fixture with long context/tool output |
+| Error storm | Add consecutive-error bound | Preview with a failing tool or provider |
+| Stop after a known terminal tool | Add stop-on-tool condition | Preview a task that calls that tool once |
 
-## StopDecision
+## Operate after saving
 
-```rust
-pub enum StopDecision {
-    Continue,
-    Stop { code: String, detail: String },
-}
-```
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agents-list.png">
+      <img src="/awaken/assets/admin-console/flow-agents-list.png" alt="Agents list with runtime inference statistics." loading="lazy" />
+    </a>
+    <figcaption>Watch run and latency signals after tightening limits.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agent-history.png">
+      <img src="/awaken/assets/admin-console/flow-agent-history.png" alt="Agent editor History tab with update/create events and Restore actions." loading="lazy" />
+    </a>
+    <figcaption>Use the History tab to restore if a limit cuts off valid work.</figcaption>
+  </figure>
+</div>
 
-When any policy returns `StopDecision::Stop`, the hook converts it to `TerminationReason::Stopped` with the given code and detail, then updates the run lifecycle to `Done`. The agent loop exits after the current step. Policies are evaluated in order; the first `Stop` wins.
+A stricter stop policy can hide valid multi-step work. If users report early
+stops, restore the previous version or raise the bound and rerun the same eval.
 
-## How Stop Policies Interact with the Agent Loop
+## API references for automation
 
-1. The `StopConditionPlugin` registers a `PhaseHook` on `Phase::AfterInference`.
-2. After each LLM inference, the hook increments `step_count`, accumulates token usage, and tracks consecutive errors in `StopConditionStatsState`.
-3. The hook builds a `StopPolicyStats` snapshot and calls `evaluate` on each registered policy.
-4. If any policy returns `Stop`, the hook emits a `RunLifecycleUpdate::Done` state command with the stop code, which terminates the run.
-5. If all policies return `Continue`, the agent loop proceeds to the next step.
-
-A policy with `max` or `max_total` set to `0` is treated as disabled and always returns `Continue`.
-
-## Common Errors
-
-| Error | Cause | Fix |
-|---|---|---|
-| Run never stops | No stop policy registered and LLM keeps calling tools | Register at least `MaxRoundsPolicy` or `MaxRoundsPlugin` |
-| `StateError::KeyAlreadyRegistered` | Both `StopConditionPlugin` and `MaxRoundsPlugin` registered | Use only one; they share the same state key |
-| Timeout fires too early | `TimeoutPolicy` takes milliseconds, `StopConditionSpec::Timeout` takes seconds | When using `TimeoutPolicy::new()` directly, pass milliseconds |
-
-## Key Files
-
-- `crates/awaken-runtime/src/policies/mod.rs` -- module root and public exports
-- `crates/awaken-runtime/src/policies/policy.rs` -- `StopPolicy` trait, built-in policies, `policies_from_specs`
-- `crates/awaken-runtime/src/policies/plugin.rs` -- `StopConditionPlugin` and `MaxRoundsPlugin`
-- `crates/awaken-runtime/src/policies/state.rs` -- `StopConditionStatsState` and its state key
-- `crates/awaken-runtime/src/policies/hook.rs` -- internal `StopConditionHook` that drives evaluation
-- `crates/awaken-runtime-contract/src/contract/lifecycle.rs` -- `StopConditionSpec` enum
-
-## Related
-
-- [Add a Plugin](/awaken/how-to/add-a-plugin/)
-- [Build an Agent](/awaken/how-to/build-an-agent/)
+- [Config reference: AgentSpec](/awaken/reference/config/#agentspec)
+- [HTTP API](/awaken/reference/http-api/)
+- [Cancellation](/awaken/reference/cancellation/)

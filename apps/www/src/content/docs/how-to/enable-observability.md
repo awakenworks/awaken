@@ -1,179 +1,84 @@
 ---
 title: "Enable Observability"
-description: "Use this when you need to trace LLM inference calls and tool executions with OpenTelemetry-compatible telemetry."
+description: "Operate with the Admin Console: inspect dashboard health, runtime stats, recent runs, traces, datasets, and eval results after the server wires observability stores."
 ---
 
-Use this when you need to trace LLM inference calls and tool executions with OpenTelemetry-compatible telemetry.
+Observability has two parts: server wiring and operator review. This guide
+focuses on what the operator should see and click after the server exposes
+runtime stats, traces, audit, and eval stores.
 
-## Prerequisites
+## What you click first
 
-- A working awaken agent runtime (see [First Agent](/awaken/tutorials/first-agent/))
-- Feature `observability` enabled on the `awaken` crate (enabled by default)
-- For OTel export: feature `otel` enabled on `awaken-ext-observability`, plus a configured OTel collector
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-dashboard-health.png">
+      <img src="/awaken/assets/admin-console/flow-dashboard-health.png" alt="Dashboard with workload, health, recent activity, and system metadata." loading="lazy" />
+    </a>
+    <figcaption>Dashboard: confirm optional observability subsystems are wired.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agents-list.png">
+      <img src="/awaken/assets/admin-console/flow-agents-list.png" alt="Agents list showing model/plugin metadata and runtime inference statistics." loading="lazy" />
+    </a>
+    <figcaption>Agents list: inspect runtime stats before drilling into one agent.</figcaption>
+  </figure>
+</div>
 
-```toml
-[dependencies]
-awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["observability"] }
-tokio = { version = "1", features = ["full"] }
-```
+1. Open **Dashboard**.
+2. Check **Health** and **System** for audit log, runtime stats, trace, and eval
+   availability.
+3. Open **Agents** and look for inference counts, latency, and error signals.
+4. Open a saved agent and use **Recent runs** when trace routes are enabled.
+5. Save important traces as dataset fixtures.
+6. Run an eval and inspect the report before accepting a behavior change.
 
-## Steps
+## What each surface tells you
 
-1. Register with the in-memory sink (development).
+| Surface | Use it for |
+|---|---|
+| **Dashboard** | Health, workload, recent audit activity, and subsystem availability. |
+| **Agents list** | Per-agent runtime signals such as inference count, errors, and latency when stats are wired. |
+| **Recent runs / traces** | Tool calls, model output, prompt variants, and final status for a run. |
+| **Datasets** | Curated traces that become repeatable fixtures. |
+| **Eval Runs** | Live or scripted replay results. |
+| **Eval Reports** | Offline NDJSON report review and baseline comparison. |
 
-```rust
-use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::ext_observability::{ObservabilityPlugin, InMemorySink};
-use awaken::registry_spec::ModelSpec;
-use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, Plugin};
+## Evaluate what you observed
 
-let sink = InMemorySink::new();
-let obs_plugin = ObservabilityPlugin::new(sink.clone());
-let mut agent_spec = AgentSpec::new("observed-agent")
-    .with_model_id("gpt-4o-mini")
-    .with_system_prompt("You are a helpful assistant.")
-    .with_hook_filter("observability");
-agent_spec.plugin_ids.push("observability".into());
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-datasets.png">
+      <img src="/awaken/assets/admin-console/flow-datasets.png" alt="Datasets screen with dataset list and fixture counts." loading="lazy" />
+    </a>
+    <figcaption>Datasets: group traces into replayable fixtures.</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-eval-run-detail.png">
+      <img src="/awaken/assets/admin-console/flow-eval-run-detail.png" alt="Eval run detail page with pass/fail fixture output." loading="lazy" />
+    </a>
+    <figcaption>Eval run detail: inspect pass/fail output for each fixture.</figcaption>
+  </figure>
+</div>
 
-let runtime = AgentRuntimeBuilder::new()
-    .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
-    .with_agent_spec(agent_spec)
-    .with_plugin("observability", Arc::new(obs_plugin) as Arc<dyn Plugin>)
-    .build()
-    .expect("failed to build runtime");
-```
+Use evals whenever a dashboard or trace observation leads to a tuning change.
+The loop is: observe → tune one field → validate → preview → save → rerun the
+same fixture.
 
-`plugin_ids` loads the observability plugin. `with_hook_filter("observability")`
-keeps its phase hooks active when the agent loads multiple plugins.
+## Server wiring checklist
 
-After a run completes, inspect collected metrics:
+If a screen says a subsystem is unavailable, the UI is working: the server has
+not exposed that store or route yet.
 
-```rust
-let metrics = sink.metrics();
-println!("inferences: {}", metrics.inferences.len());
-println!("tool calls: {}", metrics.tools.len());
-println!("total input tokens: {}", metrics.total_input_tokens());
-println!("total output tokens: {}", metrics.total_output_tokens());
-println!("tool failures: {}", metrics.tool_failures());
-println!("session duration: {}ms", metrics.session_duration_ms);
+| Missing in UI | Server side to check |
+|---|---|
+| Empty History or Audit Log disabled | Audit log store/wiring |
+| Agent stats show `n/a` | Runtime stats registry/store |
+| No recent runs or trace drawer | Trace capture/store routes |
+| Dataset/eval pages disabled | Eval dataset and run stores |
+| No external telemetry spans | OTel exporter and collector configuration |
 
-for stat in metrics.stats_by_model() {
-    println!("{}: {} calls, {} in / {} out tokens",
-        stat.model, stat.inference_count, stat.input_tokens, stat.output_tokens);
-}
+## API references for automation
 
-for stat in metrics.stats_by_tool() {
-    println!("{}: {} calls, {} failures",
-        stat.name, stat.call_count, stat.failure_count);
-}
-```
-
-2. Register with the OTel sink (production).
-
-```rust
-use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::ext_observability::{ObservabilityPlugin, OtelMetricsSink};
-use awaken::registry_spec::ModelSpec;
-use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, Plugin};
-use opentelemetry_sdk::trace::SdkTracerProvider;
-
-let provider = SdkTracerProvider::builder()
-    // configure your exporter (OTLP, Jaeger, etc.)
-    .build();
-let tracer = provider.tracer("awaken");
-
-let obs_plugin = ObservabilityPlugin::new(OtelMetricsSink::new(tracer));
-let mut agent_spec = AgentSpec::new("observed-agent")
-    .with_model_id("gpt-4o-mini")
-    .with_system_prompt("You are a helpful assistant.")
-    .with_hook_filter("observability");
-agent_spec.plugin_ids.push("observability".into());
-
-let runtime = AgentRuntimeBuilder::new()
-    .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
-    .with_agent_spec(agent_spec)
-    .with_plugin("observability", Arc::new(obs_plugin) as Arc<dyn Plugin>)
-    .build()
-    .expect("failed to build runtime");
-```
-
-3. Implement a custom sink (optional).
-
-```rust
-use awaken::ext_observability::{AgentMetrics, MetricsEvent, MetricsSink};
-
-struct MySink;
-
-impl MetricsSink for MySink {
-    // `record` is required; `flush` / `shutdown` / `flush_run` have Ok(()) defaults.
-    fn record(&self, event: &MetricsEvent) {
-        match event {
-            MetricsEvent::Inference(span) => { /* forward the inference span */ }
-            MetricsEvent::Tool(span) => { /* forward the tool span */ }
-            _ => {}
-        }
-    }
-
-    fn on_run_end(&self, metrics: &AgentMetrics) {
-        // emit aggregated run summary
-    }
-}
-```
-
-4. Captured telemetry.
-
-   The plugin hooks into the following phases:
-
-| Phase | Data Captured |
-|-------|---------------|
-| `RunStart` | Session start timestamp |
-| `BeforeInference` | Inference start timestamp, model, provider |
-| `AfterInference` | Token usage, finish reasons, duration, cache tokens |
-| `BeforeToolExecute` | Tool call start timestamp |
-| `AfterToolExecute` | Tool duration, error status; optional tool arguments/results when `ToolIoCapture` is enabled |
-| `RunEnd` | Session duration |
-
-OTel spans follow GenAI semantic conventions: the root agent span uses `gen_ai.operation.name=invoke_agent`; inference spans use attributes such as `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.conversation.id`, `gen_ai.usage.input_tokens`, and `gen_ai.usage.output_tokens`; tool spans use `gen_ai.operation.name=execute_tool` plus `gen_ai.tool.*` attributes.
-
-## Verify
-
-1. Run an agent with the `InMemorySink`.
-2. After `run()` completes, call `sink.metrics()`.
-3. Confirm `inferences` is non-empty and token counts are populated.
-4. For OTel, check your collector or Jaeger UI for spans named with the `awaken` tracer.
-
-## Common Errors
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Metrics are all zero | Plugin not registered | Register `ObservabilityPlugin` with the runtime builder |
-| `OtelMetricsSink` not found | Missing `otel` feature | Enable the `otel` feature on `awaken-ext-observability` |
-| No spans in collector | Exporter not configured | Verify `SdkTracerProvider` has an exporter and is not dropped |
-| Token counts missing | LLM provider does not report usage | Check that your `LlmExecutor` returns `TokenUsage` in `LLMResponse` |
-
-## Related Example
-
-- `crates/awaken-ext-observability/tests/`
-
-## Key Files
-
-| Path | Purpose |
-|------|---------|
-| `crates/awaken-ext-observability/src/lib.rs` | Module root and public re-exports |
-| `crates/awaken-ext-observability/src/plugin/plugin.rs` | `ObservabilityPlugin` registration |
-| `crates/awaken-ext-observability/src/plugin/hooks.rs` | Phase hooks for each telemetry point |
-| `crates/awaken-ext-observability/src/metrics.rs` | `AgentMetrics`, `GenAISpan`, `ToolSpan` types |
-| `crates/awaken-ext-observability/src/sink.rs` | `MetricsSink` trait and `InMemorySink` |
-| `crates/awaken-ext-observability/src/otel.rs` | `OtelMetricsSink` with GenAI semantic conventions |
-
-## Related
-
-- [Add a Plugin](/awaken/how-to/add-a-plugin/)
+- [Admin Console surface inventory](/awaken/reference/admin-console/)
+- [HTTP API](/awaken/reference/http-api/)
 - [Events](/awaken/reference/events/)
-- [Architecture](/awaken/explanation/architecture/)

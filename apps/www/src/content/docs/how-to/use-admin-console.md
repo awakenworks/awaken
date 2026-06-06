@@ -1,26 +1,24 @@
 ---
 title: "Use the Admin Console"
-description: "The Admin Console is the main tuning and operations UI for an Awaken server. This guide walks through the browser workflows operators run most often."
+description: "Operate Awaken from the browser: connect to a server, tune agents, validate drafts, inspect traces, run evals, and restore prior versions."
 ---
 
-The Admin Console is the main tuning and operations UI for an Awaken server.
-Use it after the runtime capabilities exist in code: configure providers and
-models, create agents, tune prompts and tool descriptions, assign MCP tools,
-activate skills and delegates, inspect traces, capture datasets, and run evals
-from the browser.
+The Admin Console is the primary tuning and operations UI for an Awaken server.
+Use it after runtime capabilities exist in code: configure providers and models,
+create agents, tune prompts and tool descriptions, assign tools/skills/delegates,
+preview drafts, inspect traces, capture datasets, run evals, and review audit
+history from the browser.
 
-For the technical inventory of every screen and widget, see the
-[Admin Console surface inventory](/awaken/reference/admin-console/).
+This guide focuses on **what to click**. For endpoint shapes and screen-to-route
+mapping, see [HTTP API](/awaken/reference/http-api/), [Config](/awaken/reference/config/),
+and the [Admin Console surface inventory](/awaken/reference/admin-console/).
 
 ## Prerequisites
 
-- A running `awaken-server` reachable from your browser. The default URL is
-  `http://127.0.0.1:38080`.
-- An admin bearer token. Set it on the server via either:
-  - `AWAKEN_ADMIN_API_BEARER_TOKEN` environment variable, or
-  - `AdminApiConfig.bearer_token` field in the server config.
-- The admin console dev server (`apps/admin-console`) running locally — or a
-  production build served behind your edge.
+- A running `awaken-server`. The default starter URL is `http://127.0.0.1:38080`.
+- An admin bearer token configured on the server.
+- The Admin Console dev server running locally, or a production build served by
+  your deployment.
 
 ```sh
 # Terminal 1 — runtime
@@ -33,15 +31,10 @@ pnpm --filter awaken-admin-console dev
 # → http://127.0.0.1:3002
 ```
 
-When you first open the console, the topbar pill on the right shows
-**Token missing**. Click it, paste your token, save. The pill flips to
-**Connected** with a green dot.
+Open the console, click the top-right token pill, paste `dev-token`, and save.
+The pill changes from **Token missing** to **Connected**.
 
 ## Visual tour
-
-The console is a thin browser control plane over the running server. The
-screenshots below show the current high-value workflow: inspect system state,
-edit an agent, and compare agent catalog health before running traffic.
 
 <figure class="screenshot">
   <a href="/awaken/assets/awaken-demo.gif">
@@ -55,271 +48,193 @@ edit an agent, and compare agent catalog health before running traffic.
     <a href="/awaken/assets/admin-console/01-dashboard.png">
       <img src="/awaken/assets/admin-console/01-dashboard.png" alt="Admin dashboard showing live workload, agent activity, recent audit events, health status, and current scope metadata." loading="lazy" />
     </a>
-    <figcaption>Dashboard: counts, current scope, and health come from `/v1/capabilities`, `/v1/system/info`, `/v1/audit-log`, and runtime stats.</figcaption>
+    <figcaption>Dashboard: workload, health, system metadata, and recent activity.</figcaption>
   </figure>
   <figure class="screenshot">
     <a href="/awaken/assets/admin-console/02-agent-editor.png">
       <img src="/awaken/assets/admin-console/02-agent-editor.png" alt="Agent editor with model selection, system prompt fields, tabs, save controls, and draft preview chat." loading="lazy" />
     </a>
-    <figcaption>Agent editor: Validate is non-destructive; Save publishes through `/v1/config/agents`.</figcaption>
+    <figcaption>Agent editor: tune, validate, preview, then save.</figcaption>
   </figure>
   <figure class="screenshot">
     <a href="/awaken/assets/admin-console/03-agents-list.png">
       <img src="/awaken/assets/admin-console/03-agents-list.png" alt="Agents list with filters, model and plugin metadata, and runtime inference statistics." loading="lazy" />
     </a>
-    <figcaption>Agents list: filter by model/plugin and see rolling inference/error/p95 stats when observability is enabled.</figcaption>
+    <figcaption>Agents list: filter by model/plugin and inspect runtime signals.</figcaption>
   </figure>
 </div>
 
 ## Navigate the workspace
 
-The left sidebar groups every screen by intent:
+The left sidebar groups screens by operator intent:
 
 | Group | What lives here |
 |---|---|
-| **Agents** | Agents — create/edit agent specs and open per-agent dashboards. |
-| **Resources** | MCP Servers, A2A Servers, Skills, Tools — runtime dependencies, remote agents, and discovered capabilities. |
-| **Infrastructure** | Providers and Models — upstream connectivity plus stable model ids and capability metadata. |
-| **Observe** | Dashboard, Audit Log, Datasets, Eval Runs, Eval Reports — operational views and evaluation records. |
+| **Agents** | Agent list, agent editor, per-agent dashboard. |
+| **Infrastructure** | Providers and Models. Configure upstream access before live runs. |
+| **Resources** | MCP Servers, A2A Servers, Skills, Tools. |
+| **Observe** | Dashboard, Audit Log, Datasets, Eval Runs, Eval Reports. |
 
-Use the **breadcrumb** in the topbar to confirm which group you are in
-and to move back up to the parent page. The core workflows below are all
-available through the visible navigation and editor controls.
+Use the breadcrumb in the topbar to move back to the parent screen. The Admin
+Assistant is a floating bubble, not a sidebar destination; it becomes useful
+after a provider-backed model is configured.
 
-The Admin Assistant is a global floating bubble, not a sidebar destination. It
-activates after at least one provider-backed model is configured; until then it
-opens with setup links for Providers and Models.
+## Connect and inspect the system
 
-## Inspect the system
+1. Open the console and enter the bearer token.
+2. Start on **Dashboard**.
+3. Check **Health** for providers without keys and MCP servers that are failing.
+4. Check **System** for version, scope, uptime, and which optional subsystems
+   are connected.
+5. Use stat cards to jump to Agents, Models, Providers, Skills, MCP Servers, or
+   Tools.
 
-Open the **Dashboard** (it's the default landing page). Key panels:
+If **Recent activity** says the audit log is disabled, the server can still run,
+but History tabs and restore workflows will be empty until audit logging is
+wired.
 
-- **Stat cards** — counts of agents, skills, models, providers, MCP
-  servers, and published tools, taken from `/v1/capabilities`. Click a
-  card to drill into the corresponding list.
-- **Health** — providers (key set / no key) and MCP servers (auto-restart
-  / manual). This tells you which providers will fail at request time
-  because no key is configured.
-- **Recent activity** — last 8 audit events, if the audit log is enabled
-  on the server. If you see a yellow "**Audit log is disabled**" notice,
-  enable it on the server (see [Enable the audit log](#enable-the-audit-log)).
-- **System** — server version, current `scope_id`, uptime, and which optional
-  subsystems (config store, audit log, runtime stats) are wired in.
+## Create provider and model
+
+1. Open **Infrastructure → Providers**.
+2. Create a provider with the adapter, base URL, and credentials for your model
+   upstream.
+3. Use the provider row's **Test** action. A toast reports success, latency, or
+   the upstream error.
+4. Open **Infrastructure → Models**.
+5. Create a model id that points at the provider. Agents reference this stable
+   model id, not raw provider credentials.
+
+Related API: [provider/model config](/awaken/reference/provider-model-config/) and
+[HTTP API](/awaken/reference/http-api/).
 
 ## Edit an agent
 
-To create one, click **+ New Agent** for a blank editor, or describe it to the
-[Admin Assistant](/awaken/how-to/build-an-agent-with-the-assistant/) and let it
-draft the spec. To edit an existing agent:
+To create one, click **Agents → + New Agent**. To edit one, click a row in the
+Agents list.
 
-1. Click **Agents** in the sidebar.
-2. Use the **filter chips** to narrow by `model`, `plugin`, or `modified
-   range`. The "Inferences" column shows real call counts over the
-   `RuntimeStatsRegistry` window (configured on the server) when the
-   observability registry is on (see [Enable runtime stats](#enable-runtime-stats)).
-3. Click a row to open the editor.
-4. The editor uses **visible tabs**:
-   - **Basics** — agent ID (read-only after creation), model, max rounds,
-     reasoning effort, system prompt.
-   - **Tools** — choose between "All tools" and "Custom selection". Custom
-     mode reveals a search box plus source filter tabs (All / Built-in /
-     Plugin / MCP) and per-group select-all/clear actions. The same UI
-     repeats for "Excluded Tools".
-   - **Plugins** — toggle plugins on/off. The badge on the tab shows the
-     enabled count.
-   - **Delegates** — pick which other agents this one can hand off to.
-     Selected delegates take the **agent-tint** (purple) treatment used
-     across both Awaken and Oversight.
-   - **Advanced** — raw JSON preview of the spec.
-   - **History** — audit events for this resource. Each row has a
-     **Restore** action that rolls the agent back to the version recorded
-     by that event (see [Restore a previous version](#restore-a-previous-version)).
-5. As soon as you change anything, the **bottom save bar** appears with two
-   buttons:
-   - **Validate** — sends your draft to `POST /v1/config/agents/validate`,
-     which runs the same prepare + schema check as a real save but does
-     **not** persist or apply. Use it to confirm your edits parse before
-     publishing.
-   - **Save** (or **Save & Publish** for new agents) — persists and
-     applies. The runtime swaps to the new spec on the next request.
-6. The **right column** is a draft-preview chat backed by
-   `POST /v1/ai-sdk/agent-previews/runs`. You can talk to your draft
-   *before* saving it; text and attached image/audio/video/PDF/text files are
-   sent as AI SDK message parts against the unsaved spec.
-7. After saving, the **Frontend integration** card appears below the sandbox.
-   It shows the agent-scoped AI SDK and AG-UI routes and links to the frontend,
-   protocol, and HTTP API docs.
+1. **Basics** — set model, max rounds, reasoning effort, and system prompt.
+2. **Tools** — choose all tools or a custom allow/exclude selection. Use source
+   filters to narrow built-in, plugin, and MCP tools.
+3. **Plugins** — enable or disable plugin-backed behavior.
+4. **Delegates** — select which other agents this agent can hand off to.
+5. **Advanced** — inspect the raw JSON if you need to review the final shape.
+6. **History** — inspect past changes and restore an earlier version when audit
+   logging is enabled.
 
-## Test a provider
+When you edit anything, the bottom save bar appears:
 
-The Providers list has a per-row **Test** button:
+- **Validate** checks the draft without saving or applying it.
+- **Save** / **Save & Publish** persists the draft and makes it available to new
+  runs.
 
-1. Click **Test** next to the provider id.
-2. The console calls `POST /v1/providers/:id/test`.
-3. A toast reports either `OK · <latency>ms` or the backend error
-   verbatim — for example, `unsupported provider adapter: scripted`.
+Use the right-side preview chat before saving. It runs against the unsaved draft
+so you can tune prompts, tools, and model selection without publishing first.
 
-Use this before publishing a new model config to confirm the credentials
-and adapter actually reach the upstream.
+Related API: `agents` config routes in [HTTP API](/awaken/reference/http-api/)
+and `AgentSpec` in [Config](/awaken/reference/config/#agentspec).
 
-## Restart an MCP server
+## Tune behavior safely
 
-1. Open **MCP Servers** and click an existing server to edit it.
-2. Scroll to **Live Status**. The four cells show: connection state,
-   handshake result, tool count, and either restart-policy summary or
-   "Failures (since last ok)" with a warn/error tone if the server is
-   currently misbehaving.
-3. The relative timestamps below the cells (`last attempt`, `last
-   success`) tell you whether the manager is actively retrying.
-4. Click **Restart** to trigger `POST /v1/mcp-servers/:id/restart`.
-   The button is disabled while a restart is in flight; an audit
-   `restart` event is emitted on success.
+A safe tuning pass is:
 
-## Connect an A2A server
+1. Change one behavior dimension at a time: prompt, model, tools, plugin config,
+   permissions, delegates, or stop policy.
+2. Click **Validate**.
+3. Use the preview chat with the same scenario you care about.
+4. Save only after the preview behaves as expected.
+5. Run a real task or eval fixture to confirm behavior outside the draft preview.
+6. If the result regresses, open **History** and restore the previous version.
 
-Open **A2A Servers** and click **New A2A server** to register a remote
-agent service by **Base URL**. Awaken discovers its agent card and lists the
-remote agents alongside your own, ready to delegate to. See
-[Connect an A2A Server](/awaken/how-to/connect-an-a2a-server/).
+See [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/) for the
+full tab-by-tab tuning map.
 
-## Capture datasets and run evals
+## Manage resources
 
-The **Datasets**, **Eval Runs**, and **Eval Reports** screens turn real traces
-into regression fixtures, run them against an agent on a real or scripted model,
-and show per-fixture pass/fail with baseline diffs. See
+### Restart an MCP server
+
+1. Open **Resources → MCP Servers**.
+2. Click a server and scroll to **Live Status**.
+3. Check connection state, handshake result, tool count, and retry/failure
+   summary.
+4. Click **Restart**. The button is disabled while restart is in flight.
+
+### Connect an A2A server
+
+Open **Resources → A2A Servers**, click **New A2A server**, and enter the remote
+server base URL. Awaken discovers the remote agent cards and makes them
+available for delegation. See [Connect an A2A Server](/awaken/how-to/connect-an-a2a-server/).
+
+### Review skills and tools
+
+Use **Skills** and **Tools** to inspect what the running server has discovered.
+Agent access is still controlled from the agent editor's Tools, Plugins, and
+Delegates tabs.
+
+## Observe runs and compare behavior
+
+Use **Observe** screens after real traffic or preview runs exist:
+
+- **Dashboard** — workload, health, and recent activity.
+- **Audit Log** — global create/update/delete/restart/restore history.
+- **Datasets** — captured fixtures you can replay.
+- **Eval Runs** — execution records for eval jobs.
+- **Eval Reports** — pass/fail and baseline diffs.
+
+For the full evaluation workflow, see
 [Capture a Dataset and Run an Eval](/awaken/how-to/capture-a-dataset-and-run-an-eval/).
 
 ## Restore a previous version
 
-Awaken's audit log is also a version history.
+Awaken's audit log doubles as version history.
 
-1. Open any resource editor (agent / model / provider / MCP server).
-2. Switch to the **History** tab.
-3. Each event row shows the actor, timestamp, and a one-line description
-   of what changed. Click a row to expand the before/after diff.
-4. Click **Restore this version** on the row you want to roll back to.
-   The console previews the JSON diff between current and target and
-   asks for confirmation.
-5. On confirm, the console calls
-   `POST /v1/config/:ns/:id/restore` with the event id. Restore is an
-   editing-store operation: the server validates the restored payload and writes
-   it to `ConfigStore`, but it does **not** hot-swap the runtime registry. This
-   keeps rollback review separate from runtime promotion.
-6. To make a restored payload active for new runs, publish it through a normal
-   config write after review, for example `PUT /v1/config/:ns/:id` with the
-   restored body. That write runs the standard validate + apply pipeline and
-   emits its own audit event. The restore event still records
-   `restored_from = <event-id>` so the rollback source remains auditable.
+1. Open an agent, model, provider, or MCP server editor.
+2. Switch to **History**.
+3. Expand an event to review the before/after diff.
+4. Click **Restore this version**.
+5. Review the diff and confirm.
+6. Validate and save the restored draft when you are ready for new runs to use it.
 
-## Browse the audit log
-
-Open **Audit Log** for a global view across every resource:
-
-- **Since / Until** filter for time range.
-- **Action** filter (create / update / delete / restart / publish / restore).
-- **Resource** filter — substring match on `<namespace>/<id>`.
-- **Actor** filter — accepts the SHA-256 prefix shown on each row.
-
-Click a row to open a side panel with the full event JSON, before/after
-diff, and (when applicable) the **Restore** button.
-
-If you see an empty page that says the filter form but never any rows,
-the audit log is probably disabled — see below.
+Related API: restore routes in [HTTP API](/awaken/reference/http-api/) and audit
+behavior in [Admin Console surface inventory](/awaken/reference/admin-console/).
 
 ## Enable optional subsystems
 
-The console honestly degrades when the runtime hasn't opted into these,
-but you'll get a much better experience with them on.
+The console degrades honestly when optional server modules are absent:
 
-### Enable the audit log
+| If absent | What you see | Enable via |
+|---|---|---|
+| Audit log | Dashboard disabled notice, empty Audit Log, empty History tabs | [Config reference](/awaken/reference/config/#auditlogconfig) and server wiring |
+| Runtime stats | Agents list shows `n/a`; per-agent latency charts are unavailable | [Enable Observability](/awaken/how-to/enable-observability/) |
+| Trace/eval stores | Dataset/eval screens cannot persist useful records | [Capture a Dataset and Run an Eval](/awaken/how-to/capture-a-dataset-and-run-an-eval/) |
 
-Wire an audit logger into `ServerState`; retention is configured separately from
-`AdminApiConfig` to keep that security struct source-compatible with 0.4.0:
+## What still belongs in API automation
 
-```rust
-use awaken_server::app::AuditLogConfig;
+The console focuses on configuration and operator review. Use the HTTP API or
+your own tooling for live execution and lower-level control:
 
-let state = state
-    .with_audit_log_config(AuditLogConfig {
-        retention_days: 90,
-        ..AuditLogConfig::default()
-    })
-    .with_audit_log_from_config();
-```
+- Threads, messages, and run inspection.
+- Programmatic run creation, cancel, interrupt, and resume.
+- HITL decisions for custom UIs.
+- Mailbox inspection and dispatch automation.
+- Registry diagnostics and bulk config management.
 
-Without this:
-- Dashboard "Recent activity" shows the disabled notice.
-- Audit Log page renders the filters but always returns 0 rows.
-- Editor "History" tab is empty.
-
-### Enable runtime stats
-
-Wire the observability plugin into your `ServerState`:
-
-```rust
-use awaken_ext_observability::{ObservabilityPlugin, RuntimeStatsRegistry};
-
-let registry = Arc::new(RuntimeStatsRegistry::new());
-let observability = ObservabilityPlugin::new()
-    .with_sink(SharedRegistrySink(Arc::clone(&registry)));
-
-let state = ServerState::new(/* ... */)
-    .with_runtime_stats(registry);
-
-let runtime = AgentRuntimeBuilder::default()
-    .with_plugin("observability", Arc::new(observability))
-    .build();
-```
-
-Without this:
-- Agents list shows a banner and `n/a` cells in the "Inferences"
-  column.
-- Per-agent dashboard cannot render its latency histogram.
-
-See [Enable Observability](/awaken/how-to/enable-observability/) for the full
-recipe.
-
-## What the console does NOT cover (use REST instead)
-
-The console focuses on **configuration**: agents, models, providers, MCP
-servers, tools, skills (read-only), audit log, and runtime stats. Live
-**execution** surfaces are intentionally REST-only today:
-
-- **Threads & runs** — list, create, cancel, inspect messages.
-- **HITL decisions** — submit resume/cancel for suspended tool calls.
-- **Mailbox** — peek/push inter-agent dispatches.
-- **Skill CRUD** — the console lists skills but does not yet edit them.
-- **Config diagnostics** — `GET /v1/config/diagnostics` returns a
-  registry-wide validation report that no screen renders yet.
-
-Drive these from `curl` or your own scripts with the same admin bearer
-token. See the
-[REST-only features matrix](/awaken/reference/admin-console/#rest-only-features-no-console-ui-yet)
-for the exact endpoint list, and the
-[HTTP API reference](/awaken/reference/http-api/) for request shapes.
-
-## Switch theme
-
-Use the topbar theme control to choose light, dark, or system mode. The choice
-is persisted locally and maps to `data-theme`, so the same `--aw-*` design
-tokens drive the console and docs.
+See the [REST-only features matrix](/awaken/reference/admin-console/#rest-only-features-no-console-ui-yet)
+and [HTTP API reference](/awaken/reference/http-api/).
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Topbar pill says **Token missing** or **Token rejected** | Bearer token absent or wrong | Click the pill, paste the token configured on the server |
-| Topbar pill says **Backend unreachable** | Server not listening or wrong URL | Confirm the server is running on `BACKEND_URL`. The default is `http://127.0.0.1:38080`. Override with `VITE_BACKEND_URL` at build time |
-| Console shows `503` errors but pages still load | An optional subsystem (audit / runtime stats) is off | See [Enable optional subsystems](#enable-optional-subsystems) |
-| Save fails with "config management API not enabled" | The server has no `ConfigStore` wired | Embedder must call `ServerState::with_config_store(...)` |
-| Provider Test always returns "unsupported adapter" | The provider uses the `scripted` adapter (no upstream to probe) | Expected; only real adapters have a meaningful test path |
-| Sidebar nav health dot stays neutral | Health badges are derived from list payloads only — full per-server probes are intentionally not made on every page load | Open the resource detail to see live `/status` |
+| Topbar says **Token missing** or **Token rejected** | Bearer token absent or wrong | Click the pill and paste the token configured on the server. |
+| Topbar says **Backend unreachable** | Server not listening or wrong URL | Confirm the server is running on `BACKEND_URL`; default is `http://127.0.0.1:38080`. |
+| Pages load but show optional subsystem warnings | Audit/runtime stats/trace/eval stores are not wired | Enable the corresponding subsystem on the server. |
+| Save fails with "config management API not enabled" | No config store is wired | Start a server with config management enabled. |
+| Provider Test reports unsupported adapter | The provider is scripted or not testable | Expected for scripted/demo providers; test a real adapter before production. |
 
 ## Related
 
-- [Admin Console surface inventory](/awaken/reference/admin-console/)
+- [Configure Agent Behavior](/awaken/how-to/configure-agent-behavior/)
 - [Build an Agent with the Admin Assistant](/awaken/how-to/build-an-agent-with-the-assistant/)
-- [Connect an A2A Server](/awaken/how-to/connect-an-a2a-server/)
+- [Enable Tool Permission HITL](/awaken/how-to/enable-tool-permission-hitl/)
 - [Capture a Dataset and Run an Eval](/awaken/how-to/capture-a-dataset-and-run-an-eval/)
-- [HTTP API](/awaken/reference/http-api/)
-- [Enable Observability](/awaken/how-to/enable-observability/)
+- [Admin Console surface inventory](/awaken/reference/admin-console/)

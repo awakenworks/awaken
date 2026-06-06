@@ -1,139 +1,78 @@
 ---
 title: "启用可观测性"
-description: "当你需要用 OpenTelemetry 兼容的遥测方式追踪 LLM 推理和工具执行时，使用本页。"
+description: "在 server 接入可观测性 stores 后，通过管理控制台检查 dashboard health、runtime stats、recent runs、traces、datasets 和 eval results。"
 ---
 
-当你需要用 OpenTelemetry 兼容的遥测方式追踪 LLM 推理和工具执行时，使用本页。
+可观测性分两部分：server wiring 和 operator review。本指南聚焦 server 暴露 runtime stats、trace、audit、eval stores 后，operator 在 UI 中应该看到什么、点击什么。
 
-## 前置条件
+## 先点击什么
 
-- 已有可运行的 awaken runtime
-- `awaken` 启用了 `observability`
-- 如果要导出 OTel：`awaken-ext-observability` 需要启用 `otel`，并准备好 collector
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-dashboard-health.png">
+      <img src="/awaken/assets/admin-console/flow-dashboard-health.png" alt="Dashboard，展示 workload、health、recent activity 和 system metadata。" loading="lazy" />
+    </a>
+    <figcaption>Dashboard：确认可选 observability subsystems 已接入。</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-agents-list.png">
+      <img src="/awaken/assets/admin-console/flow-agents-list.png" alt="Agents list，展示 model/plugin metadata 和 runtime inference statistics。" loading="lazy" />
+    </a>
+    <figcaption>Agents list：先看 runtime stats，再进入单个 Agent。</figcaption>
+  </figure>
+</div>
 
-```toml
-[dependencies]
-awaken = { git = "https://github.com/AwakenWorks/awaken", features = ["observability"] }
-tokio = { version = "1", features = ["full"] }
-```
+1. 打开 **Dashboard**。
+2. 在 **Health** 和 **System** 中检查 audit log、runtime stats、trace、eval 是否可用。
+3. 打开 **Agents**，查看 inference count、latency 和 error signals。
+4. 打开已保存 Agent；trace routes 启用后，使用 **Recent runs**。
+5. 把重要 trace 保存为 dataset fixture。
+6. 运行 eval，在接受行为变更前查看 report。
 
-## 步骤
+## 每个界面告诉你什么
 
-1. 先用内存 sink（开发环境）：
+| 界面 | 用途 |
+|---|---|
+| **Dashboard** | Health、workload、recent audit activity 和 subsystem availability。 |
+| **Agents list** | 接入 stats 后展示每个 Agent 的 inference count、errors、latency。 |
+| **Recent runs / traces** | 单次 run 的 tool calls、model output、prompt variants 和 final status。 |
+| **Datasets** | 把 trace 整理成可重复 fixtures。 |
+| **Eval Runs** | Live 或 scripted replay 结果。 |
+| **Eval Reports** | 离线 NDJSON report review 和 baseline comparison。 |
 
-```rust
-use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::ext_observability::{ObservabilityPlugin, InMemorySink};
-use awaken::registry_spec::ModelSpec;
-use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, Plugin};
+## 评测你观察到的行为
 
-let sink = InMemorySink::new();
-let obs_plugin = ObservabilityPlugin::new(sink.clone());
-let mut agent_spec = AgentSpec::new("observed-agent")
-    .with_model_id("gpt-4o-mini")
-    .with_system_prompt("You are a helpful assistant.")
-    .with_hook_filter("observability");
-agent_spec.plugin_ids.push("observability".into());
+<div class="screenshot-grid">
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-datasets.png">
+      <img src="/awaken/assets/admin-console/flow-datasets.png" alt="Datasets 界面，包含 dataset list 和 fixture counts。" loading="lazy" />
+    </a>
+    <figcaption>Datasets：把 trace 归组成可回放 fixtures。</figcaption>
+  </figure>
+  <figure class="screenshot">
+    <a href="/awaken/assets/admin-console/flow-eval-run-detail.png">
+      <img src="/awaken/assets/admin-console/flow-eval-run-detail.png" alt="Eval run 详情页，展示 pass/fail fixture output。" loading="lazy" />
+    </a>
+    <figcaption>Eval run detail：查看每个 fixture 的 pass/fail output。</figcaption>
+  </figure>
+</div>
 
-let runtime = AgentRuntimeBuilder::new()
-    .with_provider("openai", Arc::new(GenaiExecutor::new()))
-    .with_model(ModelSpec::new("gpt-4o-mini", "openai", "gpt-4o-mini"))
-    .with_agent_spec(agent_spec)
-    .with_plugin("observability", Arc::new(obs_plugin) as Arc<dyn Plugin>)
-    .build()
-    .expect("failed to build runtime");
-```
+当 dashboard 或 trace 观察引出了调优动作，就用 eval 验证。循环是：observe → tune 一个字段 → validate → preview → save → rerun 同一个 fixture。
 
-`plugin_ids` 负责加载 observability 插件；`with_hook_filter("observability")`
-在同一个 agent 加载多个插件时保留它的 phase hook。
+## Server wiring 检查表
 
-run 结束后，可以直接读取 `sink.metrics()`。
+如果界面提示某个 subsystem unavailable，说明 UI 正常：server 还没有暴露对应 store 或 route。
 
-2. 换成 OTel sink（生产环境）：
+| UI 中缺失 | Server 侧检查 |
+|---|---|
+| History 空或 Audit Log disabled | Audit log store/wiring |
+| Agent stats 显示 `n/a` | Runtime stats registry/store |
+| 没有 recent runs 或 trace drawer | Trace capture/store routes |
+| Dataset/eval 页面 disabled | Eval dataset 和 run stores |
+| 没有外部 telemetry spans | OTel exporter 和 collector configuration |
 
-```rust
-use std::sync::Arc;
-use awaken::engine::GenaiExecutor;
-use awaken::ext_observability::{ObservabilityPlugin, OtelMetricsSink};
-use awaken::registry_spec::ModelSpec;
-use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, Plugin};
-use opentelemetry_sdk::trace::SdkTracerProvider;
+## 自动化 API 参考
 
-let provider = SdkTracerProvider::builder().build();
-let tracer = provider.tracer("awaken");
-let obs_plugin = ObservabilityPlugin::new(OtelMetricsSink::new(tracer));
-```
-
-3. 如果需要，也可以实现自定义 sink：
-
-```rust
-use awaken::ext_observability::{AgentMetrics, MetricsEvent, MetricsSink};
-
-struct MySink;
-
-impl MetricsSink for MySink {
-    // `record` 必须实现;`flush` / `shutdown` / `flush_run` 默认返回 Ok(())。
-    fn record(&self, event: &MetricsEvent) {
-        match event {
-            MetricsEvent::Inference(span) => { /* 转发 inference span */ }
-            MetricsEvent::Tool(span) => { /* 转发 tool span */ }
-            _ => {}
-        }
-    }
-
-    fn on_run_end(&self, metrics: &AgentMetrics) {
-        // 输出聚合的 run 汇总
-    }
-}
-```
-
-4. 插件会在这些 phase 采集数据：
-
-| Phase | 采集内容 |
-|-------|----------|
-| `RunStart` | session 起始时间 |
-| `BeforeInference` | model、provider、开始时间 |
-| `AfterInference` | token usage、finish reason、耗时 |
-| `BeforeToolExecute` | tool 开始时间 |
-| `AfterToolExecute` | tool 耗时、失败状态；启用 `ToolIoCapture` 时可记录 tool 参数/结果 |
-| `RunEnd` | session 总时长 |
-
-OTel span 遵循 GenAI 语义约定：根 agent span 使用 `gen_ai.operation.name=invoke_agent`；推理 span 使用 `gen_ai.provider.name`、`gen_ai.request.model`、`gen_ai.conversation.id`、token usage 等属性；tool span 使用 `gen_ai.operation.name=execute_tool` 与 `gen_ai.tool.*` 属性。
-
-## 验证
-
-1. 用 `InMemorySink` 跑一个 agent
-2. 执行结束后调用 `sink.metrics()`
-3. 确认 `inferences` 非空且 token 统计有值
-4. 如果用 OTel，去 collector / Jaeger 确认 span 已上报
-
-## 常见错误
-
-| 错误 | 原因 | 修复 |
-|---|---|---|
-| metrics 全是 0 | 插件没注册 | 通过 builder 注册 `ObservabilityPlugin` |
-| 找不到 `OtelMetricsSink` | 缺少 `otel` feature | 给 `awaken-ext-observability` 开 `otel` |
-| collector 里没有 span | exporter 没配置或 tracer provider 被提前释放 | 检查 exporter 和 provider 生命周期 |
-| token 统计缺失 | provider 没返回 usage | 确保 `LlmExecutor` 产生 `TokenUsage` |
-
-## 相关示例
-
-- `crates/awaken-ext-observability/tests/`
-
-## 关键文件
-
-- `crates/awaken-ext-observability/src/lib.rs`
-- `crates/awaken-ext-observability/src/plugin/plugin.rs`
-- `crates/awaken-ext-observability/src/plugin/hooks.rs`
-- `crates/awaken-ext-observability/src/metrics.rs`
-- `crates/awaken-ext-observability/src/sink.rs`
-- `crates/awaken-ext-observability/src/otel.rs`
-
-## 相关
-
-- [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)
+- [管理控制台界面清单](/awaken/zh-cn/reference/admin-console/)
+- [HTTP API](/awaken/zh-cn/reference/http-api/)
 - [事件](/awaken/zh-cn/reference/events/)
-- [架构](/awaken/zh-cn/explanation/architecture/)
