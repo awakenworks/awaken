@@ -8,6 +8,24 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cpath d='M18 45 29 18h6l11 27h-6l-2.4-6H26.4L24 45h-6Zm10.6-11h6.8L32 25.2 28.6 34Z' fill='%23f8fafc'/%3E%3C/svg%3E"
     />
     <title>Awaken Admin Console</title>
+    <!-- Apply the stored theme before React boots so the initial paint and the
+         route Suspense fallback match the theme (no white flash on load). -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("awaken.admin.theme");
+          var dark =
+            t === "dark" ||
+            ((!t || t === "system") &&
+              window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) document.documentElement.setAttribute("data-theme", "dark");
+          document.documentElement.style.background = dark ? "#020617" : "#ffffff";
+        } catch (e) {
+          /* ignore */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

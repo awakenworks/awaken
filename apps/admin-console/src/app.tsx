@@ -302,7 +302,7 @@ function RouteLoader({ children }: { children: ReactNode }) {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen px-6 py-8 text-sm text-slate-500">
+        <div className="min-h-screen bg-bg px-6 py-8 text-sm text-fg-soft">
           Loading admin console...
         </div>
       }

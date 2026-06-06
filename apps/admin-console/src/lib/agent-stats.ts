@@ -5,6 +5,7 @@
 // Rust JSON serialisation; drift here will surface as parse errors.
 
 import { BACKEND_URL } from "./config-api";
+import { adminAuthHeaders } from "./api/http";
 
 /// One bin of a duration histogram. `upper_bound_ms === null` is the
 /// catch-all `+infinity` bucket.
@@ -81,7 +82,7 @@ export async function fetchAgentRuntimeStats(
   if (opts.window) {
     url += `?window=${encodeURIComponent(opts.window)}`;
   }
-  const resp = await fetchImpl(url);
+  const resp = await fetchImpl(url, { headers: adminAuthHeaders() });
   if (resp.status === 503) {
     return { kind: "registry_disabled" };
   }
@@ -113,7 +114,7 @@ export async function fetchAllAgentRuntimeStats(
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<AgentRuntimeStatsListResult> {
   const url = `${BACKEND_URL}/v1/agents/runtime-stats`;
-  const resp = await fetchImpl(url);
+  const resp = await fetchImpl(url, { headers: adminAuthHeaders() });
   if (resp.status === 503) {
     return { kind: "registry_disabled" };
   }

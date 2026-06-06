@@ -92,13 +92,21 @@ export function AdminAssistantBubble() {
         title={enabled ? t("assistant.title") : reason}
         onClick={() => setOpen((value) => !value)}
         className={[
-          "flex h-14 w-14 items-center justify-center rounded-full border text-sm font-semibold shadow-overlay transition",
+          "flex h-14 w-14 items-center justify-center rounded-2xl border shadow-overlay transition",
           enabled
-            ? "border-cyan-500 bg-cyan-700 text-bg hover:bg-cyan-600"
+            ? // Same look as the brand mark, theme-inverted: dark tile on light
+              // theme, light tile on dark theme (bg-fg / text-bg auto-flip).
+              "border-line bg-fg text-bg hover:opacity-90"
             : "border-tone-warning bg-surface text-tone-warning hover:bg-muted",
         ].join(" ")}
       >
-        AI
+        {/* Awaken brand mark (Λ "A" + red dot), geometry from the canonical
+            brand SVG (apps/www/public/favicon.svg). The "A" uses currentColor
+            (= text-bg, the inverse of the tile); the dot keeps the brand red. */}
+        <svg viewBox="0 0 32 32" aria-hidden="true" className="h-7 w-7" fill="none">
+          <path d="M14.2 3.6 H17.8 L27.2 25.8 H24.4 L16 6 L7.6 25.8 H4.8 Z" fill="currentColor" />
+          <circle cx="16" cy="19.4" r="2.65" fill="#fa6863" />
+        </svg>
       </button>
     </div>
   );

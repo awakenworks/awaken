@@ -116,6 +116,7 @@ describe("fetchAgentRuntimeStats", () => {
     await fetchAgentRuntimeStats("alpha/beta", fetchSpy);
     expect(fetchSpy).toHaveBeenCalledWith(
       `${BACKEND_URL}/v1/agents/alpha%2Fbeta/runtime-stats`,
+      { headers: {} },
     );
   });
 
@@ -124,6 +125,7 @@ describe("fetchAgentRuntimeStats", () => {
     await fetchAgentRuntimeStats("alpha", { window: "1h" }, fetchSpy);
     expect(fetchSpy).toHaveBeenCalledWith(
       `${BACKEND_URL}/v1/agents/alpha/runtime-stats?window=1h`,
+      { headers: {} },
     );
   });
 
@@ -132,6 +134,7 @@ describe("fetchAgentRuntimeStats", () => {
     await fetchAgentRuntimeStats("alpha", {}, fetchSpy);
     expect(fetchSpy).toHaveBeenCalledWith(
       `${BACKEND_URL}/v1/agents/alpha/runtime-stats`,
+      { headers: {} },
     );
   });
 
@@ -140,6 +143,7 @@ describe("fetchAgentRuntimeStats", () => {
     await fetchAgentRuntimeStats("alpha", fetchSpy);
     expect(fetchSpy).toHaveBeenCalledWith(
       `${BACKEND_URL}/v1/agents/alpha/runtime-stats`,
+      { headers: {} },
     );
   });
 
@@ -247,6 +251,7 @@ describe("fetchAllAgentRuntimeStats", () => {
     await fetchAllAgentRuntimeStats(fetchSpy);
     expect(fetchSpy).toHaveBeenCalledWith(
       `${BACKEND_URL}/v1/agents/runtime-stats`,
+      { headers: {} },
     );
   });
 });

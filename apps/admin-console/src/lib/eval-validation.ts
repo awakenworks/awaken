@@ -9,7 +9,11 @@
 
 /** Allowed chars: ASCII alnum + `_ . - `, must start with alnum. */
 export const DATASET_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
-export const DATASET_ID_PATTERN_SOURCE = DATASET_ID_PATTERN.source;
+/** Source for the HTML `pattern` attribute. Hardcoded (not `.source`) with an
+ *  escaped `\-`: browsers compile `pattern` under the RegExp `v` flag, where a
+ *  literal `-` must be escaped — and a regex literal's `.source` (after the
+ *  bundler) can drop the escape, yielding an invalid `[...-]` class. */
+export const DATASET_ID_PATTERN_SOURCE = '^[A-Za-z0-9][A-Za-z0-9_.\\-]*$';
 export const DATASET_ID_MAX_LEN = 128;
 
 export type DatasetIdValidation =
