@@ -18,7 +18,8 @@ pub use cancel_task_tool::CancelTaskTool;
 pub use execution_context::current_background_task_id;
 pub(crate) use execution_context::{
     BackgroundTaskExecutionContext, ToolLineageContext, current_background_task_context,
-    current_tool_lineage_context, scope_background_task_context, scope_tool_lineage_context,
+    current_durable_message_sink, current_tool_lineage_context, scope_background_task_context,
+    scope_durable_message_sink, scope_tool_lineage_context,
 };
 pub use manager::{BackgroundTaskManager, SendError, SpawnError};
 pub use plugin::BackgroundTaskPlugin;

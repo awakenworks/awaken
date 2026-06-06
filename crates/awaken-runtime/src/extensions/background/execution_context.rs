@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use super::send_message_tool::DurableMessageSink;
 use super::{BackgroundTaskManager, TaskId};
 
 tokio::task_local! {
@@ -8,6 +9,29 @@ tokio::task_local! {
 
 tokio::task_local! {
     static CURRENT_TOOL_LINEAGE_CONTEXT: ToolLineageContext;
+}
+
+tokio::task_local! {
+    /// Ambient durable message sink for the current run, scoped by the host
+    /// around run execution (e.g. the server). Read by the per-run background
+    /// plugin auto-creation in the local backend so `send_message`'s durable
+    /// routes deliver. Reuses the same task-local mechanism as the contexts
+    /// above; no new injection interface.
+    static CURRENT_DURABLE_MESSAGE_SINK: Arc<dyn DurableMessageSink>;
+}
+
+pub(crate) async fn scope_durable_message_sink<Fut>(
+    sink: Arc<dyn DurableMessageSink>,
+    future: Fut,
+) -> Fut::Output
+where
+    Fut: std::future::Future,
+{
+    CURRENT_DURABLE_MESSAGE_SINK.scope(sink, future).await
+}
+
+pub(crate) fn current_durable_message_sink() -> Option<Arc<dyn DurableMessageSink>> {
+    CURRENT_DURABLE_MESSAGE_SINK.try_with(Clone::clone).ok()
 }
 
 #[derive(Clone)]

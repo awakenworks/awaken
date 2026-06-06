@@ -128,6 +128,13 @@ pub struct AgentRuntime {
     missing_live_control_source_warned: std::sync::atomic::AtomicBool,
     #[cfg(feature = "a2a")]
     composite_registry: Option<Arc<CompositeAgentSpecRegistry>>,
+    /// Host-provided durable message transport, late-bound after the mailbox is
+    /// built (the sink wraps the mailbox, which wraps this runtime). Scoped as an
+    /// ambient task-local around run execution so the per-run background plugin
+    /// can deliver `send_message`'s durable routes.
+    #[cfg(feature = "background")]
+    durable_message_sink:
+        std::sync::OnceLock<Arc<dyn crate::extensions::background::DurableMessageSink>>,
 }
 
 impl AgentRuntime {
@@ -149,7 +156,20 @@ impl AgentRuntime {
             missing_live_control_source_warned: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "a2a")]
             composite_registry: None,
+            #[cfg(feature = "background")]
+            durable_message_sink: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Late-bind the host durable message sink (see [`Self::durable_message_sink`]).
+    /// Idempotent: the first call wins. Reuses the same optional-host-capability
+    /// pattern as the other `set_*`/`with_*` wiring on this type.
+    #[cfg(feature = "background")]
+    pub fn set_durable_message_sink(
+        &self,
+        sink: Arc<dyn crate::extensions::background::DurableMessageSink>,
+    ) {
+        let _ = self.durable_message_sink.set(sink);
     }
 
     #[must_use]

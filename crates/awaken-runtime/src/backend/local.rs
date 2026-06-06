@@ -302,10 +302,18 @@ impl LocalBackend {
         } else {
             // Bind the auto-created plugin through the same `bind_runtime_context`
             // seam the resolved-env plugins use (see `bind_local_execution_env`),
-            // rather than re-setting store/owner_inbox by hand.
+            // rather than re-setting store/owner_inbox by hand. If the host
+            // scoped an ambient durable sink for this run, wire it so durable
+            // `send_message` routes deliver; otherwise child-only.
             let manager =
                 std::sync::Arc::new(crate::extensions::background::BackgroundTaskManager::new());
-            let plugin = crate::extensions::background::BackgroundTaskPlugin::new(manager.clone());
+            let plugin = match crate::extensions::background::current_durable_message_sink() {
+                Some(sink) => crate::extensions::background::BackgroundTaskPlugin::with_messaging(
+                    manager.clone(),
+                    sink,
+                ),
+                None => crate::extensions::background::BackgroundTaskPlugin::new(manager.clone()),
+            };
             plugin.bind_runtime_context(&store, owner_inbox.as_ref());
             store
                 .install_plugin(plugin)

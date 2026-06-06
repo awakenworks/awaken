@@ -242,6 +242,28 @@ impl AgentRuntime {
         thread_ctx: Option<ThreadContextSnapshot>,
         resolved_plan: Option<ResolvedRunPlan>,
     ) -> Result<AgentRunResult, AgentLoopError> {
+        // Scope the host durable message sink (if late-bound) as an ambient
+        // task-local for the whole run, so the per-run background plugin can
+        // deliver `send_message`'s durable routes. No-op when unset.
+        #[cfg(feature = "background")]
+        if let Some(durable_sink) = self.durable_message_sink.get() {
+            return crate::extensions::background::scope_durable_message_sink(
+                durable_sink.clone(),
+                self.run_inner_body(activation, sink, thread_ctx, resolved_plan),
+            )
+            .await;
+        }
+        self.run_inner_body(activation, sink, thread_ctx, resolved_plan)
+            .await
+    }
+
+    async fn run_inner_body(
+        &self,
+        activation: RunActivation,
+        sink: Arc<dyn EventSink>,
+        thread_ctx: Option<ThreadContextSnapshot>,
+        resolved_plan: Option<ResolvedRunPlan>,
+    ) -> Result<AgentRunResult, AgentLoopError> {
         activation
             .validate()
             .map_err(|error| AgentLoopError::InvalidActivation(error.to_string()))?;

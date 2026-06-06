@@ -12,6 +12,7 @@ pub(crate) mod admin_routes;
 pub mod app;
 pub(crate) mod auth;
 pub mod config_routes;
+pub mod durable_message_sink;
 pub mod error;
 pub mod eval_limits;
 pub mod eval_router;

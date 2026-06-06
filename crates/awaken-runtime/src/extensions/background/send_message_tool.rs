@@ -1092,6 +1092,32 @@ mod tests {
         manager.cancel_all("thread-1").await;
     }
 
+    // -- ambient sink seam: scoped by the host, read by the per-run plugin --
+
+    #[tokio::test]
+    async fn ambient_durable_sink_seam_round_trips() {
+        use crate::extensions::background::{
+            current_durable_message_sink, scope_durable_message_sink,
+        };
+        let sink: Arc<dyn DurableMessageSink> = Arc::new(RecordingDurableSink::default());
+        assert!(
+            current_durable_message_sink().is_none(),
+            "unset outside any scope"
+        );
+        let visible = scope_durable_message_sink(sink.clone(), async {
+            current_durable_message_sink().is_some()
+        })
+        .await;
+        assert!(
+            visible,
+            "the scoped sink is visible to code running inside the run"
+        );
+        assert!(
+            current_durable_message_sink().is_none(),
+            "and is gone again once the scope ends"
+        );
+    }
+
     // -- closed loop: enqueue, then the real StepEnd phase drives delivery --
 
     #[tokio::test]
