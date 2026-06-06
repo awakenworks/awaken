@@ -12,7 +12,7 @@
         --bg: #0a0a0a;
         --edge: #ededed;
         --dot: #fa6863;
-        --border: #232323;
+        --border: #2e2e2e;
       }
     }
   </style>

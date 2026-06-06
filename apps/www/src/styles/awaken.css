@@ -127,6 +127,19 @@ h1.page-title {
   max-height: 280px;
 }
 
+/* Brand mark in the site header. The mark tile is theme-following (light tile
+ * on light, dark tile on dark), so on a matching header surface it can read as
+ * "floating in nothing". Give it a hair of elevation instead of inverting it
+ * to a contrasting block: a soft drop shadow in light, and — since a dark
+ * shadow is invisible on a dark page — a faint light halo in dark. drop-shadow
+ * (not box-shadow) follows the rounded tile's alpha, so the corners stay clean. */
+.site-title img {
+  filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.16));
+}
+:root[data-theme="dark"] .site-title img {
+  filter: drop-shadow(0 0 0.6px rgb(255 255 255 / 0.24));
+}
+
 /* Focus ring: match admin's accent ring exactly. */
 :focus-visible {
   outline: 2px solid var(--aw-focus);
