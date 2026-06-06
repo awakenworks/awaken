@@ -31,6 +31,26 @@ Plugin 不直接修改 state 或 prompt。phase hook 会收到 `PhaseContext`，
 
 做 context 注入时，plugin 通过 `AddContextMessage` 调度一个 `ContextMessage`。runtime handler 会把接受的消息写入 `ContextMessageStore`、更新 `ContextThrottleState`，然后 loop 在 inference 前把消息插入 system、session、conversation 或 suffix-system band。这样比直接改 prompt 更好，因为注入内容有 key、顺序、节流和清理规则，且由 loop 统一执行。
 
+## State、Action、Effect 循环
+
+下面的四层是你*存什么*。`StateCommand` 是每一次改动*怎么发生*。tool 和 hook 从不就地写 state——它们读一份 snapshot、返回一个 action，由 loop 提交。context 注入、tool 结果写回、调度一个副作用，都是同一个循环：
+
+```mermaid
+flowchart LR
+    SNAP["Snapshot<br/>(不可变、只读)"] --> H["Hook / Tool<br/>做决定"]
+    H --> CMD["StateCommand<br/>patch · scheduled_actions · effects"]
+    CMD --> COMMIT["Loop 在边界<br/>原子提交"]
+    COMMIT --> SNAP
+    CMD -->|effects| EFF["Effect handler<br/>终态副作用"]
+```
+
+- **Snapshot** 是一个冻结的、时间点固定的视图。一个 phase 里的每个 hook 读到的是*同一份* snapshot，因此互相看不到对方的半写入。
+- **Action** 是返回的 `StateCommand`：`patch`（类型化 `MutationBatch`）、`scheduled_actions`（runtime 拥有的工作，如 `AddContextMessage`）、`effects`（终态副作用）。
+- **Commit** 由 loop 在 phase 边界、等该 phase 所有 hook 收敛后应用——所以 hook 执行顺序绝不影响提交结果。
+- **Effect** handler 执行 action 请求的终态副作用。
+
+“每一次修改都走同一个循环”，正是让下面各层能安全共享、让 run 可确定重放的原因。引擎细节（merge 策略、收敛、`StateKey` trait）见[状态与快照模型](/awaken/zh-cn/explanation/state-and-snapshot-model/)。
+
 ## Run State
 
 Run state 是最瞬时的一层。它完全存在内存中,通过 `Snapshot` 同步访问,并在新 run 开始时
@@ -205,6 +225,16 @@ access.write::<Locale>("system", &"en-US".into()).await?;
 
 当你需要 run 内的同步访问与事务保证时,用 **Thread State**。
 当你需要跨边界共享或动态作用域时,用 **Shared State**。
+
+## 基于 state 的流程校验
+
+因为 state 是类型化的、且在每个 step *之前*都会从 snapshot 读取,你可以用它来强制一个固定工作流按正确顺序执行——而不是寄希望于模型遵守 prompt 指令。这个模式有三部分:
+
+1. **记录阶段。** 把工作流位置存进一个类型化 `StateKey`——例如 `KeyScope::Thread` 上的枚举 `Stage { Draft, Reviewed, Published }`。tool 通过在 `ToolOutput.command` 里发出 `patch` 来推进它。
+2. **校验转移。** 让非法转移在 merge 点就不可表达:该 key 的 `apply` 只接受合法的下一个阶段,于是过期或乱序的更新会在 batch 提交时被拒绝,而不是污染 state。
+3. **对能力把关。** 注册一个 `ToolGate` hook,从 snapshot 读取当前阶段,拒绝尚不合法的 tool call——例如阶段未到 `Reviewed` 时拒绝 `publish`。模型会看到一个 tool error,必须先完成所需步骤。
+
+这就把"必须先 review 再 publish"从 prompt 措辞变成由 state 引擎和 loop 强制的运行时契约。runtime 自身的 guardrail 也是同一形态:`validate_for_persist` 在每个 store 写入边界拒绝非法状态组合。`ToolGate` 的决策机制见[插件系统内部机制 → ToolGate Decision Priority](/awaken/zh-cn/explanation/plugin-internals/#toolgate-decision-priority);`apply` 的 merge 契约见[状态与快照模型](/awaken/zh-cn/explanation/state-and-snapshot-model/)。
 
 ## 另见
 

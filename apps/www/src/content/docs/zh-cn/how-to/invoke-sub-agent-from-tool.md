@@ -11,6 +11,25 @@ description: "当工具需要把工作委托给另一个 agent，并且要精确
 
 Awaken 用一个辅助函数加上你已经熟悉的 `Tool::execute` 模式来覆盖这个场景。框架不引入 hook、phase 或 strategy 类型——state 传递就是写在 `execute` 里的普通 Rust 代码。
 
+## 你真的需要本页吗？先考虑委托
+
+如果你只是想让 agent 能调用一个**已有的** agent，通常**不需要**写任何工具代码。在 agent spec 里声明即可：
+
+```json
+{ "id": "orchestrator", "delegates": ["researcher", "writer"] }
+```
+
+解析时 runtime 会为每个条目构建一个 `AgentTool`，以 `agent_run_{delegate_id}` 的形式暴露给 LLM。父 agent 像调用普通工具一样调用它，并拿回一个边界清晰的结果——无需写 Rust、无需重建，而且通过 config API 修改 delegate 的 spec 会在下次调用时生效。见 [多智能体模式](/awaken/zh-cn/explanation/multi-agent-patterns/)。
+
+只有当声明式委托无法表达你的需求时，才使用本页的编程式路径：
+
+- **类型化的父 ↔ 子 state。** 你精确决定哪些 `StateKey` 注入子 run、哪些子 key 写回父 store，而不只是传一个 prompt。
+- **自定义状态策略。** 你自己解释 child 的生命周期状态（语义透传、严格失败、选择性导出），而不是依赖 `AgentTool` 的默认行为。
+- **流式透传。** 你希望 child 的 token 出现在父工具自己的输出流里。
+- **动态构建输入。** child 请求（prompt、seed、取消）在调用时根据工具参数构建。
+
+上面的委托工具 `AgentTool` 与 `run_child_agent` 是同级关系，而不是上下层:两者都构建一个 `BackendDelegateRunRequest` 并调用同一个 `execute_resolved_delegate_execution` 分发。区别只在入口——`AgentTool` 是自动生成、面向 LLM 的;`run_child_agent` 是你在工具代码里、需要上面那些控制能力时调用的。
+
 ## Agent 作为独立工具
 
 当 child 以工具形式暴露给父 agent 时，要把三条通道分开：

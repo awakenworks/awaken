@@ -41,6 +41,8 @@ let builder = AgentRuntimeBuilder::new()
     .with_tool("calculator", Arc::new(CalculatorTool));
 ```
 
+每个 `with_*` 调用都把东西注册进 runtime 的五张注册表之一(agents、tools、models、providers、plugins);agent 在调用时按 id 对照这些表解析,server 模式下同样这几张表由发布的配置填充。见 [智能体解析](/awaken/zh-cn/explanation/agent-resolution/)。
+
 3. 注册 provider 和 model：
 
 ```rust

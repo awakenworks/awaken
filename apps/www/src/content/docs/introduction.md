@@ -104,8 +104,8 @@ the explicit IO layers.
 ## Reading path
 
 1. [Get Started](/awaken/get-started/) → [First Agent](/awaken/tutorials/first-agent/).
-2. [Develop Agents](/awaken/build-agents/) — implement tools, plugins, state, sub-agent calls, and UI streams in Rust.
-3. [Tune & Operate](/awaken/operate/) — use the Admin Console or config API to manage prompts, models, MCP, skills, policies, traces, datasets, and evals.
-4. [Serve & Integrate](/awaken/serve-and-integrate/) — AI SDK / CopilotKit / A2A / MCP / ACP clients.
-5. [State & Storage](/awaken/state-and-storage/) — persistence and durable state.
+2. [Develop Agents](/awaken/build-agents/) — implement tools, plugins, state, sub-agent calls, UI streams, storage boundaries, and server integration in Rust.
+3. [State & Storage](/awaken/state-and-storage/) — make the runtime durable, resumable, and distributable.
+4. [Serve & Integrate](/awaken/serve-and-integrate/) — expose the runtime through HTTP, AI SDK, CopilotKit, A2A, MCP, ACP, mailbox, and admin surfaces.
+5. [Tune & Operate](/awaken/operate/) — use the Admin Console or config API to manage prompts, models, MCP, skills, policies, traces, datasets, and evals.
 6. [Design Philosophy](/awaken/explanation/philosophy/) — the "why" behind the three rules.

@@ -1,13 +1,20 @@
 ---
 title: "State & Storage"
-description: "Build-agent guidance for wiring runtime state, config, mailbox jobs, profile/shared state, and persistence backends."
+description: "Build-time guidance for deciding what an agent remembers, resumes, shares, and persists."
 ---
 
-This Build Agents section is for teams moving beyond stateless demos.
+State & Storage is the second Build Agents step: read it after
+[Build an Agent](/awaken/how-to/build-an-agent/) and before
+[Serve & Integrate](/awaken/serve-and-integrate/). It turns a runnable runtime
+into one with explicit memory, recovery, and distribution boundaries.
 
 ## Purpose
 
-State and storage are development choices because they define what a built agent can safely remember, resume, tune, and distribute. Wire these boundaries before exposing the agent to operators: managed config, mailbox dispatch, thread state, profile state, and event history all depend on stores that code must register.
+State and storage belong in Build Agents because storage choices define the
+agent's runtime contract before it is operated. Wire these boundaries before
+exposing the agent to operators: managed config, mailbox dispatch, thread
+state, profile state, and event history all depend on stores that code must
+register.
 
 ## Use this section to decide
 
@@ -43,11 +50,12 @@ producing-run filters.
 
 ## Recommended order
 
-1. [State Management](/awaken/explanation/state-management/) to choose run, thread, shared, or profile state.
-2. [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/) to understand plugin-managed `PhaseContext`, `StateCommand`, and snapshot mutation.
-3. [Use File Store](/awaken/how-to/use-file-store/) or [Use Postgres Store](/awaken/how-to/use-postgres-store/) to choose a persistence backend.
-4. [Use NATS Stores](/awaken/how-to/use-nats-stores/) for a distributed mailbox and buffered thread writes across replicas.
-5. [Use Shared State](/awaken/how-to/use-shared-state/) to share persistent state across threads and agent types.
+1. Start from [Build an Agent](/awaken/how-to/build-an-agent/) so the runtime, provider, tools, and plugins are known.
+2. Read [State Management](/awaken/explanation/state-management/) to choose run, thread, shared, or profile state.
+3. Read [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/) to understand plugin-managed `PhaseContext`, `StateCommand`, and snapshot mutation.
+4. Use [File Store](/awaken/how-to/use-file-store/), [Postgres Store](/awaken/how-to/use-postgres-store/), or [NATS Stores](/awaken/how-to/use-nats-stores/) to choose a persistence backend.
+5. Use [Shared State](/awaken/how-to/use-shared-state/) to share persistent state across threads and agent types.
+6. Continue to [Serve & Integrate](/awaken/serve-and-integrate/) once mailbox, config, profile, trace/eval, and event durability boundaries are clear.
 
 Current built-in stores cover memory, file, PostgreSQL, SQLite mailbox, and
 NATS JetStream. Use the smallest backend that covers the durability boundary

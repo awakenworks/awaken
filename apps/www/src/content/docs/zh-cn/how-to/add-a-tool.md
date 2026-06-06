@@ -101,9 +101,35 @@ fn register(&self, registrar: &mut PluginRegistrar) -> Result<(), StateError> {
 
 通过插件注册的工具仅对激活了该插件的 agent 可见。
 
-## 工具开放范围是配置,不是代码
+## 控制 agent 能调用哪些工具
 
-`with_tool` 把工具放进 runtime registry —— 任何运行中的 agent 都*可能*调用它。给定 agent *允许*用哪些工具,是配置,不是 Rust:
+`with_tool` 把工具放进 runtime *registry* —— 任何运行中的 agent 都*可能*调用它。给定 agent *实际允许*用哪些工具,由 `AgentSpec` 的两个字段决定:`allowed_tools`(白名单)和 `excluded_tools`(黑名单)。这两个字段你可以在**代码里**、通过 **REST 配置 API**、或在**管理控制台界面**里设置——三处用的是同两个字段,且配置会在下一个 run 覆盖代码里的默认值。
+
+开关只能在已注册的对象之间做选择,所以两边都必须先注册:
+
+- **工具** —— 通过 `with_tool`、插件的 `registrar.register_tool`,或 MCP 自动注册。没注册的工具根本无法被调用。
+- **Agent** —— 通过代码里的 `with_agent_spec`,或通过配置发布它的 spec(runtime 会合并本地与已发布的 agent)。下面引用的 `assistant` 必须以这种方式已存在,才能按 id 解析到;见 [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)。
+
+往这些注册表里注册是 runtime 的核心装配——同一套模型覆盖 tool、agent、model、provider 和 plugin。见 [智能体解析](/awaken/zh-cn/explanation/agent-resolution/)。
+
+### 在代码里
+
+把默认值写进你构建的 `AgentSpec`。这两个字段就是普通的 `Option<Vec<String>>`:
+
+```rust
+use awaken::AgentSpec;
+
+let mut spec = AgentSpec::new("assistant")
+    .with_model_id("gpt-4o-mini")
+    .with_system_prompt("你帮用户处理天气问题。");
+spec.allowed_tools = Some(vec!["get_weather".into()]); // None = 所有已注册工具
+spec.excluded_tools = None;
+// builder.with_agent_spec(spec)
+```
+
+### 通过配置动态覆盖
+
+server 模式下,runtime 在调用时解析*托管*的 spec,所以发布一次改动即可覆盖代码里构建的默认值,不重新构建、不重启:
 
 ```bash
 curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
@@ -117,7 +143,11 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
   }'
 ```
 
-`allowed_tools` 是白名单,`excluded_tools` 是黑名单。两者都在下一个 run 生效 —— 不重新构建、不重启。工具在代码里加一次,通过配置按 agent 开关。
+### 在管理控制台界面
+
+打开 agent 编辑器,使用 **Tools** 区:选择 **All tools** 或 **Custom selection**,用 source 过滤器筛选 built-in / plugin / MCP 工具,保存前先 validate 一次预览。分步:[通过配置调优 Agent 行为 → 收窄工具目录](/awaken/zh-cn/how-to/configure-agent-behavior/#收窄工具目录);编辑器导览:[使用管理控制台](/awaken/zh-cn/how-to/use-admin-console/)。
+
+无论用哪个入口,`allowed_tools` 都是白名单、`excluded_tools` 都是黑名单,且改动在下一个 run 生效。工具在代码里加一次;按 agent 的开关可以在代码、配置或界面里做。
 
 需要更细的按调用控制(基于参数形状的 allow/deny/ask,不只是工具名),用 [Permission 插件](/awaken/zh-cn/how-to/enable-tool-permission-hitl/)。
 

@@ -56,19 +56,19 @@
         }
       },
       {
-        "label": "Basics",
+        "label": "Build an Agent",
+        "slug": "how-to/build-an-agent",
         "translations": {
-          "zh-CN": "基础"
+          "zh-CN": "构建 Agent"
+        }
+      },
+      {
+        "label": "Tools",
+        "translations": {
+          "zh-CN": "工具"
         },
         "collapsed": true,
         "items": [
-          {
-            "label": "Build an Agent",
-            "slug": "how-to/build-an-agent",
-            "translations": {
-              "zh-CN": "构建 Agent"
-            }
-          },
           {
             "label": "Add a Tool",
             "slug": "how-to/add-a-tool",
@@ -77,18 +77,83 @@
             }
           },
           {
-            "label": "Add a Plugin",
-            "slug": "how-to/add-a-plugin",
+            "label": "Report Tool Progress",
+            "slug": "how-to/report-tool-progress",
             "translations": {
-              "zh-CN": "添加 Plugin"
+              "zh-CN": "上报 Tool 进度"
+            }
+          },
+          {
+            "label": "Use MCP Tools",
+            "slug": "how-to/use-mcp-tools",
+            "translations": {
+              "zh-CN": "使用 MCP Tools"
+            }
+          },
+          {
+            "label": "Use Skills Subsystem",
+            "slug": "how-to/use-skills-subsystem",
+            "translations": {
+              "zh-CN": "使用 Skills 子系统"
+            }
+          },
+          {
+            "label": "Use Deferred Tools",
+            "slug": "how-to/use-deferred-tools",
+            "translations": {
+              "zh-CN": "使用延迟加载工具"
+            }
+          },
+          {
+            "label": "Invoke a Sub-Agent from a Tool",
+            "slug": "how-to/invoke-sub-agent-from-tool",
+            "translations": {
+              "zh-CN": "在工具里调用 Sub-Agent"
+            }
+          },
+          {
+            "label": "Start Background Work from a Tool",
+            "slug": "how-to/start-background-work-from-a-tool",
+            "translations": {
+              "zh-CN": "从工具启动后台任务"
             }
           }
         ]
       },
       {
-        "label": "State, Context & Storage",
+        "label": "Plugins",
         "translations": {
-          "zh-CN": "状态、上下文与存储"
+          "zh-CN": "插件"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Add a Plugin",
+            "slug": "how-to/add-a-plugin",
+            "translations": {
+              "zh-CN": "添加 Plugin"
+            }
+          },
+          {
+            "label": "Use Reminder Plugin",
+            "slug": "how-to/use-reminder-plugin",
+            "translations": {
+              "zh-CN": "使用 Reminder 插件"
+            }
+          },
+          {
+            "label": "Use Generative UI",
+            "slug": "how-to/use-generative-ui",
+            "translations": {
+              "zh-CN": "使用 Generative UI"
+            }
+          }
+        ]
+      },
+      {
+        "label": "State & Storage",
+        "translations": {
+          "zh-CN": "状态与存储"
         },
         "collapsed": true,
         "items": [
@@ -144,53 +209,9 @@
         ]
       },
       {
-        "label": "Tooling & Extensions",
+        "label": "Multi-Agent & Messaging",
         "translations": {
-          "zh-CN": "工具与扩展"
-        },
-        "collapsed": true,
-        "items": [
-          {
-            "label": "Use MCP Tools",
-            "slug": "how-to/use-mcp-tools",
-            "translations": {
-              "zh-CN": "使用 MCP Tools"
-            }
-          },
-          {
-            "label": "Use Skills Subsystem",
-            "slug": "how-to/use-skills-subsystem",
-            "translations": {
-              "zh-CN": "使用 Skills 子系统"
-            }
-          },
-          {
-            "label": "Use Deferred Tools",
-            "slug": "how-to/use-deferred-tools",
-            "translations": {
-              "zh-CN": "使用延迟加载工具"
-            }
-          },
-          {
-            "label": "Use Reminder Plugin",
-            "slug": "how-to/use-reminder-plugin",
-            "translations": {
-              "zh-CN": "使用 Reminder 插件"
-            }
-          },
-          {
-            "label": "Use Generative UI",
-            "slug": "how-to/use-generative-ui",
-            "translations": {
-              "zh-CN": "使用 Generative UI"
-            }
-          }
-        ]
-      },
-      {
-        "label": "Composition",
-        "translations": {
-          "zh-CN": "组合"
+          "zh-CN": "多智能体与通信"
         },
         "collapsed": true,
         "items": [
@@ -202,13 +223,6 @@
             }
           },
           {
-            "label": "HITL and Mailbox",
-            "slug": "explanation/hitl-and-mailbox",
-            "translations": {
-              "zh-CN": "HITL 与 Mailbox"
-            }
-          },
-          {
             "label": "Use Agent Handoff",
             "slug": "how-to/use-agent-handoff",
             "translations": {
@@ -216,28 +230,65 @@
             }
           },
           {
-            "label": "Invoke a Sub-Agent from a Tool",
-            "slug": "how-to/invoke-sub-agent-from-tool",
+            "label": "HITL and Mailbox",
+            "slug": "explanation/hitl-and-mailbox",
             "translations": {
-              "zh-CN": "在工具里调用 Sub-Agent"
+              "zh-CN": "HITL 与 Mailbox"
             }
           }
         ]
       },
       {
-        "label": "Reliability",
+        "label": "Serve & Integrate",
         "translations": {
-          "zh-CN": "可靠性"
+          "zh-CN": "服务与集成"
         },
         "collapsed": true,
         "items": [
           {
-            "label": "Report Tool Progress",
-            "slug": "how-to/report-tool-progress",
+            "label": "Overview",
+            "slug": "serve-and-integrate",
             "translations": {
-              "zh-CN": "上报 Tool 进度"
+              "zh-CN": "概览"
             }
           },
+          {
+            "label": "Expose HTTP SSE",
+            "slug": "how-to/expose-http-sse",
+            "translations": {
+              "zh-CN": "通过 SSE 暴露 HTTP"
+            }
+          },
+          {
+            "label": "Integrate AI SDK Frontend",
+            "slug": "how-to/integrate-ai-sdk-frontend",
+            "translations": {
+              "zh-CN": "集成 AI SDK 前端"
+            }
+          },
+          {
+            "label": "Integrate CopilotKit (AG-UI)",
+            "slug": "how-to/integrate-copilotkit-ag-ui",
+            "translations": {
+              "zh-CN": "集成 CopilotKit（AG-UI）"
+            }
+          },
+          {
+            "label": "Deploy to Production",
+            "slug": "how-to/deploy-to-production",
+            "translations": {
+              "zh-CN": "部署到生产"
+            }
+          }
+        ]
+      },
+      {
+        "label": "Test & Harden",
+        "translations": {
+          "zh-CN": "测试与加固"
+        },
+        "collapsed": true,
+        "items": [
           {
             "label": "Recover Streaming LLMs",
             "slug": "how-to/recover-streaming-llms",
@@ -257,9 +308,9 @@
     ]
   },
   {
-    "label": "Operate",
+    "label": "Tune & Operate",
     "translations": {
-      "zh-CN": "运营"
+      "zh-CN": "调优与运营"
     },
     "items": [
       {
@@ -360,49 +411,6 @@
     ]
   },
   {
-    "label": "Serve & Integrate",
-    "translations": {
-      "zh-CN": "服务与集成"
-    },
-    "items": [
-      {
-        "label": "Overview",
-        "slug": "serve-and-integrate",
-        "translations": {
-          "zh-CN": "概览"
-        }
-      },
-      {
-        "label": "Expose HTTP SSE",
-        "slug": "how-to/expose-http-sse",
-        "translations": {
-          "zh-CN": "通过 SSE 暴露 HTTP"
-        }
-      },
-      {
-        "label": "Integrate AI SDK Frontend",
-        "slug": "how-to/integrate-ai-sdk-frontend",
-        "translations": {
-          "zh-CN": "集成 AI SDK 前端"
-        }
-      },
-      {
-        "label": "Integrate CopilotKit (AG-UI)",
-        "slug": "how-to/integrate-copilotkit-ag-ui",
-        "translations": {
-          "zh-CN": "集成 CopilotKit（AG-UI）"
-        }
-      },
-      {
-        "label": "Deploy to Production",
-        "slug": "how-to/deploy-to-production",
-        "translations": {
-          "zh-CN": "部署到生产"
-        }
-      }
-    ]
-  },
-  {
     "label": "Concepts",
     "translations": {
       "zh-CN": "概念与架构"
@@ -420,6 +428,13 @@
             "slug": "explanation/philosophy",
             "translations": {
               "zh-CN": "设计哲学"
+            }
+          },
+          {
+            "label": "Anatomy of an Agent",
+            "slug": "explanation/anatomy-of-an-agent",
+            "translations": {
+              "zh-CN": "Agent 的构成"
             }
           },
           {

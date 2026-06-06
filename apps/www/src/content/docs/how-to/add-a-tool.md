@@ -180,9 +180,35 @@ impl Plugin for WeatherPlugin {
 
 Plugin-registered tools are scoped to agents that activate that plugin.
 
-## Tool availability is config, not code
+## Gate which tools an agent can call
 
-`with_tool` puts the tool in the runtime registry — every running agent can potentially call it. *Which* tools a given agent is allowed to call is config, not Rust:
+`with_tool` puts the tool in the runtime *registry* — every running agent can potentially call it. *Which* tools a given agent is actually allowed to call is set by two `AgentSpec` fields, `allowed_tools` (whitelist) and `excluded_tools` (blacklist). You can set them in **code**, over the **REST config API**, or in the **admin console UI** — they are the same two fields everywhere, and config overrides the code default on the next run.
+
+Gating only selects among things already in the registries, so both halves must be registered first:
+
+- **The tool** — via `with_tool`, a plugin's `registrar.register_tool`, or MCP auto-registration. Unregistered tools cannot be called at all.
+- **The agent** — via `with_agent_spec` in code, or by publishing its spec through config (the runtime merges local and published agents). The `assistant` referenced below must already exist this way to be resolvable by id; see [Build an Agent](/awaken/how-to/build-an-agent/).
+
+Registration into these registries is the runtime's core wiring — the same model covers tools, agents, models, providers, and plugins. See [Agent Resolution](/awaken/explanation/agent-resolution/).
+
+### In code
+
+Bake a default into the `AgentSpec` you build. The fields are plain `Option<Vec<String>>`:
+
+```rust
+use awaken::AgentSpec;
+
+let mut spec = AgentSpec::new("assistant")
+    .with_model_id("gpt-4o-mini")
+    .with_system_prompt("You help with weather questions.");
+spec.allowed_tools = Some(vec!["get_weather".into()]); // None = all registered tools
+spec.excluded_tools = None;
+// builder.with_agent_spec(spec)
+```
+
+### Dynamically, over config
+
+In server mode the runtime resolves the *managed* spec at call time, so publishing a change overrides the code-built default with no rebuild and no restart:
 
 ```bash
 curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
@@ -196,7 +222,11 @@ curl -sS -X PUT http://localhost:3000/v1/config/agents/assistant \
   }'
 ```
 
-`allowed_tools` whitelists; `excluded_tools` blacklists. Both apply on the next run — no rebuild, no restart. Add a tool in code once; gate it per agent via config.
+### In the admin console UI
+
+Open the agent editor and use the **Tools** section: choose **All tools** or a **Custom selection**, narrow built-in / plugin / MCP tools with source filters, and validate a preview before saving. Step-by-step: [Configure Agent Behavior → Narrow the tool catalog](/awaken/how-to/configure-agent-behavior/#narrow-the-tool-catalog); editor tour: [Use the Admin Console](/awaken/how-to/use-admin-console/).
+
+Whichever surface you use, `allowed_tools` whitelists and `excluded_tools` blacklists, and the change applies on the next run. Add a tool in code once; gate it per agent in code, config, or the UI.
 
 For finer per-call control (allow/deny/ask on argument shape, not just tool name), use the [Permission plugin](/awaken/how-to/enable-tool-permission-hitl/).
 

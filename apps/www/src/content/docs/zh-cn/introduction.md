@@ -91,8 +91,8 @@ crate 只是 `std` 类型面;MCP、Skills、Stores、Observability exporter 与 
 ## 阅读路径
 
 1. [快速上手](/awaken/zh-cn/get-started/) → [第一个 Agent](/awaken/zh-cn/tutorials/first-agent/)。
-2. [开发 Agent](/awaken/zh-cn/build-agents/) —— 在 Rust 中实现 tool、plugin、state、sub-agent 调用和 UI stream。
-3. [调优与运营](/awaken/zh-cn/operate/) —— 用管理控制台或配置 API 管理 prompt、model、MCP、Skill、策略、trace、dataset 和 eval。
-4. [服务与集成](/awaken/zh-cn/serve-and-integrate/) —— AI SDK / CopilotKit / A2A / MCP / ACP 客户端。
-5. [状态与存储](/awaken/zh-cn/state-and-storage/) —— 持久化与 durable state。
+2. [开发 Agent](/awaken/zh-cn/build-agents/) —— 在 Rust 中实现 tool、plugin、state、sub-agent 调用、UI stream、存储边界和 server integration。
+3. [状态与存储](/awaken/zh-cn/state-and-storage/) —— 让 runtime 可持久化、可恢复、可分布式执行。
+4. [服务与集成](/awaken/zh-cn/serve-and-integrate/) —— 通过 HTTP、AI SDK、CopilotKit、A2A、MCP、ACP、mailbox 和 admin surfaces 暴露 runtime。
+5. [调优与运营](/awaken/zh-cn/operate/) —— 用管理控制台或配置 API 管理 prompt、model、MCP、Skill、策略、trace、dataset 和 eval。
 6. [设计哲学](/awaken/zh-cn/explanation/philosophy/) —— 三条准则背后的"为什么"。

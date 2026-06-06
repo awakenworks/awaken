@@ -13,6 +13,18 @@ Build Agents 先说明**为什么某项能力应该写进代码**，再把可运
 配置。这样能把高成本、强安全边界的决策留在经过 review 的 Rust 中，同时让运营者
 后续清楚地调 prompt、tool、permission 和 governance。
 
+## 开发路径
+
+Build Agents 是进入在线运营前的完整开发路径：
+
+1. [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/) —— 先让 runtime 可执行。
+2. [状态与存储](/awaken/zh-cn/state-and-storage/) —— 决定 agent 记住什么、恢复什么、共享什么、持久化什么。
+3. [服务与集成](/awaken/zh-cn/serve-and-integrate/) —— 通过 server、protocol、mailbox、config 和 admin surfaces 暴露 runtime。
+4. [调优与运营](/awaken/zh-cn/operate/) —— 在代码和存储边界安全后，再调整已保存的行为。
+
+因此 state/storage 和 server integration 都是开发期事项，不是上线后的补救工作。
+它们决定后续调优、trace、eval 和分布式 run 是否有可靠数据可用。
+
 ## 需要提前确定的设计选择
 
 | 需求 | 放在这里 | 为什么这样更好 |
@@ -40,17 +52,28 @@ Build Agents 先说明**为什么某项能力应该写进代码**，再把可运
 | MCP 集成 | `McpToolRegistryManager`、custom transport、sampling handler | `crates/awaken-ext-mcp/tests/mcp_tests.rs`、`crates/awaken-ext-mcp/src/transport.rs` |
 | Observability / Eval | `MetricsSink`、`TraceStore`、`RuntimeReplayer`、`JudgeConfig` | `crates/awaken-ext-observability/tests/`、`crates/awaken-eval/tests/eval_integration.rs` |
 
-## 推荐顺序
+## 你在开发什么？
 
-1. 先读 [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)，确定 runtime、model registry 和 agent spec 的骨架。
-2. 再读 [添加 Tool](/awaken/zh-cn/how-to/add-a-tool/) 和 [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/)，用安全的方式扩展行为。
-3. 用 [状态与存储概览](/awaken/zh-cn/state-and-storage/)、[状态管理](/awaken/zh-cn/explanation/state-management/) 和 store guides 接好 runtime state、config、profile 和 mailbox 存储边界。
-4. 阅读 [多 Agent 模式](/awaken/zh-cn/explanation/multi-agent-patterns/)，选择 delegation、后台 agent、handoff 或通信方式。
-5. 需要 mailbox 路由、等待 run、HITL 或分布式调度时，阅读 [HITL 与 Mailbox](/awaken/zh-cn/explanation/hitl-and-mailbox/)。
-6. 需要一个 Agent 接管当前 thread 时，阅读 [使用 Agent Handoff](/awaken/zh-cn/how-to/use-agent-handoff/)。
-7. 自定义 tool 代码需要受控调用子 Agent 并显式传递 state 时，阅读 [在工具里调用 Sub-Agent](/awaken/zh-cn/how-to/invoke-sub-agent-from-tool/)。
-8. 需要 Agent 在文本之外流式输出 UI 文档时，阅读 [使用 Generative UI](/awaken/zh-cn/how-to/use-generative-ui/)。
-9. [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/) 用于理解代码能力和运营调优的边界。
+从任务出发，而不是先理解整个系统。找到与你下一步需求匹配的行；侧边栏里每条脊柱都自成一体。
+
+| 我想要…… | 去这里 |
+|---|---|
+| 让 runtime 可执行 | [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/) |
+| 添加一个模型可调用的 tool | [添加 Tool](/awaken/zh-cn/how-to/add-a-tool/) |
+| 从长时间运行的 tool 上报进度 | [上报 Tool 进度](/awaken/zh-cn/how-to/report-tool-progress/) |
+| 调用 MCP 或外部 tool server | [使用 MCP Tools](/awaken/zh-cn/how-to/use-mcp-tools/) |
+| 延迟加载 tool 以保持 prompt 精简 | [使用延迟加载工具](/awaken/zh-cn/how-to/use-deferred-tools/) |
+| 让 tool 受控地运行一个子 agent | [在工具里调用 Sub-Agent](/awaken/zh-cn/how-to/invoke-sub-agent-from-tool/) |
+| 让 tool 启动超出当前 turn 的长时间工作 | [从工具启动后台任务](/awaken/zh-cn/how-to/start-background-work-from-a-tool/) |
+| 从 plugin 注入模型上下文或过滤 tool | [添加 Plugin](/awaken/zh-cn/how-to/add-a-plugin/) |
+| 在文本之外流式输出 UI 文档 | [使用 Generative UI](/awaken/zh-cn/how-to/use-generative-ui/) |
+| 决定 agent 记住、共享和持久化什么 | [状态与存储](/awaken/zh-cn/state-and-storage/) |
+| 让一个 agent 接管当前对话 | [使用 Agent Handoff](/awaken/zh-cn/how-to/use-agent-handoff/) |
+| 让独立 agent 之间通信或等待人工 | [HITL 与 Mailbox](/awaken/zh-cn/explanation/hitl-and-mailbox/) |
+| 协调多个 agent | [多智能体模式](/awaken/zh-cn/explanation/multi-agent-patterns/) |
+| 通过 HTTP 或协议暴露 runtime | [服务与集成](/awaken/zh-cn/serve-and-integrate/) |
+| 让 tool 经过人工审批才能执行 | [启用工具权限 HITL](/awaken/zh-cn/how-to/enable-tool-permission-hitl/)（位于 [调优与运营](/awaken/zh-cn/operate/)） |
+| 代码安全后再调优已保存的行为 | [通过配置调优 Agent 行为](/awaken/zh-cn/how-to/configure-agent-behavior/)（位于 [调优与运营](/awaken/zh-cn/operate/)） |
 
 ## 建议搭配阅读
 

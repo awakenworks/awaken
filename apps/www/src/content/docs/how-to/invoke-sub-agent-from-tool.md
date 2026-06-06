@@ -11,6 +11,25 @@ This guide treats another agent as an independent tool: the parent calls it, rec
 
 Awaken exposes this through one helper function plus the normal `Tool::execute` shape you already know. The framework does not introduce hooks, phases, or strategy types — state passing is plain Rust code inside your `execute` method.
 
+## Do you need this? Use delegation first
+
+If you only want the agent to be able to call an existing agent, you usually do **not** need to write any tool code. Declare it in the agent spec:
+
+```json
+{ "id": "orchestrator", "delegates": ["researcher", "writer"] }
+```
+
+During resolution the runtime builds an `AgentTool` for each entry, exposed to the LLM as `agent_run_{delegate_id}`. The parent calls it like any other tool and gets a bounded result back — no Rust, no rebuild, and editing the delegate's spec through the config API takes effect on the next call. See [Multi-Agent Patterns](/awaken/explanation/multi-agent-patterns/#agent-delegation-via-agentspecdelegates).
+
+Reach for the programmatic path in this guide **only** when declarative delegation cannot express what you need:
+
+- **Typed parent ↔ child state.** You decide exactly which `StateKey`s seed the child and which child keys write back, instead of passing only the prompt.
+- **Custom status policy.** You interpret the child's lifecycle status yourself (semantic pass-through, strict-fail, or selective export) rather than relying on the default `AgentTool` behavior.
+- **Streaming passthrough.** You want the child's tokens to appear inside the parent tool's own output stream.
+- **Dynamically built input.** The child request — prompt, seed, cancellation — is constructed from tool arguments at call time.
+
+The delegate `AgentTool` above and `run_child_agent` are siblings, not layers: both build a `BackendDelegateRunRequest` and call the same `execute_resolved_delegate_execution` dispatch. The only difference is the entry point — `AgentTool` is auto-generated and LLM-facing; `run_child_agent` is the one you call from tool code when you need the control listed above.
+
 ## Agent as an independent tool
 
 When the child is exposed as a tool, keep three channels separate:

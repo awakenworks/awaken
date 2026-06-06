@@ -83,7 +83,7 @@ default `minimal` profile keeps the console focused on the resources you create.
 ## Leave this path when
 
 - You need to implement new runtime capabilities: go to [Develop Agents](/awaken/build-agents/).
-- You need to tune or operate saved agents: go to [Tune & Operate](/awaken/operate/).
-- You need HTTP or frontend integration: go to [Serve & Integrate](/awaken/serve-and-integrate/).
-- You need persistence: go to [State & Storage](/awaken/state-and-storage/).
+- You need persistence, recovery, or distributed dispatch: go to [State & Storage](/awaken/state-and-storage/).
+- You need HTTP, protocol, or frontend integration: go to [Serve & Integrate](/awaken/serve-and-integrate/).
+- You need to tune or operate saved agents after those development boundaries are safe: go to [Tune & Operate](/awaken/operate/).
 - You are ready to ship: go to [Deploy to Production](/awaken/how-to/deploy-to-production/).

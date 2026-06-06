@@ -71,7 +71,7 @@ export OPENAI_ADAPTER=openai
 ## 何时离开这条路径
 
 - 需要实现新的 runtime 能力时，进入 [开发 Agent 路径](/awaken/zh-cn/build-agents/)。
-- 需要调优或运营已保存的 Agent 时，进入 [调优与运营](/awaken/zh-cn/operate/)。
-- 需要 HTTP 或前端集成时，进入 [服务与集成](/awaken/zh-cn/serve-and-integrate/)。
-- 需要持久化时，进入 [状态与存储](/awaken/zh-cn/state-and-storage/)。
+- 需要持久化、恢复或分布式派发时，进入 [状态与存储](/awaken/zh-cn/state-and-storage/)。
+- 需要 HTTP、协议或前端集成时，进入 [服务与集成](/awaken/zh-cn/serve-and-integrate/)。
+- 代码和存储边界安全后，需要调优或运营已保存的 Agent 时，进入 [调优与运营](/awaken/zh-cn/operate/)。
 - 准备上线时，进入 [部署到生产](/awaken/zh-cn/how-to/deploy-to-production/)。
