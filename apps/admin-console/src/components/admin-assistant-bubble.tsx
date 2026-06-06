@@ -8,7 +8,11 @@ import { capabilitiesFromResult } from "@/lib/api";
 
 export function AdminAssistantBubble() {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  // Always-on FAB: persist the open/closed state so the floating window stays
+  // as the operator left it across reloads and navigation.
+  const [open, setOpen] = useState(
+    () => typeof localStorage !== "undefined" && localStorage.getItem("awaken.admin.assistantOpen") === "1",
+  );
   const dialogRef = useRef<HTMLElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const previousOpenRef = useRef(false);
@@ -19,30 +23,21 @@ export function AdminAssistantBubble() {
   const reason = assistant?.disabled_reason ?? t("assistant.bubble.disabledReason");
 
   useEffect(() => {
+    try {
+      localStorage.setItem("awaken.admin.assistantOpen", open ? "1" : "0");
+    } catch {
+      /* storage unavailable — best effort */
+    }
+  }, [open]);
+
+  // Non-modal floating window: Escape closes it, but focus is NOT trapped, so
+  // the rest of the console stays usable while the assistant is open.
+  useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         setOpen(false);
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const dialog = dialogRef.current;
-      if (!dialog) return;
-      const focusable = focusableElements(dialog);
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -52,9 +47,9 @@ export function AdminAssistantBubble() {
   useEffect(() => {
     const previousOpen = previousOpenRef.current;
     previousOpenRef.current = open;
-    if (open) {
-      dialogRef.current?.focus();
-    } else if (previousOpen) {
+    // Don't steal focus when opening (especially on a restored-open reload);
+    // just return focus to the FAB when the user closes the window.
+    if (!open && previousOpen) {
       triggerRef.current?.focus();
     }
   }, [open]);
@@ -65,7 +60,6 @@ export function AdminAssistantBubble() {
         <section
           ref={dialogRef}
           role="dialog"
-          aria-modal="true"
           aria-label={t("assistant.title")}
           tabIndex={-1}
           className="relative h-[min(720px,calc(100dvh-6rem))] w-[min(440px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-line-strong bg-bg shadow-overlay"
@@ -110,21 +104,6 @@ export function AdminAssistantBubble() {
       </button>
     </div>
   );
-}
-
-function focusableElements(root: HTMLElement): HTMLElement[] {
-  return Array.from(
-    root.querySelectorAll<HTMLElement>(
-      [
-        "a[href]",
-        "button:not([disabled])",
-        "textarea:not([disabled])",
-        "input:not([disabled])",
-        "select:not([disabled])",
-        "[tabindex]:not([tabindex='-1'])",
-      ].join(","),
-    ),
-  ).filter((element) => !element.hasAttribute("disabled") && element.offsetParent !== null);
 }
 
 function AssistantSetupNotice({ loading, reason }: { loading: boolean; reason: string }) {
