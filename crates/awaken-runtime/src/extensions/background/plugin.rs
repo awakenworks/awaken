@@ -9,6 +9,7 @@ use crate::state::{KeyScope, MutationBatch, StateKeyOptions, StateStore};
 use super::cancel_task_tool::{CANCEL_TASK_TOOL_ID, CancelTaskTool};
 use super::hook::BackgroundTaskSyncHook;
 use super::manager::BackgroundTaskManager;
+use super::recover_messages_tool::{RECOVER_FAILED_MESSAGES_TOOL_ID, RecoverFailedMessagesTool};
 use super::send_message_tool::{
     DurableMessageSink, FailedDurableMessageKey, MessageDispatchHook, MessageOutboxKey,
     SEND_MESSAGE_TOOL_ID, SendMessageTool,
@@ -119,6 +120,11 @@ impl Plugin for BackgroundTaskPlugin {
         registrar.register_key::<MessageOutboxKey>(outbox_options)?;
         registrar.register_key::<FailedDurableMessageKey>(outbox_options)?;
         registrar.register_tool(SEND_MESSAGE_TOOL_ID, Arc::new(SendMessageTool::new()))?;
+        // Recovery surface for the durable-message dead-letter list.
+        registrar.register_tool(
+            RECOVER_FAILED_MESSAGES_TOOL_ID,
+            Arc::new(RecoverFailedMessagesTool::new()),
+        )?;
         registrar.register_phase_hook(
             BACKGROUND_TASKS_PLUGIN_ID,
             Phase::StepEnd,

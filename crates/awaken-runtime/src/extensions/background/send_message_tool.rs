@@ -210,12 +210,16 @@ pub struct FailedDurableMessageState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FailedDurableMessageUpdate {
     Push(FailedDurableMessage),
+    /// Drop all dead-lettered messages (after they have been replayed back to
+    /// the outbox, or are being discarded). See the `recover_failed_messages` tool.
+    Clear,
 }
 
 impl FailedDurableMessageState {
     pub(crate) fn reduce(&mut self, update: FailedDurableMessageUpdate) {
         match update {
             FailedDurableMessageUpdate::Push(message) => self.messages.push(message),
+            FailedDurableMessageUpdate::Clear => self.messages.clear(),
         }
     }
 }

@@ -8,6 +8,7 @@ mod execution_context;
 mod hook;
 mod manager;
 mod plugin;
+mod recover_messages_tool;
 mod run_cancellation;
 mod send_message_tool;
 pub(crate) mod state;
@@ -22,6 +23,7 @@ pub(crate) use execution_context::{
 };
 pub use manager::{BackgroundTaskManager, SendError, SpawnError};
 pub use plugin::BackgroundTaskPlugin;
+pub use recover_messages_tool::{RECOVER_FAILED_MESSAGES_TOOL_ID, RecoverFailedMessagesTool};
 pub(crate) use run_cancellation::{
     dedup_managers, managers_for_resolved_agent, spawn_run_cancellation_guard,
 };
