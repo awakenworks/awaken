@@ -5,6 +5,8 @@ use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_runtime_contract::contract::lifecycle::TerminationReason;
 
 use crate::loop_runner::{AgentLoopParams, CommitWiring, prepare_resume, run_agent_loop};
+#[cfg(feature = "background")]
+use crate::plugins::Plugin;
 use crate::registry::ResolvedAgent;
 use crate::state::StateStore;
 
@@ -298,23 +300,18 @@ impl LocalBackend {
         {
             None
         } else {
-            let manager = crate::extensions::background::BackgroundTaskManager::new();
-            let manager = std::sync::Arc::new(manager);
-            manager.set_store(store.clone());
+            // Bind the auto-created plugin through the same `bind_runtime_context`
+            // seam the resolved-env plugins use (see `bind_local_execution_env`),
+            // rather than re-setting store/owner_inbox by hand.
+            let manager =
+                std::sync::Arc::new(crate::extensions::background::BackgroundTaskManager::new());
+            let plugin = crate::extensions::background::BackgroundTaskPlugin::new(manager.clone());
+            plugin.bind_runtime_context(&store, owner_inbox.as_ref());
+            store
+                .install_plugin(plugin)
+                .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
             Some(manager)
         };
-
-        #[cfg(feature = "background")]
-        if let Some(manager) = &bg_manager {
-            if let Some(sender) = owner_inbox.clone() {
-                manager.set_owner_inbox(sender);
-            }
-            store
-                .install_plugin(crate::extensions::background::BackgroundTaskPlugin::new(
-                    manager.clone(),
-                ))
-                .map_err(|error| ExecutionBackendError::ExecutionFailed(error.to_string()))?;
-        }
 
         #[cfg(feature = "background")]
         let background_cancel_managers = {
