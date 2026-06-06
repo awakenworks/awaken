@@ -31,6 +31,26 @@ Plugins do not mutate state or prompts directly. A phase hook receives `PhaseCon
 
 For context injection, plugins schedule `AddContextMessage` with a `ContextMessage`. The runtime handler writes accepted messages to `ContextMessageStore`, updates `ContextThrottleState`, and the loop inserts messages into the system, session, conversation, or suffix-system band before inference. This is better than editing prompts in-place because context injection is keyed, ordered, throttled, and cleared by the loop.
 
+## The State, Action & Effect loop
+
+The four layers below are *what* you store. `StateCommand` is *how* every change happens. Tools and hooks never write state in place — they read a snapshot, return an action, and the loop commits it. Context injection, a tool result write-back, and a scheduled side effect are all the same cycle:
+
+```mermaid
+flowchart LR
+    SNAP["Snapshot<br/>(immutable, read-only)"] --> H["Hook / Tool<br/>decides"]
+    H --> CMD["StateCommand<br/>patch · scheduled_actions · effects"]
+    CMD --> COMMIT["Loop commits<br/>atomically at boundary"]
+    COMMIT --> SNAP
+    CMD -->|effects| EFF["Effect handlers<br/>terminal side effects"]
+```
+
+- **Snapshot** is a frozen, point-in-time view. Every hook in a phase reads the *same* snapshot, so they cannot observe each other's partial writes.
+- **Action** is the returned `StateCommand`: `patch` (typed `MutationBatch`), `scheduled_actions` (runtime-owned work like `AddContextMessage`), and `effects` (terminal side effects).
+- **Commit** is applied by the loop at the phase boundary, after all hooks for that phase converge — so hook execution order never affects the committed result.
+- **Effect** handlers run the terminal side effects the actions requested.
+
+One cycle for every mutation is what makes the layers below safe to share and the run deterministic to replay. Engine details (merge strategies, convergence, the `StateKey` trait) live in [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/).
+
 ## Run State
 
 Run state is the most transient layer. It lives entirely in memory, is accessed synchronously through a `Snapshot`, and is cleared to its default value when a new run begins.
@@ -187,6 +207,16 @@ Both persist data across runs. The key differences:
 
 Use **Thread State** when you need sync access and transactional guarantees within a run.
 Use **Shared State** when you need cross-boundary sharing or dynamic scoping.
+
+## State-based flow validation
+
+Because state is typed and read from a snapshot *before* every step, you can use it to enforce that a fixed workflow runs in the right order — instead of hoping the model follows a prompt instruction. The pattern has three parts:
+
+1. **Record the stage.** Keep the workflow position in a typed `StateKey` — for example an enum `Stage { Draft, Reviewed, Published }` on `KeyScope::Thread`. A tool advances it by emitting a `patch` in its `ToolOutput.command`.
+2. **Validate the transition.** Make illegal moves unrepresentable at the merge point: the key's `apply` only accepts a legal next stage, so a stale or out-of-order update is rejected when the batch commits rather than corrupting state.
+3. **Gate the capability.** Register a `ToolGate` hook that reads the current stage from the snapshot and denies a tool call that is not valid yet — e.g. `publish` is refused until the stage is `Reviewed`. The model sees a tool error and must take the required step first.
+
+This turns "must review before publishing" into a runtime-checked contract enforced by the state engine and the loop, not by prompt wording. The same shape underlies the runtime's own guardrails, where `validate_for_persist` rejects illegal status combinations at every store-write boundary. For the `ToolGate` decision mechanics, see [Plugin Internals → ToolGate Decision Priority](/awaken/explanation/plugin-internals/#toolgate-decision-priority); for the `apply` merge contract, see [State and Snapshot Model](/awaken/explanation/state-and-snapshot-model/).
 
 ## See Also
 

@@ -1,12 +1,17 @@
 ---
 title: "Serve & Integrate"
-description: "Turn a local runtime into a server control plane for protocols, durable dispatch, managed config, trace/eval, and the admin console."
+description: "Build-time guidance for wrapping an AgentRuntime with server, protocol, mailbox, config, and admin surfaces."
 ---
 
-This path is for turning a local runtime into something other systems can call.
-The value is one agent implementation behind many clients: server mode owns the
-wire, queue, config, trace/eval, and admin surfaces while the runtime remains
-the execution core.
+Serve & Integrate is the last development step before
+[Tune & Operate](/awaken/operate/): it turns a local runtime into something
+other systems can call. Do this after [State & Storage](/awaken/state-and-storage/)
+is wired, because server mode depends on durable stores for mailbox, config,
+events, trace, eval, and recovery.
+
+The value is one agent implementation behind many clients: server mode owns
+the wire, queue, config, trace/eval, and admin surfaces while the runtime
+remains the execution core.
 
 ## Runtime development vs server development
 
@@ -94,11 +99,12 @@ Use these references when wiring a host application:
 
 ## Start here
 
-1. [Expose HTTP SSE](/awaken/how-to/expose-http-sse/) to put the runtime behind HTTP and streaming endpoints.
-2. [Integrate AI SDK Frontend](/awaken/how-to/integrate-ai-sdk-frontend/) for React clients that speak AI SDK v6.
-3. [Integrate CopilotKit (AG-UI)](/awaken/how-to/integrate-copilotkit-ag-ui/) for CopilotKit frontends.
-4. [Use the Admin Console](/awaken/how-to/use-admin-console/) when operators should tune agents through the browser.
-5. [Deploy to Production](/awaken/how-to/deploy-to-production/) to harden the server: durable stores, TLS, secrets, and health probes.
+1. Confirm [State & Storage](/awaken/state-and-storage/) choices for thread/run data, config, mailbox, events, trace, eval, and profile/shared state.
+2. [Expose HTTP SSE](/awaken/how-to/expose-http-sse/) to put the runtime behind HTTP and streaming endpoints.
+3. [Integrate AI SDK Frontend](/awaken/how-to/integrate-ai-sdk-frontend/) for React clients that speak AI SDK v6.
+4. [Integrate CopilotKit (AG-UI)](/awaken/how-to/integrate-copilotkit-ag-ui/) for CopilotKit frontends.
+5. [Use the Admin Console](/awaken/how-to/use-admin-console/) when operators should tune agents through the browser.
+6. [Deploy to Production](/awaken/how-to/deploy-to-production/) to harden the server: durable stores, TLS, secrets, and health probes.
 
 ## Reference pages to pair with this section
 

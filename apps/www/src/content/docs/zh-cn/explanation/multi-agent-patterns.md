@@ -65,7 +65,7 @@ agent 可以通过 `delegates` 声明它允许委托的子 agent：
 
 ## 在工具里以代码方式调用 Sub-Agent
 
-当你写一个自定义 `Tool` 需要委托给另一个 agent，特别是需要严格控制父 ↔ 子 state 流动时，使用 `awaken_runtime::child_agent` 的 [`run_child_agent`](/awaken/zh-cn/how-to/invoke-sub-agent-from-tool/)。它是 `AgentTool` 与 `run_streaming_subagent` 共同依赖的底层辅助函数。
+当你写一个自定义 `Tool` 需要委托给另一个 agent，特别是需要严格控制父 ↔ 子 state 流动时，使用 `awaken_runtime::child_agent` 的 [`run_child_agent`](/awaken/zh-cn/how-to/invoke-sub-agent-from-tool/)。它与自动生成的 `AgentTool` 是同级关系——两者都构建一个 `BackendDelegateRunRequest` 并调用同一个 `execute_resolved_delegate_execution` 分发;而 `run_streaming_subagent` 是对 `run_child_agent` 的薄封装。
 
 `run_child_agent` 通过 `initial_state_seed: Option<PersistedState>` 接受父→子的初始状态注入，并通过 `BackendRunResult.state`（一个 `PersistedState`）把子的终态返回给父工具去解码并以 `StateCommand` 形式塞进 `ToolOutput`。子→父 state 走的是普通工具就在用的 `ToolOutput.command` 通路，没有单独的"sub-agent 导出"机制。
 

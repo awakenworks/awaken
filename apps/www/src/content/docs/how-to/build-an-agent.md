@@ -73,6 +73,8 @@ let builder = AgentRuntimeBuilder::new()
     .with_tool("calculator", Arc::new(CalculatorTool));
 ```
 
+Each `with_*` call registers into one of the runtime's five registries (agents, tools, models, providers, plugins); an agent is resolved against them by id at call time, and in server mode the same registries are filled from published config. See [Agent Resolution](/awaken/explanation/agent-resolution/).
+
 3. Register a provider and a model.
 
 ```rust

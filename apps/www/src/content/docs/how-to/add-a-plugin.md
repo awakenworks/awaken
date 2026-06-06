@@ -182,6 +182,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `plugin_ids` loads the plugin for the agent. `with_hook_filter` only filters the
 hooks, tools, and request transforms from plugins that have already been loaded.
 
+`with_plugin` registers the plugin into the runtime's plugin registry — the same
+registration model that backs tools, agents, models, and providers. See
+[Agent Resolution](/awaken/explanation/agent-resolution/).
+
 ## Inject context and steer tools
 
 When a plugin needs to change what the model sees, return commands instead of

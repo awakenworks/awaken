@@ -72,7 +72,7 @@ If the remote agent times out or fails, the `BackendRunStatus` reflects the fail
 
 ## Programmatic Sub-Agent Invocation
 
-When you are writing a custom `Tool` that needs to delegate to another agent — and especially when you need parent ↔ child state to flow with strict control — use [`run_child_agent`](/awaken/how-to/invoke-sub-agent-from-tool/) from `awaken_runtime::child_agent`. It is the canonical lower-level helper that both `AgentTool` and `run_streaming_subagent` delegate to.
+When you are writing a custom `Tool` that needs to delegate to another agent — and especially when you need parent ↔ child state to flow with strict control — use [`run_child_agent`](/awaken/how-to/invoke-sub-agent-from-tool/) from `awaken_runtime::child_agent`. It and the auto-generated `AgentTool` are siblings — both build a `BackendDelegateRunRequest` and call the same `execute_resolved_delegate_execution` dispatch — while `run_streaming_subagent` is a thin wrapper around `run_child_agent`.
 
 `run_child_agent` accepts `initial_state_seed: Option<PersistedState>` for parent → child seeding and returns the child's `BackendRunResult.state` (a `PersistedState`) for the parent tool to decode and surface as a `StateCommand` on its `ToolOutput`. State flows back through the same `ToolOutput.command` channel any other tool uses — there is no separate "sub-agent export" mechanism.
 

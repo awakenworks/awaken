@@ -128,6 +128,9 @@ let runtime = AgentRuntimeBuilder::new()
 `plugin_ids` 负责加载插件；`with_hook_filter` 只过滤已经加载的插件所提供的
 hook、tool 和 request transform。
 
+`with_plugin` 把插件注册进 runtime 的 plugin registry —— 与 tool、agent、model、
+provider 背后是同一套注册模型。见 [智能体解析](/awaken/zh-cn/explanation/agent-resolution/)。
+
 ## 注入 context 和控制工具
 
 当 plugin 需要改变模型看到的内容时，返回命令，不要直接改 prompt 或 store：
