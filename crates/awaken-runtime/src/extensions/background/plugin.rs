@@ -9,6 +9,10 @@ use crate::state::{KeyScope, MutationBatch, StateKeyOptions, StateStore};
 use super::cancel_task_tool::{CANCEL_TASK_TOOL_ID, CancelTaskTool};
 use super::hook::BackgroundTaskSyncHook;
 use super::manager::BackgroundTaskManager;
+use super::send_message_tool::{
+    DurableMessageSink, FailedDurableMessageKey, MessageDispatchHook, MessageOutboxKey,
+    SEND_MESSAGE_TOOL_ID, SendMessageTool,
+};
 use super::state::{BackgroundTaskStateKey, BackgroundTaskViewKey};
 use super::types::BACKGROUND_TASKS_PLUGIN_ID;
 
@@ -30,17 +34,40 @@ use super::types::BACKGROUND_TASKS_PLUGIN_ID;
 /// throughout that path.
 pub struct BackgroundTaskPlugin {
     manager: Arc<BackgroundTaskManager>,
+    /// Host-provided durable transport, handed to [`MessageDispatchHook`]. When
+    /// absent, `send_message` still works for the live `child` route; durable
+    /// routes are dead-lettered by the dispatcher.
+    durable_sink: Option<Arc<dyn DurableMessageSink>>,
 }
 
 impl BackgroundTaskPlugin {
     pub fn new(manager: Arc<BackgroundTaskManager>) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            durable_sink: None,
+        }
     }
 
     /// Create the plugin and wire the store into the manager.
     pub fn with_store(manager: Arc<BackgroundTaskManager>, store: StateStore) -> Self {
         manager.set_store(store);
-        Self { manager }
+        Self {
+            manager,
+            durable_sink: None,
+        }
+    }
+
+    /// Create the plugin with a host durable sink, enabling durable
+    /// (cross-thread) `send_message` delivery. Without it, only the live
+    /// `child` route is delivered.
+    pub fn with_messaging(
+        manager: Arc<BackgroundTaskManager>,
+        durable_sink: Arc<dyn DurableMessageSink>,
+    ) -> Self {
+        Self {
+            manager,
+            durable_sink: Some(durable_sink),
+        }
     }
 
     /// Return the manager for inbox wiring.
@@ -77,6 +104,25 @@ impl Plugin for BackgroundTaskPlugin {
         registrar.register_tool(
             CANCEL_TASK_TOOL_ID,
             Arc::new(CancelTaskTool::new(self.manager.clone())),
+        )?;
+
+        // `send_message` only commits an outbox entry — it holds no transport,
+        // so it is always available (the live `child` route needs no durable
+        // sink). The dispatcher is the sole holder of the transports and drains
+        // the committed outbox at StepEnd; with no durable sink, durable routes
+        // are dead-lettered rather than dropped.
+        let outbox_options = StateKeyOptions {
+            persistent: true,
+            scope: KeyScope::Thread,
+            ..StateKeyOptions::default()
+        };
+        registrar.register_key::<MessageOutboxKey>(outbox_options)?;
+        registrar.register_key::<FailedDurableMessageKey>(outbox_options)?;
+        registrar.register_tool(SEND_MESSAGE_TOOL_ID, Arc::new(SendMessageTool::new()))?;
+        registrar.register_phase_hook(
+            BACKGROUND_TASKS_PLUGIN_ID,
+            Phase::StepEnd,
+            MessageDispatchHook::new(self.manager.clone(), self.durable_sink.clone()),
         )?;
 
         // Sync task metadata into persisted state at run boundaries.

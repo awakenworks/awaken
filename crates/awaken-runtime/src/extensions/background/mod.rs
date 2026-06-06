@@ -25,7 +25,11 @@ pub use plugin::BackgroundTaskPlugin;
 pub(crate) use run_cancellation::{
     dedup_managers, managers_for_resolved_agent, spawn_run_cancellation_guard,
 };
-pub use send_message_tool::SendMessageTool;
+pub use send_message_tool::{
+    DurableMessageRequest, DurableMessageSink, FailedDurableMessage, FailedDurableMessageKey,
+    FailedDurableMessageState, MessageDispatchHook, MessageOutbox, MessageOutboxKey, OutboxEntry,
+    OutboxRoute, SEND_MESSAGE_TOOL_ID, SendMessageReceipt, SendMessageTool,
+};
 pub use state::{
     BackgroundTaskStateKey, BackgroundTaskStateSnapshot, BackgroundTaskViewKey, PersistedTaskMeta,
 };
