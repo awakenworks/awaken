@@ -108,7 +108,7 @@ impl Plugin for ResearchPlugin {
 
 The child agent must register `ResearchConfigKey` so seeding can apply, and it must register `ResearchFindingsKey` with `persistent: true` if you want findings to appear in `outcome.state.extensions`. The parent agent must register `ResearchSummaryKey` before committing the returned `StateCommand`. The single `ResearchPlugin` above registers all three for copy-paste simplicity; in production you may split that into `ChildResearchPlugin` and `ParentResearchPlugin` as long as each side registers the keys it reads or writes.
 
-2. Implement the tool. The key call is [`run_child_agent`](/awaken/reference/) from `awaken_runtime::child_agent`. It returns the child run's terminal [`BackendRunResult`](/awaken/reference/); the parent tool decides how to interpret that lifecycle status as its own `ToolOutput.result`. The example below uses a semantic pass-through policy: the parent tool succeeds with a payload that includes `child_status`, while state export stays conservative.
+2. Implement the tool. The key call is `run_child_agent` from `awaken_runtime::child_agent`. It returns the child run's terminal `BackendRunResult`; the parent tool decides how to interpret that lifecycle status as its own `ToolOutput.result`. The example below uses a semantic pass-through policy: the parent tool succeeds with a payload that includes `child_status`, while state export stays conservative.
 
 ```rust
 use std::sync::Arc;

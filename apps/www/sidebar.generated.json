@@ -6,13 +6,6 @@
     },
     "items": [
       {
-        "label": "Get Started",
-        "slug": "get-started",
-        "translations": {
-          "zh-CN": "快速上手"
-        }
-      },
-      {
         "label": "Introduction",
         "slug": "introduction",
         "translations": {
@@ -20,25 +13,10 @@
         }
       },
       {
-        "label": "Migrate From 0.5 to 0.6",
-        "slug": "how-to/migrate-to-0-6",
+        "label": "Get Started",
+        "slug": "get-started",
         "translations": {
-          "zh-CN": "从 0.5 迁移到 0.6"
-        }
-      }
-    ]
-  },
-  {
-    "label": "Develop Agents",
-    "translations": {
-      "zh-CN": "开发 Agent"
-    },
-    "items": [
-      {
-        "label": "Develop Agents",
-        "slug": "build-agents",
-        "translations": {
-          "zh-CN": "开发 Agent 路径"
+          "zh-CN": "快速上手"
         }
       },
       {
@@ -56,109 +34,167 @@
         }
       },
       {
-        "label": "Build an Agent",
-        "slug": "how-to/build-an-agent",
+        "label": "Migrate From 0.5 to 0.6",
+        "slug": "how-to/migrate-to-0-6",
         "translations": {
-          "zh-CN": "构建 Agent"
-        }
-      },
-      {
-        "label": "Add a Tool",
-        "slug": "how-to/add-a-tool",
-        "translations": {
-          "zh-CN": "添加 Tool"
-        }
-      },
-      {
-        "label": "Report Tool Progress",
-        "slug": "how-to/report-tool-progress",
-        "translations": {
-          "zh-CN": "上报 Tool 进度"
-        }
-      },
-      {
-        "label": "Add a Plugin",
-        "slug": "how-to/add-a-plugin",
-        "translations": {
-          "zh-CN": "添加 Plugin"
-        }
-      },
-      {
-        "label": "Use MCP Tools",
-        "slug": "how-to/use-mcp-tools",
-        "translations": {
-          "zh-CN": "使用 MCP Tools"
-        }
-      },
-      {
-        "label": "Use Deferred Tools",
-        "slug": "how-to/use-deferred-tools",
-        "translations": {
-          "zh-CN": "使用延迟加载工具"
-        }
-      },
-      {
-        "label": "Use Skills Subsystem",
-        "slug": "how-to/use-skills-subsystem",
-        "translations": {
-          "zh-CN": "使用 Skills 子系统"
-        }
-      },
-      {
-        "label": "Use Reminder Plugin",
-        "slug": "how-to/use-reminder-plugin",
-        "translations": {
-          "zh-CN": "使用 Reminder 插件"
-        }
-      },
-      {
-        "label": "Use Generative UI",
-        "slug": "how-to/use-generative-ui",
-        "translations": {
-          "zh-CN": "使用 Generative UI"
-        }
-      },
-      {
-        "label": "Use Agent Handoff",
-        "slug": "how-to/use-agent-handoff",
-        "translations": {
-          "zh-CN": "使用 Agent Handoff"
-        }
-      },
-      {
-        "label": "Invoke a Sub-Agent from a Tool",
-        "slug": "how-to/invoke-sub-agent-from-tool",
-        "translations": {
-          "zh-CN": "在工具里调用 Sub-Agent"
-        }
-      },
-      {
-        "label": "Recover Streaming LLMs",
-        "slug": "how-to/recover-streaming-llms",
-        "translations": {
-          "zh-CN": "流式 LLM 错误恢复"
-        }
-      },
-      {
-        "label": "Testing Strategy",
-        "slug": "how-to/testing-strategy",
-        "translations": {
-          "zh-CN": "测试策略"
+          "zh-CN": "从 0.5 迁移到 0.6"
         }
       }
     ]
   },
   {
-    "label": "Tune & Operate",
+    "label": "Build Agents",
     "translations": {
-      "zh-CN": "调优与运营"
+      "zh-CN": "构建 Agent"
     },
     "items": [
       {
-        "label": "Tune & Operate",
+        "label": "Overview",
+        "slug": "build-agents",
+        "translations": {
+          "zh-CN": "概览"
+        }
+      },
+      {
+        "label": "Basics",
+        "translations": {
+          "zh-CN": "基础"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Build an Agent",
+            "slug": "how-to/build-an-agent",
+            "translations": {
+              "zh-CN": "构建 Agent"
+            }
+          },
+          {
+            "label": "Add a Tool",
+            "slug": "how-to/add-a-tool",
+            "translations": {
+              "zh-CN": "添加 Tool"
+            }
+          },
+          {
+            "label": "Add a Plugin",
+            "slug": "how-to/add-a-plugin",
+            "translations": {
+              "zh-CN": "添加 Plugin"
+            }
+          }
+        ]
+      },
+      {
+        "label": "Tooling & Extensions",
+        "translations": {
+          "zh-CN": "工具与扩展"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Use MCP Tools",
+            "slug": "how-to/use-mcp-tools",
+            "translations": {
+              "zh-CN": "使用 MCP Tools"
+            }
+          },
+          {
+            "label": "Use Skills Subsystem",
+            "slug": "how-to/use-skills-subsystem",
+            "translations": {
+              "zh-CN": "使用 Skills 子系统"
+            }
+          },
+          {
+            "label": "Use Deferred Tools",
+            "slug": "how-to/use-deferred-tools",
+            "translations": {
+              "zh-CN": "使用延迟加载工具"
+            }
+          },
+          {
+            "label": "Use Reminder Plugin",
+            "slug": "how-to/use-reminder-plugin",
+            "translations": {
+              "zh-CN": "使用 Reminder 插件"
+            }
+          },
+          {
+            "label": "Use Generative UI",
+            "slug": "how-to/use-generative-ui",
+            "translations": {
+              "zh-CN": "使用 Generative UI"
+            }
+          }
+        ]
+      },
+      {
+        "label": "Composition",
+        "translations": {
+          "zh-CN": "组合"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Use Agent Handoff",
+            "slug": "how-to/use-agent-handoff",
+            "translations": {
+              "zh-CN": "使用 Agent Handoff"
+            }
+          },
+          {
+            "label": "Invoke a Sub-Agent from a Tool",
+            "slug": "how-to/invoke-sub-agent-from-tool",
+            "translations": {
+              "zh-CN": "在工具里调用 Sub-Agent"
+            }
+          }
+        ]
+      },
+      {
+        "label": "Reliability",
+        "translations": {
+          "zh-CN": "可靠性"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Report Tool Progress",
+            "slug": "how-to/report-tool-progress",
+            "translations": {
+              "zh-CN": "上报 Tool 进度"
+            }
+          },
+          {
+            "label": "Recover Streaming LLMs",
+            "slug": "how-to/recover-streaming-llms",
+            "translations": {
+              "zh-CN": "流式 LLM 错误恢复"
+            }
+          },
+          {
+            "label": "Testing Strategy",
+            "slug": "how-to/testing-strategy",
+            "translations": {
+              "zh-CN": "测试策略"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "label": "Operate",
+    "translations": {
+      "zh-CN": "运营"
+    },
+    "items": [
+      {
+        "label": "Overview",
         "slug": "operate",
         "translations": {
-          "zh-CN": "调优与运营"
+          "zh-CN": "概览"
         }
       },
       {
@@ -169,67 +205,85 @@
         }
       },
       {
-        "label": "Build an Agent with the Admin Assistant",
+        "label": "Build with Admin Assistant",
         "slug": "how-to/build-an-agent-with-the-assistant",
         "translations": {
           "zh-CN": "用 Admin Assistant 构建 Agent"
         }
       },
       {
-        "label": "Configure Agent Behavior",
-        "slug": "how-to/configure-agent-behavior",
+        "label": "Tune Behavior",
         "translations": {
-          "zh-CN": "通过配置调优 Agent 行为"
-        }
+          "zh-CN": "调优行为"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Configure Agent Behavior",
+            "slug": "how-to/configure-agent-behavior",
+            "translations": {
+              "zh-CN": "通过配置调优 Agent 行为"
+            }
+          },
+          {
+            "label": "Hot-Tune Prompts",
+            "slug": "how-to/hot-tune-prompts",
+            "translations": {
+              "zh-CN": "在线调优 Prompt"
+            }
+          },
+          {
+            "label": "Optimize Context Window",
+            "slug": "how-to/optimize-context-window",
+            "translations": {
+              "zh-CN": "优化上下文窗口"
+            }
+          },
+          {
+            "label": "Configure Stop Policies",
+            "slug": "how-to/configure-stop-policies",
+            "translations": {
+              "zh-CN": "配置停止策略"
+            }
+          }
+        ]
       },
       {
-        "label": "Hot-Tune Prompts",
-        "slug": "how-to/hot-tune-prompts",
+        "label": "Governance & Evaluation",
         "translations": {
-          "zh-CN": "在线调优 Prompt"
-        }
-      },
-      {
-        "label": "Optimize Context Window",
-        "slug": "how-to/optimize-context-window",
-        "translations": {
-          "zh-CN": "优化上下文窗口"
-        }
-      },
-      {
-        "label": "Configure Stop Policies",
-        "slug": "how-to/configure-stop-policies",
-        "translations": {
-          "zh-CN": "配置停止策略"
-        }
-      },
-      {
-        "label": "Enable Tool Permission HITL",
-        "slug": "how-to/enable-tool-permission-hitl",
-        "translations": {
-          "zh-CN": "启用工具权限 HITL"
-        }
-      },
-      {
-        "label": "Connect an A2A Server",
-        "slug": "how-to/connect-an-a2a-server",
-        "translations": {
-          "zh-CN": "接入 A2A Server"
-        }
-      },
-      {
-        "label": "Capture a Dataset and Run an Eval",
-        "slug": "how-to/capture-a-dataset-and-run-an-eval",
-        "translations": {
-          "zh-CN": "采集数据集并运行评测"
-        }
-      },
-      {
-        "label": "Enable Observability",
-        "slug": "how-to/enable-observability",
-        "translations": {
-          "zh-CN": "启用可观测性"
-        }
+          "zh-CN": "治理与评测"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Enable Tool Permission HITL",
+            "slug": "how-to/enable-tool-permission-hitl",
+            "translations": {
+              "zh-CN": "启用工具权限 HITL"
+            }
+          },
+          {
+            "label": "Connect an A2A Server",
+            "slug": "how-to/connect-an-a2a-server",
+            "translations": {
+              "zh-CN": "接入 A2A Server"
+            }
+          },
+          {
+            "label": "Capture a Dataset and Run an Eval",
+            "slug": "how-to/capture-a-dataset-and-run-an-eval",
+            "translations": {
+              "zh-CN": "采集数据集并运行评测"
+            }
+          },
+          {
+            "label": "Enable Observability",
+            "slug": "how-to/enable-observability",
+            "translations": {
+              "zh-CN": "启用可观测性"
+            }
+          }
+        ]
       }
     ]
   },
@@ -240,10 +294,10 @@
     },
     "items": [
       {
-        "label": "Serve & Integrate",
+        "label": "Overview",
         "slug": "serve-and-integrate",
         "translations": {
-          "zh-CN": "服务与集成"
+          "zh-CN": "概览"
         }
       },
       {
@@ -283,53 +337,57 @@
     },
     "items": [
       {
-        "label": "State & Storage",
+        "label": "Overview",
         "slug": "state-and-storage",
         "translations": {
-          "zh-CN": "状态与存储"
+          "zh-CN": "概览"
         }
       },
       {
-        "label": "Use File Store",
-        "slug": "how-to/use-file-store",
+        "label": "Stores",
         "translations": {
-          "zh-CN": "使用文件存储"
-        }
+          "zh-CN": "存储后端"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Use File Store",
+            "slug": "how-to/use-file-store",
+            "translations": {
+              "zh-CN": "使用文件存储"
+            }
+          },
+          {
+            "label": "Use Postgres Store",
+            "slug": "how-to/use-postgres-store",
+            "translations": {
+              "zh-CN": "使用 Postgres 存储"
+            }
+          },
+          {
+            "label": "Use NATS Stores",
+            "slug": "how-to/use-nats-stores",
+            "translations": {
+              "zh-CN": "使用 NATS Store"
+            }
+          }
+        ]
       },
       {
-        "label": "Use Postgres Store",
-        "slug": "how-to/use-postgres-store",
+        "label": "State Usage",
         "translations": {
-          "zh-CN": "使用 Postgres 存储"
-        }
-      },
-      {
-        "label": "Use NATS Stores",
-        "slug": "how-to/use-nats-stores",
-        "translations": {
-          "zh-CN": "使用 NATS Store"
-        }
-      },
-      {
-        "label": "Use Shared State",
-        "slug": "how-to/use-shared-state",
-        "translations": {
-          "zh-CN": "使用 Shared State"
-        }
-      },
-      {
-        "label": "State Keys",
-        "slug": "reference/state-keys",
-        "translations": {
-          "zh-CN": "状态键"
-        }
-      },
-      {
-        "label": "Thread Model",
-        "slug": "reference/thread-model",
-        "translations": {
-          "zh-CN": "线程模型"
-        }
+          "zh-CN": "状态使用"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Use Shared State",
+            "slug": "how-to/use-shared-state",
+            "translations": {
+              "zh-CN": "使用 Shared State"
+            }
+          }
+        ]
       }
     ]
   },
@@ -340,81 +398,117 @@
     },
     "items": [
       {
-        "label": "Design Philosophy",
-        "slug": "explanation/philosophy",
+        "label": "Runtime Model",
         "translations": {
-          "zh-CN": "设计哲学"
-        }
+          "zh-CN": "运行时模型"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Design Philosophy",
+            "slug": "explanation/philosophy",
+            "translations": {
+              "zh-CN": "设计哲学"
+            }
+          },
+          {
+            "label": "Architecture",
+            "slug": "explanation/architecture",
+            "translations": {
+              "zh-CN": "架构"
+            }
+          },
+          {
+            "label": "Run Lifecycle and Phases",
+            "slug": "explanation/run-lifecycle-and-phases",
+            "translations": {
+              "zh-CN": "Run 生命周期与 Phases"
+            }
+          },
+          {
+            "label": "Agent Resolution",
+            "slug": "explanation/agent-resolution",
+            "translations": {
+              "zh-CN": "智能体解析"
+            }
+          }
+        ]
       },
       {
-        "label": "Architecture",
-        "slug": "explanation/architecture",
+        "label": "State",
         "translations": {
-          "zh-CN": "架构"
-        }
+          "zh-CN": "状态"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "State Management",
+            "slug": "explanation/state-management",
+            "translations": {
+              "zh-CN": "状态管理"
+            }
+          },
+          {
+            "label": "State and Snapshot Model",
+            "slug": "explanation/state-and-snapshot-model",
+            "translations": {
+              "zh-CN": "状态与快照模型"
+            }
+          }
+        ]
       },
       {
-        "label": "Agent Resolution",
-        "slug": "explanation/agent-resolution",
+        "label": "Control Plane",
         "translations": {
-          "zh-CN": "智能体解析"
-        }
+          "zh-CN": "控制面"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "HITL and Mailbox",
+            "slug": "explanation/hitl-and-mailbox",
+            "translations": {
+              "zh-CN": "HITL 与 Mailbox"
+            }
+          },
+          {
+            "label": "Multi-Agent Patterns",
+            "slug": "explanation/multi-agent-patterns",
+            "translations": {
+              "zh-CN": "多智能体模式"
+            }
+          }
+        ]
       },
       {
-        "label": "State Management",
-        "slug": "explanation/state-management",
+        "label": "Extension Model",
         "translations": {
-          "zh-CN": "状态管理"
-        }
-      },
-      {
-        "label": "State and Snapshot Model",
-        "slug": "explanation/state-and-snapshot-model",
-        "translations": {
-          "zh-CN": "状态与快照模型"
-        }
-      },
-      {
-        "label": "Run Lifecycle and Phases",
-        "slug": "explanation/run-lifecycle-and-phases",
-        "translations": {
-          "zh-CN": "Run 生命周期与 Phases"
-        }
-      },
-      {
-        "label": "HITL and Mailbox",
-        "slug": "explanation/hitl-and-mailbox",
-        "translations": {
-          "zh-CN": "HITL 与 Mailbox"
-        }
-      },
-      {
-        "label": "Multi-Agent Patterns",
-        "slug": "explanation/multi-agent-patterns",
-        "translations": {
-          "zh-CN": "多智能体模式"
-        }
-      },
-      {
-        "label": "Tool and Plugin Boundary",
-        "slug": "explanation/tool-and-plugin-boundary",
-        "translations": {
-          "zh-CN": "Tool 与 Plugin 的边界"
-        }
-      },
-      {
-        "label": "Plugin Internals",
-        "slug": "explanation/plugin-internals",
-        "translations": {
-          "zh-CN": "插件系统内部机制"
-        }
-      },
-      {
-        "label": "Design Tradeoffs",
-        "slug": "explanation/design-tradeoffs",
-        "translations": {
-          "zh-CN": "设计取舍"
-        }
+          "zh-CN": "扩展模型"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Tool and Plugin Boundary",
+            "slug": "explanation/tool-and-plugin-boundary",
+            "translations": {
+              "zh-CN": "Tool 与 Plugin 的边界"
+            }
+          },
+          {
+            "label": "Plugin Internals",
+            "slug": "explanation/plugin-internals",
+            "translations": {
+              "zh-CN": "插件系统内部机制"
+            }
+          },
+          {
+            "label": "Design Tradeoffs",
+            "slug": "explanation/design-tradeoffs",
+            "translations": {
+              "zh-CN": "设计取舍"
+            }
+          }
+        ]
       }
     ]
   },
@@ -432,104 +526,175 @@
         }
       },
       {
-        "label": "Tool Trait",
-        "slug": "reference/tool-trait"
-      },
-      {
-        "label": "Scheduled Actions",
-        "slug": "reference/scheduled-actions"
-      },
-      {
-        "label": "Effects",
-        "slug": "reference/effects"
-      },
-      {
-        "label": "Events",
-        "slug": "reference/events",
+        "label": "Core API",
         "translations": {
-          "zh-CN": "事件"
-        }
+          "zh-CN": "核心 API"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Tool Trait",
+            "slug": "reference/tool-trait",
+            "translations": {
+              "zh-CN": "Tool Trait"
+            }
+          },
+          {
+            "label": "Config",
+            "slug": "reference/config",
+            "translations": {
+              "zh-CN": "配置"
+            }
+          },
+          {
+            "label": "Provider and Model Configuration",
+            "slug": "reference/provider-model-config",
+            "translations": {
+              "zh-CN": "Provider 与 Model 配置"
+            }
+          },
+          {
+            "label": "Errors",
+            "slug": "reference/errors",
+            "translations": {
+              "zh-CN": "错误"
+            }
+          }
+        ]
       },
       {
-        "label": "Cancellation",
-        "slug": "reference/cancellation",
+        "label": "Runtime Contracts",
         "translations": {
-          "zh-CN": "取消"
-        }
+          "zh-CN": "运行时契约"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "Events",
+            "slug": "reference/events",
+            "translations": {
+              "zh-CN": "事件"
+            }
+          },
+          {
+            "label": "Effects",
+            "slug": "reference/effects",
+            "translations": {
+              "zh-CN": "Effects"
+            }
+          },
+          {
+            "label": "Scheduled Actions",
+            "slug": "reference/scheduled-actions",
+            "translations": {
+              "zh-CN": "Scheduled Actions"
+            }
+          },
+          {
+            "label": "Cancellation",
+            "slug": "reference/cancellation",
+            "translations": {
+              "zh-CN": "取消"
+            }
+          },
+          {
+            "label": "Tool Execution Modes",
+            "slug": "reference/tool-execution-modes",
+            "translations": {
+              "zh-CN": "工具执行模式"
+            }
+          }
+        ]
       },
       {
-        "label": "Tool Execution Modes",
-        "slug": "reference/tool-execution-modes",
+        "label": "State",
         "translations": {
-          "zh-CN": "工具执行模式"
-        }
+          "zh-CN": "状态"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "State Keys",
+            "slug": "reference/state-keys",
+            "translations": {
+              "zh-CN": "状态键"
+            }
+          },
+          {
+            "label": "Thread Model",
+            "slug": "reference/thread-model",
+            "translations": {
+              "zh-CN": "线程模型"
+            }
+          }
+        ]
       },
       {
-        "label": "HTTP API",
-        "slug": "reference/http-api"
-      },
-      {
-        "label": "Config",
-        "slug": "reference/config",
+        "label": "Server Surfaces",
         "translations": {
-          "zh-CN": "配置"
-        }
+          "zh-CN": "服务端表面"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "HTTP API",
+            "slug": "reference/http-api",
+            "translations": {
+              "zh-CN": "HTTP API"
+            }
+          },
+          {
+            "label": "Admin Console Surface",
+            "slug": "reference/admin-console",
+            "translations": {
+              "zh-CN": "管理控制台界面清单"
+            }
+          }
+        ]
       },
       {
-        "label": "Provider and Model Configuration",
-        "slug": "reference/provider-model-config",
+        "label": "Protocols",
         "translations": {
-          "zh-CN": "Provider 与 Model 配置"
-        }
-      },
-      {
-        "label": "Admin Console Surface",
-        "slug": "reference/admin-console",
-        "translations": {
-          "zh-CN": "管理控制台界面清单"
-        }
-      },
-      {
-        "label": "Errors",
-        "slug": "reference/errors",
-        "translations": {
-          "zh-CN": "错误"
-        }
-      },
-      {
-        "label": "AI SDK v6 Protocol",
-        "slug": "reference/protocols/ai-sdk-v6",
-        "translations": {
-          "zh-CN": "AI SDK v6 协议"
-        }
-      },
-      {
-        "label": "AG-UI Protocol",
-        "slug": "reference/protocols/ag-ui",
-        "translations": {
-          "zh-CN": "AG-UI 协议"
-        }
-      },
-      {
-        "label": "A2A Protocol",
-        "slug": "reference/protocols/a2a",
-        "translations": {
-          "zh-CN": "A2A 协议"
-        }
-      },
-      {
-        "label": "MCP HTTP Protocol",
-        "slug": "reference/protocols/mcp",
-        "translations": {
-          "zh-CN": "MCP HTTP 协议"
-        }
-      },
-      {
-        "label": "ACP Protocol",
-        "slug": "reference/protocols/acp",
-        "translations": {
-          "zh-CN": "ACP 协议"
-        }
+          "zh-CN": "协议"
+        },
+        "collapsed": true,
+        "items": [
+          {
+            "label": "AI SDK v6 Protocol",
+            "slug": "reference/protocols/ai-sdk-v6",
+            "translations": {
+              "zh-CN": "AI SDK v6 协议"
+            }
+          },
+          {
+            "label": "AG-UI Protocol",
+            "slug": "reference/protocols/ag-ui",
+            "translations": {
+              "zh-CN": "AG-UI 协议"
+            }
+          },
+          {
+            "label": "A2A Protocol",
+            "slug": "reference/protocols/a2a",
+            "translations": {
+              "zh-CN": "A2A 协议"
+            }
+          },
+          {
+            "label": "MCP HTTP Protocol",
+            "slug": "reference/protocols/mcp",
+            "translations": {
+              "zh-CN": "MCP HTTP 协议"
+            }
+          },
+          {
+            "label": "ACP Protocol",
+            "slug": "reference/protocols/acp",
+            "translations": {
+              "zh-CN": "ACP 协议"
+            }
+          }
+        ]
       }
     ]
   },

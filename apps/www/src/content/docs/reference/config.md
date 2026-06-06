@@ -3,6 +3,16 @@ title: "Config"
 description: "Reference for the managed configuration types: AgentSpec, provider/model/pool specs, context and compaction policies, server/mailbox/eval config, and plugin config keys."
 ---
 
+## Find quickly
+
+| Looking for | Start here |
+|---|---|
+| Agent prompts, tools, delegates, plugin sections | [AgentSpec](#agentspec) |
+| Provider credentials, endpoints, model records | [Provider, model, and MCP credentials](#provider-and-mcp-credentials) and [Provider and Model Configuration](/awaken/reference/provider-model-config/) |
+| Tool allow/exclude patterns | [Tool catalog](#tool-catalog) |
+| Runtime/server config knobs | [ConfigRuntimeManager](#configruntimemanager), [MailboxConfig](#mailboxconfig), [ServerConfig](#serverconfig), and [AdminApiConfig](#adminapiconfig) |
+| Config API routes | [HTTP API](/awaken/reference/http-api/) |
+
 ## AgentSpec
 
 The serializable agent definition. Can be loaded from JSON/YAML or constructed

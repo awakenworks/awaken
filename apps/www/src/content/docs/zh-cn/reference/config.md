@@ -3,6 +3,16 @@ title: "配置"
 description: "受管配置类型参考:AgentSpec、provider/model/pool spec、上下文与 compaction 策略、server/mailbox/eval 配置,以及 plugin config key。"
 ---
 
+## 快速查找
+
+| 要找什么 | 从这里开始 |
+|---|---|
+| Agent prompt、tools、delegates、插件 sections | [AgentSpec](#agentspec) |
+| Provider 凭据、endpoint、model 记录 | [Provider 与 MCP credentials](#provider-与-mcp-credentials) 和 [Provider 与 Model 配置](/awaken/zh-cn/reference/provider-model-config/) |
+| Tool allow/exclude pattern | [工具目录](#工具目录tool-catalog) |
+| Runtime/server 配置项 | [ConfigRuntimeManager](#configruntimemanager)、[MailboxConfig](#mailboxconfig)、[ServerConfig](#serverconfig) 和 [AdminApiConfig](#adminapiconfig) |
+| Config API 路由 | [HTTP API](/awaken/zh-cn/reference/http-api/) |
+
 ## AgentSpec
 
 `AgentSpec` 是可序列化的 agent 定义。它既可以从 JSON / YAML 加载，也可以用 builder 方法在代码里构造。

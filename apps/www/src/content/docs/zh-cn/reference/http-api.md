@@ -9,6 +9,17 @@ description: "启用 server feature 后，awaken-server 会通过 Axum 暴露 HT
 `config_routes.rs`、`event_routes.rs`、`eval_router.rs`、`system_routes.rs`
 以及协议模块。
 
+## 快速查找
+
+| 要找什么 | 从这里开始 |
+|---|---|
+| Bearer token 与 admin surface 暴露规则 | [Admin 认证](#admin-认证) 和 [路由暴露开关](#路由暴露开关) |
+| Thread 与 message 接口 | [Threads](#threads) |
+| Run 生命周期接口 | [Runs](#runs) |
+| 协议路由 | [AI SDK v6](#ai-sdk-v6-路由)、[AG-UI](#ag-ui-路由)、[A2A](#a2a-路由) 和 [MCP HTTP](#mcp-http-路由) |
+| Config/admin CRUD | [Config 与 Capabilities](#config-与-capabilities) |
+| Eval、trace、audit、system 接口 | [Eval 路由](#eval-路由)、[Trace 路由](#trace-路由)、[Admin audit log](#admin-audit-log) 和 [健康检查与指标](#健康检查与指标) |
+
 ## Admin 认证
 
 Admin、config、eval、trace 和 system 路由要求

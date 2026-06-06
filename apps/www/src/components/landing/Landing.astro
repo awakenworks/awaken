@@ -9,6 +9,7 @@
  */
 
 import { Code } from "astro:components";
+import awakenMark from "../../assets/awaken-mark.svg";
 import awakenTheme from "../../styles/shiki/awaken.json";
 import heroSnippet from "../../snippets/hero-quickstart.rs?raw";
 
@@ -27,6 +28,7 @@ const t = <T,>(en: T, zh: T): T => (locale === "zh-CN" ? zh : en);
 const baseUrl = import.meta.env.BASE_URL.replace(/\/$/, "");
 const docsBase = locale === "zh-CN" ? `${baseUrl}/zh-cn` : baseUrl;
 const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" : "awaken-demo.gif"}`;
+const awakenMarkSrc = typeof awakenMark === "string" ? awakenMark : awakenMark.src;
 ---
 
 <div class="landing-page">
@@ -35,26 +37,60 @@ const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" :
     <div class="wrap hero-grid">
       <div class="hero-left">
         <span class="hero-eyebrow">
-          <span class="dot"></span>
-          <span>{t("runtime library · server control plane", "runtime 开发库 · server 控制面")}</span>
+          <img class="mark" src={awakenMarkSrc} alt="" loading="eager" />
+          <span>{t("build in Rust · tune live · serve protocols", "Rust 构建 · 在线调优 · 多协议服务")}</span>
         </span>
         <h1 class="hero-title">
           {locale === "zh-CN" ? (
             <Fragment>
-              <span class="accent">面向 Rust 的</span>AI Agent 后端
+              <span class="accent">写一次能力，</span>持续调优 Agent
             </Fragment>
           ) : (
             <Fragment>
-              Production AI agent backend<span class="accent"> for Rust.</span>
+              Build agents in Rust.<span class="accent"> Tune them live.</span>
             </Fragment>
           )}
         </h1>
         <p class="hero-sub">
           {t(
-            "Build agent capabilities once in Rust, tune and operate them live, and serve every client from the same runtime. Use direct runtime for in-process app flows or server mode for protocols, durable runs, and the admin console.",
-            "用 Rust 写一次 Agent 能力，通过在线配置调优运营，并让同一个 runtime 服务本地开发、生产 API、多协议前端和管理控制台。",
+            "Keep tools, state, providers, and plugins in production Rust code. Tune prompts, models, permissions, skills, and eval loops through managed config and the Admin Console — without rebuilding the runtime.",
+            "Tools、state、providers、plugins 留在生产级 Rust 代码里；prompts、models、permissions、skills 与 eval loop 通过托管配置和管理控制台在线调优，无需重建 runtime。",
           )}
         </p>
+        <div class="hero-icon-badges" aria-label={t("Awaken strengths", "Awaken 重点能力")}>
+          <span class="hero-icon-badge">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v18"></path>
+              <path d="m8 7 4-4 4 4"></path>
+              <path d="m8 17 4 4 4-4"></path>
+              <path d="M4 12h16"></path>
+            </svg>
+            <span>{t("Rust core", "Rust 内核")}</span>
+          </span>
+          <span class="hero-icon-badge">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 7h10"></path><path d="M18 7h2"></path>
+              <path d="M4 17h2"></path><path d="M10 17h10"></path>
+              <circle cx="16" cy="7" r="2"></circle><circle cx="8" cy="17" r="2"></circle>
+            </svg>
+            <span>{t("Live tuning", "在线调优")}</span>
+          </span>
+          <span class="hero-icon-badge">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14"></path>
+              <path d="M5 12h14"></path>
+              <path d="M7 7h.01M17 7h.01M7 17h.01M17 17h.01"></path>
+            </svg>
+            <span>{t("Protocol ready", "协议就绪")}</span>
+          </span>
+        </div>
+        <div class="hero-tune-card">
+          <div>
+            <span class="hero-tune-kicker">{t("Tune-first control plane", "调优优先的控制面")}</span>
+            <strong>{t("Edits apply on the next run; running work keeps its resolved snapshot.", "修改在下一次 run 生效；运行中的任务保留已解析 snapshot。")}</strong>
+          </div>
+          <a href={`${docsBase}/operate/`}>{t("See tuning workflow →", "查看调优流程 →")}</a>
+        </div>
         <div class="hero-actions">
           <a class="btn btn-primary" href={`${docsBase}/get-started/`}>
             <span>{t("Get started", "快速开始")}</span>
@@ -62,11 +98,12 @@ const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" :
               <path d="M5 12h14M13 6l6 6-6 6"></path>
             </svg>
           </a>
-          <a class="btn btn-secondary" href="https://github.com/AwakenWorks/awaken">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.5-1.4-1.4-1.8-1.4-1.8-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.2.5-2.3 1.3-3.1-.1-.4-.6-1.6.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.6.2 2.8.1 3.2.8.8 1.3 1.9 1.3 3.1 0 4.6-2.8 5.6-5.5 5.9.5.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"></path>
+          <a class="btn btn-secondary" href={`${docsBase}/how-to/use-admin-console/`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="14" rx="2"></rect>
+              <path d="M8 20h8M12 18v2M7 8h4M7 12h10"></path>
             </svg>
-            <span>{t("Star on GitHub", "Star 项目")}</span>
+            <span>{t("Open Admin Console guide", "打开控制台指南")}</span>
           </a>
         </div>
         <div class="hero-meta">
@@ -77,6 +114,9 @@ const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" :
           <span>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"></path></svg>
             <span><code>unsafe_code = "forbid"</code></span>
+          </span>
+          <span>
+            <a href="https://github.com/AwakenWorks/awaken">GitHub</a>
           </span>
           <span>
             {t("Install", "安装")}:
@@ -114,8 +154,89 @@ const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" :
     </div>
   </section>
 
-  <!-- ============ TWO LAYERS ============ -->
+  <!-- ============ ADMIN CONSOLE PREVIEW (moved up — concrete proof first) ============ -->
   <section class="band canvas">
+    <div class="wrap">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">{t("Admin Console", "管理控制台")}</span>
+          <h2>{t("Tune live, then operate with evidence", "在线调优，并用证据运营")}</h2>
+          <p set:html={t(
+            "The Admin Console is the tuning surface over the server APIs: edit agents, prompts, models, permissions, skills, MCP, traces, datasets, and eval runs from one control plane.",
+            "管理控制台是 server API 之上的调优界面：agents、prompts、models、permissions、skills、MCP、traces、datasets 与 eval runs 都在同一个控制面管理。",
+          )} />
+        </div>
+        <div class="right">
+          <a href={`${docsBase}/how-to/use-admin-console/`}>{t("Open console guide →", "打开控制台指南 →")}</a>
+        </div>
+      </div>
+      <figure class="console-demo">
+        <img
+          src={demoGif}
+          width="900"
+          loading="lazy"
+          alt={t(
+            "Awaken admin console walkthrough — connect Gemini on Vertex, build an agent by hand, run a live eval",
+            "Awaken 管理控制台走查 —— 接入 Vertex 上的 Gemini、手动构建 agent、运行实时评测",
+          )}
+        />
+        <figcaption>
+          {t("Recorded against a live Gemini backend.", "录制于真实 Gemini 后端。")}
+          {" "}
+          <a href={`${docsBase}/how-to/use-admin-console/`}>{t("Try it →", "动手试试 →")}</a>
+        </figcaption>
+      </figure>
+      <div class="console-callouts tune-callouts">
+        <div class="callout tune-primary">
+          <span class="callout-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 7h10"></path><path d="M18 7h2"></path>
+              <path d="M4 17h2"></path><path d="M10 17h10"></path>
+              <circle cx="16" cy="7" r="2"></circle><circle cx="8" cy="17" r="2"></circle>
+            </svg>
+          </span>
+          <div class="eb">{t("Live tuning", "在线调优")}</div>
+          <h3>{t("Prompts, models, permissions, and skills change through config", "Prompts、models、permissions、skills 都通过配置变更")}</h3>
+          <p set:html={t(
+            "Edit through the Admin Console or <code>/v1/config/*</code>. The server validates the draft, publishes a registry snapshot, and the next run resolves against it.",
+            "通过管理控制台或 <code>/v1/config/*</code> 编辑。server 校验草稿、发布 registry snapshot，下一次 run 使用新版解析。",
+          )} />
+        </div>
+        <div class="callout">
+          <span class="callout-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19V5"></path><path d="M4 19h16"></path>
+              <path d="m8 15 3-3 3 2 5-6"></path>
+              <path d="M17 8h2v2"></path>
+            </svg>
+          </span>
+          <div class="eb">{t("Eval loop", "评测闭环")}</div>
+          <h3>{t("Capture traces, turn them into datasets, compare behavior", "采集 trace，生成 dataset，对比行为")}</h3>
+          <p>{t(
+            "Tune with evidence: replay fixtures, score outputs, inspect diffs, then publish the next agent spec.",
+            "用证据调优：回放 fixtures、打分输出、检查 diff，再发布下一版 agent spec。",
+          )}</p>
+        </div>
+        <div class="callout">
+          <span class="callout-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3 20 6v5c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-3Z"></path>
+              <path d="M9 12h6"></path><path d="M12 9v6"></path>
+            </svg>
+          </span>
+          <div class="eb">{t("Auditability", "可审计")}</div>
+          <h3>{t("Every saved change can be inspected and restored", "每次保存都可检查、可恢复")}</h3>
+          <p>{t(
+            "Config revisions and audit restore make prompt/model/policy tuning reviewable instead of hidden in deploy scripts.",
+            "Config revision 与 audit restore 让 prompt/model/policy 调优可审查，而不是藏在部署脚本里。",
+          )}</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TWO LAYERS ============ -->
+  <section class="band">
     <div class="wrap">
       <div class="section-head">
         <div>
@@ -127,7 +248,7 @@ const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" :
           )} />
         </div>
         <div class="right">
-          <a href={`${docsBase}/operate/`}>{t("Tune & Operate →", "调优与运营 →")}</a>
+          <a href={`${docsBase}/operate/`}>{t("Tune workflow →", "调优流程 →")}</a>
         </div>
       </div>
       <div class="decisions-grid">
@@ -152,7 +273,7 @@ const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" :
   </section>
 
   <!-- ============ PROTOCOL MATRIX ============ -->
-  <section class="band">
+  <section class="band canvas">
     <div class="wrap">
       <div class="section-head">
         <div>
@@ -164,7 +285,7 @@ const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" :
           )} />
         </div>
         <div class="right">
-          <a href={`${docsBase}/serve-and-integrate/`}>{t("Wire-format reference →", "线协议参考 →")}</a>
+          <a href={`${docsBase}/serve-and-integrate/`}>{t("Serve & integrate →", "服务与集成 →")}</a>
         </div>
       </div>
       <div class="proto-grid">
@@ -218,121 +339,6 @@ const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" :
           )}</p>
           <div class="proto-frontend">{t("ACP hosts", "ACP 宿主")}</div>
         </article>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ ADMIN CONSOLE PREVIEW (moved up — concrete proof first) ============ -->
-  <section class="band canvas">
-    <div class="wrap">
-      <div class="section-head">
-        <div>
-          <span class="eyebrow">{t("Admin Console", "管理控制台")}</span>
-          <h2>{t("Operate it like a product, not a script", "把它当产品运营,而不是脚本")}</h2>
-          <p set:html={t(
-            "A React 19 SPA wired to the server APIs. Manage agents, models, providers, skills, MCP, traces, datasets, and eval runs from the same control plane.",
-            "一个接入 server API 的 React 19 SPA。Agents、models、providers、skills、MCP、traces、datasets 与 eval runs 都在同一个控制面管理。",
-          )} />
-        </div>
-        <div class="right">
-          <a href={`${docsBase}/how-to/use-admin-console/`}>{t("Open console guide →", "打开控制台指南 →")}</a>
-        </div>
-      </div>
-      <figure class="console-demo">
-        <img
-          src={demoGif}
-          width="900"
-          loading="lazy"
-          alt={t(
-            "Awaken admin console walkthrough — connect Gemini on Vertex, build an agent by hand, run a live eval",
-            "Awaken 管理控制台走查 —— 接入 Vertex 上的 Gemini、手动构建 agent、运行实时评测",
-          )}
-        />
-        <figcaption>
-          {t("Recorded against a live Gemini backend.", "录制于真实 Gemini 后端。")}
-          {" "}
-          <a href={`${docsBase}/how-to/use-admin-console/`}>{t("Try it →", "动手试试 →")}</a>
-        </figcaption>
-      </figure>
-      <div class="console-grid">
-        <div class="console-shot" aria-label={t("Admin Console preview", "管理控制台预览")}>
-          <div class="titlebar">
-            <span class="d"></span><span class="d"></span><span class="d"></span>
-            <span class="url">localhost:3002/agents</span>
-          </div>
-          <div class="console-body">
-            <aside class="console-side">
-              <div class="eb">{t("Agents", "智能体")}</div>
-              <div class="item act">Agents <span class="dot"></span></div>
-              <div class="eb" style="margin-top: 8px">{t("Infrastructure", "基础设施")}</div>
-              <div class="item">Models <span class="dot"></span></div>
-              <div class="item">Providers <span class="dot"></span></div>
-              <div class="eb" style="margin-top: 8px">{t("Resources", "资源")}</div>
-              <div class="item">MCP Servers <span class="dot w"></span></div>
-              <div class="item">Skills</div>
-              <div class="item">Tools</div>
-              <div class="eb" style="margin-top: 8px">{t("Observe", "观测")}</div>
-              <div class="item">Dashboard</div>
-              <div class="item">Audit Log</div>
-              <div class="item">Datasets</div>
-              <div class="item">Eval Runs</div>
-              <div class="item">Eval Reports</div>
-            </aside>
-            <main class="console-main">
-              <div class="crumbs">Agents</div>
-              <div class="console-cards">
-                <div class="cc">
-                  <div class="lbl">{t("Agents", "智能体")}</div>
-                  <div class="num">12</div>
-                  <div class="delta">{t("registered", "已注册")}</div>
-                </div>
-                <div class="cc">
-                  <div class="lbl">{t("Tools", "工具")}</div>
-                  <div class="num">47</div>
-                  <div class="delta">{t("built-in + plugin + MCP", "内置 + 插件 + MCP")}</div>
-                </div>
-              </div>
-              <div class="console-table">
-                <div class="row head">
-                  <span>{t("Agent", "智能体")}</span><span>Model</span><span>{t("Inferences (24h)", "推理 (24h)")}</span>
-                </div>
-                <div class="row">
-                  <span class="name">assistant</span>
-                  <span class="pill live">gpt-4o-mini</span>
-                  <span style="text-align: right; font-family: var(--aw-font-mono); font-size: 10.5px; color: var(--aw-text-soft)">2.1k</span>
-                </div>
-                <div class="row">
-                  <span class="name">researcher</span>
-                  <span class="pill agent">claude-3.7</span>
-                  <span style="text-align: right; font-family: var(--aw-font-mono); font-size: 10.5px; color: var(--aw-text-soft)">847</span>
-                </div>
-                <div class="row">
-                  <span class="name">summariser</span>
-                  <span class="pill">deepseek-v3</span>
-                  <span style="text-align: right; font-family: var(--aw-font-mono); font-size: 10.5px; color: var(--aw-text-soft)">112</span>
-                </div>
-              </div>
-            </main>
-          </div>
-        </div>
-        <div class="console-callouts">
-          <div class="callout">
-            <div class="eb">{t("Config = control plane", "配置即控制面")}</div>
-            <h3>{t("Spec-first, snapshot-applied", "声明先行,snapshot 生效")}</h3>
-            <p set:html={t(
-              "Models, providers, prompts, permissions, MCP — edit the spec and the server publishes a registry snapshot for later runs.",
-              "模型、Provider、提示词、权限、MCP —— 编辑 spec 后，server 发布新的 registry snapshot 给后续 run 使用。",
-            )} />
-          </div>
-          <div class="callout">
-            <div class="eb">{t("Docs stay executable", "文档保持可执行")}</div>
-            <h3>{t("Workspace tests and doctests guard the examples", "workspace tests 与 doctests 守住示例")}</h3>
-            <p set:html={t(
-              "The workspace runs with <code>unsafe_code = \"forbid\"</code>. Public examples are covered by compile tests, doctests, and docs build checks.",
-              "整个 workspace <code>unsafe_code = \"forbid\"</code>。公开示例由 compile tests、doctests 与 docs build 共同校验。",
-            )} />
-          </div>
-        </div>
       </div>
     </div>
   </section>
@@ -391,12 +397,12 @@ const demoGif = `${baseUrl}/assets/${locale === "zh-CN" ? "awaken-demo-zh.gif" :
           <span class="eyebrow">{t("Plugins", "插件")}</span>
           <h2>{t("Batteries that opt in", "按需开启的电池组")}</h2>
           <p set:html={t(
-            "Seven typed extension surfaces, each gated by a cargo feature flag. Same <code>trait Plugin</code> + hooks the built-ins use — write your own with no special API.",
-            "七个类型化扩展点，每个由 cargo feature flag 控制。<code>trait Plugin</code> + 各 hook 与内置插件完全一致 —— 自己写不需要任何特殊 API。",
+            "Built-in and companion extension crates expose the same <code>trait Plugin</code> + hook model you use for custom capability. Opt in only to the surfaces your agent needs.",
+            "内置与配套扩展 crate 使用同一套 <code>trait Plugin</code> + hook 模型，也适用于你的自定义能力。只接入当前 agent 需要的表面。",
           )} />
         </div>
         <div class="right">
-          <a href={`${docsBase}/reference/overview/`}>{t("Plugin reference →", "插件参考 →")}</a>
+          <a href={`${docsBase}/explanation/tool-and-plugin-boundary/`}>{t("Tool/plugin boundary →", "Tool/Plugin 边界 →")}</a>
         </div>
       </div>
       <div class="plugins-grid">

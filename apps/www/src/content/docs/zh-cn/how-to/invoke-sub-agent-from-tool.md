@@ -108,7 +108,7 @@ impl Plugin for ResearchPlugin {
 
 子 agent 必须注册 `ResearchConfigKey`，这样 seed 才能应用；如果你希望 findings 出现在 `outcome.state.extensions`，它还必须以 `persistent: true` 注册 `ResearchFindingsKey`。父 agent 在提交返回的 `StateCommand` 前必须注册 `ResearchSummaryKey`。上面的单个 `ResearchPlugin` 为了方便复制粘贴而注册了全部三个 key；生产代码可以拆成 `ChildResearchPlugin` / `ParentResearchPlugin`，只要两边分别注册自己会读写的 key 即可。
 
-2. 实现工具。关键调用是来自 `awaken_runtime::child_agent` 的 [`run_child_agent`](/awaken/zh-cn/reference/)。它返回子 run 的终态 [`BackendRunResult`](/awaken/zh-cn/reference/)；父工具自行决定如何把这个生命周期状态解释成自己的 `ToolOutput.result`。下面示例采用语义透传策略：父工具返回成功 payload，并显式带上 `child_status`，但 state export 仍保持保守。
+2. 实现工具。关键调用是来自 `awaken_runtime::child_agent` 的 `run_child_agent`。它返回子 run 的终态 `BackendRunResult`；父工具自行决定如何把这个生命周期状态解释成自己的 `ToolOutput.result`。下面示例采用语义透传策略：父工具返回成功 payload，并显式带上 `child_status`，但 state export 仍保持保守。
 
 ```rust
 use std::sync::Arc;

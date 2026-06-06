@@ -213,9 +213,9 @@ println!("tool_call_done_seen: {}", tool_done);
 
 ## 下一步阅读
 
-- 了解完整工具生命周期：[Tool Trait](/awaken/zh-cn/../reference/tool-trait/)
+- 了解完整工具生命周期：[Tool Trait](/awaken/zh-cn/reference/tool-trait/)
 - 添加跨运行管理状态的插件：[添加插件](/awaken/zh-cn/how-to/add-a-plugin/)
-- 学习状态范围规则：[State Keys](/awaken/zh-cn/../reference/state-keys/)
+- 学习状态范围规则：[State Keys](/awaken/zh-cn/reference/state-keys/)
 
 ## 常见错误
 

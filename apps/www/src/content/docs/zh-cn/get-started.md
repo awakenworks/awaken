@@ -64,9 +64,9 @@ export OPENAI_ADAPTER=openai
    配置模型、创建 Agent、预览草稿，并发布下一版 runtime snapshot。
 2. 配好真实模型后,阅读 [用 Admin Assistant 构建 Agent](/awaken/zh-cn/how-to/build-an-agent-with-the-assistant/),用自然语言描述即可生成 Agent。
 3. 需要 React 前端时，阅读 [AI SDK 前端集成](/awaken/zh-cn/how-to/integrate-ai-sdk-frontend/)。
-3. 阅读 [第一个 Agent](/awaken/zh-cn/tutorials/first-agent/)，理解最小进程内 runtime。
-4. 阅读 [第一个 Tool](/awaken/zh-cn/tutorials/first-tool/)，理解 tool schema、执行流程和状态写入。
-5. 进入 [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)，把示例整理成可复用的工程基线。
+4. 阅读 [第一个 Agent](/awaken/zh-cn/tutorials/first-agent/)，理解最小进程内 runtime。
+5. 阅读 [第一个 Tool](/awaken/zh-cn/tutorials/first-tool/)，理解 tool schema、执行流程和状态写入。
+6. 进入 [构建 Agent](/awaken/zh-cn/how-to/build-an-agent/)，把示例整理成可复用的工程基线。
 
 ## 何时离开这条路径
 

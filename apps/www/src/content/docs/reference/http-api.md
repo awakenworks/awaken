@@ -10,6 +10,17 @@ This page mirrors the current route tree in `crates/awaken-server/src/routes.rs`
 `config_routes.rs`, `event_routes.rs`, `eval_router.rs`, `system_routes.rs`,
 and the protocol modules.
 
+## Find quickly
+
+| Looking for | Start here |
+|---|---|
+| Bearer token and exposed admin surfaces | [Admin authentication](#admin-authentication) and [Route exposure](#route-exposure) |
+| Thread and message endpoints | [Threads](#threads) |
+| Run lifecycle endpoints | [Runs](#runs) |
+| Protocol-specific routes | [AI SDK v6](#ai-sdk-v6-routes), [AG-UI](#ag-ui-routes), [A2A](#a2a-routes), and [MCP HTTP](#mcp-http-routes) |
+| Config/admin CRUD | [Config and capabilities](#config-and-capabilities) |
+| Eval, trace, audit, and system endpoints | [Eval routes](#eval-routes), [Trace routes](#trace-routes), [Admin audit log](#admin-audit-log), and [Health and metrics](#health-and-metrics) |
+
 ## Admin authentication
 
 Admin, config, eval, trace, and system routes require

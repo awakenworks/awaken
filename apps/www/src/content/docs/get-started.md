@@ -73,11 +73,11 @@ default `minimal` profile keeps the console focused on the resources you create.
    to describe an agent in plain language once a real model is configured.
 3. [AI SDK frontend integration](/awaken/how-to/integrate-ai-sdk-frontend/) when
    wiring a React UI to a saved agent.
-3. [First Agent](/awaken/tutorials/first-agent/) for the smallest in-process
+4. [First Agent](/awaken/tutorials/first-agent/) for the smallest in-process
    runtime.
-4. [First Tool](/awaken/tutorials/first-tool/) to understand tool schemas,
+5. [First Tool](/awaken/tutorials/first-tool/) to understand tool schemas,
    execution, and state writes.
-5. [Build an Agent](/awaken/how-to/build-an-agent/) when you want a reusable
+6. [Build an Agent](/awaken/how-to/build-an-agent/) when you want a reusable
    project baseline.
 
 ## Leave this path when

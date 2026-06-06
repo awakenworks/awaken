@@ -69,11 +69,10 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
 /* `min-width: 0` on every direct grid child so a track can shrink below
  * its content's min-content (Shiki's Rust code has long unbreakable tokens
  * that otherwise force the .hero-grid wider than the viewport on mobile).
- * Applied to every grid on the landing (hero / console / phase / proto
- * / plugins / decisions) for the same reason. With this in place,
+ * Applied to every grid on the landing (hero / phase / proto / plugins
+ * / decisions) for the same reason. With this in place,
  * overflow-x:auto on inner <pre> finally engages on narrow viewports. */
 .landing-page .hero-grid > *,
-.landing-page .console-grid > *,
 .landing-page .phase-loop > *,
 .landing-page .proto-grid > *,
 .landing-page .plugins-grid > *,
@@ -92,10 +91,11 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   border-radius: var(--aw-radius-pill);
   box-shadow: var(--aw-shadow-card);
 }
-.landing-page .hero-eyebrow .dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--aw-state-done);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--aw-state-done) 25%, transparent);
+.landing-page .hero-eyebrow .mark {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: var(--aw-radius-sm);
 }
 .landing-page h1.hero-title {
   margin: 24px 0 0;
@@ -115,8 +115,74 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   line-height: 1.55;
   text-wrap: pretty;
 }
+.landing-page .hero-icon-badges {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.landing-page .hero-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--aw-border);
+  border-radius: var(--aw-radius-pill);
+  background: var(--aw-bg-elevated);
+  color: var(--aw-text);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: var(--aw-shadow-card);
+}
+.landing-page .hero-icon-badge svg {
+  width: 14px;
+  height: 14px;
+  color: var(--aw-accent);
+}
+.landing-page .hero-tune-card {
+  margin-top: 22px;
+  max-width: 560px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in oklch, var(--aw-accent) 34%, var(--aw-border));
+  border-radius: var(--aw-radius-lg);
+  background:
+    linear-gradient(135deg,
+      color-mix(in oklch, var(--aw-accent) 10%, var(--aw-bg-elevated)),
+      var(--aw-bg-elevated) 70%);
+  box-shadow: var(--aw-shadow-card);
+}
+.landing-page .hero-tune-card strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--aw-text-strong);
+  font-weight: 600;
+}
+.landing-page .hero-tune-kicker {
+  display: block;
+  font-size: 10.5px;
+  letter-spacing: var(--aw-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--aw-accent);
+  font-weight: 700;
+}
+.landing-page .hero-tune-card a {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--aw-accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.landing-page .hero-tune-card a:hover { color: var(--aw-accent-hover); }
 .landing-page .hero-actions {
-  margin-top: 32px;
+  margin-top: 24px;
   display: flex; gap: 12px; flex-wrap: wrap;
 }
 .landing-page .btn {
@@ -160,6 +226,11 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   color: var(--aw-text) !important;
   font-size: 11.5px;
 }
+.landing-page .hero-meta a {
+  color: var(--aw-text);
+  text-decoration: none;
+}
+.landing-page .hero-meta a:hover { color: var(--aw-accent); }
 
 /* Click-to-copy install chip — same visual weight as the inline <code>
  * around it, but interactive. The OK icon swaps in for 1.5s on success. */
@@ -453,178 +524,44 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   font-size: 13px;
   color: var(--aw-text-muted);
 }
-.landing-page .console-grid {
-  display: grid;
-  grid-template-columns: 1.4fr 1fr;
-  gap: 24px;
-  align-items: stretch;
-}
-.landing-page .console-shot {
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-lg);
-  background: var(--aw-bg-elevated);
-  overflow: hidden;
-  box-shadow: var(--aw-shadow-card-lift);
-  position: relative;
-  min-height: 360px;
-}
-.landing-page .console-shot .titlebar {
-  height: 28px;
-  display: flex; align-items: center; gap: 6px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--aw-border);
-  background: var(--aw-bg-canvas);
-}
-.landing-page .console-shot .titlebar .d {
-  width: 9px; height: 9px; border-radius: 50%;
-  background: var(--aw-border-strong);
-}
-.landing-page .console-shot .titlebar .url {
-  margin-left: 8px;
-  font-family: var(--aw-font-mono);
-  font-size: 10.5px;
-  color: var(--aw-text-faint);
-}
-.landing-page .console-body {
-  display: grid;
-  grid-template-columns: 200px 1fr;
-  height: calc(100% - 28px);
-}
-.landing-page .console-side {
-  background: var(--aw-bg-canvas);
-  border-right: 1px solid var(--aw-border);
-  padding: 16px 12px;
-  font-size: 11px;
-}
-.landing-page .console-side .eb {
-  font-size: 9px;
-  color: var(--aw-text-soft);
-  letter-spacing: var(--aw-tracking-eyebrow);
-  text-transform: uppercase;
-  font-weight: 600;
-  padding: 6px 10px 4px;
-}
-.landing-page .console-side .item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px;
-  border-radius: var(--aw-radius-sm);
-  color: var(--aw-text-soft);
-}
-.landing-page .console-side .item.act {
-  background: var(--aw-bg-soft);
-  color: var(--aw-text-strong);
-  position: relative;
-  font-weight: 500;
-}
-.landing-page .console-side .item.act::before {
-  content: "";
-  position: absolute; left: 0; top: 6px; bottom: 6px;
-  width: 2px; border-radius: 2px;
-  background: var(--aw-accent);
-}
-.landing-page .console-side .item .dot {
-  width: 5px; height: 5px; border-radius: 50%;
-  background: var(--aw-state-done);
-  margin-left: auto;
-}
-.landing-page .console-side .item .dot.w {
-  background: var(--aw-state-progress);
-}
-.landing-page .console-main { padding: 14px 16px; }
-.landing-page .console-main .crumbs {
-  font-size: 10.5px;
-  color: var(--aw-text-soft);
-  margin-bottom: 14px;
-}
-.landing-page .console-main .crumbs b {
-  color: var(--aw-text-strong);
-  font-weight: 500;
-}
-.landing-page .console-cards {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-.landing-page .cc {
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-md);
-  padding: 10px 12px;
-  background: var(--aw-bg);
-}
-.landing-page .cc .lbl {
-  font-size: 9px;
-  color: var(--aw-text-soft);
-  letter-spacing: var(--aw-tracking-eyebrow);
-  text-transform: uppercase;
-  font-weight: 600;
-}
-.landing-page .cc .num {
-  font-size: 20px;
-  font-family: var(--aw-font-mono);
-  color: var(--aw-text-strong);
-  font-weight: 600;
-  margin-top: 2px;
-  letter-spacing: var(--aw-tracking-tight-em, -0.003em);
-}
-.landing-page .cc .delta {
-  font-size: 10px;
-  color: var(--aw-tone-success);
-  margin-top: 2px;
-}
-.landing-page .console-table {
-  margin-top: 12px;
-  border: 1px solid var(--aw-border);
-  border-radius: var(--aw-radius-md);
-  overflow: hidden;
-  font-size: 10.5px;
-}
-.landing-page .console-table .row {
-  display: grid;
-  grid-template-columns: 1fr 80px 50px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--aw-border);
-  align-items: center;
-}
-.landing-page .console-table .row:last-child { border-bottom: 0; }
-.landing-page .console-table .row.head {
-  background: var(--aw-bg-soft);
-  font-size: 9px;
-  color: var(--aw-text-soft);
-  letter-spacing: var(--aw-tracking-eyebrow);
-  text-transform: uppercase;
-  font-weight: 600;
-}
-.landing-page .console-table .row .name {
-  font-family: var(--aw-font-mono);
-  color: var(--aw-text-strong);
-}
-.landing-page .console-table .pill {
-  font-size: 9px;
-  padding: 1px 6px;
-  border-radius: var(--aw-radius-pill);
-  background: var(--aw-bg-muted);
-  color: var(--aw-text-soft);
-  font-family: var(--aw-font-mono);
-  text-align: center;
-}
-.landing-page .console-table .pill.live {
-  background: color-mix(in oklch, var(--aw-state-progress) 22%, transparent);
-  color: var(--aw-state-progress);
-}
-.landing-page .console-table .pill.agent {
-  background: var(--aw-agent-tint);
-  color: var(--aw-agent-fg);
-}
 .landing-page .console-callouts {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+.landing-page .console-callouts.tune-callouts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 24px;
 }
 .landing-page .callout {
   border: 1px solid var(--aw-border);
   border-radius: var(--aw-radius-lg);
   padding: 24px;
   background: var(--aw-bg-elevated);
+}
+.landing-page .callout-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 14px;
+  border: 1px solid color-mix(in oklch, var(--aw-accent) 30%, var(--aw-border));
+  border-radius: var(--aw-radius-md);
+  background: color-mix(in oklch, var(--aw-accent) 8%, var(--aw-bg-muted));
+  color: var(--aw-accent);
+}
+.landing-page .callout-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.landing-page .callout.tune-primary {
+  border-color: color-mix(in oklch, var(--aw-accent) 36%, var(--aw-border));
+  background:
+    linear-gradient(135deg,
+      color-mix(in oklch, var(--aw-accent) 9%, var(--aw-bg-elevated)),
+      var(--aw-bg-elevated) 68%);
 }
 .landing-page .callout .eb {
   font-size: 10.5px;
@@ -733,10 +670,10 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
 @media (max-width: 980px) {
   .landing-page .hero-grid,
   .landing-page .phase-loop,
-  .landing-page .console-grid,
   .landing-page .decisions-grid { grid-template-columns: 1fr; }
   .landing-page .proto-grid,
   .landing-page .plugins-grid { grid-template-columns: 1fr 1fr; }
+  .landing-page .console-callouts.tune-callouts { grid-template-columns: 1fr; }
   /* Narrow the gutters once columns collapse. */
   .landing-page .hero-grid { gap: 40px; }
   .landing-page .hero { padding: 72px 0 56px; }
@@ -744,8 +681,7 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
 
 @media (max-width: 640px) {
   .landing-page .proto-grid,
-  .landing-page .plugins-grid,
-  .landing-page .console-cards { grid-template-columns: 1fr; }
+  .landing-page .plugins-grid { grid-template-columns: 1fr; }
   .landing-page .phase-list { grid-template-columns: 1fr 1fr; }
 
   /* Tighter gutter so the hero/terminal don't overflow viewport. */
@@ -755,6 +691,13 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
   .landing-page .hero { padding: 48px 0 40px; }
   .landing-page h1.hero-title { font-size: clamp(28px, 8vw, 40px); }
   .landing-page .hero-sub { font-size: 16px; }
+  .landing-page .hero-tune-card {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+  .landing-page .hero-tune-card a { white-space: normal; }
 
   /* Eyebrow pill: it's `inline-flex` and was overflowing on long content
    * like "v0.5 · type-safe state · 9-phase loop". Let the inner label wrap;
@@ -783,7 +726,11 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
    * container wider than viewport. The Shiki <pre> already scrolls inside;
    * trim its horizontal padding so more code is visible. */
   .landing-page .terminal { font-size: 11.5px; }
-  .landing-page .terminal pre.astro-code { padding: 14px 12px; font-size: 11.5px; }
+  .landing-page .terminal pre.astro-code {
+    max-height: 320px;
+    padding: 14px 12px;
+    font-size: 11.5px;
+  }
   .landing-page .terminal-bar { padding: 8px 10px; gap: 6px; }
   .landing-page .terminal-bar .file,
   .landing-page .terminal-bar .tag {
@@ -795,10 +742,6 @@ main:has(.landing-page) > .content-panel:has(.landing-page) {
    * floating in a cramped corner. */
   .landing-page .section-head { flex-direction: column; align-items: flex-start; gap: 12px; }
   .landing-page .section-head .right { align-self: flex-start; }
-
-  /* Console preview shrinks; the sim should not overflow its parent. */
-  .landing-page .console-shot { font-size: 10px; }
-  .landing-page .console-body { grid-template-columns: 90px 1fr; }
 
   /* Phase pills already 2-col but typography can still overflow. */
   .landing-page .phase-pill .lbl { font-size: 11px; }
