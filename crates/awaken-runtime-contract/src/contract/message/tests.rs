@@ -74,6 +74,7 @@ fn test_message_with_metadata_serialization() {
         run_id: Some("run-1".to_string()),
         step_index: Some(3),
         compaction: None,
+        sender_agent_id: None,
     });
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("\"run_id\":\"run-1\""));
@@ -309,6 +310,7 @@ fn test_message_metadata_serde_roundtrip() {
         run_id: Some("run-1".into()),
         step_index: Some(5),
         compaction: None,
+        sender_agent_id: None,
     };
     let json = serde_json::to_string(&meta).unwrap();
     let parsed: MessageMetadata = serde_json::from_str(&json).unwrap();
@@ -331,6 +333,7 @@ fn message_record_projects_thread_sequence_and_producer() {
             run_id: Some("run-1".to_string()),
             step_index: Some(3),
             compaction: None,
+            sender_agent_id: None,
         });
 
     let record = MessageRecord::from_message("thread-1", 7, msg);
@@ -414,6 +417,7 @@ fn mark_produced_by_preserves_existing_metadata() {
         run_id: Some("existing-run".to_string()),
         step_index: Some(1),
         compaction: None,
+        sender_agent_id: None,
     });
 
     msg.mark_produced_by("new-run", Some(2));

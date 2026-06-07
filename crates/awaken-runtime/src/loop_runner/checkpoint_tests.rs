@@ -105,6 +105,7 @@ fn materialize_message_log_preserves_output_across_same_run_resume() {
             run_id: Some("run-1".into()),
             step_index: Some(0),
             compaction: None,
+            sender_agent_id: None,
         },
     );
     let mut new_output = Message::assistant("after resume");
@@ -320,6 +321,7 @@ fn materialize_checkpoint_append_does_not_duplicate_committed_message_updates() 
             run_id: Some("run-1".into()),
             step_index: Some(0),
             compaction: None,
+            sender_agent_id: None,
         },
     );
     let previous = RunRecord {

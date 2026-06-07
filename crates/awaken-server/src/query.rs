@@ -418,6 +418,7 @@ mod tests {
                     run_id: Some("run-1".to_string()),
                     step_index: Some(0),
                     compaction: None,
+                    sender_agent_id: None,
                 },
             ),
             Message::assistant("other").with_metadata(
@@ -425,6 +426,7 @@ mod tests {
                     run_id: Some("run-2".to_string()),
                     step_index: Some(0),
                     compaction: None,
+                    sender_agent_id: None,
                 },
             ),
             Message::assistant("new").with_metadata(
@@ -432,6 +434,7 @@ mod tests {
                     run_id: Some("run-1".to_string()),
                     step_index: Some(1),
                     compaction: None,
+                    sender_agent_id: None,
                 },
             ),
         ];

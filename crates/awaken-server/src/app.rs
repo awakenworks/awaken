@@ -330,8 +330,9 @@ impl ServerState {
         config: ServerConfig,
     ) -> Self {
         // Late-bind the mailbox-backed durable message sink onto the runtime so
-        // `send_message`'s durable routes deliver. Idempotent (OnceLock); breaks
-        // no cycle (sink holds a Weak<Mailbox>).
+        // `send_message`'s durable routes deliver. Last-write-wins, so a runtime
+        // reused by a new mailbox repoints the sink; breaks no cycle (the sink
+        // holds a Weak<Mailbox>).
         runtime.set_durable_message_sink(Arc::new(
             crate::durable_message_sink::MailboxDurableMessageSink::new(&mailbox),
         ));

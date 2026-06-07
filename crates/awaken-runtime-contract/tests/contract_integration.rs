@@ -353,6 +353,7 @@ fn stream_result_to_message_to_event_pipeline() {
                 run_id: Some("r1".into()),
                 step_index: Some(0),
                 compaction: None,
+                sender_agent_id: None,
             });
 
     assert_eq!(msg.role, Role::Assistant);

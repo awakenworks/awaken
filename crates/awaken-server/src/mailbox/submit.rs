@@ -304,6 +304,69 @@ impl Mailbox {
         })
     }
 
+    /// Deliver a durable cross-thread `send_message` (the runtime's
+    /// `DurableMessageSink`) by enqueuing a background run on the recipient
+    /// thread, keyed for **idempotent redelivery** on the sender-side
+    /// `message_id`.
+    ///
+    /// Delivery is at-least-once, so the same `message_id` can arrive more than
+    /// once (a crash between sink delivery and the outbox-remove commit triggers
+    /// a replay). Two properties make that safe at the recipient:
+    ///
+    /// - The run id is **derived deterministically** from `message_id`, so a
+    ///   redelivery resolves to the same run rather than spawning a fresh one
+    ///   every time.
+    /// - A pre-check short-circuits once that run exists, returning the original
+    ///   dispatch id **without re-appending** the recipient message — so a
+    ///   redelivered message is not duplicated in the committed thread log.
+    ///
+    /// The committed message is id-addressed by `message_id` and carries the
+    /// `sender_agent_id` in its metadata, so the recipient can attribute and
+    /// (independently) deduplicate it.
+    ///
+    /// Residual window: two *concurrent* deliveries of the same `message_id` can
+    /// both miss the pre-check before either commits. This matches the mailbox's
+    /// existing at-least-once contract; the durable dispatcher drains the outbox
+    /// sequentially, so this only arises under cross-process replay races.
+    #[tracing::instrument(skip(self, request), fields(message_id = %request.message_id))]
+    pub async fn submit_durable_message(
+        self: &Arc<Self>,
+        request: awaken_runtime::extensions::background::DurableMessageRequest,
+    ) -> Result<String, MailboxError> {
+        // Deterministic, collision-free run id: the sender-side message id is a
+        // UUID, so this is unique per message and stable across redeliveries.
+        let run_id = format!("durable-msg-{}", request.message_id);
+
+        if let Some(existing) = self.run_store.load_run(&run_id).await? {
+            // Already delivered for this message_id — idempotent no-op. Return
+            // the original dispatch id (falling back to the run id if a dispatch
+            // id was never recorded) so the sink reports success and the outbox
+            // entry is cleared.
+            return Ok(existing.dispatch_id.unwrap_or(run_id));
+        }
+
+        let message = Message::user(&request.message)
+            // id-address the recipient message by the sender-side message_id so
+            // the committed log is dedup-keyed (A-G3) and the recipient can match
+            // redeliveries.
+            .with_id(request.message_id.clone())
+            .with_metadata(awaken_server_contract::contract::message::MessageMetadata {
+                sender_agent_id: Some(request.sender_agent_id),
+                ..Default::default()
+            });
+
+        let mut activation = RunActivation::new(request.recipient_thread_id, vec![message])
+            .with_origin(awaken_server_contract::contract::storage::RunRequestOrigin::Internal)
+            .with_run_id_hint(run_id)
+            .with_dispatch_id_hint(request.message_id);
+        if let Some(agent_id) = request.recipient_agent_id {
+            activation = activation.with_agent_id(agent_id);
+        }
+
+        let result = self.submit_background(activation).await?;
+        Ok(result.dispatch_id)
+    }
+
     /// Try to steer the currently active run first, then fall back to the
     /// durable mailbox queue when live delivery is unavailable.
     ///

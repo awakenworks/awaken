@@ -973,6 +973,7 @@ async fn nats_buffered_store_thread_routes_round_trip_via_http() {
         run_id: Some("nats-run-1".to_string()),
         step_index: Some(0),
         compaction: None,
+        sender_agent_id: None,
     };
     store
         .save_messages(

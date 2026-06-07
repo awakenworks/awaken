@@ -49,6 +49,12 @@ pub struct MessageMetadata {
     /// Step (round) index within the run (0-based).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_index: Option<u32>,
+    /// Originating agent for a cross-agent durable message (`send_message`'s
+    /// `parent`/`agent` routes). Lets the recipient attribute, audit, or apply
+    /// sender-based logic instead of seeing an anonymous user message. `None`
+    /// for ordinary end-user/system messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_agent_id: Option<String>,
     /// When set, this message is a compaction summary that logically replaces
     /// the committed interval `[from_seq, to_seq]` (ADR-0038 D11/C7). The mark
     /// rides in the message body so it persists through every store without a

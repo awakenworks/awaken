@@ -132,9 +132,14 @@ pub struct AgentRuntime {
     /// built (the sink wraps the mailbox, which wraps this runtime). Scoped as an
     /// ambient task-local around run execution so the per-run background plugin
     /// can deliver `send_message`'s durable routes.
+    ///
+    /// Rebindable (`RwLock`, last-write-wins) — like [`Self::run_resolver`] — so a
+    /// new `ServerState`/mailbox reusing this runtime can repoint the sink instead
+    /// of being silently ignored (a first-write-wins `OnceLock` would pin a stale
+    /// `Weak<Mailbox>` that dangles once the original mailbox drops).
     #[cfg(feature = "background")]
     durable_message_sink:
-        std::sync::OnceLock<Arc<dyn crate::extensions::background::DurableMessageSink>>,
+        RwLock<Option<Arc<dyn crate::extensions::background::DurableMessageSink>>>,
 }
 
 impl AgentRuntime {
@@ -157,19 +162,23 @@ impl AgentRuntime {
             #[cfg(feature = "a2a")]
             composite_registry: None,
             #[cfg(feature = "background")]
-            durable_message_sink: std::sync::OnceLock::new(),
+            durable_message_sink: RwLock::new(None),
         }
     }
 
-    /// Late-bind the host durable message sink (see [`Self::durable_message_sink`]).
-    /// Idempotent: the first call wins. Reuses the same optional-host-capability
-    /// pattern as the other `set_*`/`with_*` wiring on this type.
+    /// Late-bind (or rebind) the host durable message sink (see
+    /// [`Self::durable_message_sink`]). Last-write-wins, mirroring
+    /// [`Self::set_run_resolver`], so a runtime reused by a new mailbox repoints
+    /// the sink rather than keeping a dangling `Weak<Mailbox>`.
     #[cfg(feature = "background")]
     pub fn set_durable_message_sink(
         &self,
         sink: Arc<dyn crate::extensions::background::DurableMessageSink>,
     ) {
-        let _ = self.durable_message_sink.set(sink);
+        *self
+            .durable_message_sink
+            .write()
+            .expect("durable message sink lock poisoned") = Some(sink);
     }
 
     #[must_use]
@@ -394,6 +403,18 @@ impl AgentRuntime {
     /// Create a run handle pair (handle + internal channels).
     ///
     /// Returns (RunHandle for caller, CancellationToken for loop, decision_rx for loop).
+    /// Test accessor for the currently-bound durable message sink, used to
+    /// assert last-write-wins rebinding.
+    #[cfg(all(test, feature = "background"))]
+    pub(crate) fn durable_message_sink_for_test(
+        &self,
+    ) -> Option<Arc<dyn crate::extensions::background::DurableMessageSink>> {
+        self.durable_message_sink
+            .read()
+            .expect("durable message sink lock poisoned")
+            .clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn create_run_channels(
         &self,

@@ -950,11 +950,13 @@ mod integration {
             run_id: Some("run-1".to_string()),
             step_index: Some(0),
             compaction: None,
+            sender_agent_id: None,
         };
         let run2 = awaken_server_contract::contract::message::MessageMetadata {
             run_id: Some("run-2".to_string()),
             step_index: Some(0),
             compaction: None,
+            sender_agent_id: None,
         };
         let messages = vec![
             Message::user("input"),

@@ -274,6 +274,16 @@ impl MessageDispatchHook {
 #[async_trait]
 impl PhaseHook for MessageDispatchHook {
     async fn run(&self, ctx: &PhaseContext) -> Result<StateCommand, StateError> {
+        // Prefer the explicitly-wired sink; otherwise fall back to the host sink
+        // scoped as an ambient task-local around the run (see
+        // `scope_durable_message_sink`). This is what lets a plugin the host
+        // installed itself via `BackgroundTaskPlugin::new` (durable_sink: None) —
+        // not only the auto-created `with_messaging` plugin — still deliver
+        // durable routes once the runtime has a sink bound.
+        let durable_sink = self
+            .durable_sink
+            .clone()
+            .or_else(super::current_durable_message_sink);
         let outbox = ctx.state::<MessageOutboxKey>().cloned().unwrap_or_default();
         let mut cmd = StateCommand::new();
         for entry in outbox.pending {
@@ -305,7 +315,7 @@ impl PhaseHook for MessageDispatchHook {
                     cmd.update::<MessageOutboxKey>(MessageOutboxUpdate::Remove { id });
                 }
                 OutboxRoute::Durable(request) => {
-                    let Some(sink) = &self.durable_sink else {
+                    let Some(sink) = &durable_sink else {
                         tracing::warn!(
                             message_id = %request.message_id,
                             "no durable transport configured; dead-lettering"
@@ -1115,6 +1125,80 @@ mod tests {
         assert!(
             current_durable_message_sink().is_none(),
             "and is gone again once the scope ends"
+        );
+    }
+
+    /// Issue #3 regression: a dispatcher with NO explicitly-wired sink (as a
+    /// host-installed `BackgroundTaskPlugin::new` plugin would have) still
+    /// delivers durable routes via the host sink scoped ambiently around the run.
+    #[tokio::test]
+    async fn dispatcher_without_explicit_sink_delivers_via_ambient_sink() {
+        use crate::extensions::background::scope_durable_message_sink;
+        let (manager, _unused, store) = messaging_env();
+        enqueue(
+            &store,
+            "m1",
+            OutboxRoute::Durable(durable_req("m1", "thread-2")),
+        );
+
+        // durable_sink: None — mirrors a plugin built without `with_messaging`.
+        let hook = MessageDispatchHook::new(manager.clone(), None);
+        let ambient = Arc::new(RecordingDurableSink::default());
+        let ambient_dyn: Arc<dyn DurableMessageSink> = ambient.clone();
+
+        scope_durable_message_sink(ambient_dyn, async {
+            let ctx = PhaseContext::new(Phase::StepEnd, store.snapshot());
+            let cmd = hook.run(&ctx).await.unwrap();
+            store.commit(cmd.patch).unwrap();
+        })
+        .await;
+
+        assert_eq!(
+            ambient.requests.lock().await.len(),
+            1,
+            "durable route delivered through the ambient host sink, not dead-lettered"
+        );
+        assert!(
+            store
+                .read::<FailedDurableMessageKey>()
+                .unwrap_or_default()
+                .messages
+                .is_empty(),
+            "not dead-lettered when an ambient sink is available"
+        );
+        assert!(
+            store
+                .read::<MessageOutboxKey>()
+                .unwrap_or_default()
+                .pending
+                .is_empty()
+        );
+    }
+
+    /// Without any sink — neither explicit nor ambient — durable routes still
+    /// dead-letter (the existing degradation path is unchanged).
+    #[tokio::test]
+    async fn dispatcher_without_any_sink_dead_letters() {
+        let (manager, _unused, store) = messaging_env();
+        enqueue(
+            &store,
+            "m1",
+            OutboxRoute::Durable(durable_req("m1", "thread-2")),
+        );
+        let hook = MessageDispatchHook::new(manager.clone(), None);
+        // No scope_durable_message_sink wrapper → no ambient sink.
+        let ctx = PhaseContext::new(Phase::StepEnd, store.snapshot());
+        let cmd = hook.run(&ctx).await.unwrap();
+        store.commit(cmd.patch).unwrap();
+
+        assert_eq!(
+            store
+                .read::<FailedDurableMessageKey>()
+                .unwrap_or_default()
+                .messages
+                .len(),
+            1,
+            "dead-lettered when no sink is reachable at all"
         );
     }
 

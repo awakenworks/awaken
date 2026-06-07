@@ -317,6 +317,7 @@ async fn list_message_records_query_filters_visibility_run_and_order() {
         run_id: Some("run-1".to_string()),
         step_index: Some(0),
         compaction: None,
+        sender_agent_id: None,
     };
     store
         .save_messages(

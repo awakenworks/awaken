@@ -38,6 +38,45 @@ fn new_creates_runtime() {
     assert!(rt.registry_handle().is_none());
 }
 
+/// Issue #4 regression: `set_durable_message_sink` is last-write-wins (not a
+/// first-call-wins `OnceLock`), so a runtime reused by a new mailbox repoints
+/// the sink instead of dangling on the original `Weak<Mailbox>`.
+#[cfg(feature = "background")]
+#[tokio::test]
+async fn set_durable_message_sink_rebinds_last_write_wins() {
+    use crate::extensions::background::{DurableMessageRequest, DurableMessageSink};
+
+    struct TaggedSink(&'static str);
+    #[async_trait::async_trait]
+    impl DurableMessageSink for TaggedSink {
+        async fn send_agent_message(
+            &self,
+            _request: DurableMessageRequest,
+        ) -> Result<String, String> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    let rt = make_runtime();
+    assert!(rt.durable_message_sink_for_test().is_none());
+
+    rt.set_durable_message_sink(Arc::new(TaggedSink("first")));
+    rt.set_durable_message_sink(Arc::new(TaggedSink("second")));
+
+    let bound = rt.durable_message_sink_for_test().expect("a sink is bound");
+    let tag = bound
+        .send_agent_message(DurableMessageRequest {
+            message_id: "m".into(),
+            recipient_thread_id: "t".into(),
+            recipient_agent_id: None,
+            sender_agent_id: "s".into(),
+            message: "hi".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(tag, "second", "the second bind replaced the first");
+}
+
 #[test]
 fn resolver_returns_ref() {
     let rt = make_runtime();

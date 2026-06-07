@@ -246,12 +246,19 @@ impl AgentRuntime {
         // task-local for the whole run, so the per-run background plugin can
         // deliver `send_message`'s durable routes. No-op when unset.
         #[cfg(feature = "background")]
-        if let Some(durable_sink) = self.durable_message_sink.get() {
-            return crate::extensions::background::scope_durable_message_sink(
-                durable_sink.clone(),
-                self.run_inner_body(activation, sink, thread_ctx, resolved_plan),
-            )
-            .await;
+        {
+            let durable_sink = self
+                .durable_message_sink
+                .read()
+                .expect("durable message sink lock poisoned")
+                .clone();
+            if let Some(durable_sink) = durable_sink {
+                return crate::extensions::background::scope_durable_message_sink(
+                    durable_sink,
+                    self.run_inner_body(activation, sink, thread_ctx, resolved_plan),
+                )
+                .await;
+            }
         }
         self.run_inner_body(activation, sink, thread_ctx, resolved_plan)
             .await
