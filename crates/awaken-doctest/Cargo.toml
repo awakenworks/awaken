@@ -139,7 +139,7 @@ test = true
 harness = false
 
 [dev-dependencies]
-awaken = { package = "awaken", version = "0.6.0", path = "../awaken", features = ["full"] }
+awaken = { package = "awaken", version = "0.6.1-dev", path = "../awaken", features = ["full"] }
 awaken-contract = { path = "../awaken-contract" }
 awaken-runtime = { path = "../awaken-runtime" }
 awaken-server = { path = "../awaken-server" }
