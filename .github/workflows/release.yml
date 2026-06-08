@@ -41,23 +41,26 @@ jobs:
             cargo publish --no-verify -p "$1" 2>&1 || echo "⚠️  $1: publish returned non-zero (may already exist)"
             sleep 60
           }
+          # Dependency-topological order. Base/leaf crates first so each
+          # crate's internal deps are already on the crates.io index.
+          publish awaken-tool-pattern
+          publish awaken-protocol-a2a
+          publish awaken-runtime-contract
+          publish awaken-server-contract
           publish awaken-contract
           publish awaken-stores
-          publish awaken-protocol-a2a
-          publish awaken-tool-pattern
           publish awaken-runtime
+          publish awaken-ext-observability
           publish awaken-ext-deferred-tools
           publish awaken-ext-generative-ui
           publish awaken-ext-mcp
-          publish awaken-ext-observability
           publish awaken-ext-permission
           publish awaken-ext-reminder
           publish awaken-ext-skills
+          publish awaken-eval
           publish awaken-server
           publish awaken
-          # Final crate — no sleep needed
-          echo "=== Publishing awaken-agent ==="
-          cargo publish --no-verify -p awaken-agent
+          publish awaken-agent
       - name: Create GitHub Release
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
