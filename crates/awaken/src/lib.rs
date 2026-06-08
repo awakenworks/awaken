@@ -170,12 +170,13 @@ pub mod server_contract {
 pub use awaken_runtime::engine::MockProviderProfile;
 pub use awaken_runtime::{
     AgentResolver, AgentRuntime, AgentRuntimeBuilder, BuildError, CancellationToken, CommitEvent,
-    CommitHook, DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, MutationBatch, PhaseContext, PhaseHook,
-    PhaseRuntime, Plugin, PluginDescriptor, PluginRegistrar, ProviderRemovalImpact,
-    ProviderRemovalPolicy, ProviderRemovalPreview, RegistryDiagnostic, RegistryDiagnosticSeverity,
-    RegistryResourceRef, RegistryUpdateError, RegistryValidationError, ResolvedAgent,
-    RunActivation, RuntimeError, RuntimeRegistryUpdate, SerializableRegistryDiagnostic,
-    StateCommand, StateStore, ToolGateHook, TypedEffectHandler, TypedScheduledActionHandler,
-    diagnose_agent_spec, diagnose_registry_set, diagnose_registry_set_serializable,
-    preview_provider_removal, rebuild_agent_model_provider_registries,
+    CommitHook, DEFAULT_MAX_PHASE_ROUNDS, ExecutionEnv, LoopControl, LoopControlKey,
+    LoopControlUpdate, MutationBatch, PhaseContext, PhaseHook, PhaseRuntime, Plugin,
+    PluginDescriptor, PluginRegistrar, ProviderRemovalImpact, ProviderRemovalPolicy,
+    ProviderRemovalPreview, RegistryDiagnostic, RegistryDiagnosticSeverity, RegistryResourceRef,
+    RegistryUpdateError, RegistryValidationError, ResolvedAgent, RunActivation, RuntimeError,
+    RuntimeRegistryUpdate, SerializableRegistryDiagnostic, StateCommand, StateStore, ToolGateHook,
+    TypedEffectHandler, TypedScheduledActionHandler, diagnose_agent_spec, diagnose_registry_set,
+    diagnose_registry_set_serializable, preview_provider_removal,
+    rebuild_agent_model_provider_registries,
 };

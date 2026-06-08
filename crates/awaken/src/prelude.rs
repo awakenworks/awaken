@@ -25,6 +25,7 @@ pub use awaken_runtime::engine::MockProviderProfile;
 // ── Plugin system ──
 pub use crate::CancellationToken;
 pub use crate::{EffectSpec, ScheduledActionSpec, TypedEffect};
+pub use crate::{LoopControl, LoopControlKey, LoopControlUpdate};
 pub use crate::{Phase, PhaseContext, PhaseHook, ToolGateHook};
 pub use crate::{Plugin, PluginDescriptor, PluginRegistrar};
 pub use crate::{TypedEffectHandler, TypedScheduledActionHandler};
