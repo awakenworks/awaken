@@ -61,7 +61,7 @@ metrics-exporter-prometheus = { workspace = true }
 awaken-ext-observability = { workspace = true }
 
 # Eval (ADR-0032 D6: dataset CRUD + trace→fixture curation)
-awaken-eval = { path = "../awaken-eval" }
+awaken-eval = { workspace = true }
 
 # Optional
 awaken-ext-permission = { workspace = true, optional = true }
