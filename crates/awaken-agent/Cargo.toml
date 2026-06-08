@@ -17,7 +17,7 @@ doc = false
 doctest = false
 
 [dependencies]
-awaken_core = { package = "awaken", version = "0.5.1-dev", path = "../awaken", default-features = false }
+awaken_core = { package = "awaken", version = "0.6.0", path = "../awaken", default-features = false }
 
 [features]
 default = ["full"]

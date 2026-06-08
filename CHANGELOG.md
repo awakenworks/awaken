@@ -7,6 +7,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions use [Se
 
 Development work lands here before the next versioned release.
 
+## [0.6.0] - 2026-06-09
+
+The 0.6.0 design overhaul (ADR-0037) splits the contract crates into narrower
+runtime and server/store surfaces, renames the checkpoint vocabulary to
+`ThreadCommit` / `ThreadCommitOutcome`, and routes every durable runtime write
+through a `CommitCoordinator`. Root execution moves from `RunRequest` to an
+owned `RunActivation` boundary resolved through a typed async `Resolver` and
+`BackendProfile`; `ModelBindingSpec` merges into a unified `ModelSpec` carrying
+intrinsic capabilities and pricing; and skill/tool visibility becomes
+declarative metadata rather than pluggable code. Server embedding moves to
+`ServerState` with explicit admin/eval/trace exposure gates, and agent tool
+catalogs gain glob `allowed_tool_patterns` / `excluded_tool_patterns`. This is
+a breaking release; see the 0.5 -> 0.6 migration guide in the docs.
+
 ### Changed
 
 - **BREAKING — contract crates split into runtime and server/store surfaces.**
@@ -200,7 +214,7 @@ Development work lands here before the next versioned release.
   never read the state map directly (absent ≠ Visible). No run-start visibility
   seed: visibility resolves from live metadata + explicit runtime overrides. No
   deprecated shims — these surfaces had no in-tree consumers and the crates are
-  pre-1.0 (`0.5.1-dev`).
+  pre-1.0 (`0.6.0`).
 
 - **AgentSpec catalog fields** — `allowed_tools` / `excluded_tools` are now
   strict literal-id lists, and two new fields `allowed_tool_patterns` /
