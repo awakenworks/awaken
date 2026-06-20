@@ -20,7 +20,7 @@
     "@astrojs/sitemap": "^3.7.2",
     "@astrojs/starlight": "^0.39.2",
     "@awaken/design-tokens": "workspace:*",
-    "astro": "^6.3.3",
+    "astro": "^6.4.6",
     "astro-mermaid": "^2.0.1",
     "sharp": "^0.34.0",
     "typescript": "^5"
