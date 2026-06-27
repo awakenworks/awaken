@@ -9,6 +9,18 @@ use crate::run::RunActivation;
 
 use super::{BackendProfile, BackendRequirements, ResolveError};
 
+/// Opaque reference to a catalog binding fingerprint checked at resolve time.
+///
+/// The `content_hash` is compared against the frozen registry's pinned entry
+/// for the binding. Any mismatch causes resolution to fail immediately
+/// (guardrails A-G22, A-G28).
+#[derive(Debug, Clone)]
+pub struct CatalogBindingRef {
+    pub kind: String,
+    pub id: String,
+    pub content_hash: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolutionRequest {
     pub target: ResolutionTarget,
@@ -16,6 +28,10 @@ pub struct ResolutionRequest {
     pub overrides: Option<InferenceOverride>,
     pub frontend_tools: Vec<ToolDescriptor>,
     pub features: RunFeatureSet,
+    /// Expected binding fingerprint for fail-closed validation (A-G22/A-G28).
+    /// When set, `ScopedServerResolver` verifies the frozen registry entry for
+    /// this binding matches before resolving; mismatches fail immediately.
+    pub expected_binding: Option<CatalogBindingRef>,
 }
 
 impl ResolutionRequest {
@@ -44,6 +60,7 @@ impl ResolutionRequest {
             overrides: activation.options.overrides.clone(),
             frontend_tools: activation.options.frontend_tools.clone(),
             features: RunFeatureSet::from_activation(activation, policy),
+            expected_binding: None,
         }
     }
 }

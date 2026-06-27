@@ -126,7 +126,7 @@ impl Mailbox {
         if wait_for_release {
             if self.executor.cancel_and_wait_by_thread(thread_id).await {
                 if self
-                    .wait_for_dispatch_not_claimed(&active_dispatch.dispatch_id())
+                    .wait_for_dispatch_not_claimed(active_dispatch.dispatch_id())
                     .await?
                 {
                     return Ok(true);
@@ -157,7 +157,7 @@ impl Mailbox {
 
         if wait_for_release
             && !self
-                .wait_for_dispatch_not_claimed(&active_dispatch.dispatch_id())
+                .wait_for_dispatch_not_claimed(active_dispatch.dispatch_id())
                 .await?
         {
             tracing::warn!(
@@ -241,7 +241,7 @@ impl Mailbox {
         dispatch: &RunDispatch,
         _reason: &str,
     ) -> Result<bool, MailboxError> {
-        let Some(mut run) = self.run_store.load_run(&dispatch.run_id()).await? else {
+        let Some(mut run) = self.run_store.load_run(dispatch.run_id()).await? else {
             return Ok(false);
         };
         if run.thread_id != *dispatch.thread_id() || run.status == RunStatus::Done {
@@ -352,7 +352,7 @@ impl Mailbox {
         &self,
         dispatch: &RunDispatch,
     ) -> Result<bool, MailboxError> {
-        let Some(mut run) = self.run_store.load_run(&dispatch.run_id()).await? else {
+        let Some(mut run) = self.run_store.load_run(dispatch.run_id()).await? else {
             return Ok(false);
         };
         if run.thread_id != *dispatch.thread_id() || run.status == RunStatus::Done {
@@ -388,15 +388,15 @@ impl Mailbox {
         for _ in 0..MAX_APPEND_ATTEMPTS {
             let messages = self
                 .run_store
-                .load_committed_messages(&dispatch.thread_id())
+                .load_committed_messages(dispatch.thread_id())
                 .await?
                 .unwrap_or_default();
             let expected_version = messages.len() as u64;
             if self
-                .commit_run_append(&dispatch.thread_id(), &[], Some(expected_version), run)
+                .commit_run_append(dispatch.thread_id(), &[], Some(expected_version), run)
                 .await?
             {
-                self.refresh_worker_checkpoint_cache(&dispatch.thread_id(), &messages, run)
+                self.refresh_worker_checkpoint_cache(dispatch.thread_id(), &messages, run)
                     .await;
                 return Ok(());
             }

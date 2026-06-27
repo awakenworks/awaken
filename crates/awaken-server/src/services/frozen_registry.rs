@@ -5,8 +5,8 @@ use crate::services::pinned_registry::{
 };
 use awaken_runtime::registry::RegistryHandle;
 use awaken_runtime::resolution::{
-    PersistenceRequirement, RegistryResolutionScope, ResolutionRequest, ResolveError,
-    ResolvedRunPlan, Resolver,
+    CatalogBindingRef, PersistenceRequirement, RegistryResolutionScope, ResolutionRequest,
+    ResolveError, ResolvedRunPlan, Resolver,
 };
 use awaken_server_contract::contract::versioned_registry::VersionedRecord;
 use awaken_server_contract::skill_spec::SkillSpec;
@@ -188,6 +188,9 @@ impl Resolver for ScopedServerResolver {
             .materialize(selector)
             .await
             .map_err(|error| ResolveError::Runtime(error.to_string()))?;
+        if let Some(ref expected) = request.expected_binding {
+            validate_binding_fingerprint(&frozen, expected)?;
+        }
         let snapshot_version = frozen.manifest.registry_snapshot_version.ok_or_else(|| {
             ResolveError::Runtime(
                 "published registry manifest is missing registry_snapshot_version".to_string(),
@@ -241,6 +244,38 @@ impl Resolver for LatestPublicationResolver {
     async fn resolve(&self, request: ResolutionRequest) -> Result<ResolvedRunPlan, ResolveError> {
         self.inner.resolve(request).await
     }
+}
+
+/// Validate a declared binding fingerprint against the frozen registry.
+///
+/// Only `REGISTRY_KIND_AGENT` bindings are currently checked; other kinds
+/// pass through because they are not yet modeled as catalog binding refs.
+/// A-G22: mismatch → `BindingMismatch`; absent → `BindingNotFound`.
+/// A-G28: no alternative search; error is returned immediately.
+fn validate_binding_fingerprint(
+    frozen: &FrozenAgentRegistry,
+    expected: &CatalogBindingRef,
+) -> Result<(), ResolveError> {
+    if expected.kind != REGISTRY_KIND_AGENT {
+        return Ok(());
+    }
+    let pin =
+        frozen
+            .agents
+            .pin_for_agent(&expected.id)
+            .ok_or_else(|| ResolveError::BindingNotFound {
+                kind: expected.kind.clone(),
+                id: expected.id.clone(),
+            })?;
+    if pin.content_hash != expected.content_hash {
+        return Err(ResolveError::BindingMismatch {
+            kind: expected.kind.clone(),
+            id: expected.id.clone(),
+            expected: expected.content_hash.clone(),
+            actual: pin.content_hash.clone(),
+        });
+    }
+    Ok(())
 }
 
 impl FrozenAgentRegistryMaterializer {
@@ -941,6 +976,7 @@ mod tests {
                 requested_persistence: PersistenceRequirement::CheckpointRequired,
                 ..Default::default()
             },
+            expected_binding: None,
         }
     }
 
@@ -1123,5 +1159,138 @@ mod tests {
             Ok(_) => panic!("expected frozen registry materialization error"),
             Err(error) => error,
         }
+    }
+
+    /// A-G22/A-G28: resolver rejects a request whose expected binding
+    /// fingerprint does not match the frozen registry entry — immediately,
+    /// without searching alternatives.
+    #[tokio::test]
+    async fn resolver_fails_closed_on_binding_fingerprint_mismatch() {
+        let store = InMemoryVersionedRegistryStore::new();
+        let provider = publish_provider(&store, "provider-1").await;
+        let model = publish_model(&store, "model-1", "provider-1").await;
+        let root = publish_agent(&store, agent("root", "model-1", [])).await;
+        store
+            .create_publication(
+                "default",
+                "pub-1",
+                refs([&provider, &model, &root]),
+                Vec::new(),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let resolver = ScopedServerResolver::new(
+            ScopeId::default_scope(),
+            Arc::new(store),
+            live_registry_handle(),
+        );
+
+        let mut request = nested_request(ResolutionTarget::Root {
+            agent_id: "root".into(),
+            thread_id: "thread-1".into(),
+        });
+        request.expected_binding = Some(CatalogBindingRef {
+            kind: REGISTRY_KIND_AGENT.to_string(),
+            id: "root".to_string(),
+            content_hash: "sha256:wrong-fingerprint".to_string(),
+        });
+
+        match resolver.resolve(request).await {
+            Ok(_) => panic!("expected BindingMismatch, got Ok"),
+            Err(ResolveError::BindingMismatch { kind, id, .. }) => {
+                assert_eq!(kind, "agent");
+                assert_eq!(id, "root");
+            }
+            Err(other) => panic!("expected BindingMismatch, got: {other}"),
+        }
+    }
+
+    /// A-G22/A-G28: resolver rejects a request whose expected binding id is
+    /// absent from the frozen registry — immediately, without alternatives.
+    #[tokio::test]
+    async fn resolver_fails_closed_when_binding_absent_from_frozen_registry() {
+        let store = InMemoryVersionedRegistryStore::new();
+        let provider = publish_provider(&store, "provider-1").await;
+        let model = publish_model(&store, "model-1", "provider-1").await;
+        let root = publish_agent(&store, agent("root", "model-1", [])).await;
+        store
+            .create_publication(
+                "default",
+                "pub-1",
+                refs([&provider, &model, &root]),
+                Vec::new(),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let resolver = ScopedServerResolver::new(
+            ScopeId::default_scope(),
+            Arc::new(store),
+            live_registry_handle(),
+        );
+
+        let mut request = nested_request(ResolutionTarget::Root {
+            agent_id: "root".into(),
+            thread_id: "thread-1".into(),
+        });
+        request.expected_binding = Some(CatalogBindingRef {
+            kind: REGISTRY_KIND_AGENT.to_string(),
+            id: "nonexistent-agent".to_string(),
+            content_hash: "sha256:any".to_string(),
+        });
+
+        match resolver.resolve(request).await {
+            Ok(_) => panic!("expected BindingNotFound, got Ok"),
+            Err(ResolveError::BindingNotFound { kind, id }) => {
+                assert_eq!(kind, "agent");
+                assert_eq!(id, "nonexistent-agent");
+            }
+            Err(other) => panic!("expected BindingNotFound, got: {other}"),
+        }
+    }
+
+    /// A-G22: resolver passes when the declared binding fingerprint matches
+    /// the frozen registry entry exactly.
+    #[tokio::test]
+    async fn resolver_succeeds_when_binding_fingerprint_matches() {
+        let store = InMemoryVersionedRegistryStore::new();
+        let provider = publish_provider(&store, "provider-1").await;
+        let model = publish_model(&store, "model-1", "provider-1").await;
+        let root = publish_agent(&store, agent("root", "model-1", [])).await;
+        store
+            .create_publication(
+                "default",
+                "pub-1",
+                refs([&provider, &model, &root]),
+                Vec::new(),
+                None,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let resolver = ScopedServerResolver::new(
+            ScopeId::default_scope(),
+            Arc::new(store),
+            live_registry_handle(),
+        );
+
+        let mut request = nested_request(ResolutionTarget::Root {
+            agent_id: "root".into(),
+            thread_id: "thread-1".into(),
+        });
+        request.expected_binding = Some(CatalogBindingRef {
+            kind: REGISTRY_KIND_AGENT.to_string(),
+            id: "root".to_string(),
+            content_hash: root.content_hash.clone(),
+        });
+
+        let plan = resolver.resolve(request).await.unwrap();
+        assert_eq!(plan.agent_spec().id, "root");
     }
 }

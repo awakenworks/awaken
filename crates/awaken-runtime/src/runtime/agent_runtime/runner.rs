@@ -505,6 +505,7 @@ impl AgentRuntime {
                     is_continuation: input.is_continuation,
                     requested_persistence: PersistenceRequirement::NotRequired,
                 },
+                expected_binding: None,
             };
             root_resolver.resolve(request).await.map_err(|error| {
                 AgentLoopError::RuntimeError(crate::RuntimeError::ResolveFailed {

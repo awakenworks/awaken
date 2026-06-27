@@ -901,9 +901,7 @@ impl MailboxStore for InterruptOnLoadMailboxStore {
             && dispatch.status() == RunDispatchStatus::Claimed
             && self.interrupt_once.swap(false, Ordering::SeqCst)
         {
-            self.inner
-                .interrupt(&dispatch.thread_id(), now_ms())
-                .await?;
+            self.inner.interrupt(dispatch.thread_id(), now_ms()).await?;
         }
         Ok(loaded)
     }
@@ -2101,9 +2099,7 @@ async fn reconstruct_failure_dead_letters_once_without_repolling() {
     .await;
     assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
     assert!(
-        dead.last_error()
-            .as_deref()
-            .is_some_and(|e| e.contains("not found")),
+        dead.last_error().is_some_and(|e| e.contains("not found")),
         "expected missing-message error, got: {:?}",
         dead.last_error()
     );
@@ -2275,7 +2271,6 @@ async fn permanent_inference_error_dead_letters_after_single_run() {
     assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
     assert!(
         dead.last_error()
-            .as_deref()
             .is_some_and(|e| e.contains("unauthorized")),
         "expected unauthorized error, got: {:?}",
         dead.last_error()
@@ -2341,7 +2336,6 @@ async fn transient_inference_error_nacks_for_retry() {
     assert!(
         requeued
             .last_error()
-            .as_deref()
             .is_some_and(|e| e.contains("rate limited")),
         "expected rate-limit error, got: {:?}",
         requeued.last_error()
@@ -2385,9 +2379,7 @@ async fn reconstruct_failure_missing_run_dead_letters_once() {
     .await;
     assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
     assert!(
-        dead.last_error()
-            .as_deref()
-            .is_some_and(|e| e.contains("not found")),
+        dead.last_error().is_some_and(|e| e.contains("not found")),
         "expected run-not-found error, got: {:?}",
         dead.last_error()
     );
@@ -2583,7 +2575,6 @@ async fn permanent_error_recovers_from_transient_dead_letter_fault() {
     assert_eq!(dead.status(), RunDispatchStatus::DeadLetter);
     assert!(
         dead.last_error()
-            .as_deref()
             .is_some_and(|e| e.contains("unauthorized")),
         "expected unauthorized error, got: {:?}",
         dead.last_error()
@@ -3096,7 +3087,6 @@ async fn start_lifecycle_runs_startup_recovery_for_existing_queued_dispatches() 
     assert!(
         recovered
             .last_error()
-            .as_deref()
             .is_some_and(|error| error.contains("missing-agent")),
         "dead-letter error should preserve the runtime failure: {recovered:?}"
     );
@@ -4858,7 +4848,6 @@ async fn background_permanent_error_records_run_result_before_dead_letter() {
     ));
     assert!(
         dead.last_error()
-            .as_deref()
             .is_some_and(|error| error.contains("missing-agent"))
     );
     assert!(
@@ -5335,7 +5324,7 @@ async fn submit_inline_claim_empty_cancels_precreated_run() {
     assert_eq!(dispatch.status(), RunDispatchStatus::Cancelled);
 
     let run = run_store
-        .load_run(&dispatch.run_id())
+        .load_run(dispatch.run_id())
         .await
         .unwrap()
         .expect("inline cleanup should keep run inspectable");
@@ -7890,7 +7879,7 @@ async fn distributed_expired_lease_reclaim_rejects_late_old_owner_ack() {
 
     assert!(
         store
-            .ack("dispatch-lease-race", &old_token, 1_103)
+            .ack("dispatch-lease-race", old_token, 1_103)
             .await
             .is_err(),
         "late ack from old owner must not release the new owner's claim"
@@ -7904,7 +7893,7 @@ async fn distributed_expired_lease_reclaim_rejects_late_old_owner_ack() {
     assert_eq!(still_claimed_by_b.claimed_by(), Some("consumer-b"));
 
     store
-        .ack("dispatch-lease-race", &new_token, 1_104)
+        .ack("dispatch-lease-race", new_token, 1_104)
         .await
         .expect("new owner ack succeeds");
     let delivered = store
@@ -7983,7 +7972,7 @@ async fn distributed_nack_retry_window_respects_retry_at_boundary() {
     store
         .nack(
             "dispatch-retry-boundary",
-            &token,
+            token,
             2_000,
             "retry later",
             1_001,

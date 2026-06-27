@@ -19,9 +19,9 @@ pub use capabilities::{
 };
 pub use local_registry::LocalRegistryResolver;
 pub use types::{
-    DelegatePersistence, ExecutionPlan, ExecutionRole, HandoffTranscriptRef, LiveOnlyScope,
-    PersistenceRequirement, RegistryResolutionScope, ReplayableResolvedRun, ReplayableScope,
-    ResolutionArtifact, ResolutionPolicy, ResolutionRequest, ResolutionTarget,
+    CatalogBindingRef, DelegatePersistence, ExecutionPlan, ExecutionRole, HandoffTranscriptRef,
+    LiveOnlyScope, PersistenceRequirement, RegistryResolutionScope, ReplayableResolvedRun,
+    ReplayableScope, ResolutionArtifact, ResolutionPolicy, ResolutionRequest, ResolutionTarget,
     ResolvedModelBinding, ResolvedRun, ResolvedRunPlan, ResolvedTool, RootScopeKind, RunFeatureSet,
 };
 
@@ -37,6 +37,19 @@ pub enum ResolveError {
     CapabilityMismatch(Vec<CapabilityMismatch>),
     #[error("nested resolution scope mismatch: {0}")]
     NestedScopeMismatch(String),
+    /// Frozen registry entry fingerprint does not match the declared binding
+    /// (A-G22/A-G28): resolution fails immediately, no alternative is searched.
+    #[error("binding fingerprint mismatch for {kind}/{id}: expected {expected}, found {actual}")]
+    BindingMismatch {
+        kind: String,
+        id: String,
+        expected: String,
+        actual: String,
+    },
+    /// Binding declared in the request is absent from the frozen registry
+    /// (A-G22/A-G28): resolution fails immediately, no alternative is searched.
+    #[error("binding not found in catalog: {kind}/{id}")]
+    BindingNotFound { kind: String, id: String },
 }
 
 impl From<RuntimeError> for ResolveError {

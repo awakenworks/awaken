@@ -70,6 +70,17 @@ fn map_resolve_error(context: &'static str, error: ResolveError) -> ApiError {
             ApiError::BadRequest(format!("{context}: {message}"))
         }
         ResolveError::Runtime(message) => ApiError::Internal(format!("{context}: {message}")),
+        ResolveError::BindingMismatch {
+            kind,
+            id,
+            expected,
+            actual,
+        } => ApiError::BadRequest(format!(
+            "{context}: binding fingerprint mismatch for {kind}/{id}: expected {expected}, found {actual}"
+        )),
+        ResolveError::BindingNotFound { kind, id } => ApiError::BadRequest(format!(
+            "{context}: binding not found in catalog: {kind}/{id}"
+        )),
     }
 }
 
