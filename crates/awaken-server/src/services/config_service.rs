@@ -767,7 +767,8 @@ pub(super) fn map_runtime_error(error: ConfigRuntimeError) -> ConfigServiceError
         | ConfigRuntimeError::PartialBootstrap
         | ConfigRuntimeError::PeriodicRefresh(_)
         | ConfigRuntimeError::ChangeListener(_)
-        | ConfigRuntimeError::VersionedRegistry(_) => ConfigServiceError::Apply(error.to_string()),
+        | ConfigRuntimeError::VersionedRegistry(_)
+        | ConfigRuntimeError::FingerprintChanged => ConfigServiceError::Apply(error.to_string()),
         ConfigRuntimeError::Storage(error) => ConfigServiceError::Storage(error),
     }
 }

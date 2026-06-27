@@ -31,6 +31,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 mod a2a_discovery;
+mod catalog_installer;
 #[cfg(test)]
 mod credential_tests;
 mod discovered_agents;
@@ -83,6 +84,8 @@ pub enum ConfigRuntimeError {
     VersionedRegistry(String),
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),
+    #[error("config fingerprint changed since catalog was prepared; catalog install aborted")]
+    FingerprintChanged,
 }
 
 macro_rules! overlay_registry {

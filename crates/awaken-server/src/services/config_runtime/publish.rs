@@ -1,7 +1,8 @@
 use super::{
-    ConfigRuntimeError, ConfigRuntimeManager, ManagedConfigSnapshot, provider_capability_discovery,
-    registry_compile,
+    ConfigRuntimeError, ConfigRuntimeManager, ManagedConfigSnapshot, catalog_installer,
+    provider_capability_discovery, registry_compile,
 };
+use catalog_installer::RuntimeCatalogInstaller;
 
 impl ConfigRuntimeManager {
     pub(super) async fn publish(
@@ -51,46 +52,16 @@ impl ConfigRuntimeManager {
             return Err(error);
         }
 
-        let runtime_set = self.published_or_candidate_registry_set(candidate).await?;
-        let version = match self.runtime.replace_registry_set(runtime_set) {
-            Some(version) => version,
-            None => {
-                prepared_mcp.cleanup().await;
-                return Err(ConfigRuntimeError::RuntimeNotConfigurable);
-            }
-        };
-
-        if let Some(prepared_skills) = prepared_skills {
-            prepared_skills.commit();
-        }
-
-        {
-            // Commit the executor cache and the staged capability cache together,
-            // only now that the publish transaction has fully succeeded.
-            let mut provider_cache = self.provider_cache.lock();
-            provider_cache.replace_executors(next_provider_cache);
-            provider_cache.commit_capabilities(staged_capabilities);
-        }
-
-        let previous_mcp = if prepared_mcp.state_changed {
-            let mut active = self.active_mcp_registry.lock();
-            std::mem::replace(&mut *active, prepared_mcp.next_state)
-        } else {
-            None
-        };
-
-        *self.last_applied_fingerprint.write() = Some(managed.fingerprint);
-
-        if let Some(previous) = previous_mcp
-            && let Err(error) = previous.handle.close().await
-        {
-            tracing::warn!(
-                error = %error,
-                "failed to close replaced MCP registry"
-            );
-        }
-
-        Ok(version)
+        RuntimeCatalogInstaller::new(
+            managed.fingerprint,
+            candidate,
+            next_provider_cache,
+            staged_capabilities,
+            prepared_skills,
+            prepared_mcp,
+        )
+        .commit_to(self)
+        .await
     }
 
     fn stage_provider_capability_cache(
