@@ -1103,6 +1103,7 @@ fn root_request(agent_id: &str, scope: RegistryResolutionScope) -> ResolutionReq
         overrides: None,
         frontend_tools: Vec::new(),
         features: crate::RunFeatureSet::default(),
+        expected_binding: None,
     }
 }
 

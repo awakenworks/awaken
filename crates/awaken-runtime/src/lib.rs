@@ -73,12 +73,12 @@ pub use registry::{
 };
 pub use resolution::{
     AgentSpecLookup, BackendProfile, BackendRequirements, CapabilityDecision, CapabilityMismatch,
-    DecisionCapability, DelegatePersistence, ExecutionPlan, ExecutionRole, FrontendToolCapability,
-    HandoffTranscriptRef, LiveOnlyScope, LocalRegistryResolver, OverrideCapability,
-    PersistenceCapability, PersistenceRequirement, RegistryResolutionScope, ReplayableResolvedRun,
-    ReplayableScope, ResolutionArtifact, ResolutionPolicy, ResolutionRequest, ResolutionTarget,
-    ResolveError, ResolvedModelBinding, ResolvedRun, ResolvedRunPlan, ResolvedTool, Resolver,
-    RunFeatureSet,
+    CatalogBindingRef, DecisionCapability, DelegatePersistence, ExecutionPlan, ExecutionRole,
+    FrontendToolCapability, HandoffTranscriptRef, LiveOnlyScope, LocalRegistryResolver,
+    OverrideCapability, PersistenceCapability, PersistenceRequirement, RegistryResolutionScope,
+    ReplayableResolvedRun, ReplayableScope, ResolutionArtifact, ResolutionPolicy,
+    ResolutionRequest, ResolutionTarget, ResolveError, ResolvedModelBinding, ResolvedRun,
+    ResolvedRunPlan, ResolvedTool, Resolver, RunFeatureSet,
 };
 pub use run::{
     CaptureWiring, PersistenceHints, ResolverInheritance, RunActivation, RunActivationError,
