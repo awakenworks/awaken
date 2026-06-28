@@ -49,6 +49,9 @@ subtle = { workspace = true }
 # MCP server
 mcp = { workspace = true, features = ["server", "client"] }
 
+# Console auth: offline JWT/JWKS verification (IamClient / AuthzTransport)
+jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
+
 # Audit log
 ulid = "1"
 sha2 = "0.10"

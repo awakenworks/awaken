@@ -66,7 +66,7 @@ pub(super) async fn run_claimed_dispatch(
         }
     };
     if current_dispatch.status() != RunDispatchStatus::Claimed
-        || current_dispatch.claim_token().as_deref() != Some(claim_token.as_str())
+        || current_dispatch.claim_token() != Some(claim_token.as_str())
     {
         tracing::info!(dispatch_id, status = ?current_dispatch.status(), "dispatch no longer owned by this worker, skipping execution");
         if current_dispatch.status() == RunDispatchStatus::Superseded {

@@ -324,6 +324,10 @@ pub struct AdminModuleState {
     pub admin_api_config: AdminApiConfig,
     pub audit_log_config: AuditLogConfig,
     pub started_at: Instant,
+    /// IAM client for offline JWT/JWKS verification; `None` when JWKS is not
+    /// configured. Built lazily from `admin_api_config.jwks` the first time the
+    /// console authentication middleware is wired.
+    pub iam_client: Option<std::sync::Arc<crate::console_auth::IamClient>>,
 }
 
 #[derive(Clone)]
@@ -460,6 +464,7 @@ impl ServerState {
                 admin_api_config: super::AdminApiConfig::default(),
                 audit_log_config: super::AuditLogConfig::default(),
                 started_at: Instant::now(),
+                iam_client: None,
             },
             server_config,
             scope_provider: Arc::new(SingleScopeProvider::default()),
@@ -549,6 +554,7 @@ impl ServerState {
             admin_api_config: super::admin_api_config(self),
             audit_log_config: self.admin.audit_log_config,
             started_at: self.admin.started_at,
+            iam_client: self.admin.iam_client.clone(),
         }
     }
 

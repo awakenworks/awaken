@@ -692,14 +692,14 @@ impl Mailbox {
                     let w = w.lock();
                     w.thread_ctx
                         .as_ref()
-                        .and_then(|ctx| ctx.get_run(&dispatch.run_id()).cloned())
+                        .and_then(|ctx| ctx.get_run(dispatch.run_id()).cloned())
                 })
             };
             if let Some(run) = cached {
                 run
             } else {
                 self.run_store
-                    .load_run(&dispatch.run_id())
+                    .load_run(dispatch.run_id())
                     .await?
                     .ok_or_else(|| {
                         MailboxError::Validation(format!(

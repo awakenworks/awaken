@@ -1346,7 +1346,7 @@ async fn concurrent_enqueue_same_thread_preserves_thread_index_entries() {
         let dispatch = got.into_iter().next().unwrap();
         let token = dispatch.claim_token().unwrap().to_string();
         verifier
-            .ack(&dispatch.dispatch_id(), &token, 20_000 + i as u64)
+            .ack(dispatch.dispatch_id(), &token, 20_000 + i as u64)
             .await
             .unwrap();
         claimed.push(dispatch.dispatch_id().to_string());
