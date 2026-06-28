@@ -24,7 +24,7 @@ export function AdminTopbar({
   const { t } = useTranslation();
   const { pathname } = useLocation();
   const crumbs = resolveBreadcrumbs(pathname);
-  const { token, status, openTokenModal } = useAuth();
+  const { token, status, oauthEnabled, openTokenModal, logout } = useAuth();
   const description = describeAuthStatus(status);
   const dotClass = STATUS_DOT[description.tone];
   const palette = useCommandPalette();
@@ -139,29 +139,53 @@ export function AdminTopbar({
           </svg>
         </button>
 
-        <button
-          type="button"
-          onClick={openTokenModal}
-          aria-label={token ? `Set admin token (currently ${maskAdminToken(token)})` : "Set admin token"}
-          title={token ? `admin · token ${maskAdminToken(token)} ✓` : "Set admin token"}
-          className="flex items-center gap-2 rounded-sm border border-line-strong bg-surface px-2 py-1 text-left text-xs text-fg-soft transition-colors hover:bg-soft hover:text-fg"
-        >
-          <span
-            aria-hidden
-            className="inline-flex h-6 w-6 items-center justify-center rounded-pill bg-accent/15 font-mono text-[10px] font-semibold text-accent"
+        {oauthEnabled ? (
+          <button
+            type="button"
+            onClick={() => void logout()}
+            aria-label="Sign out"
+            title="Sign out"
+            className="flex items-center gap-2 rounded-sm border border-line-strong bg-surface px-2 py-1 text-left text-xs text-fg-soft transition-colors hover:bg-soft hover:text-fg"
           >
-            {tokenInitials(token)}
-          </span>
-          <span className="hidden flex-col leading-tight sm:flex">
-            <span className="flex items-center gap-1.5 font-medium text-fg">
-              <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-pill ${dotClass}`} />
-              {description.label}
+            <span
+              aria-hidden
+              className="inline-flex h-6 w-6 items-center justify-center rounded-pill bg-accent/15 font-mono text-[10px] font-semibold text-accent"
+            >
+              {tokenInitials(token)}
             </span>
-            <span className="font-mono text-[10px] text-fg-faint">
-              admin · token ✓ · {maskAdminToken(token)}
+            <span className="hidden flex-col leading-tight sm:flex">
+              <span className="flex items-center gap-1.5 font-medium text-fg">
+                <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-pill ${dotClass}`} />
+                {description.label}
+              </span>
+              <span className="font-mono text-[10px] text-fg-faint">Sign out</span>
             </span>
-          </span>
-        </button>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={openTokenModal}
+            aria-label={token ? `Set admin token (currently ${maskAdminToken(token)})` : "Set admin token"}
+            title={token ? `admin · token ${maskAdminToken(token)} ✓` : "Set admin token"}
+            className="flex items-center gap-2 rounded-sm border border-line-strong bg-surface px-2 py-1 text-left text-xs text-fg-soft transition-colors hover:bg-soft hover:text-fg"
+          >
+            <span
+              aria-hidden
+              className="inline-flex h-6 w-6 items-center justify-center rounded-pill bg-accent/15 font-mono text-[10px] font-semibold text-accent"
+            >
+              {tokenInitials(token)}
+            </span>
+            <span className="hidden flex-col leading-tight sm:flex">
+              <span className="flex items-center gap-1.5 font-medium text-fg">
+                <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-pill ${dotClass}`} />
+                {description.label}
+              </span>
+              <span className="font-mono text-[10px] text-fg-faint">
+                admin · token ✓ · {maskAdminToken(token)}
+              </span>
+            </span>
+          </button>
+        )}
       </div>
     </header>
   );

@@ -80,18 +80,6 @@ fn decode_delivery_mode(row: &PgRow) -> Result<DeliveryMode, StorageError> {
         .map(|mode| mode.unwrap_or_default())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pending_row_decode_error_includes_column_name() {
-        let error = pending_row_decode_error("position", "wrong type");
-        assert!(matches!(error, StorageError::Serialization(_)));
-        assert!(error.to_string().contains("position"));
-    }
-}
-
 impl PostgresStore {
     async fn load_pending_message_records_tx(
         &self,
@@ -739,5 +727,17 @@ impl PostgresStore {
             .await
             .map_err(|e| StorageError::Io(e.to_string()))?;
         Ok(appended)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_row_decode_error_includes_column_name() {
+        let error = pending_row_decode_error("position", "wrong type");
+        assert!(matches!(error, StorageError::Serialization(_)));
+        assert!(error.to_string().contains("position"));
     }
 }

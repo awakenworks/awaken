@@ -11,6 +11,11 @@ import {
 import { clearAdminToken, readAdminToken, writeAdminToken } from "@/lib/admin-token";
 import { setUnauthorizedHandler } from "@/lib/auth-interceptor";
 import { configApi, ConfigApiError } from "@/lib/config-api";
+import {
+  authApi,
+  extractAccessTokenFromFragment,
+  extractOAuthErrorFromFragment,
+} from "@/lib/api/auth";
 import { AdminTokenModal } from "./admin-token-modal";
 import { useToast } from "./toast-provider";
 
@@ -19,7 +24,9 @@ export type AuthStatus = "checking" | "ok" | "unauthorized" | "missing" | "disco
 interface AuthContextValue {
   token: string | null;
   status: AuthStatus;
+  oauthEnabled: boolean;
   openTokenModal: () => void;
+  logout: () => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -34,6 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => readAdminToken());
   const [status, setStatus] = useState<AuthStatus>("checking");
   const [pending, setPending] = useState<PendingPrompt | null>(null);
+  const [oauthEnabled, setOauthEnabled] = useState(false);
   const toast = useToast();
   const refreshSeqRef = useRef(0);
 
@@ -58,12 +66,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const didMountRef = useRef(false);
+  const didFragmentCheckRef = useRef(false);
   useEffect(() => {
-    if (didMountRef.current) return;
-    didMountRef.current = true;
+    if (didFragmentCheckRef.current) return;
+    didFragmentCheckRef.current = true;
+    const fragment = window.location.hash;
+    const oauthError = extractOAuthErrorFromFragment(fragment);
+    if (oauthError) {
+      toast.error(`Login failed: ${oauthError}`);
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      return;
+    }
+    const accessToken = extractAccessTokenFromFragment(fragment);
+    if (accessToken) {
+      writeAdminToken(accessToken);
+      setToken(accessToken);
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }, [toast]);
+
+  const didCapCheckRef = useRef(false);
+  useEffect(() => {
+    if (didCapCheckRef.current) return;
+    didCapCheckRef.current = true;
+    authApi
+      .capabilities()
+      .then((caps) => {
+        setOauthEnabled(caps.oauth_enabled);
+      })
+      .catch(() => {
+        setOauthEnabled(false);
+      });
     void probe();
   }, [probe]);
+
+  useEffect(() => {
+    if (!oauthEnabled) return;
+    if (status === "missing" || status === "unauthorized") {
+      window.location.href = authApi.loginUrl(window.location.href);
+    }
+  }, [oauthEnabled, status]);
 
   const promptForToken = useCallback(
     (reason: "manual" | "unauthorized"): Promise<string | null> => {
@@ -75,12 +117,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
+    if (oauthEnabled) {
+      const dispose = setUnauthorizedHandler(async () => null);
+      return dispose;
+    }
     const dispose = setUnauthorizedHandler(async () => {
       const result = await promptForToken("unauthorized");
       return result;
     });
     return dispose;
-  }, [promptForToken]);
+  }, [oauthEnabled, promptForToken]);
+
+  const logout = useCallback(async () => {
+    try {
+      await authApi.logout();
+    } catch {
+      // best-effort
+    }
+    clearAdminToken();
+    setToken(null);
+    setStatus("missing");
+    if (oauthEnabled) {
+      window.location.href = authApi.loginUrl();
+    }
+  }, [oauthEnabled]);
 
   const handleSubmit = useCallback(
     (next: string) => {
@@ -118,21 +178,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ token, status, openTokenModal, refresh: probe }),
-    [token, status, openTokenModal, probe],
+    () => ({ token, status, oauthEnabled, openTokenModal, logout, refresh: probe }),
+    [token, status, oauthEnabled, openTokenModal, logout, probe],
   );
 
   return (
     <AuthContext.Provider value={value}>
       {children}
-      <AdminTokenModal
-        open={pending !== null}
-        initialToken={token ?? ""}
-        reason={pending?.reason ?? "manual"}
-        onSubmit={handleSubmit}
-        onClear={handleClear}
-        onCancel={handleCancel}
-      />
+      {!oauthEnabled && (
+        <AdminTokenModal
+          open={pending !== null}
+          initialToken={token ?? ""}
+          reason={pending?.reason ?? "manual"}
+          onSubmit={handleSubmit}
+          onClear={handleClear}
+          onCancel={handleCancel}
+        />
+      )}
     </AuthContext.Provider>
   );
 }

@@ -20,6 +20,7 @@ use awaken_server_contract::RedactedString;
 use super::{AdminApiConfig, AuditLogConfig, ReplayBufferMap, ServerState, SkillCatalogProvider};
 use crate::eval_limits::EvalLimits;
 use crate::mailbox::{Mailbox, MailboxSubmitResult};
+use crate::oauth_login::InProcessSessionStore;
 use crate::outbox_relay::OutboxRelayError;
 use crate::protocol_replay_state::A2aPushWebhookRelayConfig;
 use crate::scope::{HttpScopeProvider, SingleScopeProvider};
@@ -324,6 +325,11 @@ pub struct AdminModuleState {
     pub admin_api_config: AdminApiConfig,
     pub audit_log_config: AuditLogConfig,
     pub started_at: Instant,
+    pub session_store: Arc<InProcessSessionStore>,
+    /// IAM client for offline JWT/JWKS verification; `None` when JWKS is not
+    /// configured. Built lazily from `admin_api_config.jwks` the first time the
+    /// console authentication middleware is wired.
+    pub iam_client: Option<Arc<crate::console_auth::IamClient>>,
 }
 
 #[derive(Clone)]
@@ -460,6 +466,8 @@ impl ServerState {
                 admin_api_config: super::AdminApiConfig::default(),
                 audit_log_config: super::AuditLogConfig::default(),
                 started_at: Instant::now(),
+                session_store: InProcessSessionStore::new(),
+                iam_client: None,
             },
             server_config,
             scope_provider: Arc::new(SingleScopeProvider::default()),
@@ -549,7 +557,19 @@ impl ServerState {
             admin_api_config: super::admin_api_config(self),
             audit_log_config: self.admin.audit_log_config,
             started_at: self.admin.started_at,
+            session_store: self.admin.session_store.clone(),
+            iam_client: self.admin.iam_client.clone(),
         }
+    }
+
+    pub fn oauth_routes_state(&self) -> Option<crate::oauth_login::OAuthRoutesState> {
+        let admin = self.admin_module();
+        let oauth = Arc::new(admin.admin_api_config.oauth.clone()?);
+        Some(crate::oauth_login::OAuthRoutesState {
+            sessions: admin.session_store.clone(),
+            admin,
+            oauth,
+        })
     }
 
     pub fn mounted_modules(&self) -> Vec<&'static str> {

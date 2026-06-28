@@ -99,6 +99,17 @@ pub enum MailboxLifecycleMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OAuthConfig {
+    pub client_id: String,
+    pub client_secret: RedactedString,
+    pub authorization_url: String,
+    pub token_url: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub redirect_uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminApiConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bearer_token: Option<RedactedString>,
@@ -110,6 +121,11 @@ pub struct AdminApiConfig {
     pub expose_trace_routes: bool,
     #[serde(default = "default_expose_eval_routes")]
     pub expose_eval_routes: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<OAuthConfig>,
+    /// JWKS endpoint config for offline JWT access-token verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwks: Option<crate::console_auth::JwksConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -179,6 +195,8 @@ impl Default for AdminApiConfig {
             expose_config_routes: default_expose_config_routes(),
             expose_trace_routes: default_expose_trace_routes(),
             expose_eval_routes: default_expose_eval_routes(),
+            oauth: None,
+            jwks: None,
         }
     }
 }
@@ -502,6 +520,21 @@ impl ServerState {
 
     pub fn admin_api_config(&self) -> AdminApiConfig {
         admin_api_config(self)
+    }
+
+    /// Configure offline JWT/JWKS verification for the admin console.
+    ///
+    /// Stores the config in `admin_api_config.jwks` and builds an
+    /// [`crate::console_auth::IamClient`] that is shared across the request
+    /// lifecycle. Call this after configuring the admin API config.
+    #[must_use]
+    pub fn with_jwks_config(mut self, config: crate::console_auth::JwksConfig) -> Self {
+        let iam = crate::console_auth::IamClient::new(config.clone(), reqwest::Client::new());
+        self.admin.iam_client = Some(iam);
+        let mut api_config = admin_api_config(&self);
+        api_config.jwks = Some(config);
+        self.admin.admin_api_config = api_config;
+        self
     }
 
     #[must_use]
