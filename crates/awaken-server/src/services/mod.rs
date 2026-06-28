@@ -11,6 +11,7 @@ pub mod eval_common;
 pub mod eval_events;
 pub mod eval_run_service;
 pub mod frozen_registry;
+pub mod live_run_control_service;
 pub mod online_eval_service;
 #[cfg(feature = "permission")]
 pub mod permission_preview;

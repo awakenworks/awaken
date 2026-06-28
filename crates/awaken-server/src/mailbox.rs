@@ -912,6 +912,7 @@ mod server_event_capture;
 mod signal_loop;
 mod staging_coordinator;
 mod submit;
+mod wake;
 
 use self::coordinator_facade::MailboxRunStoreCoordinator;
 use self::{helpers::*, runtime_event_capture::RuntimeEventCaptureConfig};

@@ -15,6 +15,7 @@ use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
 use crate::mailbox::{ACTIVE_RUN_CONFLICT_MESSAGE, MailboxDispatchStatus, MailboxError};
 use crate::query::{self, MessageQueryParams, ThreadQueryParams};
+use crate::services::live_run_control_service::{LiveRunControlError, LiveRunControlService};
 use crate::services::run_control_service::{
     InputMode, InterruptMode, RunControlError, RunControlService,
 };
@@ -108,6 +109,14 @@ fn map_run_control_error(error: RunControlError) -> ApiError {
     }
 }
 
+fn map_live_run_control_error(error: LiveRunControlError) -> ApiError {
+    match error {
+        LiveRunControlError::NotFound(id) => ApiError::RunNotFound(id),
+        LiveRunControlError::NoSubscriber(id) => ApiError::RunNotFound(id),
+        LiveRunControlError::Mailbox(error) => map_mailbox_error(error),
+    }
+}
+
 use crate::route_modules::{AdminRunModule, CapabilitiesModule, RouteModule, SystemRoutes};
 
 /// Build the complete router for the given state.
@@ -181,6 +190,7 @@ pub(crate) fn run_routes() -> Router<RunRoutesState> {
         .route("/v1/runs/:id", get(get_run))
         .route("/v1/runs/:id/inputs", post(push_run_inputs))
         .route("/v1/runs/:id/cancel", post(cancel_run))
+        .route("/v1/runs/:id/wake", post(wake_run))
         .route("/v1/runs/:id/decision", post(submit_decision))
         .route("/v1/threads/:id/runs", get(list_thread_runs))
         .route("/v1/threads/:id/runs/active", get(active_thread_run))
@@ -864,6 +874,28 @@ async fn cancel_run(
         StatusCode::ACCEPTED,
         Json(json!({
             "status": "cancel_requested",
+            "run_id": id,
+        })),
+    )
+        .into_response())
+}
+
+#[tracing::instrument(skip(st), fields(run_id = %id))]
+async fn wake_run(
+    State(st): State<RunRoutesState>,
+    Extension(scope): Extension<ScopeContext>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let st = st.scoped(&scope);
+    LiveRunControlService::new(st.run.clone())
+        .wake(&id)
+        .await
+        .map_err(map_live_run_control_error)?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "wake_delivered",
             "run_id": id,
         })),
     )
