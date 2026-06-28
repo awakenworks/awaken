@@ -23,6 +23,7 @@ pub mod http_sse;
 pub mod mailbox;
 pub mod message_convert;
 pub mod metrics;
+pub mod oauth_login;
 pub mod outbox_relay;
 pub mod protocol_fanout;
 pub mod protocol_projector;

@@ -30,6 +30,13 @@ export {
   type OnlineEvalRequest,
   type ConfigRecord as EvalConfigRecord,
 } from "./eval";
+export {
+  authApi,
+  extractAccessTokenFromFragment,
+  extractOAuthErrorFromFragment,
+  type AuthCapabilities,
+  type SessionInfo,
+} from "./auth";
 export { systemApi } from "./system";
 export { toolsApi } from "./tools";
 export { tracesApi } from "./traces";

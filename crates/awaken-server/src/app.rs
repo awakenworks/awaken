@@ -99,6 +99,17 @@ pub enum MailboxLifecycleMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OAuthConfig {
+    pub client_id: String,
+    pub client_secret: RedactedString,
+    pub authorization_url: String,
+    pub token_url: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub redirect_uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdminApiConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bearer_token: Option<RedactedString>,
@@ -110,6 +121,8 @@ pub struct AdminApiConfig {
     pub expose_trace_routes: bool,
     #[serde(default = "default_expose_eval_routes")]
     pub expose_eval_routes: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<OAuthConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -179,6 +192,7 @@ impl Default for AdminApiConfig {
             expose_config_routes: default_expose_config_routes(),
             expose_trace_routes: default_expose_trace_routes(),
             expose_eval_routes: default_expose_eval_routes(),
+            oauth: None,
         }
     }
 }

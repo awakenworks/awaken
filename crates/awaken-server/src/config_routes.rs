@@ -767,6 +767,12 @@ pub(crate) fn ensure_admin_auth(
     admin: &AdminModuleState,
     headers: &HeaderMap,
 ) -> Result<(), ApiError> {
+    if admin.admin_api_config.oauth.is_some()
+        && let Some(sid) = crate::oauth_login::resolve_session_id(headers)
+        && admin.session_store.lookup_session(&sid).is_some()
+    {
+        return Ok(());
+    }
     ensure_admin_auth_for_token(admin.admin_api_config.bearer_token.as_ref(), headers)
 }
 

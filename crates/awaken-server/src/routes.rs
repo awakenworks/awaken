@@ -123,6 +123,9 @@ pub fn build_router(state: &ServerState) -> Router {
     if admin_config.expose_trace_routes {
         router = state.trace_routes_state().mount(router);
     }
+    if let Some(oauth_state) = state.oauth_routes_state() {
+        router = router.merge(crate::oauth_login::oauth_routes().with_state(oauth_state));
+    }
 
     router
         .route("/metrics", get(crate::metrics::metrics_handler))
