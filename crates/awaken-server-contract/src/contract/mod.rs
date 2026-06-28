@@ -8,6 +8,7 @@ pub mod audit_log;
 pub mod config_store;
 pub mod durable_event_sink;
 pub mod event_store;
+pub mod license;
 pub mod mailbox;
 pub mod outbox;
 pub mod pinned_registry;

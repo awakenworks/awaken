@@ -22,6 +22,10 @@ pub use contract::audit_log::*;
 pub use contract::config_store::*;
 pub use contract::durable_event_sink::*;
 pub use contract::event_store::*;
+pub use contract::license::{
+    ClaimSigner, Ed25519ClaimSigner, Jwks, JwksKey, LicenseAuthority, LicenseClaim, LicenseError,
+    LicenseIssuancePolicy, verify_license_token,
+};
 pub use contract::mailbox::*;
 pub use contract::outbox::*;
 pub use contract::protocol_replay_log::*;

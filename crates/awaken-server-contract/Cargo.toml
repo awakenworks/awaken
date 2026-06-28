@@ -14,6 +14,7 @@ categories = ["artificial-intelligence"]
 awaken-runtime-contract = { workspace = true }
 async-trait = { workspace = true }
 base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["serde"] }
 futures = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }

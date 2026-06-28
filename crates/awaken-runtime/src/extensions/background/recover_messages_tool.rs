@@ -130,7 +130,7 @@ mod tests {
         BackgroundTaskManager, BackgroundTaskPlugin, DurableMessageRequest, DurableMessageSink,
         FailedDurableMessage,
     };
-    use crate::state::{StateKey, StateStore};
+    use crate::state::StateStore;
     use awaken_runtime_contract::contract::identity::{RunIdentity, RunOrigin};
     use awaken_runtime_contract::registry_spec::AgentSpec;
     use std::sync::Arc;

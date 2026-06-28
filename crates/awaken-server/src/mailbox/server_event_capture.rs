@@ -403,9 +403,9 @@ impl Mailbox {
         delivery_path: &'static str,
     ) {
         self.record_mailbox_decision_received(
-            &dispatch.thread_id(),
-            &dispatch.run_id(),
-            Some(&dispatch.dispatch_id()),
+            dispatch.thread_id(),
+            dispatch.run_id(),
+            Some(dispatch.dispatch_id().as_str()),
             tool_call_id,
             resume,
             delivery_path,
