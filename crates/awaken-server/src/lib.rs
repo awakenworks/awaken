@@ -39,6 +39,7 @@ pub mod scope;
 pub mod services;
 pub(crate) mod system_routes;
 pub mod time;
+pub mod token_authority;
 pub mod transport;
 
 pub mod prelude {

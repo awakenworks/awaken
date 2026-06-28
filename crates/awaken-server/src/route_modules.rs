@@ -53,17 +53,16 @@ async fn require_console_auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if let Some(iam) = &admin.iam_client {
-        if let Some(token) = crate::console_auth::extract_bearer_token(&headers) {
-            if token.starts_with("eyJ") {
-                let identity = iam
-                    .verify_access_token(token)
-                    .await
-                    .map_err(|e| ApiError::Unauthorized(e.to_string()))?;
-                request.extensions_mut().insert(identity);
-                return Ok(next.run(request).await);
-            }
-        }
+    if let Some(iam) = &admin.iam_client
+        && let Some(token) = crate::console_auth::extract_bearer_token(&headers)
+        && token.starts_with("eyJ")
+    {
+        let identity = iam
+            .verify_access_token(token)
+            .await
+            .map_err(|e| ApiError::Unauthorized(e.to_string()))?;
+        request.extensions_mut().insert(identity);
+        return Ok(next.run(request).await);
     }
     crate::config_routes::ensure_admin_auth(&admin, &headers)?;
     Ok(next.run(request).await)

@@ -330,6 +330,10 @@ pub struct AdminModuleState {
     /// configured. Built lazily from `admin_api_config.jwks` the first time the
     /// console authentication middleware is wired.
     pub iam_client: Option<Arc<crate::console_auth::IamClient>>,
+    /// This server's own access-token signing authority; `None` when not
+    /// configured.  Present when `admin_api_config.token_authority` is `Some`.
+    /// Drives the `/.well-known/jwks.json` endpoint.
+    pub token_authority: Option<Arc<crate::token_authority::AccessTokenAuthority>>,
 }
 
 #[derive(Clone)]
@@ -468,6 +472,7 @@ impl ServerState {
                 started_at: Instant::now(),
                 session_store: InProcessSessionStore::new(),
                 iam_client: None,
+                token_authority: None,
             },
             server_config,
             scope_provider: Arc::new(SingleScopeProvider::default()),
@@ -559,6 +564,7 @@ impl ServerState {
             started_at: self.admin.started_at,
             session_store: self.admin.session_store.clone(),
             iam_client: self.admin.iam_client.clone(),
+            token_authority: self.admin.token_authority.clone(),
         }
     }
 

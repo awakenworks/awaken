@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::app::{RunRoutesState, ServerState, TraceRoutesState};
+use crate::app::{AdminModuleState, RunRoutesState, ServerState, TraceRoutesState};
 use crate::http_run::wire_sse_relay;
 use crate::http_sse::{sse_body_stream, sse_response};
 use crate::mailbox::{ACTIVE_RUN_CONFLICT_MESSAGE, MailboxDispatchStatus, MailboxError};
@@ -127,6 +127,9 @@ pub fn build_router(state: &ServerState) -> Router {
         router = router.merge(crate::oauth_login::oauth_routes().with_state(oauth_state));
     }
 
+    // Public JWKS endpoint — no auth, always mounted (returns 404 when unconfigured).
+    router = router.merge(well_known_routes().with_state(state.admin_module()));
+
     router
         .route("/metrics", get(crate::metrics::metrics_handler))
         .layer(middleware::from_fn(crate::metrics::http_metrics_middleware))
@@ -143,6 +146,24 @@ pub(crate) fn health_routes() -> Router<RunRoutesState> {
     Router::new()
         .route("/health", get(health_ready))
         .route("/health/live", get(health_live))
+}
+
+/// Public `/.well-known/jwks.json` endpoint.
+///
+/// Returns the server's own JWKS so relying parties can verify access tokens
+/// offline.  No authentication is required — the JWKS is intentionally public.
+/// Returns 404 when no [`crate::token_authority::AccessTokenAuthority`] is
+/// configured.
+pub(crate) fn well_known_routes() -> Router<AdminModuleState> {
+    Router::new().route("/.well-known/jwks.json", get(jwks_handler))
+}
+
+#[tracing::instrument(skip(admin))]
+async fn jwks_handler(State(admin): State<AdminModuleState>) -> Response {
+    match &admin.token_authority {
+        Some(authority) => Json(authority.jwks()).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 pub(crate) fn thread_routes() -> Router<RunRoutesState> {

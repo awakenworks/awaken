@@ -126,6 +126,12 @@ pub struct AdminApiConfig {
     /// JWKS endpoint config for offline JWT access-token verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jwks: Option<crate::console_auth::JwksConfig>,
+    /// This server's own access-token signing authority.
+    ///
+    /// When present the public key set is published at
+    /// `/.well-known/jwks.json` so relying parties can verify tokens offline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_authority: Option<crate::token_authority::TokenAuthorityConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -197,6 +203,7 @@ impl Default for AdminApiConfig {
             expose_eval_routes: default_expose_eval_routes(),
             oauth: None,
             jwks: None,
+            token_authority: None,
         }
     }
 }
@@ -533,6 +540,26 @@ impl ServerState {
         self.admin.iam_client = Some(iam);
         let mut api_config = admin_api_config(&self);
         api_config.jwks = Some(config);
+        self.admin.admin_api_config = api_config;
+        self
+    }
+
+    /// Configure this server's own access-token signing authority.
+    ///
+    /// Stores the config in `admin_api_config.token_authority` and builds an
+    /// [`crate::token_authority::AccessTokenAuthority`] shared across the
+    /// request lifecycle.  Enables the `/.well-known/jwks.json` endpoint.
+    #[must_use]
+    pub fn with_token_authority(
+        mut self,
+        config: crate::token_authority::TokenAuthorityConfig,
+    ) -> Self {
+        let authority = Arc::new(crate::token_authority::AccessTokenAuthority::new(
+            config.clone(),
+        ));
+        self.admin.token_authority = Some(authority);
+        let mut api_config = admin_api_config(&self);
+        api_config.token_authority = Some(config);
         self.admin.admin_api_config = api_config;
         self
     }
