@@ -38,12 +38,33 @@ async fn require_scope_middleware(
     Ok(next.run(Request::from_parts(parts, body)).await)
 }
 
-async fn require_admin_auth_middleware(
+/// Admin auth middleware with JWKS JWT support.
+///
+/// When `admin.iam_client` is `Some` and the request carries a Bearer token
+/// that looks like a JWT (`eyJ…`), the token is verified offline via
+/// [`crate::console_auth::IamClient::verify_access_token`] (fail closed:
+/// any JWKS error immediately returns 401 without trying other methods).
+/// [`crate::console_auth::ConsoleIdentity`] is injected into request
+/// extensions on success. If no JWT is present, falls back to the existing
+/// OAuth-session / static-bearer checks.
+async fn require_console_auth_middleware(
     State(admin): State<AdminModuleState>,
     headers: HeaderMap,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
+    if let Some(iam) = &admin.iam_client {
+        if let Some(token) = crate::console_auth::extract_bearer_token(&headers) {
+            if token.starts_with("eyJ") {
+                let identity = iam
+                    .verify_access_token(token)
+                    .await
+                    .map_err(|e| ApiError::Unauthorized(e.to_string()))?;
+                request.extensions_mut().insert(identity);
+                return Ok(next.run(request).await);
+            }
+        }
+    }
     crate::config_routes::ensure_admin_auth(&admin, &headers)?;
     Ok(next.run(request).await)
 }
@@ -106,7 +127,7 @@ impl RouteModule for ProtocolRoutesState {
             require_scope_middleware,
         );
         let auth =
-            middleware::from_fn_with_state(self.admin.clone(), require_admin_auth_middleware);
+            middleware::from_fn_with_state(self.admin.clone(), require_console_auth_middleware);
         router
             .merge(
                 crate::protocols::ai_sdk_v6::http::ai_sdk_routes()
@@ -145,7 +166,7 @@ pub(crate) struct SystemRoutes(pub SystemRoutesState);
 impl RouteModule for SystemRoutes {
     fn mount(self, router: Router) -> Router {
         let auth =
-            middleware::from_fn_with_state(self.0.admin.clone(), require_admin_auth_middleware);
+            middleware::from_fn_with_state(self.0.admin.clone(), require_console_auth_middleware);
         let scope = middleware::from_fn_with_state(
             ScopeMiddlewareState {
                 provider: self.0.scope_provider.clone(),
@@ -167,7 +188,7 @@ pub(crate) struct AdminRunModule(pub AdminRunRoutesState);
 impl RouteModule for AdminRunModule {
     fn mount(self, router: Router) -> Router {
         let auth =
-            middleware::from_fn_with_state(self.0.admin.clone(), require_admin_auth_middleware);
+            middleware::from_fn_with_state(self.0.admin.clone(), require_console_auth_middleware);
         let scope = middleware::from_fn_with_state(
             ScopeMiddlewareState {
                 provider: self.0.scope_provider.clone(),
@@ -196,7 +217,7 @@ pub(crate) struct CapabilitiesModule(pub ConfigRoutesState);
 impl RouteModule for CapabilitiesModule {
     fn mount(self, router: Router) -> Router {
         let auth =
-            middleware::from_fn_with_state(self.0.admin.clone(), require_admin_auth_middleware);
+            middleware::from_fn_with_state(self.0.admin.clone(), require_console_auth_middleware);
         let scope = middleware::from_fn_with_state(
             ScopeMiddlewareState {
                 provider: self.0.scope_provider.clone(),
@@ -216,7 +237,7 @@ impl RouteModule for CapabilitiesModule {
 impl RouteModule for ConfigRoutesState {
     fn mount(self, router: Router) -> Router {
         let auth =
-            middleware::from_fn_with_state(self.admin.clone(), require_admin_auth_middleware);
+            middleware::from_fn_with_state(self.admin.clone(), require_console_auth_middleware);
         let scope = middleware::from_fn_with_state(
             ScopeMiddlewareState {
                 provider: self.scope_provider.clone(),
@@ -243,7 +264,7 @@ impl RouteModule for ConfigRoutesState {
 impl RouteModule for EvalRoutesState {
     fn mount(self, router: Router) -> Router {
         let auth =
-            middleware::from_fn_with_state(self.admin.clone(), require_admin_auth_middleware);
+            middleware::from_fn_with_state(self.admin.clone(), require_console_auth_middleware);
         let scope = middleware::from_fn_with_state(
             ScopeMiddlewareState {
                 provider: self.scope_provider.clone(),
@@ -263,7 +284,7 @@ impl RouteModule for EvalRoutesState {
 impl RouteModule for TraceRoutesState {
     fn mount(self, router: Router) -> Router {
         let auth =
-            middleware::from_fn_with_state(self.admin.clone(), require_admin_auth_middleware);
+            middleware::from_fn_with_state(self.admin.clone(), require_console_auth_middleware);
         let scope = middleware::from_fn_with_state(
             ScopeMiddlewareState {
                 provider: self.scope_provider.clone(),
