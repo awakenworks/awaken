@@ -79,32 +79,48 @@ impl LlmExecutor for GenaiExecutor {
         sink: &dyn awaken_runtime_contract::llm::DeltaSink,
     ) -> Result<ChatResponse> {
         use futures::StreamExt;
-        use genai::chat::ChatStreamEvent;
+        use genai::chat::{ChatOptions, ChatStreamEvent};
 
         let model = request.model_binding.model_ref.clone();
         let genai_request = to_genai_request(&request);
 
+        // Have genai assemble the committed turn for us. It concatenates the text
+        // chunks and parses the accumulated tool-argument fragments into a JSON
+        // object, exactly as the non-streaming path returns them — Anthropic
+        // streams tool arguments as `input_json_delta` text that is only valid
+        // JSON once the block ends. Without `capture_*` the `End` event carries
+        // no content and we'd be stuck with the raw, string-encoded deltas.
+        let options = ChatOptions::default()
+            .with_capture_content(true)
+            .with_capture_tool_calls(true)
+            .with_capture_usage(true);
+
         let stream_response = tokio::time::timeout(
             self.timeout,
-            self.client.exec_chat_stream(model, genai_request, None),
+            self.client
+                .exec_chat_stream(model, genai_request, Some(&options)),
         )
         .await
         .map_err(|_| Error::Transient("model stream timed out".to_string()))?
         .map_err(|err| classify_error(&err.to_string()))?;
 
         let mut stream = stream_response.stream;
+        let mut captured: Option<MessageContent> = None;
+        let mut usage: Option<TokenUsage> = None;
+        // Fallback assembly, used only if the provider delivers no captured turn.
         let mut text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
 
-        // Forward each chunk live as it arrives; assemble the committed turn from
-        // the same chunks. genai emits tool-call chunks with accumulated args, so
-        // upsert by call id keeps the final, complete arguments.
         while let Some(event) = stream.next().await {
             match event.map_err(|err| classify_error(&err.to_string()))? {
+                // Live text: forward each chunk as it arrives (valid UTF-8 by type).
                 ChatStreamEvent::Chunk(chunk) if !chunk.content.is_empty() => {
                     sink.on_text(&chunk.content).await;
                     text.push_str(&chunk.content);
                 }
+                // Live tool-call progress: genai hands incremental, string-encoded
+                // arguments here. Best-effort only; the committed turn is the End
+                // event, where genai has parsed the arguments into an object.
                 ChatStreamEvent::ToolCallChunk(tool) => {
                     let call = from_genai_tool_call(&tool.tool_call);
                     sink.on_tool_call(&call.call_id, &call.tool_id, &call.arguments)
@@ -114,25 +130,36 @@ impl LlmExecutor for GenaiExecutor {
                         None => tool_calls.push(call),
                     }
                 }
+                // Committed turn: genai's parsed, ordered content and usage.
+                ChatStreamEvent::End(end) => {
+                    captured = end.captured_content;
+                    usage = end.captured_usage.as_ref().map(map_usage);
+                }
                 _ => {}
             }
         }
 
-        let mut blocks: Vec<ContentBlock> = Vec::new();
-        if !text.is_empty() {
-            blocks.push(ContentBlock::text(text));
-        }
-        for call in tool_calls {
-            blocks.push(ContentBlock::tool_use(
-                call.call_id,
-                call.tool_id,
-                call.arguments,
-            ));
-        }
-        Ok(ChatResponse {
-            output: AssistantOutput::from_blocks(blocks),
-            usage: None,
-        })
+        // Prefer genai's captured turn (parsed tool arguments, same shape as
+        // `infer`); fall back to the chunk-assembled blocks only if no End
+        // content arrived (e.g. a stream that ends without a captured block).
+        let output = match captured {
+            Some(content) => map_assistant_output(&content),
+            None => {
+                let mut blocks: Vec<ContentBlock> = Vec::new();
+                if !text.is_empty() {
+                    blocks.push(ContentBlock::text(text));
+                }
+                for call in tool_calls {
+                    blocks.push(ContentBlock::tool_use(
+                        call.call_id,
+                        call.tool_id,
+                        call.arguments,
+                    ));
+                }
+                AssistantOutput::from_blocks(blocks)
+            }
+        };
+        Ok(ChatResponse { output, usage })
     }
 }
 

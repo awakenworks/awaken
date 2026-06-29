@@ -184,16 +184,26 @@ async fn minimax_streaming_tool_call_accumulates_arguments() {
         .await
         .expect("stream tool call");
 
-    // The committed turn is the source of truth (G13): it must carry the call.
+    // The committed turn is the source of truth (G13). genai parses the streamed
+    // argument fragments into an object at stream end, so the committed call
+    // carries the same shape the non-streaming path returns: a JSON object.
     let committed = response.output.tool_calls();
     println!("[minimax tool stream] committed calls -> {committed:?}");
     let call = committed
         .iter()
         .find(|c| c.tool_id == "get_weather")
         .expect("model called get_weather");
+    assert!(
+        call.arguments
+            .get("city")
+            .and_then(|v| v.as_str())
+            .is_some_and(|c| !c.is_empty()),
+        "committed arguments are a parsed object with a string city: {:?}",
+        call.arguments
+    );
 
-    // The live sink saw the call too, and its final arguments accumulated into
-    // the same valid JSON the committed call carries (genai upserts by call id).
+    // The live plane is best-effort: genai delivers incremental, string-encoded
+    // argument fragments. The final fragment parses to the committed object.
     let live = recorder.tool_calls.lock().unwrap().clone();
     println!("[minimax tool stream] {} live tool-call deltas", live.len());
     assert!(
@@ -205,22 +215,11 @@ async fn minimax_streaming_tool_call_accumulates_arguments() {
         .rev()
         .find(|(_, tool_id, _)| tool_id == "get_weather")
         .expect("a live get_weather delta");
+    let live_args = last.2.as_str().expect("a live fragment is a JSON string");
+    let live_parsed: serde_json::Value =
+        serde_json::from_str(live_args).expect("the final live fragment is valid JSON");
     assert_eq!(
-        last.2, call.arguments,
-        "the final live arguments equal the committed arguments"
-    );
-    // MiniMax delivers tool arguments as a JSON *string* (e.g. `"{\"city\":...}"`),
-    // not a pre-parsed object; the adapter forwards the provider's shape verbatim.
-    // Accept either: parse the string when needed, then assert the object holds a
-    // string `city`. This proves the streamed deltas accumulated into valid JSON.
-    let parsed = match &call.arguments {
-        serde_json::Value::String(raw) => {
-            serde_json::from_str::<serde_json::Value>(raw).expect("arguments are valid JSON text")
-        }
-        other => other.clone(),
-    };
-    assert!(
-        parsed.get("city").and_then(|v| v.as_str()).is_some(),
-        "accumulated arguments parse to an object with a string city: {parsed:?}",
+        live_parsed, call.arguments,
+        "the final live fragment parses to the committed object"
     );
 }
