@@ -1,9 +1,14 @@
 # ADR-0004: Plugin Factory, Contributions, And Capability Bound
 
 - Status: Accepted
+- Amended: 2026-06-29 — D2/D3/D4/D5 refined against the awaken reference
+  implementation; see Amendment A1
 - Depends on: ADR-0001
-- Supersedes: the mutable `PluginRegistrar` registration seam and the separate
-  `PluginConfigValidator` port (both collapse into the model below)
+- Supersedes: the mutable `PluginRegistrar` registration seam; the config-blind
+  `register_runtime(&mut PluginRegistrar)` seam (replaced by `resolve`, not
+  retained). The separate `PluginConfigValidator` *implementation* collapses into
+  one `validate_section` home (D3); the trait survives only as the thin
+  runtime↔server DI seam that calls it (Amendment A1).
 
 ## Context
 
@@ -51,7 +56,11 @@ registration seam is retired.
 is compiled exactly once inside `resolve` and the produced hooks close over it.
 Config errors surface at resolve (fail closed), not at the Nth call.
 `ResolveContext` exposes only the config sections the manifest declares; a plugin
-cannot read a section it never declared.
+cannot read a section it never declared. To make this a mechanism and not a
+convention, the context exposes **no raw `AgentSpec` accessor at all** — typed
+config is reachable only through the confined `config::<K>()`, so there is no
+`agent_spec().config()` bypass. A future need for non-config spec data is served
+by a narrow typed accessor, never by re-exposing the whole spec (Amendment A1).
 
 ### D3: `PluginManifest` is the single identity-and-config contract
 
@@ -69,8 +78,11 @@ PluginManifest {
 
 Config validation has one home, `validate_section`, used by both write-time
 (config/admin) and resolve-time. The schema is derived from the typed config and
-decoding targets the same type, so schema and decode cannot disagree. The
-separate `PluginConfigValidator` port is removed.
+decoding targets the same type, so schema and decode cannot disagree. There is no
+second validation *implementation*; the `PluginConfigValidator` trait is retained
+only as the thin runtime↔server DI seam that forwards to `validate_section` (the
+server depends on the contract trait, not on the concrete runtime). Collapsing the
+duplicate logic — not deleting the seam — is the win (Amendment A1).
 
 ### D4: `CapabilityBound` is a declared, fail-closed upper bound
 
@@ -78,12 +90,28 @@ The manifest declares what a plugin **may** contribute. This is a ceiling, not a
 inventory and not an authorization: the only authoritative list of what a plugin
 contributes is its `Contributions`, and the only authorization path remains the
 permission policy (G9, G21). "Bound", not "grant", is used deliberately so the
-word `grant` stays reserved for authorization (ADR-0001 D3).
+word `grant` stays reserved for authorization (ADR-0001 D3). This separation is
+**type-level, not just naming**: no type is named `Grant`, and there is no
+conversion between `CapabilityBound`/`IdBound` and any permission-decision type,
+so a structural ceiling and an authorization decision cannot be confused at the
+type level (Amendment A1).
 
-- Capabilities with addressable identity declare a set or namespace: tools,
-  state keys, guards.
-- Singleton powers with no instance identity are flags: the power to intercept
-  any tool call, and the power to rewrite the whole inference request.
+- Capabilities with addressable identity declare a set or namespace. **Every**
+  identity-bearing contribution kind is bounded: `tools`, `state_keys`, `guards`,
+  `effects`, and `scheduled_actions` — effects are the state-mutation carrier and
+  scheduled actions are deferred mutations, so they belong under the ceiling too
+  (Amendment A1).
+- Singleton powers with no instance identity are flags: `tool_gate` (the power to
+  intercept any tool call), and `transforms` (the power to rewrite the whole
+  inference request).
+
+Each id-bearing dimension is an `IdBound`: `Any | Exact(ids) | Namespace(prefix)
+| NamespacedExact { prefix, ids }`. `NamespacedExact` is the finer ceiling for a
+dynamically discovered family (MCP/skills): an id is admitted only if it is both
+under the prefix **and** in the explicit list, so a stray prefixed id that did not
+come from discovery — a hardcoded backdoor — is rejected, which a bare `Namespace`
+prefix would admit (Amendment A1, supersedes the coarse prefix-only treatment in
+D5).
 
 After `resolve`, `enforce_bound(manifest, contributions)` checks
 `actual ⊆ declared` and fails the resolution closed on any excess; the catalog
@@ -93,12 +121,28 @@ of G4/G5 applied to the contribution boundary, and the plugin-scoped analogue of
 the pinned tool-descriptor segment (D6, G8). The concrete inventory for operator
 UIs is derived by a dry-run `resolve`, never hand-maintained.
 
+**Resolve-time tightened sub-bound (dynamic families).** A dynamic plugin cannot
+enumerate its ids in a static manifest, yet a coarse `Namespace` ceiling is weak.
+It therefore declares the coarse `Namespace` ceiling statically and, inside
+`resolve`, submits a tightened sub-bound (`Contributions::tighten_bound`) built
+from the **same discovery snapshot** that produced its contributions — so the
+bound and the contributions cannot drift even if the underlying registry refreshes
+concurrently (a real time-of-check hazard, since the source registry is live).
+`enforce_bound` then runs two checks: the tightened bound must be `within` the
+static manifest ceiling (`CapabilityBound::within` / `IdBound::within` — a
+tightening can only narrow, never escape the declared namespace or claim an
+ungranted `tool_gate`/`transforms`), and the contributions must stay within the
+tightened exact set. The tightened bound doubles as the derived operator inventory
+(Amendment A1).
+
 ### D5: Contribution identity is fixed by construction
 
 A tool id is one literal: the registration key, the `ToolDescriptor` id, and the
 `CapabilityBound` reference are the same value by construction, not by
-convention. A dynamic tool family declares a single namespace that feeds both the
-bound and the id constructor, and `enforce_bound`'s prefix check is the backstop.
+convention. A dynamic tool family declares a single namespace constant that feeds
+both the bound and the id constructor; the coarse prefix is the static ceiling,
+and the resolve-time tightened sub-bound (D4) narrows it to the exact discovered
+ids — the prefix check is the backstop, the tightened set is the real bound.
 
 ### D6: Uniqueness and ordering belong to the aggregate root
 
@@ -140,6 +184,50 @@ an injected port through the call context, never via interior mutability.
 - The neutral kernel stays domain-agnostic: `Contributions` is the
   anti-corruption value between an extension and the kernel; the kernel
   enumerates no plugin vocabulary.
+
+## Amendment A1 (2026-06-29): refinements proven in implementation
+
+These refine D2–D5 against the awaken runtime implementation, which carried this
+design to a working, tested state and surfaced what the original text under- or
+mis-specified. They are corrections and additions, not a new direction.
+
+1. **Bound vs grant is type-level (D4).** Reserving the *word* `grant` is not
+   enough; the separation must be unforgeable. No type is named `Grant`, and
+   `CapabilityBound`/`IdBound` have no conversion to any permission-decision type,
+   so passing `enforce_bound` can never be mistaken for "authorized".
+2. **Every id-bearing kind is bounded (D4).** `effects` and `scheduled_actions`
+   join `tools`/`state_keys`/`guards` under the ceiling — state mutation and
+   deferred mutation are identity-bearing and must not be unbounded.
+3. **`IdBound::NamespacedExact { prefix, ids }` (D4/D5).** A prefix-plus-explicit
+   list ceiling for dynamic families, strictly finer than a bare `Namespace`.
+4. **Resolve-time tightened sub-bound + `within` (D4).** A dynamic plugin
+   declares the coarse `Namespace` statically and submits a tightened sub-bound
+   from the same discovery snapshot; `enforce_bound` checks
+   `contributions ⊆ tightened ⊆ static ceiling`. This closes a real
+   time-of-check/time-of-use gap (the source registry is live) that a single
+   static or single re-queried bound would leave open.
+5. **Config confinement is mechanized, not conventional (D2).** `ResolveContext`
+   exposes no raw `AgentSpec` accessor at all; the confined `config::<K>()` is the
+   only config path, so `agent_spec().config()` cannot bypass confinement.
+6. **`PluginConfigValidator` is reconciled (D3, Supersedes).** The duplicate
+   validation *logic* collapses into `validate_section`; the trait is kept as the
+   thin runtime↔server DI seam. Deleting the seam (as the original text implied)
+   would remove a real abstraction, not a duplication.
+
+### Still open — required for the governance payoff (G8 operator overlay)
+
+The bound currently delivers drift-prevention (self-check `actual ⊆ declared`) but
+not yet operator governance. Two additions close that, and neither is yet built in
+the reference implementation:
+
+- **`CapabilityBound` must derive `Serialize`/`Deserialize`.** It is pure data in
+  the contract crate; to preview and allow/deny by bound on the config/admin
+  plane it has to cross that boundary as data.
+- **`PluginCapability` (capability.rs) must carry a bound projection.** Extend
+  `RuntimeCapabilityCatalog`'s `PluginCapability { id, schema_keys }` with the
+  declared `bound` (derived by dry-run `resolve`, per D4), so an operator overlay
+  can deny a plugin by its declared `tool_gate` / `transforms` / namespace before
+  a run — the consumer side of G8/G30 that the catalog surface does not yet expose.
 
 ## References
 
