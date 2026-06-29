@@ -90,7 +90,122 @@ impl Tool for GrepTool {
     }
 }
 
-/// The read-only, safe hand tools, erased for `Runtime::with_tool` registration.
+/// Write `content` to a file, creating or truncating it. Returns a confirmation.
+pub struct WriteTool;
+
+#[derive(Deserialize)]
+pub struct WriteArgs {
+    pub path: String,
+    pub content: String,
+}
+
+#[async_trait]
+impl Tool for WriteTool {
+    type Args = WriteArgs;
+    type Output = String;
+    fn id(&self) -> &str {
+        "write"
+    }
+    async fn call(&self, args: WriteArgs) -> Result<String, ToolError> {
+        std::fs::write(&args.path, &args.content)
+            .map_err(|err| ToolError::Execution(format!("write {}: {err}", args.path)))?;
+        Ok(format!(
+            "wrote {} bytes to {}",
+            args.content.len(),
+            args.path
+        ))
+    }
+}
+
+/// Replace one exact occurrence of `old` with `new` in a file. Fails closed when
+/// `old` is absent or ambiguous, so an edit never silently changes the wrong
+/// span.
+pub struct EditTool;
+
+#[derive(Deserialize)]
+pub struct EditArgs {
+    pub path: String,
+    pub old: String,
+    pub new: String,
+}
+
+#[async_trait]
+impl Tool for EditTool {
+    type Args = EditArgs;
+    type Output = String;
+    fn id(&self) -> &str {
+        "edit"
+    }
+    async fn call(&self, args: EditArgs) -> Result<String, ToolError> {
+        let content = std::fs::read_to_string(&args.path)
+            .map_err(|err| ToolError::Execution(format!("read {}: {err}", args.path)))?;
+        let matches = content.matches(&args.old).count();
+        match matches {
+            0 => Err(ToolError::Execution(format!(
+                "edit {}: `old` text not found",
+                args.path
+            ))),
+            1 => {
+                let updated = content.replacen(&args.old, &args.new, 1);
+                std::fs::write(&args.path, &updated)
+                    .map_err(|err| ToolError::Execution(format!("write {}: {err}", args.path)))?;
+                Ok(format!("edited {}", args.path))
+            }
+            n => Err(ToolError::Execution(format!(
+                "edit {}: `old` text is ambiguous ({n} occurrences); add context to make it unique",
+                args.path
+            ))),
+        }
+    }
+}
+
+/// Run a shell command via `sh -c` and return its output. A non-zero exit is a
+/// model-visible error result carrying stdout/stderr, not a run abort.
+pub struct BashTool;
+
+#[derive(Deserialize)]
+pub struct BashArgs {
+    pub command: String,
+}
+
+#[async_trait]
+impl Tool for BashTool {
+    type Args = BashArgs;
+    type Output = String;
+    fn id(&self) -> &str {
+        "bash"
+    }
+    async fn call(&self, args: BashArgs) -> Result<String, ToolError> {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&args.command)
+            .output()
+            .map_err(|err| ToolError::Execution(format!("spawn sh: {err}")))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.status.success() {
+            Ok(stdout.into_owned())
+        } else {
+            let code = output
+                .status
+                .code()
+                .map_or_else(|| "signal".to_string(), |c| c.to_string());
+            Err(ToolError::Execution(format!(
+                "command exited {code}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            )))
+        }
+    }
+}
+
+/// The local hand tools, erased for `Runtime::with_tool` registration. The
+/// network tools `web_fetch` and `web_search` are added by `web_hand_tools`.
 pub fn executable_hand_tools() -> Vec<Arc<dyn RawTool>> {
-    vec![erase(ReadTool), erase(GlobTool), erase(GrepTool)]
+    vec![
+        erase(ReadTool),
+        erase(WriteTool),
+        erase(EditTool),
+        erase(GlobTool),
+        erase(GrepTool),
+        erase(BashTool),
+    ]
 }

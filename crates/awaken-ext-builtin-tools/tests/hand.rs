@@ -80,6 +80,88 @@ async fn grep_finds_matching_lines_with_line_numbers() {
 }
 
 #[tokio::test]
+async fn write_creates_a_file_with_contents() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("out.txt");
+    let out = tool("write")
+        .invoke(call(
+            "write",
+            serde_json::json!({ "path": path, "content": "payload" }),
+        ))
+        .await
+        .expect("write");
+    assert!(out.content.contains("wrote"));
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        "payload"
+    );
+}
+
+#[tokio::test]
+async fn edit_replaces_a_unique_occurrence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("code.txt");
+    std::fs::write(&path, "let x = 1;\nlet y = 2;").expect("write");
+
+    tool("edit")
+        .invoke(call(
+            "edit",
+            serde_json::json!({ "path": path, "old": "x = 1", "new": "x = 42" }),
+        ))
+        .await
+        .expect("edit");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        "let x = 42;\nlet y = 2;"
+    );
+}
+
+#[tokio::test]
+async fn edit_fails_closed_on_missing_or_ambiguous_old() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("dup.txt");
+    std::fs::write(&path, "a a a").expect("write");
+
+    let missing = tool("edit")
+        .invoke(call(
+            "edit",
+            serde_json::json!({ "path": path, "old": "zzz", "new": "q" }),
+        ))
+        .await
+        .expect_err("missing old");
+    assert!(matches!(missing, ToolError::Execution(_)));
+
+    let ambiguous = tool("edit")
+        .invoke(call(
+            "edit",
+            serde_json::json!({ "path": path, "old": "a", "new": "b" }),
+        ))
+        .await
+        .expect_err("ambiguous old");
+    assert!(matches!(ambiguous, ToolError::Execution(_)));
+    // The file is untouched because the edit failed closed.
+    assert_eq!(std::fs::read_to_string(&path).expect("read back"), "a a a");
+}
+
+#[tokio::test]
+async fn bash_runs_a_command_and_returns_stdout() {
+    let out = tool("bash")
+        .invoke(call("bash", serde_json::json!({ "command": "echo hello" })))
+        .await
+        .expect("bash");
+    assert_eq!(out.content.trim(), "hello");
+}
+
+#[tokio::test]
+async fn bash_nonzero_exit_is_a_typed_error() {
+    let err = tool("bash")
+        .invoke(call("bash", serde_json::json!({ "command": "exit 3" })))
+        .await
+        .expect_err("nonzero exit");
+    assert!(matches!(err, ToolError::Execution(_)));
+}
+
+#[tokio::test]
 async fn grep_invalid_regex_is_a_typed_error() {
     let err = tool("grep")
         .invoke(call(

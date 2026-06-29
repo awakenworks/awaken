@@ -22,6 +22,28 @@ impl core::marker::Sync for awaken_ext_builtin_tools::Toolset
 impl core::marker::Unpin for awaken_ext_builtin_tools::Toolset
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::Toolset
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::Toolset
+pub struct awaken_ext_builtin_tools::BashArgs
+pub awaken_ext_builtin_tools::BashArgs::command: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_builtin_tools::BashArgs
+pub fn awaken_ext_builtin_tools::BashArgs::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_builtin_tools::BashArgs
+impl core::marker::Send for awaken_ext_builtin_tools::BashArgs
+impl core::marker::Sync for awaken_ext_builtin_tools::BashArgs
+impl core::marker::Unpin for awaken_ext_builtin_tools::BashArgs
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::BashArgs
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::BashArgs
+pub struct awaken_ext_builtin_tools::BashTool
+impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::BashTool
+pub type awaken_ext_builtin_tools::BashTool::Args = awaken_ext_builtin_tools::BashArgs
+pub type awaken_ext_builtin_tools::BashTool::Output = alloc::string::String
+pub fn awaken_ext_builtin_tools::BashTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::BashArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_builtin_tools::BashTool::id(&self) -> &str
+impl core::marker::Freeze for awaken_ext_builtin_tools::BashTool
+impl core::marker::Send for awaken_ext_builtin_tools::BashTool
+impl core::marker::Sync for awaken_ext_builtin_tools::BashTool
+impl core::marker::Unpin for awaken_ext_builtin_tools::BashTool
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::BashTool
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::BashTool
 pub struct awaken_ext_builtin_tools::BuiltinTool
 pub awaken_ext_builtin_tools::BuiltinTool::descriptor: awaken_runtime_contract::resolved::ToolDescriptor
 pub awaken_ext_builtin_tools::BuiltinTool::toolset: awaken_ext_builtin_tools::Toolset
@@ -42,6 +64,30 @@ impl core::marker::Sync for awaken_ext_builtin_tools::BuiltinTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::BuiltinTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::BuiltinTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::BuiltinTool
+pub struct awaken_ext_builtin_tools::EditArgs
+pub awaken_ext_builtin_tools::EditArgs::new: alloc::string::String
+pub awaken_ext_builtin_tools::EditArgs::old: alloc::string::String
+pub awaken_ext_builtin_tools::EditArgs::path: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_builtin_tools::EditArgs
+pub fn awaken_ext_builtin_tools::EditArgs::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_builtin_tools::EditArgs
+impl core::marker::Send for awaken_ext_builtin_tools::EditArgs
+impl core::marker::Sync for awaken_ext_builtin_tools::EditArgs
+impl core::marker::Unpin for awaken_ext_builtin_tools::EditArgs
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::EditArgs
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::EditArgs
+pub struct awaken_ext_builtin_tools::EditTool
+impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::EditTool
+pub type awaken_ext_builtin_tools::EditTool::Args = awaken_ext_builtin_tools::EditArgs
+pub type awaken_ext_builtin_tools::EditTool::Output = alloc::string::String
+pub fn awaken_ext_builtin_tools::EditTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::EditArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_builtin_tools::EditTool::id(&self) -> &str
+impl core::marker::Freeze for awaken_ext_builtin_tools::EditTool
+impl core::marker::Send for awaken_ext_builtin_tools::EditTool
+impl core::marker::Sync for awaken_ext_builtin_tools::EditTool
+impl core::marker::Unpin for awaken_ext_builtin_tools::EditTool
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::EditTool
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::EditTool
 pub struct awaken_ext_builtin_tools::Erased<T>(pub T)
 impl<T: awaken_runtime_contract::tool::Tool> awaken_runtime_contract::tool::RawTool for awaken_ext_builtin_tools::Erased<T>
 pub fn awaken_ext_builtin_tools::Erased<T>::id(&self) -> &str
@@ -119,6 +165,29 @@ impl core::marker::Sync for awaken_ext_builtin_tools::ReadTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::ReadTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::ReadTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::ReadTool
+pub struct awaken_ext_builtin_tools::WriteArgs
+pub awaken_ext_builtin_tools::WriteArgs::content: alloc::string::String
+pub awaken_ext_builtin_tools::WriteArgs::path: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_builtin_tools::WriteArgs
+pub fn awaken_ext_builtin_tools::WriteArgs::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_builtin_tools::WriteArgs
+impl core::marker::Send for awaken_ext_builtin_tools::WriteArgs
+impl core::marker::Sync for awaken_ext_builtin_tools::WriteArgs
+impl core::marker::Unpin for awaken_ext_builtin_tools::WriteArgs
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WriteArgs
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WriteArgs
+pub struct awaken_ext_builtin_tools::WriteTool
+impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::WriteTool
+pub type awaken_ext_builtin_tools::WriteTool::Args = awaken_ext_builtin_tools::WriteArgs
+pub type awaken_ext_builtin_tools::WriteTool::Output = alloc::string::String
+pub fn awaken_ext_builtin_tools::WriteTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WriteArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_builtin_tools::WriteTool::id(&self) -> &str
+impl core::marker::Freeze for awaken_ext_builtin_tools::WriteTool
+impl core::marker::Send for awaken_ext_builtin_tools::WriteTool
+impl core::marker::Sync for awaken_ext_builtin_tools::WriteTool
+impl core::marker::Unpin for awaken_ext_builtin_tools::WriteTool
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WriteTool
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WriteTool
 pub fn awaken_ext_builtin_tools::builtin_tools() -> alloc::vec::Vec<awaken_ext_builtin_tools::BuiltinTool>
 pub fn awaken_ext_builtin_tools::erase<T: awaken_runtime_contract::tool::Tool + 'static>(T) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>
 pub fn awaken_ext_builtin_tools::executable_hand_tools() -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>

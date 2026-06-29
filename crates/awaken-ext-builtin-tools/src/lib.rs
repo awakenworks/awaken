@@ -9,7 +9,10 @@ mod erasure;
 mod hand;
 
 pub use erasure::{Erased, erase};
-pub use hand::{GlobArgs, GlobTool, GrepArgs, GrepTool, ReadArgs, ReadTool, executable_hand_tools};
+pub use hand::{
+    BashArgs, BashTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs, GrepTool, ReadArgs,
+    ReadTool, WriteArgs, WriteTool, executable_hand_tools,
+};
 
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use serde::{Deserialize, Serialize};
