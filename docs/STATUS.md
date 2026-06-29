@@ -5,9 +5,9 @@ authorities; it does not certify a build, deployment or product outcome.
 
 ## Documentation model
 
-- Documentation decisions
+- [Documentation decisions](adr/0001-documentation-model-and-vocabulary-alignment.md)
   define the source-document and downstream-wiki boundary.
-- Guardrails identify invariants and their enforcers.
+- [Guardrails](INVARIANTS.md) identify invariants and their enforcers.
 - [Requirements coverage](requirements-coverage.md) connects requirements to
   their existing implementation and evidence owners.
 - [Documentation index](README.md) locates the bounded-context design owners.
@@ -46,19 +46,19 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `STATUS.md` | Meta / introspection | Not required | n/a |
 | `INVARIANTS.md` | Guardrail registry | Not required | n/a |
 | `requirements-coverage.md` | Coverage map | Not required | n/a |
-| `design/architecture-overview.md` | Navigation / context map | Delegated | runtime-interface-boundaries.md |
-| `design/config-to-run-execution-flow.md` | Delegated boundary narrative | Delegated | runtime-interface-boundaries.md |
-| `design/config-publication-lifecycle.md` | Delegated boundary narrative | Delegated | runtime-interface-boundaries.md |
+| `design/architecture-overview.md` | Navigation / context map | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
+| `design/config-to-run-execution-flow.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
+| `design/config-publication-lifecycle.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/protocol-adapter-boundaries.md` | Product/downstream mapping | Not required | n/a |
 | `design/permission-policy-axis.md` | Role owner | Required | self |
 | `design/model-provider-backend-binding.md` | Role owner | Required | self |
-| `design/commit-fact-projection-taxonomy.md` | Delegated boundary narrative | Delegated | runtime-interface-boundaries.md |
+| `design/commit-fact-projection-taxonomy.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/builtin-tools-extension-contract.md` | Delegated boundary narrative | Delegated | tool-and-capability.md |
 | `design/key-design-decisions.md` | Decision record | Not required | n/a |
 | `design/runtime-behavior.md` | Role owner | Required | self |
 | `design/runtime-scenario-validation.md` | Coverage map | Not required | n/a |
 | `design/runtime-interface-boundaries.md` | Role owner | Required | self |
-| `design/neutral-waist.md` | Delegated boundary narrative | Delegated | runtime-interface-boundaries.md |
+| `design/neutral-waist.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/tool-and-capability.md` | Role owner | Required | self |
 | `design/run-ingress-message-delivery.md` | Role owner | Required | self |
 | `design/anthropic-alignment-and-sessions.md` | Product/downstream mapping | Not required | n/a |
