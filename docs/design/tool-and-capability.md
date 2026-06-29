@@ -10,12 +10,21 @@ subsystem.
 |---|---|---|---|
 | Decision-surface descriptor | Dispatch / Server | agent instructions, model id, tool/skill descriptor, allowed tool ids, content hash | Serialized in `ResolvedSpec` and fingerprinted |
 | Execution behavior | Orchestration layer above or runtime catalog | tool impls, skill scripts, MCP servers, remote endpoints | Invoked by id through existing tool/backend ports |
-| Operator overlay | Config / Admin / Product | permission allow/deny/ask, skill visibility, HITL policy | Mutable; not part of replayable descriptor truth |
+| Operator overlay | Config / Admin / Product | permission allow/deny/ask, skill visibility, HITL policy, **plugin allow/deny by `CapabilityBound`** | Mutable; not part of replayable descriptor truth |
 | Secrets / credentials | Product data plane | API keys, OAuth grants, vault refs | Opaque references only across runtime boundaries |
 | Session data | Runtime Core | messages, decisions, state facts, verdicts | Replayed from committed runtime facts |
 
 The runtime validates what the model saw and the content hash of execution
 material. It does not own execution bytes, vault secrets, or operator workflow.
+
+The **contribution-ceiling** sub-segment of the operator overlay is the plugin
+`CapabilityBound` (ADR-0004 D4, amended A1): the bound is a structural ceiling on
+what a plugin may contribute — never authorization (G9/G21 keep permission as the
+only grant path). Every id-bearing kind is bounded (tools, state keys, guards,
+effects, scheduled actions); dynamic families (MCP/skills) tighten a coarse
+`Namespace` ceiling to the discovered set at resolve. An operator allows/denies a
+plugin by its declared bound (the dry-run-`resolve`-derived `PluginCapability`
+projection) before a run.
 
 ## Tool Model
 
