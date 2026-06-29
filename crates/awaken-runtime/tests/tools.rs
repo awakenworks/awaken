@@ -48,13 +48,13 @@ impl LlmExecutor for ToolThenText {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let output = if n == 0 {
-            AssistantOutput::ToolCalls(vec![ToolCall {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "call-1".to_string(),
                 tool_id: "echo".to_string(),
                 arguments: serde_json::json!({"text": "ping"}),
             }])
         } else {
-            AssistantOutput::Text("all done".to_string())
+            AssistantOutput::text("all done".to_string())
         };
         Ok(ChatResponse {
             output,
@@ -245,9 +245,9 @@ impl LlmExecutor for CallsTool {
             .any(|m| matches!(m.role, awaken_runtime_contract::llm::ChatRole::Tool))
             || request.messages.len() > 2;
         let output = if answered {
-            AssistantOutput::Text("done".to_string())
+            AssistantOutput::text("done".to_string())
         } else {
-            AssistantOutput::ToolCalls(vec![ToolCall {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "call-1".to_string(),
                 tool_id: self.0.to_string(),
                 arguments: serde_json::json!({}),
@@ -360,7 +360,7 @@ impl LlmExecutor for CaptureTools {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         *self.seen.lock().unwrap() = request.tools.clone();
         Ok(ChatResponse {
-            output: AssistantOutput::Text("done".to_string()),
+            output: AssistantOutput::text("done".to_string()),
             usage: None,
         })
     }
@@ -427,7 +427,7 @@ impl LlmExecutor for AlwaysToolCall {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         Ok(ChatResponse {
-            output: AssistantOutput::ToolCalls(vec![ToolCall {
+            output: AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "call-loop".to_string(),
                 tool_id: "echo".to_string(),
                 arguments: serde_json::json!({"text": "again"}),
@@ -492,4 +492,78 @@ async fn the_configured_step_ceiling_is_honored() {
         3,
         "the loop honors the configured step ceiling"
     );
+}
+
+/// First turn interleaves a text block and a tool-call block; the second ends.
+struct InterleavedThenText {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for InterleavedThenText {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = if n == 0 {
+            AssistantOutput::from_blocks(vec![
+                ContentBlock::text("let me check that"),
+                ContentBlock::tool_use("call-1", "echo", serde_json::json!({"text": "ping"})),
+            ])
+        } else {
+            AssistantOutput::text("all done")
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn an_assistant_turn_interleaves_text_and_a_tool_call() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(InterleavedThenText {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+
+    let outcome = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the interleaved tool call runs"
+    );
+
+    // The first assistant turn committed BOTH a text block and a tool-use block,
+    // in one message — text and a tool request interleaved.
+    let committed = commit.committed();
+    let first = committed
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Assistant)
+        .expect("an assistant turn is committed");
+    assert!(
+        first
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { .. })),
+        "the turn keeps its text block"
+    );
+    assert!(
+        first
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
+        "the turn keeps its tool-use block"
+    );
+    assert_eq!(first.text_content(), "let me check that");
 }

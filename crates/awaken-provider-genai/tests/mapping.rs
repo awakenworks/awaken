@@ -110,7 +110,7 @@ fn text_content_maps_to_text_output() {
     let content = MessageContent::from_text("hello world");
     assert_eq!(
         map_assistant_output(&content),
-        AssistantOutput::Text("hello world".to_string())
+        AssistantOutput::text("hello world".to_string())
     );
 }
 
@@ -122,13 +122,9 @@ fn tool_call_content_maps_to_tool_calls_output() {
         fn_arguments: serde_json::json!({"q": "rust"}),
         thought_signatures: None,
     }]);
-    match map_assistant_output(&content) {
-        AssistantOutput::ToolCalls(calls) => {
-            assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0].tool_id, "search");
-        }
-        AssistantOutput::Text(_) => panic!("expected tool calls"),
-    }
+    let calls = map_assistant_output(&content).tool_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].tool_id, "search");
 }
 
 #[test]

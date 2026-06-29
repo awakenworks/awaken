@@ -39,7 +39,7 @@ fn chat_request_round_trips_as_plain_data() {
 #[test]
 fn chat_response_round_trips_with_tool_calls() {
     let response = ChatResponse {
-        output: AssistantOutput::ToolCalls(vec![ToolCall {
+        output: AssistantOutput::from_tool_calls(vec![ToolCall {
             call_id: "c1".to_string(),
             tool_id: "echo".to_string(),
             arguments: serde_json::json!({"text": "hi"}),
@@ -66,7 +66,7 @@ impl LlmExecutor for EchoExecutor {
             .map(|m| extract_text(&m.content))
             .unwrap_or_default();
         Ok(ChatResponse {
-            output: AssistantOutput::Text(echoed),
+            output: AssistantOutput::text(echoed),
             usage: None,
         })
     }
@@ -76,5 +76,5 @@ impl LlmExecutor for EchoExecutor {
 async fn llm_executor_is_dyn_dispatchable_and_awaitable() {
     let executor: Arc<dyn LlmExecutor> = Arc::new(EchoExecutor);
     let response = executor.infer(sample_request()).await.expect("infer");
-    assert_eq!(response.output, AssistantOutput::Text("hello".to_string()));
+    assert_eq!(response.output, AssistantOutput::text("hello".to_string()));
 }

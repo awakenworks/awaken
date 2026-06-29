@@ -7,7 +7,7 @@
 //! runtime validates the selected `ModelBinding` and never searches for another.
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -59,17 +59,64 @@ pub struct ToolSchema {
     pub parameters: serde_json::Value,
 }
 
-/// One model response. Either a natural-end text turn or a tool-call turn.
+/// One model response: the assistant turn plus optional usage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub output: AssistantOutput,
     pub usage: Option<TokenUsage>,
 }
 
+/// One assistant turn as a list of content blocks. Text and tool requests may
+/// interleave (`vec![Text, ToolUse, Text]`); a text-only turn is a natural end,
+/// a turn with any `ToolUse` continues the loop.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum AssistantOutput {
-    Text(String),
-    ToolCalls(Vec<ToolCall>),
+pub struct AssistantOutput {
+    pub blocks: Vec<ContentBlock>,
+}
+
+impl AssistantOutput {
+    /// A text-only turn.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            blocks: vec![ContentBlock::text(text)],
+        }
+    }
+
+    /// A turn from explicit blocks (text and/or tool requests).
+    pub fn from_blocks(blocks: Vec<ContentBlock>) -> Self {
+        Self { blocks }
+    }
+
+    /// A turn from execution-side tool calls, each mapped to a `ToolUse` block.
+    pub fn from_tool_calls(calls: Vec<ToolCall>) -> Self {
+        Self {
+            blocks: calls
+                .into_iter()
+                .map(|c| ContentBlock::tool_use(c.call_id, c.tool_id, c.arguments))
+                .collect(),
+        }
+    }
+
+    /// The turn's combined text across its `Text` blocks.
+    pub fn text_content(&self) -> String {
+        extract_text(&self.blocks)
+    }
+
+    /// The tool calls this turn requests, in order, projected onto the
+    /// execution-side [`ToolCall`] (`ToolUse.id`/`name`/`input`).
+    pub fn tool_calls(&self) -> Vec<ToolCall> {
+        self.blocks
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, name, input } => Some(ToolCall {
+                    call_id: id.clone(),
+                    tool_id: name.clone(),
+                    arguments: input.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -134,8 +181,9 @@ pub trait LlmExecutor: Send + Sync {
         sink: &dyn DeltaSink,
     ) -> Result<ChatResponse> {
         let response = self.infer(request).await?;
-        if let AssistantOutput::Text(text) = &response.output {
-            sink.on_text(text).await;
+        let text = response.output.text_content();
+        if !text.is_empty() {
+            sink.on_text(&text).await;
         }
         Ok(response)
     }

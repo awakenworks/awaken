@@ -6,16 +6,39 @@
 //! reference or inline bytes — never an executable handle or untyped JSON.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-/// One unit of message content. The set is intentionally narrow — only the
-/// modalities the runtime and a provider carry today. Tool-call and tool-result
-/// blocks, and further media (audio, video, documents), are added when their
+/// One unit of message content. A turn — user or assistant — is a list of these,
+/// so text, an image, a tool request, and a tool result can interleave in a
+/// single message. Further media (audio, video, documents) are added when their
 /// mapping and consumer exist.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text { text: String },
-    Image { source: ImageSource },
+    Text {
+        text: String,
+    },
+    Image {
+        source: ImageSource,
+    },
+    /// A model's request to invoke a tool, interleaved with text in the same
+    /// assistant turn. `input` is the only place untyped JSON is unavoidable: a
+    /// tool's arguments are shaped by that tool's own schema, not by any type the
+    /// framework can know — so they are validated against the tool schema, not
+    /// statically typed here. No permission grant is implied (authority lives
+    /// behind the gate).
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    /// A tool's result fed back to the model, addressed by the originating
+    /// `ToolUse` id. Its own content is blocks, so a tool may return text today
+    /// and an image later without a schema change.
+    ToolResult {
+        tool_use_id: String,
+        content: Vec<ContentBlock>,
+    },
 }
 
 /// Where image bytes come from: inline base64, or a URL the provider fetches.
@@ -45,15 +68,33 @@ impl ContentBlock {
             },
         }
     }
+
+    pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {
+        Self::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input,
+        }
+    }
+
+    pub fn tool_result(tool_use_id: impl Into<String>, content: Vec<ContentBlock>) -> Self {
+        Self::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content,
+        }
+    }
 }
 
-/// Concatenate the text of every `Text` block, ignoring non-text blocks. Used
-/// where a plain-text view of multimodal content is enough (logging, a digest).
+/// A plain-text view of content: the text of every `Text` block, plus the text
+/// nested inside any `ToolResult`. Images and tool-use arguments contribute no
+/// text. Used for logging, digests, and a tool result's text payload.
 pub fn extract_text(blocks: &[ContentBlock]) -> String {
     let mut out = String::new();
     for block in blocks {
-        if let ContentBlock::Text { text } = block {
-            out.push_str(text);
+        match block {
+            ContentBlock::Text { text } => out.push_str(text),
+            ContentBlock::ToolResult { content, .. } => out.push_str(&extract_text(content)),
+            ContentBlock::Image { .. } | ContentBlock::ToolUse { .. } => {}
         }
     }
     out

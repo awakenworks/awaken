@@ -15,7 +15,8 @@ pub enum Role {
 
 /// One message in a thread. Content is multimodal: a list of content blocks,
 /// never a bare string, so an image rides alongside text without a schema change.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Not `Eq` — a `ToolUse` block carries untyped JSON arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub id: Id,
     pub role: Role,

@@ -35,7 +35,7 @@ impl LlmExecutor for TextLlm {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         Ok(ChatResponse {
-            output: AssistantOutput::Text("done".to_string()),
+            output: AssistantOutput::text("done".to_string()),
             usage: None,
         })
     }

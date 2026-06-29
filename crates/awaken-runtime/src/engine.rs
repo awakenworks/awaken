@@ -22,7 +22,7 @@ use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamK
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatMessage, ChatRequest, ChatRole, DeltaSink, ToolCall, ToolSchema,
+    ChatMessage, ChatRequest, ChatRole, DeltaSink, ToolCall, ToolSchema,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{PhaseContext, PhaseHookPoint, ResolvedExecutionEnv};
@@ -293,54 +293,52 @@ async fn drive(
             break;
         }
 
-        match response.output {
-            AssistantOutput::Text(text) => {
-                // The text already streamed to the live sink during inference; the
-                // committed message is the assembled whole, not the live chunks.
-                let message = assistant_message(run_id, step_base + step, text);
-                transcript.push(message.clone());
-                new_messages.push(message);
-                end = Some(End::Ended(EndCause::NaturalEnd));
-                break;
-            }
-            AssistantOutput::ToolCalls(calls) => {
-                let assistant = assistant_tool_call_message(run_id, step_base + step, &calls);
-                transcript.push(assistant.clone());
-                new_messages.push(assistant);
+        // Commit the assistant turn verbatim — text and tool-use blocks may
+        // interleave. The text already streamed to the live sink; the committed
+        // message is the assembled whole.
+        let calls = response.output.tool_calls();
+        let assistant = assistant_message(run_id, step_base + step, response.output.blocks);
+        transcript.push(assistant.clone());
+        new_messages.push(assistant);
 
-                for call in calls {
-                    let output = match gate_decision(runtime, &call).await {
-                        GateOutcome::Allow => execute_tool(runtime, &call).await,
-                        GateOutcome::Block { reason } => {
-                            ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
-                        }
-                        GateOutcome::SetResult(output) => output,
-                        GateOutcome::Suspend { ticket_id } => {
-                            // Park the run on a structured ticket carrying the
-                            // pending call so an allow decision can run it later.
-                            let ticket = waiting_ticket(resolved, run_id, &ticket_id, &call);
-                            end = Some(End::Parked(ticket));
-                            emit(
-                                context,
-                                run_id,
-                                StreamKind::Waiting {
-                                    reason: "tool_permission".to_string(),
-                                },
-                            )
-                            .await;
-                            break;
-                        }
-                    };
-                    staged_state.extend(output.state.clone());
-                    let message = tool_result_message(&call, &output);
-                    transcript.push(message.clone());
-                    new_messages.push(message);
+        // A text-only turn (no tool requests) is a natural end.
+        if calls.is_empty() {
+            end = Some(End::Ended(EndCause::NaturalEnd));
+            break;
+        }
+
+        // Otherwise run each requested tool and feed the results back.
+        for call in calls {
+            let output = match gate_decision(runtime, &call).await {
+                GateOutcome::Allow => execute_tool(runtime, &call).await,
+                GateOutcome::Block { reason } => {
+                    ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
                 }
-
-                if end.is_some() {
+                GateOutcome::SetResult(output) => output,
+                GateOutcome::Suspend { ticket_id } => {
+                    // Park the run on a structured ticket carrying the pending
+                    // call so an allow decision can run it later.
+                    let ticket = waiting_ticket(resolved, run_id, &ticket_id, &call);
+                    end = Some(End::Parked(ticket));
+                    emit(
+                        context,
+                        run_id,
+                        StreamKind::Waiting {
+                            reason: "tool_permission".to_string(),
+                        },
+                    )
+                    .await;
                     break;
                 }
-            }
+            };
+            staged_state.extend(output.state.clone());
+            let message = tool_result_message(&call, &output);
+            transcript.push(message.clone());
+            new_messages.push(message);
+        }
+
+        if end.is_some() {
+            break;
         }
 
         // StepEnd fires at the boundary between steps that continue the loop.
@@ -464,7 +462,10 @@ async fn resume_into_messages(
     match result {
         ResumeResult::ToolResult(output) => {
             let state = output.state.clone();
-            (vec![tool_message(&call_id, &output.content)], state)
+            (
+                vec![tool_result_message_from(&call_id, &output.content)],
+                state,
+            )
         }
         ResumeResult::Decision { allow, note } => {
             if allow && let Some(pending) = &ticket.pending_tool {
@@ -475,11 +476,17 @@ async fn resume_into_messages(
                 };
                 let output = execute_tool(runtime, &call).await;
                 let state = output.state.clone();
-                (vec![tool_message(&call_id, &output.content)], state)
+                (
+                    vec![tool_result_message_from(&call_id, &output.content)],
+                    state,
+                )
             } else {
                 let reason = note.unwrap_or_else(|| "denied".to_string());
                 (
-                    vec![tool_message(&call_id, &format!("blocked: {reason}"))],
+                    vec![tool_result_message_from(
+                        &call_id,
+                        &format!("blocked: {reason}"),
+                    )],
                     Vec::new(),
                 )
             }
@@ -569,35 +576,32 @@ fn to_tool_schema(descriptor: &ToolDescriptor) -> ToolSchema {
     }
 }
 
-fn assistant_message(run_id: &RunId, step: usize, text: String) -> Message {
-    Message::text(
-        MessageId(format!("{}-assistant-{step}", run_id.0)),
-        Role::Assistant,
-        text,
-    )
-}
-
-/// Record an assistant tool-call turn so the committed transcript explains why
-/// tool results follow.
-fn assistant_tool_call_message(run_id: &RunId, step: usize, calls: &[ToolCall]) -> Message {
-    let summary: Vec<_> = calls.iter().map(|c| c.tool_id.as_str()).collect();
-    Message::text(
-        MessageId(format!("{}-assistant-{step}", run_id.0)),
-        Role::Assistant,
-        format!("tool_calls: {}", summary.join(", ")),
-    )
+/// The committed assistant turn: its content blocks verbatim (text and tool-use
+/// interleaved), so the transcript explains both what was said and what was
+/// called.
+fn assistant_message(run_id: &RunId, step: usize, blocks: Vec<ContentBlock>) -> Message {
+    Message {
+        id: MessageId(format!("{}-assistant-{step}", run_id.0)),
+        role: Role::Assistant,
+        content: blocks,
+    }
 }
 
 fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Message {
-    tool_message(&call.call_id, &output.content)
+    tool_result_message_from(&call.call_id, &output.content)
 }
 
-fn tool_message(call_id: &str, content: &str) -> Message {
-    Message::text(
-        MessageId(format!("tool-{call_id}")),
-        Role::Tool,
-        content.to_string(),
-    )
+/// A tool-role message carrying a structured `ToolResult` block addressed to the
+/// originating call, so the model sees a real tool result rather than loose text.
+fn tool_result_message_from(call_id: &str, text: &str) -> Message {
+    Message {
+        id: MessageId(format!("tool-{call_id}")),
+        role: Role::Tool,
+        content: vec![ContentBlock::tool_result(
+            call_id.to_string(),
+            vec![ContentBlock::text(text.to_string())],
+        )],
+    }
 }
 
 /// Best-effort live emission. A sink failure is swallowed: committed truth is

@@ -93,13 +93,21 @@ pub awaken_agent_contract::agent::content::ContentBlock::Image
 pub awaken_agent_contract::agent::content::ContentBlock::Image::source: awaken_agent_contract::agent::content::ImageSource
 pub awaken_agent_contract::agent::content::ContentBlock::Text
 pub awaken_agent_contract::agent::content::ContentBlock::Text::text: alloc::string::String
+pub awaken_agent_contract::agent::content::ContentBlock::ToolResult
+pub awaken_agent_contract::agent::content::ContentBlock::ToolResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_agent_contract::agent::content::ContentBlock::ToolResult::tool_use_id: alloc::string::String
+pub awaken_agent_contract::agent::content::ContentBlock::ToolUse
+pub awaken_agent_contract::agent::content::ContentBlock::ToolUse::id: alloc::string::String
+pub awaken_agent_contract::agent::content::ContentBlock::ToolUse::input: serde_json::value::Value
+pub awaken_agent_contract::agent::content::ContentBlock::ToolUse::name: alloc::string::String
 impl awaken_agent_contract::agent::content::ContentBlock
 pub fn awaken_agent_contract::agent::content::ContentBlock::image_base64(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::image_url(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::text(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::agent::content::ContentBlock::tool_result(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
+pub fn awaken_agent_contract::agent::content::ContentBlock::tool_use(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 impl core::clone::Clone for awaken_agent_contract::agent::content::ContentBlock
 pub fn awaken_agent_contract::agent::content::ContentBlock::clone(&self) -> awaken_agent_contract::agent::content::ContentBlock
-impl core::cmp::Eq for awaken_agent_contract::agent::content::ContentBlock
 impl core::cmp::PartialEq for awaken_agent_contract::agent::content::ContentBlock
 pub fn awaken_agent_contract::agent::content::ContentBlock::eq(&self, &awaken_agent_contract::agent::content::ContentBlock) -> bool
 impl core::fmt::Debug for awaken_agent_contract::agent::content::ContentBlock
@@ -215,7 +223,6 @@ pub fn awaken_agent_contract::agent::message::Message::text(awaken_agent_contrac
 pub fn awaken_agent_contract::agent::message::Message::text_content(&self) -> alloc::string::String
 impl core::clone::Clone for awaken_agent_contract::agent::message::Message
 pub fn awaken_agent_contract::agent::message::Message::clone(&self) -> awaken_agent_contract::agent::message::Message
-impl core::cmp::Eq for awaken_agent_contract::agent::message::Message
 impl core::cmp::PartialEq for awaken_agent_contract::agent::message::Message
 pub fn awaken_agent_contract::agent::message::Message::eq(&self, &awaken_agent_contract::agent::message::Message) -> bool
 impl core::fmt::Debug for awaken_agent_contract::agent::message::Message
@@ -1188,7 +1195,6 @@ pub fn awaken_agent_contract::agent::message::Message::text(awaken_agent_contrac
 pub fn awaken_agent_contract::agent::message::Message::text_content(&self) -> alloc::string::String
 impl core::clone::Clone for awaken_agent_contract::agent::message::Message
 pub fn awaken_agent_contract::agent::message::Message::clone(&self) -> awaken_agent_contract::agent::message::Message
-impl core::cmp::Eq for awaken_agent_contract::agent::message::Message
 impl core::cmp::PartialEq for awaken_agent_contract::agent::message::Message
 pub fn awaken_agent_contract::agent::message::Message::eq(&self, &awaken_agent_contract::agent::message::Message) -> bool
 impl core::fmt::Debug for awaken_agent_contract::agent::message::Message

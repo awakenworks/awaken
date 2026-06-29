@@ -275,26 +275,6 @@ pub trait awaken_runtime_contract::execution::RunExecutor: core::marker::Send + 
 pub fn awaken_runtime_contract::execution::RunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub type awaken_runtime_contract::execution::Result<T> = core::result::Result<T, awaken_runtime_contract::execution::Error>
 pub mod awaken_runtime_contract::llm
-pub enum awaken_runtime_contract::llm::AssistantOutput
-pub awaken_runtime_contract::llm::AssistantOutput::Text(alloc::string::String)
-pub awaken_runtime_contract::llm::AssistantOutput::ToolCalls(alloc::vec::Vec<awaken_runtime_contract::llm::ToolCall>)
-impl core::clone::Clone for awaken_runtime_contract::llm::AssistantOutput
-pub fn awaken_runtime_contract::llm::AssistantOutput::clone(&self) -> awaken_runtime_contract::llm::AssistantOutput
-impl core::cmp::PartialEq for awaken_runtime_contract::llm::AssistantOutput
-pub fn awaken_runtime_contract::llm::AssistantOutput::eq(&self, &awaken_runtime_contract::llm::AssistantOutput) -> bool
-impl core::fmt::Debug for awaken_runtime_contract::llm::AssistantOutput
-pub fn awaken_runtime_contract::llm::AssistantOutput::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::llm::AssistantOutput
-impl serde_core::ser::Serialize for awaken_runtime_contract::llm::AssistantOutput
-pub fn awaken_runtime_contract::llm::AssistantOutput::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::llm::AssistantOutput
-pub fn awaken_runtime_contract::llm::AssistantOutput::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_runtime_contract::llm::AssistantOutput
-impl core::marker::Send for awaken_runtime_contract::llm::AssistantOutput
-impl core::marker::Sync for awaken_runtime_contract::llm::AssistantOutput
-impl core::marker::Unpin for awaken_runtime_contract::llm::AssistantOutput
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::AssistantOutput
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::AssistantOutput
 pub enum awaken_runtime_contract::llm::ChatRole
 pub awaken_runtime_contract::llm::ChatRole::Assistant
 pub awaken_runtime_contract::llm::ChatRole::System
@@ -336,6 +316,31 @@ impl core::marker::Sync for awaken_runtime_contract::llm::Error
 impl core::marker::Unpin for awaken_runtime_contract::llm::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::Error
+pub struct awaken_runtime_contract::llm::AssistantOutput
+pub awaken_runtime_contract::llm::AssistantOutput::blocks: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+impl awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::from_blocks(alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
+pub fn awaken_runtime_contract::llm::AssistantOutput::from_tool_calls(alloc::vec::Vec<awaken_runtime_contract::llm::ToolCall>) -> Self
+pub fn awaken_runtime_contract::llm::AssistantOutput::text(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::llm::AssistantOutput::text_content(&self) -> alloc::string::String
+pub fn awaken_runtime_contract::llm::AssistantOutput::tool_calls(&self) -> alloc::vec::Vec<awaken_runtime_contract::llm::ToolCall>
+impl core::clone::Clone for awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::clone(&self) -> awaken_runtime_contract::llm::AssistantOutput
+impl core::cmp::PartialEq for awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::eq(&self, &awaken_runtime_contract::llm::AssistantOutput) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::llm::AssistantOutput
+impl serde_core::ser::Serialize for awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::llm::AssistantOutput
+impl core::marker::Send for awaken_runtime_contract::llm::AssistantOutput
+impl core::marker::Sync for awaken_runtime_contract::llm::AssistantOutput
+impl core::marker::Unpin for awaken_runtime_contract::llm::AssistantOutput
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::AssistantOutput
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::AssistantOutput
 pub struct awaken_runtime_contract::llm::ChatMessage
 pub awaken_runtime_contract::llm::ChatMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_runtime_contract::llm::ChatMessage::role: awaken_runtime_contract::llm::ChatRole

@@ -32,7 +32,7 @@ impl LlmExecutor for TextLlm {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         Ok(ChatResponse {
-            output: AssistantOutput::Text("done".to_string()),
+            output: AssistantOutput::text("done".to_string()),
             usage: None,
         })
     }
@@ -53,7 +53,7 @@ impl LlmExecutor for GatedLlm {
         self.started.notify_one();
         self.release.notified().await;
         Ok(ChatResponse {
-            output: AssistantOutput::Text("late".to_string()),
+            output: AssistantOutput::text("late".to_string()),
             usage: None,
         })
     }

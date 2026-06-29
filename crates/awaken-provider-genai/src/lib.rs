@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
+use awaken_agent_contract::agent::content::{ContentBlock, ImageSource, extract_text};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, Error, LlmExecutor, Result, TokenUsage,
     ToolCall,
@@ -15,7 +15,7 @@ use awaken_runtime_contract::llm::{
 use genai::Client;
 use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
-    Tool as GenaiTool, ToolCall as GenaiToolCall, Usage,
+    Tool as GenaiTool, ToolCall as GenaiToolCall, ToolResponse, Usage,
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -140,6 +140,19 @@ fn to_genai_part(block: &ContentBlock) -> ContentPart {
     match block {
         ContentBlock::Text { text } => ContentPart::Text(text.clone()),
         ContentBlock::Image { source } => ContentPart::Binary(to_genai_binary(source)),
+        ContentBlock::ToolUse { id, name, input } => ContentPart::ToolCall(GenaiToolCall {
+            call_id: id.clone(),
+            fn_name: name.clone(),
+            fn_arguments: input.clone(),
+            thought_signatures: None,
+        }),
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+        } => ContentPart::ToolResponse(ToolResponse::new(
+            tool_use_id.clone(),
+            extract_text(content),
+        )),
     }
 }
 
@@ -187,15 +200,22 @@ pub fn from_genai_response(response: genai::chat::ChatResponse) -> ChatResponse 
     }
 }
 
-/// Tool calls take precedence over text, matching the loop's natural-end vs
-/// tool-call branch.
+/// Map a provider turn onto neutral content blocks, preserving the order of text
+/// and tool requests so an interleaved turn (text + tool call + text) survives.
 pub fn map_assistant_output(content: &MessageContent) -> AssistantOutput {
-    let tool_calls = content.tool_calls();
-    if tool_calls.is_empty() {
-        AssistantOutput::Text(content.first_text().unwrap_or_default().to_string())
-    } else {
-        AssistantOutput::ToolCalls(tool_calls.into_iter().map(from_genai_tool_call).collect())
-    }
+    let blocks = content
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::Text(text) => Some(ContentBlock::text(text.clone())),
+            ContentPart::ToolCall(call) => Some(ContentBlock::tool_use(
+                call.call_id.clone(),
+                call.fn_name.clone(),
+                call.fn_arguments.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    AssistantOutput::from_blocks(blocks)
 }
 
 pub fn map_usage(usage: &Usage) -> TokenUsage {

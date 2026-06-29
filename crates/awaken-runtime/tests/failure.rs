@@ -61,7 +61,7 @@ impl LlmExecutor for FlakyLlm {
             Err(LlmError::Transient("503".to_string()))
         } else {
             Ok(ChatResponse {
-                output: AssistantOutput::Text("recovered".to_string()),
+                output: AssistantOutput::text("recovered".to_string()),
                 usage: None,
             })
         }

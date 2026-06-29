@@ -42,13 +42,13 @@ impl LlmExecutor for CallThenEnd {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let output = if n == 0 {
-            AssistantOutput::ToolCalls(vec![ToolCall {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "call-1".to_string(),
                 tool_id: "stateful".to_string(),
                 arguments: serde_json::json!({}),
             }])
         } else {
-            AssistantOutput::Text("done".to_string())
+            AssistantOutput::text("done".to_string())
         };
         Ok(ChatResponse {
             output,

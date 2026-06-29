@@ -34,7 +34,7 @@ struct StreamingLlm {
 impl LlmExecutor for StreamingLlm {
     async fn infer(&self, _request: ChatRequest) -> Result<ChatResponse> {
         Ok(ChatResponse {
-            output: AssistantOutput::Text(self.chunks.concat()),
+            output: AssistantOutput::text(self.chunks.concat()),
             usage: None,
         })
     }
@@ -48,7 +48,7 @@ impl LlmExecutor for StreamingLlm {
             sink.on_text(chunk).await;
         }
         Ok(ChatResponse {
-            output: AssistantOutput::Text(self.chunks.concat()),
+            output: AssistantOutput::text(self.chunks.concat()),
             usage: None,
         })
     }
