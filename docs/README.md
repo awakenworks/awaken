@@ -92,6 +92,9 @@ type rather than duplicate schemas, state machines, or role catalogs.
   — the `Plugin` factory, config-aware `resolve` to `Contributions`, the
   `ResolvedExecutionEnv` aggregate, and `CapabilityBound` as a fail-closed
   contribution ceiling that is never authorization.
+- [adr/0005-run-terminal-state-single-authority.md](adr/0005-run-terminal-state-single-authority.md)
+  — the committed run `Phase` (`Waiting | Ended(EndCause)`) as the one stored
+  terminal authority, with status/outcome/error derived, never stored.
 
 ## Development-Ready Design Rule
 

@@ -54,25 +54,27 @@ messages, the latest run projection, and thread-scoped state.
 ```text
 RunActivation
   -> live runtime loop and StateStore
-  -> RunRecord { lifecycle, run-scoped PersistedState }
+  -> RunRecord { phase, run-scoped PersistedState }
   -> ThreadCommit { message write intent, run projection, thread-state snapshot }
   -> CommitCoordinator checkpoint
   -> ThreadResumeSnapshot { committed messages, message version, latest run, thread state }
 ```
 
-The durable run lifecycle is a sum type, not a flat status plus optional fields:
+The committed run `Phase` is the single stored terminal authority — a sum type,
+not a flat status plus a separate outcome field. The runtime commits a phase only
+at a pause or a terminus; `Created` and `Running` are live, uncommitted states
+that never become a stored fact.
 
-| Phase | Payload | Rule |
+| Committed `Phase` | Payload | Rule |
 |---|---|---|
-| `Created` | none | accepted user intent that has not started; it must not carry `started_at` or `finished_at` |
-| `Running` | none | active execution; it must not carry waiting state, terminal outcome, or `finished_at` |
-| `Waiting` | `RunWaitingState` | parked on a structured reason and optional resume tickets; it resumes only through ingress, dispatch, or recovery |
-| `Done` | `RunOutcome` | terminal business outcome; it must carry `finished_at` |
+| `Waiting` | waiting ticket (in the checkpoint's waiting slot, not on the run fact) | parked on a structured reason; resumes only through ingress, dispatch, or recovery. A pause is not a terminus and carries no end cause |
+| `Ended` | `EndCause` | the single terminal authority: `NaturalEnd`, `MaxSteps`, `Cancelled`, or `Error(Failure)`. Run status, the published outcome, and the error flag are *derived* from it and never stored beside it ([ADR-0005](../adr/0005-run-terminal-state-single-authority.md)) |
 
-`RunWaitingState` keeps same-run resume data structured. Valid reasons are
-`ToolPermission`, `UserInput`, `BackgroundTasks`, `ExternalEvent`, `RateLimit`,
-and `ManualPause`. Public status names, HTTP states, or product protocol names
-are adapter projections and do not replace these runtime values.
+`EndCause::Error` carries a `Failure` kind (`Inference`, `CapabilityBound`,
+`StateConflict`); the fault detail lives in the committed authority, not in a
+separate status string. The waiting ticket keeps same-run resume data structured;
+its reason today is `ToolPermission`. Public status names, HTTP states, or product
+protocol names are adapter projections and do not replace these runtime values.
 
 The thread side follows different rules:
 
@@ -139,7 +141,7 @@ The model deliberately separates these concepts:
 
 | Concept | Role | Rule |
 |---|---|---|
-| Durable run lifecycle value | durable run phase value on `RunRecord` | illegal combinations are unrepresentable; waiting payloads live only in waiting, outcomes only in done |
+| Committed run `Phase` | durable run phase value on `RunRecord` | illegal combinations are unrepresentable; a waiting ticket lives only in `Waiting`, the `EndCause` authority only in `Ended`, and status/outcome are derived, never stored |
 | `StateKey` | typed extension-state identity | owns value/update types, validation, apply logic, merge policy, scope, and serde |
 | `StateCommand` | runtime command envelope | carries a state patch plus scheduled actions and effects from hooks or tools |
 | `MutationBatch` | atomic state patch | validates registered keys and base revision before applying all updates or none |
@@ -540,8 +542,8 @@ authority, extension activation, or replay-sensitive decisions.
 |---|---|---|---|---|---|---|
 | `RunActivation` | aggregate input value | prepared runtime input for one run attempt | resolved spec, thread/run ids, selected backend and tools | HTTP route state, product DTOs, live registry objects | runtime starts from adapter-shaped or mutable input | G2, G3; activation serde/API checks |
 | `RuntimeRunContext` | per-attempt live wiring | cancellation, input receiver, stream sink, commit source, pinned resolver scope, persistence mode, and thread context cache for one execution attempt | `RunExecutor`, ingress/runtime execution construction | durable request data, public DTOs, config records, immutable executable snapshot data | replay or durable dispatch depends on process-local handles | G2, G3, G5, G13; activation/context split tests |
-| Durable run lifecycle value | durable run phase value | legal phase payload combinations for created/running/waiting/done | `RunRecord`, waiting state, terminal outcome | public protocol status, live control handles, thread serialization | impossible state is persisted or adapter status becomes runtime truth | G1, G10; lifecycle validation and adapter mapping tests |
-| `RunRecord` | durable run projection | run identity, input/output ranges, lifecycle, timing, token counters, run-scoped state | activation snapshot, message ranges, persisted state | thread message-log ownership, thread-scoped state authority, product session state | resume reads a run projection that cannot explain the committed thread state | G1, G13; run persist/resume tests |
+| Committed run `Phase` | durable run phase authority (`Waiting \| Ended(EndCause)`) | the single stored terminal authority; derived status/outcome/error projections | `RunRecord`, waiting ticket, `EndCause`/`Failure` | a stored status/outcome field, public protocol status, live control handles, thread serialization | a second stored notion of the end drifts, or adapter status becomes runtime truth | G1, G10, G31; terminal projection tests |
+| `RunRecord` | durable run projection | run identity, input/output ranges, the `Phase` authority, timing, token counters, run-scoped state | activation snapshot, message ranges, persisted state | thread message-log ownership, thread-scoped state authority, product session state | resume reads a run projection that cannot explain the committed thread state | G1, G13; run persist/resume tests |
 | `RunWaitingState` | durable waiting payload | structured reason, resume tickets, dispatch marker, wait message | tool-call suspension, ingress resume, recovery wake | terminal outcome, product pause labels, ad hoc status strings | waiting run cannot be safely resumed or recovered | G5, G9, G13; waiting reason and ticket validation tests |
 | `ThreadCommit` | atomic thread checkpoint plan | message write intent, append fence, latest run projection, optional thread-state snapshot | commit coordinator, persisted state exports, message delta | whole-log rewrite, unguarded message append, product outbox payloads | duplicate/reordered messages or split run/thread truth | G1, G13; append-fence and checkpoint atomicity tests |
 | `ThreadResumeSnapshot` | consistent resume read model | committed message view, message version, latest run, thread-scoped state | resume store, dispatch recovery, context builder | mutation authority, product session replay, live sink state | resume observes a torn mix of messages, run projection, and state | G1, G13; snapshot consistency tests |
