@@ -6,6 +6,7 @@ members = [
     "crates/awaken-runtime",
     "crates/awaken-ext-builtin-tools",
     "crates/awaken-provider-genai",
+    "crates/awaken-store-postgres",
 ]
 
 [workspace.package]
