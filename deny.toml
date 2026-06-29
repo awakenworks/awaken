@@ -1,0 +1,72 @@
+# Architecture fitness function: crate dependency direction (layering).
+#
+# Enforces the one-way dependency rule (INVARIANTS G2, G18, G29): contracts are
+# the base, the runtime core depends only on contracts, and extensions/host sit
+# on top. A reverse edge — a lower layer depending on a higher one — fails the
+# build. (Most reverse edges are dependency cycles that cargo itself rejects;
+# this check covers the acyclic upward edges cargo allows, e.g. kernel -> ext.)
+#
+# Layers, low -> high:
+#   awaken-agent-contract     base contract; no internal dependencies
+#   awaken-runtime-contract   -> agent-contract
+#   awaken-runtime            -> the two contracts; the kernel
+#   awaken-ext-builtin-tools  -> contract/kernel surface; first-party extensions
+#   awaken-provider-genai     -> contracts only; the model-SDK adapter (no kernel dep)
+#   awaken-run-ingress        (planned host; named in key-design-decisions.md)
+#
+# Each rule denies a crate, then lists via `wrappers` the ONLY crates allowed to
+# depend on it (its legitimate upper layers). A depender not in the list is a
+# forbidden upward edge and fails `cargo deny check bans`.
+#
+# Run: cargo deny --log-level error check bans
+#   `--log-level error` hides the benign "unused-wrapper" notes for upper layers
+#   that do not exist or do not consume the lower layer yet; real upward edges
+#   still fail. Only the `bans` check is in scope; licenses/advisories are not.
+
+[graph]
+all-features = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+# Base contract: only the layers above it may depend on it.
+[[bans.deny]]
+name = "awaken-agent-contract"
+wrappers = [
+    "awaken-runtime-contract",
+    "awaken-runtime",
+    "awaken-ext-builtin-tools",
+    "awaken-provider-genai",
+    "awaken-run-ingress",
+]
+reason = "base contract; nothing may pull it upward (no downward dep of its own)"
+
+# Contract layer: the base contract must NOT depend upward on it.
+[[bans.deny]]
+name = "awaken-runtime-contract"
+wrappers = [
+    "awaken-runtime",
+    "awaken-ext-builtin-tools",
+    "awaken-provider-genai",
+    "awaken-run-ingress",
+]
+reason = "contract layer; agent-contract must not depend on it (no upward edge)"
+
+# Kernel: contracts must NOT depend on the kernel; only extensions/host may.
+[[bans.deny]]
+name = "awaken-runtime"
+wrappers = [
+    "awaken-ext-builtin-tools",
+    "awaken-run-ingress",
+]
+reason = "runtime core; contracts must not depend on the kernel (G2, G18)"
+
+# Extension layer: the runtime core and contracts must NOT depend on it; only the
+# host/application layer composes the bundle.
+[[bans.deny]]
+name = "awaken-ext-builtin-tools"
+wrappers = [
+    "awaken-run-ingress",
+]
+reason = "extensions sit on top; the runtime core must stay extension-agnostic (G2)"
