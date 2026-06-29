@@ -486,8 +486,11 @@ impl core::marker::Sync for awaken_runtime_contract::llm::ToolSchema
 impl core::marker::Unpin for awaken_runtime_contract::llm::ToolSchema
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ToolSchema
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ToolSchema
+pub trait awaken_runtime_contract::llm::DeltaSink: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::llm::DeltaSink::on_text<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::llm::LlmExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::LlmExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::llm::LlmExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub type awaken_runtime_contract::llm::Result<T> = core::result::Result<T, awaken_runtime_contract::llm::Error>
 pub mod awaken_runtime_contract::permission
 pub enum awaken_runtime_contract::permission::GateOutcome
@@ -1666,6 +1669,7 @@ pub trait awaken_runtime_contract::LiveRunControl
 pub fn awaken_runtime_contract::LiveRunControl::deliver(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
 pub trait awaken_runtime_contract::LlmExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::LlmExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::LlmExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::PermissionPolicy: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::PermissionPolicy::decide<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::PermissionDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::PhaseHook: core::marker::Send + core::marker::Sync

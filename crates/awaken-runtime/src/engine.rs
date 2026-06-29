@@ -21,7 +21,8 @@ use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamK
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, ToolCall, ToolSchema,
+    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, DeltaSink, ToolCall,
+    ToolSchema,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{PhaseContext, PhaseHookPoint, ResolvedExecutionEnv};
@@ -233,6 +234,8 @@ async fn drive(
     // The loop's terminal decision. It stays `None` only if the loop runs to its
     // step ceiling, which is itself a terminus (`MaxSteps`).
     let mut end: Option<End> = None;
+    // Forwards streamed text chunks to the live stream during each inference.
+    let delta_sink = StreamDeltaSink { context, run_id };
 
     // The agent's configured ceiling guards against a non-terminating tool cycle;
     // a natural-end text turn ends the loop earlier.
@@ -263,15 +266,16 @@ async fn drive(
         let request = build_chat_request(&resolved.spec, &transcript);
         // A transient inference failure retries with backoff; a permanent failure
         // (or exhausted retries) commits a typed terminal reason (G26).
-        let response = match infer_with_retry(llm, request, runtime.infer_retries()).await {
-            Ok(response) => response,
-            Err(err) => {
-                end = Some(End::Ended(EndCause::Error(Failure::Inference(
-                    err.to_string(),
-                ))));
-                break;
-            }
-        };
+        let response =
+            match infer_with_retry(llm, request, runtime.infer_retries(), &delta_sink).await {
+                Ok(response) => response,
+                Err(err) => {
+                    end = Some(End::Ended(EndCause::Error(Failure::Inference(
+                        err.to_string(),
+                    ))));
+                    break;
+                }
+            };
 
         run_phase_hooks(
             env,
@@ -291,12 +295,8 @@ async fn drive(
 
         match response.output {
             AssistantOutput::Text(text) => {
-                emit(
-                    context,
-                    run_id,
-                    StreamKind::OutputText { text: text.clone() },
-                )
-                .await;
+                // The text already streamed to the live sink during inference; the
+                // committed message is the assembled whole, not the live chunks.
                 let message = assistant_message(run_id, step_base + step, text);
                 transcript.push(message.clone());
                 new_messages.push(message);
@@ -363,19 +363,43 @@ async fn drive(
     })
 }
 
-/// Call inference, retrying a transient failure up to `retries` times with a
-/// short linear backoff. A permanent failure returns immediately (G26).
+/// Forwards a turn's streamed text chunks to the live stream as `OutputText`
+/// events. Live progress only — the committed message comes from the returned
+/// response, never these chunks (G10/G13).
+struct StreamDeltaSink<'a> {
+    context: &'a RuntimeRunContext,
+    run_id: &'a RunId,
+}
+
+#[async_trait]
+impl DeltaSink for StreamDeltaSink<'_> {
+    async fn on_text(&self, chunk: &str) {
+        emit(
+            self.context,
+            self.run_id,
+            StreamKind::OutputText {
+                text: chunk.to_string(),
+            },
+        )
+        .await;
+    }
+}
+
+/// Call inference, streaming text chunks to `sink` as they arrive and retrying a
+/// transient failure up to `retries` times with a short linear backoff. A
+/// permanent failure returns immediately (G26).
 async fn infer_with_retry(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,
     retries: usize,
+    sink: &dyn DeltaSink,
 ) -> std::result::Result<
     awaken_runtime_contract::llm::ChatResponse,
     awaken_runtime_contract::llm::Error,
 > {
     let mut attempt = 0;
     loop {
-        match llm.infer(request.clone()).await {
+        match llm.infer_streaming(request.clone(), sink).await {
             Ok(response) => return Ok(response),
             Err(err) if err.is_retryable() && attempt < retries => {
                 attempt += 1;

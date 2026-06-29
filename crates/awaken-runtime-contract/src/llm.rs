@@ -109,8 +109,40 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Where a provider pushes a turn's content as it streams. Best-effort live
+/// progress only — never committed truth, which is the returned `ChatResponse`
+/// (G10/G13). The runtime implements this to forward chunks to its live stream.
+#[async_trait]
+pub trait DeltaSink: Send + Sync {
+    /// A chunk of assistant text as it arrives. Each chunk is a complete, valid
+    /// UTF-8 fragment (the `&str` type guarantees it), and the concatenation of
+    /// all chunks equals the final text. A provider that decodes a byte
+    /// transport must buffer an incomplete multi-byte sequence and never split a
+    /// code point across chunks; the runtime concatenates chunks verbatim and
+    /// never indexes into a chunk by byte.
+    async fn on_text(&self, chunk: &str);
+}
+
 /// Provider-adapter port: turn one neutral request into one neutral response.
 #[async_trait]
 pub trait LlmExecutor: Send + Sync {
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse>;
+
+    /// Stream the turn's text to `sink` as it arrives, returning the same
+    /// assembled response `infer` would. The default is a faithful degenerate
+    /// stream — it runs `infer` and pushes the whole text as one chunk — so a
+    /// non-streaming provider needs no extra code; a streaming provider overrides
+    /// this to push real chunks. The returned response is the committed truth;
+    /// the pushed chunks are best-effort live output.
+    async fn infer_streaming(
+        &self,
+        request: ChatRequest,
+        sink: &dyn DeltaSink,
+    ) -> Result<ChatResponse> {
+        let response = self.infer(request).await?;
+        if let AssistantOutput::Text(text) = &response.output {
+            sink.on_text(text).await;
+        }
+        Ok(response)
+    }
 }
