@@ -1,0 +1,186 @@
+//! Resume command and the shared `ResumeValidator`.
+//!
+//! A parked run resumes only through a `ResumeCommand` that the runtime validates
+//! against the committed `WaitingTicket`: correlation, run/thread, executable
+//! snapshot, catalog fingerprint, and deadline must all match, or the resume
+//! fails closed (G5/G28). The clock is supplied by the caller so the runtime
+//! core stays deterministic and replayable.
+
+use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::agent::waiting::WaitingTicket;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::tool::ToolOutput;
+
+/// What a resume delivers back into the parked run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ResumeResult {
+    /// A tool result for the call the run was waiting on.
+    ToolResult(ToolOutput),
+    /// A permission decision: allow runs the tool, deny feeds a blocked result.
+    Decision { allow: bool, note: Option<String> },
+    /// Free-form input delivered to the run (e.g. a user answer).
+    Input(String),
+}
+
+/// Neutral resume input. Pure data so it can cross an ingress boundary, be
+/// logged, and be validated before any execution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResumeCommand {
+    pub correlation_id: String,
+    pub run_id: RunId,
+    pub thread_id: ThreadId,
+    pub snapshot_id: String,
+    pub catalog_fingerprint: String,
+    pub result: ResumeResult,
+    /// Caller-supplied clock (epoch millis) used to enforce the ticket deadline.
+    pub now_ms: u64,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ResumeError {
+    #[error("run is not waiting (no active ticket)")]
+    NotWaiting,
+    #[error("resume correlation does not match the ticket")]
+    CorrelationMismatch,
+    #[error("resume run id does not match the ticket")]
+    RunMismatch,
+    #[error("resume thread id does not match the ticket")]
+    ThreadMismatch,
+    #[error("resume snapshot id does not match the ticket")]
+    SnapshotMismatch,
+    #[error("resume catalog fingerprint does not match the ticket")]
+    FingerprintMismatch,
+    #[error("resume is past the ticket deadline")]
+    Expired,
+}
+
+/// Validate a resume against the committed ticket. Every identity must match and
+/// the deadline (if any) must not have passed, or the resume fails closed.
+pub fn validate_resume(ticket: &WaitingTicket, command: &ResumeCommand) -> Result<(), ResumeError> {
+    if ticket.correlation_id != command.correlation_id {
+        return Err(ResumeError::CorrelationMismatch);
+    }
+    if ticket.run_id != command.run_id {
+        return Err(ResumeError::RunMismatch);
+    }
+    if ticket.thread_id != command.thread_id {
+        return Err(ResumeError::ThreadMismatch);
+    }
+    if ticket.snapshot_id != command.snapshot_id {
+        return Err(ResumeError::SnapshotMismatch);
+    }
+    if ticket.catalog_fingerprint != command.catalog_fingerprint {
+        return Err(ResumeError::FingerprintMismatch);
+    }
+    if let Some(deadline) = ticket.deadline_ms
+        && command.now_ms > deadline
+    {
+        return Err(ResumeError::Expired);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_agent_contract::agent::waiting::WaitingReason;
+
+    fn ticket() -> WaitingTicket {
+        WaitingTicket {
+            correlation_id: "c1".to_string(),
+            run_id: RunId("run-1".to_string()),
+            thread_id: ThreadId("thread-1".to_string()),
+            snapshot_id: "snap-1".to_string(),
+            catalog_fingerprint: "fp-1".to_string(),
+            reason: WaitingReason::ToolPermission,
+            call_id: Some("call-1".to_string()),
+            pending_tool: None,
+            deadline_ms: Some(100),
+        }
+    }
+
+    fn command() -> ResumeCommand {
+        ResumeCommand {
+            correlation_id: "c1".to_string(),
+            run_id: RunId("run-1".to_string()),
+            thread_id: ThreadId("thread-1".to_string()),
+            snapshot_id: "snap-1".to_string(),
+            catalog_fingerprint: "fp-1".to_string(),
+            result: ResumeResult::Decision {
+                allow: true,
+                note: None,
+            },
+            now_ms: 50,
+        }
+    }
+
+    #[test]
+    fn matching_resume_is_accepted() {
+        assert!(validate_resume(&ticket(), &command()).is_ok());
+    }
+
+    #[test]
+    fn each_mismatch_fails_closed() {
+        let cases = [
+            (
+                ResumeCommand {
+                    correlation_id: "x".into(),
+                    ..command()
+                },
+                ResumeError::CorrelationMismatch,
+            ),
+            (
+                ResumeCommand {
+                    run_id: RunId("x".into()),
+                    ..command()
+                },
+                ResumeError::RunMismatch,
+            ),
+            (
+                ResumeCommand {
+                    thread_id: ThreadId("x".into()),
+                    ..command()
+                },
+                ResumeError::ThreadMismatch,
+            ),
+            (
+                ResumeCommand {
+                    snapshot_id: "x".into(),
+                    ..command()
+                },
+                ResumeError::SnapshotMismatch,
+            ),
+            (
+                ResumeCommand {
+                    catalog_fingerprint: "x".into(),
+                    ..command()
+                },
+                ResumeError::FingerprintMismatch,
+            ),
+            (
+                ResumeCommand {
+                    now_ms: 999,
+                    ..command()
+                },
+                ResumeError::Expired,
+            ),
+        ];
+        for (cmd, expected) in cases {
+            assert_eq!(validate_resume(&ticket(), &cmd), Err(expected));
+        }
+    }
+
+    #[test]
+    fn no_deadline_never_expires() {
+        let mut t = ticket();
+        t.deadline_ms = None;
+        let cmd = ResumeCommand {
+            now_ms: u64::MAX,
+            ..command()
+        };
+        assert!(validate_resume(&t, &cmd).is_ok());
+    }
+}

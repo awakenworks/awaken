@@ -7,9 +7,11 @@ pub mod control;
 pub mod execution;
 pub mod llm;
 pub mod permission;
+pub mod plugin;
 pub mod plugin_config;
 pub mod resolved;
 pub mod resolver;
+pub mod resume;
 pub mod runtime_context;
 pub mod snapshot;
 pub mod snapshot_exec;
@@ -21,8 +23,13 @@ pub use control::LiveRunControl;
 pub use execution::{RunExecutor, RunOutcome};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use permission::{GateOutcome, PermissionDecision, PermissionPolicy, ToolGateHook};
+pub use plugin::{
+    CapabilityBound, Contributions, PhaseHook, PhaseHookPoint, Plugin, PluginManifest,
+    ResolvedExecutionEnv,
+};
 pub use resolved::{CatalogFingerprint, ResolvedSpec};
 pub use resolver::{AgentSnapshotResolver, RunResolver};
+pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
 pub use runtime_context::RuntimeRunContext;
 pub use snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 pub use snapshot_exec::{RunWithSnapshotCommand, RunWithSnapshotExecutor};

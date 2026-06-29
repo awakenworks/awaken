@@ -87,11 +87,24 @@ pub struct TokenUsage {
 #[derive(Debug, Error)]
 pub enum Error {
     /// The selected binding cannot be served (unknown model, bad endpoint).
+    /// Permanent: retrying will not help.
     #[error("model binding rejected: {0}")]
     Binding(String),
-    /// The provider call failed (transport, auth, upstream error).
+    /// The provider call failed permanently (auth, quota exhausted, bad request,
+    /// context overflow). Not worth retrying.
     #[error("model inference failed: {0}")]
     Inference(String),
+    /// A transient failure worth retrying with backoff (rate limit, overload,
+    /// 5xx, connection reset, timeout).
+    #[error("model inference transiently failed: {0}")]
+    Transient(String),
+}
+
+impl Error {
+    /// Whether the runtime should retry the call after backoff.
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Error::Transient(_))
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

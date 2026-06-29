@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_runtime_contract::capability::RuntimeCapabilitySource;
 use awaken_runtime_contract::catalog::{
     InstalledCatalog, RuntimeCatalogInstall, RuntimeCatalogInstaller,
@@ -10,6 +11,7 @@ use awaken_runtime_contract::catalog::{
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
+use awaken_runtime_contract::plugin::{MergeError, Plugin, ResolvedExecutionEnv};
 use awaken_runtime_contract::resolved::CatalogFingerprint;
 use awaken_runtime_contract::snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 use awaken_runtime_contract::tool::RawTool;
@@ -18,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 /// The runtime core. It installs catalogs, resolves snapshots, and executes
 /// runs through injected ports. The model provider, executable tools, and the
 /// permission gate are all ports, so the core never names a model SDK or a
-/// concrete tool id (G2/G12).
+/// concrete tool id (G2).
 #[derive(Default)]
 pub struct Runtime {
     active_catalog: Mutex<Option<RuntimeCatalogInstall>>,
@@ -28,17 +30,36 @@ pub struct Runtime {
     snapshots: Mutex<HashMap<ExecutableAgentSnapshotId, ExecutableAgentSnapshot>>,
     /// Model provider, built from the catalog at the composition root.
     llm: Option<Arc<dyn LlmExecutor>>,
-    /// Executable tools keyed by id; concrete ids come from extensions (G12).
+    /// Executable tools keyed by id; concrete ids come from extensions.
     tools: HashMap<String, Arc<dyn RawTool>>,
     /// The authorization gate; absent means tools run ungated (test-only).
     gate: Option<Arc<dyn ToolGateHook>>,
+    /// Installed plugin factories; the active subset for a run is chosen by the
+    /// resolved spec's `plugin_ids` and merged under capability bounds (G30).
+    plugins: Vec<Arc<dyn Plugin>>,
     /// Cancellation tokens for in-flight runs, so live control can steer them.
     active_runs: Mutex<HashMap<RunId, CancellationToken>>,
+    /// How many extra attempts to make on a transient inference failure.
+    infer_retries: usize,
 }
 
 impl Runtime {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            infer_retries: 2,
+            ..Self::default()
+        }
+    }
+
+    /// Set how many extra attempts to make on a transient inference failure.
+    #[must_use]
+    pub fn with_infer_retries(mut self, retries: usize) -> Self {
+        self.infer_retries = retries;
+        self
+    }
+
+    pub(crate) fn infer_retries(&self) -> usize {
+        self.infer_retries
     }
 
     /// Inject the model provider used by execution (composition root wiring).
@@ -60,6 +81,32 @@ impl Runtime {
     pub fn with_gate(mut self, gate: Arc<dyn ToolGateHook>) -> Self {
         self.gate = Some(gate);
         self
+    }
+
+    /// Install a plugin factory. It only contributes to a run whose resolved
+    /// spec selects its id in `plugin_ids`.
+    #[must_use]
+    pub fn with_plugin(mut self, plugin: Arc<dyn Plugin>) -> Self {
+        self.plugins.push(plugin);
+        self
+    }
+
+    /// Resolve the active plugins for a run into one merged execution
+    /// environment, enforcing capability bounds and ordering (G30). Plugins not
+    /// listed in `plugin_ids` are inert.
+    pub(crate) fn resolve_plugin_env(
+        &self,
+        plugin_ids: &[String],
+    ) -> std::result::Result<ResolvedExecutionEnv, MergeError> {
+        let active: Vec<_> = self
+            .plugins
+            .iter()
+            .map(|plugin| plugin.manifest())
+            .zip(self.plugins.iter())
+            .filter(|(manifest, _)| plugin_ids.contains(&manifest.id))
+            .map(|(manifest, plugin)| (manifest, plugin.resolve()))
+            .collect();
+        ResolvedExecutionEnv::merge(active)
     }
 
     pub(crate) fn llm(&self) -> Option<&Arc<dyn LlmExecutor>> {
@@ -107,6 +154,21 @@ impl Runtime {
             .lock()
             .ok()
             .and_then(|catalog| catalog.as_ref().map(|install| install.fingerprint.clone()))
+    }
+
+    /// Resume a parked run from a validated `ResumeCommand`. The reader supplies
+    /// the committed transcript and the active waiting ticket; the resume fails
+    /// closed unless every identity in the ticket matches (G5/G28).
+    pub async fn resume(
+        &self,
+        command: awaken_runtime_contract::resume::ResumeCommand,
+        reader: &dyn ThreadReader,
+        context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<
+        awaken_runtime_contract::execution::RunOutcome,
+        awaken_runtime_contract::execution::Error,
+    > {
+        crate::engine::resume_run(self, command, reader, context).await
     }
 
     pub(crate) fn snapshot_by_id(
@@ -186,8 +248,9 @@ impl LiveRunControl for Runtime {
                 token.cancel();
                 Ok(())
             }
-            // Waiting/resume is not yet implemented; a wake on a live run is a
-            // no-op rather than a hard failure.
+            // Wake is a live nudge for an in-flight run. Durable resume of a
+            // parked run goes through `Runtime::resume` with a validated
+            // `ResumeCommand`, not this live channel, so wake stays a no-op.
             LiveCommand::Wake { .. } => Ok(()),
         }
     }
