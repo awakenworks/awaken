@@ -1,7 +1,8 @@
-//! In-process hand tools (ADR-0007). The read-only, safe set — `read`, `glob`,
-//! `grep` — runs directly in the runtime process and renders results as text.
+//! In-process hand tools (ADR-0007). `read`, `write`, `edit`, `glob`, `grep`,
+//! and `bash` run directly in the runtime process and render results as text.
 //! Their ids match the descriptors in [`crate::builtin_tools`], so a run that
 //! makes a descriptor model-visible can register the matching implementation.
+//! The network tools `web_fetch`/`web_search` live in [`crate::web`].
 
 use std::sync::Arc;
 

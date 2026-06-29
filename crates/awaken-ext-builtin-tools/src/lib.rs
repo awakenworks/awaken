@@ -7,12 +7,14 @@
 
 mod erasure;
 mod hand;
+mod web;
 
 pub use erasure::{Erased, erase};
 pub use hand::{
     BashArgs, BashTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs, GrepTool, ReadArgs,
     ReadTool, WriteArgs, WriteTool, executable_hand_tools,
 };
+pub use web::{WebFetchArgs, WebFetchTool, WebSearchArgs, WebSearchTool, web_hand_tools};
 
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use serde::{Deserialize, Serialize};

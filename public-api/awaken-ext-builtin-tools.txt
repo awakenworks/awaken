@@ -165,6 +165,50 @@ impl core::marker::Sync for awaken_ext_builtin_tools::ReadTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::ReadTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::ReadTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::ReadTool
+pub struct awaken_ext_builtin_tools::WebFetchArgs
+pub awaken_ext_builtin_tools::WebFetchArgs::url: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_builtin_tools::WebFetchArgs
+pub fn awaken_ext_builtin_tools::WebFetchArgs::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_builtin_tools::WebFetchArgs
+impl core::marker::Send for awaken_ext_builtin_tools::WebFetchArgs
+impl core::marker::Sync for awaken_ext_builtin_tools::WebFetchArgs
+impl core::marker::Unpin for awaken_ext_builtin_tools::WebFetchArgs
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WebFetchArgs
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WebFetchArgs
+pub struct awaken_ext_builtin_tools::WebFetchTool
+impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::WebFetchTool
+pub type awaken_ext_builtin_tools::WebFetchTool::Args = awaken_ext_builtin_tools::WebFetchArgs
+pub type awaken_ext_builtin_tools::WebFetchTool::Output = alloc::string::String
+pub fn awaken_ext_builtin_tools::WebFetchTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebFetchArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_builtin_tools::WebFetchTool::id(&self) -> &str
+impl core::marker::Freeze for awaken_ext_builtin_tools::WebFetchTool
+impl core::marker::Send for awaken_ext_builtin_tools::WebFetchTool
+impl core::marker::Sync for awaken_ext_builtin_tools::WebFetchTool
+impl core::marker::Unpin for awaken_ext_builtin_tools::WebFetchTool
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WebFetchTool
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WebFetchTool
+pub struct awaken_ext_builtin_tools::WebSearchArgs
+pub awaken_ext_builtin_tools::WebSearchArgs::query: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_builtin_tools::WebSearchArgs
+pub fn awaken_ext_builtin_tools::WebSearchArgs::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_builtin_tools::WebSearchArgs
+impl core::marker::Send for awaken_ext_builtin_tools::WebSearchArgs
+impl core::marker::Sync for awaken_ext_builtin_tools::WebSearchArgs
+impl core::marker::Unpin for awaken_ext_builtin_tools::WebSearchArgs
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WebSearchArgs
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WebSearchArgs
+pub struct awaken_ext_builtin_tools::WebSearchTool
+impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::WebSearchTool
+pub type awaken_ext_builtin_tools::WebSearchTool::Args = awaken_ext_builtin_tools::WebSearchArgs
+pub type awaken_ext_builtin_tools::WebSearchTool::Output = alloc::string::String
+pub fn awaken_ext_builtin_tools::WebSearchTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::WebSearchArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_builtin_tools::WebSearchTool::id(&self) -> &str
+impl core::marker::Freeze for awaken_ext_builtin_tools::WebSearchTool
+impl core::marker::Send for awaken_ext_builtin_tools::WebSearchTool
+impl core::marker::Sync for awaken_ext_builtin_tools::WebSearchTool
+impl core::marker::Unpin for awaken_ext_builtin_tools::WebSearchTool
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::WebSearchTool
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WebSearchTool
 pub struct awaken_ext_builtin_tools::WriteArgs
 pub awaken_ext_builtin_tools::WriteArgs::content: alloc::string::String
 pub awaken_ext_builtin_tools::WriteArgs::path: alloc::string::String
@@ -191,3 +235,4 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::WriteToo
 pub fn awaken_ext_builtin_tools::builtin_tools() -> alloc::vec::Vec<awaken_ext_builtin_tools::BuiltinTool>
 pub fn awaken_ext_builtin_tools::erase<T: awaken_runtime_contract::tool::Tool + 'static>(T) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>
 pub fn awaken_ext_builtin_tools::executable_hand_tools() -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
+pub fn awaken_ext_builtin_tools::web_hand_tools() -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
