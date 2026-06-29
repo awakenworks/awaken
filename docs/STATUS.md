@@ -53,7 +53,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/permission-policy-axis.md` | Role owner | Required | self |
 | `design/model-provider-backend-binding.md` | Role owner | Required | self |
 | `design/commit-fact-projection-taxonomy.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
-| `design/builtin-tools-extension-contract.md` | Delegated boundary narrative | Delegated | tool-and-capability.md |
+| `design/builtin-tools-extension-contract.md` | Delegated boundary narrative | Delegated | [tool-and-capability.md](design/tool-and-capability.md#tool-and-capability-role-catalog) |
 | `design/key-design-decisions.md` | Decision record | Not required | n/a |
 | `design/runtime-behavior.md` | Role owner | Required | self |
 | `design/runtime-scenario-validation.md` | Coverage map | Not required | n/a |
