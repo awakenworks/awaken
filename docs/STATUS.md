@@ -109,6 +109,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0003-deferred-work-mechanism-selection.md` | Decision record | Not required | n/a |
 | `adr/0004-plugin-factory-contributions-and-capability-bound.md` | Decision record | Not required | n/a |
 | `adr/0005-run-terminal-state-single-authority.md` | Decision record | Not required | n/a |
+| `adr/0006-fact-authority-run-record-is-cache.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 

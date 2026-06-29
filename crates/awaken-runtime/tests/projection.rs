@@ -9,7 +9,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::kind::Kind as EventKind;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{CommittedThread, MemoryCommitCoordinator, MemoryStreamSink};
+use awaken_runtime::memory::{
+    CommittedThread, MemoryCommitCoordinator, MemoryStreamSink, replay_latest_phase,
+};
 use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -118,4 +120,11 @@ async fn projection_derives_from_committed_events_not_the_live_stream() {
     let record = commit.get(&RunId("run-1".to_string())).expect("run record");
     assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
     assert!(commit.get(&RunId("missing".to_string())).is_none());
+
+    // The record is a derived cache: it equals what replay derives from the
+    // committed fact log, which is the authority (ADR-0006 D1/D2).
+    assert_eq!(
+        replay_latest_phase(&committed, &RunId("run-1".to_string())),
+        Some(record.phase)
+    );
 }

@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::kind::Kind as EventKind;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
+use awaken_runtime::memory::{MemoryCommitCoordinator, replay_latest_phase};
 use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -225,6 +225,23 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
     );
     // The ticket is cleared once resumed.
     assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+
+    // The fact log keeps the Waiting -> Ended progression in order, and the
+    // latest fact is the authority replay derives (ADR-0006 D1).
+    let phases: Vec<_> = committed
+        .run_facts
+        .iter()
+        .filter(|f| f.run_id == RunId("run-1".to_string()))
+        .map(|f| f.phase.clone())
+        .collect();
+    assert_eq!(
+        phases,
+        vec![Phase::Waiting, Phase::Ended(EndCause::NaturalEnd)]
+    );
+    assert_eq!(
+        replay_latest_phase(&committed, &RunId("run-1".to_string())),
+        Some(Phase::Ended(EndCause::NaturalEnd))
+    );
 }
 
 #[tokio::test]

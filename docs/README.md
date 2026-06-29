@@ -95,6 +95,9 @@ type rather than duplicate schemas, state machines, or role catalogs.
 - [adr/0005-run-terminal-state-single-authority.md](adr/0005-run-terminal-state-single-authority.md)
   — the committed run `Phase` (`Waiting | Ended(EndCause)`) as the one stored
   terminal authority, with status/outcome/error derived, never stored.
+- [adr/0006-fact-authority-run-record-is-cache.md](adr/0006-fact-authority-run-record-is-cache.md)
+  — the committed fact log as the run's read authority and the `RunRecord` as a
+  derived cache that equals the latest fact; the fence is the committed count.
 
 ## Development-Ready Design Rule
 
