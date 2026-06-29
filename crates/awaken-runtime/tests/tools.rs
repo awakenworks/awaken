@@ -118,6 +118,7 @@ fn activation() -> RunActivation {
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
+                max_steps: 16,
                 model_binding: ModelBinding {
                     provider_instance_ref: "provider-1".to_string(),
                     model_ref: "model-1".to_string(),
@@ -459,5 +460,36 @@ async fn a_loop_that_never_ends_naturally_terminates_on_the_step_ceiling() {
     assert!(
         ran.load(Ordering::SeqCst) >= 1,
         "the tool did run each step"
+    );
+}
+
+/// Same fixture as `activation`, but with the agent's step ceiling overridden.
+fn activation_with_steps(max_steps: usize) -> RunActivation {
+    let mut activation = activation();
+    activation.snapshot.resolved_spec.max_steps = max_steps;
+    activation
+}
+
+#[tokio::test]
+async fn the_configured_step_ceiling_is_honored() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(AlwaysToolCall))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let context = RuntimeRunContext::new(PersistenceMode::Disabled);
+    // The loop never ends naturally; it must stop at exactly the configured
+    // ceiling (3), not the previously hard-coded 16.
+    let outcome = runtime
+        .execute(activation_with_steps(3), context)
+        .await
+        .expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::MaxSteps));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        3,
+        "the loop honors the configured step ceiling"
     );
 }

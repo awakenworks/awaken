@@ -106,6 +106,7 @@ fn activation() -> RunActivation {
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
+                max_steps: 16,
                 model_binding: ModelBinding {
                     provider_instance_ref: "p".to_string(),
                     model_ref: "m".to_string(),

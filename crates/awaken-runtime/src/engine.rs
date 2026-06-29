@@ -34,10 +34,6 @@ use awaken_runtime_contract::tool::ToolOutput;
 
 use crate::runtime::Runtime;
 
-/// Upper bound on model/tool steps for one run. A natural-end text turn ends the
-/// loop earlier; the bound only guards against a non-terminating tool cycle.
-const MAX_STEPS: usize = 16;
-
 /// Message-id base for messages produced by a resumed attempt, kept distinct
 /// from the original attempt's ids.
 const RESUME_STEP_BASE: usize = 1_000;
@@ -238,7 +234,9 @@ async fn drive(
     // step ceiling, which is itself a terminus (`MaxSteps`).
     let mut end: Option<End> = None;
 
-    for step in 0..MAX_STEPS {
+    // The agent's configured ceiling guards against a non-terminating tool cycle;
+    // a natural-end text turn ends the loop earlier.
+    for step in 0..resolved.spec.max_steps {
         if context.is_cancelled() {
             end = Some(End::Ended(EndCause::Cancelled));
             break;
@@ -668,6 +666,7 @@ mod tests {
         ResolvedSpec {
             catalog_fingerprint: CatalogFingerprint("c".to_string()),
             instructions: instructions.to_string(),
+            max_steps: 16,
             model_binding: ModelBinding {
                 provider_instance_ref: "p".to_string(),
                 model_ref: "m".to_string(),

@@ -11,6 +11,11 @@ pub struct ResolvedSpec {
     /// decision surface (data-only, G3); empty means the run carries no
     /// agent-level system message.
     pub instructions: String,
+    /// The agent's ceiling on model/tool loop steps for one run. The loop ends
+    /// with `EndCause::MaxSteps` if it reaches this without a natural end. Part
+    /// of the resolved decision surface (data-only, G3); the config side owns a
+    /// sensible value, the runtime only honors it.
+    pub max_steps: usize,
     pub model_binding: ModelBinding,
     pub tool_descriptors: Vec<ToolDescriptor>,
     pub plugin_ids: Vec<String>,
