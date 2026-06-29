@@ -36,6 +36,8 @@ fn snapshot(fingerprint: &str) -> ExecutableAgentSnapshot {
         root_agent_id: AgentId("agent-1".to_string()),
         resolved_spec: ResolvedSpec {
             catalog_fingerprint: fingerprint.clone(),
+            instructions: String::new(),
+            max_steps: 16,
             model_binding: ModelBinding {
                 provider_instance_ref: "provider-1".to_string(),
                 model_ref: "model-1".to_string(),
@@ -85,7 +87,7 @@ fn inline_and_by_id_inputs_converge_to_the_same_validated_plan() {
     let id = runtime.register_snapshot(snapshot("catalog-a"));
 
     let inline = runtime
-        .load_snapshot(&AgentSnapshotInput::Inline(snapshot("catalog-a")))
+        .load_snapshot(&AgentSnapshotInput::Inline(Box::new(snapshot("catalog-a"))))
         .and_then(|s| runtime.resolve(&s))
         .expect("inline resolves");
     let by_id = runtime

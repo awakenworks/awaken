@@ -5,10 +5,9 @@
 //! AWAKEN_GENAI_MODEL=gpt-4o-mini cargo test -p awaken-provider-genai --test live -- --ignored
 //! ```
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_provider_genai::GenaiExecutor;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, LlmExecutor,
-};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 
 #[tokio::test]
@@ -25,14 +24,15 @@ async fn live_text_completion() {
         },
         messages: vec![ChatMessage {
             role: ChatRole::User,
-            content: ChatContent::Text("Reply with the single word: pong".to_string()),
+            content: vec![ContentBlock::text("Reply with the single word: pong")],
         }],
         tools: Vec::new(),
     };
 
     let response = executor.infer(request).await.expect("live inference");
-    match response.output {
-        AssistantOutput::Text(text) => assert!(!text.is_empty()),
-        AssistantOutput::ToolCalls(_) => panic!("expected text, got tool calls"),
-    }
+    assert!(
+        response.output.tool_calls().is_empty(),
+        "expected text, got tool calls"
+    );
+    assert!(!response.output.text_content().is_empty());
 }

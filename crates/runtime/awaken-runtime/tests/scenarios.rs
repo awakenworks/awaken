@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -40,7 +41,7 @@ impl LlmExecutor for TextLlm {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         Ok(ChatResponse {
-            output: AssistantOutput::Text("done".to_string()),
+            output: AssistantOutput::text("done".to_string()),
             usage: None,
         })
     }
@@ -75,6 +76,8 @@ fn activation() -> RunActivation {
             root_agent_id: AgentId("agent-1".to_string()),
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fingerprint.clone(),
+                instructions: String::new(),
+                max_steps: 16,
                 model_binding: ModelBinding {
                     provider_instance_ref: "p".to_string(),
                     model_ref: "m".to_string(),
@@ -88,7 +91,7 @@ fn activation() -> RunActivation {
         input: vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
-            content: "hi".to_string(),
+            content: vec![ContentBlock::text("hi")],
         }],
         options: RunOptions {
             persistence: PersistenceMode::ReadWrite,

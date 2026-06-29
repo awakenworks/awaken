@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -41,13 +42,13 @@ impl LlmExecutor for ToolThenText {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let output = if n == 0 {
-            AssistantOutput::ToolCalls(vec![ToolCall {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "call-1".to_string(),
                 tool_id: "echo".to_string(),
                 arguments: serde_json::json!({"text": "ping"}),
             }])
         } else {
-            AssistantOutput::Text("all done".to_string())
+            AssistantOutput::text("all done".to_string())
         };
         Ok(ChatResponse {
             output,
@@ -92,6 +93,8 @@ fn snapshot() -> ExecutableAgentSnapshot {
         root_agent_id: AgentId("agent-1".to_string()),
         resolved_spec: ResolvedSpec {
             catalog_fingerprint: fingerprint.clone(),
+            instructions: String::new(),
+            max_steps: 16,
             model_binding: ModelBinding {
                 provider_instance_ref: "p".to_string(),
                 model_ref: "m".to_string(),
@@ -142,7 +145,7 @@ fn activation() -> RunActivation {
         input: vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
-            content: "go".to_string(),
+            content: vec![ContentBlock::text("go")],
         }],
         options: RunOptions {
             persistence: PersistenceMode::ReadWrite,
@@ -221,7 +224,7 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
         committed
             .messages
             .iter()
-            .any(|m| m.role == Role::Tool && m.content.contains("echoed"))
+            .any(|m| m.role == Role::Tool && m.text_content().contains("echoed"))
     );
     // The ticket is cleared once resumed.
     assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
@@ -270,7 +273,7 @@ async fn deny_resume_feeds_a_blocked_result_without_running_the_tool() {
             .committed()
             .messages
             .iter()
-            .any(|m| m.role == Role::Tool && m.content.contains("blocked"))
+            .any(|m| m.role == Role::Tool && m.text_content().contains("blocked"))
     );
 }
 
@@ -359,7 +362,7 @@ async fn resume_with_a_client_tool_result_is_used_directly() {
             .committed()
             .messages
             .iter()
-            .any(|m| m.role == Role::Tool && m.content == "client-computed")
+            .any(|m| m.role == Role::Tool && m.text_content() == "client-computed")
     );
 }
 
@@ -385,6 +388,6 @@ async fn resume_with_input_injects_a_user_message() {
             .committed()
             .messages
             .iter()
-            .any(|m| m.role == Role::User && m.content == "the answer is 42")
+            .any(|m| m.role == Role::User && m.text_content() == "the answer is 42")
     );
 }

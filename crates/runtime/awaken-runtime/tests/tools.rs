@@ -4,11 +4,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::event::Kind as StreamKind;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
+use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -47,13 +49,13 @@ impl LlmExecutor for ToolThenText {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let output = if n == 0 {
-            AssistantOutput::ToolCalls(vec![ToolCall {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "call-1".to_string(),
                 tool_id: "echo".to_string(),
                 arguments: serde_json::json!({"text": "ping"}),
             }])
         } else {
-            AssistantOutput::Text("all done".to_string())
+            AssistantOutput::text("all done".to_string())
         };
         Ok(ChatResponse {
             output,
@@ -117,6 +119,8 @@ fn activation() -> RunActivation {
             root_agent_id: AgentId("agent-1".to_string()),
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fingerprint.clone(),
+                instructions: String::new(),
+                max_steps: 16,
                 model_binding: ModelBinding {
                     provider_instance_ref: "provider-1".to_string(),
                     model_ref: "model-1".to_string(),
@@ -139,7 +143,7 @@ fn activation() -> RunActivation {
         input: vec![Message {
             id: MessageId("message-1".to_string()),
             role: Role::User,
-            content: "please echo".to_string(),
+            content: vec![ContentBlock::text("please echo")],
         }],
         options: RunOptions {
             persistence: PersistenceMode::ReadWrite,
@@ -171,7 +175,7 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
         .filter(|m| m.role == Role::Tool)
         .collect();
     assert_eq!(tool_results.len(), 1);
-    assert!(tool_results[0].content.contains("echoed"));
+    assert!(tool_results[0].text_content().contains("echoed"));
 }
 
 #[tokio::test]
@@ -200,7 +204,7 @@ async fn denied_tool_call_never_executes_even_though_visible() {
     let blocked = committed
         .messages
         .iter()
-        .any(|m| m.role == Role::Tool && m.content.contains("blocked"));
+        .any(|m| m.role == Role::Tool && m.text_content().contains("blocked"));
     assert!(blocked, "a blocked result must be staged for the model");
 }
 
@@ -235,17 +239,16 @@ impl LlmExecutor for CallsTool {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        // End once a tool result is already present in the transcript.
-        let answered = request.messages.iter().any(|m| {
-            matches!(
-                m.content,
-                awaken_runtime_contract::llm::ChatContent::Text(_)
-            ) && matches!(m.role, awaken_runtime_contract::llm::ChatRole::Tool)
-        }) || request.messages.len() > 2;
+        // End once a tool result (a Tool-role message) is in the transcript.
+        let answered = request
+            .messages
+            .iter()
+            .any(|m| matches!(m.role, awaken_runtime_contract::llm::ChatRole::Tool))
+            || request.messages.len() > 2;
         let output = if answered {
-            AssistantOutput::Text("done".to_string())
+            AssistantOutput::text("done".to_string())
         } else {
-            AssistantOutput::ToolCalls(vec![ToolCall {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "call-1".to_string(),
                 tool_id: self.0.to_string(),
                 arguments: serde_json::json!({}),
@@ -276,7 +279,7 @@ async fn unknown_tool_yields_a_model_visible_error_result() {
         committed
             .messages
             .iter()
-            .any(|m| m.role == Role::Tool && m.content.contains("unknown tool"))
+            .any(|m| m.role == Role::Tool && m.text_content().contains("unknown tool"))
     );
 }
 
@@ -339,7 +342,7 @@ async fn invalid_arguments_yield_a_model_visible_error_result() {
         committed
             .messages
             .iter()
-            .any(|m| m.role == Role::Tool && m.content.contains("invalid tool arguments")),
+            .any(|m| m.role == Role::Tool && m.text_content().contains("invalid tool arguments")),
         "invalid arguments must surface as a model-visible error, not abort the run"
     );
 }
@@ -358,7 +361,7 @@ impl LlmExecutor for CaptureTools {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         *self.seen.lock().unwrap() = request.tools.clone();
         Ok(ChatResponse {
-            output: AssistantOutput::Text("done".to_string()),
+            output: AssistantOutput::text("done".to_string()),
             usage: None,
         })
     }
@@ -410,7 +413,7 @@ async fn gate_set_result_skips_execution_and_stages_supplied_result() {
             .committed()
             .messages
             .iter()
-            .any(|m| m.role == Role::Tool && m.content == "injected")
+            .any(|m| m.role == Role::Tool && m.text_content() == "injected")
     );
 }
 
@@ -425,7 +428,7 @@ impl LlmExecutor for AlwaysToolCall {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         Ok(ChatResponse {
-            output: AssistantOutput::ToolCalls(vec![ToolCall {
+            output: AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "call-loop".to_string(),
                 tool_id: "echo".to_string(),
                 arguments: serde_json::json!({"text": "again"}),
@@ -459,4 +462,146 @@ async fn a_loop_that_never_ends_naturally_terminates_on_the_step_ceiling() {
         ran.load(Ordering::SeqCst) >= 1,
         "the tool did run each step"
     );
+}
+
+/// Same fixture as `activation`, but with the agent's step ceiling overridden.
+fn activation_with_steps(max_steps: usize) -> RunActivation {
+    let mut activation = activation();
+    activation.snapshot.resolved_spec.max_steps = max_steps;
+    activation
+}
+
+#[tokio::test]
+async fn the_configured_step_ceiling_is_honored() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(AlwaysToolCall))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let context = RuntimeRunContext::new(PersistenceMode::Disabled);
+    // The loop never ends naturally; it must stop at exactly the configured
+    // ceiling (3), not the previously hard-coded 16.
+    let outcome = runtime
+        .execute(activation_with_steps(3), context)
+        .await
+        .expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::MaxSteps));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        3,
+        "the loop honors the configured step ceiling"
+    );
+}
+
+/// First turn interleaves a text block and a tool-call block; the second ends.
+struct InterleavedThenText {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for InterleavedThenText {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = if n == 0 {
+            AssistantOutput::from_blocks(vec![
+                ContentBlock::text("let me check that"),
+                ContentBlock::tool_use("call-1", "echo", serde_json::json!({"text": "ping"})),
+            ])
+        } else {
+            AssistantOutput::text("all done")
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn an_assistant_turn_interleaves_text_and_a_tool_call() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(InterleavedThenText {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+
+    let outcome = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the interleaved tool call runs"
+    );
+
+    // The first assistant turn committed BOTH a text block and a tool-use block,
+    // in one message — text and a tool request interleaved.
+    let committed = commit.committed();
+    let first = committed
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Assistant)
+        .expect("an assistant turn is committed");
+    assert!(
+        first
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { .. })),
+        "the turn keeps its text block"
+    );
+    assert!(
+        first
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
+        "the turn keeps its tool-use block"
+    );
+    assert_eq!(first.text_content(), "let me check that");
+}
+
+#[tokio::test]
+async fn a_tool_call_streams_to_the_live_sink() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(InterleavedThenText {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let sink = Arc::new(MemoryStreamSink::new());
+    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite)
+        .with_commit(commit.clone())
+        .with_stream_sink(sink.clone());
+
+    let outcome = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+
+    // The tool call surfaced on the live stream as the turn produced it, with
+    // its tool id and arguments.
+    let streamed: Vec<_> = sink
+        .events()
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            StreamKind::ToolCall {
+                tool_id, arguments, ..
+            } => Some((tool_id, arguments)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(streamed.len(), 1);
+    assert_eq!(streamed[0].0, "echo");
+    assert_eq!(streamed[0].1, serde_json::json!({"text": "ping"}));
 }

@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatResponse, ChatRole, LlmExecutor,
-    ToolCall, ToolSchema,
+    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
+    ToolSchema,
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 
@@ -17,7 +18,7 @@ fn sample_request() -> ChatRequest {
         },
         messages: vec![ChatMessage {
             role: ChatRole::User,
-            content: ChatContent::Text("hello".to_string()),
+            content: vec![ContentBlock::text("hello")],
         }],
         tools: vec![ToolSchema {
             id: "echo".to_string(),
@@ -38,7 +39,7 @@ fn chat_request_round_trips_as_plain_data() {
 #[test]
 fn chat_response_round_trips_with_tool_calls() {
     let response = ChatResponse {
-        output: AssistantOutput::ToolCalls(vec![ToolCall {
+        output: AssistantOutput::from_tool_calls(vec![ToolCall {
             call_id: "c1".to_string(),
             tool_id: "echo".to_string(),
             arguments: serde_json::json!({"text": "hi"}),
@@ -59,12 +60,13 @@ impl LlmExecutor for EchoExecutor {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let echoed = match request.messages.last().map(|m| &m.content) {
-            Some(ChatContent::Text(text)) => text.clone(),
-            _ => String::new(),
-        };
+        let echoed = request
+            .messages
+            .last()
+            .map(|m| extract_text(&m.content))
+            .unwrap_or_default();
         Ok(ChatResponse {
-            output: AssistantOutput::Text(echoed),
+            output: AssistantOutput::text(echoed),
             usage: None,
         })
     }
@@ -74,5 +76,5 @@ impl LlmExecutor for EchoExecutor {
 async fn llm_executor_is_dyn_dispatchable_and_awaitable() {
     let executor: Arc<dyn LlmExecutor> = Arc::new(EchoExecutor);
     let response = executor.infer(sample_request()).await.expect("infer");
-    assert_eq!(response.output, AssistantOutput::Text("hello".to_string()));
+    assert_eq!(response.output, AssistantOutput::text("hello".to_string()));
 }

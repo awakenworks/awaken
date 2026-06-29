@@ -275,49 +275,6 @@ pub trait awaken_runtime_contract::execution::RunExecutor: core::marker::Send + 
 pub fn awaken_runtime_contract::execution::RunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub type awaken_runtime_contract::execution::Result<T> = core::result::Result<T, awaken_runtime_contract::execution::Error>
 pub mod awaken_runtime_contract::llm
-pub enum awaken_runtime_contract::llm::AssistantOutput
-pub awaken_runtime_contract::llm::AssistantOutput::Text(alloc::string::String)
-pub awaken_runtime_contract::llm::AssistantOutput::ToolCalls(alloc::vec::Vec<awaken_runtime_contract::llm::ToolCall>)
-impl core::clone::Clone for awaken_runtime_contract::llm::AssistantOutput
-pub fn awaken_runtime_contract::llm::AssistantOutput::clone(&self) -> awaken_runtime_contract::llm::AssistantOutput
-impl core::cmp::PartialEq for awaken_runtime_contract::llm::AssistantOutput
-pub fn awaken_runtime_contract::llm::AssistantOutput::eq(&self, &awaken_runtime_contract::llm::AssistantOutput) -> bool
-impl core::fmt::Debug for awaken_runtime_contract::llm::AssistantOutput
-pub fn awaken_runtime_contract::llm::AssistantOutput::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::llm::AssistantOutput
-impl serde_core::ser::Serialize for awaken_runtime_contract::llm::AssistantOutput
-pub fn awaken_runtime_contract::llm::AssistantOutput::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::llm::AssistantOutput
-pub fn awaken_runtime_contract::llm::AssistantOutput::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_runtime_contract::llm::AssistantOutput
-impl core::marker::Send for awaken_runtime_contract::llm::AssistantOutput
-impl core::marker::Sync for awaken_runtime_contract::llm::AssistantOutput
-impl core::marker::Unpin for awaken_runtime_contract::llm::AssistantOutput
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::AssistantOutput
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::AssistantOutput
-pub enum awaken_runtime_contract::llm::ChatContent
-pub awaken_runtime_contract::llm::ChatContent::Text(alloc::string::String)
-pub awaken_runtime_contract::llm::ChatContent::ToolCalls(alloc::vec::Vec<awaken_runtime_contract::llm::ToolCall>)
-pub awaken_runtime_contract::llm::ChatContent::ToolResult
-pub awaken_runtime_contract::llm::ChatContent::ToolResult::call_id: alloc::string::String
-pub awaken_runtime_contract::llm::ChatContent::ToolResult::content: alloc::string::String
-impl core::clone::Clone for awaken_runtime_contract::llm::ChatContent
-pub fn awaken_runtime_contract::llm::ChatContent::clone(&self) -> awaken_runtime_contract::llm::ChatContent
-impl core::cmp::PartialEq for awaken_runtime_contract::llm::ChatContent
-pub fn awaken_runtime_contract::llm::ChatContent::eq(&self, &awaken_runtime_contract::llm::ChatContent) -> bool
-impl core::fmt::Debug for awaken_runtime_contract::llm::ChatContent
-pub fn awaken_runtime_contract::llm::ChatContent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::llm::ChatContent
-impl serde_core::ser::Serialize for awaken_runtime_contract::llm::ChatContent
-pub fn awaken_runtime_contract::llm::ChatContent::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::llm::ChatContent
-pub fn awaken_runtime_contract::llm::ChatContent::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_runtime_contract::llm::ChatContent
-impl core::marker::Send for awaken_runtime_contract::llm::ChatContent
-impl core::marker::Sync for awaken_runtime_contract::llm::ChatContent
-impl core::marker::Unpin for awaken_runtime_contract::llm::ChatContent
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ChatContent
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ChatContent
 pub enum awaken_runtime_contract::llm::ChatRole
 pub awaken_runtime_contract::llm::ChatRole::Assistant
 pub awaken_runtime_contract::llm::ChatRole::System
@@ -359,8 +316,33 @@ impl core::marker::Sync for awaken_runtime_contract::llm::Error
 impl core::marker::Unpin for awaken_runtime_contract::llm::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::Error
+pub struct awaken_runtime_contract::llm::AssistantOutput
+pub awaken_runtime_contract::llm::AssistantOutput::blocks: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+impl awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::from_blocks(alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
+pub fn awaken_runtime_contract::llm::AssistantOutput::from_tool_calls(alloc::vec::Vec<awaken_runtime_contract::llm::ToolCall>) -> Self
+pub fn awaken_runtime_contract::llm::AssistantOutput::text(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::llm::AssistantOutput::text_content(&self) -> alloc::string::String
+pub fn awaken_runtime_contract::llm::AssistantOutput::tool_calls(&self) -> alloc::vec::Vec<awaken_runtime_contract::llm::ToolCall>
+impl core::clone::Clone for awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::clone(&self) -> awaken_runtime_contract::llm::AssistantOutput
+impl core::cmp::PartialEq for awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::eq(&self, &awaken_runtime_contract::llm::AssistantOutput) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::llm::AssistantOutput
+impl serde_core::ser::Serialize for awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_runtime_contract::llm::AssistantOutput::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::llm::AssistantOutput
+impl core::marker::Send for awaken_runtime_contract::llm::AssistantOutput
+impl core::marker::Sync for awaken_runtime_contract::llm::AssistantOutput
+impl core::marker::Unpin for awaken_runtime_contract::llm::AssistantOutput
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::AssistantOutput
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::AssistantOutput
 pub struct awaken_runtime_contract::llm::ChatMessage
-pub awaken_runtime_contract::llm::ChatMessage::content: awaken_runtime_contract::llm::ChatContent
+pub awaken_runtime_contract::llm::ChatMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_runtime_contract::llm::ChatMessage::role: awaken_runtime_contract::llm::ChatRole
 impl core::clone::Clone for awaken_runtime_contract::llm::ChatMessage
 pub fn awaken_runtime_contract::llm::ChatMessage::clone(&self) -> awaken_runtime_contract::llm::ChatMessage
@@ -486,8 +468,12 @@ impl core::marker::Sync for awaken_runtime_contract::llm::ToolSchema
 impl core::marker::Unpin for awaken_runtime_contract::llm::ToolSchema
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ToolSchema
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ToolSchema
+pub trait awaken_runtime_contract::llm::DeltaSink: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::llm::DeltaSink::on_text<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::llm::DeltaSink::on_tool_call<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_runtime_contract::llm::LlmExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::LlmExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::llm::LlmExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub type awaken_runtime_contract::llm::Result<T> = core::result::Result<T, awaken_runtime_contract::llm::Error>
 pub mod awaken_runtime_contract::permission
 pub enum awaken_runtime_contract::permission::GateOutcome
@@ -843,6 +829,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolv
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ResolvedRun
 pub struct awaken_runtime_contract::resolved::ResolvedSpec
 pub awaken_runtime_contract::resolved::ResolvedSpec::catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
+pub awaken_runtime_contract::resolved::ResolvedSpec::instructions: alloc::string::String
+pub awaken_runtime_contract::resolved::ResolvedSpec::max_steps: usize
 pub awaken_runtime_contract::resolved::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::resolved::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::resolved::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
@@ -1011,7 +999,7 @@ impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runtime_
 pub mod awaken_runtime_contract::snapshot
 pub enum awaken_runtime_contract::snapshot::AgentSnapshotInput
 pub awaken_runtime_contract::snapshot::AgentSnapshotInput::ById(awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId)
-pub awaken_runtime_contract::snapshot::AgentSnapshotInput::Inline(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot)
+pub awaken_runtime_contract::snapshot::AgentSnapshotInput::Inline(alloc::boxed::Box<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>)
 impl core::clone::Clone for awaken_runtime_contract::snapshot::AgentSnapshotInput
 pub fn awaken_runtime_contract::snapshot::AgentSnapshotInput::clone(&self) -> awaken_runtime_contract::snapshot::AgentSnapshotInput
 impl core::cmp::PartialEq for awaken_runtime_contract::snapshot::AgentSnapshotInput
@@ -1494,6 +1482,8 @@ impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugi
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 pub struct awaken_runtime_contract::ResolvedSpec
 pub awaken_runtime_contract::ResolvedSpec::catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
+pub awaken_runtime_contract::ResolvedSpec::instructions: alloc::string::String
+pub awaken_runtime_contract::ResolvedSpec::max_steps: usize
 pub awaken_runtime_contract::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
@@ -1662,6 +1652,7 @@ pub trait awaken_runtime_contract::LiveRunControl
 pub fn awaken_runtime_contract::LiveRunControl::deliver(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
 pub trait awaken_runtime_contract::LlmExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::LlmExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::LlmExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::PermissionPolicy: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::PermissionPolicy::decide<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::PermissionDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::PhaseHook: core::marker::Send + core::marker::Sync
