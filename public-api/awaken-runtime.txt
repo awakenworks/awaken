@@ -87,6 +87,7 @@ pub fn awaken_runtime::Runtime::new() -> Self
 pub fn awaken_runtime::Runtime::register_snapshot(&self, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 pub async fn awaken_runtime::Runtime::resume(&self, awaken_runtime_contract::resume::ResumeCommand, &dyn awaken_agent_contract::store::thread_reader::ThreadReader, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_runtime_contract::execution::RunOutcome, awaken_runtime_contract::execution::Error>
 pub fn awaken_runtime::Runtime::with_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
+pub fn awaken_runtime::Runtime::with_infer_retries(self, usize) -> Self
 pub fn awaken_runtime::Runtime::with_llm(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime::Runtime::with_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::plugin::Plugin>) -> Self
 pub fn awaken_runtime::Runtime::with_tool(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> Self

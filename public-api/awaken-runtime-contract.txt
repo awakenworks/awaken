@@ -362,6 +362,9 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::Chat
 pub enum awaken_runtime_contract::llm::Error
 pub awaken_runtime_contract::llm::Error::Binding(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::Inference(alloc::string::String)
+pub awaken_runtime_contract::llm::Error::Transient(alloc::string::String)
+impl awaken_runtime_contract::llm::Error
+pub fn awaken_runtime_contract::llm::Error::is_retryable(&self) -> bool
 impl core::error::Error for awaken_runtime_contract::llm::Error
 impl core::fmt::Debug for awaken_runtime_contract::llm::Error
 pub fn awaken_runtime_contract::llm::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

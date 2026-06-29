@@ -39,11 +39,27 @@ pub struct Runtime {
     plugins: Vec<Arc<dyn Plugin>>,
     /// Cancellation tokens for in-flight runs, so live control can steer them.
     active_runs: Mutex<HashMap<RunId, CancellationToken>>,
+    /// How many extra attempts to make on a transient inference failure.
+    infer_retries: usize,
 }
 
 impl Runtime {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            infer_retries: 2,
+            ..Self::default()
+        }
+    }
+
+    /// Set how many extra attempts to make on a transient inference failure.
+    #[must_use]
+    pub fn with_infer_retries(mut self, retries: usize) -> Self {
+        self.infer_retries = retries;
+        self
+    }
+
+    pub(crate) fn infer_retries(&self) -> usize {
+        self.infer_retries
     }
 
     /// Inject the model provider used by execution (composition root wiring).

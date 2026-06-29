@@ -169,6 +169,7 @@ async fn finalize(
             lifecycle: Lifecycle::Failed,
             staged_state: Vec::new(),
             waiting: None,
+            failure_reason: Some("exclusive state key conflict".to_string()),
             ..outcome
         };
         return finish(context, thread_id, run_id, failed).await;
@@ -182,6 +183,7 @@ struct Outcome {
     new_messages: Vec<Message>,
     staged_state: Vec<StateCommand>,
     waiting: Option<WaitingTicket>,
+    failure_reason: Option<String>,
 }
 
 impl Outcome {
@@ -191,6 +193,7 @@ impl Outcome {
             new_messages: Vec::new(),
             staged_state: Vec::new(),
             waiting: None,
+            failure_reason: None,
         }
     }
 
@@ -200,6 +203,7 @@ impl Outcome {
             new_messages: Vec::new(),
             staged_state: Vec::new(),
             waiting: None,
+            failure_reason: Some("plugin capability bound violation".to_string()),
         }
     }
 }
@@ -224,6 +228,7 @@ async fn drive(
     let mut staged_state: Vec<StateCommand> = Vec::new();
     let mut lifecycle = Lifecycle::Completed;
     let mut waiting: Option<WaitingTicket> = None;
+    let mut failure_reason: Option<String> = None;
 
     for step in 0..MAX_STEPS {
         if context.is_cancelled() {
@@ -250,10 +255,16 @@ async fn drive(
         .await;
 
         let request = build_chat_request(&resolved.spec, &transcript);
-        let response = llm
-            .infer(request)
-            .await
-            .map_err(|err| Error::Execution(err.to_string()))?;
+        // A transient inference failure retries with backoff; a permanent failure
+        // (or exhausted retries) commits a typed terminal reason (G26).
+        let response = match infer_with_retry(llm, request, runtime.infer_retries()).await {
+            Ok(response) => response,
+            Err(err) => {
+                lifecycle = Lifecycle::Failed;
+                failure_reason = Some(err.to_string());
+                break;
+            }
+        };
 
         run_phase_hooks(
             env,
@@ -340,7 +351,31 @@ async fn drive(
         new_messages,
         staged_state,
         waiting,
+        failure_reason,
     })
+}
+
+/// Call inference, retrying a transient failure up to `retries` times with a
+/// short linear backoff. A permanent failure returns immediately (G26).
+async fn infer_with_retry(
+    llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
+    request: ChatRequest,
+    retries: usize,
+) -> std::result::Result<
+    awaken_runtime_contract::llm::ChatResponse,
+    awaken_runtime_contract::llm::Error,
+> {
+    let mut attempt = 0;
+    loop {
+        match llm.infer(request.clone()).await {
+            Ok(response) => return Ok(response),
+            Err(err) if err.is_retryable() && attempt < retries => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(10 * attempt as u64)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 /// Run every hook registered for one phase point, in dependency order, staging
@@ -549,12 +584,16 @@ async fn finish(
         new_messages,
         staged_state,
         waiting,
+        failure_reason,
     } = outcome;
 
     if let Some(coordinator) = &context.commit {
         let mut events = vec![EventDraft {
             kind: EventKind::RunLifecycleChanged,
-            payload: serde_json::json!({ "lifecycle": lifecycle }),
+            payload: serde_json::json!({
+                "lifecycle": lifecycle,
+                "reason": failure_reason,
+            }),
         }];
         if !staged_state.is_empty() {
             events.push(EventDraft {

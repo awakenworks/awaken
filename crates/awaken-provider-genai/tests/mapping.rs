@@ -4,10 +4,12 @@
 use std::time::Duration;
 
 use awaken_provider_genai::{
-    GenaiExecutor, from_genai_tool_call, map_assistant_output, map_usage, to_genai_request,
+    GenaiExecutor, classify_error, from_genai_tool_call, map_assistant_output, map_usage,
+    to_genai_request,
 };
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, ToolCall, ToolSchema,
+    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, Error as LlmError, ToolCall,
+    ToolSchema,
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 use genai::chat::{ChatRole as GenaiRole, MessageContent, ToolCall as GenaiToolCall, Usage};
@@ -140,4 +142,36 @@ fn executor_constructors_are_available() {
     let _ = GenaiExecutor::new();
     let _ = GenaiExecutor::default().with_timeout(Duration::from_secs(5));
     let _ = GenaiExecutor::with_client(genai::Client::default());
+}
+
+#[test]
+fn transient_provider_errors_are_retryable() {
+    for msg in [
+        "429 Too Many Requests",
+        "model is Overloaded",
+        "rate limit exceeded",
+        "503 Service Unavailable",
+        "connection reset by peer",
+        "request timed out",
+    ] {
+        assert!(
+            matches!(classify_error(msg), LlmError::Transient(_)),
+            "{msg:?} should be transient"
+        );
+    }
+}
+
+#[test]
+fn permanent_provider_errors_are_not_retryable() {
+    for msg in [
+        "invalid api key",
+        "401 Unauthorized",
+        "context length exceeded",
+        "model not found",
+    ] {
+        assert!(
+            matches!(classify_error(msg), LlmError::Inference(_)),
+            "{msg:?} should be permanent"
+        );
+    }
 }
