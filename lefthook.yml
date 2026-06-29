@@ -1,0 +1,123 @@
+# Repository guardrails for the runtime design corpus and future Rust/frontend
+# engineering workspace.
+#
+# These hooks keep the runtime docs, wiki facts, ownership index, invariant
+# registry, repository shape, and future Rust/frontend checks executable. To
+# activate them:
+#
+#   git init            # if not already a git repo
+#   lefthook install    # wires the git hooks
+#
+# Before git is set up, run everything directly with:
+#
+#   scripts/ci/check-all.sh
+#
+# Each check is also safe to run standalone over a file list, e.g.
+#   python3 scripts/ci/check_doc_links.py $(find docs -name '*.md' | sort)
+
+pre-commit:
+  parallel: true
+  commands:
+    # 1. Repository-wide hygiene that should never depend on project language.
+    repository-hygiene:
+      run: python3 scripts/ci/check_repository_hygiene.py --staged
+
+    # 2. High-signal credential scanner. Generic secret assignments only fail
+    #    in source/config files, so design examples can stay readable.
+    secrets:
+      run: python3 scripts/ci/check_secrets.py --staged
+
+    # 3. Keep modules and design docs bounded. Tests, generated code, lockfiles,
+    #    and build output are excluded by policy.
+    file-limits:
+      run: python3 scripts/ci/check_file_limits.py --staged
+
+    # 4. Rust checks are active as soon as a Cargo workspace exists.
+    rustfmt:
+      glob: "**/*.rs"
+      run: rustfmt {staged_files}
+      stage_fixed: true
+
+    rust-quick:
+      glob: "{Cargo.toml,Cargo.lock,crates/**/*.rs,crates/**/Cargo.toml,apps/**/*.rs,apps/**/Cargo.toml,tests/**/*.rs,xtask/**/*.rs,xtask/**/Cargo.toml}"
+      run: scripts/ci/check-rust.sh --quick
+
+    # 5. Frontend checks are active as soon as package.json exists. The frontend
+    #    project must expose lint/typecheck/build scripts.
+    frontend-quick:
+      glob: "{package.json,pnpm-lock.yaml,package-lock.json,yarn.lock,bun.lockb,apps/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},packages/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},web/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml}}"
+      run: scripts/ci/check-frontend.sh --quick
+
+    # 6. Every relative Markdown link resolves to a real file and anchor.
+    check-doc-links:
+      glob: "docs/**/*.md"
+      run: python3 scripts/ci/check_doc_links.py {staged_files}
+
+    # 7. The OKF wiki keeps its shape: frontmatter `type`, FACT-* records with
+    #    Status/Owner/Fact/Links/Verification, owner links that resolve.
+    check-wiki-okf:
+      glob: "docs/wiki/**/*.md"
+      run: python3 scripts/ci/check_wiki_okf.py {staged_files}
+
+    # 8. Wiki facts stay thin: a FACT must summarize and cite an invariant id,
+    #    not paste the invariant statement verbatim (drift guard).
+    check-wiki-no-invariant-copy:
+      glob: "{docs/wiki/**/*.md,docs/INVARIANTS.md}"
+      run: python3 scripts/ci/check_wiki_no_invariant_copy.py {staged_files}
+
+    # 9. Invariant registry is complete (Statement/Source/Enforcer, unique ids)
+    #    and every invariant id a wiki fact cites is actually defined.
+    check-invariants:
+      glob: "{docs/INVARIANTS.md,docs/design/*.md,docs/wiki/**/*.md}"
+      run: python3 scripts/ci/check_invariants.py
+
+    # 10. The wiki ownership index lists every design document. Whole-tree scan,
+    #    so any added/renamed/removed design doc trips it regardless of glob.
+    check-ownership-index:
+      glob: "{docs/design/*.md,docs/wiki/document-ownership.md}"
+      run: python3 scripts/ci/check_ownership_index.py
+
+    # 11. Source documents declare whether they own, delegate, or do not need a
+    #    role/component catalog; the declared policy must match the document.
+    check-role-catalogs:
+      glob: "{docs/README.md,docs/STATUS.md,docs/INVARIANTS.md,docs/requirements-coverage.md,docs/design/*.md}"
+      run: python3 scripts/ci/check_role_catalogs.py
+
+    # 12. ADRs have a stable structure (title/number, Status, required sections,
+    #    unique numbers) so the decision-first model (ADR-0001) stays executable.
+    check-adr:
+      glob: "docs/adr/*.md"
+      run: python3 scripts/ci/check_adr.py
+
+    # 13. Crate dependency direction (layering) fitness function: a lower layer
+    #    must not depend on a higher one (deny.toml; INVARIANTS G2/G18/G29).
+    #    Skips with a hint if cargo-deny is not installed.
+    check-dep-direction:
+      glob: "{Cargo.toml,Cargo.lock,deny.toml,crates/*/Cargo.toml}"
+      run: |
+        if command -v cargo-deny >/dev/null 2>&1; then
+          cargo deny --log-level error check bans
+        else
+          echo "cargo-deny not installed; skipping dependency-direction check (cargo install cargo-deny)"
+        fi
+
+commit-msg:
+  commands:
+    # Commit messages stay thin and provenance-clean: '<emoji> <type>(<scope>):
+    # <subject>', subject <=100 chars, <=4 lines with a blank-line body, body
+    # wrapped at 72 columns, and no Co-Authored-By / AI-generation / external
+    # tool / project-management markers. Ported from ../awaken-next.
+    validate-message:
+      run: python3 scripts/ci/check_commit_message.py {1}
+
+pre-push:
+  commands:
+    check-all-full:
+      run: scripts/ci/check-all.sh
+
+    # Public API surface fitness function (INVARIANTS G2/G6/G10). Heavier than the
+    # pre-commit checks (it builds rustdoc), so it runs on push. Self-skips if
+    # cargo-public-api is not installed; run with --bless to accept an intended
+    # surface change.
+    public-api:
+      run: scripts/ci/check_public_api.sh
