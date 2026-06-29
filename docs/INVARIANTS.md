@@ -11,7 +11,17 @@ holds the rule), and the **Validation** (the test kind that proves it).
 - Enforcer/Validation name this corpus's own roles and intended tests. This
   corpus is self-contained: it does not depend on any other repository to be
   understood (ADR-0001).
-- A guardrail whose mechanism is not yet designed is marked **Target**.
+- A guardrail whose mechanism is not yet designed is marked **Target**. The
+  current split, by whether the named enforcer exists in the workspace today:
+  - **Active** (enforcer type and a test or CI hook exist now): G1, G3, G5, G6,
+    G8, G9, G13, G14, G15, G16, G21, G27, G28, G30, G31, G32.
+  - **Target** (the rule is accepted, but its enforcer is not yet built here, so
+    it holds vacuously until the subsystem lands): G4 (catalog fingerprint-fail
+    path), G7 (`ExecutionBackend`/`BackendProfile`), G10/G19/G26 (public protocol
+    adapters), G11 (`ContinuationGuard`), G18/G23/G29 (config publication
+    coordinator and registry compiler), G22 (backend-binding negotiation), G25
+    (observability/eval). A Target guardrail must gain a real enforcer and test
+    in the same change that first builds its subsystem.
 - The rationale (problem, decision, consequence) behind these guardrails is owned
   by [key-design-decisions.md](design/key-design-decisions.md) (D1–D22); this
   index records only the enforceable statement, enforcer, and validation, and
