@@ -1,10 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunOutcome {
-    pub run_id: awaken_agent_contract::agent::run::Id,
-    pub lifecycle: awaken_agent_contract::agent::run::Lifecycle,
-}
+use awaken_agent_contract::agent::run::Phase;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -24,5 +20,5 @@ pub trait RunExecutor: Send + Sync {
         &self,
         activation: crate::activation::RunActivation,
         context: crate::runtime_context::RuntimeRunContext,
-    ) -> Result<RunOutcome>;
+    ) -> Result<Phase>;
 }

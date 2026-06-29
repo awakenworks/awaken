@@ -4,11 +4,11 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::event::Kind as StreamKind;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_lifecycle};
+use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_phase};
 use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -100,7 +100,7 @@ async fn one_model_step_commits_facts_and_streams_progress() {
         .execute(activation("catalog-a"), context)
         .await
         .expect("run executes");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 
     // Committed truth: one commit, the assistant message, and a run fact.
     assert_eq!(commit.commit_count(), 1);
@@ -111,8 +111,8 @@ async fn one_model_step_commits_facts_and_streams_progress() {
 
     // Replay reads committed facts, not the live stream.
     assert_eq!(
-        replay_latest_lifecycle(&committed, &RunId("run-1".to_string())),
-        Some(Lifecycle::Completed)
+        replay_latest_phase(&committed, &RunId("run-1".to_string())),
+        Some(Phase::Ended(EndCause::NaturalEnd))
     );
     assert_eq!(committed.events.len(), 1);
 
@@ -173,5 +173,5 @@ async fn run_without_commit_coordinator_still_completes() {
         )
         .await
         .expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 }

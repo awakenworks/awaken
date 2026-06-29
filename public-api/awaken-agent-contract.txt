@@ -176,31 +176,72 @@ impl core::marker::Unpin for awaken_agent_contract::agent::message::Message
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::message::Message
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::message::Message
 pub mod awaken_agent_contract::agent::run
-pub enum awaken_agent_contract::agent::run::Lifecycle
-pub awaken_agent_contract::agent::run::Lifecycle::Cancelled
-pub awaken_agent_contract::agent::run::Lifecycle::Completed
-pub awaken_agent_contract::agent::run::Lifecycle::Failed
-pub awaken_agent_contract::agent::run::Lifecycle::Pending
-pub awaken_agent_contract::agent::run::Lifecycle::Running
-pub awaken_agent_contract::agent::run::Lifecycle::Waiting
-impl core::clone::Clone for awaken_agent_contract::agent::run::Lifecycle
-pub fn awaken_agent_contract::agent::run::Lifecycle::clone(&self) -> awaken_agent_contract::agent::run::Lifecycle
-impl core::cmp::Eq for awaken_agent_contract::agent::run::Lifecycle
-impl core::cmp::PartialEq for awaken_agent_contract::agent::run::Lifecycle
-pub fn awaken_agent_contract::agent::run::Lifecycle::eq(&self, &awaken_agent_contract::agent::run::Lifecycle) -> bool
-impl core::fmt::Debug for awaken_agent_contract::agent::run::Lifecycle
-pub fn awaken_agent_contract::agent::run::Lifecycle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::run::Lifecycle
-impl serde_core::ser::Serialize for awaken_agent_contract::agent::run::Lifecycle
-pub fn awaken_agent_contract::agent::run::Lifecycle::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::run::Lifecycle
-pub fn awaken_agent_contract::agent::run::Lifecycle::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_agent_contract::agent::run::Lifecycle
-impl core::marker::Send for awaken_agent_contract::agent::run::Lifecycle
-impl core::marker::Sync for awaken_agent_contract::agent::run::Lifecycle
-impl core::marker::Unpin for awaken_agent_contract::agent::run::Lifecycle
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Lifecycle
-impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Lifecycle
+pub enum awaken_agent_contract::agent::run::EndCause
+pub awaken_agent_contract::agent::run::EndCause::Cancelled
+pub awaken_agent_contract::agent::run::EndCause::Error(awaken_agent_contract::agent::run::Failure)
+pub awaken_agent_contract::agent::run::EndCause::MaxSteps
+pub awaken_agent_contract::agent::run::EndCause::NaturalEnd
+impl core::clone::Clone for awaken_agent_contract::agent::run::EndCause
+pub fn awaken_agent_contract::agent::run::EndCause::clone(&self) -> awaken_agent_contract::agent::run::EndCause
+impl core::cmp::Eq for awaken_agent_contract::agent::run::EndCause
+impl core::cmp::PartialEq for awaken_agent_contract::agent::run::EndCause
+pub fn awaken_agent_contract::agent::run::EndCause::eq(&self, &awaken_agent_contract::agent::run::EndCause) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::run::EndCause
+pub fn awaken_agent_contract::agent::run::EndCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::run::EndCause
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::run::EndCause
+pub fn awaken_agent_contract::agent::run::EndCause::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::run::EndCause
+pub fn awaken_agent_contract::agent::run::EndCause::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::run::EndCause
+impl core::marker::Send for awaken_agent_contract::agent::run::EndCause
+impl core::marker::Sync for awaken_agent_contract::agent::run::EndCause
+impl core::marker::Unpin for awaken_agent_contract::agent::run::EndCause
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::EndCause
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::EndCause
+pub enum awaken_agent_contract::agent::run::Failure
+pub awaken_agent_contract::agent::run::Failure::CapabilityBound
+pub awaken_agent_contract::agent::run::Failure::Inference(alloc::string::String)
+pub awaken_agent_contract::agent::run::Failure::StateConflict
+impl core::clone::Clone for awaken_agent_contract::agent::run::Failure
+pub fn awaken_agent_contract::agent::run::Failure::clone(&self) -> awaken_agent_contract::agent::run::Failure
+impl core::cmp::Eq for awaken_agent_contract::agent::run::Failure
+impl core::cmp::PartialEq for awaken_agent_contract::agent::run::Failure
+pub fn awaken_agent_contract::agent::run::Failure::eq(&self, &awaken_agent_contract::agent::run::Failure) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::run::Failure
+pub fn awaken_agent_contract::agent::run::Failure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::run::Failure
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::run::Failure
+pub fn awaken_agent_contract::agent::run::Failure::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::run::Failure
+pub fn awaken_agent_contract::agent::run::Failure::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::run::Failure
+impl core::marker::Send for awaken_agent_contract::agent::run::Failure
+impl core::marker::Sync for awaken_agent_contract::agent::run::Failure
+impl core::marker::Unpin for awaken_agent_contract::agent::run::Failure
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Failure
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Failure
+pub enum awaken_agent_contract::agent::run::Phase
+pub awaken_agent_contract::agent::run::Phase::Ended(awaken_agent_contract::agent::run::EndCause)
+pub awaken_agent_contract::agent::run::Phase::Waiting
+impl core::clone::Clone for awaken_agent_contract::agent::run::Phase
+pub fn awaken_agent_contract::agent::run::Phase::clone(&self) -> awaken_agent_contract::agent::run::Phase
+impl core::cmp::Eq for awaken_agent_contract::agent::run::Phase
+impl core::cmp::PartialEq for awaken_agent_contract::agent::run::Phase
+pub fn awaken_agent_contract::agent::run::Phase::eq(&self, &awaken_agent_contract::agent::run::Phase) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::run::Phase
+pub fn awaken_agent_contract::agent::run::Phase::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::run::Phase
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::run::Phase
+pub fn awaken_agent_contract::agent::run::Phase::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::run::Phase
+pub fn awaken_agent_contract::agent::run::Phase::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::run::Phase
+impl core::marker::Send for awaken_agent_contract::agent::run::Phase
+impl core::marker::Sync for awaken_agent_contract::agent::run::Phase
+impl core::marker::Unpin for awaken_agent_contract::agent::run::Phase
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Phase
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Phase
 pub struct awaken_agent_contract::agent::run::Id(pub alloc::string::String)
 impl core::clone::Clone for awaken_agent_contract::agent::run::Id
 pub fn awaken_agent_contract::agent::run::Id::clone(&self) -> awaken_agent_contract::agent::run::Id
@@ -224,7 +265,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::r
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Id
 pub struct awaken_agent_contract::agent::run::Record
 pub awaken_agent_contract::agent::run::Record::id: awaken_agent_contract::agent::run::Id
-pub awaken_agent_contract::agent::run::Record::lifecycle: awaken_agent_contract::agent::run::Lifecycle
+pub awaken_agent_contract::agent::run::Record::phase: awaken_agent_contract::agent::run::Phase
 pub awaken_agent_contract::agent::run::Record::thread_id: awaken_agent_contract::agent::thread::Id
 impl core::clone::Clone for awaken_agent_contract::agent::run::Record
 pub fn awaken_agent_contract::agent::run::Record::clone(&self) -> awaken_agent_contract::agent::run::Record
@@ -808,7 +849,7 @@ impl<T> core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::e
 pub mod awaken_agent_contract::event::kind
 pub enum awaken_agent_contract::event::kind::Kind
 pub awaken_agent_contract::event::kind::Kind::MessageCommitted
-pub awaken_agent_contract::event::kind::Kind::RunLifecycleChanged
+pub awaken_agent_contract::event::kind::Kind::RunPhaseChanged
 pub awaken_agent_contract::event::kind::Kind::RunResumed
 pub awaken_agent_contract::event::kind::Kind::RunWaiting
 pub awaken_agent_contract::event::kind::Kind::StateChanged
@@ -878,7 +919,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::fact::me
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::fact::message::Fact
 pub mod awaken_agent_contract::fact::run
 pub struct awaken_agent_contract::fact::run::Fact
-pub awaken_agent_contract::fact::run::Fact::lifecycle: awaken_agent_contract::agent::run::Lifecycle
+pub awaken_agent_contract::fact::run::Fact::phase: awaken_agent_contract::agent::run::Phase
 pub awaken_agent_contract::fact::run::Fact::run_id: awaken_agent_contract::agent::run::Id
 impl core::clone::Clone for awaken_agent_contract::fact::run::Fact
 pub fn awaken_agent_contract::fact::run::Fact::clone(&self) -> awaken_agent_contract::fact::run::Fact
@@ -1127,7 +1168,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::r
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Id
 pub struct awaken_agent_contract::RunRecord
 pub awaken_agent_contract::RunRecord::id: awaken_agent_contract::agent::run::Id
-pub awaken_agent_contract::RunRecord::lifecycle: awaken_agent_contract::agent::run::Lifecycle
+pub awaken_agent_contract::RunRecord::phase: awaken_agent_contract::agent::run::Phase
 pub awaken_agent_contract::RunRecord::thread_id: awaken_agent_contract::agent::thread::Id
 impl core::clone::Clone for awaken_agent_contract::agent::run::Record
 pub fn awaken_agent_contract::agent::run::Record::clone(&self) -> awaken_agent_contract::agent::run::Record

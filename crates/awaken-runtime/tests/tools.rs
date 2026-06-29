@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -161,7 +161,7 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
     let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1, "tool must run exactly once");
 
     let committed = commit.committed();
@@ -189,7 +189,7 @@ async fn denied_tool_call_never_executes_even_though_visible() {
     let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         0,
@@ -223,7 +223,7 @@ async fn ask_decision_parks_the_run_in_waiting() {
         )
         .await
         .expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Waiting);
+    assert_eq!(outcome, Phase::Waiting);
 }
 
 /// A model that requests a specific tool id once, then ends with text.
@@ -269,7 +269,7 @@ async fn unknown_tool_yields_a_model_visible_error_result() {
     let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert!(
@@ -296,7 +296,7 @@ async fn without_a_gate_an_authorized_tool_runs() {
         )
         .await
         .expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1);
 }
 
@@ -332,7 +332,7 @@ async fn invalid_arguments_yield_a_model_visible_error_result() {
     let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert!(
@@ -411,5 +411,52 @@ async fn gate_set_result_skips_execution_and_stages_supplied_result() {
             .messages
             .iter()
             .any(|m| m.role == Role::Tool && m.content == "injected")
+    );
+}
+
+/// Always asks for a tool call and never ends with text, so the loop runs to
+/// its step ceiling.
+struct AlwaysToolCall;
+
+#[async_trait::async_trait]
+impl LlmExecutor for AlwaysToolCall {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        Ok(ChatResponse {
+            output: AssistantOutput::ToolCalls(vec![ToolCall {
+                call_id: "call-loop".to_string(),
+                tool_id: "echo".to_string(),
+                arguments: serde_json::json!({"text": "again"}),
+            }]),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_loop_that_never_ends_naturally_terminates_on_the_step_ceiling() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(AlwaysToolCall))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+
+    // The run ends on the step-ceiling guard, recorded as a single MaxSteps
+    // authority — not mislabelled NaturalEnd, and carrying no fault.
+    let outcome = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::MaxSteps));
+    assert_eq!(
+        commit.committed().latest_run.unwrap().phase,
+        Phase::Ended(EndCause::MaxSteps)
+    );
+    assert!(
+        ran.load(Ordering::SeqCst) >= 1,
+        "the tool did run each step"
     );
 }

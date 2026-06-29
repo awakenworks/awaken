@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::state::{Command as StateCommand, Key, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::kind::Kind as EventKind;
@@ -150,12 +150,12 @@ async fn tool_staged_state_is_committed_and_replayable() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
     assert_eq!(committed.state.len(), 1, "the state command is committed");
 
-    // A StateChanged event is committed alongside the lifecycle event.
+    // A StateChanged event is committed alongside the phase event.
     assert!(
         committed
             .events
@@ -199,8 +199,8 @@ async fn exclusive_conflict_fails_closed_and_commits_no_state() {
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
     assert_eq!(
-        outcome.lifecycle,
-        Lifecycle::Failed,
+        outcome,
+        Phase::Ended(EndCause::Error(Failure::StateConflict)),
         "exclusive conflict fails closed"
     );
     let committed = commit.committed();
@@ -208,5 +208,8 @@ async fn exclusive_conflict_fails_closed_and_commits_no_state() {
         committed.state.is_empty(),
         "a conflicting batch is never committed"
     );
-    assert_eq!(committed.latest_run.unwrap().lifecycle, Lifecycle::Failed);
+    assert!(matches!(
+        committed.latest_run.unwrap().phase,
+        Phase::Ended(EndCause::Error(Failure::StateConflict))
+    ));
 }

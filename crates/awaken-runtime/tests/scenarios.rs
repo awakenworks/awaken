@@ -14,10 +14,10 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::event::Kind as StreamKind;
-use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_lifecycle};
+use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_phase};
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
@@ -131,8 +131,8 @@ async fn live_stream_is_not_replay_truth() {
     // Replay is reconstructed from committed facts alone.
     let committed = commit.committed();
     assert_eq!(
-        replay_latest_lifecycle(&committed, &RunId("run-1".to_string())),
-        Some(Lifecycle::Completed)
+        replay_latest_phase(&committed, &RunId("run-1".to_string())),
+        Some(Phase::Ended(EndCause::NaturalEnd))
     );
 }
 
@@ -150,7 +150,7 @@ async fn cancel_commits_terminal_outcome() {
         .with_cancellation(token);
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Cancelled);
+    assert_eq!(outcome, Phase::Ended(EndCause::Cancelled));
 
     let committed = commit.committed();
     assert!(

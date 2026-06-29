@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::state::{Command as StateCommand, Key, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
@@ -170,7 +170,7 @@ async fn active_plugin_hook_stages_state_through_the_commit_path() {
         .execute(activation(vec!["mark".to_string()]), context)
         .await
         .expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 
     // The hook's state command was committed and is replayable.
     let store = replay_state(&commit.committed());
@@ -217,8 +217,8 @@ async fn out_of_bound_plugin_fails_the_run_closed() {
         .expect("runs");
 
     assert_eq!(
-        outcome.lifecycle,
-        Lifecycle::Failed,
+        outcome,
+        Phase::Ended(EndCause::Error(Failure::CapabilityBound)),
         "a contribution outside the declared bound fails closed (G30)"
     );
 }

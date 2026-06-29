@@ -9,10 +9,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::run::{Id as RunId, Phase};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
-use awaken_runtime_contract::execution::{Error, Result, RunExecutor, RunOutcome};
+use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 use crate::runtime::Runtime;
@@ -22,14 +22,10 @@ use crate::runtime::Runtime;
 #[async_trait]
 pub trait RunIngress: Send + Sync {
     /// Execute a run with caller-provided live wiring.
-    async fn submit(
-        &self,
-        activation: RunActivation,
-        context: RuntimeRunContext,
-    ) -> Result<RunOutcome>;
+    async fn submit(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<Phase>;
 
     /// Durable, fire-and-forget submission. Direct ingress fails closed (G5).
-    async fn submit_background(&self, activation: RunActivation) -> Result<RunOutcome>;
+    async fn submit_background(&self, activation: RunActivation) -> Result<Phase>;
 
     /// Cancel an in-flight run by id.
     fn cancel(&self, run_id: &RunId) -> std::result::Result<(), ControlError>;
@@ -49,15 +45,11 @@ impl DirectRunIngress {
 
 #[async_trait]
 impl RunIngress for DirectRunIngress {
-    async fn submit(
-        &self,
-        activation: RunActivation,
-        context: RuntimeRunContext,
-    ) -> Result<RunOutcome> {
+    async fn submit(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<Phase> {
         self.runtime.execute(activation, context).await
     }
 
-    async fn submit_background(&self, _activation: RunActivation) -> Result<RunOutcome> {
+    async fn submit_background(&self, _activation: RunActivation) -> Result<Phase> {
         Err(Error::Execution(
             "direct ingress does not support durable background submission".to_string(),
         ))

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
-    RunLifecycleChanged,
+    RunPhaseChanged,
     MessageCommitted,
     StateChanged,
     // A run parked on a structured waiting reason, and its later resume. The

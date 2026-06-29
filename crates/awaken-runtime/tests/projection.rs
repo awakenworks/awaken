@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::kind::Kind as EventKind;
 use awaken_agent_contract::store::run_store::RunStore;
@@ -37,11 +37,11 @@ impl LlmExecutor for TextLlm {
 }
 
 /// A public-style projection built only from committed event records.
-fn project_lifecycle_events(committed: &CommittedThread) -> Vec<String> {
+fn project_phase_events(committed: &CommittedThread) -> Vec<String> {
     committed
         .events
         .iter()
-        .filter(|record| matches!(record.kind, EventKind::RunLifecycleChanged))
+        .filter(|record| matches!(record.kind, EventKind::RunPhaseChanged))
         .map(|record| record.payload.to_string())
         .collect()
 }
@@ -110,12 +110,12 @@ async fn projection_derives_from_committed_events_not_the_live_stream() {
     let committed = commit.committed();
 
     // The projection is built from committed event records.
-    let events = project_lifecycle_events(&committed);
+    let events = project_phase_events(&committed);
     assert_eq!(events.len(), 1);
-    assert!(events[0].contains("Completed"));
+    assert!(events[0].contains("NaturalEnd"));
 
     // The same truth is reachable through the RunStore read port.
     let record = commit.get(&RunId("run-1".to_string())).expect("run record");
-    assert_eq!(record.lifecycle, Lifecycle::Completed);
+    assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
     assert!(commit.get(&RunId("missing".to_string())).is_none());
 }
