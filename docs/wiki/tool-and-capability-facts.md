@@ -70,6 +70,6 @@ Owner: [tool-and-capability.md](../design/tool-and-capability.md).
 
 - Status: active
 - Owner: [Tool model](../design/tool-and-capability.md#tool-model)
-- Fact: runtime invokes tools through neutral `Tool` / `ToolExecutor` contracts; host hand, MCP, remote, and client-executed tool protocols implement those contracts on the execution side.
+- Fact: runtime invokes tools in-process through neutral `Tool` / `RawTool` contracts; hand, MCP, and adapter tools implement those contracts and run when invoked by id.
 - Links: [runtime interface facts](runtime-interface-boundaries-facts.md); guardrails G9 and G14
 - Verification: tool executor adapter tests, dependency checks, idempotency/correlation tests for remote adapters, and no-direct-store-write tests.

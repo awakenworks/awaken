@@ -7,10 +7,10 @@ Use the existing runtime vocabulary first.
 
 | Item | Owner |
 |---|---|
-| Agent loop, typed state/tools, commit boundary | Runtime Core |
+| Agent loop, typed state/tools, in-process tool execution, commit boundary | Runtime Core |
 | Backend dispatch, durable buffering, routes | Dispatch / Server |
 | Product event names and public DTOs | Product adapters |
-| Execution placement and process/resource mechanics | Orchestration layer above (out of scope here) |
+| Credential mechanics and any future remote-agent execution | Product / future ADR (out of scope here) |
 
 ## Core Ports
 
@@ -20,8 +20,7 @@ Use the existing runtime vocabulary first.
 | `RunActivation` / `RuntimeRunContext` | Immutable run input plus per-attempt live wiring | No product DTOs in either; no process-local handles in activation |
 | `RunExecutor` / `LiveRunControl` | Narrow execution and live steering role views | Split execution from cancel/decision/wake authority |
 | `RunResolver` / `CommitCoordinatorSource` | Resolve scoped plans and expose durable commit wiring | Resolution and commit ownership stay out of the execution role |
-| `ExecutionBackend` | Execute local or external agent work | Checked through `BackendProfile` before use |
-| `ToolExecutor` | Invoke the selected tool through a neutral call/result port | The executing side implements this port; where execution runs stays out of the contract and is not authorization |
+| `ToolExecutor` | Invoke the selected tool in-process through a neutral call/result port | The runtime invokes the tool by id; the port carries no authorization |
 | `StreamSink` | Stream live runtime progress to callers | Facts still commit through `CommitCoordinator` |
 | `EventReader` / `EventSubscriber` | Read or subscribe to committed durable event records | Cannot create or erase runtime truth |
 | `ContinuationGuard` | Decide whether a natural-end run should continue | Async, replayable verdicts; no product outcome semantics |
@@ -54,7 +53,6 @@ Backends advertise `BackendProfile`. Before a run starts, requirements derived
 from the activation are checked against the profile:
 
 - continuation support;
-- delegated tool execution support;
 - decision/HITL support;
 - frontend tool capability;
 - protocol-specific endpoint support, after adapter translation.
@@ -88,8 +86,8 @@ When adding execution behavior:
 
 ## Non-Goals
 
-- No new execution-transport framework before an actual driver in the
-  orchestration layer above needs it.
+- No new execution-transport framework before a future ADR introduces
+  remote-agent execution.
 - No product status names in runtime events.
 - No server route state in `RunActivation`.
 - No cancellation channels, stream sinks, or commit coordinator handles in

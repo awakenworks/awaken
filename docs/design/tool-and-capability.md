@@ -61,43 +61,43 @@ execution location into one capability check.
 The runtime-facing execution port stays neutral:
 
 ```text
-ToolExecutor::execute(call, context) -> ToolOutput
+RawTool::invoke(call) -> ToolOutput
 ```
 
-Host-hand tools, MCP tools, remote tools, and
-client-executed tools implement that port on the execution side. They may use
-their own wire protocols, correlation ids, and idempotency rules, but those
-details — and where execution happens — do not enter the runtime contract. Runtime sees a descriptor, a validated
-call, a gate/permission decision, and a `ToolOutput` whose state changes still
-stage through `StateCommand`.
+Hand tools, MCP tools, and adapter tools implement that port and run in-process
+when the runtime invokes them by id. An adapter tool may still speak its own wire
+protocol, correlation ids, and idempotency rules behind the port, but the port
+itself is a direct in-process call. Runtime sees a descriptor, a validated call, a
+gate/permission decision, and a `ToolOutput` whose state changes still stage
+through `StateCommand`.
 
-## External Agent And Tool Adapters
+## Agent Delegation And Tool Adapters
 
-External agents are not a new runtime aggregate. Expose them through one of two
-adapter shapes:
+Sub-agent delegation is not a new runtime aggregate. Expose it through one of two
+shapes:
 
 | Shape | Use when | Runtime sees |
 |---|---|---|
 | `agent_run` target | the model should explicitly delegate to a configured agent | one tool call with an `agent_id` argument, roster validation, permission gate, and normal tool output |
-| `ExecutionBackend` / `RawTool` adapter | an external service or agent runtime executes work behind a selected descriptor | backend/tool request, capability profile, correlation id, and typed or raw result |
+| `RawTool` adapter | a service-backed tool (e.g. MCP) executes work behind a selected descriptor | a tool request, capability requirement, correlation id, and typed or raw result |
 
 The config domain or product adapter owns discovery, endpoint selection,
-credentials, remote authorization, and public naming. It publishes only
-descriptor data, allowed targets, backend profiles, and opaque refs into runtime
-resolution. Runtime validates the selected descriptor and capability evidence,
-then invokes by id through the normal tool/backend port.
+credentials, and public naming. It publishes only descriptor data, allowed
+targets, and opaque refs into runtime resolution. Runtime validates the selected
+descriptor and capability evidence, then invokes the tool in-process by id.
 
-External agent adapters must provide:
+Tool adapters must provide:
 
-1. a stable descriptor or backend target id;
+1. a stable descriptor or target id;
 2. schema and content/fingerprint data when model-visible;
-3. capability requirements and advertised backend profile;
+3. capability requirements;
 4. permission policy keys;
 5. correlation/idempotency behavior for retry and resume;
-6. typed error mapping, including indeterminate execution.
+6. typed error mapping, including indeterminate results from a service call the
+   adapter makes inside its in-process `invoke`.
 
 They must not write runtime state, append messages, publish config, or emit
-protocol replay directly. Results return as `ToolOutput`, backend output,
+protocol replay directly. Results return as `ToolOutput`,
 `StateCommand`, `ScheduledAction` result, or neutral resume data and become
 durable only through the normal commit path.
 
@@ -118,7 +118,7 @@ not.
 
 | Toolset | Tool ids | Runtime rule |
 |---|---|---|
-| `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` | descriptors and proxy tools live in the extension; process, filesystem, and network execution stay in the orchestration layer above |
+| `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` | descriptors and concrete tools live in the extension and execute in-process; runtime core ships no concrete tool id |
 | `builtin-task-tools` | `send_message`, `cancel_task`, `recover_failed_messages` | task tools are ordinary plugin tools over runtime state/effect/commit seams; recovery tools are ops-scoped unless explicitly enabled |
 | `builtin-delegation-tools` | `agent_run` | delegation is one tool id with a target argument, not one generated id per target agent |
 
@@ -175,10 +175,9 @@ separate even when one implementation computes several of them together.
 | `ToolVisibilityPolicy` | visibility policy | descriptor include/exclude and step-time visibility semantics | catalog fields, active plugin scope, step filters | invocation authorization, backend selection | hidden authorization encoded as visibility | G8, G9; visibility policy tests |
 | `ToolGateHook` | invocation gate hook | allow, block, suspend, or set result for one tool call | visible descriptor, call arguments, permission policy | descriptor visibility, tool implementation, durable commit | tool invocation bypasses explicit permission path | G9; no-bypass permission tests |
 | `ToolPolicyHook` | policy extension hook | compute unconditional or contextual tool policy effects | selected config, runtime context, active plugin scope | model-visible descriptor list, execution transport | preview and runtime apply different permission rules | G8, G9; policy parity tests |
-| `ToolExecutor` | runtime execution port | invoke the selected tool through a neutral call/result contract | tool call, resolved descriptor, runtime context | transport protocol details, authorization, direct store writes, execution location | runtime contract depends on one host/transport implementation | G7, G9, G14; tool executor adapter tests |
-| `BackendProfile` | capability evidence value | advertised backend features checked before execution | selected backend, activation requirements | provider selection, permission, health authorization | unsupported continuation/tool/decision feature fails late | G7; backend negotiation tests |
+| `ToolExecutor` | runtime execution port | invoke the selected tool in-process through a neutral call/result contract | tool call, resolved descriptor, runtime context | authorization, direct store writes | tool invocation bypasses the gate or writes the store directly | G9, G14; tool executor adapter tests |
 | `PermissionPolicy` | authorization policy | explicit allow/deny/ask decision for protected operation | operator overlay, credential refs, runtime context | selection, capability compatibility, visibility | membership or health check becomes authorization | G9; permission type/API tests |
-| `CapabilityRequirement` | requirement value | feature demand derived from the resolved run | `ResolvedSpec`, tool descriptors, backend profile | provider search, product policy mutation | runtime silently degrades required capability | G7, G8; fail-closed requirement tests |
+| `CapabilityRequirement` | requirement value | feature demand derived from the resolved run | `ResolvedSpec`, tool descriptors, model capability | provider search, product policy mutation | runtime silently degrades required capability | G8, G22; fail-closed requirement tests |
 
 When a tool reaches the catalog through a plugin's resolved `Contributions`, its
 contribution identity is one value by construction: the registration key, the
@@ -221,10 +220,10 @@ For a new capability type, implement in this order:
 
 1. Descriptor in `ResolvedSpec` and fingerprint calculation.
 2. Runtime validation against the catalog fingerprint.
-3. Existing invocation path by id.
+3. Existing in-process invocation path by id.
 4. Permission policy hook.
-5. Out-of-process or remote execution only when a concrete driver in the
-   orchestration layer above requires it.
+5. A service-backed tool reaches its endpoint inside its own in-process `invoke`;
+   out-of-process agent execution waits for a future ADR.
 
 This keeps replayability and discovery from competing.
 

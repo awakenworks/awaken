@@ -18,7 +18,7 @@ schemas are projections, not runtime-domain types.
 | `DispatchError` | Dispatch / Server | durable delivery, lease, or buffering failure | server/protocol error |
 | `CommitConflict` | store/commit coordinator | atomic runtime write failed or conflicted | retry or terminal according to store policy |
 | `ProjectionError` | adapter/projection sink | committed truth could not be projected | public stream/replay sink error |
-| `EnvironmentError` | Orchestration layer above | process, mount, quota, or driver failure | typed tool/backend failure |
+| `EnvironmentError` | Runtime/extension (in-process) | filesystem, process, quota, or driver failure while a tool runs | typed tool failure |
 | `ProductAdapterError` | product adapter | public protocol compatibility failure | public protocol error |
 
 Runtime code should prefer typed neutral errors. Product adapters decide public

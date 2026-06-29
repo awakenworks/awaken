@@ -32,7 +32,7 @@ guidance.
 
 - Status: active
 - Owner: [Execution placement boundary](../design/run-ingress-message-delivery.md#execution-placement-boundary)
-- Fact: execution placement and process mechanics are owned by the orchestration layer above; runtime sees backend/tool ports.
+- Fact: the runtime executes tools in-process; OS process lifecycle and durable-dispatch mechanics around the run are a server/dispatch concern.
 - Links: [resources facts](resources-memory-files-skills-facts.md)
 - Verification: dependency checks and execution integration tests.
 

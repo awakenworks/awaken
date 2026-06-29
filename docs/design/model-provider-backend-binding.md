@@ -16,7 +16,7 @@ Config Domain model-provider/model records
   -> ResolvedSpec model-provider/model/backend refs
   -> RunResolver validates binding and capability profile
   -> ResolvedRun / ResolvedExecutionEnv
-  -> LlmExecutor or ExecutionBackend invocation
+  -> LlmExecutor invocation
 ```
 
 The runtime may reject a binding. It may not silently replace it.
@@ -35,7 +35,7 @@ Binding values are runtime-facing selections derived from those records.
 | `ModelPoolSpec` | config record | Config Domain | explicit model selection/fallback policy over model bindings or model refs | hidden runtime provider search, implicit downgrade, authorization |
 | `AgentSpec` | config record | Config Domain | behavior assembly that references model selection, tools, plugins, skills, resources, instructions, and requirements | provider credentials, tool implementations, live registry handles, concrete launch or endpoint fields |
 | `ModelBinding` | value object | Config compiler / adapter before activation | selected model-provider/model/backend tuple and capability evidence for one run scope | mutable fallback policy or runtime search |
-| `BackendProfile` | evidence value | Provider/backend adapter | advertised execution features for validation | permission grant or provider selection policy |
+| `BackendProfile` | evidence value | Provider/backend adapter | advertised model-serving features for validation | permission grant or provider selection policy |
 
 The intended relation is:
 
@@ -86,7 +86,7 @@ resolved executable snapshot when a concrete slice exists.
 | structured output | resolved output schema | model/model-provider capability | fail before execution or downgrade only when config permits |
 | continuation | continuation guard and run policy | backend profile | fail closed when required continuation cannot be represented |
 | cancellation | `LiveRunControl` requirement | backend cancellation profile | unsupported cancel is reported before accepting a cancellable run |
-| wait/resume | client-executed tools in resolved env | backend/tool profile | wait not projected unless runtime can resume safely |
+| wait/resume | resolved tools in resolved env | model/tool profile | wait not projected unless runtime can resume safely |
 | media/modalities | messages, tools, and output schema | model profile | unsupported modality fails before provider call |
 | context window | resolved history and compaction plan | model profile | require compaction or reject; no untracked truncation |
 
@@ -111,13 +111,13 @@ for protected tools, credentials, and resources.
 |---|---|---|---|---|---|---|
 | `ModelProviderSpec` | config record | configured model-access provider instance, model API endpoint/config knobs, opaque credential refs, and declared model/backend capability evidence | config store, credential refs, model-provider adapter family | secret material, authorization grant, runtime executor handles, agent runtime identity | model-provider config cannot explain calls or leaks secrets | G3, G9, G22; no-secret serde and binding tests |
 | `ModelSpec` | config record | model identity, provider-specific model name, model capability metadata, and limits | `ModelProviderSpec`, model-provider capability evidence | fallback policy, selected runtime binding, credential selection | model config is treated as a selected executable binding | G3, G22; model graph validation tests |
-| `ModelPoolSpec` | config record | explicit model selection, routing, fallback, weighting, and downgrade policy | `ModelSpec` refs or `ModelBinding` candidates | hidden provider search, authorization, runtime loop decisions | runtime invents fallback during execution | G7, G22; fallback policy and no-search tests |
+| `ModelPoolSpec` | config record | explicit model selection, routing, fallback, weighting, and downgrade policy | `ModelSpec` refs or `ModelBinding` candidates | hidden provider search, authorization, runtime loop decisions | runtime invents fallback during execution | G22; fallback policy and no-search tests |
 | `AgentSpec` | config record | agent behavior assembly and model selection ref | model/model-pool refs, tools, plugins, skills, resource refs, capability requirements | provider credentials, tool implementations, live registry handles, concrete launch or endpoint fields | agent config becomes a god object or hides provider policy | G3, G8, G22; config graph tests |
 | `ModelProviderRef` | value object | configured model-provider instance identity | config publication and opaque credential refs | secret material, authorization grant | runtime calls an unconfigured model provider | G3, G22; no-secret serde tests |
 | `ModelBinding` | value object | selected model and provider binding | resolved config, adapter overrides when allowed | provider search, credential selection | execution uses an unreviewed model | G22; binding snapshot tests |
-| `BackendRequirement` | value object | features required by a run | tools, output schema, protocol options | backend evidence, permission grant | required feature silently degrades | G7, G22; requirement tests |
-| `BackendProfile` | evidence value | advertised backend capabilities | provider adapter, environment adapter | authorization, selection policy | unsupported feature fails late | G7, G22; negotiation tests |
-| `BindingValidator` | domain service | reconcile requirement and profile | model binding, backend profile, resolved run | fallback selection, public error mapping | wrong backend accepts the run | G7, G22; fail-closed mismatch tests |
+| `BackendRequirement` | value object | model/serving features required by a run | tools, output schema, protocol options | provider evidence, permission grant | required feature silently degrades | G22; requirement tests |
+| `BackendProfile` | evidence value | advertised model-serving capabilities | provider adapter, model capability evidence | authorization, selection policy | unsupported feature fails late | G22; negotiation tests |
+| `BindingValidator` | domain service | reconcile requirement and profile | model binding, model profile, resolved run | fallback selection, public error mapping | wrong model backend accepts the run | G22; fail-closed mismatch tests |
 | `LlmExecutor` | execution port | model-provider invocation | validated binding and model request | provider discovery, config writes | runtime execution performs selection | G2, G22; dependency checks |
 
 ## First Vertical Slice
