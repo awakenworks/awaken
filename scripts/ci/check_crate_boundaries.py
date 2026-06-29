@@ -67,6 +67,21 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
     },
+    # Postgres durable store: the only crate allowed to name the SQL driver
+    # (`sqlx`) and the migration ledger (`awaken-scoped-migration`). It implements
+    # the neutral CommitCoordinator / read ports against Postgres; the driver
+    # lives here and nowhere else (ADR-0006 commit contract, ADR-0007 boundary).
+    "awaken-store-postgres": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-scoped-migration",
+        "async-trait",
+        "sqlx",
+        "tokio",
+        "serde",
+        "serde_json",
+        "thiserror",
+    },
 }
 
 NEUTRAL_CRATES = {
@@ -83,6 +98,7 @@ EXTENSION_CRATES = {
 # vocabulary rules but still have an explicit dependency allowlist above.
 ADAPTER_CRATES = {
     "awaken-provider-genai",
+    "awaken-store-postgres",
 }
 
 FORBIDDEN_NEUTRAL_TERMS = {
