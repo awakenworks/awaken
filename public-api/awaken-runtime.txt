@@ -59,6 +59,7 @@ impl core::marker::Unpin for awaken_runtime::memory::MemoryStreamSink
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::memory::MemoryStreamSink
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime::memory::MemoryStreamSink
 pub fn awaken_runtime::memory::replay_latest_lifecycle(&awaken_runtime::memory::CommittedThread, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Lifecycle>
+pub fn awaken_runtime::memory::replay_state(&awaken_runtime::memory::CommittedThread) -> awaken_agent_contract::agent::state::Store
 pub struct awaken_runtime::DirectRunIngress
 impl awaken_runtime::DirectRunIngress
 pub fn awaken_runtime::DirectRunIngress::new(alloc::sync::Arc<awaken_runtime::Runtime>) -> Self

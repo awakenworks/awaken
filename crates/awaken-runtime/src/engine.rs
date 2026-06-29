@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::state::{Command as StateCommand, validate_batch};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::commit::staged::ThreadCommit;
 use awaken_agent_contract::event::draft::Draft as EventDraft;
@@ -70,6 +71,7 @@ pub(crate) async fn run_agent_loop(
             run_id,
             Lifecycle::Cancelled,
             Vec::new(),
+            Vec::new(),
         )
         .await;
     }
@@ -81,9 +83,10 @@ pub(crate) async fn run_agent_loop(
     })?;
 
     // The transcript starts from the activation input; new assistant/tool
-    // messages are also collected for the commit.
+    // messages and any staged state transitions are collected for the commit.
     let mut transcript: Vec<Message> = activation.input.clone();
     let mut new_messages: Vec<Message> = Vec::new();
+    let mut staged_state: Vec<StateCommand> = Vec::new();
 
     let mut lifecycle = Lifecycle::Completed;
 
@@ -139,6 +142,9 @@ pub(crate) async fn run_agent_loop(
                             break;
                         }
                     };
+                    // Tools stage state transitions onto the commit boundary
+                    // (the same path hooks use); they never write a store.
+                    staged_state.extend(output.state.clone());
                     let message = tool_result_message(&call, &output);
                     transcript.push(message.clone());
                     new_messages.push(message);
@@ -153,7 +159,29 @@ pub(crate) async fn run_agent_loop(
         }
     }
 
-    finish(&context, &thread_id, run_id, lifecycle, new_messages).await
+    // Fail closed if an exclusive state key was written twice in this batch: a
+    // conflicting batch is never committed (G13).
+    if !staged_state.is_empty() && validate_batch(&staged_state).is_err() {
+        return finish(
+            &context,
+            &thread_id,
+            run_id,
+            Lifecycle::Failed,
+            new_messages,
+            Vec::new(),
+        )
+        .await;
+    }
+
+    finish(
+        &context,
+        &thread_id,
+        run_id,
+        lifecycle,
+        new_messages,
+        staged_state,
+    )
+    .await
 }
 
 /// Consult the permission gate; an absent gate allows (used only in tests).
@@ -268,8 +296,21 @@ async fn finish(
     run_id: RunId,
     lifecycle: Lifecycle,
     new_messages: Vec<Message>,
+    state: Vec<StateCommand>,
 ) -> Result<RunOutcome> {
     if let Some(coordinator) = &context.commit {
+        // A non-empty state batch records a StateChanged event alongside the
+        // lifecycle event, in the same atomic commit (G1/G13).
+        let mut events = vec![EventDraft {
+            kind: EventKind::RunLifecycleChanged,
+            payload: serde_json::json!({ "lifecycle": lifecycle }),
+        }];
+        if !state.is_empty() {
+            events.push(EventDraft {
+                kind: EventKind::StateChanged,
+                payload: serde_json::json!({ "commands": state.len() }),
+            });
+        }
         let commit = ThreadCommit {
             thread_id: thread_id.clone(),
             run_fact: RunFact {
@@ -277,11 +318,8 @@ async fn finish(
                 lifecycle: lifecycle.clone(),
             },
             messages: new_messages,
-            state: Vec::new(),
-            events: vec![EventDraft {
-                kind: EventKind::RunLifecycleChanged,
-                payload: serde_json::json!({ "lifecycle": lifecycle }),
-            }],
+            state,
+            events,
         };
         coordinator
             .commit(commit)

@@ -7,18 +7,23 @@
 //! orchestration layer above — and stays out of the neutral runtime contract.
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::state::Command as StateCommand;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use crate::llm::ToolCall;
 
 /// Neutral result of one tool invocation. `is_error` lets a tool return a
-/// model-visible failure without aborting the run.
+/// model-visible failure without aborting the run; `state` carries any state
+/// transitions the tool wants staged onto the commit boundary (never a direct
+/// store write — the same path hooks use).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolOutput {
     pub call_id: String,
     pub content: String,
     pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state: Vec<StateCommand>,
 }
 
 impl ToolOutput {
@@ -27,6 +32,7 @@ impl ToolOutput {
             call_id: call_id.into(),
             content: content.into(),
             is_error: false,
+            state: Vec::new(),
         }
     }
 
@@ -35,7 +41,15 @@ impl ToolOutput {
             call_id: call_id.into(),
             content: content.into(),
             is_error: true,
+            state: Vec::new(),
         }
+    }
+
+    /// Stage state transitions to be committed with this tool's result.
+    #[must_use]
+    pub fn with_state(mut self, state: Vec<StateCommand>) -> Self {
+        self.state = state;
+        self
     }
 }
 

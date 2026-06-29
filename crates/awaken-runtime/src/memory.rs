@@ -139,6 +139,12 @@ impl StreamSink for MemoryStreamSink {
     }
 }
 
+/// Rebuild the materialized [`StateStore`] from committed state commands, proving
+/// state replay derives from durable truth and not the live store (G1/G13).
+pub fn replay_state(committed: &CommittedThread) -> awaken_agent_contract::agent::state::Store {
+    awaken_agent_contract::agent::state::Store::rebuild(&committed.state)
+}
+
 /// Reconstruct the latest run lifecycle from committed facts (not live events),
 /// proving replay reads durable truth (G1).
 pub fn replay_latest_lifecycle(committed: &CommittedThread, run_id: &RunId) -> Option<Lifecycle> {

@@ -917,9 +917,11 @@ pub struct awaken_runtime_contract::tool::ToolOutput
 pub awaken_runtime_contract::tool::ToolOutput::call_id: alloc::string::String
 pub awaken_runtime_contract::tool::ToolOutput::content: alloc::string::String
 pub awaken_runtime_contract::tool::ToolOutput::is_error: bool
+pub awaken_runtime_contract::tool::ToolOutput::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 impl awaken_runtime_contract::tool::ToolOutput
 pub fn awaken_runtime_contract::tool::ToolOutput::error(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::tool::ToolOutput::ok(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::tool::ToolOutput::with_state(self, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::tool::ToolOutput
 pub fn awaken_runtime_contract::tool::ToolOutput::clone(&self) -> awaken_runtime_contract::tool::ToolOutput
 impl core::cmp::PartialEq for awaken_runtime_contract::tool::ToolOutput
@@ -1230,9 +1232,11 @@ pub struct awaken_runtime_contract::ToolOutput
 pub awaken_runtime_contract::ToolOutput::call_id: alloc::string::String
 pub awaken_runtime_contract::ToolOutput::content: alloc::string::String
 pub awaken_runtime_contract::ToolOutput::is_error: bool
+pub awaken_runtime_contract::ToolOutput::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 impl awaken_runtime_contract::tool::ToolOutput
 pub fn awaken_runtime_contract::tool::ToolOutput::error(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::tool::ToolOutput::ok(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::tool::ToolOutput::with_state(self, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::tool::ToolOutput
 pub fn awaken_runtime_contract::tool::ToolOutput::clone(&self) -> awaken_runtime_contract::tool::ToolOutput
 impl core::cmp::PartialEq for awaken_runtime_contract::tool::ToolOutput
