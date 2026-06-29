@@ -7,15 +7,15 @@ and execution ports.
 
 ## Package Boundary
 
-`awaken-ext-builtin-tools` may provide descriptors, schemas, proxy
-implementations, and integration tests. It does not own runtime core, admin
-authority, execution placement, credential secrets, or public protocol DTOs.
+`awaken-ext-builtin-tools` may provide descriptors, schemas, concrete in-process
+tool implementations, and integration tests. It does not own runtime core, admin
+authority, credential secrets, or public protocol DTOs.
 
 | Toolset | Default role | Execution owner | Notes |
 |---|---|---|---|
-| `builtin-hand-tools` | local hand operations | Orchestration layer above | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` |
+| `builtin-hand-tools` | local hand operations | Runtime extension (in-process) | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` |
 | `builtin-task-tools` | runtime task and recovery helpers | Runtime extension plus Dispatch / Server | `send_message`, `cancel_task`, `recover_failed_messages` |
-| `builtin-delegation-tools` | sub-agent invocation | Runtime extension and backend/ingress ports | one `agent_run` tool with `agent_id` argument |
+| `builtin-delegation-tools` | sub-agent invocation | Runtime extension (in-process sub-run) | one `agent_run` tool with `agent_id` argument |
 
 Each toolset is independently enabled. Installing the package does not make every
 tool visible to every agent.
@@ -38,19 +38,20 @@ invocation. Execution location still decides where and how the work runs.
 
 ## Hand Tools
 
-Hand tools expose filesystem, shell, and network-like capabilities. They require
-an environment profile and permission policy before use.
+Hand tools expose filesystem, shell, and network-like capabilities. They execute
+in-process within the extension and require a permission policy before use.
 
 Rules:
 
-1. local absolute paths are environment details, not runtime authority;
+1. the tool reads its paths from validated arguments; absolute paths are an
+   environment detail of the running process, not runtime authority;
 2. model-visible paths are logical or workspace-relative according to the
-   environment profile;
+   extension's environment;
 3. `bash` requires explicit shell capability and command policy;
 4. `write` and `edit` require write permission and conflict handling;
 5. `web_fetch` and `web_search` require network policy and source/audit handling;
-6. process, filesystem, and network execution happen in the orchestration layer
-   above, not in runtime core.
+6. filesystem, shell, and network operations run in-process in the extension; the
+   runtime owns execution and commits the result through the normal tool path.
 
 ## Task Tools
 
@@ -78,10 +79,10 @@ Do not generate `agent_run_<agent_id>` descriptors.
 
 ## First Vertical Slice
 
-1. Register one hand tool descriptor and one proxy implementation.
+1. Register one hand tool descriptor and its in-process implementation.
 2. Fingerprint the descriptor in the resolved tool catalog.
 3. Gate invocation through permission policy.
-4. Execute through an environment adapter.
+4. Execute the tool in-process and produce a `ToolOutput`.
 5. Commit tool result and audit facts.
 6. Add a negative test proving runtime core has no concrete builtin tool ids.
 

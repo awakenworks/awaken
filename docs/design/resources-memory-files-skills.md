@@ -11,7 +11,7 @@ core. Resources are a boundary contract, not a second execution model.
 | Runtime state facts, messages, verdicts | Runtime Core |
 | Resource declarations and policy overlays | Config / Product |
 | File, memory, vault, skill, and external data stores | Product data plane |
-| Execution placement and process/credential mechanics | Orchestration layer above (out of scope here) |
+| Credential mechanics and durable resource hosting | Product data plane (out of scope here) |
 | Tool invocation and backend execution | Runtime ports and execution adapters |
 
 ## Resource Boundary
@@ -44,8 +44,8 @@ reference:
   read/write mode, mounts, and cleanup.
 
 No runtime API should accept an absolute path as the source of authority. If a
-tool needs a local path, that path is produced inside the environment adapter and
-stays there.
+tool needs a local path, that path is produced in-process when the tool runs,
+from the resolved logical ref, and is not carried as runtime authority.
 
 ## Skills And MCP
 
@@ -102,8 +102,8 @@ boundary:
 1. Add descriptor/ref data to the resolved run input.
 2. Include it in the catalog fingerprint or descriptor hash.
 3. Validate it in runtime before execution.
-4. Realize it in an environment adapter.
-5. Invoke it through an existing tool/backend port.
+4. Realize it in-process when the tool runs, from the resolved ref.
+5. Invoke it through the existing in-process tool port.
 6. Add a replay or recovery test showing the run does not depend on local paths.
 
 ## Non-Goals

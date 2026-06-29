@@ -21,7 +21,7 @@ each class must satisfy — and does not redefine those crates.
 | run ingress/dispatch | runtime ports, stores, durable delivery internals | product DTOs in runtime request data | dispatch vocabulary |
 | protocol adapter | server routes, runtime ports, projection stores | runtime internals, config write ports unless explicitly an admin/config API | public protocol vocabulary allowed only here |
 | admin assistant tools | admin auth, config validation/publication services, private tool registry | ordinary agent catalogs | admin vocabulary required |
-| orchestration layer above | executor/tool/backend adapter contracts, resource realization | runtime domain decisions, public protocol semantics | execution-adapter vocabulary |
+| orchestration layer above | process hosting, durable infrastructure wiring | runtime domain decisions, in-process tool execution, public protocol semantics | deployment vocabulary |
 | analytics/eval | committed facts/events, runtime ports for scenarios | runtime write internals | analytics vocabulary |
 
 ## Required Checks
@@ -60,8 +60,8 @@ config application/domain
   -> no runtime implementation internals
 
 orchestration layer above
-  -> executor/tool/backend contracts
-  -> runtime ports only when acting as execution adapter
+  -> process hosting and durable infrastructure
+  -> runtime ports only as a host/deployment
 
 analytics/eval
   -> committed facts/events or normal runtime ports

@@ -323,8 +323,7 @@ Use this split:
 | Plugin mechanism | `Plugin` factory, `PluginManifest`, `CapabilityBound`, resolved `Contributions` (hook slots, tool gates, transform slots, key registry, output validation) | plugin packages, first-party extension bundles, product-selected active plugin scope | core resolves and bound-checks contributions; plugins decide behavior |
 | Client-executed tools | pending `RunWaitingState` (client-tool waiting reason), descriptor fingerprint, neutral resume command validated by the shared `ResumeValidator` | public wait/result projection and client adapter | public result ids are projections; runtime validates the pending call before resume |
 | State-machine workflows | typed state/effect/action/guard mechanism and replay-safe commit path | plugin or first-party extension workflow semantics | workflow state lives in runtime state/facts, not a parallel workflow store |
-| Tool and capability expansion | `ToolDescriptor`, `ToolExecutor`, `ToolGateHook`, `BackendProfile` contracts | tool package, MCP adapter, or remote backend | visibility, authorization, and execution location remain separate decisions |
-| Remote backend execution | `ExecutionBackend` contract behind activation/context/commit | backend service | remote execution cannot write runtime truth except through passed commit ports |
+| Tool and capability expansion | `ToolDescriptor`, `ToolExecutor`, `ToolGateHook` contracts | tool package or MCP adapter | visibility and authorization remain separate decisions; tools run in-process |
 | Context and memory | committed messages/facts, `ContextCompaction` fact shape, lineage checks | selected compaction policy, memory/resource adapters | summaries are append-only facts with lineage; source messages remain truth |
 | Observability and eval | neutral events/facts and normal execution ports | analytics/eval surface, trace store, dataset builder | observability consumes runtime truth and never becomes runtime truth |
 | Resource and credential access | opaque refs, permission policy, typed result boundaries | product data plane and orchestration layer above | runtime receives opaque references and typed results, not vault data or host authority |
@@ -357,11 +356,11 @@ internals or mutate runtime state directly.
 
 | External need | Stable exposure | Extension point | Runtime-owned validation |
 |---|---|---|---|
-| let a model call another agent | model-visible `agent_run` descriptor from an extension | config publishes delegate roster; local/remote agent adapter executes through `RunIngress` or `ExecutionBackend` | target is in resolved roster, descriptor fingerprint matches, permission gate passes |
+| let a model call another agent | model-visible `agent_run` descriptor from an extension | config publishes delegate roster; the sub-run executes in-process through `RunIngress` | target is in resolved roster, descriptor fingerprint matches, permission gate passes |
 | let agents or external callers send messages | shared target-thread pending append mechanism | internal `send_message` tool/effect or external message adapter; durable input buffer | message id idempotency, target thread binding, pending freeze before runtime consumption |
 | let plugins schedule later work | `ScheduledAction` request committed with the run/thread checkpoint | plugin registers action kinds and result adapter; server owns timer/wake | committed request exists, correlation/idempotency key matches, snapshot/fingerprint match |
 | let a client execute a tool | wait/resume channel (client-tool waiting reason) | protocol adapter projects wait/result; tool descriptor may come from per-run client config | pending wait exists, descriptor fingerprint matches, result is not duplicate/expired/mismatched |
-| let an external agent/backend execute work | `ExecutionBackend` or `RawTool` adapter behind resolved descriptors | environment/backend package owns transport, auth, and result mapping | backend capability satisfies requirements; result returns through tool/backend output and commit path |
+| let a service-backed tool execute work | `RawTool` adapter behind resolved descriptors | adapter package owns transport, auth, and result mapping inside its in-process `invoke` | capability satisfies requirements; result returns through tool output and commit path |
 | let a product expose public status | projection from committed facts/events and dispatch state | protocol/product adapter owns DTO names and cursors | live stream is not replay truth; public ids map back to neutral ids |
 
 The external API should therefore be a composition of small surfaces:
@@ -480,9 +479,9 @@ configuration publication
 registers one descriptor with an `agent_id` argument. Resolution hides the tool
 when the current agent has no delegate roster. Invocation fails closed if the
 target agent is not in the resolved roster or if permission/capability checks do
-not pass. After validation, execution may be a local child run, durable
-`RunIngress` submit, or remote `ExecutionBackend`; the child result returns as a
-normal tool output or committed fact. Parent and child runs remain ordinary runs.
+not pass. After validation, execution may be a local child run or a durable
+`RunIngress` submit; the child result returns as a normal tool output or
+committed fact. Parent and child runs remain ordinary runs.
 
 `send_message` is the internal multi-agent message path. It uses the same
 bottom lifecycle as external inbound messages: append target-thread pending

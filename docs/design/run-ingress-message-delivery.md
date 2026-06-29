@@ -250,10 +250,11 @@ operations surface, not to public dispatch internals.
 ## Execution Placement Boundary
 
 This document does not define process lifecycle, mount handling, or
-execution-owned leases. Execution placement and process mechanics are owned by
-the orchestration layer above this repository and are out of scope here. Run
-ingress may claim a run-dispatch lease, but that lease is a server-side delivery
-authority for one thread/run opportunity, not a general execution lease.
+execution-owned leases. The runtime executes tools in-process; the OS process
+lifecycle and durable-dispatch mechanics around it are a server/dispatch concern
+and are out of scope here. Run ingress may claim a run-dispatch lease, but that
+lease is a server-side delivery authority for one thread/run opportunity, not a
+general execution lease.
 
 ## Failure And Recovery
 
