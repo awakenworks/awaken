@@ -65,10 +65,40 @@ impl LlmExecutor for GenaiExecutor {
             self.client.exec_chat(model, genai_request, None),
         )
         .await
-        .map_err(|_| Error::Inference("model call timed out".to_string()))?
-        .map_err(|err| Error::Inference(err.to_string()))?;
+        // A timeout is transient: the same call may succeed on retry.
+        .map_err(|_| Error::Transient("model call timed out".to_string()))?
+        .map_err(|err| classify_error(&err.to_string()))?;
 
         Ok(from_genai_response(response))
+    }
+}
+
+/// Classify a provider error string as transient (retryable) or permanent.
+/// Rate limits, overloads, 5xx, and connection resets are worth retrying; auth,
+/// quota, and bad-request style failures are not.
+pub fn classify_error(message: &str) -> Error {
+    let lower = message.to_lowercase();
+    const TRANSIENT: &[&str] = &[
+        "rate limit",
+        "ratelimit",
+        "overloaded",
+        "too many requests",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection closed",
+        "temporarily",
+        "unavailable",
+    ];
+    if TRANSIENT.iter().any(|needle| lower.contains(needle)) {
+        Error::Transient(message.to_string())
+    } else {
+        Error::Inference(message.to_string())
     }
 }
 

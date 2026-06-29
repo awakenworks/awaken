@@ -8,3 +8,4 @@ pub mod step;
 pub mod thread;
 pub mod tool_call;
 pub mod turn;
+pub mod waiting;

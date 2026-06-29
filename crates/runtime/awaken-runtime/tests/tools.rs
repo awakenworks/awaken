@@ -122,10 +122,16 @@ fn activation() -> RunActivation {
                     model_ref: "model-1".to_string(),
                     backend_ref: "backend-1".to_string(),
                 },
-                tool_descriptors: vec![ToolDescriptor {
-                    id: "echo".to_string(),
-                    content_hash: "hash-1".to_string(),
-                }],
+                tool_descriptors: vec![ToolDescriptor::pinned(
+                    "test",
+                    "echo",
+                    "Echo the text argument back",
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": { "text": { "type": "string" } },
+                        "required": ["text"],
+                    }),
+                )],
                 plugin_ids: Vec::new(),
             },
             fingerprint,
@@ -292,6 +298,91 @@ async fn without_a_gate_an_authorized_tool_runs() {
         .expect("runs");
     assert_eq!(outcome.lifecycle, Lifecycle::Completed);
     assert_eq!(ran.load(Ordering::SeqCst), 1);
+}
+
+/// A tool that validates its arguments against the declared schema and rejects
+/// missing fields with `InvalidArguments` (the serde-validation path, A3).
+struct ValidatingEcho;
+
+#[async_trait::async_trait]
+impl RawTool for ValidatingEcho {
+    fn id(&self) -> &str {
+        "echo"
+    }
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        let text = call
+            .arguments
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArguments("missing 'text'".to_string()))?;
+        Ok(ToolOutput::ok(call.call_id, format!("echoed: {text}")))
+    }
+}
+
+#[tokio::test]
+async fn invalid_arguments_yield_a_model_visible_error_result() {
+    // `CallsTool` invokes `echo` with empty arguments, which fail validation.
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(CallsTool("echo")))
+        .with_tool(Arc::new(ValidatingEcho))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+
+    let outcome = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+
+    let committed = commit.committed();
+    assert!(
+        committed
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.content.contains("invalid tool arguments")),
+        "invalid arguments must surface as a model-visible error, not abort the run"
+    );
+}
+
+/// Captures the tool schemas the model receives so we can assert the real
+/// descriptor schema (not a placeholder) reaches inference (A2).
+struct CaptureTools {
+    seen: Arc<std::sync::Mutex<Vec<awaken_runtime_contract::llm::ToolSchema>>>,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for CaptureTools {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        *self.seen.lock().unwrap() = request.tools.clone();
+        Ok(ChatResponse {
+            output: AssistantOutput::Text("done".to_string()),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn real_tool_schema_is_projected_to_the_model() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let runtime = Runtime::new().with_llm(Arc::new(CaptureTools { seen: seen.clone() }));
+    install(&runtime);
+
+    runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new(PersistenceMode::Disabled),
+        )
+        .await
+        .expect("runs");
+
+    let tools = seen.lock().unwrap().clone();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].id, "echo");
+    assert_eq!(tools[0].description, "Echo the text argument back");
+    assert_eq!(tools[0].parameters["properties"]["text"]["type"], "string");
 }
 
 #[tokio::test]
