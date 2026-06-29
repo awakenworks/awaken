@@ -17,11 +17,15 @@ holds the rule), and the **Validation** (the test kind that proves it).
     G8, G9, G13, G14, G15, G16, G21, G27, G28, G30, G31, G32.
   - **Target** (the rule is accepted, but its enforcer is not yet built here, so
     it holds vacuously until the subsystem lands): G4 (catalog fingerprint-fail
-    path), G7 (`ExecutionBackend`/`BackendProfile`), G10/G19/G26 (public protocol
-    adapters), G11 (`ContinuationGuard`), G18/G23/G29 (config publication
-    coordinator and registry compiler), G22 (backend-binding negotiation), G25
-    (observability/eval). A Target guardrail must gain a real enforcer and test
-    in the same change that first builds its subsystem.
+    path), G10/G19/G26 (public protocol adapters), G11 (`ContinuationGuard`),
+    G18/G23/G29 (config publication coordinator and registry compiler), G22
+    (backend-binding negotiation), G25 (observability/eval). A Target guardrail
+    must gain a real enforcer and test in the same change that first builds its
+    subsystem.
+  - **Retired**: G7 (`ExecutionBackend`/`BackendProfile`). The runtime executes
+    tools in-process (ADR-0007); remote/out-of-process agent execution is out of
+    scope until a future ADR introduces it with a concrete driver and tests. The
+    row is kept as a tombstone so G8–G32 references stay stable.
 - The rationale (problem, decision, consequence) behind these guardrails is owned
   by [key-design-decisions.md](design/key-design-decisions.md) (D1–D22); this
   index records only the enforceable statement, enforcer, and validation, and
@@ -39,8 +43,8 @@ holds the rule), and the **Validation** (the test kind that proves it).
 | G4 | Runtime builds live execution objects from its own catalog and fails closed on fingerprint/catalog mismatch. | `RuntimeCatalogInstaller` builds live objects from the installed catalog; fingerprint check fails closed | catalog fingerprint tests; descriptor resolution tests |
 | G5 | `RunIngress` has exactly two delivery semantics: direct `DirectRunIngress` and durable `DurableRunIngress`; durable-only operations fail closed on direct ingress. | `RunIngress` with `DirectRunIngress` / `DurableRunIngress`; durable-only ops fail closed on direct | `RunIngress` capability tests |
 | G6 | Durable ingress behavior is additive over runtime control; durable ingress internals are not public runtime seams. | durable ingress wraps runtime control; same-source commit guard at construction | public API snapshots (`scripts/ci/check_public_api.sh`); both-ingress route tests |
-| G7 | Agent execution (local child run or A2A/remote agent) goes through `ExecutionBackend`, whose `BackendProfile` is checked against requirements before use; unsupported features fail closed before execution. | `ExecutionBackend` seam; `BackendProfile` capability negotiation before execution | capability negotiation tests |
-| G8 | Capability configuration is segmented: descriptors are pinned/fingerprinted, execution behavior is invoked by id, operator policy is mutable, secrets are opaque refs, session data is runtime fact state. The operator-policy segment allows/denies a plugin by its declared `CapabilityBound` (especially `tool_gate` / `transforms` / namespace), the bound being the dry-run-`resolve`-derived projection on `PluginCapability`. | pinned `ToolDescriptor` / `ResolvedSpec` segments; behavior invoked by id; mutable operator policy keyed on `CapabilityBound` projection; opaque secret refs; session = fact state | config materialization tests; no-secret serialization tests; bound-projection on `PluginCapability`; `scripts/ci/check_crate_boundaries.py` blocks concrete builtin tool ids/symbols in neutral crates |
+| G7 | _(retired, ADR-0007)_ The runtime executes tools in-process; there is no `ExecutionBackend`/`BackendProfile` execution-placement seam. Remote/out-of-process agent execution is out of scope until a future ADR reintroduces it with a concrete driver and tests. | — | — |
+| G8 | Capability configuration is segmented: descriptors are pinned/fingerprinted, execution behavior is owned by the runtime/extension and invoked in-process by id, operator policy is mutable, secrets are opaque refs, session data is runtime fact state. The operator-policy segment allows/denies a plugin by its declared `CapabilityBound` (especially `tool_gate` / `transforms` / namespace), the bound being the dry-run-`resolve`-derived projection on `PluginCapability`. | pinned `ToolDescriptor` / `ResolvedSpec` segments; behavior invoked by id; mutable operator policy keyed on `CapabilityBound` projection; opaque secret refs; session = fact state | config materialization tests; no-secret serialization tests; bound-projection on `PluginCapability`; `scripts/ci/check_crate_boundaries.py` blocks concrete builtin tool ids/symbols in neutral crates |
 | G9 | Selection, capability compatibility, and health probes are never authorization; their result types carry no grant. | selection/compatibility/health result types carry no grant; `ToolGateHook` + permission policy is the only grant path | type/API checks; explicit-authorization permission tests |
 | G10 | Public protocol names live only in adapters/anti-corruption layers. Runtime errors and events use neutral names. | neutral runtime error/event names; public names only in protocol adapters | grep/deny-list over runtime crates; public API snapshots (`scripts/ci/check_public_api.sh`) |
 | G11 | Goal evaluation semantics live in `awaken-ext-goal` or downstream product adapters. The runtime records opaque continuation verdicts and terminal conclusions but does not interpret product outcomes. | `ContinuationGuard` records opaque verdicts; goal semantics live in `awaken-ext-goal` / adapters | extension boundary tests; replay reuses recorded verdicts |

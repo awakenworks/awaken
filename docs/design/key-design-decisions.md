@@ -20,9 +20,9 @@ names, hosted policy, vaults, resource data, and deployment choices.
 run. Server, protocol, and product behavior live above it.
 
 **Consequence.** Runtime code may name `AgentRuntime`, `RunActivation`,
-`ExecutionBackend`, `StreamSink`, `CommitCoordinator`, typed
-state/tools, and extension hooks. It may not name Managed Agents DTOs, public
-event names, tenant policy, registry publication workflow, vault schemas, or
+`StreamSink`, `CommitCoordinator`, typed state/tools, and extension hooks. It runs
+tools in-process (ADR-0007). It may not name Managed Agents DTOs, public event
+names, tenant policy, registry publication workflow, vault schemas, or remote
 execution placement.
 
 ---
@@ -37,8 +37,8 @@ contract and makes future repository splits risky.
 `ResolvedSpec`/resolver output, `RunExecutor`, `LiveRunControl`, `RunResolver`,
 `CommitCoordinatorSource`,
 `RunWithSnapshotExecutor`, `AgentSnapshotResolver`, `AgentSnapshotCatalog`,
-`RuntimeCapabilitySource`, `PluginManifest`, `ExecutionBackend(Factory)`,
-`BackendProfile`, `StreamSink`, `Plugin`, `Contributions`, `CommitCoordinator`, and
+`RuntimeCapabilitySource`, `PluginManifest`,
+`StreamSink`, `Plugin`, `Contributions`, `CommitCoordinator`, and
 runtime store traits.
 
 **Consequence.** Adding a new cross-boundary type is an architecture change, not a
@@ -100,14 +100,14 @@ names and protocol-specific status are applied by adapters after the commit.
 operator policy, secrets, and session data becomes too broad to reason about.
 
 **Decision.** Split capability configuration into segments:
-decision-surface descriptors in pinned config, execution behavior in the
-orchestration layer above, operator overlay in config/admin/product policy,
-secrets in the data plane, and session data in runtime facts.
+decision-surface descriptors in pinned config, execution behavior owned by the
+runtime/extension and invoked in-process by id, operator overlay in
+config/admin/product policy, secrets in the data plane, and session data in
+runtime facts.
 
-**Consequence.** The first slice pins descriptors and content hashes.
-Out-of-process execution is deferred until a concrete driver exists in that
-layer. Permission
-policy stays mutable and separate from replayable descriptors.
+**Consequence.** The first slice pins descriptors and content hashes. Tools run
+in-process (ADR-0007); remote/out-of-process execution is deferred to a future
+ADR. Permission policy stays mutable and separate from replayable descriptors.
 
 ---
 
@@ -367,7 +367,7 @@ extension package with independently enabled toolsets:
 
 | Toolset | Example ids | Ownership rule |
 |---|---|---|
-| `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` | registers descriptors and proxy behavior; execution stays in the orchestration layer above |
+| `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` | registers descriptors and concrete tools that execute in-process within the extension |
 | `builtin-task-tools` | `send_message`, `cancel_task`, `recover_failed_messages` | registers task orchestration tools over runtime state/effect seams; recovery tools are ops-scoped unless explicitly enabled |
 | `builtin-delegation-tools` | `agent_run` | registers one delegation tool; target agent is an argument, not a generated tool id |
 
