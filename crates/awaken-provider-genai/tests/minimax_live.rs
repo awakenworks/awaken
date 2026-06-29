@@ -11,7 +11,9 @@ use std::sync::Mutex;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_provider_genai::GenaiExecutor;
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, DeltaSink, LlmExecutor};
+use awaken_runtime_contract::llm::{
+    ChatMessage, ChatRequest, ChatRole, DeltaSink, LlmExecutor, ToolSchema,
+};
 use awaken_runtime_contract::resolved::ModelBinding;
 use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
@@ -22,8 +24,11 @@ fn model() -> String {
 }
 
 fn executor() -> GenaiExecutor {
+    // genai's Anthropic adapter appends `messages` to this base, so it must end
+    // at the versioned path: `.../anthropic/v1/`. Without `v1/` the stream
+    // endpoint returns 404.
     let base = std::env::var("MINIMAX_BASE_URL")
-        .unwrap_or_else(|_| "https://api.minimaxi.com/anthropic/".to_string());
+        .unwrap_or_else(|_| "https://api.minimaxi.com/anthropic/v1/".to_string());
     let key = std::env::var("MINIMAX_API_KEY").expect("MINIMAX_API_KEY must be set");
     let resolver = ServiceTargetResolver::from_resolver_fn(
         move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
@@ -67,12 +72,21 @@ fn user(blocks: Vec<ContentBlock>) -> ChatRequest {
 #[derive(Default)]
 struct Recorder {
     chunks: Mutex<Vec<String>>,
+    tool_calls: Mutex<Vec<(String, String, serde_json::Value)>>,
 }
 
 #[async_trait::async_trait]
 impl DeltaSink for Recorder {
     async fn on_text(&self, chunk: &str) {
         self.chunks.lock().unwrap().push(chunk.to_string());
+    }
+
+    async fn on_tool_call(&self, call_id: &str, tool_id: &str, arguments: &serde_json::Value) {
+        self.tool_calls.lock().unwrap().push((
+            call_id.to_string(),
+            tool_id.to_string(),
+            arguments.clone(),
+        ));
     }
 }
 
@@ -132,4 +146,81 @@ async fn minimax_multimodal_image() {
     let text = response.output.text_content();
     println!("[minimax image] -> {text:?}");
     assert!(!text.is_empty(), "model responded to the image");
+}
+
+/// A weather tool the model is steered into calling. Its single required string
+/// argument lets us assert the streamed arguments accumulated into valid JSON.
+fn weather_tool() -> ToolSchema {
+    ToolSchema {
+        id: "get_weather".to_string(),
+        description: "Get the current weather for a city.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "city": { "type": "string", "description": "City name" }
+            },
+            "required": ["city"]
+        }),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires network and MINIMAX_API_KEY"]
+async fn minimax_streaming_tool_call_accumulates_arguments() {
+    let request = ChatRequest {
+        model_binding: binding(),
+        messages: vec![ChatMessage {
+            role: ChatRole::User,
+            content: vec![ContentBlock::text(
+                "Use the get_weather tool to look up the weather in Paris. \
+                 Call the tool; do not answer in prose.",
+            )],
+        }],
+        tools: vec![weather_tool()],
+    };
+    let recorder = Recorder::default();
+    let response = executor()
+        .infer_streaming(request, &recorder)
+        .await
+        .expect("stream tool call");
+
+    // The committed turn is the source of truth (G13): it must carry the call.
+    let committed = response.output.tool_calls();
+    println!("[minimax tool stream] committed calls -> {committed:?}");
+    let call = committed
+        .iter()
+        .find(|c| c.tool_id == "get_weather")
+        .expect("model called get_weather");
+
+    // The live sink saw the call too, and its final arguments accumulated into
+    // the same valid JSON the committed call carries (genai upserts by call id).
+    let live = recorder.tool_calls.lock().unwrap().clone();
+    println!("[minimax tool stream] {} live tool-call deltas", live.len());
+    assert!(
+        !live.is_empty(),
+        "at least one live tool-call delta arrived"
+    );
+    let last = live
+        .iter()
+        .rev()
+        .find(|(_, tool_id, _)| tool_id == "get_weather")
+        .expect("a live get_weather delta");
+    assert_eq!(
+        last.2, call.arguments,
+        "the final live arguments equal the committed arguments"
+    );
+    // MiniMax delivers tool arguments as a JSON *string* (e.g. `"{\"city\":...}"`),
+    // not a pre-parsed object; the adapter forwards the provider's shape verbatim.
+    // Accept either: parse the string when needed, then assert the object holds a
+    // string `city`. This proves the streamed deltas accumulated into valid JSON.
+    let parsed = match &call.arguments {
+        serde_json::Value::String(raw) => {
+            serde_json::from_str::<serde_json::Value>(raw).expect("arguments are valid JSON text")
+        }
+        other => other.clone(),
+    };
+    assert!(
+        parsed.get("city").and_then(|v| v.as_str()).is_some(),
+        "accumulated arguments parse to an object with a string city: {parsed:?}",
+    );
 }
