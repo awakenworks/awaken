@@ -503,9 +503,19 @@ async fn execute_tool(runtime: &Runtime, call: &ToolCall) -> ToolOutput {
 /// Build a model request from the resolved binding, transcript, and visible
 /// tool descriptors.
 pub(crate) fn build_chat_request(spec: &ResolvedSpec, transcript: &[Message]) -> ChatRequest {
+    // The agent's instructions lead the request as a system message, ahead of the
+    // transcript. Empty instructions contribute no system message.
+    let mut messages = Vec::with_capacity(transcript.len() + 1);
+    if !spec.instructions.is_empty() {
+        messages.push(ChatMessage {
+            role: ChatRole::System,
+            content: ChatContent::Text(spec.instructions.clone()),
+        });
+    }
+    messages.extend(transcript.iter().map(to_chat_message));
     ChatRequest {
         model_binding: spec.model_binding.clone(),
-        messages: transcript.iter().map(to_chat_message).collect(),
+        messages,
         tools: spec.tool_descriptors.iter().map(to_tool_schema).collect(),
     }
 }
@@ -647,4 +657,51 @@ async fn finish(
 
 fn map_resolver_error(err: resolver::Error) -> Error {
     Error::Resolution(err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding};
+
+    fn spec(instructions: &str) -> ResolvedSpec {
+        ResolvedSpec {
+            catalog_fingerprint: CatalogFingerprint("c".to_string()),
+            instructions: instructions.to_string(),
+            model_binding: ModelBinding {
+                provider_instance_ref: "p".to_string(),
+                model_ref: "m".to_string(),
+                backend_ref: "b".to_string(),
+            },
+            tool_descriptors: Vec::new(),
+            plugin_ids: Vec::new(),
+        }
+    }
+
+    fn user_message() -> Message {
+        Message {
+            id: MessageId("m1".to_string()),
+            role: Role::User,
+            content: "hi".to_string(),
+        }
+    }
+
+    #[test]
+    fn instructions_lead_the_request_as_a_system_message() {
+        let request = build_chat_request(&spec("be helpful"), &[user_message()]);
+        assert_eq!(request.messages.len(), 2);
+        assert!(matches!(request.messages[0].role, ChatRole::System));
+        assert!(matches!(
+            &request.messages[0].content,
+            ChatContent::Text(text) if text == "be helpful"
+        ));
+        assert!(matches!(request.messages[1].role, ChatRole::User));
+    }
+
+    #[test]
+    fn empty_instructions_contribute_no_system_message() {
+        let request = build_chat_request(&spec(""), &[user_message()]);
+        assert_eq!(request.messages.len(), 1);
+        assert!(matches!(request.messages[0].role, ChatRole::User));
+    }
 }

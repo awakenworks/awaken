@@ -6,6 +6,11 @@ pub struct CatalogFingerprint(pub String);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedSpec {
     pub catalog_fingerprint: CatalogFingerprint,
+    /// The agent's instructions: the behavior text the runtime injects as the
+    /// leading system message of every inference request. Part of the resolved
+    /// decision surface (data-only, G3); empty means the run carries no
+    /// agent-level system message.
+    pub instructions: String,
     pub model_binding: ModelBinding,
     pub tool_descriptors: Vec<ToolDescriptor>,
     pub plugin_ids: Vec<String>,

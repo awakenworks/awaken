@@ -63,6 +63,7 @@ fn activation(fingerprint: &str) -> RunActivation {
             root_agent_id: AgentId("agent-1".to_string()),
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fingerprint.clone(),
+                instructions: String::new(),
                 model_binding: ModelBinding {
                     provider_instance_ref: "provider-1".to_string(),
                     model_ref: "model-1".to_string(),

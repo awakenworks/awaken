@@ -105,6 +105,7 @@ fn activation() -> RunActivation {
             root_agent_id: AgentId("agent-1".to_string()),
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fingerprint.clone(),
+                instructions: String::new(),
                 model_binding: ModelBinding {
                     provider_instance_ref: "p".to_string(),
                     model_ref: "m".to_string(),

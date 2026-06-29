@@ -843,6 +843,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolv
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ResolvedRun
 pub struct awaken_runtime_contract::resolved::ResolvedSpec
 pub awaken_runtime_contract::resolved::ResolvedSpec::catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
+pub awaken_runtime_contract::resolved::ResolvedSpec::instructions: alloc::string::String
 pub awaken_runtime_contract::resolved::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::resolved::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::resolved::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
@@ -1011,7 +1012,7 @@ impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runtime_
 pub mod awaken_runtime_contract::snapshot
 pub enum awaken_runtime_contract::snapshot::AgentSnapshotInput
 pub awaken_runtime_contract::snapshot::AgentSnapshotInput::ById(awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId)
-pub awaken_runtime_contract::snapshot::AgentSnapshotInput::Inline(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot)
+pub awaken_runtime_contract::snapshot::AgentSnapshotInput::Inline(alloc::boxed::Box<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>)
 impl core::clone::Clone for awaken_runtime_contract::snapshot::AgentSnapshotInput
 pub fn awaken_runtime_contract::snapshot::AgentSnapshotInput::clone(&self) -> awaken_runtime_contract::snapshot::AgentSnapshotInput
 impl core::cmp::PartialEq for awaken_runtime_contract::snapshot::AgentSnapshotInput
@@ -1494,6 +1495,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugi
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 pub struct awaken_runtime_contract::ResolvedSpec
 pub awaken_runtime_contract::ResolvedSpec::catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
+pub awaken_runtime_contract::ResolvedSpec::instructions: alloc::string::String
 pub awaken_runtime_contract::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>

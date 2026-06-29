@@ -24,7 +24,7 @@ impl Runtime {
         input: &AgentSnapshotInput,
     ) -> Result<ExecutableAgentSnapshot, Error> {
         match input {
-            AgentSnapshotInput::Inline(snapshot) => Ok(snapshot.clone()),
+            AgentSnapshotInput::Inline(snapshot) => Ok(snapshot.as_ref().clone()),
             AgentSnapshotInput::ById(id) => self.snapshot_by_id(id).ok_or(Error::SnapshotNotFound),
         }
     }
