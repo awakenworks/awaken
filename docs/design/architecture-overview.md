@@ -24,7 +24,7 @@ product code.
         | gated runtime port: RunActivation, RuntimeRunContext, ResolvedSpec,
         | StreamSink,
         | RunExecutor, LiveRunControl, CommitCoordinator,
-        | ExecutionBackend, Plugin, RunWithSnapshotExecutor,
+        | Plugin, RunWithSnapshotExecutor,
         | AgentSnapshotResolver, RuntimeCapabilitySource
         v
   Runtime Core Context
@@ -33,17 +33,17 @@ product code.
   continuation guards, goal extension, commit boundary, store contracts
         ^
         |
-        | tool invocation / agent-execution ports
+        | tool invocation port (in-process)
         |
-  (Execution placement, isolation, and process/credential mechanics are
-   owned by the orchestration layer above this repository and are out of
-   scope here. The runtime only invokes work by id through its ports.)
+  (The runtime invokes tools in-process by id and owns their execution.
+   Credential mechanics and any future remote-agent execution stay out of
+   scope here.)
 ```
 
-The Runtime Core is the domain center. It must not know public protocols,
-registry publication workflow, vault schemas, execution placement, or
-product-specific session names. Server and product code adapt into the runtime
-through explicit ports.
+The Runtime Core is the domain center. It runs tools in-process but must not know
+public protocols, registry publication workflow, vault schemas, remote execution
+placement, or product-specific session names. Server and product code adapt into
+the runtime through explicit ports.
 
 Config publication is an adjacent config-side flow, not a runtime subsystem.
 `ConfigPublicationCoordinator` may live in a server/config application package,
@@ -110,7 +110,6 @@ RunExecutor / LiveRunControl / RunResolver / CommitCoordinatorSource
 RuntimeCatalogInstaller / RunWithSnapshotExecutor
 AgentSnapshotResolver / AgentSnapshotCatalog
 RuntimeCapabilitySource / PluginManifest
-ExecutionBackend(Factory) + BackendProfile
 StreamSink
 Plugin / Contributions / ResolvedExecutionEnv
 RunActivation / RuntimeRunContext
@@ -206,15 +205,14 @@ Capabilities are split into segments:
 | Segment | Owner | Runtime role |
 |---|---|---|
 | Decision-surface descriptor | control/server | pinned in `ResolvedSpec` and fingerprinted |
-| Execution behavior | orchestration layer above | invoked by id through existing tool/backend ports |
+| Execution behavior | runtime/extension | concrete tools run in-process, invoked by id |
 | Operator overlay | config/admin/product | mutable permission and visibility policy |
 | Secrets/credentials | data plane/product | referenced opaquely, never embedded |
 | Session data | runtime facts | replayed from committed state |
 
 This keeps replayability simple: the runtime validates what the model saw and the
-content hash of execution material, while the orchestration layer above executes
-live behavior behind a port. Out-of-process or remote execution is added only
-when a concrete driver exists in that layer.
+content hash of execution material, and runs the tool in-process. Out-of-process
+or remote agent execution is added only when a future ADR introduces it.
 
 ---
 
