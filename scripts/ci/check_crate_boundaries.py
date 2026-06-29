@@ -37,10 +37,20 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "tokio-util",
     },
+    # Builtin tools extension: owns concrete tool ids and runs them in-process
+    # (ADR-0007). It implements the async `Tool`/`RawTool` ports (`async-trait`,
+    # `tokio` for tests) and hand tools touch the filesystem (`glob`, `regex`,
+    # `tempfile` for tests) — these execution deps live here, never in a neutral
+    # crate.
     "awaken-ext-builtin-tools": {
         "awaken-runtime-contract",
+        "async-trait",
+        "glob",
+        "regex",
         "serde",
         "serde_json",
+        "tempfile",
+        "tokio",
     },
     # Provider adapter: the only crate allowed to name the model SDK. It also
     # consumes the SDK's async response stream, so `futures` (StreamExt) is
@@ -96,19 +106,19 @@ BUILTIN_TOOL_IDS = {
 FORBIDDEN_NEUTRAL_TYPE_NAMES = {
     "TypedTool": "use Tool for the preferred typed API and RawTool for the low-level adapter",
     "BackgroundTask": "use ScheduledAction, RunWaitingState, or durable run dispatch by authority",
-    # Removed roles: the executing side implements ToolExecutor; where a tool
-    # runs is not a runtime role. (ExecutionBackend is NOT banned: it is the
-    # local/A2A agent-execution seam and may live in the neutral contract.)
+    # Removed roles: the executing side implements ToolExecutor and runs the tool
+    # in-process (ADR-0007); where a tool runs is not a separate runtime role.
     "ToolExecutionLocus": "removed role; ToolExecutor is the sole neutral tool port",
     "ExecutorAdapter": "removed role; the executing side implements ToolExecutor, not a runtime adapter",
+    "ExecutionBackend": "retired (ADR-0007); tool execution is in-process and remote-agent execution awaits a future ADR",
 }
 
 # Phrases that must not appear in neutral crate source (case-insensitive,
-# whole-word). Execution placement is owned by the orchestration layer above this
-# repository and never named by the runtime core.
+# whole-word). Worker/sandbox placement is not a runtime-core concern and is
+# never named by the runtime core.
 FORBIDDEN_NEUTRAL_PHRASES = {
-    "worker placement": "worker placement is owned by the orchestration layer above; runtime core never names it",
-    "sandbox placement": "sandbox placement is owned by the orchestration layer above; runtime core never names it",
+    "worker placement": "worker placement is not a runtime-core concern; runtime core never names it",
+    "sandbox placement": "sandbox placement is not a runtime-core concern; runtime core never names it",
 }
 
 FORBIDDEN_NEUTRAL_SYMBOLS = {
