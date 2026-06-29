@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 /// The runtime core. It installs catalogs, resolves snapshots, and executes
 /// runs through injected ports. The model provider, executable tools, and the
 /// permission gate are all ports, so the core never names a model SDK or a
-/// concrete tool id (G2/G12).
+/// concrete tool id (G2).
 #[derive(Default)]
 pub struct Runtime {
     active_catalog: Mutex<Option<RuntimeCatalogInstall>>,
@@ -28,7 +28,7 @@ pub struct Runtime {
     snapshots: Mutex<HashMap<ExecutableAgentSnapshotId, ExecutableAgentSnapshot>>,
     /// Model provider, built from the catalog at the composition root.
     llm: Option<Arc<dyn LlmExecutor>>,
-    /// Executable tools keyed by id; concrete ids come from extensions (G12).
+    /// Executable tools keyed by id; concrete ids come from extensions.
     tools: HashMap<String, Arc<dyn RawTool>>,
     /// The authorization gate; absent means tools run ungated (test-only).
     gate: Option<Arc<dyn ToolGateHook>>,

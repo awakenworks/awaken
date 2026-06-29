@@ -209,11 +209,14 @@ fn to_chat_role(role: &Role) -> ChatRole {
     }
 }
 
+/// Project a pinned descriptor into the model-visible schema. The real
+/// description and JSON Schema travel to the model, so it can call tools with
+/// arguments; the descriptor's `content_hash` stays internal (G3/G8).
 fn to_tool_schema(descriptor: &ToolDescriptor) -> ToolSchema {
     ToolSchema {
         id: descriptor.id.clone(),
-        description: format!("tool {}", descriptor.id),
-        parameters: serde_json::json!({"type": "object"}),
+        description: descriptor.description.clone(),
+        parameters: descriptor.parameters.clone(),
     }
 }
 

@@ -1,11 +1,10 @@
 //! Tool execution ports.
 //!
-//! Two concerns stay separate (tool-and-capability.md, G12): a tool
-//! *implementation* (`Tool` typed, `RawTool` schema-erased) and the *executor*
-//! port the loop calls to run one resolved call. Where a call physically runs
-//! (host/remote/MCP/sandbox) is an implementation detail of whoever implements
-//! `ToolExecutor` — the environment/sandbox layer — and stays out of the
-//! neutral runtime contract until a real driver needs it.
+//! Two concerns stay separate (tool-and-capability.md): a tool *implementation*
+//! (`Tool` typed, `RawTool` schema-erased) and the *executor* port the loop
+//! calls to run one resolved call. Where a call physically runs is an
+//! implementation detail of whoever implements `ToolExecutor` — owned by the
+//! orchestration layer above — and stays out of the neutral runtime contract.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -51,7 +50,7 @@ pub enum ToolError {
 }
 
 /// Schema-erased tool: the dynamic call boundary used by the runtime and by
-/// MCP/server/client/sandbox adapters. Concrete implementations live in
+/// MCP/server/client adapters. Concrete implementations live in
 /// extension/adapter crates, never in neutral crates.
 #[async_trait]
 pub trait RawTool: Send + Sync {
@@ -71,8 +70,8 @@ pub trait Tool: Send + Sync {
 }
 
 /// The port the execution loop calls to run one already-authorized tool call.
-/// Where the call runs (host/remote/MCP/sandbox) is hidden behind this port and
-/// owned by its implementer, not the runtime core.
+/// Where the call runs is hidden behind this port and owned by its implementer
+/// (the orchestration layer above), not the runtime core.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError>;

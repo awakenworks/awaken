@@ -27,7 +27,6 @@ pub awaken_ext_builtin_tools::BuiltinTool::descriptor: awaken_runtime_contract::
 pub awaken_ext_builtin_tools::BuiltinTool::toolset: awaken_ext_builtin_tools::Toolset
 impl core::clone::Clone for awaken_ext_builtin_tools::BuiltinTool
 pub fn awaken_ext_builtin_tools::BuiltinTool::clone(&self) -> awaken_ext_builtin_tools::BuiltinTool
-impl core::cmp::Eq for awaken_ext_builtin_tools::BuiltinTool
 impl core::cmp::PartialEq for awaken_ext_builtin_tools::BuiltinTool
 pub fn awaken_ext_builtin_tools::BuiltinTool::eq(&self, &awaken_ext_builtin_tools::BuiltinTool) -> bool
 impl core::fmt::Debug for awaken_ext_builtin_tools::BuiltinTool

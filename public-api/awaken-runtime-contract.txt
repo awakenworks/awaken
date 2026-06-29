@@ -694,10 +694,13 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolv
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ResolvedSpec
 pub struct awaken_runtime_contract::resolved::ToolDescriptor
 pub awaken_runtime_contract::resolved::ToolDescriptor::content_hash: alloc::string::String
+pub awaken_runtime_contract::resolved::ToolDescriptor::description: alloc::string::String
 pub awaken_runtime_contract::resolved::ToolDescriptor::id: alloc::string::String
+pub awaken_runtime_contract::resolved::ToolDescriptor::parameters: serde_json::value::Value
+impl awaken_runtime_contract::resolved::ToolDescriptor
+pub fn awaken_runtime_contract::resolved::ToolDescriptor::pinned(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 impl core::clone::Clone for awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::clone(&self) -> awaken_runtime_contract::resolved::ToolDescriptor
-impl core::cmp::Eq for awaken_runtime_contract::resolved::ToolDescriptor
 impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::eq(&self, &awaken_runtime_contract::resolved::ToolDescriptor) -> bool
 impl core::fmt::Debug for awaken_runtime_contract::resolved::ToolDescriptor

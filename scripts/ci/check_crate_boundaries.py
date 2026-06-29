@@ -40,6 +40,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-ext-builtin-tools": {
         "awaken-runtime-contract",
         "serde",
+        "serde_json",
     },
     # Provider adapter: the only crate allowed to name the model SDK.
     "awaken-provider-genai": {
