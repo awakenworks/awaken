@@ -1,6 +1,27 @@
-//! Official builtin tool descriptors.
+//! Official builtin tools.
 //!
-//! Concrete model-callable tool ids live here, not in `awaken-runtime`.
+//! Concrete model-callable tool ids live here, not in `awaken-runtime`. The
+//! extension owns both the descriptors and their in-process implementations
+//! (ADR-0007): typed [`Tool`](awaken_runtime_contract::tool::Tool)s erased into
+//! the runtime's `RawTool` registry.
+
+mod delegation;
+mod erasure;
+mod hand;
+mod task;
+mod web;
+
+pub use delegation::{AgentRunArgs, AgentRunTool, AgentRunner, delegation_tools};
+pub use erasure::{Erased, erase};
+pub use hand::{
+    BashArgs, BashTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs, GrepTool, ReadArgs,
+    ReadTool, WriteArgs, WriteTool, executable_hand_tools,
+};
+pub use task::{
+    CancelTaskArgs, CancelTaskTool, MessageRecovery, MessageSender, RecoverFailedMessagesArgs,
+    RecoverFailedMessagesTool, SendMessageArgs, SendMessageTool, TaskCanceller, task_tools,
+};
+pub use web::{WebFetchArgs, WebFetchTool, WebSearchArgs, WebSearchTool, web_hand_tools};
 
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use serde::{Deserialize, Serialize};
