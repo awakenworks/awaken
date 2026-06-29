@@ -16,6 +16,8 @@ pub struct AgentId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AgentSnapshotInput {
-    Inline(ExecutableAgentSnapshot),
+    /// The full snapshot inline. Boxed because it dwarfs the by-id variant, the
+    /// common path, which should not carry the inline payload's stack size.
+    Inline(Box<ExecutableAgentSnapshot>),
     ById(ExecutableAgentSnapshotId),
 }

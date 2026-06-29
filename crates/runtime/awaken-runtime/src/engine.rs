@@ -7,6 +7,7 @@
 //! source (G1/G13).
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::state::{Command as StateCommand, validate_batch};
@@ -21,7 +22,7 @@ use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamK
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, ToolCall, ToolSchema,
+    ChatMessage, ChatRequest, ChatRole, DeltaSink, ToolCall, ToolSchema,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{PhaseContext, PhaseHookPoint, ResolvedExecutionEnv};
@@ -33,10 +34,6 @@ use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
 use awaken_runtime_contract::tool::ToolOutput;
 
 use crate::runtime::Runtime;
-
-/// Upper bound on model/tool steps for one run. A natural-end text turn ends the
-/// loop earlier; the bound only guards against a non-terminating tool cycle.
-const MAX_STEPS: usize = 16;
 
 /// Message-id base for messages produced by a resumed attempt, kept distinct
 /// from the original attempt's ids.
@@ -237,8 +234,12 @@ async fn drive(
     // The loop's terminal decision. It stays `None` only if the loop runs to its
     // step ceiling, which is itself a terminus (`MaxSteps`).
     let mut end: Option<End> = None;
+    // Forwards streamed text chunks to the live stream during each inference.
+    let delta_sink = StreamDeltaSink { context, run_id };
 
-    for step in 0..MAX_STEPS {
+    // The agent's configured ceiling guards against a non-terminating tool cycle;
+    // a natural-end text turn ends the loop earlier.
+    for step in 0..resolved.spec.max_steps {
         if context.is_cancelled() {
             end = Some(End::Ended(EndCause::Cancelled));
             break;
@@ -265,15 +266,16 @@ async fn drive(
         let request = build_chat_request(&resolved.spec, &transcript);
         // A transient inference failure retries with backoff; a permanent failure
         // (or exhausted retries) commits a typed terminal reason (G26).
-        let response = match infer_with_retry(llm, request, runtime.infer_retries()).await {
-            Ok(response) => response,
-            Err(err) => {
-                end = Some(End::Ended(EndCause::Error(Failure::Inference(
-                    err.to_string(),
-                ))));
-                break;
-            }
-        };
+        let response =
+            match infer_with_retry(llm, request, runtime.infer_retries(), &delta_sink).await {
+                Ok(response) => response,
+                Err(err) => {
+                    end = Some(End::Ended(EndCause::Error(Failure::Inference(
+                        err.to_string(),
+                    ))));
+                    break;
+                }
+            };
 
         run_phase_hooks(
             env,
@@ -291,58 +293,52 @@ async fn drive(
             break;
         }
 
-        match response.output {
-            AssistantOutput::Text(text) => {
-                emit(
-                    context,
-                    run_id,
-                    StreamKind::OutputText { text: text.clone() },
-                )
-                .await;
-                let message = assistant_message(run_id, step_base + step, text);
-                transcript.push(message.clone());
-                new_messages.push(message);
-                end = Some(End::Ended(EndCause::NaturalEnd));
-                break;
-            }
-            AssistantOutput::ToolCalls(calls) => {
-                let assistant = assistant_tool_call_message(run_id, step_base + step, &calls);
-                transcript.push(assistant.clone());
-                new_messages.push(assistant);
+        // Commit the assistant turn verbatim — text and tool-use blocks may
+        // interleave. The text already streamed to the live sink; the committed
+        // message is the assembled whole.
+        let calls = response.output.tool_calls();
+        let assistant = assistant_message(run_id, step_base + step, response.output.blocks);
+        transcript.push(assistant.clone());
+        new_messages.push(assistant);
 
-                for call in calls {
-                    let output = match gate_decision(runtime, &call).await {
-                        GateOutcome::Allow => execute_tool(runtime, &call).await,
-                        GateOutcome::Block { reason } => {
-                            ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
-                        }
-                        GateOutcome::SetResult(output) => output,
-                        GateOutcome::Suspend { ticket_id } => {
-                            // Park the run on a structured ticket carrying the
-                            // pending call so an allow decision can run it later.
-                            let ticket = waiting_ticket(resolved, run_id, &ticket_id, &call);
-                            end = Some(End::Parked(ticket));
-                            emit(
-                                context,
-                                run_id,
-                                StreamKind::Waiting {
-                                    reason: "tool_permission".to_string(),
-                                },
-                            )
-                            .await;
-                            break;
-                        }
-                    };
-                    staged_state.extend(output.state.clone());
-                    let message = tool_result_message(&call, &output);
-                    transcript.push(message.clone());
-                    new_messages.push(message);
+        // A text-only turn (no tool requests) is a natural end.
+        if calls.is_empty() {
+            end = Some(End::Ended(EndCause::NaturalEnd));
+            break;
+        }
+
+        // Otherwise run each requested tool and feed the results back.
+        for call in calls {
+            let output = match gate_decision(runtime, &call).await {
+                GateOutcome::Allow => execute_tool(runtime, &call).await,
+                GateOutcome::Block { reason } => {
+                    ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
                 }
-
-                if end.is_some() {
+                GateOutcome::SetResult(output) => output,
+                GateOutcome::Suspend { ticket_id } => {
+                    // Park the run on a structured ticket carrying the pending
+                    // call so an allow decision can run it later.
+                    let ticket = waiting_ticket(resolved, run_id, &ticket_id, &call);
+                    end = Some(End::Parked(ticket));
+                    emit(
+                        context,
+                        run_id,
+                        StreamKind::Waiting {
+                            reason: "tool_permission".to_string(),
+                        },
+                    )
+                    .await;
                     break;
                 }
-            }
+            };
+            staged_state.extend(output.state.clone());
+            let message = tool_result_message(&call, &output);
+            transcript.push(message.clone());
+            new_messages.push(message);
+        }
+
+        if end.is_some() {
+            break;
         }
 
         // StepEnd fires at the boundary between steps that continue the loop.
@@ -365,19 +361,56 @@ async fn drive(
     })
 }
 
-/// Call inference, retrying a transient failure up to `retries` times with a
-/// short linear backoff. A permanent failure returns immediately (G26).
+/// Forwards a turn's streamed text chunks to the live stream as `OutputText`
+/// events. Live progress only — the committed message comes from the returned
+/// response, never these chunks (G10/G13).
+struct StreamDeltaSink<'a> {
+    context: &'a RuntimeRunContext,
+    run_id: &'a RunId,
+}
+
+#[async_trait]
+impl DeltaSink for StreamDeltaSink<'_> {
+    async fn on_text(&self, chunk: &str) {
+        emit(
+            self.context,
+            self.run_id,
+            StreamKind::OutputText {
+                text: chunk.to_string(),
+            },
+        )
+        .await;
+    }
+
+    async fn on_tool_call(&self, call_id: &str, tool_id: &str, arguments: &serde_json::Value) {
+        emit(
+            self.context,
+            self.run_id,
+            StreamKind::ToolCall {
+                call_id: call_id.to_string(),
+                tool_id: tool_id.to_string(),
+                arguments: arguments.clone(),
+            },
+        )
+        .await;
+    }
+}
+
+/// Call inference, streaming text chunks to `sink` as they arrive and retrying a
+/// transient failure up to `retries` times with a short linear backoff. A
+/// permanent failure returns immediately (G26).
 async fn infer_with_retry(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,
     retries: usize,
+    sink: &dyn DeltaSink,
 ) -> std::result::Result<
     awaken_runtime_contract::llm::ChatResponse,
     awaken_runtime_contract::llm::Error,
 > {
     let mut attempt = 0;
     loop {
-        match llm.infer(request.clone()).await {
+        match llm.infer_streaming(request.clone(), sink).await {
             Ok(response) => return Ok(response),
             Err(err) if err.is_retryable() && attempt < retries => {
                 attempt += 1;
@@ -442,7 +475,10 @@ async fn resume_into_messages(
     match result {
         ResumeResult::ToolResult(output) => {
             let state = output.state.clone();
-            (vec![tool_message(&call_id, &output.content)], state)
+            (
+                vec![tool_result_message_from(&call_id, &output.content)],
+                state,
+            )
         }
         ResumeResult::Decision { allow, note } => {
             if allow && let Some(pending) = &ticket.pending_tool {
@@ -453,21 +489,27 @@ async fn resume_into_messages(
                 };
                 let output = execute_tool(runtime, &call).await;
                 let state = output.state.clone();
-                (vec![tool_message(&call_id, &output.content)], state)
+                (
+                    vec![tool_result_message_from(&call_id, &output.content)],
+                    state,
+                )
             } else {
                 let reason = note.unwrap_or_else(|| "denied".to_string());
                 (
-                    vec![tool_message(&call_id, &format!("blocked: {reason}"))],
+                    vec![tool_result_message_from(
+                        &call_id,
+                        &format!("blocked: {reason}"),
+                    )],
                     Vec::new(),
                 )
             }
         }
         ResumeResult::Input(text) => (
-            vec![Message {
-                id: MessageId(format!("resume-input-{call_id}")),
-                role: Role::User,
-                content: text,
-            }],
+            vec![Message::text(
+                MessageId(format!("resume-input-{call_id}")),
+                Role::User,
+                text,
+            )],
             Vec::new(),
         ),
     }
@@ -503,9 +545,19 @@ async fn execute_tool(runtime: &Runtime, call: &ToolCall) -> ToolOutput {
 /// Build a model request from the resolved binding, transcript, and visible
 /// tool descriptors.
 pub(crate) fn build_chat_request(spec: &ResolvedSpec, transcript: &[Message]) -> ChatRequest {
+    // The agent's instructions lead the request as a system message, ahead of the
+    // transcript. Empty instructions contribute no system message.
+    let mut messages = Vec::with_capacity(transcript.len() + 1);
+    if !spec.instructions.is_empty() {
+        messages.push(ChatMessage {
+            role: ChatRole::System,
+            content: vec![ContentBlock::text(spec.instructions.clone())],
+        });
+    }
+    messages.extend(transcript.iter().map(to_chat_message));
     ChatRequest {
         model_binding: spec.model_binding.clone(),
-        messages: transcript.iter().map(to_chat_message).collect(),
+        messages,
         tools: spec.tool_descriptors.iter().map(to_tool_schema).collect(),
     }
 }
@@ -513,7 +565,7 @@ pub(crate) fn build_chat_request(spec: &ResolvedSpec, transcript: &[Message]) ->
 fn to_chat_message(message: &Message) -> ChatMessage {
     ChatMessage {
         role: to_chat_role(&message.role),
-        content: ChatContent::Text(message.content.clone()),
+        content: message.content.clone(),
     }
 }
 
@@ -537,34 +589,31 @@ fn to_tool_schema(descriptor: &ToolDescriptor) -> ToolSchema {
     }
 }
 
-fn assistant_message(run_id: &RunId, step: usize, text: String) -> Message {
+/// The committed assistant turn: its content blocks verbatim (text and tool-use
+/// interleaved), so the transcript explains both what was said and what was
+/// called.
+fn assistant_message(run_id: &RunId, step: usize, blocks: Vec<ContentBlock>) -> Message {
     Message {
         id: MessageId(format!("{}-assistant-{step}", run_id.0)),
         role: Role::Assistant,
-        content: text,
-    }
-}
-
-/// Record an assistant tool-call turn so the committed transcript explains why
-/// tool results follow.
-fn assistant_tool_call_message(run_id: &RunId, step: usize, calls: &[ToolCall]) -> Message {
-    let summary: Vec<_> = calls.iter().map(|c| c.tool_id.as_str()).collect();
-    Message {
-        id: MessageId(format!("{}-assistant-{step}", run_id.0)),
-        role: Role::Assistant,
-        content: format!("tool_calls: {}", summary.join(", ")),
+        content: blocks,
     }
 }
 
 fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Message {
-    tool_message(&call.call_id, &output.content)
+    tool_result_message_from(&call.call_id, &output.content)
 }
 
-fn tool_message(call_id: &str, content: &str) -> Message {
+/// A tool-role message carrying a structured `ToolResult` block addressed to the
+/// originating call, so the model sees a real tool result rather than loose text.
+fn tool_result_message_from(call_id: &str, text: &str) -> Message {
     Message {
         id: MessageId(format!("tool-{call_id}")),
         role: Role::Tool,
-        content: content.to_string(),
+        content: vec![ContentBlock::tool_result(
+            call_id.to_string(),
+            vec![ContentBlock::text(text.to_string())],
+        )],
     }
 }
 
@@ -647,4 +696,48 @@ async fn finish(
 
 fn map_resolver_error(err: resolver::Error) -> Error {
     Error::Resolution(err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding};
+
+    fn spec(instructions: &str) -> ResolvedSpec {
+        ResolvedSpec {
+            catalog_fingerprint: CatalogFingerprint("c".to_string()),
+            instructions: instructions.to_string(),
+            max_steps: 16,
+            model_binding: ModelBinding {
+                provider_instance_ref: "p".to_string(),
+                model_ref: "m".to_string(),
+                backend_ref: "b".to_string(),
+            },
+            tool_descriptors: Vec::new(),
+            plugin_ids: Vec::new(),
+        }
+    }
+
+    fn user_message() -> Message {
+        Message::text(MessageId("m1".to_string()), Role::User, "hi")
+    }
+
+    #[test]
+    fn instructions_lead_the_request_as_a_system_message() {
+        let request = build_chat_request(&spec("be helpful"), &[user_message()]);
+        assert_eq!(request.messages.len(), 2);
+        assert!(matches!(request.messages[0].role, ChatRole::System));
+        assert_eq!(
+            request.messages[0].content,
+            vec![ContentBlock::text("be helpful")]
+        );
+        assert!(matches!(request.messages[1].role, ChatRole::User));
+    }
+
+    #[test]
+    fn empty_instructions_contribute_no_system_message() {
+        let request = build_chat_request(&spec(""), &[user_message()]);
+        assert_eq!(request.messages.len(), 1);
+        assert!(matches!(request.messages[0].role, ChatRole::User));
+    }
 }
