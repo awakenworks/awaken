@@ -42,12 +42,15 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "serde_json",
     },
-    # Provider adapter: the only crate allowed to name the model SDK.
+    # Provider adapter: the only crate allowed to name the model SDK. It also
+    # consumes the SDK's async response stream, so `futures` (StreamExt) is
+    # permitted here and nowhere else.
     "awaken-provider-genai": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "genai",
         "async-trait",
+        "futures",
         "tokio",
         "serde",
         "serde_json",

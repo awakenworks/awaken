@@ -72,6 +72,68 @@ impl LlmExecutor for GenaiExecutor {
 
         Ok(from_genai_response(response))
     }
+
+    async fn infer_streaming(
+        &self,
+        request: ChatRequest,
+        sink: &dyn awaken_runtime_contract::llm::DeltaSink,
+    ) -> Result<ChatResponse> {
+        use futures::StreamExt;
+        use genai::chat::ChatStreamEvent;
+
+        let model = request.model_binding.model_ref.clone();
+        let genai_request = to_genai_request(&request);
+
+        let stream_response = tokio::time::timeout(
+            self.timeout,
+            self.client.exec_chat_stream(model, genai_request, None),
+        )
+        .await
+        .map_err(|_| Error::Transient("model stream timed out".to_string()))?
+        .map_err(|err| classify_error(&err.to_string()))?;
+
+        let mut stream = stream_response.stream;
+        let mut text = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+
+        // Forward each chunk live as it arrives; assemble the committed turn from
+        // the same chunks. genai emits tool-call chunks with accumulated args, so
+        // upsert by call id keeps the final, complete arguments.
+        while let Some(event) = stream.next().await {
+            match event.map_err(|err| classify_error(&err.to_string()))? {
+                ChatStreamEvent::Chunk(chunk) if !chunk.content.is_empty() => {
+                    sink.on_text(&chunk.content).await;
+                    text.push_str(&chunk.content);
+                }
+                ChatStreamEvent::ToolCallChunk(tool) => {
+                    let call = from_genai_tool_call(&tool.tool_call);
+                    sink.on_tool_call(&call.call_id, &call.tool_id, &call.arguments)
+                        .await;
+                    match tool_calls.iter_mut().find(|c| c.call_id == call.call_id) {
+                        Some(existing) => *existing = call,
+                        None => tool_calls.push(call),
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut blocks: Vec<ContentBlock> = Vec::new();
+        if !text.is_empty() {
+            blocks.push(ContentBlock::text(text));
+        }
+        for call in tool_calls {
+            blocks.push(ContentBlock::tool_use(
+                call.call_id,
+                call.tool_id,
+                call.arguments,
+            ));
+        }
+        Ok(ChatResponse {
+            output: AssistantOutput::from_blocks(blocks),
+            usage: None,
+        })
+    }
 }
 
 /// Classify a provider error string as transient (retryable) or permanent.

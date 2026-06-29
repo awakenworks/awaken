@@ -8,6 +8,7 @@ license.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true
+futures = "0.3"
 genai.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

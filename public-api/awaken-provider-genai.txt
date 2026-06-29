@@ -6,6 +6,7 @@ pub fn awaken_provider_genai::GenaiExecutor::with_client(genai::client::client_t
 pub fn awaken_provider_genai::GenaiExecutor::with_timeout(self, core::time::Duration) -> Self
 impl awaken_runtime_contract::llm::LlmExecutor for awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::GenaiExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_provider_genai::GenaiExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl core::default::Default for awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::GenaiExecutor::default() -> Self
 impl core::marker::Freeze for awaken_provider_genai::GenaiExecutor
