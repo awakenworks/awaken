@@ -1,0 +1,1010 @@
+pub mod awaken_agent_contract
+pub mod awaken_agent_contract::agent
+pub mod awaken_agent_contract::agent::approval
+pub enum awaken_agent_contract::agent::approval::Decision
+pub awaken_agent_contract::agent::approval::Decision::Allow
+pub awaken_agent_contract::agent::approval::Decision::Ask
+pub awaken_agent_contract::agent::approval::Decision::Deny
+impl core::clone::Clone for awaken_agent_contract::agent::approval::Decision
+pub fn awaken_agent_contract::agent::approval::Decision::clone(&self) -> awaken_agent_contract::agent::approval::Decision
+impl core::cmp::Eq for awaken_agent_contract::agent::approval::Decision
+impl core::cmp::PartialEq for awaken_agent_contract::agent::approval::Decision
+pub fn awaken_agent_contract::agent::approval::Decision::eq(&self, &awaken_agent_contract::agent::approval::Decision) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::approval::Decision
+pub fn awaken_agent_contract::agent::approval::Decision::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::approval::Decision
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::approval::Decision
+pub fn awaken_agent_contract::agent::approval::Decision::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::approval::Decision
+pub fn awaken_agent_contract::agent::approval::Decision::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::approval::Decision
+impl core::marker::Send for awaken_agent_contract::agent::approval::Decision
+impl core::marker::Sync for awaken_agent_contract::agent::approval::Decision
+impl core::marker::Unpin for awaken_agent_contract::agent::approval::Decision
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::approval::Decision
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::approval::Decision
+pub struct awaken_agent_contract::agent::approval::Id(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::approval::Id
+pub fn awaken_agent_contract::agent::approval::Id::clone(&self) -> awaken_agent_contract::agent::approval::Id
+impl core::cmp::Eq for awaken_agent_contract::agent::approval::Id
+impl core::cmp::PartialEq for awaken_agent_contract::agent::approval::Id
+pub fn awaken_agent_contract::agent::approval::Id::eq(&self, &awaken_agent_contract::agent::approval::Id) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::approval::Id
+pub fn awaken_agent_contract::agent::approval::Id::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::approval::Id
+pub fn awaken_agent_contract::agent::approval::Id::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::approval::Id
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::approval::Id
+pub fn awaken_agent_contract::agent::approval::Id::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::approval::Id
+pub fn awaken_agent_contract::agent::approval::Id::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::approval::Id
+impl core::marker::Send for awaken_agent_contract::agent::approval::Id
+impl core::marker::Sync for awaken_agent_contract::agent::approval::Id
+impl core::marker::Unpin for awaken_agent_contract::agent::approval::Id
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::approval::Id
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::approval::Id
+pub mod awaken_agent_contract::agent::artifact
+pub struct awaken_agent_contract::agent::artifact::Artifact
+pub awaken_agent_contract::agent::artifact::Artifact::id: awaken_agent_contract::agent::artifact::Id
+pub awaken_agent_contract::agent::artifact::Artifact::logical_ref: alloc::string::String
+impl core::clone::Clone for awaken_agent_contract::agent::artifact::Artifact
+pub fn awaken_agent_contract::agent::artifact::Artifact::clone(&self) -> awaken_agent_contract::agent::artifact::Artifact
+impl core::cmp::Eq for awaken_agent_contract::agent::artifact::Artifact
+impl core::cmp::PartialEq for awaken_agent_contract::agent::artifact::Artifact
+pub fn awaken_agent_contract::agent::artifact::Artifact::eq(&self, &awaken_agent_contract::agent::artifact::Artifact) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::artifact::Artifact
+pub fn awaken_agent_contract::agent::artifact::Artifact::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::artifact::Artifact
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::artifact::Artifact
+pub fn awaken_agent_contract::agent::artifact::Artifact::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::artifact::Artifact
+pub fn awaken_agent_contract::agent::artifact::Artifact::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::artifact::Artifact
+impl core::marker::Send for awaken_agent_contract::agent::artifact::Artifact
+impl core::marker::Sync for awaken_agent_contract::agent::artifact::Artifact
+impl core::marker::Unpin for awaken_agent_contract::agent::artifact::Artifact
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::artifact::Artifact
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::artifact::Artifact
+pub struct awaken_agent_contract::agent::artifact::Id(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::artifact::Id
+pub fn awaken_agent_contract::agent::artifact::Id::clone(&self) -> awaken_agent_contract::agent::artifact::Id
+impl core::cmp::Eq for awaken_agent_contract::agent::artifact::Id
+impl core::cmp::PartialEq for awaken_agent_contract::agent::artifact::Id
+pub fn awaken_agent_contract::agent::artifact::Id::eq(&self, &awaken_agent_contract::agent::artifact::Id) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::artifact::Id
+pub fn awaken_agent_contract::agent::artifact::Id::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::artifact::Id
+pub fn awaken_agent_contract::agent::artifact::Id::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::artifact::Id
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::artifact::Id
+pub fn awaken_agent_contract::agent::artifact::Id::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::artifact::Id
+pub fn awaken_agent_contract::agent::artifact::Id::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::artifact::Id
+impl core::marker::Send for awaken_agent_contract::agent::artifact::Id
+impl core::marker::Sync for awaken_agent_contract::agent::artifact::Id
+impl core::marker::Unpin for awaken_agent_contract::agent::artifact::Id
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::artifact::Id
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::artifact::Id
+pub mod awaken_agent_contract::agent::handoff
+pub struct awaken_agent_contract::agent::handoff::Handoff
+pub awaken_agent_contract::agent::handoff::Handoff::target_agent_id: alloc::string::String
+impl core::clone::Clone for awaken_agent_contract::agent::handoff::Handoff
+pub fn awaken_agent_contract::agent::handoff::Handoff::clone(&self) -> awaken_agent_contract::agent::handoff::Handoff
+impl core::cmp::Eq for awaken_agent_contract::agent::handoff::Handoff
+impl core::cmp::PartialEq for awaken_agent_contract::agent::handoff::Handoff
+pub fn awaken_agent_contract::agent::handoff::Handoff::eq(&self, &awaken_agent_contract::agent::handoff::Handoff) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::handoff::Handoff
+pub fn awaken_agent_contract::agent::handoff::Handoff::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::handoff::Handoff
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::handoff::Handoff
+pub fn awaken_agent_contract::agent::handoff::Handoff::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::handoff::Handoff
+pub fn awaken_agent_contract::agent::handoff::Handoff::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::handoff::Handoff
+impl core::marker::Send for awaken_agent_contract::agent::handoff::Handoff
+impl core::marker::Sync for awaken_agent_contract::agent::handoff::Handoff
+impl core::marker::Unpin for awaken_agent_contract::agent::handoff::Handoff
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::handoff::Handoff
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::handoff::Handoff
+pub mod awaken_agent_contract::agent::message
+pub enum awaken_agent_contract::agent::message::Role
+pub awaken_agent_contract::agent::message::Role::Assistant
+pub awaken_agent_contract::agent::message::Role::System
+pub awaken_agent_contract::agent::message::Role::Tool
+pub awaken_agent_contract::agent::message::Role::User
+impl core::clone::Clone for awaken_agent_contract::agent::message::Role
+pub fn awaken_agent_contract::agent::message::Role::clone(&self) -> awaken_agent_contract::agent::message::Role
+impl core::cmp::Eq for awaken_agent_contract::agent::message::Role
+impl core::cmp::PartialEq for awaken_agent_contract::agent::message::Role
+pub fn awaken_agent_contract::agent::message::Role::eq(&self, &awaken_agent_contract::agent::message::Role) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::message::Role
+pub fn awaken_agent_contract::agent::message::Role::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::message::Role
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::message::Role
+pub fn awaken_agent_contract::agent::message::Role::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::message::Role
+pub fn awaken_agent_contract::agent::message::Role::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::message::Role
+impl core::marker::Send for awaken_agent_contract::agent::message::Role
+impl core::marker::Sync for awaken_agent_contract::agent::message::Role
+impl core::marker::Unpin for awaken_agent_contract::agent::message::Role
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::message::Role
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::message::Role
+pub struct awaken_agent_contract::agent::message::Id(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::message::Id
+pub fn awaken_agent_contract::agent::message::Id::clone(&self) -> awaken_agent_contract::agent::message::Id
+impl core::cmp::Eq for awaken_agent_contract::agent::message::Id
+impl core::cmp::PartialEq for awaken_agent_contract::agent::message::Id
+pub fn awaken_agent_contract::agent::message::Id::eq(&self, &awaken_agent_contract::agent::message::Id) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::message::Id
+pub fn awaken_agent_contract::agent::message::Id::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::message::Id
+pub fn awaken_agent_contract::agent::message::Id::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::message::Id
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::message::Id
+pub fn awaken_agent_contract::agent::message::Id::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::message::Id
+pub fn awaken_agent_contract::agent::message::Id::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::message::Id
+impl core::marker::Send for awaken_agent_contract::agent::message::Id
+impl core::marker::Sync for awaken_agent_contract::agent::message::Id
+impl core::marker::Unpin for awaken_agent_contract::agent::message::Id
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::message::Id
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::message::Id
+pub struct awaken_agent_contract::agent::message::Message
+pub awaken_agent_contract::agent::message::Message::content: alloc::string::String
+pub awaken_agent_contract::agent::message::Message::id: awaken_agent_contract::agent::message::Id
+pub awaken_agent_contract::agent::message::Message::role: awaken_agent_contract::agent::message::Role
+impl core::clone::Clone for awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::clone(&self) -> awaken_agent_contract::agent::message::Message
+impl core::cmp::Eq for awaken_agent_contract::agent::message::Message
+impl core::cmp::PartialEq for awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::eq(&self, &awaken_agent_contract::agent::message::Message) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::message::Message
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::message::Message
+impl core::marker::Send for awaken_agent_contract::agent::message::Message
+impl core::marker::Sync for awaken_agent_contract::agent::message::Message
+impl core::marker::Unpin for awaken_agent_contract::agent::message::Message
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::message::Message
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::message::Message
+pub mod awaken_agent_contract::agent::run
+pub enum awaken_agent_contract::agent::run::Lifecycle
+pub awaken_agent_contract::agent::run::Lifecycle::Cancelled
+pub awaken_agent_contract::agent::run::Lifecycle::Completed
+pub awaken_agent_contract::agent::run::Lifecycle::Failed
+pub awaken_agent_contract::agent::run::Lifecycle::Pending
+pub awaken_agent_contract::agent::run::Lifecycle::Running
+pub awaken_agent_contract::agent::run::Lifecycle::Waiting
+impl core::clone::Clone for awaken_agent_contract::agent::run::Lifecycle
+pub fn awaken_agent_contract::agent::run::Lifecycle::clone(&self) -> awaken_agent_contract::agent::run::Lifecycle
+impl core::cmp::Eq for awaken_agent_contract::agent::run::Lifecycle
+impl core::cmp::PartialEq for awaken_agent_contract::agent::run::Lifecycle
+pub fn awaken_agent_contract::agent::run::Lifecycle::eq(&self, &awaken_agent_contract::agent::run::Lifecycle) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::run::Lifecycle
+pub fn awaken_agent_contract::agent::run::Lifecycle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::run::Lifecycle
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::run::Lifecycle
+pub fn awaken_agent_contract::agent::run::Lifecycle::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::run::Lifecycle
+pub fn awaken_agent_contract::agent::run::Lifecycle::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::run::Lifecycle
+impl core::marker::Send for awaken_agent_contract::agent::run::Lifecycle
+impl core::marker::Sync for awaken_agent_contract::agent::run::Lifecycle
+impl core::marker::Unpin for awaken_agent_contract::agent::run::Lifecycle
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Lifecycle
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Lifecycle
+pub struct awaken_agent_contract::agent::run::Id(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::clone(&self) -> awaken_agent_contract::agent::run::Id
+impl core::cmp::Eq for awaken_agent_contract::agent::run::Id
+impl core::cmp::PartialEq for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::eq(&self, &awaken_agent_contract::agent::run::Id) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::run::Id
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::run::Id
+impl core::marker::Send for awaken_agent_contract::agent::run::Id
+impl core::marker::Sync for awaken_agent_contract::agent::run::Id
+impl core::marker::Unpin for awaken_agent_contract::agent::run::Id
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Id
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Id
+pub struct awaken_agent_contract::agent::run::Record
+pub awaken_agent_contract::agent::run::Record::id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::agent::run::Record::lifecycle: awaken_agent_contract::agent::run::Lifecycle
+pub awaken_agent_contract::agent::run::Record::thread_id: awaken_agent_contract::agent::thread::Id
+impl core::clone::Clone for awaken_agent_contract::agent::run::Record
+pub fn awaken_agent_contract::agent::run::Record::clone(&self) -> awaken_agent_contract::agent::run::Record
+impl core::cmp::Eq for awaken_agent_contract::agent::run::Record
+impl core::cmp::PartialEq for awaken_agent_contract::agent::run::Record
+pub fn awaken_agent_contract::agent::run::Record::eq(&self, &awaken_agent_contract::agent::run::Record) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::run::Record
+pub fn awaken_agent_contract::agent::run::Record::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::run::Record
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::run::Record
+pub fn awaken_agent_contract::agent::run::Record::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::run::Record
+pub fn awaken_agent_contract::agent::run::Record::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::run::Record
+impl core::marker::Send for awaken_agent_contract::agent::run::Record
+impl core::marker::Sync for awaken_agent_contract::agent::run::Record
+impl core::marker::Unpin for awaken_agent_contract::agent::run::Record
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Record
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Record
+pub mod awaken_agent_contract::agent::state
+pub enum awaken_agent_contract::agent::state::Command
+pub awaken_agent_contract::agent::state::Command::Remove(awaken_agent_contract::agent::state::Key)
+pub awaken_agent_contract::agent::state::Command::Set(awaken_agent_contract::agent::state::Value)
+impl core::clone::Clone for awaken_agent_contract::agent::state::Command
+pub fn awaken_agent_contract::agent::state::Command::clone(&self) -> awaken_agent_contract::agent::state::Command
+impl core::cmp::PartialEq for awaken_agent_contract::agent::state::Command
+pub fn awaken_agent_contract::agent::state::Command::eq(&self, &awaken_agent_contract::agent::state::Command) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::state::Command
+pub fn awaken_agent_contract::agent::state::Command::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::state::Command
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::state::Command
+pub fn awaken_agent_contract::agent::state::Command::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::state::Command
+pub fn awaken_agent_contract::agent::state::Command::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::state::Command
+impl core::marker::Send for awaken_agent_contract::agent::state::Command
+impl core::marker::Sync for awaken_agent_contract::agent::state::Command
+impl core::marker::Unpin for awaken_agent_contract::agent::state::Command
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Command
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Command
+pub struct awaken_agent_contract::agent::state::Key(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::clone(&self) -> awaken_agent_contract::agent::state::Key
+impl core::cmp::Eq for awaken_agent_contract::agent::state::Key
+impl core::cmp::PartialEq for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::eq(&self, &awaken_agent_contract::agent::state::Key) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::state::Key
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::state::Key
+impl core::marker::Send for awaken_agent_contract::agent::state::Key
+impl core::marker::Sync for awaken_agent_contract::agent::state::Key
+impl core::marker::Unpin for awaken_agent_contract::agent::state::Key
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Key
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Key
+pub struct awaken_agent_contract::agent::state::Value
+pub awaken_agent_contract::agent::state::Value::key: awaken_agent_contract::agent::state::Key
+pub awaken_agent_contract::agent::state::Value::value: serde_json::value::Value
+impl core::clone::Clone for awaken_agent_contract::agent::state::Value
+pub fn awaken_agent_contract::agent::state::Value::clone(&self) -> awaken_agent_contract::agent::state::Value
+impl core::cmp::PartialEq for awaken_agent_contract::agent::state::Value
+pub fn awaken_agent_contract::agent::state::Value::eq(&self, &awaken_agent_contract::agent::state::Value) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::state::Value
+pub fn awaken_agent_contract::agent::state::Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::state::Value
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::state::Value
+pub fn awaken_agent_contract::agent::state::Value::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::state::Value
+pub fn awaken_agent_contract::agent::state::Value::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::state::Value
+impl core::marker::Send for awaken_agent_contract::agent::state::Value
+impl core::marker::Sync for awaken_agent_contract::agent::state::Value
+impl core::marker::Unpin for awaken_agent_contract::agent::state::Value
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Value
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Value
+pub mod awaken_agent_contract::agent::step
+pub enum awaken_agent_contract::agent::step::Kind
+pub awaken_agent_contract::agent::step::Kind::Commit
+pub awaken_agent_contract::agent::step::Kind::Model
+pub awaken_agent_contract::agent::step::Kind::Tool
+impl core::clone::Clone for awaken_agent_contract::agent::step::Kind
+pub fn awaken_agent_contract::agent::step::Kind::clone(&self) -> awaken_agent_contract::agent::step::Kind
+impl core::cmp::Eq for awaken_agent_contract::agent::step::Kind
+impl core::cmp::PartialEq for awaken_agent_contract::agent::step::Kind
+pub fn awaken_agent_contract::agent::step::Kind::eq(&self, &awaken_agent_contract::agent::step::Kind) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::step::Kind
+pub fn awaken_agent_contract::agent::step::Kind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::step::Kind
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::step::Kind
+pub fn awaken_agent_contract::agent::step::Kind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::step::Kind
+pub fn awaken_agent_contract::agent::step::Kind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::step::Kind
+impl core::marker::Send for awaken_agent_contract::agent::step::Kind
+impl core::marker::Sync for awaken_agent_contract::agent::step::Kind
+impl core::marker::Unpin for awaken_agent_contract::agent::step::Kind
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::step::Kind
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::step::Kind
+pub struct awaken_agent_contract::agent::step::Id(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::step::Id
+pub fn awaken_agent_contract::agent::step::Id::clone(&self) -> awaken_agent_contract::agent::step::Id
+impl core::cmp::Eq for awaken_agent_contract::agent::step::Id
+impl core::cmp::PartialEq for awaken_agent_contract::agent::step::Id
+pub fn awaken_agent_contract::agent::step::Id::eq(&self, &awaken_agent_contract::agent::step::Id) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::step::Id
+pub fn awaken_agent_contract::agent::step::Id::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::step::Id
+pub fn awaken_agent_contract::agent::step::Id::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::step::Id
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::step::Id
+pub fn awaken_agent_contract::agent::step::Id::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::step::Id
+pub fn awaken_agent_contract::agent::step::Id::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::step::Id
+impl core::marker::Send for awaken_agent_contract::agent::step::Id
+impl core::marker::Sync for awaken_agent_contract::agent::step::Id
+impl core::marker::Unpin for awaken_agent_contract::agent::step::Id
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::step::Id
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::step::Id
+pub struct awaken_agent_contract::agent::step::Step
+pub awaken_agent_contract::agent::step::Step::id: awaken_agent_contract::agent::step::Id
+pub awaken_agent_contract::agent::step::Step::kind: awaken_agent_contract::agent::step::Kind
+impl core::clone::Clone for awaken_agent_contract::agent::step::Step
+pub fn awaken_agent_contract::agent::step::Step::clone(&self) -> awaken_agent_contract::agent::step::Step
+impl core::cmp::Eq for awaken_agent_contract::agent::step::Step
+impl core::cmp::PartialEq for awaken_agent_contract::agent::step::Step
+pub fn awaken_agent_contract::agent::step::Step::eq(&self, &awaken_agent_contract::agent::step::Step) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::step::Step
+pub fn awaken_agent_contract::agent::step::Step::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::step::Step
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::step::Step
+pub fn awaken_agent_contract::agent::step::Step::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::step::Step
+pub fn awaken_agent_contract::agent::step::Step::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::step::Step
+impl core::marker::Send for awaken_agent_contract::agent::step::Step
+impl core::marker::Sync for awaken_agent_contract::agent::step::Step
+impl core::marker::Unpin for awaken_agent_contract::agent::step::Step
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::step::Step
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::step::Step
+pub mod awaken_agent_contract::agent::thread
+pub struct awaken_agent_contract::agent::thread::Id(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::clone(&self) -> awaken_agent_contract::agent::thread::Id
+impl core::cmp::Eq for awaken_agent_contract::agent::thread::Id
+impl core::cmp::PartialEq for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::eq(&self, &awaken_agent_contract::agent::thread::Id) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::thread::Id
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::thread::Id
+impl core::marker::Send for awaken_agent_contract::agent::thread::Id
+impl core::marker::Sync for awaken_agent_contract::agent::thread::Id
+impl core::marker::Unpin for awaken_agent_contract::agent::thread::Id
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::thread::Id
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::thread::Id
+pub struct awaken_agent_contract::agent::thread::Record
+pub awaken_agent_contract::agent::thread::Record::id: awaken_agent_contract::agent::thread::Id
+pub awaken_agent_contract::agent::thread::Record::latest_run_id: core::option::Option<awaken_agent_contract::agent::run::Id>
+impl core::clone::Clone for awaken_agent_contract::agent::thread::Record
+pub fn awaken_agent_contract::agent::thread::Record::clone(&self) -> awaken_agent_contract::agent::thread::Record
+impl core::cmp::Eq for awaken_agent_contract::agent::thread::Record
+impl core::cmp::PartialEq for awaken_agent_contract::agent::thread::Record
+pub fn awaken_agent_contract::agent::thread::Record::eq(&self, &awaken_agent_contract::agent::thread::Record) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::thread::Record
+pub fn awaken_agent_contract::agent::thread::Record::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::thread::Record
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::thread::Record
+pub fn awaken_agent_contract::agent::thread::Record::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::thread::Record
+pub fn awaken_agent_contract::agent::thread::Record::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::thread::Record
+impl core::marker::Send for awaken_agent_contract::agent::thread::Record
+impl core::marker::Sync for awaken_agent_contract::agent::thread::Record
+impl core::marker::Unpin for awaken_agent_contract::agent::thread::Record
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::thread::Record
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::thread::Record
+pub mod awaken_agent_contract::agent::tool_call
+pub struct awaken_agent_contract::agent::tool_call::Id(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::tool_call::Id
+pub fn awaken_agent_contract::agent::tool_call::Id::clone(&self) -> awaken_agent_contract::agent::tool_call::Id
+impl core::cmp::Eq for awaken_agent_contract::agent::tool_call::Id
+impl core::cmp::PartialEq for awaken_agent_contract::agent::tool_call::Id
+pub fn awaken_agent_contract::agent::tool_call::Id::eq(&self, &awaken_agent_contract::agent::tool_call::Id) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::tool_call::Id
+pub fn awaken_agent_contract::agent::tool_call::Id::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::tool_call::Id
+pub fn awaken_agent_contract::agent::tool_call::Id::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::tool_call::Id
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::tool_call::Id
+pub fn awaken_agent_contract::agent::tool_call::Id::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::tool_call::Id
+pub fn awaken_agent_contract::agent::tool_call::Id::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::tool_call::Id
+impl core::marker::Send for awaken_agent_contract::agent::tool_call::Id
+impl core::marker::Sync for awaken_agent_contract::agent::tool_call::Id
+impl core::marker::Unpin for awaken_agent_contract::agent::tool_call::Id
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::tool_call::Id
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::tool_call::Id
+pub struct awaken_agent_contract::agent::tool_call::ToolCall
+pub awaken_agent_contract::agent::tool_call::ToolCall::arguments: serde_json::value::Value
+pub awaken_agent_contract::agent::tool_call::ToolCall::id: awaken_agent_contract::agent::tool_call::Id
+pub awaken_agent_contract::agent::tool_call::ToolCall::tool_id: alloc::string::String
+impl core::clone::Clone for awaken_agent_contract::agent::tool_call::ToolCall
+pub fn awaken_agent_contract::agent::tool_call::ToolCall::clone(&self) -> awaken_agent_contract::agent::tool_call::ToolCall
+impl core::cmp::PartialEq for awaken_agent_contract::agent::tool_call::ToolCall
+pub fn awaken_agent_contract::agent::tool_call::ToolCall::eq(&self, &awaken_agent_contract::agent::tool_call::ToolCall) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::tool_call::ToolCall
+pub fn awaken_agent_contract::agent::tool_call::ToolCall::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::tool_call::ToolCall
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::tool_call::ToolCall
+pub fn awaken_agent_contract::agent::tool_call::ToolCall::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::tool_call::ToolCall
+pub fn awaken_agent_contract::agent::tool_call::ToolCall::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::tool_call::ToolCall
+impl core::marker::Send for awaken_agent_contract::agent::tool_call::ToolCall
+impl core::marker::Sync for awaken_agent_contract::agent::tool_call::ToolCall
+impl core::marker::Unpin for awaken_agent_contract::agent::tool_call::ToolCall
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::tool_call::ToolCall
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::tool_call::ToolCall
+pub mod awaken_agent_contract::agent::turn
+pub struct awaken_agent_contract::agent::turn::Id(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::turn::Id
+pub fn awaken_agent_contract::agent::turn::Id::clone(&self) -> awaken_agent_contract::agent::turn::Id
+impl core::cmp::Eq for awaken_agent_contract::agent::turn::Id
+impl core::cmp::PartialEq for awaken_agent_contract::agent::turn::Id
+pub fn awaken_agent_contract::agent::turn::Id::eq(&self, &awaken_agent_contract::agent::turn::Id) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::turn::Id
+pub fn awaken_agent_contract::agent::turn::Id::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::turn::Id
+pub fn awaken_agent_contract::agent::turn::Id::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::turn::Id
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::turn::Id
+pub fn awaken_agent_contract::agent::turn::Id::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::turn::Id
+pub fn awaken_agent_contract::agent::turn::Id::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::turn::Id
+impl core::marker::Send for awaken_agent_contract::agent::turn::Id
+impl core::marker::Sync for awaken_agent_contract::agent::turn::Id
+impl core::marker::Unpin for awaken_agent_contract::agent::turn::Id
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::turn::Id
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::turn::Id
+pub struct awaken_agent_contract::agent::turn::Turn
+pub awaken_agent_contract::agent::turn::Turn::id: awaken_agent_contract::agent::turn::Id
+pub awaken_agent_contract::agent::turn::Turn::run_id: awaken_agent_contract::agent::run::Id
+impl core::clone::Clone for awaken_agent_contract::agent::turn::Turn
+pub fn awaken_agent_contract::agent::turn::Turn::clone(&self) -> awaken_agent_contract::agent::turn::Turn
+impl core::cmp::Eq for awaken_agent_contract::agent::turn::Turn
+impl core::cmp::PartialEq for awaken_agent_contract::agent::turn::Turn
+pub fn awaken_agent_contract::agent::turn::Turn::eq(&self, &awaken_agent_contract::agent::turn::Turn) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::turn::Turn
+pub fn awaken_agent_contract::agent::turn::Turn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::turn::Turn
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::turn::Turn
+pub fn awaken_agent_contract::agent::turn::Turn::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::turn::Turn
+pub fn awaken_agent_contract::agent::turn::Turn::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::turn::Turn
+impl core::marker::Send for awaken_agent_contract::agent::turn::Turn
+impl core::marker::Sync for awaken_agent_contract::agent::turn::Turn
+impl core::marker::Unpin for awaken_agent_contract::agent::turn::Turn
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::turn::Turn
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::turn::Turn
+pub mod awaken_agent_contract::commit
+pub mod awaken_agent_contract::commit::coordinator
+pub enum awaken_agent_contract::commit::coordinator::Error
+pub awaken_agent_contract::commit::coordinator::Error::Rejected(alloc::string::String)
+impl core::error::Error for awaken_agent_contract::commit::coordinator::Error
+impl core::fmt::Debug for awaken_agent_contract::commit::coordinator::Error
+pub fn awaken_agent_contract::commit::coordinator::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_agent_contract::commit::coordinator::Error
+pub fn awaken_agent_contract::commit::coordinator::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_agent_contract::commit::coordinator::Error
+impl core::marker::Send for awaken_agent_contract::commit::coordinator::Error
+impl core::marker::Sync for awaken_agent_contract::commit::coordinator::Error
+impl core::marker::Unpin for awaken_agent_contract::commit::coordinator::Error
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::coordinator::Error
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::coordinator::Error
+pub trait awaken_agent_contract::commit::coordinator::Coordinator: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::commit::coordinator::Coordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub mod awaken_agent_contract::commit::staged
+pub struct awaken_agent_contract::commit::staged::CommitRecord
+pub awaken_agent_contract::commit::staged::CommitRecord::sequence: u64
+impl core::clone::Clone for awaken_agent_contract::commit::staged::CommitRecord
+pub fn awaken_agent_contract::commit::staged::CommitRecord::clone(&self) -> awaken_agent_contract::commit::staged::CommitRecord
+impl core::cmp::Eq for awaken_agent_contract::commit::staged::CommitRecord
+impl core::cmp::PartialEq for awaken_agent_contract::commit::staged::CommitRecord
+pub fn awaken_agent_contract::commit::staged::CommitRecord::eq(&self, &awaken_agent_contract::commit::staged::CommitRecord) -> bool
+impl core::fmt::Debug for awaken_agent_contract::commit::staged::CommitRecord
+pub fn awaken_agent_contract::commit::staged::CommitRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::commit::staged::CommitRecord
+impl serde_core::ser::Serialize for awaken_agent_contract::commit::staged::CommitRecord
+pub fn awaken_agent_contract::commit::staged::CommitRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::commit::staged::CommitRecord
+pub fn awaken_agent_contract::commit::staged::CommitRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::commit::staged::CommitRecord
+impl core::marker::Send for awaken_agent_contract::commit::staged::CommitRecord
+impl core::marker::Sync for awaken_agent_contract::commit::staged::CommitRecord
+impl core::marker::Unpin for awaken_agent_contract::commit::staged::CommitRecord
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::staged::CommitRecord
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::staged::CommitRecord
+pub struct awaken_agent_contract::commit::staged::ThreadCommit
+pub awaken_agent_contract::commit::staged::ThreadCommit::events: alloc::vec::Vec<awaken_agent_contract::event::draft::Draft>
+pub awaken_agent_contract::commit::staged::ThreadCommit::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_agent_contract::commit::staged::ThreadCommit::run_fact: awaken_agent_contract::fact::run::Fact
+pub awaken_agent_contract::commit::staged::ThreadCommit::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
+pub awaken_agent_contract::commit::staged::ThreadCommit::thread_id: awaken_agent_contract::agent::thread::Id
+impl core::clone::Clone for awaken_agent_contract::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::commit::staged::ThreadCommit::clone(&self) -> awaken_agent_contract::commit::staged::ThreadCommit
+impl core::cmp::PartialEq for awaken_agent_contract::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::commit::staged::ThreadCommit::eq(&self, &awaken_agent_contract::commit::staged::ThreadCommit) -> bool
+impl core::fmt::Debug for awaken_agent_contract::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::commit::staged::ThreadCommit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::commit::staged::ThreadCommit
+impl serde_core::ser::Serialize for awaken_agent_contract::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::commit::staged::ThreadCommit::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::commit::staged::ThreadCommit::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::commit::staged::ThreadCommit
+impl core::marker::Send for awaken_agent_contract::commit::staged::ThreadCommit
+impl core::marker::Sync for awaken_agent_contract::commit::staged::ThreadCommit
+impl core::marker::Unpin for awaken_agent_contract::commit::staged::ThreadCommit
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::staged::ThreadCommit
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::staged::ThreadCommit
+pub mod awaken_agent_contract::event
+pub mod awaken_agent_contract::event::draft
+pub struct awaken_agent_contract::event::draft::Draft
+pub awaken_agent_contract::event::draft::Draft::kind: awaken_agent_contract::event::kind::Kind
+pub awaken_agent_contract::event::draft::Draft::payload: serde_json::value::Value
+impl core::clone::Clone for awaken_agent_contract::event::draft::Draft
+pub fn awaken_agent_contract::event::draft::Draft::clone(&self) -> awaken_agent_contract::event::draft::Draft
+impl core::cmp::PartialEq for awaken_agent_contract::event::draft::Draft
+pub fn awaken_agent_contract::event::draft::Draft::eq(&self, &awaken_agent_contract::event::draft::Draft) -> bool
+impl core::fmt::Debug for awaken_agent_contract::event::draft::Draft
+pub fn awaken_agent_contract::event::draft::Draft::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::event::draft::Draft
+impl serde_core::ser::Serialize for awaken_agent_contract::event::draft::Draft
+pub fn awaken_agent_contract::event::draft::Draft::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::event::draft::Draft
+pub fn awaken_agent_contract::event::draft::Draft::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::event::draft::Draft
+impl core::marker::Send for awaken_agent_contract::event::draft::Draft
+impl core::marker::Sync for awaken_agent_contract::event::draft::Draft
+impl core::marker::Unpin for awaken_agent_contract::event::draft::Draft
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::draft::Draft
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::draft::Draft
+pub mod awaken_agent_contract::event::envelope
+pub struct awaken_agent_contract::event::envelope::Envelope<T>
+pub awaken_agent_contract::event::envelope::Envelope::fingerprint: alloc::string::String
+pub awaken_agent_contract::event::envelope::Envelope::record: T
+impl<'de, T> serde_core::de::Deserialize<'de> for awaken_agent_contract::event::envelope::Envelope<T> where T: serde_core::de::Deserialize<'de>
+pub fn awaken_agent_contract::event::envelope::Envelope<T>::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl<T: core::clone::Clone> core::clone::Clone for awaken_agent_contract::event::envelope::Envelope<T>
+pub fn awaken_agent_contract::event::envelope::Envelope<T>::clone(&self) -> awaken_agent_contract::event::envelope::Envelope<T>
+impl<T: core::cmp::PartialEq> core::cmp::PartialEq for awaken_agent_contract::event::envelope::Envelope<T>
+pub fn awaken_agent_contract::event::envelope::Envelope<T>::eq(&self, &awaken_agent_contract::event::envelope::Envelope<T>) -> bool
+impl<T: core::fmt::Debug> core::fmt::Debug for awaken_agent_contract::event::envelope::Envelope<T>
+pub fn awaken_agent_contract::event::envelope::Envelope<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::marker::StructuralPartialEq for awaken_agent_contract::event::envelope::Envelope<T>
+impl<T> serde_core::ser::Serialize for awaken_agent_contract::event::envelope::Envelope<T> where T: serde_core::ser::Serialize
+pub fn awaken_agent_contract::event::envelope::Envelope<T>::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<T> core::marker::Freeze for awaken_agent_contract::event::envelope::Envelope<T> where T: core::marker::Freeze
+impl<T> core::marker::Send for awaken_agent_contract::event::envelope::Envelope<T> where T: core::marker::Send
+impl<T> core::marker::Sync for awaken_agent_contract::event::envelope::Envelope<T> where T: core::marker::Sync
+impl<T> core::marker::Unpin for awaken_agent_contract::event::envelope::Envelope<T> where T: core::marker::Unpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::envelope::Envelope<T> where T: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::envelope::Envelope<T> where T: core::panic::unwind_safe::UnwindSafe
+pub mod awaken_agent_contract::event::kind
+pub enum awaken_agent_contract::event::kind::Kind
+pub awaken_agent_contract::event::kind::Kind::MessageCommitted
+pub awaken_agent_contract::event::kind::Kind::RunLifecycleChanged
+pub awaken_agent_contract::event::kind::Kind::RunResumed
+pub awaken_agent_contract::event::kind::Kind::RunWaiting
+pub awaken_agent_contract::event::kind::Kind::StateChanged
+impl core::clone::Clone for awaken_agent_contract::event::kind::Kind
+pub fn awaken_agent_contract::event::kind::Kind::clone(&self) -> awaken_agent_contract::event::kind::Kind
+impl core::cmp::Eq for awaken_agent_contract::event::kind::Kind
+impl core::cmp::PartialEq for awaken_agent_contract::event::kind::Kind
+pub fn awaken_agent_contract::event::kind::Kind::eq(&self, &awaken_agent_contract::event::kind::Kind) -> bool
+impl core::fmt::Debug for awaken_agent_contract::event::kind::Kind
+pub fn awaken_agent_contract::event::kind::Kind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::event::kind::Kind
+impl serde_core::ser::Serialize for awaken_agent_contract::event::kind::Kind
+pub fn awaken_agent_contract::event::kind::Kind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::event::kind::Kind
+pub fn awaken_agent_contract::event::kind::Kind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::event::kind::Kind
+impl core::marker::Send for awaken_agent_contract::event::kind::Kind
+impl core::marker::Sync for awaken_agent_contract::event::kind::Kind
+impl core::marker::Unpin for awaken_agent_contract::event::kind::Kind
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::kind::Kind
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::kind::Kind
+pub mod awaken_agent_contract::event::record
+pub struct awaken_agent_contract::event::record::Record
+pub awaken_agent_contract::event::record::Record::kind: awaken_agent_contract::event::kind::Kind
+pub awaken_agent_contract::event::record::Record::payload: serde_json::value::Value
+pub awaken_agent_contract::event::record::Record::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::event::record::Record::sequence: u64
+impl core::clone::Clone for awaken_agent_contract::event::record::Record
+pub fn awaken_agent_contract::event::record::Record::clone(&self) -> awaken_agent_contract::event::record::Record
+impl core::cmp::PartialEq for awaken_agent_contract::event::record::Record
+pub fn awaken_agent_contract::event::record::Record::eq(&self, &awaken_agent_contract::event::record::Record) -> bool
+impl core::fmt::Debug for awaken_agent_contract::event::record::Record
+pub fn awaken_agent_contract::event::record::Record::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::event::record::Record
+impl serde_core::ser::Serialize for awaken_agent_contract::event::record::Record
+pub fn awaken_agent_contract::event::record::Record::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::event::record::Record
+pub fn awaken_agent_contract::event::record::Record::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::event::record::Record
+impl core::marker::Send for awaken_agent_contract::event::record::Record
+impl core::marker::Sync for awaken_agent_contract::event::record::Record
+impl core::marker::Unpin for awaken_agent_contract::event::record::Record
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::record::Record
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::record::Record
+pub mod awaken_agent_contract::fact
+pub mod awaken_agent_contract::fact::message
+pub struct awaken_agent_contract::fact::message::Fact
+pub awaken_agent_contract::fact::message::Fact::message_id: awaken_agent_contract::agent::message::Id
+pub awaken_agent_contract::fact::message::Fact::thread_id: awaken_agent_contract::agent::thread::Id
+impl core::clone::Clone for awaken_agent_contract::fact::message::Fact
+pub fn awaken_agent_contract::fact::message::Fact::clone(&self) -> awaken_agent_contract::fact::message::Fact
+impl core::cmp::Eq for awaken_agent_contract::fact::message::Fact
+impl core::cmp::PartialEq for awaken_agent_contract::fact::message::Fact
+pub fn awaken_agent_contract::fact::message::Fact::eq(&self, &awaken_agent_contract::fact::message::Fact) -> bool
+impl core::fmt::Debug for awaken_agent_contract::fact::message::Fact
+pub fn awaken_agent_contract::fact::message::Fact::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::fact::message::Fact
+impl serde_core::ser::Serialize for awaken_agent_contract::fact::message::Fact
+pub fn awaken_agent_contract::fact::message::Fact::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::fact::message::Fact
+pub fn awaken_agent_contract::fact::message::Fact::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::fact::message::Fact
+impl core::marker::Send for awaken_agent_contract::fact::message::Fact
+impl core::marker::Sync for awaken_agent_contract::fact::message::Fact
+impl core::marker::Unpin for awaken_agent_contract::fact::message::Fact
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::fact::message::Fact
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::fact::message::Fact
+pub mod awaken_agent_contract::fact::run
+pub struct awaken_agent_contract::fact::run::Fact
+pub awaken_agent_contract::fact::run::Fact::lifecycle: awaken_agent_contract::agent::run::Lifecycle
+pub awaken_agent_contract::fact::run::Fact::run_id: awaken_agent_contract::agent::run::Id
+impl core::clone::Clone for awaken_agent_contract::fact::run::Fact
+pub fn awaken_agent_contract::fact::run::Fact::clone(&self) -> awaken_agent_contract::fact::run::Fact
+impl core::cmp::Eq for awaken_agent_contract::fact::run::Fact
+impl core::cmp::PartialEq for awaken_agent_contract::fact::run::Fact
+pub fn awaken_agent_contract::fact::run::Fact::eq(&self, &awaken_agent_contract::fact::run::Fact) -> bool
+impl core::fmt::Debug for awaken_agent_contract::fact::run::Fact
+pub fn awaken_agent_contract::fact::run::Fact::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::fact::run::Fact
+impl serde_core::ser::Serialize for awaken_agent_contract::fact::run::Fact
+pub fn awaken_agent_contract::fact::run::Fact::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::fact::run::Fact
+pub fn awaken_agent_contract::fact::run::Fact::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::fact::run::Fact
+impl core::marker::Send for awaken_agent_contract::fact::run::Fact
+impl core::marker::Sync for awaken_agent_contract::fact::run::Fact
+impl core::marker::Unpin for awaken_agent_contract::fact::run::Fact
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::fact::run::Fact
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::fact::run::Fact
+pub mod awaken_agent_contract::fact::state
+pub enum awaken_agent_contract::fact::state::Scope
+pub awaken_agent_contract::fact::state::Scope::Run(awaken_agent_contract::agent::run::Id)
+pub awaken_agent_contract::fact::state::Scope::Thread(awaken_agent_contract::agent::thread::Id)
+impl core::clone::Clone for awaken_agent_contract::fact::state::Scope
+pub fn awaken_agent_contract::fact::state::Scope::clone(&self) -> awaken_agent_contract::fact::state::Scope
+impl core::cmp::Eq for awaken_agent_contract::fact::state::Scope
+impl core::cmp::PartialEq for awaken_agent_contract::fact::state::Scope
+pub fn awaken_agent_contract::fact::state::Scope::eq(&self, &awaken_agent_contract::fact::state::Scope) -> bool
+impl core::fmt::Debug for awaken_agent_contract::fact::state::Scope
+pub fn awaken_agent_contract::fact::state::Scope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::fact::state::Scope
+impl serde_core::ser::Serialize for awaken_agent_contract::fact::state::Scope
+pub fn awaken_agent_contract::fact::state::Scope::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::fact::state::Scope
+pub fn awaken_agent_contract::fact::state::Scope::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::fact::state::Scope
+impl core::marker::Send for awaken_agent_contract::fact::state::Scope
+impl core::marker::Sync for awaken_agent_contract::fact::state::Scope
+impl core::marker::Unpin for awaken_agent_contract::fact::state::Scope
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::fact::state::Scope
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::fact::state::Scope
+pub struct awaken_agent_contract::fact::state::Fact
+pub awaken_agent_contract::fact::state::Fact::scope: awaken_agent_contract::fact::state::Scope
+pub awaken_agent_contract::fact::state::Fact::value: awaken_agent_contract::agent::state::Value
+impl core::clone::Clone for awaken_agent_contract::fact::state::Fact
+pub fn awaken_agent_contract::fact::state::Fact::clone(&self) -> awaken_agent_contract::fact::state::Fact
+impl core::cmp::PartialEq for awaken_agent_contract::fact::state::Fact
+pub fn awaken_agent_contract::fact::state::Fact::eq(&self, &awaken_agent_contract::fact::state::Fact) -> bool
+impl core::fmt::Debug for awaken_agent_contract::fact::state::Fact
+pub fn awaken_agent_contract::fact::state::Fact::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::fact::state::Fact
+impl serde_core::ser::Serialize for awaken_agent_contract::fact::state::Fact
+pub fn awaken_agent_contract::fact::state::Fact::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::fact::state::Fact
+pub fn awaken_agent_contract::fact::state::Fact::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::fact::state::Fact
+impl core::marker::Send for awaken_agent_contract::fact::state::Fact
+impl core::marker::Sync for awaken_agent_contract::fact::state::Fact
+impl core::marker::Unpin for awaken_agent_contract::fact::state::Fact
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::fact::state::Fact
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::fact::state::Fact
+pub mod awaken_agent_contract::fact::thread
+pub struct awaken_agent_contract::fact::thread::Fact
+pub awaken_agent_contract::fact::thread::Fact::latest_run_id: core::option::Option<awaken_agent_contract::agent::run::Id>
+pub awaken_agent_contract::fact::thread::Fact::thread_id: awaken_agent_contract::agent::thread::Id
+impl core::clone::Clone for awaken_agent_contract::fact::thread::Fact
+pub fn awaken_agent_contract::fact::thread::Fact::clone(&self) -> awaken_agent_contract::fact::thread::Fact
+impl core::cmp::Eq for awaken_agent_contract::fact::thread::Fact
+impl core::cmp::PartialEq for awaken_agent_contract::fact::thread::Fact
+pub fn awaken_agent_contract::fact::thread::Fact::eq(&self, &awaken_agent_contract::fact::thread::Fact) -> bool
+impl core::fmt::Debug for awaken_agent_contract::fact::thread::Fact
+pub fn awaken_agent_contract::fact::thread::Fact::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::fact::thread::Fact
+impl serde_core::ser::Serialize for awaken_agent_contract::fact::thread::Fact
+pub fn awaken_agent_contract::fact::thread::Fact::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::fact::thread::Fact
+pub fn awaken_agent_contract::fact::thread::Fact::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::fact::thread::Fact
+impl core::marker::Send for awaken_agent_contract::fact::thread::Fact
+impl core::marker::Sync for awaken_agent_contract::fact::thread::Fact
+impl core::marker::Unpin for awaken_agent_contract::fact::thread::Fact
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::fact::thread::Fact
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::fact::thread::Fact
+pub mod awaken_agent_contract::store
+pub mod awaken_agent_contract::store::event_log
+pub trait awaken_agent_contract::store::event_log::EventLog
+pub fn awaken_agent_contract::store::event_log::EventLog::append(&self, awaken_agent_contract::event::record::Record)
+pub mod awaken_agent_contract::store::fact_log
+pub trait awaken_agent_contract::store::fact_log::FactLog
+pub fn awaken_agent_contract::store::fact_log::FactLog::append_run(&self, awaken_agent_contract::fact::run::Fact)
+pub mod awaken_agent_contract::store::run_store
+pub trait awaken_agent_contract::store::run_store::RunStore
+pub fn awaken_agent_contract::store::run_store::RunStore::get(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub mod awaken_agent_contract::stream
+pub mod awaken_agent_contract::stream::event
+pub enum awaken_agent_contract::stream::event::Kind
+pub awaken_agent_contract::stream::event::Kind::OutputText
+pub awaken_agent_contract::stream::event::Kind::OutputText::text: alloc::string::String
+pub awaken_agent_contract::stream::event::Kind::RunFinished
+pub awaken_agent_contract::stream::event::Kind::RunStarted
+pub awaken_agent_contract::stream::event::Kind::Waiting
+pub awaken_agent_contract::stream::event::Kind::Waiting::reason: alloc::string::String
+impl core::clone::Clone for awaken_agent_contract::stream::event::Kind
+pub fn awaken_agent_contract::stream::event::Kind::clone(&self) -> awaken_agent_contract::stream::event::Kind
+impl core::cmp::PartialEq for awaken_agent_contract::stream::event::Kind
+pub fn awaken_agent_contract::stream::event::Kind::eq(&self, &awaken_agent_contract::stream::event::Kind) -> bool
+impl core::fmt::Debug for awaken_agent_contract::stream::event::Kind
+pub fn awaken_agent_contract::stream::event::Kind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::stream::event::Kind
+impl serde_core::ser::Serialize for awaken_agent_contract::stream::event::Kind
+pub fn awaken_agent_contract::stream::event::Kind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::stream::event::Kind
+pub fn awaken_agent_contract::stream::event::Kind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::stream::event::Kind
+impl core::marker::Send for awaken_agent_contract::stream::event::Kind
+impl core::marker::Sync for awaken_agent_contract::stream::event::Kind
+impl core::marker::Unpin for awaken_agent_contract::stream::event::Kind
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::stream::event::Kind
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::stream::event::Kind
+pub struct awaken_agent_contract::stream::event::Event
+pub awaken_agent_contract::stream::event::Event::kind: awaken_agent_contract::stream::event::Kind
+pub awaken_agent_contract::stream::event::Event::run_id: awaken_agent_contract::agent::run::Id
+impl core::clone::Clone for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::clone(&self) -> awaken_agent_contract::stream::event::Event
+impl core::cmp::PartialEq for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::eq(&self, &awaken_agent_contract::stream::event::Event) -> bool
+impl core::fmt::Debug for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::stream::event::Event
+impl serde_core::ser::Serialize for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::stream::event::Event
+impl core::marker::Send for awaken_agent_contract::stream::event::Event
+impl core::marker::Sync for awaken_agent_contract::stream::event::Event
+impl core::marker::Unpin for awaken_agent_contract::stream::event::Event
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::stream::event::Event
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::stream::event::Event
+pub mod awaken_agent_contract::stream::sink
+pub enum awaken_agent_contract::stream::sink::Error
+pub awaken_agent_contract::stream::sink::Error::Closed
+impl core::error::Error for awaken_agent_contract::stream::sink::Error
+impl core::fmt::Debug for awaken_agent_contract::stream::sink::Error
+pub fn awaken_agent_contract::stream::sink::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_agent_contract::stream::sink::Error
+pub fn awaken_agent_contract::stream::sink::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_agent_contract::stream::sink::Error
+impl core::marker::Send for awaken_agent_contract::stream::sink::Error
+impl core::marker::Sync for awaken_agent_contract::stream::sink::Error
+impl core::marker::Unpin for awaken_agent_contract::stream::sink::Error
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::stream::sink::Error
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::stream::sink::Error
+pub trait awaken_agent_contract::stream::sink::Sink: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::stream::sink::Sink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_agent_contract::stream::Event
+pub awaken_agent_contract::stream::Event::kind: awaken_agent_contract::stream::event::Kind
+pub awaken_agent_contract::stream::Event::run_id: awaken_agent_contract::agent::run::Id
+impl core::clone::Clone for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::clone(&self) -> awaken_agent_contract::stream::event::Event
+impl core::cmp::PartialEq for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::eq(&self, &awaken_agent_contract::stream::event::Event) -> bool
+impl core::fmt::Debug for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::stream::event::Event
+impl serde_core::ser::Serialize for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::stream::event::Event
+impl core::marker::Send for awaken_agent_contract::stream::event::Event
+impl core::marker::Sync for awaken_agent_contract::stream::event::Event
+impl core::marker::Unpin for awaken_agent_contract::stream::event::Event
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::stream::event::Event
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::stream::event::Event
+pub trait awaken_agent_contract::stream::Sink: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::stream::Sink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_agent_contract::EventRecord
+pub awaken_agent_contract::EventRecord::kind: awaken_agent_contract::event::kind::Kind
+pub awaken_agent_contract::EventRecord::payload: serde_json::value::Value
+pub awaken_agent_contract::EventRecord::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::EventRecord::sequence: u64
+impl core::clone::Clone for awaken_agent_contract::event::record::Record
+pub fn awaken_agent_contract::event::record::Record::clone(&self) -> awaken_agent_contract::event::record::Record
+impl core::cmp::PartialEq for awaken_agent_contract::event::record::Record
+pub fn awaken_agent_contract::event::record::Record::eq(&self, &awaken_agent_contract::event::record::Record) -> bool
+impl core::fmt::Debug for awaken_agent_contract::event::record::Record
+pub fn awaken_agent_contract::event::record::Record::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::event::record::Record
+impl serde_core::ser::Serialize for awaken_agent_contract::event::record::Record
+pub fn awaken_agent_contract::event::record::Record::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::event::record::Record
+pub fn awaken_agent_contract::event::record::Record::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::event::record::Record
+impl core::marker::Send for awaken_agent_contract::event::record::Record
+impl core::marker::Sync for awaken_agent_contract::event::record::Record
+impl core::marker::Unpin for awaken_agent_contract::event::record::Record
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::record::Record
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::record::Record
+pub struct awaken_agent_contract::Message
+pub awaken_agent_contract::Message::content: alloc::string::String
+pub awaken_agent_contract::Message::id: awaken_agent_contract::agent::message::Id
+pub awaken_agent_contract::Message::role: awaken_agent_contract::agent::message::Role
+impl core::clone::Clone for awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::clone(&self) -> awaken_agent_contract::agent::message::Message
+impl core::cmp::Eq for awaken_agent_contract::agent::message::Message
+impl core::cmp::PartialEq for awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::eq(&self, &awaken_agent_contract::agent::message::Message) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::message::Message
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::message::Message
+impl core::marker::Send for awaken_agent_contract::agent::message::Message
+impl core::marker::Sync for awaken_agent_contract::agent::message::Message
+impl core::marker::Unpin for awaken_agent_contract::agent::message::Message
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::message::Message
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::message::Message
+pub struct awaken_agent_contract::RunId(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::clone(&self) -> awaken_agent_contract::agent::run::Id
+impl core::cmp::Eq for awaken_agent_contract::agent::run::Id
+impl core::cmp::PartialEq for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::eq(&self, &awaken_agent_contract::agent::run::Id) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::run::Id
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::run::Id::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::run::Id
+impl core::marker::Send for awaken_agent_contract::agent::run::Id
+impl core::marker::Sync for awaken_agent_contract::agent::run::Id
+impl core::marker::Unpin for awaken_agent_contract::agent::run::Id
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Id
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Id
+pub struct awaken_agent_contract::RunRecord
+pub awaken_agent_contract::RunRecord::id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::RunRecord::lifecycle: awaken_agent_contract::agent::run::Lifecycle
+pub awaken_agent_contract::RunRecord::thread_id: awaken_agent_contract::agent::thread::Id
+impl core::clone::Clone for awaken_agent_contract::agent::run::Record
+pub fn awaken_agent_contract::agent::run::Record::clone(&self) -> awaken_agent_contract::agent::run::Record
+impl core::cmp::Eq for awaken_agent_contract::agent::run::Record
+impl core::cmp::PartialEq for awaken_agent_contract::agent::run::Record
+pub fn awaken_agent_contract::agent::run::Record::eq(&self, &awaken_agent_contract::agent::run::Record) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::run::Record
+pub fn awaken_agent_contract::agent::run::Record::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::run::Record
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::run::Record
+pub fn awaken_agent_contract::agent::run::Record::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::run::Record
+pub fn awaken_agent_contract::agent::run::Record::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::run::Record
+impl core::marker::Send for awaken_agent_contract::agent::run::Record
+impl core::marker::Sync for awaken_agent_contract::agent::run::Record
+impl core::marker::Unpin for awaken_agent_contract::agent::run::Record
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::run::Record
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Record
+pub struct awaken_agent_contract::StateKey(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::clone(&self) -> awaken_agent_contract::agent::state::Key
+impl core::cmp::Eq for awaken_agent_contract::agent::state::Key
+impl core::cmp::PartialEq for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::eq(&self, &awaken_agent_contract::agent::state::Key) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::state::Key
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::state::Key
+pub fn awaken_agent_contract::agent::state::Key::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::state::Key
+impl core::marker::Send for awaken_agent_contract::agent::state::Key
+impl core::marker::Sync for awaken_agent_contract::agent::state::Key
+impl core::marker::Unpin for awaken_agent_contract::agent::state::Key
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::state::Key
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::state::Key
+pub struct awaken_agent_contract::StreamEvent
+pub awaken_agent_contract::StreamEvent::kind: awaken_agent_contract::stream::event::Kind
+pub awaken_agent_contract::StreamEvent::run_id: awaken_agent_contract::agent::run::Id
+impl core::clone::Clone for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::clone(&self) -> awaken_agent_contract::stream::event::Event
+impl core::cmp::PartialEq for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::eq(&self, &awaken_agent_contract::stream::event::Event) -> bool
+impl core::fmt::Debug for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::stream::event::Event
+impl serde_core::ser::Serialize for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::stream::event::Event
+pub fn awaken_agent_contract::stream::event::Event::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::stream::event::Event
+impl core::marker::Send for awaken_agent_contract::stream::event::Event
+impl core::marker::Sync for awaken_agent_contract::stream::event::Event
+impl core::marker::Unpin for awaken_agent_contract::stream::event::Event
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::stream::event::Event
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::stream::event::Event
+pub struct awaken_agent_contract::ThreadId(pub alloc::string::String)
+impl core::clone::Clone for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::clone(&self) -> awaken_agent_contract::agent::thread::Id
+impl core::cmp::Eq for awaken_agent_contract::agent::thread::Id
+impl core::cmp::PartialEq for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::eq(&self, &awaken_agent_contract::agent::thread::Id) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::thread::Id
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::thread::Id
+pub fn awaken_agent_contract::agent::thread::Id::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::thread::Id
+impl core::marker::Send for awaken_agent_contract::agent::thread::Id
+impl core::marker::Sync for awaken_agent_contract::agent::thread::Id
+impl core::marker::Unpin for awaken_agent_contract::agent::thread::Id
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::thread::Id
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::thread::Id
+pub trait awaken_agent_contract::CommitCoordinator: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::CommitCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_agent_contract::StreamSink: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::StreamSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

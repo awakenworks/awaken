@@ -1,0 +1,21 @@
+pub mod awaken_provider_genai
+pub struct awaken_provider_genai::GenaiExecutor
+impl awaken_provider_genai::GenaiExecutor
+pub fn awaken_provider_genai::GenaiExecutor::new() -> Self
+pub fn awaken_provider_genai::GenaiExecutor::with_client(genai::client::client_types::Client) -> Self
+pub fn awaken_provider_genai::GenaiExecutor::with_timeout(self, core::time::Duration) -> Self
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_provider_genai::GenaiExecutor
+pub fn awaken_provider_genai::GenaiExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::default::Default for awaken_provider_genai::GenaiExecutor
+pub fn awaken_provider_genai::GenaiExecutor::default() -> Self
+impl core::marker::Freeze for awaken_provider_genai::GenaiExecutor
+impl core::marker::Send for awaken_provider_genai::GenaiExecutor
+impl core::marker::Sync for awaken_provider_genai::GenaiExecutor
+impl core::marker::Unpin for awaken_provider_genai::GenaiExecutor
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_provider_genai::GenaiExecutor
+impl !core::panic::unwind_safe::UnwindSafe for awaken_provider_genai::GenaiExecutor
+pub fn awaken_provider_genai::from_genai_response(genai::chat::chat_response::ChatResponse) -> awaken_runtime_contract::llm::ChatResponse
+pub fn awaken_provider_genai::from_genai_tool_call(&genai::chat::tool::tool_call::ToolCall) -> awaken_runtime_contract::llm::ToolCall
+pub fn awaken_provider_genai::map_assistant_output(&genai::chat::message_content::MessageContent) -> awaken_runtime_contract::llm::AssistantOutput
+pub fn awaken_provider_genai::map_usage(&genai::chat::usage::Usage) -> awaken_runtime_contract::llm::TokenUsage
+pub fn awaken_provider_genai::to_genai_request(&awaken_runtime_contract::llm::ChatRequest) -> genai::chat::chat_request::ChatRequest
