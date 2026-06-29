@@ -11,6 +11,7 @@ use awaken_runtime_contract::catalog::{
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
+use awaken_runtime_contract::plugin::{MergeError, Plugin, ResolvedExecutionEnv};
 use awaken_runtime_contract::resolved::CatalogFingerprint;
 use awaken_runtime_contract::snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 use awaken_runtime_contract::tool::RawTool;
@@ -33,6 +34,9 @@ pub struct Runtime {
     tools: HashMap<String, Arc<dyn RawTool>>,
     /// The authorization gate; absent means tools run ungated (test-only).
     gate: Option<Arc<dyn ToolGateHook>>,
+    /// Installed plugin factories; the active subset for a run is chosen by the
+    /// resolved spec's `plugin_ids` and merged under capability bounds (G30).
+    plugins: Vec<Arc<dyn Plugin>>,
     /// Cancellation tokens for in-flight runs, so live control can steer them.
     active_runs: Mutex<HashMap<RunId, CancellationToken>>,
 }
@@ -61,6 +65,32 @@ impl Runtime {
     pub fn with_gate(mut self, gate: Arc<dyn ToolGateHook>) -> Self {
         self.gate = Some(gate);
         self
+    }
+
+    /// Install a plugin factory. It only contributes to a run whose resolved
+    /// spec selects its id in `plugin_ids`.
+    #[must_use]
+    pub fn with_plugin(mut self, plugin: Arc<dyn Plugin>) -> Self {
+        self.plugins.push(plugin);
+        self
+    }
+
+    /// Resolve the active plugins for a run into one merged execution
+    /// environment, enforcing capability bounds and ordering (G30). Plugins not
+    /// listed in `plugin_ids` are inert.
+    pub(crate) fn resolve_plugin_env(
+        &self,
+        plugin_ids: &[String],
+    ) -> std::result::Result<ResolvedExecutionEnv, MergeError> {
+        let active: Vec<_> = self
+            .plugins
+            .iter()
+            .map(|plugin| plugin.manifest())
+            .zip(self.plugins.iter())
+            .filter(|(manifest, _)| plugin_ids.contains(&manifest.id))
+            .map(|(manifest, plugin)| (manifest, plugin.resolve()))
+            .collect();
+        ResolvedExecutionEnv::merge(active)
     }
 
     pub(crate) fn llm(&self) -> Option<&Arc<dyn LlmExecutor>> {

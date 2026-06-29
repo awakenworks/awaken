@@ -24,6 +24,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, ToolCall, ToolSchema,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
+use awaken_runtime_contract::plugin::{PhaseContext, PhaseHookPoint, ResolvedExecutionEnv};
 use awaken_runtime_contract::resolved::{ResolvedRun, ResolvedSpec, ToolDescriptor};
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
@@ -78,12 +79,20 @@ pub(crate) async fn run_agent_loop(
         return finish(&context, &thread_id, run_id, Outcome::cancelled()).await;
     }
 
+    // Merge the active plugins under their capability bounds; a violation fails
+    // the run closed before any model call (G30).
+    let env = match runtime.resolve_plugin_env(&resolved.spec.plugin_ids) {
+        Ok(env) => env,
+        Err(_) => return finish(&context, &thread_id, run_id, Outcome::failed()).await,
+    };
+
     emit(&context, &run_id, StreamKind::RunStarted).await;
 
     let transcript = activation.input.clone();
     let outcome = drive(
         runtime,
         &resolved,
+        &env,
         &run_id,
         &context,
         transcript,
@@ -116,6 +125,11 @@ pub(crate) async fn resume_run(
     let run_id = command.run_id.clone();
     let thread_id = command.thread_id.clone();
 
+    let env = match runtime.resolve_plugin_env(&resolved.spec.plugin_ids) {
+        Ok(env) => env,
+        Err(_) => return finish(&context, &thread_id, run_id, Outcome::failed()).await,
+    };
+
     emit(&context, &run_id, StreamKind::RunStarted).await;
 
     // Rebuild the transcript from committed truth and apply the resumed result.
@@ -126,6 +140,7 @@ pub(crate) async fn resume_run(
     let mut outcome = drive(
         runtime,
         &resolved,
+        &env,
         &run_id,
         &context,
         transcript,
@@ -178,6 +193,15 @@ impl Outcome {
             waiting: None,
         }
     }
+
+    fn failed() -> Self {
+        Self {
+            lifecycle: Lifecycle::Failed,
+            new_messages: Vec::new(),
+            staged_state: Vec::new(),
+            waiting: None,
+        }
+    }
 }
 
 /// Run the model/tool loop over a prepared transcript. Shared by fresh execution
@@ -186,6 +210,7 @@ impl Outcome {
 async fn drive(
     runtime: &Runtime,
     resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
     run_id: &RunId,
     context: &RuntimeRunContext,
     mut transcript: Vec<Message>,
@@ -206,11 +231,38 @@ async fn drive(
             break;
         }
 
+        // Phase hooks contribute state through the commit path only (G9/G30).
+        run_phase_hooks(
+            env,
+            run_id,
+            step,
+            PhaseHookPoint::StepStart,
+            &mut staged_state,
+        )
+        .await;
+        run_phase_hooks(
+            env,
+            run_id,
+            step,
+            PhaseHookPoint::BeforeInference,
+            &mut staged_state,
+        )
+        .await;
+
         let request = build_chat_request(&resolved.spec, &transcript);
         let response = llm
             .infer(request)
             .await
             .map_err(|err| Error::Execution(err.to_string()))?;
+
+        run_phase_hooks(
+            env,
+            run_id,
+            step,
+            PhaseHookPoint::AfterInference,
+            &mut staged_state,
+        )
+        .await;
 
         // A cancel may have landed while inference was in flight; observe it at
         // this step boundary and discard the model output.
@@ -271,6 +323,16 @@ async fn drive(
                 }
             }
         }
+
+        // StepEnd fires at the boundary between steps that continue the loop.
+        run_phase_hooks(
+            env,
+            run_id,
+            step,
+            PhaseHookPoint::StepEnd,
+            &mut staged_state,
+        )
+        .await;
     }
 
     Ok(Outcome {
@@ -279,6 +341,25 @@ async fn drive(
         staged_state,
         waiting,
     })
+}
+
+/// Run every hook registered for one phase point, in dependency order, staging
+/// their state commands. Hooks return data; they never write a store (G9/G30).
+async fn run_phase_hooks(
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    step: usize,
+    point: PhaseHookPoint,
+    staged_state: &mut Vec<StateCommand>,
+) {
+    for hook in env.hooks_for(point) {
+        let ctx = PhaseContext {
+            run_id: run_id.clone(),
+            step,
+            point,
+        };
+        staged_state.extend(hook.on_phase(&ctx).await);
+    }
 }
 
 /// Build the committed ticket for a parked tool call.
