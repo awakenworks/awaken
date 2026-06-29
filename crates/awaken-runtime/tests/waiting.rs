@@ -314,3 +314,60 @@ async fn second_resume_after_completion_is_not_waiting() {
         .expect_err("a stale resume is rejected");
     assert!(err.to_string().contains("not waiting"));
 }
+
+#[tokio::test]
+async fn resume_with_a_client_tool_result_is_used_directly() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    suspend(&commit, &runtime).await;
+
+    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let outcome = runtime
+        .resume(
+            resume_command(ResumeResult::ToolResult(ToolOutput::ok(
+                "call-1",
+                "client-computed",
+            ))),
+            commit.as_ref(),
+            context,
+        )
+        .await
+        .expect("resume runs");
+    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    // The client's result is fed back verbatim; the host tool never ran.
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.content == "client-computed")
+    );
+}
+
+#[tokio::test]
+async fn resume_with_input_injects_a_user_message() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran);
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    suspend(&commit, &runtime).await;
+
+    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let outcome = runtime
+        .resume(
+            resume_command(ResumeResult::Input("the answer is 42".to_string())),
+            commit.as_ref(),
+            context,
+        )
+        .await
+        .expect("resume runs");
+    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content == "the answer is 42")
+    );
+}
