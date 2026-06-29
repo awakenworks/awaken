@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::state::{Command as StateCommand, validate_batch};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingTicket};
@@ -19,7 +19,7 @@ use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamKind};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::execution::{Error, Result, RunExecutor, RunOutcome};
+use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, ToolCall, ToolSchema,
 };
@@ -48,7 +48,7 @@ impl RunExecutor for Runtime {
         &self,
         activation: RunActivation,
         context: RuntimeRunContext,
-    ) -> Result<RunOutcome> {
+    ) -> Result<Phase> {
         // Track this run's cancellation token so live control can steer it, and
         // always deregister on the way out.
         let run_id = activation.run_id.clone();
@@ -65,7 +65,7 @@ pub(crate) async fn run_agent_loop(
     runtime: &Runtime,
     activation: RunActivation,
     context: RuntimeRunContext,
-) -> Result<RunOutcome> {
+) -> Result<Phase> {
     let resolved = runtime
         .resolve(&activation.snapshot)
         .map_err(map_resolver_error)?;
@@ -76,20 +76,22 @@ pub(crate) async fn run_agent_loop(
     // Cancellation observed before any model call: commit a terminal Cancelled
     // outcome instead of starting work.
     if context.is_cancelled() {
-        return finish(&context, &thread_id, run_id, Outcome::cancelled()).await;
+        return finish(&context, &thread_id, run_id, Checkpoint::cancelled()).await;
     }
 
     // Merge the active plugins under their capability bounds; a violation fails
     // the run closed before any model call (G30).
     let env = match runtime.resolve_plugin_env(&resolved.spec.plugin_ids) {
         Ok(env) => env,
-        Err(_) => return finish(&context, &thread_id, run_id, Outcome::failed()).await,
+        Err(_) => {
+            return finish(&context, &thread_id, run_id, Checkpoint::capability_bound()).await;
+        }
     };
 
     emit(&context, &run_id, StreamKind::RunStarted).await;
 
     let transcript = activation.input.clone();
-    let outcome = drive(
+    let checkpoint = drive(
         runtime,
         &resolved,
         &env,
@@ -100,7 +102,7 @@ pub(crate) async fn run_agent_loop(
         0,
     )
     .await?;
-    finalize(&context, &thread_id, run_id, outcome).await
+    finalize(&context, &thread_id, run_id, checkpoint).await
 }
 
 /// Resume a parked run: validate the resume against the committed ticket, rebuild
@@ -111,7 +113,7 @@ pub(crate) async fn resume_run(
     command: ResumeCommand,
     reader: &dyn ThreadReader,
     context: RuntimeRunContext,
-) -> Result<RunOutcome> {
+) -> Result<Phase> {
     let ticket = reader
         .waiting_ticket(&command.run_id)
         .ok_or_else(|| Error::Execution("run is not waiting".to_string()))?;
@@ -127,7 +129,9 @@ pub(crate) async fn resume_run(
 
     let env = match runtime.resolve_plugin_env(&resolved.spec.plugin_ids) {
         Ok(env) => env,
-        Err(_) => return finish(&context, &thread_id, run_id, Outcome::failed()).await,
+        Err(_) => {
+            return finish(&context, &thread_id, run_id, Checkpoint::capability_bound()).await;
+        }
     };
 
     emit(&context, &run_id, StreamKind::RunStarted).await;
@@ -137,7 +141,7 @@ pub(crate) async fn resume_run(
     let (resumed, seed_state) = resume_into_messages(runtime, &ticket, command.result).await;
     transcript.extend(resumed.iter().cloned());
 
-    let mut outcome = drive(
+    let mut checkpoint = drive(
         runtime,
         &resolved,
         &env,
@@ -150,60 +154,64 @@ pub(crate) async fn resume_run(
     .await?;
     // State staged by the resumed tool itself is committed too (kept first).
     let mut combined = seed_state;
-    combined.append(&mut outcome.staged_state);
-    outcome.staged_state = combined;
+    combined.append(&mut checkpoint.staged_state);
+    checkpoint.staged_state = combined;
 
-    finalize(&context, &thread_id, run_id, outcome).await
+    finalize(&context, &thread_id, run_id, checkpoint).await
 }
 
-/// Validate the staged state batch, then commit. A conflict fails closed and no
-/// state is committed (G13).
+/// Validate the staged state batch, then commit. A conflict fails closed: the
+/// attempt becomes a `StateConflict` fault, drops any pause, and commits no
+/// state (G13). A run whose state did not commit cleanly must not be resumable.
 async fn finalize(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
     run_id: RunId,
-    outcome: Outcome,
-) -> Result<RunOutcome> {
-    if !outcome.staged_state.is_empty() && validate_batch(&outcome.staged_state).is_err() {
-        let failed = Outcome {
-            lifecycle: Lifecycle::Failed,
+    checkpoint: Checkpoint,
+) -> Result<Phase> {
+    if !checkpoint.staged_state.is_empty() && validate_batch(&checkpoint.staged_state).is_err() {
+        let failed = Checkpoint {
+            new_messages: checkpoint.new_messages,
             staged_state: Vec::new(),
-            waiting: None,
-            failure_reason: Some("exclusive state key conflict".to_string()),
-            ..outcome
+            end: End::Ended(EndCause::Error(Failure::StateConflict)),
         };
         return finish(context, thread_id, run_id, failed).await;
     }
-    finish(context, thread_id, run_id, outcome).await
+    finish(context, thread_id, run_id, checkpoint).await
 }
 
-/// The result of driving the loop for one attempt.
-struct Outcome {
-    lifecycle: Lifecycle,
+/// What one attempt at driving the loop resolved to, ready to commit: the new
+/// messages, the staged state, and where the run goes next.
+struct Checkpoint {
     new_messages: Vec<Message>,
     staged_state: Vec<StateCommand>,
-    waiting: Option<WaitingTicket>,
-    failure_reason: Option<String>,
+    end: End,
 }
 
-impl Outcome {
+/// The terminal decision of one attempt. A paused run carries its ticket here;
+/// an ended run carries its cause. The two are mutually exclusive by
+/// construction, so the committed [`Phase`] can never disagree with the ticket.
+enum End {
+    /// The run paused; the ticket is committed alongside the checkpoint.
+    Parked(WaitingTicket),
+    /// The run reached a terminus through one cause.
+    Ended(EndCause),
+}
+
+impl Checkpoint {
     fn cancelled() -> Self {
-        Self {
-            lifecycle: Lifecycle::Cancelled,
-            new_messages: Vec::new(),
-            staged_state: Vec::new(),
-            waiting: None,
-            failure_reason: None,
-        }
+        Self::ended(EndCause::Cancelled)
     }
 
-    fn failed() -> Self {
+    fn capability_bound() -> Self {
+        Self::ended(EndCause::Error(Failure::CapabilityBound))
+    }
+
+    fn ended(cause: EndCause) -> Self {
         Self {
-            lifecycle: Lifecycle::Failed,
             new_messages: Vec::new(),
             staged_state: Vec::new(),
-            waiting: None,
-            failure_reason: Some("plugin capability bound violation".to_string()),
+            end: End::Ended(cause),
         }
     }
 }
@@ -220,19 +228,19 @@ async fn drive(
     mut transcript: Vec<Message>,
     mut new_messages: Vec<Message>,
     step_base: usize,
-) -> Result<Outcome> {
+) -> Result<Checkpoint> {
     let llm = runtime.llm().ok_or_else(|| {
         Error::Execution("no model provider configured for this runtime".to_string())
     })?;
 
     let mut staged_state: Vec<StateCommand> = Vec::new();
-    let mut lifecycle = Lifecycle::Completed;
-    let mut waiting: Option<WaitingTicket> = None;
-    let mut failure_reason: Option<String> = None;
+    // The loop's terminal decision. It stays `None` only if the loop runs to its
+    // step ceiling, which is itself a terminus (`MaxSteps`).
+    let mut end: Option<End> = None;
 
     for step in 0..MAX_STEPS {
         if context.is_cancelled() {
-            lifecycle = Lifecycle::Cancelled;
+            end = Some(End::Ended(EndCause::Cancelled));
             break;
         }
 
@@ -260,8 +268,9 @@ async fn drive(
         let response = match infer_with_retry(llm, request, runtime.infer_retries()).await {
             Ok(response) => response,
             Err(err) => {
-                lifecycle = Lifecycle::Failed;
-                failure_reason = Some(err.to_string());
+                end = Some(End::Ended(EndCause::Error(Failure::Inference(
+                    err.to_string(),
+                ))));
                 break;
             }
         };
@@ -278,7 +287,7 @@ async fn drive(
         // A cancel may have landed while inference was in flight; observe it at
         // this step boundary and discard the model output.
         if context.is_cancelled() {
-            lifecycle = Lifecycle::Cancelled;
+            end = Some(End::Ended(EndCause::Cancelled));
             break;
         }
 
@@ -293,6 +302,7 @@ async fn drive(
                 let message = assistant_message(run_id, step_base + step, text);
                 transcript.push(message.clone());
                 new_messages.push(message);
+                end = Some(End::Ended(EndCause::NaturalEnd));
                 break;
             }
             AssistantOutput::ToolCalls(calls) => {
@@ -310,8 +320,8 @@ async fn drive(
                         GateOutcome::Suspend { ticket_id } => {
                             // Park the run on a structured ticket carrying the
                             // pending call so an allow decision can run it later.
-                            waiting = Some(waiting_ticket(resolved, run_id, &ticket_id, &call));
-                            lifecycle = Lifecycle::Waiting;
+                            let ticket = waiting_ticket(resolved, run_id, &ticket_id, &call);
+                            end = Some(End::Parked(ticket));
                             emit(
                                 context,
                                 run_id,
@@ -329,7 +339,7 @@ async fn drive(
                     new_messages.push(message);
                 }
 
-                if waiting.is_some() {
+                if end.is_some() {
                     break;
                 }
             }
@@ -346,12 +356,12 @@ async fn drive(
         .await;
     }
 
-    Ok(Outcome {
-        lifecycle,
+    // No early terminus means the loop exhausted its step ceiling.
+    let end = end.unwrap_or(End::Ended(EndCause::MaxSteps));
+    Ok(Checkpoint {
         new_messages,
         staged_state,
-        waiting,
-        failure_reason,
+        end,
     })
 }
 
@@ -577,23 +587,30 @@ async fn finish(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
     run_id: RunId,
-    outcome: Outcome,
-) -> Result<RunOutcome> {
-    let Outcome {
-        lifecycle,
+    checkpoint: Checkpoint,
+) -> Result<Phase> {
+    let Checkpoint {
         new_messages,
         staged_state,
-        waiting,
-        failure_reason,
-    } = outcome;
+        end,
+    } = checkpoint;
+
+    // Project the attempt's `End` onto the stored authority: a pause records
+    // `Phase::Waiting` and parks its ticket; a terminus records `Ended(cause)`
+    // with no ticket. The two cannot disagree because `End` made them exclusive.
+    let (phase, waiting) = match end {
+        End::Parked(mut ticket) => {
+            // The ticket carries the real thread id only at commit time.
+            ticket.thread_id = thread_id.clone();
+            (Phase::Waiting, Some(ticket))
+        }
+        End::Ended(cause) => (Phase::Ended(cause), None),
+    };
 
     if let Some(coordinator) = &context.commit {
         let mut events = vec![EventDraft {
-            kind: EventKind::RunLifecycleChanged,
-            payload: serde_json::json!({
-                "lifecycle": lifecycle,
-                "reason": failure_reason,
-            }),
+            kind: EventKind::RunPhaseChanged,
+            payload: serde_json::json!({ "phase": phase }),
         }];
         if !staged_state.is_empty() {
             events.push(EventDraft {
@@ -601,11 +618,6 @@ async fn finish(
                 payload: serde_json::json!({ "commands": staged_state.len() }),
             });
         }
-        // The ticket carries the real thread id only at commit time.
-        let waiting = waiting.map(|mut ticket| {
-            ticket.thread_id = thread_id.clone();
-            ticket
-        });
         if waiting.is_some() {
             events.push(EventDraft {
                 kind: EventKind::RunWaiting,
@@ -616,7 +628,7 @@ async fn finish(
             thread_id: thread_id.clone(),
             run_fact: RunFact {
                 run_id: run_id.clone(),
-                lifecycle: lifecycle.clone(),
+                phase: phase.clone(),
             },
             messages: new_messages,
             state: staged_state,
@@ -630,7 +642,7 @@ async fn finish(
     }
 
     emit(context, &run_id, StreamKind::RunFinished).await;
-    Ok(RunOutcome { run_id, lifecycle })
+    Ok(phase)
 }
 
 fn map_resolver_error(err: resolver::Error) -> Error {

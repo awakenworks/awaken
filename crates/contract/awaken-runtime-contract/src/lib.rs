@@ -20,7 +20,7 @@ pub mod tool;
 pub use activation::RunActivation;
 pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 pub use control::LiveRunControl;
-pub use execution::{RunExecutor, RunOutcome};
+pub use execution::RunExecutor;
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use permission::{GateOutcome, PermissionDecision, PermissionPolicy, ToolGateHook};
 pub use plugin::{

@@ -5,11 +5,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::kind::Kind as EventKind;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
+use awaken_runtime::memory::{MemoryCommitCoordinator, replay_latest_phase};
 use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -166,7 +166,7 @@ fn resume_command(result: ResumeResult) -> ResumeCommand {
 async fn suspend(commit: &Arc<MemoryCommitCoordinator>, runtime: &Runtime) {
     let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Waiting);
+    assert_eq!(outcome, Phase::Waiting);
 }
 
 #[tokio::test]
@@ -209,7 +209,7 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
         )
         .await
         .expect("resume runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
@@ -225,6 +225,23 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
     );
     // The ticket is cleared once resumed.
     assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+
+    // The fact log keeps the Waiting -> Ended progression in order, and the
+    // latest fact is the authority replay derives (ADR-0006 D1).
+    let phases: Vec<_> = committed
+        .run_facts
+        .iter()
+        .filter(|f| f.run_id == RunId("run-1".to_string()))
+        .map(|f| f.phase.clone())
+        .collect();
+    assert_eq!(
+        phases,
+        vec![Phase::Waiting, Phase::Ended(EndCause::NaturalEnd)]
+    );
+    assert_eq!(
+        replay_latest_phase(&committed, &RunId("run-1".to_string())),
+        Some(Phase::Ended(EndCause::NaturalEnd))
+    );
 }
 
 #[tokio::test]
@@ -246,7 +263,7 @@ async fn deny_resume_feeds_a_blocked_result_without_running_the_tool() {
         )
         .await
         .expect("resume runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 0, "deny must not run the tool");
     assert!(
         commit
@@ -334,7 +351,7 @@ async fn resume_with_a_client_tool_result_is_used_directly() {
         )
         .await
         .expect("resume runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
     // The client's result is fed back verbatim; the host tool never ran.
     assert_eq!(ran.load(Ordering::SeqCst), 0);
     assert!(
@@ -362,7 +379,7 @@ async fn resume_with_input_injects_a_user_message() {
         )
         .await
         .expect("resume runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
     assert!(
         commit
             .committed()

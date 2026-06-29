@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle, Record as RunRecord};
+use awaken_agent_contract::agent::run::{Id as RunId, Phase, Record as RunRecord};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
@@ -89,13 +89,13 @@ impl CommitCoordinator for MemoryCommitCoordinator {
 
         let next = state.sequence + 1;
         let run_id = commit.run_fact.run_id.clone();
-        let lifecycle = commit.run_fact.lifecycle.clone();
+        let phase = commit.run_fact.phase.clone();
 
         // Park or clear the waiting ticket atomically with the checkpoint: a
-        // `Some` ticket parks the run; any non-Waiting lifecycle clears it so a
+        // `Some` ticket parks the run; any ended phase clears it so a
         // resumed/terminal run can no longer be resumed (G5).
-        match (&commit.waiting, &lifecycle) {
-            (Some(ticket), Lifecycle::Waiting) => {
+        match (&commit.waiting, &phase) {
+            (Some(ticket), Phase::Waiting) => {
                 state.waiting.insert(run_id.clone(), ticket.clone());
             }
             _ => {
@@ -119,7 +119,7 @@ impl CommitCoordinator for MemoryCommitCoordinator {
         thread.latest_run = Some(RunRecord {
             id: run_id,
             thread_id: commit.thread_id,
-            lifecycle,
+            phase,
         });
 
         state.sequence = next;
@@ -187,13 +187,13 @@ pub fn replay_state(committed: &CommittedThread) -> awaken_agent_contract::agent
     awaken_agent_contract::agent::state::Store::rebuild(&committed.state)
 }
 
-/// Reconstruct the latest run lifecycle from committed facts (not live events),
+/// Reconstruct the latest run [`Phase`] from committed facts (not live events),
 /// proving replay reads durable truth (G1).
-pub fn replay_latest_lifecycle(committed: &CommittedThread, run_id: &RunId) -> Option<Lifecycle> {
+pub fn replay_latest_phase(committed: &CommittedThread, run_id: &RunId) -> Option<Phase> {
     committed
         .run_facts
         .iter()
         .rev()
         .find(|fact| &fact.run_id == run_id)
-        .map(|fact| fact.lifecycle.clone())
+        .map(|fact| fact.phase.clone())
 }
