@@ -39,9 +39,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     # Builtin tools extension: owns concrete tool ids and runs them in-process
     # (ADR-0007). It implements the async `Tool`/`RawTool` ports (`async-trait`,
-    # `tokio` for tests) and hand tools touch the filesystem (`glob`, `regex`,
-    # `tempfile` for tests) — these execution deps live here, never in a neutral
-    # crate.
+    # `tokio`), hand tools touch the filesystem (`glob`, `regex`, `tempfile` for
+    # tests), and the network tools make HTTP calls (`ureq`). These execution
+    # deps live here, never in a neutral crate.
     "awaken-ext-builtin-tools": {
         "awaken-runtime-contract",
         "async-trait",
@@ -51,6 +51,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "tempfile",
         "tokio",
+        "ureq",
     },
     # Provider adapter: the only crate allowed to name the model SDK. It also
     # consumes the SDK's async response stream, so `futures` (StreamExt) is
