@@ -7,14 +7,15 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatContent, ChatRequest, ChatResponse, ChatRole, Error, LlmExecutor, Result,
-    TokenUsage, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, ChatRole, Error, LlmExecutor, Result, TokenUsage,
+    ToolCall,
 };
 use genai::Client;
 use genai::chat::{
-    ChatMessage, ChatRequest as GenaiChatRequest, MessageContent, Tool as GenaiTool,
-    ToolCall as GenaiToolCall, ToolResponse, Usage,
+    Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
+    Tool as GenaiTool, ToolCall as GenaiToolCall, Usage,
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -106,25 +107,14 @@ pub fn classify_error(message: &str) -> Error {
 pub fn to_genai_request(request: &ChatRequest) -> GenaiChatRequest {
     let mut messages: Vec<ChatMessage> = Vec::with_capacity(request.messages.len());
     for message in &request.messages {
-        match &message.content {
-            ChatContent::Text(text) => match message.role {
-                ChatRole::System => messages.push(ChatMessage::system(text.clone())),
-                ChatRole::Assistant => messages.push(ChatMessage::assistant(text.clone())),
-                // A bare tool-role text without a call id is treated as user input.
-                ChatRole::User | ChatRole::Tool => messages.push(ChatMessage::user(text.clone())),
-            },
-            ChatContent::ToolCalls(calls) => {
-                let genai_calls: Vec<GenaiToolCall> =
-                    calls.iter().map(to_genai_tool_call).collect();
-                messages.push(ChatMessage::from(genai_calls));
-            }
-            ChatContent::ToolResult { call_id, content } => {
-                messages.push(ChatMessage::from(ToolResponse::new(
-                    call_id.clone(),
-                    content.clone(),
-                )));
-            }
-        }
+        let parts: Vec<ContentPart> = message.content.iter().map(to_genai_part).collect();
+        let genai_message = match message.role {
+            ChatRole::System => ChatMessage::system(parts),
+            ChatRole::Assistant => ChatMessage::assistant(parts),
+            // A tool-role message without structured tool framing is plain input.
+            ChatRole::User | ChatRole::Tool => ChatMessage::user(parts),
+        };
+        messages.push(genai_message);
     }
 
     let tools: Vec<GenaiTool> = request
@@ -144,13 +134,40 @@ pub fn to_genai_request(request: &ChatRequest) -> GenaiChatRequest {
     genai_request
 }
 
-fn to_genai_tool_call(call: &ToolCall) -> GenaiToolCall {
-    GenaiToolCall {
-        call_id: call.call_id.clone(),
-        fn_name: call.tool_id.clone(),
-        fn_arguments: call.arguments.clone(),
-        thought_signatures: None,
+/// Map one neutral content block onto a `genai` content part. Text maps to text;
+/// an image maps to a `Binary` (base64 inline or a URL the provider fetches).
+fn to_genai_part(block: &ContentBlock) -> ContentPart {
+    match block {
+        ContentBlock::Text { text } => ContentPart::Text(text.clone()),
+        ContentBlock::Image { source } => ContentPart::Binary(to_genai_binary(source)),
     }
+}
+
+fn to_genai_binary(source: &ImageSource) -> Binary {
+    match source {
+        ImageSource::Base64 { media_type, data } => {
+            Binary::from_base64(media_type.clone(), data.clone(), None)
+        }
+        ImageSource::Url { url } => Binary::from_url(content_type_for_url(url), url.clone(), None),
+    }
+}
+
+/// A neutral image URL carries no media type; infer one from the extension so
+/// the provider gets a concrete MIME type, defaulting to a generic image type.
+fn content_type_for_url(url: &str) -> String {
+    let lower = url.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/*"
+    }
+    .to_string()
 }
 
 /// Map a `genai::ToolCall` back into the neutral `ToolCall`.

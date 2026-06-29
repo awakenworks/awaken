@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatResponse, ChatRole, LlmExecutor,
-    ToolCall, ToolSchema,
+    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
+    ToolSchema,
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 
@@ -17,7 +18,7 @@ fn sample_request() -> ChatRequest {
         },
         messages: vec![ChatMessage {
             role: ChatRole::User,
-            content: ChatContent::Text("hello".to_string()),
+            content: vec![ContentBlock::text("hello")],
         }],
         tools: vec![ToolSchema {
             id: "echo".to_string(),
@@ -59,10 +60,11 @@ impl LlmExecutor for EchoExecutor {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let echoed = match request.messages.last().map(|m| &m.content) {
-            Some(ChatContent::Text(text)) => text.clone(),
-            _ => String::new(),
-        };
+        let echoed = request
+            .messages
+            .last()
+            .map(|m| extract_text(&m.content))
+            .unwrap_or_default();
         Ok(ChatResponse {
             output: AssistantOutput::Text(echoed),
             usage: None,

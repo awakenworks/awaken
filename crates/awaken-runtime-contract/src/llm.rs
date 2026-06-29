@@ -7,6 +7,7 @@
 //! runtime validates the selected `ModelBinding` and never searches for another.
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -27,7 +28,9 @@ pub struct ChatRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: ChatRole,
-    pub content: ChatContent,
+    /// Multimodal content blocks (text, image). The adapter maps each block onto
+    /// the provider's content representation.
+    pub content: Vec<ContentBlock>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,15 +39,6 @@ pub enum ChatRole {
     User,
     Assistant,
     Tool,
-}
-
-/// Neutral message content. A turn is either text, a set of requested tool
-/// calls (assistant), or a tool result fed back to the model.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ChatContent {
-    Text(String),
-    ToolCalls(Vec<ToolCall>),
-    ToolResult { call_id: String, content: String },
 }
 
 /// A model's request to invoke one tool. `tool_id` is the resolved descriptor

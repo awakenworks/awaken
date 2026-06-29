@@ -1,5 +1,6 @@
 pub mod approval;
 pub mod artifact;
+pub mod content;
 pub mod handoff;
 pub mod message;
 pub mod run;

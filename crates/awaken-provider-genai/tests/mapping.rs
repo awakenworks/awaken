@@ -3,13 +3,13 @@
 
 use std::time::Duration;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_provider_genai::{
     GenaiExecutor, classify_error, from_genai_tool_call, map_assistant_output, map_usage,
     to_genai_request,
 };
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, Error as LlmError, ToolCall,
-    ToolSchema,
+    AssistantOutput, ChatMessage, ChatRequest, ChatRole, Error as LlmError, ToolSchema,
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 use genai::chat::{ChatRole as GenaiRole, MessageContent, ToolCall as GenaiToolCall, Usage};
@@ -29,26 +29,15 @@ fn maps_roles_and_tools_onto_genai_request() {
         messages: vec![
             ChatMessage {
                 role: ChatRole::System,
-                content: ChatContent::Text("be brief".to_string()),
+                content: vec![ContentBlock::text("be brief")],
             },
             ChatMessage {
                 role: ChatRole::User,
-                content: ChatContent::Text("hi".to_string()),
+                content: vec![ContentBlock::text("hi")],
             },
             ChatMessage {
                 role: ChatRole::Assistant,
-                content: ChatContent::ToolCalls(vec![ToolCall {
-                    call_id: "c1".to_string(),
-                    tool_id: "search".to_string(),
-                    arguments: serde_json::json!({"q": "rust"}),
-                }]),
-            },
-            ChatMessage {
-                role: ChatRole::Tool,
-                content: ChatContent::ToolResult {
-                    call_id: "c1".to_string(),
-                    content: "result".to_string(),
-                },
+                content: vec![ContentBlock::text("ok")],
             },
         ],
         tools: vec![ToolSchema {
@@ -59,12 +48,34 @@ fn maps_roles_and_tools_onto_genai_request() {
     };
 
     let genai = to_genai_request(&request);
-    assert_eq!(genai.messages.len(), 4);
+    assert_eq!(genai.messages.len(), 3);
     assert!(matches!(genai.messages[0].role, GenaiRole::System));
     assert!(matches!(genai.messages[1].role, GenaiRole::User));
     assert!(matches!(genai.messages[2].role, GenaiRole::Assistant));
-    assert!(matches!(genai.messages[3].role, GenaiRole::Tool));
     assert_eq!(genai.tools.as_ref().map(|t| t.len()), Some(1));
+}
+
+#[test]
+fn image_block_maps_to_a_binary_part() {
+    let request = ChatRequest {
+        model_binding: binding("gpt-4o-mini"),
+        messages: vec![ChatMessage {
+            role: ChatRole::User,
+            content: vec![
+                ContentBlock::text("what is this?"),
+                ContentBlock::image_base64("image/png", "iVBORw0KGgo="),
+            ],
+        }],
+        tools: Vec::new(),
+    };
+
+    let genai = to_genai_request(&request);
+    let content = &genai.messages[0].content;
+    assert!(content.contains_text(), "the text block survives");
+    assert!(content.contains_binary(), "the image maps to a binary part");
+    let binaries = content.binaries();
+    assert_eq!(binaries.len(), 1);
+    assert_eq!(binaries[0].content_type, "image/png");
 }
 
 #[test]
@@ -73,7 +84,7 @@ fn omits_tools_when_none_are_visible() {
         model_binding: binding("m"),
         messages: vec![ChatMessage {
             role: ChatRole::User,
-            content: ChatContent::Text("hi".to_string()),
+            content: vec![ContentBlock::text("hi")],
         }],
         tools: Vec::new(),
     };

@@ -7,6 +7,7 @@
 //! source (G1/G13).
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::state::{Command as StateCommand, validate_batch};
@@ -21,8 +22,7 @@ use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamK
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, DeltaSink, ToolCall,
-    ToolSchema,
+    AssistantOutput, ChatMessage, ChatRequest, ChatRole, DeltaSink, ToolCall, ToolSchema,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{PhaseContext, PhaseHookPoint, ResolvedExecutionEnv};
@@ -485,11 +485,11 @@ async fn resume_into_messages(
             }
         }
         ResumeResult::Input(text) => (
-            vec![Message {
-                id: MessageId(format!("resume-input-{call_id}")),
-                role: Role::User,
-                content: text,
-            }],
+            vec![Message::text(
+                MessageId(format!("resume-input-{call_id}")),
+                Role::User,
+                text,
+            )],
             Vec::new(),
         ),
     }
@@ -531,7 +531,7 @@ pub(crate) fn build_chat_request(spec: &ResolvedSpec, transcript: &[Message]) ->
     if !spec.instructions.is_empty() {
         messages.push(ChatMessage {
             role: ChatRole::System,
-            content: ChatContent::Text(spec.instructions.clone()),
+            content: vec![ContentBlock::text(spec.instructions.clone())],
         });
     }
     messages.extend(transcript.iter().map(to_chat_message));
@@ -545,7 +545,7 @@ pub(crate) fn build_chat_request(spec: &ResolvedSpec, transcript: &[Message]) ->
 fn to_chat_message(message: &Message) -> ChatMessage {
     ChatMessage {
         role: to_chat_role(&message.role),
-        content: ChatContent::Text(message.content.clone()),
+        content: message.content.clone(),
     }
 }
 
@@ -570,22 +570,22 @@ fn to_tool_schema(descriptor: &ToolDescriptor) -> ToolSchema {
 }
 
 fn assistant_message(run_id: &RunId, step: usize, text: String) -> Message {
-    Message {
-        id: MessageId(format!("{}-assistant-{step}", run_id.0)),
-        role: Role::Assistant,
-        content: text,
-    }
+    Message::text(
+        MessageId(format!("{}-assistant-{step}", run_id.0)),
+        Role::Assistant,
+        text,
+    )
 }
 
 /// Record an assistant tool-call turn so the committed transcript explains why
 /// tool results follow.
 fn assistant_tool_call_message(run_id: &RunId, step: usize, calls: &[ToolCall]) -> Message {
     let summary: Vec<_> = calls.iter().map(|c| c.tool_id.as_str()).collect();
-    Message {
-        id: MessageId(format!("{}-assistant-{step}", run_id.0)),
-        role: Role::Assistant,
-        content: format!("tool_calls: {}", summary.join(", ")),
-    }
+    Message::text(
+        MessageId(format!("{}-assistant-{step}", run_id.0)),
+        Role::Assistant,
+        format!("tool_calls: {}", summary.join(", ")),
+    )
 }
 
 fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Message {
@@ -593,11 +593,11 @@ fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Message {
 }
 
 fn tool_message(call_id: &str, content: &str) -> Message {
-    Message {
-        id: MessageId(format!("tool-{call_id}")),
-        role: Role::Tool,
-        content: content.to_string(),
-    }
+    Message::text(
+        MessageId(format!("tool-{call_id}")),
+        Role::Tool,
+        content.to_string(),
+    )
 }
 
 /// Best-effort live emission. A sink failure is swallowed: committed truth is
@@ -702,11 +702,7 @@ mod tests {
     }
 
     fn user_message() -> Message {
-        Message {
-            id: MessageId("m1".to_string()),
-            role: Role::User,
-            content: "hi".to_string(),
-        }
+        Message::text(MessageId("m1".to_string()), Role::User, "hi")
     }
 
     #[test]
@@ -714,10 +710,10 @@ mod tests {
         let request = build_chat_request(&spec("be helpful"), &[user_message()]);
         assert_eq!(request.messages.len(), 2);
         assert!(matches!(request.messages[0].role, ChatRole::System));
-        assert!(matches!(
-            &request.messages[0].content,
-            ChatContent::Text(text) if text == "be helpful"
-        ));
+        assert_eq!(
+            request.messages[0].content,
+            vec![ContentBlock::text("be helpful")]
+        );
         assert!(matches!(request.messages[1].role, ChatRole::User));
     }
 

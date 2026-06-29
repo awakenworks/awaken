@@ -5,9 +5,10 @@
 //! AWAKEN_GENAI_MODEL=gpt-4o-mini cargo test -p awaken-provider-genai --test live -- --ignored
 //! ```
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_provider_genai::GenaiExecutor;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, LlmExecutor,
+    AssistantOutput, ChatMessage, ChatRequest, ChatRole, LlmExecutor,
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 
@@ -25,7 +26,7 @@ async fn live_text_completion() {
         },
         messages: vec![ChatMessage {
             role: ChatRole::User,
-            content: ChatContent::Text("Reply with the single word: pong".to_string()),
+            content: vec![ContentBlock::text("Reply with the single word: pong")],
         }],
         tools: Vec::new(),
     };

@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -94,7 +95,7 @@ async fn run() -> (MemoryCommitCoordinator, MemoryStreamSink) {
         input: vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
-            content: "hi".to_string(),
+            content: vec![ContentBlock::text("hi")],
         }],
         options: RunOptions {
             persistence: PersistenceMode::ReadWrite,

@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -141,7 +142,7 @@ fn activation() -> RunActivation {
         input: vec![Message {
             id: MessageId("message-1".to_string()),
             role: Role::User,
-            content: "please echo".to_string(),
+            content: vec![ContentBlock::text("please echo")],
         }],
         options: RunOptions {
             persistence: PersistenceMode::ReadWrite,
@@ -173,7 +174,7 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
         .filter(|m| m.role == Role::Tool)
         .collect();
     assert_eq!(tool_results.len(), 1);
-    assert!(tool_results[0].content.contains("echoed"));
+    assert!(tool_results[0].text_content().contains("echoed"));
 }
 
 #[tokio::test]
@@ -202,7 +203,7 @@ async fn denied_tool_call_never_executes_even_though_visible() {
     let blocked = committed
         .messages
         .iter()
-        .any(|m| m.role == Role::Tool && m.content.contains("blocked"));
+        .any(|m| m.role == Role::Tool && m.text_content().contains("blocked"));
     assert!(blocked, "a blocked result must be staged for the model");
 }
 
@@ -237,13 +238,12 @@ impl LlmExecutor for CallsTool {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        // End once a tool result is already present in the transcript.
-        let answered = request.messages.iter().any(|m| {
-            matches!(
-                m.content,
-                awaken_runtime_contract::llm::ChatContent::Text(_)
-            ) && matches!(m.role, awaken_runtime_contract::llm::ChatRole::Tool)
-        }) || request.messages.len() > 2;
+        // End once a tool result (a Tool-role message) is in the transcript.
+        let answered = request
+            .messages
+            .iter()
+            .any(|m| matches!(m.role, awaken_runtime_contract::llm::ChatRole::Tool))
+            || request.messages.len() > 2;
         let output = if answered {
             AssistantOutput::Text("done".to_string())
         } else {
@@ -278,7 +278,7 @@ async fn unknown_tool_yields_a_model_visible_error_result() {
         committed
             .messages
             .iter()
-            .any(|m| m.role == Role::Tool && m.content.contains("unknown tool"))
+            .any(|m| m.role == Role::Tool && m.text_content().contains("unknown tool"))
     );
 }
 
@@ -341,7 +341,7 @@ async fn invalid_arguments_yield_a_model_visible_error_result() {
         committed
             .messages
             .iter()
-            .any(|m| m.role == Role::Tool && m.content.contains("invalid tool arguments")),
+            .any(|m| m.role == Role::Tool && m.text_content().contains("invalid tool arguments")),
         "invalid arguments must surface as a model-visible error, not abort the run"
     );
 }
@@ -412,7 +412,7 @@ async fn gate_set_result_skips_execution_and_stages_supplied_result() {
             .committed()
             .messages
             .iter()
-            .any(|m| m.role == Role::Tool && m.content == "injected")
+            .any(|m| m.role == Role::Tool && m.text_content() == "injected")
     );
 }
 

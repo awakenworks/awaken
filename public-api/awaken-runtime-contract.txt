@@ -295,29 +295,6 @@ impl core::marker::Sync for awaken_runtime_contract::llm::AssistantOutput
 impl core::marker::Unpin for awaken_runtime_contract::llm::AssistantOutput
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::AssistantOutput
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::AssistantOutput
-pub enum awaken_runtime_contract::llm::ChatContent
-pub awaken_runtime_contract::llm::ChatContent::Text(alloc::string::String)
-pub awaken_runtime_contract::llm::ChatContent::ToolCalls(alloc::vec::Vec<awaken_runtime_contract::llm::ToolCall>)
-pub awaken_runtime_contract::llm::ChatContent::ToolResult
-pub awaken_runtime_contract::llm::ChatContent::ToolResult::call_id: alloc::string::String
-pub awaken_runtime_contract::llm::ChatContent::ToolResult::content: alloc::string::String
-impl core::clone::Clone for awaken_runtime_contract::llm::ChatContent
-pub fn awaken_runtime_contract::llm::ChatContent::clone(&self) -> awaken_runtime_contract::llm::ChatContent
-impl core::cmp::PartialEq for awaken_runtime_contract::llm::ChatContent
-pub fn awaken_runtime_contract::llm::ChatContent::eq(&self, &awaken_runtime_contract::llm::ChatContent) -> bool
-impl core::fmt::Debug for awaken_runtime_contract::llm::ChatContent
-pub fn awaken_runtime_contract::llm::ChatContent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::llm::ChatContent
-impl serde_core::ser::Serialize for awaken_runtime_contract::llm::ChatContent
-pub fn awaken_runtime_contract::llm::ChatContent::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::llm::ChatContent
-pub fn awaken_runtime_contract::llm::ChatContent::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_runtime_contract::llm::ChatContent
-impl core::marker::Send for awaken_runtime_contract::llm::ChatContent
-impl core::marker::Sync for awaken_runtime_contract::llm::ChatContent
-impl core::marker::Unpin for awaken_runtime_contract::llm::ChatContent
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ChatContent
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ChatContent
 pub enum awaken_runtime_contract::llm::ChatRole
 pub awaken_runtime_contract::llm::ChatRole::Assistant
 pub awaken_runtime_contract::llm::ChatRole::System
@@ -360,7 +337,7 @@ impl core::marker::Unpin for awaken_runtime_contract::llm::Error
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::Error
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::Error
 pub struct awaken_runtime_contract::llm::ChatMessage
-pub awaken_runtime_contract::llm::ChatMessage::content: awaken_runtime_contract::llm::ChatContent
+pub awaken_runtime_contract::llm::ChatMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_runtime_contract::llm::ChatMessage::role: awaken_runtime_contract::llm::ChatRole
 impl core::clone::Clone for awaken_runtime_contract::llm::ChatMessage
 pub fn awaken_runtime_contract::llm::ChatMessage::clone(&self) -> awaken_runtime_contract::llm::ChatMessage

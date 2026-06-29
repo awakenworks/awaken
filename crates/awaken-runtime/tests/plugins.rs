@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::state::{Command as StateCommand, Key, MergePolicy, Scope};
@@ -147,7 +148,7 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
         input: vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
-            content: "go".to_string(),
+            content: vec![ContentBlock::text("go")],
         }],
         options: RunOptions {
             persistence: PersistenceMode::ReadWrite,

@@ -87,6 +87,59 @@ impl core::marker::Sync for awaken_agent_contract::agent::artifact::Id
 impl core::marker::Unpin for awaken_agent_contract::agent::artifact::Id
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::artifact::Id
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::artifact::Id
+pub mod awaken_agent_contract::agent::content
+pub enum awaken_agent_contract::agent::content::ContentBlock
+pub awaken_agent_contract::agent::content::ContentBlock::Image
+pub awaken_agent_contract::agent::content::ContentBlock::Image::source: awaken_agent_contract::agent::content::ImageSource
+pub awaken_agent_contract::agent::content::ContentBlock::Text
+pub awaken_agent_contract::agent::content::ContentBlock::Text::text: alloc::string::String
+impl awaken_agent_contract::agent::content::ContentBlock
+pub fn awaken_agent_contract::agent::content::ContentBlock::image_base64(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::agent::content::ContentBlock::image_url(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::agent::content::ContentBlock::text(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for awaken_agent_contract::agent::content::ContentBlock
+pub fn awaken_agent_contract::agent::content::ContentBlock::clone(&self) -> awaken_agent_contract::agent::content::ContentBlock
+impl core::cmp::Eq for awaken_agent_contract::agent::content::ContentBlock
+impl core::cmp::PartialEq for awaken_agent_contract::agent::content::ContentBlock
+pub fn awaken_agent_contract::agent::content::ContentBlock::eq(&self, &awaken_agent_contract::agent::content::ContentBlock) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::content::ContentBlock
+pub fn awaken_agent_contract::agent::content::ContentBlock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::content::ContentBlock
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::content::ContentBlock
+pub fn awaken_agent_contract::agent::content::ContentBlock::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::content::ContentBlock
+pub fn awaken_agent_contract::agent::content::ContentBlock::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::content::ContentBlock
+impl core::marker::Send for awaken_agent_contract::agent::content::ContentBlock
+impl core::marker::Sync for awaken_agent_contract::agent::content::ContentBlock
+impl core::marker::Unpin for awaken_agent_contract::agent::content::ContentBlock
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::content::ContentBlock
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::content::ContentBlock
+pub enum awaken_agent_contract::agent::content::ImageSource
+pub awaken_agent_contract::agent::content::ImageSource::Base64
+pub awaken_agent_contract::agent::content::ImageSource::Base64::data: alloc::string::String
+pub awaken_agent_contract::agent::content::ImageSource::Base64::media_type: alloc::string::String
+pub awaken_agent_contract::agent::content::ImageSource::Url
+pub awaken_agent_contract::agent::content::ImageSource::Url::url: alloc::string::String
+impl core::clone::Clone for awaken_agent_contract::agent::content::ImageSource
+pub fn awaken_agent_contract::agent::content::ImageSource::clone(&self) -> awaken_agent_contract::agent::content::ImageSource
+impl core::cmp::Eq for awaken_agent_contract::agent::content::ImageSource
+impl core::cmp::PartialEq for awaken_agent_contract::agent::content::ImageSource
+pub fn awaken_agent_contract::agent::content::ImageSource::eq(&self, &awaken_agent_contract::agent::content::ImageSource) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::content::ImageSource
+pub fn awaken_agent_contract::agent::content::ImageSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::content::ImageSource
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::content::ImageSource
+pub fn awaken_agent_contract::agent::content::ImageSource::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::content::ImageSource
+pub fn awaken_agent_contract::agent::content::ImageSource::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::content::ImageSource
+impl core::marker::Send for awaken_agent_contract::agent::content::ImageSource
+impl core::marker::Sync for awaken_agent_contract::agent::content::ImageSource
+impl core::marker::Unpin for awaken_agent_contract::agent::content::ImageSource
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::content::ImageSource
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::content::ImageSource
+pub fn awaken_agent_contract::agent::content::extract_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
 pub mod awaken_agent_contract::agent::handoff
 pub struct awaken_agent_contract::agent::handoff::Handoff
 pub awaken_agent_contract::agent::handoff::Handoff::target_agent_id: alloc::string::String
@@ -154,9 +207,12 @@ impl core::marker::Unpin for awaken_agent_contract::agent::message::Id
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::message::Id
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::message::Id
 pub struct awaken_agent_contract::agent::message::Message
-pub awaken_agent_contract::agent::message::Message::content: alloc::string::String
+pub awaken_agent_contract::agent::message::Message::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::agent::message::Message::id: awaken_agent_contract::agent::message::Id
 pub awaken_agent_contract::agent::message::Message::role: awaken_agent_contract::agent::message::Role
+impl awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::text(awaken_agent_contract::agent::message::Id, awaken_agent_contract::agent::message::Role, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::agent::message::Message::text_content(&self) -> alloc::string::String
 impl core::clone::Clone for awaken_agent_contract::agent::message::Message
 pub fn awaken_agent_contract::agent::message::Message::clone(&self) -> awaken_agent_contract::agent::message::Message
 impl core::cmp::Eq for awaken_agent_contract::agent::message::Message
@@ -1124,9 +1180,12 @@ impl core::marker::Unpin for awaken_agent_contract::event::record::Record
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event::record::Record
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::record::Record
 pub struct awaken_agent_contract::Message
-pub awaken_agent_contract::Message::content: alloc::string::String
+pub awaken_agent_contract::Message::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::Message::id: awaken_agent_contract::agent::message::Id
 pub awaken_agent_contract::Message::role: awaken_agent_contract::agent::message::Role
+impl awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::text(awaken_agent_contract::agent::message::Id, awaken_agent_contract::agent::message::Role, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::agent::message::Message::text_content(&self) -> alloc::string::String
 impl core::clone::Clone for awaken_agent_contract::agent::message::Message
 pub fn awaken_agent_contract::agent::message::Message::clone(&self) -> awaken_agent_contract::agent::message::Message
 impl core::cmp::Eq for awaken_agent_contract::agent::message::Message

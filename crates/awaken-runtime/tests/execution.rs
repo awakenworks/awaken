@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -78,7 +79,7 @@ fn activation(fingerprint: &str) -> RunActivation {
         input: vec![Message {
             id: MessageId("message-1".to_string()),
             role: Role::User,
-            content: "hello".to_string(),
+            content: vec![ContentBlock::text("hello")],
         }],
         options: RunOptions {
             persistence: PersistenceMode::ReadWrite,
@@ -108,7 +109,7 @@ async fn one_model_step_commits_facts_and_streams_progress() {
     assert_eq!(commit.commit_count(), 1);
     let committed = commit.committed();
     assert_eq!(committed.messages.len(), 1);
-    assert_eq!(committed.messages[0].content, "hi there");
+    assert_eq!(committed.messages[0].text_content(), "hi there");
     assert_eq!(committed.messages[0].role, Role::Assistant);
 
     // Replay reads committed facts, not the live stream.
