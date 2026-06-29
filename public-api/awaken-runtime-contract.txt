@@ -742,6 +742,79 @@ pub trait awaken_runtime_contract::resolver::AgentSnapshotResolver
 pub fn awaken_runtime_contract::resolver::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 pub trait awaken_runtime_contract::resolver::RunResolver
 pub fn awaken_runtime_contract::resolver::RunResolver::resolve(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::resolved::ResolvedRun, awaken_runtime_contract::resolver::Error>
+pub mod awaken_runtime_contract::resume
+pub enum awaken_runtime_contract::resume::ResumeError
+pub awaken_runtime_contract::resume::ResumeError::CorrelationMismatch
+pub awaken_runtime_contract::resume::ResumeError::Expired
+pub awaken_runtime_contract::resume::ResumeError::FingerprintMismatch
+pub awaken_runtime_contract::resume::ResumeError::NotWaiting
+pub awaken_runtime_contract::resume::ResumeError::RunMismatch
+pub awaken_runtime_contract::resume::ResumeError::SnapshotMismatch
+pub awaken_runtime_contract::resume::ResumeError::ThreadMismatch
+impl core::cmp::Eq for awaken_runtime_contract::resume::ResumeError
+impl core::cmp::PartialEq for awaken_runtime_contract::resume::ResumeError
+pub fn awaken_runtime_contract::resume::ResumeError::eq(&self, &awaken_runtime_contract::resume::ResumeError) -> bool
+impl core::error::Error for awaken_runtime_contract::resume::ResumeError
+impl core::fmt::Debug for awaken_runtime_contract::resume::ResumeError
+pub fn awaken_runtime_contract::resume::ResumeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_runtime_contract::resume::ResumeError
+pub fn awaken_runtime_contract::resume::ResumeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resume::ResumeError
+impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeError
+impl core::marker::Send for awaken_runtime_contract::resume::ResumeError
+impl core::marker::Sync for awaken_runtime_contract::resume::ResumeError
+impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeError
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeError
+pub enum awaken_runtime_contract::resume::ResumeResult
+pub awaken_runtime_contract::resume::ResumeResult::Decision
+pub awaken_runtime_contract::resume::ResumeResult::Decision::allow: bool
+pub awaken_runtime_contract::resume::ResumeResult::Decision::note: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::resume::ResumeResult::Input(alloc::string::String)
+pub awaken_runtime_contract::resume::ResumeResult::ToolResult(awaken_runtime_contract::tool::ToolOutput)
+impl core::clone::Clone for awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::clone(&self) -> awaken_runtime_contract::resume::ResumeResult
+impl core::cmp::PartialEq for awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::eq(&self, &awaken_runtime_contract::resume::ResumeResult) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resume::ResumeResult
+impl serde_core::ser::Serialize for awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeResult
+impl core::marker::Send for awaken_runtime_contract::resume::ResumeResult
+impl core::marker::Sync for awaken_runtime_contract::resume::ResumeResult
+impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeResult
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeResult
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeResult
+pub struct awaken_runtime_contract::resume::ResumeCommand
+pub awaken_runtime_contract::resume::ResumeCommand::catalog_fingerprint: alloc::string::String
+pub awaken_runtime_contract::resume::ResumeCommand::correlation_id: alloc::string::String
+pub awaken_runtime_contract::resume::ResumeCommand::now_ms: u64
+pub awaken_runtime_contract::resume::ResumeCommand::result: awaken_runtime_contract::resume::ResumeResult
+pub awaken_runtime_contract::resume::ResumeCommand::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_runtime_contract::resume::ResumeCommand::snapshot_id: alloc::string::String
+pub awaken_runtime_contract::resume::ResumeCommand::thread_id: awaken_agent_contract::agent::thread::Id
+impl core::clone::Clone for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::clone(&self) -> awaken_runtime_contract::resume::ResumeCommand
+impl core::cmp::PartialEq for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::eq(&self, &awaken_runtime_contract::resume::ResumeCommand) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resume::ResumeCommand
+impl serde_core::ser::Serialize for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeCommand
+impl core::marker::Send for awaken_runtime_contract::resume::ResumeCommand
+impl core::marker::Sync for awaken_runtime_contract::resume::ResumeCommand
+impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeCommand
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeCommand
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::validate_resume(&awaken_agent_contract::agent::waiting::WaitingTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
 pub mod awaken_runtime_contract::runtime_context
 pub struct awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
@@ -993,6 +1066,52 @@ impl core::marker::Sync for awaken_runtime_contract::permission::PermissionDecis
 impl core::marker::Unpin for awaken_runtime_contract::permission::PermissionDecision
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::permission::PermissionDecision
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::permission::PermissionDecision
+pub enum awaken_runtime_contract::ResumeError
+pub awaken_runtime_contract::ResumeError::CorrelationMismatch
+pub awaken_runtime_contract::ResumeError::Expired
+pub awaken_runtime_contract::ResumeError::FingerprintMismatch
+pub awaken_runtime_contract::ResumeError::NotWaiting
+pub awaken_runtime_contract::ResumeError::RunMismatch
+pub awaken_runtime_contract::ResumeError::SnapshotMismatch
+pub awaken_runtime_contract::ResumeError::ThreadMismatch
+impl core::cmp::Eq for awaken_runtime_contract::resume::ResumeError
+impl core::cmp::PartialEq for awaken_runtime_contract::resume::ResumeError
+pub fn awaken_runtime_contract::resume::ResumeError::eq(&self, &awaken_runtime_contract::resume::ResumeError) -> bool
+impl core::error::Error for awaken_runtime_contract::resume::ResumeError
+impl core::fmt::Debug for awaken_runtime_contract::resume::ResumeError
+pub fn awaken_runtime_contract::resume::ResumeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_runtime_contract::resume::ResumeError
+pub fn awaken_runtime_contract::resume::ResumeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resume::ResumeError
+impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeError
+impl core::marker::Send for awaken_runtime_contract::resume::ResumeError
+impl core::marker::Sync for awaken_runtime_contract::resume::ResumeError
+impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeError
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeError
+pub enum awaken_runtime_contract::ResumeResult
+pub awaken_runtime_contract::ResumeResult::Decision
+pub awaken_runtime_contract::ResumeResult::Decision::allow: bool
+pub awaken_runtime_contract::ResumeResult::Decision::note: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::ResumeResult::Input(alloc::string::String)
+pub awaken_runtime_contract::ResumeResult::ToolResult(awaken_runtime_contract::tool::ToolOutput)
+impl core::clone::Clone for awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::clone(&self) -> awaken_runtime_contract::resume::ResumeResult
+impl core::cmp::PartialEq for awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::eq(&self, &awaken_runtime_contract::resume::ResumeResult) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resume::ResumeResult
+impl serde_core::ser::Serialize for awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeResult
+impl core::marker::Send for awaken_runtime_contract::resume::ResumeResult
+impl core::marker::Sync for awaken_runtime_contract::resume::ResumeResult
+impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeResult
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeResult
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeResult
 pub struct awaken_runtime_contract::CatalogFingerprint(pub alloc::string::String)
 impl core::clone::Clone for awaken_runtime_contract::resolved::CatalogFingerprint
 pub fn awaken_runtime_contract::resolved::CatalogFingerprint::clone(&self) -> awaken_runtime_contract::resolved::CatalogFingerprint
@@ -1120,6 +1239,31 @@ impl core::marker::Sync for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::marker::Unpin for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ResolvedSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ResolvedSpec
+pub struct awaken_runtime_contract::ResumeCommand
+pub awaken_runtime_contract::ResumeCommand::catalog_fingerprint: alloc::string::String
+pub awaken_runtime_contract::ResumeCommand::correlation_id: alloc::string::String
+pub awaken_runtime_contract::ResumeCommand::now_ms: u64
+pub awaken_runtime_contract::ResumeCommand::result: awaken_runtime_contract::resume::ResumeResult
+pub awaken_runtime_contract::ResumeCommand::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_runtime_contract::ResumeCommand::snapshot_id: alloc::string::String
+pub awaken_runtime_contract::ResumeCommand::thread_id: awaken_agent_contract::agent::thread::Id
+impl core::clone::Clone for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::clone(&self) -> awaken_runtime_contract::resume::ResumeCommand
+impl core::cmp::PartialEq for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::eq(&self, &awaken_runtime_contract::resume::ResumeCommand) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resume::ResumeCommand
+impl serde_core::ser::Serialize for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::resume::ResumeCommand
+impl core::marker::Send for awaken_runtime_contract::resume::ResumeCommand
+impl core::marker::Sync for awaken_runtime_contract::resume::ResumeCommand
+impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeCommand
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeCommand
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeCommand
 pub struct awaken_runtime_contract::RunActivation
 pub awaken_runtime_contract::RunActivation::input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::RunActivation::options: awaken_runtime_contract::activation::RunOptions
@@ -1282,3 +1426,4 @@ pub trait awaken_runtime_contract::ToolExecutor: core::marker::Send + core::mark
 pub fn awaken_runtime_contract::ToolExecutor::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::ToolGateHook: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::ToolGateHook::gate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::validate_resume(&awaken_agent_contract::agent::waiting::WaitingTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>

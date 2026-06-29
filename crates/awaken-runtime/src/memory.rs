@@ -6,6 +6,7 @@
 //! become truth, while durable facts/events/messages are written atomically by
 //! [`MemoryCommitCoordinator`] and read back for replay (G1/G13).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -13,11 +14,13 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle, Record as RunRecord};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::commit::coordinator::{Coordinator as CommitCoordinator, Error};
 use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::event::record::Record as EventRecord;
 use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink as StreamSink};
 
@@ -37,6 +40,9 @@ pub struct CommittedThread {
 struct CommitState {
     sequence: u64,
     thread: CommittedThread,
+    /// Active waiting tickets keyed by run; present only while a run is parked,
+    /// so a resume against a terminal/resumed run finds nothing (fail closed).
+    waiting: HashMap<RunId, WaitingTicket>,
 }
 
 /// In-memory atomic commit boundary. Each `commit` appends messages, facts, and
@@ -63,6 +69,14 @@ impl MemoryCommitCoordinator {
     pub fn commit_count(&self) -> u64 {
         self.state.lock().map(|state| state.sequence).unwrap_or(0)
     }
+
+    /// The active waiting ticket for a run, if it is currently parked.
+    pub fn waiting_for(&self, run_id: &RunId) -> Option<WaitingTicket> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.waiting.get(run_id).cloned())
+    }
 }
 
 #[async_trait]
@@ -76,6 +90,18 @@ impl CommitCoordinator for MemoryCommitCoordinator {
         let next = state.sequence + 1;
         let run_id = commit.run_fact.run_id.clone();
         let lifecycle = commit.run_fact.lifecycle.clone();
+
+        // Park or clear the waiting ticket atomically with the checkpoint: a
+        // `Some` ticket parks the run; any non-Waiting lifecycle clears it so a
+        // resumed/terminal run can no longer be resumed (G5).
+        match (&commit.waiting, &lifecycle) {
+            (Some(ticket), Lifecycle::Waiting) => {
+                state.waiting.insert(run_id.clone(), ticket.clone());
+            }
+            _ => {
+                state.waiting.remove(&run_id);
+            }
+        }
 
         let thread = &mut state.thread;
         thread.thread_id = Some(commit.thread_id.clone());
@@ -108,6 +134,22 @@ impl RunStore for MemoryCommitCoordinator {
         self.committed()
             .latest_run
             .filter(|record| &record.id == id)
+    }
+}
+
+/// Committed thread truth is readable for resume through the contract read port:
+/// the transcript and the active waiting ticket, never the live sink (G1/G13).
+impl ThreadReader for MemoryCommitCoordinator {
+    fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
+        let committed = self.committed();
+        match committed.thread_id {
+            Some(id) if &id == thread_id => committed.messages,
+            _ => Vec::new(),
+        }
+    }
+
+    fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
+        self.waiting_for(run_id)
     }
 }
 

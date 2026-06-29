@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_runtime_contract::capability::RuntimeCapabilitySource;
 use awaken_runtime_contract::catalog::{
     InstalledCatalog, RuntimeCatalogInstall, RuntimeCatalogInstaller,
@@ -109,6 +110,21 @@ impl Runtime {
             .and_then(|catalog| catalog.as_ref().map(|install| install.fingerprint.clone()))
     }
 
+    /// Resume a parked run from a validated `ResumeCommand`. The reader supplies
+    /// the committed transcript and the active waiting ticket; the resume fails
+    /// closed unless every identity in the ticket matches (G5/G28).
+    pub async fn resume(
+        &self,
+        command: awaken_runtime_contract::resume::ResumeCommand,
+        reader: &dyn ThreadReader,
+        context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<
+        awaken_runtime_contract::execution::RunOutcome,
+        awaken_runtime_contract::execution::Error,
+    > {
+        crate::engine::resume_run(self, command, reader, context).await
+    }
+
     pub(crate) fn snapshot_by_id(
         &self,
         id: &ExecutableAgentSnapshotId,
@@ -186,8 +202,9 @@ impl LiveRunControl for Runtime {
                 token.cancel();
                 Ok(())
             }
-            // Waiting/resume is not yet implemented; a wake on a live run is a
-            // no-op rather than a hard failure.
+            // Wake is a live nudge for an in-flight run. Durable resume of a
+            // parked run goes through `Runtime::resume` with a validated
+            // `ResumeCommand`, not this live channel, so wake stays a no-op.
             LiveCommand::Wake { .. } => Ok(()),
         }
     }

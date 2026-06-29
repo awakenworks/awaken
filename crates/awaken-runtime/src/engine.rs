@@ -1,18 +1,22 @@
 //! The async agent execution loop.
 //!
 //! `execute` resolves the activation, runs the model/tool phase loop, stages a
-//! `ThreadCommit`, and commits durable truth. Live progress is emitted to the
-//! stream sink as a best-effort plane; it is never the replay source (G1/G13).
+//! `ThreadCommit`, and commits durable truth. A run can park on a gate `Suspend`
+//! by committing a `WaitingTicket`, then `resume` validates a `ResumeCommand`
+//! against it and continues. Live progress is best-effort and never the replay
+//! source (G1/G13).
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
 use awaken_agent_contract::agent::state::{Command as StateCommand, validate_batch};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingTicket};
 use awaken_agent_contract::commit::staged::ThreadCommit;
 use awaken_agent_contract::event::draft::Draft as EventDraft;
 use awaken_agent_contract::event::kind::Kind as EventKind;
 use awaken_agent_contract::fact::run::Fact as RunFact;
+use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamKind};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor, RunOutcome};
@@ -20,9 +24,11 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatContent, ChatMessage, ChatRequest, ChatRole, ToolCall, ToolSchema,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
-use awaken_runtime_contract::resolved::{ResolvedSpec, ToolDescriptor};
+use awaken_runtime_contract::resolved::{ResolvedRun, ResolvedSpec, ToolDescriptor};
 use awaken_runtime_contract::resolver::{self, RunResolver};
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
 use awaken_runtime_contract::tool::ToolOutput;
 
 use crate::runtime::Runtime;
@@ -30,6 +36,10 @@ use crate::runtime::Runtime;
 /// Upper bound on model/tool steps for one run. A natural-end text turn ends the
 /// loop earlier; the bound only guards against a non-terminating tool cycle.
 const MAX_STEPS: usize = 16;
+
+/// Message-id base for messages produced by a resumed attempt, kept distinct
+/// from the original attempt's ids.
+const RESUME_STEP_BASE: usize = 1_000;
 
 #[async_trait]
 impl RunExecutor for Runtime {
@@ -65,30 +75,130 @@ pub(crate) async fn run_agent_loop(
     // Cancellation observed before any model call: commit a terminal Cancelled
     // outcome instead of starting work.
     if context.is_cancelled() {
-        return finish(
-            &context,
-            &thread_id,
-            run_id,
-            Lifecycle::Cancelled,
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
+        return finish(&context, &thread_id, run_id, Outcome::cancelled()).await;
     }
 
     emit(&context, &run_id, StreamKind::RunStarted).await;
 
+    let transcript = activation.input.clone();
+    let outcome = drive(
+        runtime,
+        &resolved,
+        &run_id,
+        &context,
+        transcript,
+        Vec::new(),
+        0,
+    )
+    .await?;
+    finalize(&context, &thread_id, run_id, outcome).await
+}
+
+/// Resume a parked run: validate the resume against the committed ticket, rebuild
+/// the transcript from committed messages, inject the resumed result, and drive
+/// the loop to a new terminal/parked state (G5/G28).
+pub(crate) async fn resume_run(
+    runtime: &Runtime,
+    command: ResumeCommand,
+    reader: &dyn ThreadReader,
+    context: RuntimeRunContext,
+) -> Result<RunOutcome> {
+    let ticket = reader
+        .waiting_ticket(&command.run_id)
+        .ok_or_else(|| Error::Execution("run is not waiting".to_string()))?;
+    validate_resume(&ticket, &command).map_err(|err| Error::Execution(err.to_string()))?;
+
+    let snapshot = runtime
+        .snapshot_by_id(&ExecutableAgentSnapshotId(ticket.snapshot_id.clone()))
+        .ok_or_else(|| Error::Resolution("snapshot for resume not found".to_string()))?;
+    let resolved = runtime.resolve(&snapshot).map_err(map_resolver_error)?;
+
+    let run_id = command.run_id.clone();
+    let thread_id = command.thread_id.clone();
+
+    emit(&context, &run_id, StreamKind::RunStarted).await;
+
+    // Rebuild the transcript from committed truth and apply the resumed result.
+    let mut transcript = reader.committed_messages(&thread_id);
+    let (resumed, seed_state) = resume_into_messages(runtime, &ticket, command.result).await;
+    transcript.extend(resumed.iter().cloned());
+
+    let mut outcome = drive(
+        runtime,
+        &resolved,
+        &run_id,
+        &context,
+        transcript,
+        resumed,
+        RESUME_STEP_BASE,
+    )
+    .await?;
+    // State staged by the resumed tool itself is committed too (kept first).
+    let mut combined = seed_state;
+    combined.append(&mut outcome.staged_state);
+    outcome.staged_state = combined;
+
+    finalize(&context, &thread_id, run_id, outcome).await
+}
+
+/// Validate the staged state batch, then commit. A conflict fails closed and no
+/// state is committed (G13).
+async fn finalize(
+    context: &RuntimeRunContext,
+    thread_id: &ThreadId,
+    run_id: RunId,
+    outcome: Outcome,
+) -> Result<RunOutcome> {
+    if !outcome.staged_state.is_empty() && validate_batch(&outcome.staged_state).is_err() {
+        let failed = Outcome {
+            lifecycle: Lifecycle::Failed,
+            staged_state: Vec::new(),
+            waiting: None,
+            ..outcome
+        };
+        return finish(context, thread_id, run_id, failed).await;
+    }
+    finish(context, thread_id, run_id, outcome).await
+}
+
+/// The result of driving the loop for one attempt.
+struct Outcome {
+    lifecycle: Lifecycle,
+    new_messages: Vec<Message>,
+    staged_state: Vec<StateCommand>,
+    waiting: Option<WaitingTicket>,
+}
+
+impl Outcome {
+    fn cancelled() -> Self {
+        Self {
+            lifecycle: Lifecycle::Cancelled,
+            new_messages: Vec::new(),
+            staged_state: Vec::new(),
+            waiting: None,
+        }
+    }
+}
+
+/// Run the model/tool loop over a prepared transcript. Shared by fresh execution
+/// and resume; the caller seeds the transcript and the already-produced messages.
+#[allow(clippy::too_many_arguments)]
+async fn drive(
+    runtime: &Runtime,
+    resolved: &ResolvedRun,
+    run_id: &RunId,
+    context: &RuntimeRunContext,
+    mut transcript: Vec<Message>,
+    mut new_messages: Vec<Message>,
+    step_base: usize,
+) -> Result<Outcome> {
     let llm = runtime.llm().ok_or_else(|| {
         Error::Execution("no model provider configured for this runtime".to_string())
     })?;
 
-    // The transcript starts from the activation input; new assistant/tool
-    // messages and any staged state transitions are collected for the commit.
-    let mut transcript: Vec<Message> = activation.input.clone();
-    let mut new_messages: Vec<Message> = Vec::new();
     let mut staged_state: Vec<StateCommand> = Vec::new();
-
     let mut lifecycle = Lifecycle::Completed;
+    let mut waiting: Option<WaitingTicket> = None;
 
     for step in 0..MAX_STEPS {
         if context.is_cancelled() {
@@ -112,24 +222,21 @@ pub(crate) async fn run_agent_loop(
         match response.output {
             AssistantOutput::Text(text) => {
                 emit(
-                    &context,
-                    &run_id,
+                    context,
+                    run_id,
                     StreamKind::OutputText { text: text.clone() },
                 )
                 .await;
-                let message = assistant_message(&run_id, step, text);
+                let message = assistant_message(run_id, step_base + step, text);
                 transcript.push(message.clone());
                 new_messages.push(message);
                 break;
             }
             AssistantOutput::ToolCalls(calls) => {
-                // Record the assistant's tool-call turn, then run each call
-                // through the gate before execution (visibility != grant, G9/G21).
-                let assistant = assistant_tool_call_message(&run_id, step, &calls);
+                let assistant = assistant_tool_call_message(run_id, step_base + step, &calls);
                 transcript.push(assistant.clone());
                 new_messages.push(assistant);
 
-                let mut suspended = false;
                 for call in calls {
                     let output = match gate_decision(runtime, &call).await {
                         GateOutcome::Allow => execute_tool(runtime, &call).await,
@@ -137,51 +244,107 @@ pub(crate) async fn run_agent_loop(
                             ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
                         }
                         GateOutcome::SetResult(output) => output,
-                        GateOutcome::Suspend { .. } => {
-                            suspended = true;
+                        GateOutcome::Suspend { ticket_id } => {
+                            // Park the run on a structured ticket carrying the
+                            // pending call so an allow decision can run it later.
+                            waiting = Some(waiting_ticket(resolved, run_id, &ticket_id, &call));
+                            lifecycle = Lifecycle::Waiting;
+                            emit(
+                                context,
+                                run_id,
+                                StreamKind::Waiting {
+                                    reason: "tool_permission".to_string(),
+                                },
+                            )
+                            .await;
                             break;
                         }
                     };
-                    // Tools stage state transitions onto the commit boundary
-                    // (the same path hooks use); they never write a store.
                     staged_state.extend(output.state.clone());
                     let message = tool_result_message(&call, &output);
                     transcript.push(message.clone());
                     new_messages.push(message);
                 }
 
-                if suspended {
-                    lifecycle = Lifecycle::Waiting;
+                if waiting.is_some() {
                     break;
                 }
-                // Otherwise continue to the next model step with the results.
             }
         }
     }
 
-    // Fail closed if an exclusive state key was written twice in this batch: a
-    // conflicting batch is never committed (G13).
-    if !staged_state.is_empty() && validate_batch(&staged_state).is_err() {
-        return finish(
-            &context,
-            &thread_id,
-            run_id,
-            Lifecycle::Failed,
-            new_messages,
-            Vec::new(),
-        )
-        .await;
-    }
-
-    finish(
-        &context,
-        &thread_id,
-        run_id,
+    Ok(Outcome {
         lifecycle,
         new_messages,
         staged_state,
-    )
-    .await
+        waiting,
+    })
+}
+
+/// Build the committed ticket for a parked tool call.
+fn waiting_ticket(
+    resolved: &ResolvedRun,
+    run_id: &RunId,
+    ticket_id: &str,
+    call: &ToolCall,
+) -> WaitingTicket {
+    WaitingTicket {
+        correlation_id: ticket_id.to_string(),
+        run_id: run_id.clone(),
+        thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
+        snapshot_id: resolved.snapshot_id.0.clone(),
+        catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
+        reason: WaitingReason::ToolPermission,
+        call_id: Some(call.call_id.clone()),
+        pending_tool: Some(PendingTool {
+            tool_id: call.tool_id.clone(),
+            arguments: call.arguments.clone(),
+        }),
+        deadline_ms: None,
+    }
+}
+
+/// Turn a resumed result into the tool/user message(s) and any staged state.
+/// An `allow` decision executes the pending tool now; a `deny` feeds a blocked
+/// result; a `ToolResult`/`Input` is used directly.
+async fn resume_into_messages(
+    runtime: &Runtime,
+    ticket: &WaitingTicket,
+    result: ResumeResult,
+) -> (Vec<Message>, Vec<StateCommand>) {
+    let call_id = ticket.call_id.clone().unwrap_or_default();
+    match result {
+        ResumeResult::ToolResult(output) => {
+            let state = output.state.clone();
+            (vec![tool_message(&call_id, &output.content)], state)
+        }
+        ResumeResult::Decision { allow, note } => {
+            if allow && let Some(pending) = &ticket.pending_tool {
+                let call = ToolCall {
+                    call_id: call_id.clone(),
+                    tool_id: pending.tool_id.clone(),
+                    arguments: pending.arguments.clone(),
+                };
+                let output = execute_tool(runtime, &call).await;
+                let state = output.state.clone();
+                (vec![tool_message(&call_id, &output.content)], state)
+            } else {
+                let reason = note.unwrap_or_else(|| "denied".to_string());
+                (
+                    vec![tool_message(&call_id, &format!("blocked: {reason}"))],
+                    Vec::new(),
+                )
+            }
+        }
+        ResumeResult::Input(text) => (
+            vec![Message {
+                id: MessageId(format!("resume-input-{call_id}")),
+                role: Role::User,
+                content: text,
+            }],
+            Vec::new(),
+        ),
+    }
 }
 
 /// Consult the permission gate; an absent gate allows (used only in tests).
@@ -268,10 +431,14 @@ fn assistant_tool_call_message(run_id: &RunId, step: usize, calls: &[ToolCall]) 
 }
 
 fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Message {
+    tool_message(&call.call_id, &output.content)
+}
+
+fn tool_message(call_id: &str, content: &str) -> Message {
     Message {
-        id: MessageId(format!("tool-{}", call.call_id)),
+        id: MessageId(format!("tool-{call_id}")),
         role: Role::Tool,
-        content: output.content.clone(),
+        content: content.to_string(),
     }
 }
 
@@ -288,27 +455,41 @@ async fn emit(context: &RuntimeRunContext, run_id: &RunId, kind: StreamKind) {
     }
 }
 
-/// Stage and commit the terminal checkpoint, emit `RunFinished`, and return the
-/// outcome. Commit only runs when a coordinator is wired and persistence is on.
+/// Stage and commit the terminal/parked checkpoint, emit `RunFinished`, and
+/// return the outcome. Commit only runs when a coordinator is wired.
 async fn finish(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
     run_id: RunId,
-    lifecycle: Lifecycle,
-    new_messages: Vec<Message>,
-    state: Vec<StateCommand>,
+    outcome: Outcome,
 ) -> Result<RunOutcome> {
+    let Outcome {
+        lifecycle,
+        new_messages,
+        staged_state,
+        waiting,
+    } = outcome;
+
     if let Some(coordinator) = &context.commit {
-        // A non-empty state batch records a StateChanged event alongside the
-        // lifecycle event, in the same atomic commit (G1/G13).
         let mut events = vec![EventDraft {
             kind: EventKind::RunLifecycleChanged,
             payload: serde_json::json!({ "lifecycle": lifecycle }),
         }];
-        if !state.is_empty() {
+        if !staged_state.is_empty() {
             events.push(EventDraft {
                 kind: EventKind::StateChanged,
-                payload: serde_json::json!({ "commands": state.len() }),
+                payload: serde_json::json!({ "commands": staged_state.len() }),
+            });
+        }
+        // The ticket carries the real thread id only at commit time.
+        let waiting = waiting.map(|mut ticket| {
+            ticket.thread_id = thread_id.clone();
+            ticket
+        });
+        if waiting.is_some() {
+            events.push(EventDraft {
+                kind: EventKind::RunWaiting,
+                payload: serde_json::json!({ "run_id": run_id.0 }),
             });
         }
         let commit = ThreadCommit {
@@ -318,8 +499,9 @@ async fn finish(
                 lifecycle: lifecycle.clone(),
             },
             messages: new_messages,
-            state,
+            state: staged_state,
             events,
+            waiting,
         };
         coordinator
             .commit(commit)

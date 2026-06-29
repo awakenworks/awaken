@@ -627,6 +627,79 @@ impl core::marker::Sync for awaken_agent_contract::agent::turn::Turn
 impl core::marker::Unpin for awaken_agent_contract::agent::turn::Turn
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::turn::Turn
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::turn::Turn
+pub mod awaken_agent_contract::agent::waiting
+pub enum awaken_agent_contract::agent::waiting::WaitingReason
+pub awaken_agent_contract::agent::waiting::WaitingReason::BackgroundTasks
+pub awaken_agent_contract::agent::waiting::WaitingReason::ExternalEvent
+pub awaken_agent_contract::agent::waiting::WaitingReason::ManualPause
+pub awaken_agent_contract::agent::waiting::WaitingReason::RateLimit
+pub awaken_agent_contract::agent::waiting::WaitingReason::ToolPermission
+pub awaken_agent_contract::agent::waiting::WaitingReason::UserInput
+impl core::clone::Clone for awaken_agent_contract::agent::waiting::WaitingReason
+pub fn awaken_agent_contract::agent::waiting::WaitingReason::clone(&self) -> awaken_agent_contract::agent::waiting::WaitingReason
+impl core::cmp::Eq for awaken_agent_contract::agent::waiting::WaitingReason
+impl core::cmp::PartialEq for awaken_agent_contract::agent::waiting::WaitingReason
+pub fn awaken_agent_contract::agent::waiting::WaitingReason::eq(&self, &awaken_agent_contract::agent::waiting::WaitingReason) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::waiting::WaitingReason
+pub fn awaken_agent_contract::agent::waiting::WaitingReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::waiting::WaitingReason
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::waiting::WaitingReason
+pub fn awaken_agent_contract::agent::waiting::WaitingReason::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::waiting::WaitingReason
+pub fn awaken_agent_contract::agent::waiting::WaitingReason::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::waiting::WaitingReason
+impl core::marker::Send for awaken_agent_contract::agent::waiting::WaitingReason
+impl core::marker::Sync for awaken_agent_contract::agent::waiting::WaitingReason
+impl core::marker::Unpin for awaken_agent_contract::agent::waiting::WaitingReason
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::waiting::WaitingReason
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::waiting::WaitingReason
+pub struct awaken_agent_contract::agent::waiting::PendingTool
+pub awaken_agent_contract::agent::waiting::PendingTool::arguments: serde_json::value::Value
+pub awaken_agent_contract::agent::waiting::PendingTool::tool_id: alloc::string::String
+impl core::clone::Clone for awaken_agent_contract::agent::waiting::PendingTool
+pub fn awaken_agent_contract::agent::waiting::PendingTool::clone(&self) -> awaken_agent_contract::agent::waiting::PendingTool
+impl core::cmp::PartialEq for awaken_agent_contract::agent::waiting::PendingTool
+pub fn awaken_agent_contract::agent::waiting::PendingTool::eq(&self, &awaken_agent_contract::agent::waiting::PendingTool) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::waiting::PendingTool
+pub fn awaken_agent_contract::agent::waiting::PendingTool::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::waiting::PendingTool
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::waiting::PendingTool
+pub fn awaken_agent_contract::agent::waiting::PendingTool::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::waiting::PendingTool
+pub fn awaken_agent_contract::agent::waiting::PendingTool::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::waiting::PendingTool
+impl core::marker::Send for awaken_agent_contract::agent::waiting::PendingTool
+impl core::marker::Sync for awaken_agent_contract::agent::waiting::PendingTool
+impl core::marker::Unpin for awaken_agent_contract::agent::waiting::PendingTool
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::waiting::PendingTool
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::waiting::PendingTool
+pub struct awaken_agent_contract::agent::waiting::WaitingTicket
+pub awaken_agent_contract::agent::waiting::WaitingTicket::call_id: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::agent::waiting::WaitingTicket::catalog_fingerprint: alloc::string::String
+pub awaken_agent_contract::agent::waiting::WaitingTicket::correlation_id: alloc::string::String
+pub awaken_agent_contract::agent::waiting::WaitingTicket::deadline_ms: core::option::Option<u64>
+pub awaken_agent_contract::agent::waiting::WaitingTicket::pending_tool: core::option::Option<awaken_agent_contract::agent::waiting::PendingTool>
+pub awaken_agent_contract::agent::waiting::WaitingTicket::reason: awaken_agent_contract::agent::waiting::WaitingReason
+pub awaken_agent_contract::agent::waiting::WaitingTicket::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::agent::waiting::WaitingTicket::snapshot_id: alloc::string::String
+pub awaken_agent_contract::agent::waiting::WaitingTicket::thread_id: awaken_agent_contract::agent::thread::Id
+impl core::clone::Clone for awaken_agent_contract::agent::waiting::WaitingTicket
+pub fn awaken_agent_contract::agent::waiting::WaitingTicket::clone(&self) -> awaken_agent_contract::agent::waiting::WaitingTicket
+impl core::cmp::PartialEq for awaken_agent_contract::agent::waiting::WaitingTicket
+pub fn awaken_agent_contract::agent::waiting::WaitingTicket::eq(&self, &awaken_agent_contract::agent::waiting::WaitingTicket) -> bool
+impl core::fmt::Debug for awaken_agent_contract::agent::waiting::WaitingTicket
+pub fn awaken_agent_contract::agent::waiting::WaitingTicket::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::agent::waiting::WaitingTicket
+impl serde_core::ser::Serialize for awaken_agent_contract::agent::waiting::WaitingTicket
+pub fn awaken_agent_contract::agent::waiting::WaitingTicket::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::agent::waiting::WaitingTicket
+pub fn awaken_agent_contract::agent::waiting::WaitingTicket::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_agent_contract::agent::waiting::WaitingTicket
+impl core::marker::Send for awaken_agent_contract::agent::waiting::WaitingTicket
+impl core::marker::Sync for awaken_agent_contract::agent::waiting::WaitingTicket
+impl core::marker::Unpin for awaken_agent_contract::agent::waiting::WaitingTicket
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::waiting::WaitingTicket
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::waiting::WaitingTicket
 pub mod awaken_agent_contract::commit
 pub mod awaken_agent_contract::commit::coordinator
 pub enum awaken_agent_contract::commit::coordinator::Error
@@ -671,6 +744,7 @@ pub awaken_agent_contract::commit::staged::ThreadCommit::messages: alloc::vec::V
 pub awaken_agent_contract::commit::staged::ThreadCommit::run_fact: awaken_agent_contract::fact::run::Fact
 pub awaken_agent_contract::commit::staged::ThreadCommit::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub awaken_agent_contract::commit::staged::ThreadCommit::thread_id: awaken_agent_contract::agent::thread::Id
+pub awaken_agent_contract::commit::staged::ThreadCommit::waiting: core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
 impl core::clone::Clone for awaken_agent_contract::commit::staged::ThreadCommit
 pub fn awaken_agent_contract::commit::staged::ThreadCommit::clone(&self) -> awaken_agent_contract::commit::staged::ThreadCommit
 impl core::cmp::PartialEq for awaken_agent_contract::commit::staged::ThreadCommit
@@ -898,6 +972,10 @@ pub fn awaken_agent_contract::store::fact_log::FactLog::append_run(&self, awaken
 pub mod awaken_agent_contract::store::run_store
 pub trait awaken_agent_contract::store::run_store::RunStore
 pub fn awaken_agent_contract::store::run_store::RunStore::get(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub mod awaken_agent_contract::store::thread_reader
+pub trait awaken_agent_contract::store::thread_reader::ThreadReader: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::store::thread_reader::ThreadReader::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub fn awaken_agent_contract::store::thread_reader::ThreadReader::waiting_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
 pub mod awaken_agent_contract::stream
 pub mod awaken_agent_contract::stream::event
 pub enum awaken_agent_contract::stream::event::Kind
