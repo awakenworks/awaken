@@ -129,7 +129,13 @@ The following should not be implemented as broad subsystems from these docs alon
 
 - a product-first managed crate family as the core architecture;
 - a universal execution abstraction that replaces `RunIngress` or durable ingress
-  internals before a concrete server slice requires it;
+  internals before a concrete server slice requires it. The shipped surface is
+  `DirectRunIngress` plus a fail-closed `submit_background` (tested); a real
+  `DurableRunIngress` is deferred until a durable `CommitCoordinator` backend
+  exists — the in-memory coordinator is the only backend today, so a durable
+  queue/worker would have nothing to persist to. The commit contract such a
+  backend must satisfy is fixed by
+  [ADR-0006](adr/0006-fact-authority-run-record-is-cache.md);
 - product-specific vaults, sessions, and outcome fields inside runtime crates.
 - a manager/controller that owns config loading, registry compilation, catalog
   install, live control, and execution as one runtime object;
