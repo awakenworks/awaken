@@ -42,4 +42,83 @@ impl core::marker::Sync for awaken_ext_builtin_tools::BuiltinTool
 impl core::marker::Unpin for awaken_ext_builtin_tools::BuiltinTool
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::BuiltinTool
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::BuiltinTool
+pub struct awaken_ext_builtin_tools::Erased<T>(pub T)
+impl<T: awaken_runtime_contract::tool::Tool> awaken_runtime_contract::tool::RawTool for awaken_ext_builtin_tools::Erased<T>
+pub fn awaken_ext_builtin_tools::Erased<T>::id(&self) -> &str
+pub fn awaken_ext_builtin_tools::Erased<T>::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl<T> core::marker::Freeze for awaken_ext_builtin_tools::Erased<T> where T: core::marker::Freeze
+impl<T> core::marker::Send for awaken_ext_builtin_tools::Erased<T> where T: core::marker::Send
+impl<T> core::marker::Sync for awaken_ext_builtin_tools::Erased<T> where T: core::marker::Sync
+impl<T> core::marker::Unpin for awaken_ext_builtin_tools::Erased<T> where T: core::marker::Unpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::Erased<T> where T: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::Erased<T> where T: core::panic::unwind_safe::UnwindSafe
+pub struct awaken_ext_builtin_tools::GlobArgs
+pub awaken_ext_builtin_tools::GlobArgs::pattern: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_builtin_tools::GlobArgs
+pub fn awaken_ext_builtin_tools::GlobArgs::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_builtin_tools::GlobArgs
+impl core::marker::Send for awaken_ext_builtin_tools::GlobArgs
+impl core::marker::Sync for awaken_ext_builtin_tools::GlobArgs
+impl core::marker::Unpin for awaken_ext_builtin_tools::GlobArgs
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::GlobArgs
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::GlobArgs
+pub struct awaken_ext_builtin_tools::GlobTool
+impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::GlobTool
+pub type awaken_ext_builtin_tools::GlobTool::Args = awaken_ext_builtin_tools::GlobArgs
+pub type awaken_ext_builtin_tools::GlobTool::Output = alloc::string::String
+pub fn awaken_ext_builtin_tools::GlobTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::GlobArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_builtin_tools::GlobTool::id(&self) -> &str
+impl core::marker::Freeze for awaken_ext_builtin_tools::GlobTool
+impl core::marker::Send for awaken_ext_builtin_tools::GlobTool
+impl core::marker::Sync for awaken_ext_builtin_tools::GlobTool
+impl core::marker::Unpin for awaken_ext_builtin_tools::GlobTool
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::GlobTool
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::GlobTool
+pub struct awaken_ext_builtin_tools::GrepArgs
+pub awaken_ext_builtin_tools::GrepArgs::path: alloc::string::String
+pub awaken_ext_builtin_tools::GrepArgs::pattern: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_builtin_tools::GrepArgs
+pub fn awaken_ext_builtin_tools::GrepArgs::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_builtin_tools::GrepArgs
+impl core::marker::Send for awaken_ext_builtin_tools::GrepArgs
+impl core::marker::Sync for awaken_ext_builtin_tools::GrepArgs
+impl core::marker::Unpin for awaken_ext_builtin_tools::GrepArgs
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::GrepArgs
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::GrepArgs
+pub struct awaken_ext_builtin_tools::GrepTool
+impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::GrepTool
+pub type awaken_ext_builtin_tools::GrepTool::Args = awaken_ext_builtin_tools::GrepArgs
+pub type awaken_ext_builtin_tools::GrepTool::Output = alloc::string::String
+pub fn awaken_ext_builtin_tools::GrepTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::GrepArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_builtin_tools::GrepTool::id(&self) -> &str
+impl core::marker::Freeze for awaken_ext_builtin_tools::GrepTool
+impl core::marker::Send for awaken_ext_builtin_tools::GrepTool
+impl core::marker::Sync for awaken_ext_builtin_tools::GrepTool
+impl core::marker::Unpin for awaken_ext_builtin_tools::GrepTool
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::GrepTool
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::GrepTool
+pub struct awaken_ext_builtin_tools::ReadArgs
+pub awaken_ext_builtin_tools::ReadArgs::path: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_builtin_tools::ReadArgs
+pub fn awaken_ext_builtin_tools::ReadArgs::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_builtin_tools::ReadArgs
+impl core::marker::Send for awaken_ext_builtin_tools::ReadArgs
+impl core::marker::Sync for awaken_ext_builtin_tools::ReadArgs
+impl core::marker::Unpin for awaken_ext_builtin_tools::ReadArgs
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::ReadArgs
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::ReadArgs
+pub struct awaken_ext_builtin_tools::ReadTool
+impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::ReadTool
+pub type awaken_ext_builtin_tools::ReadTool::Args = awaken_ext_builtin_tools::ReadArgs
+pub type awaken_ext_builtin_tools::ReadTool::Output = alloc::string::String
+pub fn awaken_ext_builtin_tools::ReadTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::ReadArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_builtin_tools::ReadTool::id(&self) -> &str
+impl core::marker::Freeze for awaken_ext_builtin_tools::ReadTool
+impl core::marker::Send for awaken_ext_builtin_tools::ReadTool
+impl core::marker::Sync for awaken_ext_builtin_tools::ReadTool
+impl core::marker::Unpin for awaken_ext_builtin_tools::ReadTool
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_builtin_tools::ReadTool
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_builtin_tools::ReadTool
 pub fn awaken_ext_builtin_tools::builtin_tools() -> alloc::vec::Vec<awaken_ext_builtin_tools::BuiltinTool>
+pub fn awaken_ext_builtin_tools::erase<T: awaken_runtime_contract::tool::Tool + 'static>(T) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>
+pub fn awaken_ext_builtin_tools::executable_hand_tools() -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
