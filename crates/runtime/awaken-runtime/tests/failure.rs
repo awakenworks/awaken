@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -129,24 +129,30 @@ async fn permanent_inference_error_commits_a_terminal_failed_reason() {
     let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
-    assert_eq!(outcome.lifecycle, Lifecycle::Failed);
+    assert!(matches!(
+        outcome,
+        Phase::Ended(EndCause::Error(Failure::Inference(_)))
+    ));
     // A permanent error is not retried.
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let committed = commit.committed();
-    assert_eq!(committed.latest_run.unwrap().lifecycle, Lifecycle::Failed);
-    // The terminal reason is recorded in the lifecycle event payload.
-    let lifecycle_event = committed
+    assert!(matches!(
+        committed.latest_run.unwrap().phase,
+        Phase::Ended(EndCause::Error(Failure::Inference(_)))
+    ));
+    // The terminal reason is recorded in the phase event payload.
+    let phase_event = committed
         .events
         .iter()
         .find(|e| {
             matches!(
                 e.kind,
-                awaken_agent_contract::event::kind::Kind::RunLifecycleChanged
+                awaken_agent_contract::event::kind::Kind::RunPhaseChanged
             )
         })
-        .expect("a lifecycle event");
-    assert!(lifecycle_event.payload.to_string().contains("bad api key"));
+        .expect("a phase event");
+    assert!(phase_event.payload.to_string().contains("bad api key"));
 }
 
 #[tokio::test]
@@ -163,7 +169,10 @@ async fn transient_error_is_retried_until_exhausted_then_failed() {
     let context = RuntimeRunContext::new(PersistenceMode::Disabled);
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
-    assert_eq!(outcome.lifecycle, Lifecycle::Failed);
+    assert!(matches!(
+        outcome,
+        Phase::Ended(EndCause::Error(Failure::Inference(_)))
+    ));
     // 1 initial attempt + 2 retries = 3 calls.
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
@@ -182,7 +191,7 @@ async fn transient_error_then_success_recovers() {
     let context = RuntimeRunContext::new(PersistenceMode::Disabled);
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
     // One failure then one success.
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }

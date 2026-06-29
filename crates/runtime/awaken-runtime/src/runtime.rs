@@ -164,10 +164,8 @@ impl Runtime {
         command: awaken_runtime_contract::resume::ResumeCommand,
         reader: &dyn ThreadReader,
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
-    ) -> Result<
-        awaken_runtime_contract::execution::RunOutcome,
-        awaken_runtime_contract::execution::Error,
-    > {
+    ) -> Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
+    {
         crate::engine::resume_run(self, command, reader, context).await
     }
 

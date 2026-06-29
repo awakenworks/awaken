@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
@@ -117,5 +117,5 @@ async fn a_system_role_message_is_carried_into_inference() {
         )
         .await
         .expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 }

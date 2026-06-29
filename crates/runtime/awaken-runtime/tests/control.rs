@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Lifecycle};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
@@ -120,10 +120,10 @@ async fn pre_cancelled_run_commits_a_terminal_cancelled_outcome() {
         .with_cancellation(token);
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Cancelled);
+    assert_eq!(outcome, Phase::Ended(EndCause::Cancelled));
     assert_eq!(
-        commit.committed().latest_run.unwrap().lifecycle,
-        Lifecycle::Cancelled
+        commit.committed().latest_run.unwrap().phase,
+        Phase::Ended(EndCause::Cancelled)
     );
 }
 
@@ -153,7 +153,7 @@ async fn live_cancel_steers_an_in_flight_run() {
     release.notify_one();
 
     let outcome = handle.await.expect("join").expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Cancelled);
+    assert_eq!(outcome, Phase::Ended(EndCause::Cancelled));
 }
 
 #[test]
@@ -180,7 +180,7 @@ async fn direct_ingress_runs_inline_and_rejects_durable() {
         )
         .await
         .expect("inline run");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 
     // Durable submission fails closed on direct ingress (G5).
     assert!(matches!(
@@ -225,5 +225,5 @@ async fn wake_on_an_active_run_is_accepted() {
     );
     release.notify_one();
     let outcome = handle.await.expect("join").expect("runs");
-    assert_eq!(outcome.lifecycle, Lifecycle::Completed);
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 }

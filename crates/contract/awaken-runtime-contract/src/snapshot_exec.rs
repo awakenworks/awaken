@@ -7,8 +7,10 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use awaken_agent_contract::agent::run::Phase;
+
 use crate::activation::{RunOptions, TraceContext};
-use crate::execution::{Error, RunOutcome};
+use crate::execution::Error;
 use crate::runtime_context::RuntimeRunContext;
 use crate::snapshot::AgentSnapshotInput;
 
@@ -31,5 +33,5 @@ pub trait RunWithSnapshotExecutor: Send + Sync {
         &self,
         command: RunWithSnapshotCommand,
         context: RuntimeRunContext,
-    ) -> Result<RunOutcome, Error>;
+    ) -> Result<Phase, Error>;
 }
