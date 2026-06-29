@@ -1,0 +1,7 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fact {
+    pub thread_id: crate::agent::thread::Id,
+    pub latest_run_id: Option<crate::agent::run::Id>,
+}
