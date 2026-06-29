@@ -1087,6 +1087,10 @@ pub awaken_agent_contract::stream::event::Kind::OutputText
 pub awaken_agent_contract::stream::event::Kind::OutputText::text: alloc::string::String
 pub awaken_agent_contract::stream::event::Kind::RunFinished
 pub awaken_agent_contract::stream::event::Kind::RunStarted
+pub awaken_agent_contract::stream::event::Kind::ToolCall
+pub awaken_agent_contract::stream::event::Kind::ToolCall::arguments: serde_json::value::Value
+pub awaken_agent_contract::stream::event::Kind::ToolCall::call_id: alloc::string::String
+pub awaken_agent_contract::stream::event::Kind::ToolCall::tool_id: alloc::string::String
 pub awaken_agent_contract::stream::event::Kind::Waiting
 pub awaken_agent_contract::stream::event::Kind::Waiting::reason: alloc::string::String
 impl core::clone::Clone for awaken_agent_contract::stream::event::Kind

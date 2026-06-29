@@ -8,8 +8,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::event::Kind as StreamKind;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
+use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -566,4 +567,41 @@ async fn an_assistant_turn_interleaves_text_and_a_tool_call() {
         "the turn keeps its tool-use block"
     );
     assert_eq!(first.text_content(), "let me check that");
+}
+
+#[tokio::test]
+async fn a_tool_call_streams_to_the_live_sink() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(InterleavedThenText {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let sink = Arc::new(MemoryStreamSink::new());
+    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite)
+        .with_commit(commit.clone())
+        .with_stream_sink(sink.clone());
+
+    let outcome = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+
+    // The tool call surfaced on the live stream as the turn produced it, with
+    // its tool id and arguments.
+    let streamed: Vec<_> = sink
+        .events()
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            StreamKind::ToolCall {
+                tool_id, arguments, ..
+            } => Some((tool_id, arguments)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(streamed.len(), 1);
+    assert_eq!(streamed[0].0, "echo");
+    assert_eq!(streamed[0].1, serde_json::json!({"text": "ping"}));
 }

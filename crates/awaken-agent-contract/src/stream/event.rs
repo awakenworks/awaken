@@ -9,7 +9,18 @@ pub struct Event {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Kind {
     RunStarted,
-    OutputText { text: String },
-    Waiting { reason: String },
+    OutputText {
+        text: String,
+    },
+    /// A tool call surfaced live as the assistant turn produced it, before the
+    /// turn is committed. Best-effort progress (G10/G13).
+    ToolCall {
+        call_id: String,
+        tool_id: String,
+        arguments: serde_json::Value,
+    },
+    Waiting {
+        reason: String,
+    },
     RunFinished,
 }

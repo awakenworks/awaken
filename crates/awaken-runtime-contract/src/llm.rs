@@ -162,6 +162,12 @@ pub trait DeltaSink: Send + Sync {
     /// code point across chunks; the runtime concatenates chunks verbatim and
     /// never indexes into a chunk by byte.
     async fn on_text(&self, chunk: &str);
+
+    /// A tool call surfaced as the turn produced it. Best-effort live progress;
+    /// the committed call is the one in the returned response, not this. The
+    /// default does nothing, so a sink that only cares about text need not
+    /// implement it.
+    async fn on_tool_call(&self, _call_id: &str, _tool_id: &str, _arguments: &serde_json::Value) {}
 }
 
 /// Provider-adapter port: turn one neutral request into one neutral response.
@@ -184,6 +190,10 @@ pub trait LlmExecutor: Send + Sync {
         let text = response.output.text_content();
         if !text.is_empty() {
             sink.on_text(&text).await;
+        }
+        for call in response.output.tool_calls() {
+            sink.on_tool_call(&call.call_id, &call.tool_id, &call.arguments)
+                .await;
         }
         Ok(response)
     }

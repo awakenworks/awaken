@@ -381,6 +381,19 @@ impl DeltaSink for StreamDeltaSink<'_> {
         )
         .await;
     }
+
+    async fn on_tool_call(&self, call_id: &str, tool_id: &str, arguments: &serde_json::Value) {
+        emit(
+            self.context,
+            self.run_id,
+            StreamKind::ToolCall {
+                call_id: call_id.to_string(),
+                tool_id: tool_id.to_string(),
+                arguments: arguments.clone(),
+            },
+        )
+        .await;
+    }
 }
 
 /// Call inference, streaming text chunks to `sink` as they arrive and retrying a
