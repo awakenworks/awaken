@@ -17,6 +17,11 @@ pub struct ToolCapability {
 pub struct PluginCapability {
     pub id: String,
     pub schema_keys: Vec<String>,
+    // TODO(ADR-0004 A1, G8): add a serializable `bound` projection of the
+    // plugin's declared `CapabilityBound` (derived by dry-run `resolve`), so the
+    // operator overlay can allow/deny a plugin by its `tool_gate` / `transforms`
+    // / namespace ceiling before a run. Requires `CapabilityBound` to derive
+    // `Serialize`/`Deserialize` so it can cross the runtime↔config boundary.
 }
 
 pub trait RuntimeCapabilitySource {
