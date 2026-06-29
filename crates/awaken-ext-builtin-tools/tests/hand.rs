@@ -172,3 +172,58 @@ async fn grep_invalid_regex_is_a_typed_error() {
         .expect_err("bad regex");
     assert!(matches!(err, ToolError::InvalidArguments(_)));
 }
+
+#[tokio::test]
+async fn grep_missing_file_is_a_typed_error() {
+    let err = tool("grep")
+        .invoke(call(
+            "grep",
+            serde_json::json!({ "pattern": "x", "path": "/no/such/file" }),
+        ))
+        .await
+        .expect_err("missing file");
+    assert!(matches!(err, ToolError::Execution(_)));
+}
+
+#[tokio::test]
+async fn glob_invalid_pattern_is_a_typed_error() {
+    let err = tool("glob")
+        .invoke(call("glob", serde_json::json!({ "pattern": "a[b" })))
+        .await
+        .expect_err("bad glob");
+    assert!(matches!(err, ToolError::InvalidArguments(_)));
+}
+
+#[tokio::test]
+async fn write_to_an_unwritable_path_is_a_typed_error() {
+    let err = tool("write")
+        .invoke(call(
+            "write",
+            serde_json::json!({ "path": "/no/such/dir/out.txt", "content": "y" }),
+        ))
+        .await
+        .expect_err("bad dir");
+    assert!(matches!(err, ToolError::Execution(_)));
+}
+
+#[tokio::test]
+async fn edit_missing_file_is_a_typed_error() {
+    let err = tool("edit")
+        .invoke(call(
+            "edit",
+            serde_json::json!({ "path": "/no/such/file", "old": "a", "new": "b" }),
+        ))
+        .await
+        .expect_err("missing file");
+    assert!(matches!(err, ToolError::Execution(_)));
+}
+
+#[tokio::test]
+async fn unknown_argument_shape_is_an_invalid_arguments_error() {
+    // `read` requires `path`; a wrong shape is a typed arg error from erasure.
+    let err = tool("read")
+        .invoke(call("read", serde_json::json!({ "wrong": 1 })))
+        .await
+        .expect_err("bad args");
+    assert!(matches!(err, ToolError::InvalidArguments(_)));
+}

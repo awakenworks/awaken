@@ -109,6 +109,7 @@ mod tests {
     #[tokio::test]
     async fn erased_tool_keeps_the_typed_id() {
         assert_eq!(RawTool::id(&Erased(Greet)), "greet");
+        assert_eq!(RawTool::id(&Erased(Stats)), "stats");
     }
 
     #[tokio::test]

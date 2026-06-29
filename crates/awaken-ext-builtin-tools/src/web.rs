@@ -150,3 +150,42 @@ impl Tool for WebSearchTool {
 pub fn web_hand_tools() -> Vec<Arc<dyn RawTool>> {
     vec![erase(WebFetchTool), erase(WebSearchTool)]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_includes_heading_abstract_url_and_topics() {
+        let response = DdgResponse {
+            heading: "Rust".to_string(),
+            abstract_text: "A language".to_string(),
+            abstract_url: "https://rust-lang.org".to_string(),
+            related_topics: vec![
+                DdgTopic {
+                    text: "Cargo".to_string(),
+                    first_url: "https://doc.rust-lang.org/cargo".to_string(),
+                },
+                DdgTopic {
+                    text: "Tokio".to_string(),
+                    first_url: String::new(),
+                },
+                DdgTopic::default(), // empty text is filtered out
+            ],
+        };
+        let out = render_search(&response);
+        assert!(out.contains("Rust"));
+        assert!(out.contains("A language (https://rust-lang.org)"));
+        assert!(out.contains("- Cargo (https://doc.rust-lang.org/cargo)"));
+        assert!(out.contains("- Tokio"));
+        assert!(!out.contains("()"), "empty url renders no parens: {out}");
+    }
+
+    #[test]
+    fn render_empty_response_is_a_placeholder() {
+        assert_eq!(
+            render_search(&DdgResponse::default()),
+            "no instant-answer results"
+        );
+    }
+}
