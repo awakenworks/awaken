@@ -152,10 +152,13 @@ append-then-delete (no 2PC)
 is true ([ADR-0014](../adr/0014-scheduled-delivery.md)). A crash-retry budget
 dead-letters a poison run past `max_attempts` recoveries, with `dead_letters`/
 `requeue` ops ([ADR-0015](../adr/0015-crash-retry-budget-and-dead-letter.md)).
-Deferred (named, not built): a pure timer wake with no input (a
-reminder/`ScheduledAction`), per-run lease renewal, the `send_message`
-tool/effect wiring, dispatch query/maintenance/GC, supersession/durable cancel,
-and the `RunDispatch*` query/lifecycle store roles above.
+A queued or parked run is cancelled durably — the dispatch is removed and a
+terminal `Cancelled` fact is committed through the one finish boundary
+([ADR-0016](../adr/0016-durable-cancel.md)). Deferred (named, not built): a pure
+timer wake with no input (a reminder/`ScheduledAction`), per-run lease renewal,
+the `send_message` tool/effect wiring, dispatch query/maintenance/GC,
+epoch-based supersession, and the `RunDispatch*` query/lifecycle store roles
+above.
 
 ## Durable Semantics
 
