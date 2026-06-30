@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{Id as RunId, Phase};
-use awaken_agent_contract::agent::waiting::WaitingTicket;
+use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
@@ -95,6 +95,19 @@ impl<S: DispatchStore> DispatchWorker<S> {
         self.exec.runtime_context(CancellationToken::new())
     }
 
+    /// Perform a committed ScheduledAction in-process (ADR-0020).
+    async fn perform_scheduled(&self, run_id: &RunId, now_ms: u64) -> Result<Phase, Error> {
+        Ok(self
+            .runtime
+            .perform_scheduled_action(
+                run_id,
+                self.reader.as_ref(),
+                self.execution_context(),
+                now_ms,
+            )
+            .await?)
+    }
+
     /// Claim and process at most one runnable dispatch. Returns the processed
     /// run's id and resulting phase, or `None` when the queue is idle.
     pub async fn tick(&self, now_ms: u64) -> Result<Option<(RunId, Phase)>, Error> {
@@ -107,9 +120,14 @@ impl<S: DispatchStore> DispatchWorker<S> {
             .iter()
             .map(|p| p.message_id.clone())
             .collect();
-        let context = self.exec.runtime_context(CancellationToken::new());
 
-        let (phase, consumed) = match self.reader.waiting_ticket(&run_id) {
+        let mut phase = match self.reader.waiting_ticket(&run_id) {
+            // A committed ScheduledAction (ADR-0020): the system performs the
+            // deferred action, not waits for external input. This also covers a
+            // crash recovery of a scheduled park (no pending input is expected).
+            Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
+                self.perform_scheduled(&run_id, now_ms).await?
+            }
             // The run is parked. Deliver only input whose correlation matches the
             // committed ticket; input for a superseded ticket (stale) is dropped
             // without delivery. Input that already drove a committed resume left a
@@ -123,14 +141,10 @@ impl<S: DispatchStore> DispatchWorker<S> {
                     .cloned();
                 match matched {
                     Some(input) => {
-                        // Consume every input seen this attempt: the matched
-                        // answer and any stale input for a superseded ticket.
                         let command = resume_command(&ticket, input.result, now_ms);
-                        let phase = self
-                            .runtime
-                            .resume(command, self.reader.as_ref(), context)
-                            .await?;
-                        (phase, all_pending)
+                        self.runtime
+                            .resume(command, self.reader.as_ref(), self.execution_context())
+                            .await?
                     }
                     None => {
                         // No input answers the current ticket; drop stale input
@@ -153,20 +167,30 @@ impl<S: DispatchStore> DispatchWorker<S> {
                     return Ok(Some((run_id, record.phase)));
                 }
                 _ => {
-                    let phase = self
-                        .runtime
-                        .execute(claimed.request.activation, context)
-                        .await?;
-                    (phase, all_pending)
+                    self.runtime
+                        .execute(claimed.request.activation, self.execution_context())
+                        .await?
                 }
             },
         };
+
+        // Drive any further scheduled actions to completion in-process: a run that
+        // ends a step by committing a ScheduledAction is performed immediately,
+        // until it ends or parks on a wait that needs external input.
+        while phase == Phase::Waiting {
+            match self.reader.waiting_ticket(&run_id) {
+                Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
+                    phase = self.perform_scheduled(&run_id, now_ms).await?;
+                }
+                _ => break,
+            }
+        }
 
         let outcome = match &phase {
             Phase::Waiting => DispatchOutcome::Parked,
             Phase::Ended(_) => DispatchOutcome::Done,
         };
-        self.store.settle(&run_id, outcome, &consumed).await?;
+        self.store.settle(&run_id, outcome, &all_pending).await?;
         Ok(Some((run_id, phase)))
     }
 

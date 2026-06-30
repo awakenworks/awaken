@@ -97,6 +97,17 @@ impl ToolGateHook for SuspendGate {
     }
 }
 
+/// Defers the tool call as a ScheduledAction instead of running it inline.
+struct ScheduleGate;
+#[async_trait::async_trait]
+impl ToolGateHook for ScheduleGate {
+    async fn gate(&self, _c: &PermissionContext) -> GateOutcome {
+        GateOutcome::Schedule {
+            correlation_id: TICKET.to_string(),
+        }
+    }
+}
+
 pub fn snapshot() -> ExecutableAgentSnapshot {
     let fp = CatalogFingerprint(FP.to_string());
     ExecutableAgentSnapshot {
@@ -159,6 +170,22 @@ pub fn tool_runtime() -> (Arc<Runtime>, Arc<AtomicUsize>) {
             }))
             .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
             .with_gate(Arc::new(SuspendGate)),
+    );
+    install(&runtime);
+    (runtime, ran)
+}
+
+/// A runtime whose gate defers the tool call as a ScheduledAction (ADR-0020),
+/// exposing the tool-run counter so a test can assert the deferred action runs.
+pub fn schedule_runtime() -> (Arc<Runtime>, Arc<AtomicUsize>) {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_llm(Arc::new(ToolThenText {
+                calls: AtomicUsize::new(0),
+            }))
+            .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+            .with_gate(Arc::new(ScheduleGate)),
     );
     install(&runtime);
     (runtime, ran)

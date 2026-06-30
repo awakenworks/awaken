@@ -23,7 +23,7 @@ use awaken_runtime_contract::activation::PersistenceMode;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
-use harness::{FP, SNAP, THREAD, TICKET, activation, text_runtime, tool_runtime};
+use harness::{FP, SNAP, THREAD, TICKET, activation, schedule_runtime, text_runtime, tool_runtime};
 
 fn allow_command() -> ResumeCommand {
     ResumeCommand {
@@ -652,5 +652,32 @@ async fn ingress_dead_letter_and_purge_ops() {
             .cancel_durable(&RunId("run-1".to_string()))
             .await
             .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn daemon_performs_a_scheduled_action_to_completion() {
+    // RS-SCH-001 over the dispatch: a durably-submitted run whose gate defers the
+    // tool parks on a committed ScheduledAction; the worker performs it in-process
+    // (no external input) and the run settles Done.
+    let (runtime, ran) = schedule_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+
+    let phase = ingress
+        .submit_background(activation("run-1"))
+        .await
+        .unwrap();
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the scheduled action ran once"
+    );
+    assert_eq!(
+        store.dispatch_count(),
+        0,
+        "the run settled Done, not Parked"
     );
 }
