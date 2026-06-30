@@ -596,6 +596,34 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::DispatchStore>(sto
     assert!(store.dead_letters().await.unwrap().is_empty());
 }
 
+/// Shared spec for the daemon's bulk lease renewal (ADR-0024): renewing an owner's
+/// in-flight leases keeps them from being reclaimed. Every backend matches.
+pub async fn assert_renew_owned_leases<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::RunExecutionRequest;
+
+    // owner-a claims two runs at t=0 with a 100ms lease (expire at 100).
+    for run in ["r1", "r2"] {
+        store
+            .enqueue(RunExecutionRequest::new(activation(run)))
+            .await
+            .unwrap();
+        assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
+    }
+
+    // Renewing owner-a's leases at t=60 extends both to 160.
+    assert_eq!(
+        store.renew_owned_leases("owner-a", 100, 60).await.unwrap(),
+        2
+    );
+    // At t=120 the original lease would have expired, but the renewed one has not.
+    assert!(
+        store.claim("owner-b", 100, 120).await.unwrap().is_none(),
+        "renewed leases are not yet reclaimable"
+    );
+    // Past the renewed expiry, recovery reclaims.
+    assert!(store.claim("owner-b", 100, 200).await.unwrap().is_some());
+}
+
 /// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only
 /// dead-letters older than the cutoff; younger ones stay. Every backend matches.
 pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::DispatchStore>(store: &S) {

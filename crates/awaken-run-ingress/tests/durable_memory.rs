@@ -828,3 +828,8 @@ async fn submit_superseding_abandons_prior_thread_work() {
 async fn dead_letter_ttl_gc_store_spec() {
     harness::assert_dead_letter_ttl_gc(&MemoryDispatchStore::new()).await;
 }
+
+#[tokio::test]
+async fn renew_owned_leases_store_spec() {
+    harness::assert_renew_owned_leases(&MemoryDispatchStore::new()).await;
+}

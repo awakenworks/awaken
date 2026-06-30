@@ -34,6 +34,10 @@ pub struct DispatchServiceConfig {
     /// If set, dead-letters older than this are GC'd on the poll cadence; `None`
     /// keeps them until an operator purges them (ADR-0023).
     pub dead_letter_ttl: Option<Duration>,
+    /// If set, a heartbeat renews this daemon's in-flight leases on this cadence so
+    /// a long run is not reclaimed while still executing; `None` disables renewal
+    /// (a single in-process daemon needs none). Use well under the lease (ADR-0024).
+    pub lease_renewal_interval: Option<Duration>,
 }
 
 impl Default for DispatchServiceConfig {
@@ -42,6 +46,7 @@ impl Default for DispatchServiceConfig {
             poll_interval: Duration::from_millis(50),
             max_attempts: 5,
             dead_letter_ttl: None,
+            lease_renewal_interval: None,
         }
     }
 }
@@ -52,6 +57,7 @@ pub struct DispatchService<S> {
     wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     handle: JoinHandle<()>,
+    renewal: Option<JoinHandle<()>>,
 }
 
 impl<S: DispatchStore + 'static> DispatchService<S> {
@@ -75,16 +81,27 @@ impl<S: DispatchStore + 'static> DispatchService<S> {
         let shutdown = CancellationToken::new();
         let handle = tokio::spawn(run_loop(
             worker.clone(),
-            clock,
+            clock.clone(),
             wake.clone(),
             shutdown.clone(),
             config,
         ));
+        // A separate heartbeat renews in-flight leases concurrently with the drain,
+        // since the drain task is busy executing a long run (ADR-0024).
+        let renewal = config.lease_renewal_interval.map(|interval| {
+            tokio::spawn(renewal_loop(
+                worker.clone(),
+                clock,
+                shutdown.clone(),
+                interval,
+            ))
+        });
         Self {
             worker,
             wake,
             shutdown,
             handle,
+            renewal,
         }
     }
 
@@ -122,6 +139,31 @@ impl<S: DispatchStore + 'static> DispatchService<S> {
         self.shutdown.cancel();
         let _ = self.wake.publish().await;
         let _ = self.handle.await;
+        if let Some(renewal) = self.renewal {
+            let _ = renewal.await;
+        }
+    }
+}
+
+/// Renew this daemon's in-flight leases on a cadence, so a long-running run is not
+/// reclaimed by another node's recovery while it is still executing (ADR-0024).
+async fn renewal_loop<S: DispatchStore + 'static>(
+    worker: Arc<DispatchWorker<S>>,
+    clock: Arc<dyn Clock>,
+    shutdown: CancellationToken,
+    interval: Duration,
+) {
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = tokio::time::sleep(interval) => {
+                let now = clock.now_ms();
+                let _ = worker
+                    .store()
+                    .renew_owned_leases(worker.owner(), worker.lease_ms(), now)
+                    .await;
+            }
+        }
     }
 }
 

@@ -281,6 +281,25 @@ impl RunDispatch for PostgresDispatchStore {
         Ok(result.rows_affected() > 0)
     }
 
+    async fn renew_owned_leases(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError> {
+        let p = &self.prefix;
+        let result = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET lease_until = $1 \
+             WHERE status = 'running' AND lease_owner = $2"
+        ))
+        .bind((now_ms + lease_ms) as i64)
+        .bind(owner)
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(result.rows_affected() as usize)
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,

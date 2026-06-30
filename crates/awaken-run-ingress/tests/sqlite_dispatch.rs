@@ -182,3 +182,9 @@ async fn dead_letter_ttl_gc_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
     harness::assert_dead_letter_ttl_gc(&store).await;
 }
+
+#[tokio::test]
+async fn renew_owned_leases_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_renew_owned_leases(&store).await;
+}

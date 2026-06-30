@@ -324,6 +324,28 @@ impl RunDispatch for SqliteDispatchStore {
         .await
     }
 
+    async fn renew_owned_leases(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError> {
+        let owner = owner.to_string();
+        self.with_conn(move |conn, p| {
+            let n = conn
+                .execute(
+                    &format!(
+                        "UPDATE {p}_dispatch SET lease_until = ?1 \
+                         WHERE status = 'running' AND lease_owner = ?2"
+                    ),
+                    params![(now_ms + lease_ms) as i64, owner],
+                )
+                .map_err(reject)?;
+            Ok(n)
+        })
+        .await
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,

@@ -139,6 +139,17 @@ pub trait RunDispatch: Send + Sync {
         now_ms: u64,
     ) -> Result<bool, DispatchError>;
 
+    /// Renew the lease on every running dispatch owned by `owner` to
+    /// `now_ms + lease_ms` — the daemon's bulk heartbeat that keeps its in-flight
+    /// runs from being reclaimed while they are still executing (ADR-0024).
+    /// Returns how many leases were renewed.
+    async fn renew_owned_leases(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError>;
+
     /// Settle a claimed dispatch. `Done` removes it and all its pending input;
     /// `Parked` returns it to the waiting state and drops only the `consumed`
     /// pending (by `message_id`), leaving input that arrived mid-attempt for the

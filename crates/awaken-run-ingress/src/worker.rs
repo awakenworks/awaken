@@ -91,6 +91,16 @@ impl<S: DispatchStore> DispatchWorker<S> {
         &self.store
     }
 
+    /// This worker's lease owner id — the daemon renews this owner's leases.
+    pub(crate) fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    /// This worker's lease duration, for the daemon's renewal heartbeat.
+    pub(crate) fn lease_ms(&self) -> u64 {
+        self.lease_ms
+    }
+
     /// A runtime context bound to this worker's commit boundary, for an
     /// out-of-band commit such as a durable cancel.
     pub(crate) fn execution_context(&self) -> RuntimeRunContext {

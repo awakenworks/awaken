@@ -299,6 +299,26 @@ impl RunDispatch for MemoryDispatchStore {
         }
     }
 
+    async fn renew_owned_leases(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let mut renewed = 0;
+        for row in state.rows.values_mut() {
+            if row.status == Status::Running && row.lease.as_ref().is_some_and(|l| l.owner == owner)
+            {
+                if let Some(lease) = row.lease.as_mut() {
+                    lease.expires_ms = now_ms + lease_ms;
+                }
+                renewed += 1;
+            }
+        }
+        Ok(renewed)
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,
