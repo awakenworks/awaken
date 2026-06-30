@@ -282,3 +282,27 @@ async fn service_dead_letters_a_poison_run() {
 
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn daemon_runs_with_lease_renewal_and_ttl_gc_enabled() {
+    // Exercises the renewal heartbeat and the ttl-GC branch of the daemon loop:
+    // the run drains, and both background steps fire on a real clock.
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+    let service = ingress.spawn_service(
+        Arc::new(SystemClock),
+        DispatchServiceConfig {
+            poll_interval: Duration::from_millis(5),
+            lease_renewal_interval: Some(Duration::from_millis(5)),
+            dead_letter_ttl: Some(Duration::from_millis(1)),
+            ..Default::default()
+        },
+    );
+    service.submit(activation("run-1")).await.expect("submit");
+    assert!(wait_for(|| commit.commit_count() >= 1).await, "run drained");
+    // Let the renewal and GC ticks fire a few times before shutting down.
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    service.shutdown().await;
+}

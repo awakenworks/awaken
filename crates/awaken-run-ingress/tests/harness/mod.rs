@@ -104,6 +104,7 @@ impl ToolGateHook for ScheduleGate {
     async fn gate(&self, _c: &PermissionContext) -> GateOutcome {
         GateOutcome::Schedule {
             correlation_id: TICKET.to_string(),
+            action_kind: None,
         }
     }
 }
