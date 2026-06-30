@@ -838,3 +838,27 @@ async fn renew_owned_leases_store_spec() {
 async fn list_dispatches_store_spec() {
     harness::assert_list_dispatches(&MemoryDispatchStore::new()).await;
 }
+
+#[tokio::test]
+async fn ingress_lists_dispatches_and_purges_aged_dead_letters() {
+    // Covers the DurableRunIngress query + time-windowed GC wrappers.
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    let listed = ingress.list_dispatches().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].run_id, RunId("run-1".to_string()));
+
+    // Dead-letter it at t=1000, then age it out through the ingress.
+    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert_eq!(ingress.reap(0, 1_000).await.unwrap(), 1);
+    assert_eq!(ingress.purge_dead_letters_before(999).await.unwrap(), 0);
+    assert_eq!(ingress.purge_dead_letters_before(1_000).await.unwrap(), 1);
+    assert!(ingress.list_dispatches().await.unwrap().is_empty());
+}
