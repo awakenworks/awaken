@@ -41,6 +41,24 @@ impl LlmExecutor for ScriptedLlm {
     }
 }
 
+/// The simplest possible model: it replies with one fixed greeting and ends —
+/// no tool call. `hello_agent` uses it for the minimal "instructions + model,
+/// no tools, no permissions" path.
+pub struct GreeterLlm;
+
+#[async_trait::async_trait]
+impl LlmExecutor for GreeterLlm {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        Ok(ChatResponse {
+            output: AssistantOutput::text("Hello! How can I help?".to_string()),
+            usage: None,
+        })
+    }
+}
+
 /// A trivial tool that echoes its `text` argument — a stand-in for a real tool
 /// (the runtime sees only the `RawTool` port).
 pub struct EchoTool;
@@ -59,4 +77,33 @@ impl RawTool for EchoTool {
             .unwrap_or("");
         Ok(ToolOutput::ok(call.call_id, format!("echoed: {text}")))
     }
+}
+
+/// One import for the example assembly. The examples teach *wiring*, not where
+/// each type lives, so the deep contract paths are noise — this gathers them
+/// (plus the stub ports above) so an example reads as assembly, not imports.
+pub mod prelude {
+    pub use awaken_agent_contract::agent::content::ContentBlock;
+    pub use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    pub use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+    pub use awaken_agent_contract::agent::thread::Id as ThreadId;
+    pub use awaken_ext_permission::{
+        Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
+        ToolPermissionBehavior,
+    };
+    pub use awaken_runtime::memory::MemoryCommitCoordinator;
+    pub use awaken_runtime::{PermissionGate, Runtime};
+    pub use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+    pub use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
+    pub use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
+    pub use awaken_runtime_contract::execution::RunExecutor;
+    pub use awaken_runtime_contract::resolved::{
+        CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
+    };
+    pub use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+    pub use awaken_runtime_contract::snapshot::{
+        AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+    };
+
+    pub use crate::{EchoTool, GreeterLlm, ScriptedLlm};
 }

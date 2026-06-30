@@ -251,6 +251,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-config-store",
  "awaken-ext-permission",
  "awaken-runtime",
  "awaken-runtime-contract",

@@ -13,34 +13,16 @@
 
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
-use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_ext_permission::{
-    Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
-    ToolPermissionBehavior,
-};
-use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime::{PermissionGate, Runtime};
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
-use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
-};
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::snapshot::{
-    AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
-};
-use awaken_runtime_examples::{EchoTool, ScriptedLlm};
+use awaken_runtime_examples::prelude::*;
 
 #[tokio::main]
 async fn main() {
-    // 1. Pick the catalog fingerprint. With a config store this is sha256(config);
-    //    here we choose it directly. The snapshot, its resolved spec, and the
-    //    install must all carry the SAME fingerprint, or resolution fails closed.
+    // 1. Pick a catalog fingerprint by hand. NOTE: a chosen string is not really a
+    //    fingerprint — a producer derives sha256(config) and stamps it everywhere
+    //    (see `hello_agent`, which calls `compile()`). We fake it here, and below
+    //    must repeat it four times by hand, precisely to show the raw contract the
+    //    producer spares you: snapshot, resolved spec, and install must all carry
+    //    the SAME value, or resolution fails closed.
     let fingerprint = CatalogFingerprint("demo-v1".to_string());
 
     // 2. Describe the one tool the agent may use.
