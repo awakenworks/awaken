@@ -5,6 +5,7 @@ members = [
     "crates/contract/awaken-runtime-contract",
     "crates/runtime/awaken-runtime",
     "crates/runtime/awaken-ext-builtin-tools",
+    "crates/runtime/awaken-ext-permission",
     "crates/runtime/awaken-provider-genai",
     "crates/stores/awaken-store-schema",
     "crates/stores/awaken-store-postgres",
