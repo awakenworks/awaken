@@ -138,8 +138,11 @@ and a Postgres adapter. The worker decides execute-versus-resume from committed
 truth, so the queue never becomes a second authority. Pending input is keyed to
 the waiting-ticket correlation it answers, so a resume that committed before the
 worker settled is never re-applied after a crash, without an atomic append+freeze
-([ADR-0010](../adr/0010-idempotent-pending-consumption.md)). Deferred (named, not
-built): scheduled wake, lease renewal,
+([ADR-0010](../adr/0010-idempotent-pending-consumption.md)). A `DispatchService`
+daemon drains the queue on a nudge or poll and recovers crashed leases on a
+`Clock` injected at the edge, keeping the worker deterministic
+([ADR-0011](../adr/0011-autonomous-dispatch-service.md)). Deferred (named, not
+built): scheduled wake, per-run lease renewal,
 cross-thread `send_message` outbox, dispatch query/maintenance/GC, supersession,
 dead-letter, and the `RunDispatch*` query/lifecycle store roles above.
 
