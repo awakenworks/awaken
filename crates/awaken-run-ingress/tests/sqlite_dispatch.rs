@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
-use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_run_ingress::{
     DurableRunIngress, PendingInbox, PendingInput, RunDispatch, RunExecutionRequest,
@@ -19,17 +18,15 @@ use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
-use harness::{THREAD, TICKET, activation, tool_runtime};
+use harness::{TICKET, activation, tool_runtime};
 
 fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
-    PendingInput {
-        message_id: message_id.to_string(),
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId(THREAD.to_string()),
-        correlation_id: correlation.to_string(),
-        available_at_ms: None,
-        result: ResumeResult::Decision { allow, note: None },
-    }
+    harness::pending(
+        message_id,
+        "run-1",
+        correlation,
+        ResumeResult::Decision { allow, note: None },
+    )
 }
 
 #[tokio::test]

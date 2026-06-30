@@ -25,14 +25,12 @@ use awaken_store_postgres::PostgresCommitCoordinator;
 use harness::{THREAD, TICKET, activation, database_url, pool, reset, tool_runtime};
 
 fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
-    PendingInput {
-        message_id: message_id.to_string(),
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId(THREAD.to_string()),
-        correlation_id: correlation.to_string(),
-        available_at_ms: None,
-        result: ResumeResult::Decision { allow, note: None },
-    }
+    harness::pending(
+        message_id,
+        "run-1",
+        correlation,
+        ResumeResult::Decision { allow, note: None },
+    )
 }
 
 #[tokio::test]

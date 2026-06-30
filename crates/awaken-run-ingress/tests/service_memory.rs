@@ -34,14 +34,7 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
 }
 
 fn pending(message_id: &str, run: &str, result: ResumeResult) -> PendingInput {
-    PendingInput {
-        message_id: message_id.to_string(),
-        run_id: RunId(run.to_string()),
-        thread_id: ThreadId(THREAD.to_string()),
-        correlation_id: TICKET.to_string(),
-        available_at_ms: None,
-        result,
-    }
+    harness::pending(message_id, run, TICKET, result)
 }
 
 #[tokio::test]

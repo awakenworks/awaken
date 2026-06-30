@@ -164,6 +164,24 @@ pub fn tool_runtime() -> (Arc<Runtime>, Arc<AtomicUsize>) {
     (runtime, ran)
 }
 
+/// Build a pending input for the test thread. The one place the `PendingInput`
+/// shape lives, so each suite's convenience builder delegates here.
+pub fn pending(
+    message_id: &str,
+    run: &str,
+    correlation: &str,
+    result: ResumeResult,
+) -> awaken_run_ingress::PendingInput {
+    awaken_run_ingress::PendingInput {
+        message_id: message_id.to_string(),
+        run_id: RunId(run.to_string()),
+        thread_id: ThreadId(THREAD.to_string()),
+        correlation_id: correlation.to_string(),
+        available_at_ms: None,
+        result,
+    }
+}
+
 pub fn activation(run: &str) -> RunActivation {
     RunActivation {
         run_id: RunId(run.to_string()),
