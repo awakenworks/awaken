@@ -10,4 +10,7 @@ pub enum Kind {
     // one waiting reason, so these names stay neutral (wait/resume).
     RunWaiting,
     RunResumed,
+    /// A protected tool call passed the permission gate; the payload records the
+    /// decision (allow/deny/ask) for audit (ADR-0030).
+    PermissionDecided,
 }
