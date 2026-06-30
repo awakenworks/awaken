@@ -480,6 +480,9 @@ pub enum awaken_runtime_contract::permission::GateOutcome
 pub awaken_runtime_contract::permission::GateOutcome::Allow
 pub awaken_runtime_contract::permission::GateOutcome::Block
 pub awaken_runtime_contract::permission::GateOutcome::Block::reason: alloc::string::String
+pub awaken_runtime_contract::permission::GateOutcome::Schedule
+pub awaken_runtime_contract::permission::GateOutcome::Schedule::action_kind: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::permission::GateOutcome::Schedule::correlation_id: alloc::string::String
 pub awaken_runtime_contract::permission::GateOutcome::SetResult(awaken_runtime_contract::tool::ToolOutput)
 pub awaken_runtime_contract::permission::GateOutcome::Suspend
 pub awaken_runtime_contract::permission::GateOutcome::Suspend::ticket_id: alloc::string::String
@@ -547,6 +550,9 @@ pub trait awaken_runtime_contract::permission::ToolGateHook: core::marker::Send 
 pub fn awaken_runtime_contract::permission::ToolGateHook::gate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub mod awaken_runtime_contract::plugin
 pub enum awaken_runtime_contract::plugin::BoundViolation
+pub awaken_runtime_contract::plugin::BoundViolation::ActionKind
+pub awaken_runtime_contract::plugin::BoundViolation::ActionKind::id: alloc::string::String
+pub awaken_runtime_contract::plugin::BoundViolation::ActionKind::plugin: alloc::string::String
 pub awaken_runtime_contract::plugin::BoundViolation::Hook
 pub awaken_runtime_contract::plugin::BoundViolation::Hook::plugin: alloc::string::String
 pub awaken_runtime_contract::plugin::BoundViolation::Hook::point: awaken_runtime_contract::plugin::PhaseHookPoint
@@ -576,6 +582,10 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::B
 pub enum awaken_runtime_contract::plugin::MergeError
 pub awaken_runtime_contract::plugin::MergeError::Bound(awaken_runtime_contract::plugin::BoundViolation)
 pub awaken_runtime_contract::plugin::MergeError::DependencyCycle
+pub awaken_runtime_contract::plugin::MergeError::DuplicateActionKind
+pub awaken_runtime_contract::plugin::MergeError::DuplicateActionKind::first: alloc::string::String
+pub awaken_runtime_contract::plugin::MergeError::DuplicateActionKind::id: alloc::string::String
+pub awaken_runtime_contract::plugin::MergeError::DuplicateActionKind::second: alloc::string::String
 pub awaken_runtime_contract::plugin::MergeError::DuplicateTool
 pub awaken_runtime_contract::plugin::MergeError::DuplicateTool::first: alloc::string::String
 pub awaken_runtime_contract::plugin::MergeError::DuplicateTool::id: alloc::string::String
@@ -628,6 +638,7 @@ impl core::marker::Unpin for awaken_runtime_contract::plugin::PhaseHookPoint
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PhaseHookPoint
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PhaseHookPoint
 pub struct awaken_runtime_contract::plugin::CapabilityBound
+pub awaken_runtime_contract::plugin::CapabilityBound::action_kinds: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::plugin::CapabilityBound::phase_hooks: alloc::vec::Vec<awaken_runtime_contract::plugin::PhaseHookPoint>
 pub awaken_runtime_contract::plugin::CapabilityBound::state_keys: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::plugin::CapabilityBound::tool_ids: alloc::vec::Vec<alloc::string::String>
@@ -652,6 +663,7 @@ impl core::marker::Unpin for awaken_runtime_contract::plugin::CapabilityBound
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::CapabilityBound
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::CapabilityBound
 pub struct awaken_runtime_contract::plugin::Contributions
+pub awaken_runtime_contract::plugin::Contributions::action_kinds: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::plugin::Contributions::phase_hooks: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
 pub awaken_runtime_contract::plugin::Contributions::plugin_id: alloc::string::String
 pub awaken_runtime_contract::plugin::Contributions::state_keys: alloc::vec::Vec<alloc::string::String>
@@ -710,6 +722,7 @@ impl core::marker::Unpin for awaken_runtime_contract::plugin::PluginManifest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PluginManifest
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PluginManifest
 pub struct awaken_runtime_contract::plugin::ResolvedExecutionEnv
+pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::action_kinds: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::order: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::phase_hooks: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
 pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::state_keys: alloc::vec::Vec<alloc::string::String>
@@ -717,6 +730,7 @@ pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::tools: alloc::vec::Ve
 impl awaken_runtime_contract::plugin::ResolvedExecutionEnv
 pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::hooks_for(&self, awaken_runtime_contract::plugin::PhaseHookPoint) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
 pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::merge(alloc::vec::Vec<(awaken_runtime_contract::plugin::PluginManifest, awaken_runtime_contract::plugin::Contributions)>) -> core::result::Result<Self, awaken_runtime_contract::plugin::MergeError>
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::permits_action_kind(&self, &str) -> bool
 impl core::marker::Freeze for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl core::marker::Send for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl core::marker::Sync for awaken_runtime_contract::plugin::ResolvedExecutionEnv
@@ -1185,6 +1199,9 @@ pub enum awaken_runtime_contract::GateOutcome
 pub awaken_runtime_contract::GateOutcome::Allow
 pub awaken_runtime_contract::GateOutcome::Block
 pub awaken_runtime_contract::GateOutcome::Block::reason: alloc::string::String
+pub awaken_runtime_contract::GateOutcome::Schedule
+pub awaken_runtime_contract::GateOutcome::Schedule::action_kind: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::GateOutcome::Schedule::correlation_id: alloc::string::String
 pub awaken_runtime_contract::GateOutcome::SetResult(awaken_runtime_contract::tool::ToolOutput)
 pub awaken_runtime_contract::GateOutcome::Suspend
 pub awaken_runtime_contract::GateOutcome::Suspend::ticket_id: alloc::string::String
@@ -1298,6 +1315,7 @@ impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeResult
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeResult
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeResult
 pub struct awaken_runtime_contract::CapabilityBound
+pub awaken_runtime_contract::CapabilityBound::action_kinds: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::CapabilityBound::phase_hooks: alloc::vec::Vec<awaken_runtime_contract::plugin::PhaseHookPoint>
 pub awaken_runtime_contract::CapabilityBound::state_keys: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::CapabilityBound::tool_ids: alloc::vec::Vec<alloc::string::String>
@@ -1384,6 +1402,7 @@ impl core::marker::Unpin for awaken_runtime_contract::llm::ChatResponse
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::ChatResponse
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ChatResponse
 pub struct awaken_runtime_contract::Contributions
+pub awaken_runtime_contract::Contributions::action_kinds: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::Contributions::phase_hooks: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
 pub awaken_runtime_contract::Contributions::plugin_id: alloc::string::String
 pub awaken_runtime_contract::Contributions::state_keys: alloc::vec::Vec<alloc::string::String>
@@ -1467,6 +1486,7 @@ impl core::marker::Unpin for awaken_runtime_contract::plugin::PluginManifest
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PluginManifest
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PluginManifest
 pub struct awaken_runtime_contract::ResolvedExecutionEnv
+pub awaken_runtime_contract::ResolvedExecutionEnv::action_kinds: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::ResolvedExecutionEnv::order: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::ResolvedExecutionEnv::phase_hooks: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
 pub awaken_runtime_contract::ResolvedExecutionEnv::state_keys: alloc::vec::Vec<alloc::string::String>
@@ -1474,6 +1494,7 @@ pub awaken_runtime_contract::ResolvedExecutionEnv::tools: alloc::vec::Vec<alloc:
 impl awaken_runtime_contract::plugin::ResolvedExecutionEnv
 pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::hooks_for(&self, awaken_runtime_contract::plugin::PhaseHookPoint) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
 pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::merge(alloc::vec::Vec<(awaken_runtime_contract::plugin::PluginManifest, awaken_runtime_contract::plugin::Contributions)>) -> core::result::Result<Self, awaken_runtime_contract::plugin::MergeError>
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::permits_action_kind(&self, &str) -> bool
 impl core::marker::Freeze for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl core::marker::Send for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl core::marker::Sync for awaken_runtime_contract::plugin::ResolvedExecutionEnv

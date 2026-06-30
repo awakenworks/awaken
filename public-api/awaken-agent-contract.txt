@@ -244,6 +244,7 @@ pub awaken_agent_contract::agent::run::EndCause::Cancelled
 pub awaken_agent_contract::agent::run::EndCause::Error(awaken_agent_contract::agent::run::Failure)
 pub awaken_agent_contract::agent::run::EndCause::MaxSteps
 pub awaken_agent_contract::agent::run::EndCause::NaturalEnd
+pub awaken_agent_contract::agent::run::EndCause::Stopped(alloc::string::String)
 impl core::clone::Clone for awaken_agent_contract::agent::run::EndCause
 pub fn awaken_agent_contract::agent::run::EndCause::clone(&self) -> awaken_agent_contract::agent::run::EndCause
 impl core::cmp::Eq for awaken_agent_contract::agent::run::EndCause
@@ -737,6 +738,7 @@ pub awaken_agent_contract::agent::waiting::WaitingReason::BackgroundTasks
 pub awaken_agent_contract::agent::waiting::WaitingReason::ExternalEvent
 pub awaken_agent_contract::agent::waiting::WaitingReason::ManualPause
 pub awaken_agent_contract::agent::waiting::WaitingReason::RateLimit
+pub awaken_agent_contract::agent::waiting::WaitingReason::ScheduledAction
 pub awaken_agent_contract::agent::waiting::WaitingReason::ToolPermission
 pub awaken_agent_contract::agent::waiting::WaitingReason::UserInput
 impl core::clone::Clone for awaken_agent_contract::agent::waiting::WaitingReason
@@ -912,6 +914,7 @@ impl<T> core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::e
 pub mod awaken_agent_contract::event::kind
 pub enum awaken_agent_contract::event::kind::Kind
 pub awaken_agent_contract::event::kind::Kind::MessageCommitted
+pub awaken_agent_contract::event::kind::Kind::PermissionDecided
 pub awaken_agent_contract::event::kind::Kind::RunPhaseChanged
 pub awaken_agent_contract::event::kind::Kind::RunResumed
 pub awaken_agent_contract::event::kind::Kind::RunWaiting
