@@ -164,3 +164,9 @@ async fn lease_renewal_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
     harness::assert_lease_renewal(&store).await;
 }
+
+#[tokio::test]
+async fn idle_thread_inbox_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_idle_thread_inbox(&store).await;
+}

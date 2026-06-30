@@ -20,7 +20,7 @@ use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOpt
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resolved::{
@@ -155,6 +155,38 @@ fn install(runtime: &Runtime) {
 /// A runtime with a plain text model — fresh runs end naturally.
 pub fn text_runtime() -> Arc<Runtime> {
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(TextLlm("done"))));
+    install(&runtime);
+    runtime
+}
+
+/// Echoes the run's user-message text back as the assistant reply, so a test can
+/// observe exactly which input reached the model.
+struct EchoInputLlm;
+#[async_trait::async_trait]
+impl LlmExecutor for EchoInputLlm {
+    async fn infer(&self, r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let echoed = r
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, ChatRole::User))
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        Ok(ChatResponse {
+            output: AssistantOutput::text(echoed),
+            usage: None,
+        })
+    }
+}
+
+/// A runtime whose model echoes the user input it received — a probe for which
+/// messages actually reached the run.
+pub fn input_echo_runtime() -> Arc<Runtime> {
+    let runtime = Arc::new(Runtime::new().with_llm(Arc::new(EchoInputLlm)));
     install(&runtime);
     runtime
 }
@@ -562,6 +594,48 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::DispatchStore>(sto
     );
     assert_eq!(store.purge_dead_letters().await.unwrap(), 1);
     assert!(store.dead_letters().await.unwrap().is_empty());
+}
+
+/// Shared spec for the idle-thread inbox (ADR-0021): unbound input is listed for
+/// its thread, and a Done settle that consumed it removes it. Every backend matches.
+pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest};
+    use awaken_runtime_contract::resume::ResumeResult;
+
+    // Unbound idle-thread input (empty run/correlation) is listed for the thread.
+    let unbound = pending("u1", "", "", ResumeResult::Input("hi".to_string()));
+    assert!(store.append(unbound).await.unwrap());
+    let listed = store.list(&ThreadId(THREAD.to_string())).await.unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|r| r.input.message_id == "u1" && r.input.run_id.0.is_empty()),
+        "the unbound input is listed for its thread"
+    );
+
+    // A fresh run drains it: a Done settle that consumed it removes it.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    store.claim("w", 1_000, 0).await.unwrap();
+    store
+        .settle(
+            &RunId("run-1".to_string()),
+            DispatchOutcome::Done,
+            &["u1".to_string()],
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .list(&ThreadId(THREAD.to_string()))
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.input.message_id != "u1"),
+        "the consumed unbound input is removed on Done"
+    );
 }
 
 /// Shared spec for lease renewal (the multi-node liveness knob). A run's owner

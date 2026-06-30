@@ -336,3 +336,15 @@ async fn two_workers_claim_distinct_runs_on_postgres() {
 
     reset(&pool, prefix).await;
 }
+
+#[tokio::test]
+async fn idle_thread_inbox_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_idle";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_idle_thread_inbox(&store).await;
+    reset(&pool, prefix).await;
+}

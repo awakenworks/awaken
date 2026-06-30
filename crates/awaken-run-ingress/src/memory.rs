@@ -264,7 +264,11 @@ impl RunDispatch for MemoryDispatchStore {
             DispatchOutcome::Done => {
                 state.rows.remove(run_id);
                 state.order.retain(|r| r != run_id);
-                state.pending.retain(|p| &p.input.run_id != run_id);
+                // Drop the run's own pending and anything else the worker consumed
+                // this attempt (e.g. unbound idle-thread input, ADR-0021).
+                state.pending.retain(|p| {
+                    &p.input.run_id != run_id && !consumed.contains(&p.input.message_id)
+                });
             }
             DispatchOutcome::Parked => {
                 if let Some(row) = state.rows.get_mut(run_id) {

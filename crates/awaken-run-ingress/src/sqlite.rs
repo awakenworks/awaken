@@ -292,6 +292,15 @@ impl RunDispatch for SqliteDispatchStore {
                         params![run_id],
                     )
                     .map_err(reject)?;
+                    // Also drop anything else consumed this attempt (e.g. unbound
+                    // idle-thread input, ADR-0021).
+                    for message_id in &consumed {
+                        tx.execute(
+                            &format!("DELETE FROM {p}_pending WHERE message_id = ?1"),
+                            params![message_id],
+                        )
+                        .map_err(reject)?;
+                    }
                     tx.execute(
                         &format!("DELETE FROM {p}_dispatch WHERE run_id = ?1"),
                         params![run_id],

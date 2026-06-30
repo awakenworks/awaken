@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, Phase};
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
@@ -21,7 +23,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
 use crate::Error;
-use crate::dispatch::{DispatchOutcome, DispatchStore};
+use crate::dispatch::{DispatchOutcome, DispatchStore, PendingInput};
 use crate::request::RunExecutionContext;
 
 /// Default lease: how long a claimed dispatch is owned before it is reclaimable.
@@ -115,7 +117,7 @@ impl<S: DispatchStore> DispatchWorker<S> {
             return Ok(None);
         };
         let run_id = claimed.request.run_id().clone();
-        let all_pending: Vec<String> = claimed
+        let mut all_pending: Vec<String> = claimed
             .pending
             .iter()
             .map(|p| p.message_id.clone())
@@ -167,8 +169,34 @@ impl<S: DispatchStore> DispatchWorker<S> {
                     return Ok(Some((run_id, record.phase)));
                 }
                 _ => {
+                    // Drain the thread inbox: input addressed to this thread with
+                    // no run yet (ADR-0021) becomes new input to this fresh run.
+                    let thread = claimed.request.thread_id().clone();
+                    let unbound: Vec<PendingInput> = self
+                        .store
+                        .list(&thread)
+                        .await?
+                        .into_iter()
+                        .map(|r| r.input)
+                        .filter(|input| input.run_id.0.is_empty())
+                        .collect();
+                    let mut activation = claimed.request.activation;
+                    for (idx, input) in unbound.iter().enumerate() {
+                        if let ResumeResult::Input(text) = &input.result {
+                            activation.input.insert(
+                                idx,
+                                Message {
+                                    id: MessageId(input.message_id.clone()),
+                                    role: Role::User,
+                                    content: vec![ContentBlock::text(text)],
+                                },
+                            );
+                        }
+                    }
+                    // Consumed on settle, not on read, so a crash re-delivers them.
+                    all_pending.extend(unbound.into_iter().map(|input| input.message_id));
                     self.runtime
-                        .execute(claimed.request.activation, self.execution_context())
+                        .execute(activation, self.execution_context())
                         .await?
                 }
             },

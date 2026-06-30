@@ -244,11 +244,16 @@ impl RunDispatch for PostgresDispatchStore {
         let mut tx = self.pool.begin().await.map_err(reject)?;
         match outcome {
             DispatchOutcome::Done => {
-                sqlx::query(&format!("DELETE FROM {p}_pending WHERE run_id = $1"))
-                    .bind(&run_id.0)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(reject)?;
+                // Drop the run's own pending and anything else consumed this
+                // attempt (e.g. unbound idle-thread input, ADR-0021).
+                sqlx::query(&format!(
+                    "DELETE FROM {p}_pending WHERE run_id = $1 OR message_id = ANY($2)"
+                ))
+                .bind(&run_id.0)
+                .bind(consumed)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
                 sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE run_id = $1"))
                     .bind(&run_id.0)
                     .execute(&mut *tx)

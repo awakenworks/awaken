@@ -4,14 +4,15 @@
 //! [`MessageSender`] port (ADR-0007); the host injects this adapter. It resolves
 //! the target run's parked waiting ticket and stages a durable cross-thread
 //! delivery into the outbox, which the daemon relays to the target's pending
-//! input (ADR-0017). Delivery to a run that is *not* waiting fails closed:
-//! unsolicited delivery to an idle run needs new-input (not resume) semantics,
-//! which is deferred.
+//! input (ADR-0017). When the thread has no parked run, the message is staged as
+//! *unbound* input addressed to the thread; the thread's next run consumes it as
+//! new input (ADR-0021).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_ext_builtin_tools::MessageSender;
@@ -46,29 +47,35 @@ impl<S: RunDispatch + MessageOutbox> OutboxMessageSender<S> {
 impl<S: RunDispatch + MessageOutbox + 'static> MessageSender for OutboxMessageSender<S> {
     async fn send(&self, target_thread: &str, content: &str) -> Result<(), ToolError> {
         let thread = ThreadId(target_thread.to_string());
-        let run = self
+        let n = self.seq.fetch_add(1, Ordering::SeqCst);
+        let message_id = format!("{target_thread}-msg-{n}");
+
+        // Bind to the run parked on the thread if there is one; otherwise stage
+        // an unbound delivery (empty run/correlation) the thread's next run
+        // consumes as new input (ADR-0021).
+        let input = match self
             .store
             .parked_run(&thread)
             .await
             .map_err(|err| ToolError::Execution(err.to_string()))?
-            .ok_or_else(|| {
-                ToolError::Execution(format!(
-                    "thread {target_thread} has no run waiting for input"
-                ))
-            })?;
-        let ticket = self
-            .reader
-            .waiting_ticket(&run)
-            .ok_or_else(|| ToolError::Execution(format!("run {} is no longer waiting", run.0)))?;
-
-        let n = self.seq.fetch_add(1, Ordering::SeqCst);
-        let input = PendingInput {
-            message_id: format!("{target_thread}-msg-{n}"),
-            run_id: ticket.run_id,
-            thread_id: ticket.thread_id,
-            correlation_id: ticket.correlation_id,
-            available_at_ms: None,
-            result: ResumeResult::Input(content.to_string()),
+            .and_then(|run| self.reader.waiting_ticket(&run))
+        {
+            Some(ticket) => PendingInput {
+                message_id,
+                run_id: ticket.run_id,
+                thread_id: ticket.thread_id,
+                correlation_id: ticket.correlation_id,
+                available_at_ms: None,
+                result: ResumeResult::Input(content.to_string()),
+            },
+            None => PendingInput {
+                message_id,
+                run_id: RunId(String::new()),
+                thread_id: thread,
+                correlation_id: String::new(),
+                available_at_ms: None,
+                result: ResumeResult::Input(content.to_string()),
+            },
         };
         self.store
             .stage(input)
