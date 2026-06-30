@@ -53,6 +53,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "ureq",
     },
+    # Permission policy extension: declarative allow/ask/deny rules over the
+    # neutral PermissionPolicy port. No runtime-core or store deps.
+    "awaken-ext-permission": {
+        "awaken-runtime-contract",
+        "async-trait",
+        "glob",
+        "serde",
+        "serde_json",
+        "tokio",
+    },
     # Provider adapter: the only crate allowed to name the model SDK. It also
     # consumes the SDK's async response stream, so `futures` (StreamExt) is
     # permitted here and nowhere else.
@@ -136,6 +146,7 @@ NEUTRAL_CRATES = {
 
 EXTENSION_CRATES = {
     "awaken-ext-builtin-tools",
+    "awaken-ext-permission",
 }
 
 # Adapter crates may name an external SDK; they are not bound by the neutral
