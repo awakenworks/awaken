@@ -25,6 +25,7 @@ use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGa
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -210,6 +211,43 @@ async fn scheduled_action_commits_then_perform_runs_it() {
 }
 
 #[tokio::test]
+async fn performing_a_scheduled_action_twice_is_idempotent() {
+    // RS-SCH-001 (idempotency): a duplicate perform after the action committed is
+    // rejected, not run again.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    runtime
+        .execute(activation(), context(&commit))
+        .await
+        .expect("parks on a scheduled action");
+    runtime
+        .perform_scheduled_action(
+            &RunId("run-1".to_string()),
+            commit.as_ref(),
+            context(&commit),
+            0,
+        )
+        .await
+        .expect("first perform");
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+
+    // The ticket is cleared, so a second perform finds nothing to do.
+    let err = runtime
+        .perform_scheduled_action(
+            &RunId("run-1".to_string()),
+            commit.as_ref(),
+            context(&commit),
+            0,
+        )
+        .await
+        .expect_err("duplicate perform rejected");
+    assert!(err.to_string().contains("not waiting"));
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "the action ran exactly once");
+}
+
+#[tokio::test]
 async fn perform_on_a_non_scheduled_run_fails_closed() {
     // RS-SCH-004: a result for a run not parked on a scheduled action is rejected.
     let ran = Arc::new(AtomicUsize::new(0));
@@ -243,6 +281,78 @@ async fn perform_on_a_non_scheduled_run_fails_closed() {
         .await
         .expect_err("not a scheduled action");
     assert!(err.to_string().contains("not parked on a scheduled action"));
+}
+
+#[tokio::test]
+async fn an_uncommitted_scheduled_action_is_not_wakeable() {
+    // RS-SCH-003/007: a scheduled candidate whose ThreadCommit did not persist is
+    // not wakeable — only committed records are dispatch truth.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    // Execute with no commit boundary: the run reaches a parked phase, but the
+    // candidate ticket is never persisted.
+    let phase = runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new(PersistenceMode::ReadWrite),
+        )
+        .await
+        .expect("runs");
+    assert_eq!(phase, Phase::Waiting);
+
+    // No committed ScheduledAction exists, so there is nothing to perform.
+    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+    let err = runtime
+        .perform_scheduled_action(
+            &RunId("run-1".to_string()),
+            commit.as_ref(),
+            context(&commit),
+            0,
+        )
+        .await
+        .expect_err("uncommitted candidate is not wakeable");
+    assert!(err.to_string().contains("not waiting"));
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() {
+    // RS-SCH-002: a resume targeting a committed ScheduledAction but carrying the
+    // wrong catalog fingerprint is rejected without running the action or mutating
+    // the committed ticket.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    runtime
+        .execute(activation(), context(&commit))
+        .await
+        .expect("parks on a scheduled action");
+
+    let stale = ResumeCommand {
+        correlation_id: "sched-1".to_string(),
+        run_id: RunId("run-1".to_string()),
+        thread_id: ThreadId("thread-1".to_string()),
+        snapshot_id: SNAP.to_string(),
+        catalog_fingerprint: "wrong-fingerprint".to_string(),
+        result: ResumeResult::Decision {
+            allow: true,
+            note: None,
+        },
+        now_ms: 0,
+    };
+    let err = runtime
+        .resume(stale, commit.as_ref(), context(&commit))
+        .await
+        .expect_err("a mismatched fingerprint is rejected");
+    assert!(!err.to_string().is_empty());
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "the action did not run");
+    assert!(
+        commit.waiting_for(&RunId("run-1".to_string())).is_some(),
+        "the committed ticket is unchanged"
+    );
 }
 
 #[tokio::test]
