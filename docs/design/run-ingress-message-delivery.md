@@ -125,6 +125,27 @@ An internal launcher or host service may exist, but it is not a stable
 cross-boundary role unless it gains authority beyond preparing a request and
 calling `RunExecutor`.
 
+## Implemented Slice
+
+A first slice of this boundary ships in the `awaken-dispatch` crate
+([ADR-0009](../adr/0009-durable-run-ingress-slice.md)); the Rustdoc there co-owns
+the realized behaviour, this document owns the boundary it must keep. Realized
+roles: `RunIngress` / `DirectRunIngress` / `DurableRunIngress`,
+`RunIngressCapabilities`, `RunExecutionRequest` / `RunExecutionContext`, the
+`RunDispatch` queue (enqueue, single-owner claim/lease, lease-expiry recovery)
+and the `PendingInbox` (idempotent append) backed by an in-memory reference store
+and a Postgres adapter. The worker decides execute-versus-resume from committed
+truth, so the queue never becomes a second authority. Pending input is keyed to
+the waiting-ticket correlation it answers, so a resume that committed before the
+worker settled is never re-applied after a crash, without an atomic append+freeze
+([ADR-0010](../adr/0010-idempotent-pending-consumption.md)). A `DispatchService`
+daemon drains the queue on a nudge or poll and recovers crashed leases on a
+`Clock` injected at the edge, keeping the worker deterministic
+([ADR-0011](../adr/0011-autonomous-dispatch-service.md)). Deferred (named, not
+built): scheduled wake, per-run lease renewal,
+cross-thread `send_message` outbox, dispatch query/maintenance/GC, supersession,
+dead-letter, and the `RunDispatch*` query/lifecycle store roles above.
+
 ## Durable Semantics
 
 Durable behavior is additive:
