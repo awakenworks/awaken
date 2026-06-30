@@ -24,7 +24,7 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_postgres::PostgresCommitCoordinator;
 
-use harness::{FP, SNAP, THREAD, TICKET, activation, pool, reset, tool_runtime};
+use harness::{FP, SNAP, THREAD, TICKET, activation, tool_runtime};
 
 fn allow_resume() -> ResumeCommand {
     ResumeCommand {
@@ -43,15 +43,15 @@ fn allow_resume() -> ResumeCommand {
 
 #[tokio::test]
 async fn postgres_commit_backs_execute_resume_and_survives_restart() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_rt";
-    reset(&pool, prefix).await;
+    let Some(pool) = harness::schema_pool("t_rt").await else {
+        return;
+    };
 
     let (runtime, ran) = tool_runtime();
 
     // Execute against the Postgres commit boundary: the run parks on the gate.
     let commit = Arc::new(
-        PostgresCommitCoordinator::with_pool(pool.clone(), prefix)
+        PostgresCommitCoordinator::with_pool(pool.clone(), "runtime")
             .await
             .expect("coordinator"),
     );
@@ -66,7 +66,7 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
 
     // A fresh coordinator on the same database rehydrates committed truth.
     let restarted = Arc::new(
-        PostgresCommitCoordinator::with_pool(pool.clone(), prefix)
+        PostgresCommitCoordinator::with_pool(pool.clone(), "runtime")
             .await
             .expect("restart"),
     );
@@ -92,6 +92,4 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
         ThreadReader::waiting_ticket(&*restarted, &RunId("run-1".to_string())).is_none(),
         "a resumed run clears its ticket"
     );
-
-    reset(&pool, prefix).await;
 }
