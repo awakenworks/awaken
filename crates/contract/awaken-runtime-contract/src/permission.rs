@@ -47,6 +47,10 @@ pub enum GateOutcome {
     SetResult(ToolOutput),
     /// Suspend the run pending an out-of-band decision (ticket correlation).
     Suspend { ticket_id: String },
+    /// Defer this call as a committed `ScheduledAction` (ADR-0020): the run parks
+    /// and the action is performed later (in-process or by recovery), not decided
+    /// by a human. `correlation_id` keys the committed request and its resume.
+    Schedule { correlation_id: String },
 }
 
 /// The final invocation gate. The loop calls this for every tool call; only an

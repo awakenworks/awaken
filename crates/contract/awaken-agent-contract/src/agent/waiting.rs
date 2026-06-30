@@ -17,6 +17,11 @@ pub enum WaitingReason {
     ExternalEvent,
     RateLimit,
     ManualPause,
+    /// The run committed a `ScheduledAction` (ADR-0003 mechanism #1): a deferred
+    /// action recorded in committed state, performed by the system (not decided
+    /// by a human) and recovered from the committed request for consistency
+    /// (ADR-0020).
+    ScheduledAction,
 }
 
 /// The committed correlation for one same-run pause. A resume is accepted only
