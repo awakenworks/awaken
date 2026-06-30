@@ -7,6 +7,7 @@ members = [
     "crates/awaken-ext-builtin-tools",
     "crates/awaken-provider-genai",
     "crates/awaken-store-postgres",
+    "crates/awaken-run-ingress",
 ]
 
 [workspace.package]

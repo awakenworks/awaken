@@ -1,0 +1,25 @@
+[package]
+name = "awaken-run-ingress"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-runtime = { path = "../awaken-runtime" }
+async-trait.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
+awaken-scoped-migration = { path = "../../../awaken-foundation/crates/awaken-scoped-migration", features = ["postgres"] }
+
+[dev-dependencies]
+awaken-store-postgres = { path = "../awaken-store-postgres" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

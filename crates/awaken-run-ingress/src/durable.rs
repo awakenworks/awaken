@@ -1,0 +1,127 @@
+//! `DurableRunIngress`: the durable half of the `RunIngress` port (G5).
+//!
+//! Direct ingress executes inline and fails its durable-only operation closed.
+//! Durable ingress instead *persists* an accepted run, then drives it through the
+//! dispatch worker, so the submission survives a crash and is recovered. It adds
+//! durability over the same runtime control a direct ingress uses (G6); it does
+//! not own the loop, agent truth, or a second commit mechanism.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use awaken_agent_contract::agent::run::{Id as RunId, Phase};
+use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
+use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_runtime::{RunIngress, Runtime};
+use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
+use awaken_runtime_contract::execution::{Error as ExecError, Result as ExecResult};
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+
+use crate::Error;
+use crate::capability::RunIngressCapabilities;
+use crate::dispatch::{DispatchStore, PendingInput};
+use crate::request::RunExecutionRequest;
+use crate::worker::DispatchWorker;
+
+/// Durable run ingress over a dispatch store. Holds the worker that turns durable
+/// dispatches into runtime attempts.
+pub struct DurableRunIngress<S> {
+    worker: DispatchWorker<S>,
+}
+
+impl<S: DispatchStore + 'static> DurableRunIngress<S> {
+    /// Build durable ingress from a runtime, a dispatch store, and the durable
+    /// commit boundary. The commit handle is the single source of truth shared by
+    /// the runtime's writes and the worker's reads (G6 same-source wiring).
+    pub fn new<C>(runtime: Arc<Runtime>, store: Arc<S>, commit: Arc<C>) -> Self
+    where
+        C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
+    {
+        Self {
+            worker: DispatchWorker::new(runtime, store, commit, "durable-run-ingress"),
+        }
+    }
+
+    /// The durable guarantees this ingress reports (G5): durable, recoverable,
+    /// replayable. A direct ingress would report [`RunIngressCapabilities::DIRECT`].
+    pub fn capabilities(&self) -> RunIngressCapabilities {
+        RunIngressCapabilities::DURABLE
+    }
+
+    /// The worker, for out-of-band driving (recovery sweeps, background loops).
+    pub fn worker(&self) -> &DispatchWorker<S> {
+        &self.worker
+    }
+
+    /// Deliver durable input to a parked run and drive its resume. The input is
+    /// appended idempotently (duplicate `message_id` is a no-op), then the worker
+    /// freezes it at the run's boundary and resumes against the committed ticket.
+    /// Returns the run's resulting phase. Only runs submitted durably (with a
+    /// dispatch row) can be woken this way.
+    pub async fn deliver_resume(&self, input: PendingInput, now_ms: u64) -> Result<Phase, Error> {
+        let run_id = input.run_id.clone();
+        self.worker.store().append(input).await?;
+        let processed = self.worker.run_until_idle(now_ms).await?;
+        phase_of(&processed, &run_id).ok_or_else(|| {
+            Error::from(ExecError::Execution("resumed run was not processed".into()))
+        })
+    }
+
+    /// Reclaim and re-run any dispatch whose lease expired (crash recovery), plus
+    /// any work that became runnable. Returns each processed run and its phase.
+    pub async fn recover(&self, now_ms: u64) -> Result<Vec<(RunId, Phase)>, Error> {
+        self.worker.run_until_idle(now_ms).await
+    }
+}
+
+#[async_trait]
+impl<S: DispatchStore + 'static> RunIngress for DurableRunIngress<S> {
+    /// Foreground submit is additive over runtime control: it executes inline
+    /// through the same `RunExecutor` a direct ingress uses (G6).
+    async fn submit(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecResult<Phase> {
+        use awaken_runtime_contract::execution::RunExecutor;
+        self.worker.runtime().execute(activation, context).await
+    }
+
+    /// Durable submit: persist the accepted run first (so it survives a crash),
+    /// then drive it. A direct ingress fails this closed; durable ingress does
+    /// not (G5).
+    async fn submit_background(&self, activation: RunActivation) -> ExecResult<Phase> {
+        let run_id = activation.run_id.clone();
+        self.worker
+            .store()
+            .enqueue(RunExecutionRequest::new(activation))
+            .await
+            .map_err(|err| ExecError::Execution(err.to_string()))?;
+        let processed = self.worker.run_until_idle(0).await.map_err(exec_error)?;
+        phase_of(&processed, &run_id)
+            .ok_or_else(|| ExecError::Execution("submitted run was not processed".into()))
+    }
+
+    fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {
+        self.worker.runtime().deliver(LiveCommand::Cancel {
+            run_id: run_id.clone(),
+        })
+    }
+}
+
+fn phase_of(processed: &[(RunId, Phase)], run_id: &RunId) -> Option<Phase> {
+    processed
+        .iter()
+        .rev()
+        .find(|(id, _)| id == run_id)
+        .map(|(_, phase)| phase.clone())
+}
+
+fn exec_error(err: Error) -> ExecError {
+    match err {
+        Error::Execution(err) => err,
+        Error::Dispatch(err) => ExecError::Execution(err.to_string()),
+    }
+}

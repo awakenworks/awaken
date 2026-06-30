@@ -1,0 +1,45 @@
+//! Durable run ingress: the dispatch/server host above the runtime core.
+//!
+//! `RunIngress` has exactly two delivery semantics (G5): direct, shipped by the
+//! runtime as `DirectRunIngress`, and durable, shipped here as
+//! [`DurableRunIngress`]. This crate owns the durable half — the dispatch queue,
+//! pending input, claim/lease/recovery, and the worker that turns a durable
+//! dispatch into a runtime attempt. It sits *above* the runtime (it depends on
+//! the kernel; the kernel never depends on it) and adds durability over runtime
+//! control without owning the loop, agent truth, or a second commit mechanism
+//! (G6). Committed facts remain the single authority (G1/G13).
+//!
+//! The aggregates follow the run-ingress design's DDD split: [`RunDispatch`] owns
+//! delivery opportunity (claim/lease/recovery), [`PendingInbox`] owns the
+//! thread's pending input, and run outcome stays in committed facts, read back
+//! through the commit boundary's `ThreadReader`/`RunStore` ports.
+
+mod capability;
+mod dispatch;
+mod durable;
+pub mod memory;
+mod postgres;
+mod request;
+mod worker;
+
+pub use capability::RunIngressCapabilities;
+pub use dispatch::{
+    Claimed, DispatchError, DispatchOutcome, DispatchStore, Lease, PendingInbox, PendingInput,
+    RunDispatch,
+};
+pub use durable::DurableRunIngress;
+pub use memory::MemoryDispatchStore;
+pub use postgres::{PostgresDispatchStore, StoreError, dispatch_bundle};
+pub use request::{RunExecutionContext, RunExecutionRequest};
+pub use worker::{DEFAULT_LEASE_MS, DispatchWorker};
+
+/// A durable-ingress failure: either the dispatch store rejected an operation or
+/// a runtime attempt failed. Kept as two arms so a queue-storage failure never
+/// masquerades as a run execution failure.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Dispatch(#[from] dispatch::DispatchError),
+    #[error(transparent)]
+    Execution(#[from] awaken_runtime_contract::execution::Error),
+}

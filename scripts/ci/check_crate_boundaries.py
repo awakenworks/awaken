@@ -82,6 +82,24 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
     },
+    # Durable run host: the dispatch/server layer above the runtime kernel
+    # (ADR-0009). It depends on the kernel it drives and the store adapter it
+    # persists through, and — like an adapter — may name the SQL driver for its
+    # own durable dispatch tables. Nothing below the kernel depends on it.
+    "awaken-run-ingress": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-runtime",
+        "awaken-scoped-migration",
+        "awaken-store-postgres",
+        "async-trait",
+        "sqlx",
+        "tokio",
+        "tokio-util",
+        "serde",
+        "serde_json",
+        "thiserror",
+    },
 }
 
 NEUTRAL_CRATES = {

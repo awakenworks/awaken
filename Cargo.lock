@@ -117,6 +117,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-run-ingress"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-scoped-migration",
+ "awaken-store-postgres",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "awaken-runtime"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,259 @@
+//! Durable ingress over the in-memory dispatch store and commit coordinator.
+//!
+//! These prove the durable slice end to end without a database: a durable submit
+//! persists then runs a fresh run; the durable-only operation fails closed on
+//! direct ingress (G5); enqueue and pending append are idempotent; a parked run
+//! resumes through delivered input (#4); and an expired lease is recovered.
+
+mod harness;
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use awaken_agent_contract::agent::message::Role;
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_run_ingress::{
+    DispatchOutcome, DurableRunIngress, MemoryDispatchStore, PendingInbox, PendingInput,
+    RunDispatch, RunExecutionRequest, RunIngressCapabilities,
+};
+use awaken_runtime::memory::MemoryCommitCoordinator;
+use awaken_runtime::{DirectRunIngress, RunIngress};
+use awaken_runtime_contract::resume::ResumeResult;
+
+use harness::{THREAD, activation, text_runtime, tool_runtime};
+
+fn pending(message_id: &str, run: &str, result: ResumeResult) -> PendingInput {
+    PendingInput {
+        message_id: message_id.to_string(),
+        run_id: RunId(run.to_string()),
+        thread_id: ThreadId(THREAD.to_string()),
+        result,
+    }
+}
+
+#[tokio::test]
+async fn durable_submit_persists_then_runs_to_completion() {
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    let phase = ingress
+        .submit_background(activation("run-1"))
+        .await
+        .expect("durable submit");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+
+    // Committed truth holds the run; the dispatch was settled and removed.
+    assert_eq!(commit.commit_count(), 1);
+    assert_eq!(commit.committed().messages[0].text_content(), "done");
+    assert_eq!(store.dispatch_count(), 0, "a finished dispatch is removed");
+}
+
+#[tokio::test]
+async fn direct_ingress_fails_durable_submit_closed_while_durable_does_not() {
+    // G5: the durable-only operation (submit_background) fails closed on direct
+    // ingress and succeeds on durable ingress.
+    let runtime = text_runtime();
+    let direct = DirectRunIngress::new(runtime.clone());
+    let err = direct
+        .submit_background(activation("run-1"))
+        .await
+        .expect_err("direct has no durable submit");
+    assert!(matches!(
+        err,
+        awaken_runtime_contract::execution::Error::Execution(_)
+    ));
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let durable = DurableRunIngress::new(runtime, store, commit);
+    assert_eq!(durable.capabilities(), RunIngressCapabilities::DURABLE);
+    assert!(durable.submit_background(activation("run-1")).await.is_ok());
+}
+
+#[tokio::test]
+async fn durable_submit_is_idempotent_per_run() {
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+
+    ingress
+        .submit_background(activation("run-1"))
+        .await
+        .expect("first submit");
+    // Re-submitting the same run id is a no-op: the dispatch was already settled,
+    // and re-enqueue does not create a second run or a second commit.
+    let phase = ingress
+        .submit_background(activation("run-1"))
+        .await
+        .expect("second submit");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(commit.commit_count(), 1, "the run committed exactly once");
+}
+
+#[tokio::test]
+async fn parked_run_resumes_through_delivered_input() {
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    // A durable submit parks on the gate.
+    let phase = ingress
+        .submit_background(activation("run-1"))
+        .await
+        .expect("submit parks");
+    assert_eq!(phase, Phase::Waiting);
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "tool must not run while parked"
+    );
+    assert_eq!(store.dispatch_count(), 1, "the parked dispatch is retained");
+
+    // Delivering an allow decision wakes and resumes the run to completion.
+    let resumed = ingress
+        .deliver_resume(
+            pending(
+                "msg-1",
+                "run-1",
+                ResumeResult::Decision {
+                    allow: true,
+                    note: None,
+                },
+            ),
+            0,
+        )
+        .await
+        .expect("resume");
+    assert_eq!(resumed, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "allow runs the pending tool once"
+    );
+    assert_eq!(
+        store.dispatch_count(),
+        0,
+        "the finished dispatch is removed"
+    );
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text_content().contains("echoed"))
+    );
+}
+
+#[tokio::test]
+async fn duplicate_pending_delivery_is_idempotent() {
+    let store = MemoryDispatchStore::new();
+    let input = pending("msg-1", "run-1", ResumeResult::Input("hi".to_string()));
+    assert!(
+        store.append(input.clone()).await.unwrap(),
+        "first append stores"
+    );
+    assert!(
+        !store.append(input).await.unwrap(),
+        "a duplicate message id is a no-op"
+    );
+    assert_eq!(store.pending_count(&RunId("run-1".to_string())), 1);
+}
+
+#[tokio::test]
+async fn expired_lease_is_reclaimable_for_recovery() {
+    let store = MemoryDispatchStore::new();
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+
+    // First claim takes a 1000ms lease at t=0.
+    assert!(
+        store.claim("worker-a", 1_000, 0).await.unwrap().is_some(),
+        "a fresh run is claimable"
+    );
+    // While the lease holds, the run is not re-claimable.
+    assert!(
+        store.claim("worker-b", 1_000, 500).await.unwrap().is_none(),
+        "a held lease blocks a second claim"
+    );
+    // After the lease expires, recovery reclaims it.
+    let recovered = store.claim("worker-b", 1_000, 1_001).await.unwrap();
+    assert_eq!(
+        recovered.map(|c| c.lease.owner),
+        Some("worker-b".to_string()),
+        "an expired lease is reclaimed by the next worker"
+    );
+}
+
+#[tokio::test]
+async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    // Simulate a worker that claimed a run, then crashed before executing it:
+    // enqueue and claim directly, leaving a held lease and no committed run.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    assert!(
+        store
+            .claim("dead-worker", 1_000, 0)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        commit.commit_count(),
+        0,
+        "the crashed attempt committed nothing"
+    );
+
+    // Recovery after the lease expires reclaims and completes the run.
+    let processed = ingress.recover(2_000).await.expect("recover");
+    assert_eq!(
+        processed,
+        vec![(
+            RunId("run-1".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        )]
+    );
+    assert_eq!(
+        commit.commit_count(),
+        1,
+        "recovery ran the run exactly once"
+    );
+    assert_eq!(store.dispatch_count(), 0);
+}
+
+#[tokio::test]
+async fn settle_done_clears_pending_and_dispatch() {
+    // A store-level invariant: settling Done removes the dispatch and any pending.
+    let store = MemoryDispatchStore::new();
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    store
+        .append(pending(
+            "msg-1",
+            "run-1",
+            ResumeResult::Input("x".to_string()),
+        ))
+        .await
+        .unwrap();
+    store
+        .settle(&RunId("run-1".to_string()), DispatchOutcome::Done)
+        .await
+        .unwrap();
+    assert_eq!(store.dispatch_count(), 0);
+    assert_eq!(store.pending_count(&RunId("run-1".to_string())), 0);
+}
