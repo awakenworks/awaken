@@ -356,6 +356,48 @@ async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() 
 }
 
 #[tokio::test]
+async fn a_stop_policy_makes_a_late_scheduled_result_fail_closed() {
+    // RS-CTRL-002: a stop policy commits a terminal stop reason; a deferred result
+    // that arrives later is rejected without running the action or mutating facts.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    runtime
+        .execute(activation(), context(&commit))
+        .await
+        .expect("parks on a scheduled action");
+
+    // The host stop policy commits a terminal Stopped(reason).
+    let phase = runtime
+        .stop_run(
+            RunId("run-1".to_string()),
+            ThreadId("thread-1".to_string()),
+            "budget exhausted".to_string(),
+            context(&commit),
+        )
+        .await
+        .expect("stop");
+    assert_eq!(
+        phase,
+        Phase::Ended(EndCause::Stopped("budget exhausted".to_string()))
+    );
+
+    // A late scheduled perform is rejected; the action never runs.
+    let err = runtime
+        .perform_scheduled_action(
+            &RunId("run-1".to_string()),
+            commit.as_ref(),
+            context(&commit),
+            0,
+        )
+        .await
+        .expect_err("late perform rejected");
+    assert!(err.to_string().contains("not waiting"));
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn cancel_makes_a_late_scheduled_perform_fail_closed() {
     // RS-CTRL-001.
     let ran = Arc::new(AtomicUsize::new(0));

@@ -31,6 +31,9 @@ pub enum EndCause {
     MaxSteps,
     /// The run was cancelled from outside.
     Cancelled,
+    /// A stop policy ended the run with a terminal reason (e.g. a budget or step
+    /// ceiling enforced by the host), distinct from an external cancel (ADR-0026).
+    Stopped(String),
     /// An execution fault ended the run.
     Error(Failure),
 }

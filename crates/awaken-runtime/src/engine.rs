@@ -114,6 +114,19 @@ pub(crate) async fn cancel_run(
     finish(&context, &thread_id, run_id, Checkpoint::cancelled()).await
 }
 
+/// Stop a run by committing a terminal `Stopped(reason)` fact through the one
+/// finish boundary (G31) — a host stop policy (budget, step ceiling) making the
+/// run terminal. Like cancel, it clears any waiting ticket, so a later resume or
+/// scheduled result for the run fails closed (RS-CTRL-002, ADR-0026).
+pub(crate) async fn stop_run(
+    run_id: RunId,
+    thread_id: ThreadId,
+    reason: String,
+    context: RuntimeRunContext,
+) -> Result<Phase> {
+    finish(&context, &thread_id, run_id, Checkpoint::stopped(reason)).await
+}
+
 /// Perform a committed `ScheduledAction` (ADR-0020): the run is parked on a
 /// ticket whose reason is `ScheduledAction`, holding the deferred action as its
 /// pending tool. Performing it is an allow-resume of that committed action — the
@@ -246,6 +259,10 @@ enum End {
 impl Checkpoint {
     fn cancelled() -> Self {
         Self::ended(EndCause::Cancelled)
+    }
+
+    fn stopped(reason: String) -> Self {
+        Self::ended(EndCause::Stopped(reason))
     }
 
     fn capability_bound() -> Self {
