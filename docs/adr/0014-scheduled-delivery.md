@@ -46,9 +46,12 @@ wake. No separate scheduling path is needed.
 - A parked run can be woken on a durable schedule; the daemon fires a delayed
   delivery when its clock reaches the time, proven deterministically with a
   `ManualClock`.
-- Pure timer wake with no input (a reminder/`ScheduledAction`) is still deferred:
-  it needs a runtime-side timer `WaitingReason` and effect, not just a queue
-  column.
+- This is *delayed delivery of input* — the run-ingress waiting-ticket mechanism
+  (ADR-0003 mechanism #2) plus a due-time gate. It is **not** `ScheduledAction`
+  (ADR-0003 mechanism #1): a `ScheduledAction` is a committed in-run request to
+  perform deferred work, recovered from committed state for consistency, not a
+  queue column with a time. That mechanism remains unbuilt and stays a
+  runtime-core concern, distinct from this dispatch-layer schedule.
 - The deterministic `Clock` plus an epoch-millis column keeps scheduling testable
   and backend-uniform.
 
