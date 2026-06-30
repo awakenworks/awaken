@@ -47,10 +47,19 @@ A scripted model reads a real temp file, asks to edit it, and the edit is applie
 on approval (and not applied on denial) — proving the agent mutates code and that
 the permission gate gates mutations.
 
-Live, against a real model (ignored by default; needs a funded key + network):
+Live, against a real model through the MiniMax config (ignored by default; needs
+network and a funded key):
 
 ```text
-MINIMAX_API_KEY=… AWAKEN_MODEL=MiniMax-M3 \
+MINIMAX_API_KEY=… MINIMAX_BASE_URL=https://api.minimaxi.com/anthropic \
+AWAKEN_MODEL=MiniMax-M3 \
   cargo test -p awaken-runtime-examples --features coding-agent-tui \
     --test coding_agent_minimax -- --ignored --nocapture
 ```
+
+Two checks: `minimax_endpoint_authenticates_and_reaches_the_model` proves the
+`genai` client routes to the MiniMax model via the Anthropic adapter at the custom
+endpoint; `minimax_agent_edits_a_real_file` runs the full agent against the live
+model. The first passes whenever the endpoint is reachable; the second needs the
+account to have credits (a `2056` "Token Plan" quota response means the wiring is
+correct but the plan is exhausted).
