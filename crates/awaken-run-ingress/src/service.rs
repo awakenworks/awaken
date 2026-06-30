@@ -4,9 +4,8 @@
 //! one background task drains the queue, woken by a nudge when new work arrives
 //! and by a periodic timer otherwise (so a crashed lease is recovered without new
 //! work). It is the only part of the crate that reads a real [`Clock`], keeping
-//! the worker deterministic. Lease *renewal* and multi-worker concurrency are
-//! deferred to the distributed milestone; a single in-process daemon needs
-//! neither (ADR-0011).
+//! the worker deterministic. It waits on a [`WakeSignal`] — a `LocalWakeSignal`
+//! for one process, or a cross-node signal for a fleet (ADR-0011, ADR-0019).
 
 use std::sync::Arc;
 use std::time::Duration;

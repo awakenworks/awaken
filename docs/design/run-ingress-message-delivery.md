@@ -159,12 +159,16 @@ backed by the outbox through a host adapter, addressed by thread
 ([ADR-0017](../adr/0017-send-message-over-outbox.md)). Fresh work is claimed by
 priority, an `enqueue_with` dedupe key dedups concurrent submissions, and
 `purge_dead_letters` is an operator GC over dead-lettered rows
-([ADR-0018](../adr/0018-priority-dedupe-gc.md)). Deferred (named, not built): a
-pure timer wake with no input (a reminder/`ScheduledAction`), per-run lease
-renewal, unsolicited delivery to an idle thread (new-input semantics),
-time-windowed auto-GC, epoch-based supersession, a distributed (multi-node)
-backend with wake signals, and the `RunDispatch*` query/lifecycle store roles
-above.
+([ADR-0018](../adr/0018-priority-dedupe-gc.md)). Multi-node dispatch works on
+Postgres (concurrent distinct claim via `SKIP LOCKED`), `renew_lease` keeps a
+long run owned, and a pluggable `WakeSignal` (local, or feature-gated NATS)
+replaces the daemon's notify
+([ADR-0019](../adr/0019-distributed-dispatch-and-wake-signal.md)). Deferred
+(named, not built): a pure timer wake with no input (a
+reminder/`ScheduledAction`), unsolicited delivery to an idle thread (new-input
+semantics), time-windowed auto-GC, epoch-based supersession, a NATS-backed store
+(JetStream durability), daemon-driven lease-renewal scheduling, and the
+`RunDispatch*` query/lifecycle store roles above.
 
 ## Durable Semantics
 
