@@ -88,10 +88,13 @@ async fn postgres_config_store_round_trips_config_and_publication() {
     store.put_publication(&stored).await.expect("re-put");
 
     let loaded = store
-        .get_publication(&publication.fingerprint)
+        .get_publication(&publication.snapshot().fingerprint.0)
         .await
         .unwrap()
         .expect("publication exists");
-    assert_eq!(loaded.fingerprint, publication.fingerprint);
-    assert_eq!(loaded.snapshot.fingerprint.0, publication.fingerprint);
+    assert_eq!(loaded.fingerprint, publication.snapshot().fingerprint.0);
+    assert_eq!(
+        loaded.snapshot.fingerprint.0,
+        publication.snapshot().fingerprint.0
+    );
 }

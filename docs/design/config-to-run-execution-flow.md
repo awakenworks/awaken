@@ -247,6 +247,31 @@ does not execute runs and does not hold live runtime registries. Runtime stays o
 the right side of the boundary: install a complete catalog, resolve executable
 snapshots, run, and commit.
 
+## Implemented Run Input: RunnableConfig (ADR-0032)
+
+The names above (`RegistryPublication`, `RegistryCompiler`,
+`ConfigPublicationCoordinator`) are design-level. The implemented seam bundles the
+runtime-facing data into one value object: **`RunnableConfig`**
+(`awaken-runtime-contract`), pairing the `ExecutableAgentSnapshot` with its
+`RuntimeCatalogInstall` under one fingerprint. The runtime consumes a
+`RunnableConfig`; it does not juggle the two parts. This is the owning description
+of the implemented run input — other docs link here rather than restate it.
+
+`RunnableConfig` has two producers and one consumer:
+
+- **`RunnableConfig::builder`** — the single assembly path. A direct caller builds
+  one by hand (no config store), stamping the agent id as the consistency token.
+- **`compile()`** (`awaken-config-store`) — a thin wrapper over the builder that
+  resolves tool ids and stamps the content hash (`sha256`); the config side of the
+  boundary, and optional.
+- **`Runtime::run`** (or `install_catalog` + `execute` for the durable path) — the
+  runtime installs the config's catalog (idempotent) and resolves the snapshot
+  against it, fail-closed (G4/G28). The runtime never computes the fingerprint.
+
+The earlier in-memory `Publication` value is removed — `RunnableConfig` subsumes
+it. The durable `StoredPublication` and the publication lifecycle
+([config-publication-lifecycle.md](config-publication-lifecycle.md)) are unchanged.
+
 ## Snapshot Execution And Inspection Contract
 
 The runtime also has an internal execution and inspection contract for

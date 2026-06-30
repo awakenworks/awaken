@@ -1,10 +1,10 @@
 //! The `ConfigStore` port and its persisted aggregates.
 
 use awaken_runtime_contract::catalog::RuntimeCatalogInstall;
+use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use serde::{Deserialize, Serialize};
 
-use crate::compile::Publication;
 use crate::config::AgentConfig;
 
 /// A neutral config-store failure (storage or serialization). Compilation errors
@@ -44,15 +44,18 @@ pub struct StoredPublication {
 }
 
 impl StoredPublication {
-    /// Wrap a freshly compiled publication as `published`.
-    pub fn published(publication: Publication, agent_id: impl Into<String>) -> Self {
+    /// Wrap a freshly compiled config as `published`. The fingerprint and
+    /// publication id come from the runnable config itself (the producer stamped
+    /// them), so the store never re-derives them.
+    pub fn published(config: RunnableConfig, agent_id: impl Into<String>) -> Self {
+        let (snapshot, install) = config.into_parts();
         Self {
-            publication_id: publication.publication_id,
-            fingerprint: publication.fingerprint,
+            publication_id: install.publication_id.clone(),
+            fingerprint: snapshot.fingerprint.0.clone(),
             agent_id: agent_id.into(),
             state: PublicationState::Published,
-            snapshot: publication.snapshot,
-            install: publication.install,
+            snapshot,
+            install,
         }
     }
 }

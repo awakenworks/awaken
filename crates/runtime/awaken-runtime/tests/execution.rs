@@ -10,7 +10,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::event::Kind as StreamKind;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_phase};
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::{Error, RunExecutor};
@@ -81,9 +81,6 @@ fn activation(fingerprint: &str) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("hello")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }
@@ -95,7 +92,7 @@ async fn one_model_step_commits_facts_and_streams_progress() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let sink = Arc::new(MemoryStreamSink::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite)
+    let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_stream_sink(sink.clone());
 
@@ -135,10 +132,7 @@ async fn execution_fails_closed_on_fingerprint_mismatch() {
     install(&runtime, "catalog-a");
 
     let result = runtime
-        .execute(
-            activation("catalog-b"),
-            RuntimeRunContext::new(PersistenceMode::ReadWrite),
-        )
+        .execute(activation("catalog-b"), RuntimeRunContext::new())
         .await;
     assert!(matches!(result, Err(Error::Resolution(_))));
 }
@@ -147,10 +141,7 @@ async fn execution_fails_closed_on_fingerprint_mismatch() {
 async fn execution_fails_without_a_catalog() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("hi")));
     let result = runtime
-        .execute(
-            activation("catalog-a"),
-            RuntimeRunContext::new(PersistenceMode::ReadWrite),
-        )
+        .execute(activation("catalog-a"), RuntimeRunContext::new())
         .await;
     assert!(matches!(result, Err(Error::Resolution(_))));
 }
@@ -160,10 +151,7 @@ async fn execution_requires_a_model_provider() {
     let runtime = Runtime::new();
     install(&runtime, "catalog-a");
     let result = runtime
-        .execute(
-            activation("catalog-a"),
-            RuntimeRunContext::new(PersistenceMode::ReadWrite),
-        )
+        .execute(activation("catalog-a"), RuntimeRunContext::new())
         .await;
     assert!(matches!(result, Err(Error::Execution(_))));
 }
@@ -173,10 +161,7 @@ async fn run_without_commit_coordinator_still_completes() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("ok")));
     install(&runtime, "catalog-a");
     let outcome = runtime
-        .execute(
-            activation("catalog-a"),
-            RuntimeRunContext::new(PersistenceMode::Disabled),
-        )
+        .execute(activation("catalog-a"), RuntimeRunContext::new())
         .await
         .expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));

@@ -12,11 +12,8 @@ use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use tokio_util::sync::CancellationToken;
 
-use crate::activation::PersistenceMode;
-
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
-    pub persistence: PersistenceMode,
     /// Live best-effort progress delivery; absent means no live streaming.
     pub stream_sink: Option<Arc<dyn StreamSink>>,
     /// Durable write boundary for this attempt; absent means no persistence.
@@ -30,11 +27,8 @@ pub struct RuntimeRunContext {
 }
 
 impl RuntimeRunContext {
-    pub fn new(persistence: PersistenceMode) -> Self {
-        Self {
-            persistence,
-            ..Default::default()
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     #[must_use]

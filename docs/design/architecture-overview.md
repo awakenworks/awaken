@@ -80,7 +80,7 @@ crate name.
 |---|---|---|
 | Agent-domain contract | replayable agent truth and runtime commit vocabulary | `RunRecord`, durable run lifecycle value, `ThreadCommit`, `CommitCoordinator`, `RuntimeResumeStore`, state/fact/event records |
 | Config publication contract | config-side records, snapshots, and publication values before runtime install | `ConfigStore`, `ConfigSnapshot`, `RegistryPublication`, `RegistryCompiler` contracts |
-| Runtime-facing contract | internal ports and immutable values used to enter, install, or inspect runtime execution | `RuntimeCatalogInstaller`, `RuntimeCatalogInstall`, `RunWithSnapshotExecutor`, `ExecutableAgentSnapshot`, `AgentSnapshotResolver`, `AgentSnapshotCatalog`, `RuntimeCapabilitySource`, `PluginManifest` |
+| Runtime-facing contract | internal ports and immutable values used to enter, install, or inspect runtime execution | `RunnableConfig` (the bundled run input), `RuntimeCatalogInstaller`, `RuntimeCatalogInstall`, `RunWithSnapshotExecutor`, `ExecutableAgentSnapshot`, `AgentSnapshotResolver`, `AgentSnapshotCatalog`, `RuntimeCapabilitySource`, `PluginManifest` |
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |
 | Run-ingress contract | durable delivery and dispatch vocabulary | submit/input records, dispatch records, claims, leases, wake hints, live-command delivery stores |
 | Run-ingress implementation | buffering, host supervision, recovery, and live delivery | `DurableRunIngress`, input buffer, dispatch coordinator, recovery replay |

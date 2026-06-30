@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
@@ -103,9 +103,6 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }
@@ -118,7 +115,7 @@ async fn pre_cancelled_run_commits_a_terminal_cancelled_outcome() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let token = CancellationToken::new();
     token.cancel();
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite)
+    let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_cancellation(token);
 
@@ -141,7 +138,7 @@ async fn live_cancel_steers_an_in_flight_run() {
     install(&runtime);
 
     let token = CancellationToken::new();
-    let context = RuntimeRunContext::new(PersistenceMode::Disabled).with_cancellation(token);
+    let context = RuntimeRunContext::new().with_cancellation(token);
 
     let runtime_for_run = runtime.clone();
     let handle = tokio::spawn(async move { runtime_for_run.execute(activation(), context).await });
@@ -177,10 +174,7 @@ async fn direct_ingress_runs_inline_and_rejects_durable() {
     let ingress = DirectRunIngress::new(runtime);
 
     let outcome = ingress
-        .submit(
-            activation(),
-            RuntimeRunContext::new(PersistenceMode::ReadWrite),
-        )
+        .submit(activation(), RuntimeRunContext::new())
         .await
         .expect("inline run");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
@@ -213,7 +207,7 @@ async fn wake_on_an_active_run_is_accepted() {
     install(&runtime);
 
     let token = CancellationToken::new();
-    let context = RuntimeRunContext::new(PersistenceMode::Disabled).with_cancellation(token);
+    let context = RuntimeRunContext::new().with_cancellation(token);
     let runtime_for_run = runtime.clone();
     let handle = tokio::spawn(async move { runtime_for_run.execute(activation(), context).await });
 
