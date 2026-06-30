@@ -803,11 +803,15 @@ pub struct awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::resolved::ModelBinding::backend_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelBinding::model_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelBinding::provider_instance_ref: alloc::string::String
+impl awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::resolved::ModelBinding
 pub fn awaken_runtime_contract::resolved::ModelBinding::clone(&self) -> awaken_runtime_contract::resolved::ModelBinding
 impl core::cmp::Eq for awaken_runtime_contract::resolved::ModelBinding
 impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ModelBinding
 pub fn awaken_runtime_contract::resolved::ModelBinding::eq(&self, &awaken_runtime_contract::resolved::ModelBinding) -> bool
+impl core::default::Default for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::default() -> awaken_runtime_contract::resolved::ModelBinding
 impl core::fmt::Debug for awaken_runtime_contract::resolved::ModelBinding
 pub fn awaken_runtime_contract::resolved::ModelBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for awaken_runtime_contract::resolved::ModelBinding
@@ -988,6 +992,42 @@ impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeCommand
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeCommand
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeCommand
 pub fn awaken_runtime_contract::resume::validate_resume(&awaken_agent_contract::agent::waiting::WaitingTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
+pub mod awaken_runtime_contract::runnable
+pub struct awaken_runtime_contract::runnable::RunnableConfig
+impl awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_runtime_contract::runnable::RunnableConfig::builder(impl core::convert::Into<alloc::string::String>) -> awaken_runtime_contract::runnable::RunnableConfigBuilder
+pub fn awaken_runtime_contract::runnable::RunnableConfig::install(&self) -> &awaken_runtime_contract::catalog::RuntimeCatalogInstall
+pub fn awaken_runtime_contract::runnable::RunnableConfig::into_parts(self) -> (awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::catalog::RuntimeCatalogInstall)
+pub fn awaken_runtime_contract::runnable::RunnableConfig::snapshot(&self) -> &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+impl core::clone::Clone for awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_runtime_contract::runnable::RunnableConfig::clone(&self) -> awaken_runtime_contract::runnable::RunnableConfig
+impl core::fmt::Debug for awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_runtime_contract::runnable::RunnableConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_runtime_contract::runnable::RunnableConfig
+impl core::marker::Send for awaken_runtime_contract::runnable::RunnableConfig
+impl core::marker::Sync for awaken_runtime_contract::runnable::RunnableConfig
+impl core::marker::Unpin for awaken_runtime_contract::runnable::RunnableConfig
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runnable::RunnableConfig
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable::RunnableConfig
+pub struct awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl awaken_runtime_contract::runnable::RunnableConfigBuilder
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::build(self) -> awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::max_steps(self, usize) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::model(self, awaken_runtime_contract::resolved::ModelBinding) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tool(self, awaken_runtime_contract::resolved::ToolDescriptor) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tools(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::resolved::ToolDescriptor>) -> Self
+impl core::clone::Clone for awaken_runtime_contract::runnable::RunnableConfigBuilder
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::clone(&self) -> awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::fmt::Debug for awaken_runtime_contract::runnable::RunnableConfigBuilder
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::marker::Send for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::marker::Sync for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::marker::Unpin for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable::RunnableConfigBuilder
 pub mod awaken_runtime_contract::runtime_context
 pub struct awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
@@ -1462,6 +1502,32 @@ impl core::marker::Sync for awaken_runtime_contract::snapshot::ExecutableAgentSn
 impl core::marker::Unpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
+pub struct awaken_runtime_contract::ModelBinding
+pub awaken_runtime_contract::ModelBinding::backend_ref: alloc::string::String
+pub awaken_runtime_contract::ModelBinding::model_ref: alloc::string::String
+pub awaken_runtime_contract::ModelBinding::provider_instance_ref: alloc::string::String
+impl awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::clone(&self) -> awaken_runtime_contract::resolved::ModelBinding
+impl core::cmp::Eq for awaken_runtime_contract::resolved::ModelBinding
+impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::eq(&self, &awaken_runtime_contract::resolved::ModelBinding) -> bool
+impl core::default::Default for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::default() -> awaken_runtime_contract::resolved::ModelBinding
+impl core::fmt::Debug for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resolved::ModelBinding
+impl serde_core::ser::Serialize for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::resolved::ModelBinding
+impl core::marker::Send for awaken_runtime_contract::resolved::ModelBinding
+impl core::marker::Sync for awaken_runtime_contract::resolved::ModelBinding
+impl core::marker::Unpin for awaken_runtime_contract::resolved::ModelBinding
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ModelBinding
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ModelBinding
 pub struct awaken_runtime_contract::PluginManifest
 pub awaken_runtime_contract::PluginManifest::bound: awaken_runtime_contract::plugin::CapabilityBound
 pub awaken_runtime_contract::PluginManifest::config_sections: alloc::vec::Vec<alloc::string::String>
@@ -1600,6 +1666,41 @@ impl core::marker::Sync for awaken_runtime_contract::snapshot_exec::RunWithSnaps
 impl core::marker::Unpin for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
+pub struct awaken_runtime_contract::RunnableConfig
+impl awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_runtime_contract::runnable::RunnableConfig::builder(impl core::convert::Into<alloc::string::String>) -> awaken_runtime_contract::runnable::RunnableConfigBuilder
+pub fn awaken_runtime_contract::runnable::RunnableConfig::install(&self) -> &awaken_runtime_contract::catalog::RuntimeCatalogInstall
+pub fn awaken_runtime_contract::runnable::RunnableConfig::into_parts(self) -> (awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::catalog::RuntimeCatalogInstall)
+pub fn awaken_runtime_contract::runnable::RunnableConfig::snapshot(&self) -> &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+impl core::clone::Clone for awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_runtime_contract::runnable::RunnableConfig::clone(&self) -> awaken_runtime_contract::runnable::RunnableConfig
+impl core::fmt::Debug for awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_runtime_contract::runnable::RunnableConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_runtime_contract::runnable::RunnableConfig
+impl core::marker::Send for awaken_runtime_contract::runnable::RunnableConfig
+impl core::marker::Sync for awaken_runtime_contract::runnable::RunnableConfig
+impl core::marker::Unpin for awaken_runtime_contract::runnable::RunnableConfig
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runnable::RunnableConfig
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable::RunnableConfig
+pub struct awaken_runtime_contract::RunnableConfigBuilder
+impl awaken_runtime_contract::runnable::RunnableConfigBuilder
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::build(self) -> awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::max_steps(self, usize) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::model(self, awaken_runtime_contract::resolved::ModelBinding) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tool(self, awaken_runtime_contract::resolved::ToolDescriptor) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tools(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::resolved::ToolDescriptor>) -> Self
+impl core::clone::Clone for awaken_runtime_contract::runnable::RunnableConfigBuilder
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::clone(&self) -> awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::fmt::Debug for awaken_runtime_contract::runnable::RunnableConfigBuilder
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::marker::Send for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::marker::Sync for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::marker::Unpin for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::runnable::RunnableConfigBuilder
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable::RunnableConfigBuilder
 pub struct awaken_runtime_contract::RuntimeCatalogInstall
 pub awaken_runtime_contract::RuntimeCatalogInstall::capabilities: awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 pub awaken_runtime_contract::RuntimeCatalogInstall::fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint

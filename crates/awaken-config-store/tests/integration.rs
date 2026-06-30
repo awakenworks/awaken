@@ -75,11 +75,11 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
 
     // Reload the publication by its fingerprint — the durable round trip.
     let loaded = store
-        .get_publication(&publication.fingerprint)
+        .get_publication(&publication.snapshot().fingerprint.0)
         .await
         .expect("get")
         .expect("publication exists");
-    assert_eq!(loaded.fingerprint, publication.fingerprint);
+    assert_eq!(loaded.fingerprint, publication.snapshot().fingerprint.0);
     assert_eq!(
         store.get_config("support-agent").await.unwrap().as_ref(),
         Some(&config)

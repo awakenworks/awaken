@@ -1,9 +1,10 @@
-//! Run the runtime end to end with **direct configuration** — no config store.
+//! Run the runtime end to end with a **hand-built config** — no config store.
 //!
-//! This is the first lesson: build the catalog and the executable snapshot by
-//! hand, wire the runtime's ports (model, tool, permission gate), execute one
-//! run, and read the committed transcript. Example #2 (`config_store_runtime`)
-//! shows the config store *producing* the snapshot this example builds by hand.
+//! Build a `RunnableConfig` directly with the builder, wire the runtime's ports
+//! (model, tool, permission gate), and run one turn. No fingerprint is written by
+//! hand — the builder stamps a consistent one (a compiler would stamp sha256).
+//! Example #2 (`hello_agent`) compiles the same kind of config from a config store;
+//! the `runtime.run` call is identical.
 //!
 //! Run:
 //! ```text
@@ -17,56 +18,21 @@ use awaken_runtime_examples::prelude::*;
 
 #[tokio::main]
 async fn main() {
-    // 1. Pick a catalog fingerprint by hand. NOTE: a chosen string is not really a
-    //    fingerprint — a producer derives sha256(config) and stamps it everywhere
-    //    (see `hello_agent`, which calls `compile()`). We fake it here, and below
-    //    must repeat it four times by hand, precisely to show the raw contract the
-    //    producer spares you: snapshot, resolved spec, and install must all carry
-    //    the SAME value, or resolution fails closed.
-    let fingerprint = CatalogFingerprint("demo-v1".to_string());
+    // 1. Build the agent config directly. No fingerprint, no snapshot/install
+    //    juggling — the builder assembles them under one stamped fingerprint.
+    let config = RunnableConfig::builder("assistant")
+        .instructions("You are a concise assistant.")
+        .model(ModelBinding::new("demo", "stub", "stub"))
+        .tool(ToolDescriptor::pinned(
+            "demo",
+            "echo",
+            "Echo back the given text",
+            serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
+        ))
+        .max_steps(8)
+        .build();
 
-    // 2. Describe the one tool the agent may use.
-    let echo = ToolDescriptor::pinned(
-        "demo",
-        "echo",
-        "Echo back the given text",
-        serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
-    );
-
-    // 3. Build the executable snapshot by hand (this is what a config store would
-    //    otherwise compile for you).
-    let snapshot = ExecutableAgentSnapshot {
-        id: ExecutableAgentSnapshotId("assistant".to_string()),
-        root_agent_id: AgentId("assistant".to_string()),
-        resolved_spec: ResolvedSpec {
-            catalog_fingerprint: fingerprint.clone(),
-            instructions: "You are a concise assistant.".to_string(),
-            max_steps: 8,
-            model_binding: ModelBinding {
-                provider_instance_ref: "demo".to_string(),
-                model_ref: "stub".to_string(),
-                backend_ref: "stub".to_string(),
-            },
-            tool_descriptors: vec![echo],
-            plugin_ids: Vec::new(),
-        },
-        fingerprint: fingerprint.clone(),
-    };
-
-    // 4. The matching install candidate — same fingerprint as the snapshot.
-    let install = RuntimeCatalogInstall {
-        publication_id: "demo-pub".to_string(),
-        fingerprint: fingerprint.clone(),
-        source_revisions: vec!["hand-written".to_string()],
-        capabilities: RuntimeCapabilityCatalog {
-            catalog_fingerprint: fingerprint,
-            runtime_version: "demo".to_string(),
-            tools: Vec::new(),
-            plugins: Vec::new(),
-        },
-    };
-
-    // 5. A permission policy (Claude-Code-style): allow `echo`, ask for anything
+    // 2. A permission policy (Claude-Code-style): allow `echo`, ask for anything
     //    else. The gate is the single authorization path.
     let ruleset = PermissionRuleset {
         default_behavior: ToolPermissionBehavior::Ask,
@@ -78,7 +44,7 @@ async fn main() {
     };
     let gate = PermissionGate::new(Arc::new(RulePermissionPolicy::new(ruleset)));
 
-    // 6. Assemble the runtime from its ports: model + tool + gate. Swap
+    // 3. Assemble the runtime from its ports: model + tool + gate. Swap
     //    `ScriptedLlm` for `awaken_provider_genai::GenAiExecutor::new()` to use a
     //    real model (set OPENAI_API_KEY / ANTHROPIC_API_KEY).
     let runtime = Runtime::new()
@@ -86,33 +52,14 @@ async fn main() {
         .with_tool(Arc::new(EchoTool))
         .with_gate(Arc::new(gate));
 
-    // 7. Install the catalog and register the snapshot for resolution.
-    runtime.install_catalog(install).expect("install catalog");
-    runtime.register_snapshot(snapshot.clone());
-
-    // 8. The durable commit boundary (in-memory here; swap a SQLite coordinator
-    //    to persist across restarts).
+    // 4. Run one turn. `run` installs the config's catalog and executes — no
+    //    separate install/register, no hand-built activation. Swap the in-memory
+    //    commit for a SQLite coordinator to persist across restarts.
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let phase = runtime.run(&config, "Say hi.", context).await.expect("run");
 
-    // 9. Build the activation (snapshot + user input) and execute one run.
-    let activation = RunActivation {
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId("thread-1".to_string()),
-        snapshot,
-        input: vec![Message {
-            id: MessageId("m1".to_string()),
-            role: Role::User,
-            content: vec![ContentBlock::text("Say hi.")],
-        }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
-        trace: Default::default(),
-    };
-    let phase = runtime.execute(activation, context).await.expect("execute");
-
-    // 10. Inspect the committed transcript.
+    // 5. Inspect the committed transcript.
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
     println!("run finished: {phase:?}\n--- committed transcript ---");
     for message in commit.committed().messages {

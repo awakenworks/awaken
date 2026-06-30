@@ -92,7 +92,7 @@ pub mod prelude {
         ToolPermissionBehavior,
     };
     pub use awaken_runtime::memory::MemoryCommitCoordinator;
-    pub use awaken_runtime::{PermissionGate, Runtime};
+    pub use awaken_runtime::{PermissionGate, RunInput, Runtime};
     pub use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
     pub use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
     pub use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -100,6 +100,7 @@ pub mod prelude {
     pub use awaken_runtime_contract::resolved::{
         CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
     };
+    pub use awaken_runtime_contract::runnable::{RunnableConfig, RunnableConfigBuilder};
     pub use awaken_runtime_contract::runtime_context::RuntimeRunContext;
     pub use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,

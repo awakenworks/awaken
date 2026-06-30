@@ -90,6 +90,21 @@ impl core::marker::Sync for awaken_runtime::PermissionGate
 impl core::marker::Unpin for awaken_runtime::PermissionGate
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::PermissionGate
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime::PermissionGate
+pub struct awaken_runtime::RunInput(_)
+impl core::convert::From<&str> for awaken_runtime::RunInput
+pub fn awaken_runtime::RunInput::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for awaken_runtime::RunInput
+pub fn awaken_runtime::RunInput::from(alloc::string::String) -> Self
+impl core::convert::From<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>> for awaken_runtime::RunInput
+pub fn awaken_runtime::RunInput::from(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
+impl core::convert::From<awaken_agent_contract::agent::message::Message> for awaken_runtime::RunInput
+pub fn awaken_runtime::RunInput::from(awaken_agent_contract::agent::message::Message) -> Self
+impl core::marker::Freeze for awaken_runtime::RunInput
+impl core::marker::Send for awaken_runtime::RunInput
+impl core::marker::Sync for awaken_runtime::RunInput
+impl core::marker::Unpin for awaken_runtime::RunInput
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::RunInput
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime::RunInput
 pub struct awaken_runtime::Runtime
 impl awaken_runtime::Runtime
 pub async fn awaken_runtime::Runtime::cancel_run(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
@@ -105,6 +120,8 @@ pub fn awaken_runtime::Runtime::with_plugin(self, alloc::sync::Arc<dyn awaken_ru
 pub fn awaken_runtime::Runtime::with_tool(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> Self
 impl awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::load_snapshot(&self, &awaken_runtime_contract::snapshot::AgentSnapshotInput) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolver::Error>
+impl awaken_runtime::Runtime
+pub async fn awaken_runtime::Runtime::run(&self, &awaken_runtime_contract::runnable::RunnableConfig, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
 impl awaken_runtime_contract::capability::RuntimeCapabilitySource for awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::runtime_capabilities(&self) -> awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 impl awaken_runtime_contract::catalog::RuntimeCatalogInstaller for awaken_runtime::Runtime

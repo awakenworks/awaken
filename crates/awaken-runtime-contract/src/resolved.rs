@@ -27,11 +27,26 @@ pub struct ResolvedSpec {
     pub plugin_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelBinding {
     pub provider_instance_ref: String,
     pub model_ref: String,
     pub backend_ref: String,
+}
+
+impl ModelBinding {
+    /// The provider instance, model, and backend a run binds to.
+    pub fn new(
+        provider_instance_ref: impl Into<String>,
+        model_ref: impl Into<String>,
+        backend_ref: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider_instance_ref: provider_instance_ref.into(),
+            model_ref: model_ref.into(),
+            backend_ref: backend_ref.into(),
+        }
+    }
 }
 
 /// Model-visible tool identity pinned in the resolved spec. The runtime projects
