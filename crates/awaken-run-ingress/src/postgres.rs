@@ -42,13 +42,13 @@ const SPECS: [(i64, &str, &str); 2] = [
     ),
     (
         2,
-        "thread pending input, frozen once at a run boundary",
+        "thread pending input, delivered to the matching waiting-ticket correlation",
         "CREATE TABLE {prefix}_pending (\
             message_id TEXT PRIMARY KEY, \
             run_id TEXT NOT NULL, \
             thread_id TEXT NOT NULL, \
+            correlation_id TEXT NOT NULL, \
             result {json} NOT NULL, \
-            frozen BOOLEAN NOT NULL DEFAULT FALSE, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
     ),
 ];
@@ -141,7 +141,7 @@ impl RunDispatch for PostgresDispatchStore {
         let wake = format!(
             "SELECT d.run_id, d.request FROM {p}_dispatch d \
              WHERE d.status = 'parked' AND EXISTS ( \
-                 SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id AND pe.frozen = FALSE) \
+                 SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id) \
              ORDER BY d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let fresh = format!(
@@ -187,25 +187,29 @@ impl RunDispatch for PostgresDispatchStore {
         .await
         .map_err(reject)?;
 
-        // Freeze any unconsumed pending input into this attempt.
-        let frozen = sqlx::query(&format!(
-            "UPDATE {p}_pending SET frozen = TRUE WHERE run_id = $1 AND frozen = FALSE \
-             RETURNING message_id, thread_id, result"
+        // Hand the run's current pending input to the worker. It is not removed
+        // here: settle removes exactly what the worker reports it consumed, so a
+        // crash before settle leaves the input to be re-derived (ADR-0010).
+        let rows = sqlx::query(&format!(
+            "SELECT message_id, thread_id, correlation_id, result FROM {p}_pending \
+             WHERE run_id = $1 ORDER BY created_at"
         ))
         .bind(&run_id)
         .fetch_all(&mut *tx)
         .await
         .map_err(reject)?;
 
-        let mut pending = Vec::with_capacity(frozen.len());
-        for prow in frozen {
+        let mut pending = Vec::with_capacity(rows.len());
+        for prow in rows {
             let message_id: String = prow.try_get("message_id").map_err(reject)?;
             let thread_id: String = prow.try_get("thread_id").map_err(reject)?;
+            let correlation_id: String = prow.try_get("correlation_id").map_err(reject)?;
             let Json(result): Json<ResumeResult> = prow.try_get("result").map_err(reject)?;
             pending.push(PendingInput {
                 message_id,
                 run_id: RunId(run_id.clone()),
                 thread_id: ThreadId(thread_id),
+                correlation_id,
                 result,
             });
         }
@@ -223,7 +227,12 @@ impl RunDispatch for PostgresDispatchStore {
         }))
     }
 
-    async fn settle(&self, run_id: &RunId, outcome: DispatchOutcome) -> Result<(), DispatchError> {
+    async fn settle(
+        &self,
+        run_id: &RunId,
+        outcome: DispatchOutcome,
+        consumed: &[String],
+    ) -> Result<(), DispatchError> {
         let p = &self.prefix;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         match outcome {
@@ -241,9 +250,9 @@ impl RunDispatch for PostgresDispatchStore {
             }
             DispatchOutcome::Parked => {
                 sqlx::query(&format!(
-                    "DELETE FROM {p}_pending WHERE run_id = $1 AND frozen = TRUE"
+                    "DELETE FROM {p}_pending WHERE message_id = ANY($1)"
                 ))
-                .bind(&run_id.0)
+                .bind(consumed)
                 .execute(&mut *tx)
                 .await
                 .map_err(reject)?;
@@ -267,12 +276,13 @@ impl PendingInbox for PostgresDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let p = &self.prefix;
         let result = sqlx::query(&format!(
-            "INSERT INTO {p}_pending (message_id, run_id, thread_id, result) \
-             VALUES ($1, $2, $3, $4) ON CONFLICT (message_id) DO NOTHING"
+            "INSERT INTO {p}_pending (message_id, run_id, thread_id, correlation_id, result) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (message_id) DO NOTHING"
         ))
         .bind(&input.message_id)
         .bind(&input.run_id.0)
         .bind(&input.thread_id.0)
+        .bind(&input.correlation_id)
         .bind(Json(&input.result))
         .execute(&self.pool)
         .await

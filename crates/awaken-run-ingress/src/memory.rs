@@ -30,18 +30,13 @@ struct Row {
     lease: Option<Lease>,
 }
 
-#[derive(Debug, Clone)]
-struct Pend {
-    input: PendingInput,
-    frozen: bool,
-}
-
 #[derive(Debug, Default)]
 struct State {
     /// Enqueue order, so claim is deterministic (oldest first).
     order: Vec<RunId>,
     rows: HashMap<RunId, Row>,
-    pending: Vec<Pend>,
+    /// Undelivered pending input, in arrival order.
+    pending: Vec<PendingInput>,
 }
 
 /// In-memory durable-ingress store. Cloneable handles share one state.
@@ -64,12 +59,7 @@ impl MemoryDispatchStore {
     pub fn pending_count(&self, run_id: &RunId) -> usize {
         self.state
             .lock()
-            .map(|s| {
-                s.pending
-                    .iter()
-                    .filter(|p| &p.input.run_id == run_id)
-                    .count()
-            })
+            .map(|s| s.pending.iter().filter(|p| &p.run_id == run_id).count())
             .unwrap_or(0)
     }
 }
@@ -91,11 +81,7 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
                     && row.lease.as_ref().is_some_and(|l| l.expires_ms <= now_ms)
             }
             Status::Parked => {
-                row.status == Status::Parked
-                    && state
-                        .pending
-                        .iter()
-                        .any(|p| &p.input.run_id == run && !p.frozen)
+                row.status == Status::Parked && state.pending.iter().any(|p| &p.run_id == run)
             }
             Status::Pending => row.status == Status::Pending,
         }
@@ -157,14 +143,15 @@ impl RunDispatch for MemoryDispatchStore {
             row.request.clone()
         };
 
-        // Freeze any unconsumed pending input into this attempt.
-        let mut pending = Vec::new();
-        for pend in state.pending.iter_mut() {
-            if pend.input.run_id == run_id && !pend.frozen {
-                pend.frozen = true;
-                pending.push(pend.input.clone());
-            }
-        }
+        // Hand the run's current pending input to the worker. It is not removed
+        // here: settle removes exactly what the worker reports it consumed, so a
+        // crash before settle leaves the input to be re-derived (ADR-0010).
+        let pending = state
+            .pending
+            .iter()
+            .filter(|p| p.run_id == run_id)
+            .cloned()
+            .collect();
 
         Ok(Some(Claimed {
             request,
@@ -173,24 +160,27 @@ impl RunDispatch for MemoryDispatchStore {
         }))
     }
 
-    async fn settle(&self, run_id: &RunId, outcome: DispatchOutcome) -> Result<(), DispatchError> {
+    async fn settle(
+        &self,
+        run_id: &RunId,
+        outcome: DispatchOutcome,
+        consumed: &[String],
+    ) -> Result<(), DispatchError> {
         let mut state = lock(&self.state)?;
         match outcome {
             DispatchOutcome::Done => {
                 state.rows.remove(run_id);
                 state.order.retain(|r| r != run_id);
-                state.pending.retain(|p| &p.input.run_id != run_id);
+                state.pending.retain(|p| &p.run_id != run_id);
             }
             DispatchOutcome::Parked => {
                 if let Some(row) = state.rows.get_mut(run_id) {
                     row.status = Status::Parked;
                     row.lease = None;
                 }
-                // Consumed (frozen) input is gone; input that arrived during the
-                // attempt stays unfrozen for the next wake.
-                state
-                    .pending
-                    .retain(|p| !(&p.input.run_id == run_id && p.frozen));
+                // Drop only what the worker consumed; input that arrived during
+                // the attempt stays for the next wake.
+                state.pending.retain(|p| !consumed.contains(&p.message_id));
             }
         }
         Ok(())
@@ -204,14 +194,11 @@ impl PendingInbox for MemoryDispatchStore {
         if state
             .pending
             .iter()
-            .any(|p| p.input.message_id == input.message_id)
+            .any(|p| p.message_id == input.message_id)
         {
             return Ok(false);
         }
-        state.pending.push(Pend {
-            input,
-            frozen: false,
-        });
+        state.pending.push(input);
         Ok(true)
     }
 }

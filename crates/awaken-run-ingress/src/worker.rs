@@ -95,35 +95,62 @@ impl<S: DispatchStore> DispatchWorker<S> {
             return Ok(None);
         };
         let run_id = claimed.request.run_id().clone();
+        let all_pending: Vec<String> = claimed
+            .pending
+            .iter()
+            .map(|p| p.message_id.clone())
+            .collect();
         let context = self.exec.runtime_context(CancellationToken::new());
 
-        let phase = match self.reader.waiting_ticket(&run_id) {
-            // The run is parked. A wake delivers pending input -> resume. A claim
-            // with no input is a recovered park with nothing to do; re-park it.
-            Some(ticket) => match claimed.pending.into_iter().next() {
-                Some(input) => {
-                    let command = resume_command(&ticket, input.result, now_ms);
-                    self.runtime
-                        .resume(command, self.reader.as_ref(), context)
-                        .await?
+        let (phase, consumed) = match self.reader.waiting_ticket(&run_id) {
+            // The run is parked. Deliver only input whose correlation matches the
+            // committed ticket; input for a superseded ticket (stale) is dropped
+            // without delivery. Input that already drove a committed resume left a
+            // ticket with a different correlation (or none), so it is never
+            // re-applied (ADR-0010).
+            Some(ticket) => {
+                let matched = claimed
+                    .pending
+                    .iter()
+                    .find(|p| p.correlation_id == ticket.correlation_id)
+                    .cloned();
+                match matched {
+                    Some(input) => {
+                        // Consume every input seen this attempt: the matched
+                        // answer and any stale input for a superseded ticket.
+                        let command = resume_command(&ticket, input.result, now_ms);
+                        let phase = self
+                            .runtime
+                            .resume(command, self.reader.as_ref(), context)
+                            .await?;
+                        (phase, all_pending)
+                    }
+                    None => {
+                        // No input answers the current ticket; drop stale input
+                        // and leave the run parked for a later wake.
+                        self.store
+                            .settle(&run_id, DispatchOutcome::Parked, &all_pending)
+                            .await?;
+                        return Ok(Some((run_id, Phase::Waiting)));
+                    }
                 }
-                None => {
-                    self.store.settle(&run_id, DispatchOutcome::Parked).await?;
-                    return Ok(Some((run_id, Phase::Waiting)));
-                }
-            },
+            }
             // No ticket: a fresh run, or a recovered run that already finished.
             // The committed run record disambiguates so recovery never re-runs a
-            // terminal run.
+            // terminal run, and any orphan pending is dropped on settle.
             None => match self.runs.get(&run_id) {
                 Some(record) if matches!(record.phase, Phase::Ended(_)) => {
-                    self.store.settle(&run_id, DispatchOutcome::Done).await?;
+                    self.store
+                        .settle(&run_id, DispatchOutcome::Done, &all_pending)
+                        .await?;
                     return Ok(Some((run_id, record.phase)));
                 }
                 _ => {
-                    self.runtime
+                    let phase = self
+                        .runtime
                         .execute(claimed.request.activation, context)
-                        .await?
+                        .await?;
+                    (phase, all_pending)
                 }
             },
         };
@@ -132,7 +159,7 @@ impl<S: DispatchStore> DispatchWorker<S> {
             Phase::Waiting => DispatchOutcome::Parked,
             Phase::Ended(_) => DispatchOutcome::Done,
         };
-        self.store.settle(&run_id, outcome).await?;
+        self.store.settle(&run_id, outcome, &consumed).await?;
         Ok(Some((run_id, phase)))
     }
 

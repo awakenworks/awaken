@@ -19,15 +19,44 @@ use awaken_run_ingress::{
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress};
-use awaken_runtime_contract::resume::ResumeResult;
+use awaken_runtime_contract::activation::PersistenceMode;
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
-use harness::{THREAD, activation, text_runtime, tool_runtime};
+use harness::{FP, SNAP, THREAD, TICKET, activation, text_runtime, tool_runtime};
 
+fn allow_command() -> ResumeCommand {
+    ResumeCommand {
+        correlation_id: TICKET.to_string(),
+        run_id: RunId("run-1".to_string()),
+        thread_id: ThreadId(THREAD.to_string()),
+        snapshot_id: SNAP.to_string(),
+        catalog_fingerprint: FP.to_string(),
+        result: ResumeResult::Decision {
+            allow: true,
+            note: None,
+        },
+        now_ms: 0,
+    }
+}
+
+/// Pending input answering the gate's ticket (the common case).
 fn pending(message_id: &str, run: &str, result: ResumeResult) -> PendingInput {
+    pending_for(message_id, run, TICKET, result)
+}
+
+/// Pending input answering a specific ticket correlation.
+fn pending_for(
+    message_id: &str,
+    run: &str,
+    correlation: &str,
+    result: ResumeResult,
+) -> PendingInput {
     PendingInput {
         message_id: message_id.to_string(),
         run_id: RunId(run.to_string()),
         thread_id: ThreadId(THREAD.to_string()),
+        correlation_id: correlation.to_string(),
         result,
     }
 }
@@ -251,9 +280,134 @@ async fn settle_done_clears_pending_and_dispatch() {
         .await
         .unwrap();
     store
-        .settle(&RunId("run-1".to_string()), DispatchOutcome::Done)
+        .settle(&RunId("run-1".to_string()), DispatchOutcome::Done, &[])
         .await
         .unwrap();
     assert_eq!(store.dispatch_count(), 0);
     assert_eq!(store.pending_count(&RunId("run-1".to_string())), 0);
+}
+
+#[tokio::test]
+async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
+    // Model the crash window: a resume commits, but the worker dies before it
+    // settles. The dispatch is left 'running' with the pending input still
+    // present and the ticket already cleared. Recovery must NOT re-run the tool.
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime.clone(), store.clone(), commit.clone());
+
+    // Park, then deliver input WITHOUT driving (just append).
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        Phase::Waiting
+    );
+    store
+        .append(pending(
+            "msg-1",
+            "run-1",
+            ResumeResult::Decision {
+                allow: true,
+                note: None,
+            },
+        ))
+        .await
+        .unwrap();
+
+    // Worker got partway: it claimed (took a lease) and committed the resume,
+    // then crashed before settle. Drive those two steps by hand.
+    let _claimed = store.claim("dead-worker", 1_000, 0).await.unwrap();
+    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let phase = runtime
+        .resume(allow_command(), commit.as_ref(), context)
+        .await
+        .expect("resume commits");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the tool ran once before the crash"
+    );
+
+    // Recovery after the lease expires: the committed run is terminal, so the
+    // worker settles it without re-running the tool, and clears the pending.
+    let processed = ingress.recover(2_000).await.expect("recover");
+    assert_eq!(
+        processed,
+        vec![(
+            RunId("run-1".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        )]
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "recovery did not re-apply the resume"
+    );
+    assert_eq!(store.dispatch_count(), 0);
+    assert_eq!(store.pending_count(&RunId("run-1".to_string())), 0);
+}
+
+#[tokio::test]
+async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
+    // Input whose correlation does not match the run's committed ticket is stale;
+    // it is dropped without delivery, and the run stays parked until the right
+    // input arrives.
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        Phase::Waiting
+    );
+
+    // Stale input (wrong correlation) does not resume the run.
+    let phase = ingress
+        .deliver_resume(
+            pending_for(
+                "stale",
+                "run-1",
+                "some-old-ticket",
+                ResumeResult::Decision {
+                    allow: true,
+                    note: None,
+                },
+            ),
+            0,
+        )
+        .await
+        .expect("stale delivery");
+    assert_eq!(phase, Phase::Waiting, "a stale input leaves the run parked");
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "the tool did not run");
+    assert_eq!(
+        store.pending_count(&RunId("run-1".to_string())),
+        0,
+        "the stale input was dropped"
+    );
+
+    // The correctly-correlated input resumes the run.
+    let phase = ingress
+        .deliver_resume(
+            pending(
+                "good",
+                "run-1",
+                ResumeResult::Decision {
+                    allow: true,
+                    note: None,
+                },
+            ),
+            0,
+        )
+        .await
+        .expect("good delivery");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
 }

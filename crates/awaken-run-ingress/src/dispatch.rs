@@ -37,6 +37,11 @@ pub struct PendingInput {
     pub message_id: String,
     pub run_id: RunId,
     pub thread_id: ThreadId,
+    /// The waiting-ticket correlation this input answers. Consumption is keyed to
+    /// it: the worker delivers an input only while the committed ticket still
+    /// carries the same correlation, so a resume that already committed (and
+    /// advanced or cleared the ticket) is never re-applied (ADR-0010).
+    pub correlation_id: String,
     /// What this input delivers back into the parked run on resume.
     pub result: ResumeResult,
 }
@@ -50,15 +55,15 @@ pub struct Lease {
     pub expires_ms: u64,
 }
 
-/// A claimed, ready-to-run dispatch and any pending input frozen for this
-/// attempt. `pending` is empty for a fresh run and non-empty for a wake.
+/// A claimed, ready-to-run dispatch and the run's undelivered pending input.
+/// `pending` is empty for a fresh run and non-empty for a wake.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Claimed {
     pub request: RunExecutionRequest,
     pub lease: Lease,
-    /// Pending input frozen for this attempt: empty for a fresh run, non-empty
-    /// for a wake. The worker decides execute-vs-resume from committed truth (the
-    /// waiting ticket), not from this field.
+    /// The run's undelivered pending input. The worker decides execute-vs-resume
+    /// from committed truth (the waiting ticket), not from this field, and tells
+    /// `settle` which inputs it consumed.
     pub pending: Vec<PendingInput>,
 }
 
@@ -79,10 +84,9 @@ pub trait RunDispatch: Send + Sync {
     async fn enqueue(&self, request: RunExecutionRequest) -> Result<(), DispatchError>;
 
     /// Claim one runnable dispatch for `owner`, single owner per run: a fresh
-    /// `pending` run, a parked run with unfrozen pending input (a wake), or a
-    /// running dispatch whose lease expired (recovery). Returns `None` when
-    /// nothing is runnable. A wake freezes the run's pending input into the
-    /// returned [`Claimed`] in the same transaction.
+    /// `pending` run, a parked run with pending input (a wake), or a running
+    /// dispatch whose lease expired (recovery). Returns `None` when nothing is
+    /// runnable, and the run's current pending input in the returned [`Claimed`].
     async fn claim(
         &self,
         owner: &str,
@@ -90,9 +94,16 @@ pub trait RunDispatch: Send + Sync {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
 
-    /// Settle a claimed dispatch. `Done` removes it (and any consumed pending);
-    /// `Parked` returns it to the waiting state until a wake re-arms it.
-    async fn settle(&self, run_id: &RunId, outcome: DispatchOutcome) -> Result<(), DispatchError>;
+    /// Settle a claimed dispatch. `Done` removes it and all its pending input;
+    /// `Parked` returns it to the waiting state and drops only the `consumed`
+    /// pending (by `message_id`), leaving input that arrived mid-attempt for the
+    /// next wake.
+    async fn settle(
+        &self,
+        run_id: &RunId,
+        outcome: DispatchOutcome,
+        consumed: &[String],
+    ) -> Result<(), DispatchError>;
 }
 
 /// Durable pending-input intake for a thread.

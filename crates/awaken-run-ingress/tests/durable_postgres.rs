@@ -21,7 +21,7 @@ use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 
-use harness::{THREAD, activation, pool, reset, tool_runtime};
+use harness::{THREAD, TICKET, activation, pool, reset, tool_runtime};
 
 #[tokio::test]
 async fn durable_submit_parks_then_delivered_decision_resumes_on_postgres() {
@@ -57,6 +57,7 @@ async fn durable_submit_parks_then_delivered_decision_resumes_on_postgres() {
                 message_id: "msg-1".to_string(),
                 run_id: RunId("run-1".to_string()),
                 thread_id: ThreadId(THREAD.to_string()),
+                correlation_id: TICKET.to_string(),
                 result: ResumeResult::Decision {
                     allow: true,
                     note: None,

@@ -57,9 +57,11 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
 
     /// Deliver durable input to a parked run and drive its resume. The input is
     /// appended idempotently (duplicate `message_id` is a no-op), then the worker
-    /// freezes it at the run's boundary and resumes against the committed ticket.
-    /// Returns the run's resulting phase. Only runs submitted durably (with a
-    /// dispatch row) can be woken this way.
+    /// resumes against the committed ticket — but only if `input.correlation_id`
+    /// matches the run's current ticket; input for a superseded or already-resumed
+    /// ticket is dropped, never re-applied (ADR-0010). Returns the run's resulting
+    /// phase. Only runs submitted durably (with a dispatch row) can be woken this
+    /// way.
     pub async fn deliver_resume(&self, input: PendingInput, now_ms: u64) -> Result<Phase, Error> {
         let run_id = input.run_id.clone();
         self.worker.store().append(input).await?;
