@@ -21,14 +21,17 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 use crate::Error;
 use crate::capability::RunIngressCapabilities;
+use crate::clock::Clock;
 use crate::dispatch::{DispatchStore, PendingInput};
 use crate::request::RunExecutionRequest;
+use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
 
 /// Durable run ingress over a dispatch store. Holds the worker that turns durable
-/// dispatches into runtime attempts.
+/// dispatches into runtime attempts; the worker is shared (`Arc`) so an
+/// autonomous [`DispatchService`] can drain the same queue.
 pub struct DurableRunIngress<S> {
-    worker: DispatchWorker<S>,
+    worker: Arc<DispatchWorker<S>>,
 }
 
 impl<S: DispatchStore + 'static> DurableRunIngress<S> {
@@ -40,7 +43,12 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
     {
         Self {
-            worker: DispatchWorker::new(runtime, store, commit, "durable-run-ingress"),
+            worker: Arc::new(DispatchWorker::new(
+                runtime,
+                store,
+                commit,
+                "durable-run-ingress",
+            )),
         }
     }
 
@@ -53,6 +61,18 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
     /// The worker, for out-of-band driving (recovery sweeps, background loops).
     pub fn worker(&self) -> &DispatchWorker<S> {
         &self.worker
+    }
+
+    /// Start an autonomous daemon that drains this queue against its runtime,
+    /// recovering crashed leases on its poll cadence (ADR-0011). The daemon shares
+    /// the same worker and store, so runs submitted synchronously here and runs
+    /// submitted to the daemon all flow through one queue.
+    pub fn spawn_service(
+        &self,
+        clock: Arc<dyn Clock>,
+        config: DispatchServiceConfig,
+    ) -> DispatchService<S> {
+        DispatchService::spawn(self.worker.clone(), clock, config)
     }
 
     /// Deliver durable input to a parked run and drive its resume. The input is

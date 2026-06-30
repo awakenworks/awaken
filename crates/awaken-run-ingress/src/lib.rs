@@ -15,14 +15,17 @@
 //! through the commit boundary's `ThreadReader`/`RunStore` ports.
 
 mod capability;
+mod clock;
 mod dispatch;
 mod durable;
 pub mod memory;
 mod postgres;
 mod request;
+mod service;
 mod worker;
 
 pub use capability::RunIngressCapabilities;
+pub use clock::{Clock, ManualClock, SystemClock};
 pub use dispatch::{
     Claimed, DispatchError, DispatchOutcome, DispatchStore, Lease, PendingInbox, PendingInput,
     RunDispatch,
@@ -31,6 +34,7 @@ pub use durable::DurableRunIngress;
 pub use memory::MemoryDispatchStore;
 pub use postgres::{PostgresDispatchStore, StoreError, dispatch_bundle};
 pub use request::{RunExecutionContext, RunExecutionRequest};
+pub use service::{DispatchService, DispatchServiceConfig};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker};
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or
