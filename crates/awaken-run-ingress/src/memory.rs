@@ -273,6 +273,22 @@ impl RunDispatch for MemoryDispatchStore {
             _ => Ok(false),
         }
     }
+
+    async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let cancellable = matches!(
+            state.rows.get(run_id).map(|r| r.status),
+            Some(Status::Pending | Status::Parked)
+        );
+        if !cancellable {
+            return Ok(None);
+        }
+        let thread = state.rows[run_id].request.thread_id().clone();
+        state.rows.remove(run_id);
+        state.order.retain(|r| r != run_id);
+        state.pending.retain(|p| &p.input.run_id != run_id);
+        Ok(Some(thread))
+    }
 }
 
 #[async_trait]

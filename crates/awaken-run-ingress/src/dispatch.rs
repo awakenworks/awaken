@@ -125,6 +125,13 @@ pub trait RunDispatch: Send + Sync {
     /// Return a dead-lettered run to the queue at a fresh budget. Returns `true`
     /// if a dead-lettered run with that id was requeued.
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError>;
+
+    /// Durably cancel a *not-running* dispatch (pending or parked): remove it and
+    /// its pending input so it never runs or resumes. Returns the run's thread id
+    /// when cancelled (the host then commits a terminal `Cancelled` fact), or
+    /// `None` if the run is currently running (use live cancel), already
+    /// dead-lettered, or unknown.
+    async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError>;
 }
 
 /// A pending input as stored, with its optimistic-concurrency `revision`. The

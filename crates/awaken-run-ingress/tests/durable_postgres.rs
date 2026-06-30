@@ -263,3 +263,15 @@ async fn dead_letter_budget_on_postgres() {
     harness::assert_dead_letter(&store).await;
     reset(&pool, prefix).await;
 }
+
+#[tokio::test]
+async fn cancel_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_cancel";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_cancel(&store).await;
+    reset(&pool, prefix).await;
+}

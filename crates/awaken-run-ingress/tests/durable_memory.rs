@@ -477,3 +477,78 @@ async fn scheduled_delivery_due_store_spec() {
 async fn dead_letter_budget_store_spec() {
     harness::assert_dead_letter(&MemoryDispatchStore::new()).await;
 }
+
+#[tokio::test]
+async fn cancel_store_spec() {
+    harness::assert_cancel(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn cancel_durable_commits_cancelled_for_a_parked_run() {
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        Phase::Waiting
+    );
+    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_some());
+
+    // Durable cancel commits a terminal Cancelled and clears the ticket.
+    assert!(
+        ingress
+            .cancel_durable(&RunId("run-1".to_string()))
+            .await
+            .unwrap()
+    );
+    let record = awaken_agent_contract::store::run_store::RunStore::get(
+        commit.as_ref(),
+        &RunId("run-1".to_string()),
+    )
+    .expect("run record");
+    assert_eq!(record.phase, Phase::Ended(EndCause::Cancelled));
+    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+    assert_eq!(store.dispatch_count(), 0);
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn cancel_durable_for_a_queued_run_that_never_ran() {
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    // Enqueue without driving, then cancel: a terminal Cancelled is committed
+    // even though the run never executed.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    assert!(
+        ingress
+            .cancel_durable(&RunId("run-1".to_string()))
+            .await
+            .unwrap()
+    );
+    let record = awaken_agent_contract::store::run_store::RunStore::get(
+        commit.as_ref(),
+        &RunId("run-1".to_string()),
+    )
+    .expect("run record");
+    assert_eq!(record.phase, Phase::Ended(EndCause::Cancelled));
+    assert_eq!(store.dispatch_count(), 0);
+
+    // Cancelling again is a no-op.
+    assert!(
+        !ingress
+            .cancel_durable(&RunId("run-1".to_string()))
+            .await
+            .unwrap()
+    );
+}

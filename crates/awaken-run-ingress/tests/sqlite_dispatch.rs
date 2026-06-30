@@ -149,3 +149,9 @@ async fn dead_letter_budget_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
     harness::assert_dead_letter(&store).await;
 }
+
+#[tokio::test]
+async fn cancel_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_cancel(&store).await;
+}

@@ -169,6 +169,19 @@ impl Runtime {
         crate::engine::resume_run(self, command, reader, context).await
     }
 
+    /// Cancel a not-running run (queued or parked) by committing a terminal
+    /// `Cancelled` fact, clearing any waiting ticket. An in-flight run is
+    /// cancelled through `LiveRunControl` instead.
+    pub async fn cancel_run(
+        &self,
+        run_id: RunId,
+        thread_id: awaken_agent_contract::agent::thread::Id,
+        context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
+    {
+        crate::engine::cancel_run(run_id, thread_id, context).await
+    }
+
     pub(crate) fn snapshot_by_id(
         &self,
         id: &ExecutableAgentSnapshotId,

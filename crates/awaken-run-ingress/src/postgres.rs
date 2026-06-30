@@ -288,6 +288,33 @@ impl RunDispatch for PostgresDispatchStore {
         .map_err(reject)?;
         Ok(result.rows_affected() > 0)
     }
+
+    async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
+        let p = &self.prefix;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let thread: Option<String> = sqlx::query_scalar(&format!(
+            "SELECT thread_id FROM {p}_dispatch \
+             WHERE run_id = $1 AND status IN ('pending', 'parked')"
+        ))
+        .bind(&run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if thread.is_some() {
+            sqlx::query(&format!("DELETE FROM {p}_pending WHERE run_id = $1"))
+                .bind(&run_id.0)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+            sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE run_id = $1"))
+                .bind(&run_id.0)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+        }
+        tx.commit().await.map_err(reject)?;
+        Ok(thread.map(ThreadId))
+    }
 }
 
 #[async_trait]

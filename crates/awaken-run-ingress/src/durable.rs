@@ -127,6 +127,21 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
     pub async fn requeue(&self, run_id: &RunId) -> Result<bool, Error> {
         Ok(self.worker.store().requeue(run_id).await?)
     }
+
+    /// Durably cancel a not-running run: remove its dispatch and pending input,
+    /// then commit a terminal `Cancelled` fact so its committed phase reflects the
+    /// cancellation (clearing any waiting ticket). Returns `true` if cancelled; a
+    /// currently-running run is not cancelled here — use `cancel` (live control).
+    pub async fn cancel_durable(&self, run_id: &RunId) -> Result<bool, Error> {
+        let Some(thread_id) = self.worker.store().cancel(run_id).await? else {
+            return Ok(false);
+        };
+        self.worker
+            .runtime()
+            .cancel_run(run_id.clone(), thread_id, self.worker.execution_context())
+            .await?;
+        Ok(true)
+    }
 }
 
 #[async_trait]

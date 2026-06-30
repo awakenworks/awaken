@@ -334,6 +334,41 @@ impl RunDispatch for SqliteDispatchStore {
         })
         .await
     }
+
+    async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
+        let run_id = run_id.0.clone();
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let thread: Option<String> = tx
+                .query_row(
+                    &format!(
+                        "SELECT thread_id FROM {p}_dispatch \
+                         WHERE run_id = ?1 AND status IN ('pending', 'parked')"
+                    ),
+                    params![run_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(reject)?;
+            if thread.is_some() {
+                tx.execute(
+                    &format!("DELETE FROM {p}_pending WHERE run_id = ?1"),
+                    params![run_id],
+                )
+                .map_err(reject)?;
+                tx.execute(
+                    &format!("DELETE FROM {p}_dispatch WHERE run_id = ?1"),
+                    params![run_id],
+                )
+                .map_err(reject)?;
+            }
+            tx.commit().map_err(reject)?;
+            Ok(thread.map(ThreadId))
+        })
+        .await
+    }
 }
 
 #[async_trait]

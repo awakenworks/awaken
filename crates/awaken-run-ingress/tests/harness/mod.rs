@@ -369,6 +369,42 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::DispatchStore>(store: &S)
     );
 }
 
+/// Shared spec for durable cancel: a pending or parked dispatch is cancellable
+/// (returns its thread id and is removed); a running one is not. Every backend
+/// must match.
+pub async fn assert_cancel<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::RunExecutionRequest;
+    let thread = Some(ThreadId(THREAD.to_string()));
+
+    // A pending run is cancellable and then gone.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.cancel(&RunId("run-1".to_string())).await.unwrap(),
+        thread
+    );
+    assert!(store.claim("w", 100, 0).await.unwrap().is_none());
+    // Cancelling an unknown run is a no-op.
+    assert_eq!(
+        store.cancel(&RunId("run-1".to_string())).await.unwrap(),
+        None
+    );
+
+    // A running run is not durably cancellable (use live control instead).
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-2")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    assert_eq!(
+        store.cancel(&RunId("run-2".to_string())).await.unwrap(),
+        None,
+        "a running run is not durably cancelled"
+    );
+}
+
 /// Drop every commit- and dispatch-schema table for a prefix (plus the shared
 /// migration ledger) so each test starts from a clean, isolated schema.
 pub async fn reset(pool: &PgPool, prefix: &str) {
