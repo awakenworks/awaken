@@ -289,6 +289,19 @@ impl RunDispatch for MemoryDispatchStore {
         state.pending.retain(|p| &p.input.run_id != run_id);
         Ok(Some(thread))
     }
+
+    async fn parked_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .order
+            .iter()
+            .find(|run| {
+                state.rows.get(*run).is_some_and(|row| {
+                    row.status == Status::Parked && row.request.thread_id() == thread_id
+                })
+            })
+            .cloned())
+    }
 }
 
 #[async_trait]

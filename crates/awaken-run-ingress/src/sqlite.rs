@@ -369,6 +369,25 @@ impl RunDispatch for SqliteDispatchStore {
         })
         .await
     }
+
+    async fn parked_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+        let thread_id = thread_id.0.clone();
+        self.with_conn(move |conn, p| {
+            let run: Option<String> = conn
+                .query_row(
+                    &format!(
+                        "SELECT run_id FROM {p}_dispatch WHERE thread_id = ?1 AND status = 'parked' \
+                         ORDER BY created_at LIMIT 1"
+                    ),
+                    params![thread_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(reject)?;
+            Ok(run.map(RunId))
+        })
+        .await
+    }
 }
 
 #[async_trait]

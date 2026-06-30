@@ -111,6 +111,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime",
+        "awaken-ext-builtin-tools",
         "awaken-scoped-migration",
         "awaken-store-postgres",
         "awaken-store-sqlite",

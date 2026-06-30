@@ -24,11 +24,14 @@ struct RecordingSender {
 }
 #[async_trait::async_trait]
 impl MessageSender for RecordingSender {
-    async fn send(&self, content: &str) -> Result<(), ToolError> {
+    async fn send(&self, target_thread: &str, content: &str) -> Result<(), ToolError> {
         if self.fail {
             return Err(ToolError::Execution("ingress down".to_string()));
         }
-        self.sent.lock().unwrap().push(content.to_string());
+        self.sent
+            .lock()
+            .unwrap()
+            .push(format!("{target_thread}:{content}"));
         Ok(())
     }
 }
@@ -91,12 +94,15 @@ async fn send_message_forwards_to_the_sender() {
     let out = find(&tools, "send_message")
         .invoke(call(
             "send_message",
-            serde_json::json!({ "content": "hi team" }),
+            serde_json::json!({ "target_thread": "thread-9", "content": "hi team" }),
         ))
         .await
         .expect("send");
-    assert_eq!(out.content, "message sent");
-    assert_eq!(sender.sent.lock().unwrap().as_slice(), &["hi team"]);
+    assert_eq!(out.content, "message sent to thread-9");
+    assert_eq!(
+        sender.sent.lock().unwrap().as_slice(),
+        &["thread-9:hi team"]
+    );
 }
 
 #[tokio::test]
@@ -111,7 +117,10 @@ async fn send_message_propagates_a_service_error() {
         Arc::new(FixedRecovery("")),
     );
     let err = find(&tools, "send_message")
-        .invoke(call("send_message", serde_json::json!({ "content": "x" })))
+        .invoke(call(
+            "send_message",
+            serde_json::json!({ "target_thread": "thread-9", "content": "x" }),
+        ))
         .await
         .expect_err("ingress down");
     assert!(matches!(err, ToolError::Execution(_)));

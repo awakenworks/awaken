@@ -552,3 +552,55 @@ async fn cancel_durable_for_a_queued_run_that_never_ran() {
             .unwrap()
     );
 }
+
+#[tokio::test]
+async fn send_message_delivers_to_a_threads_parked_run() {
+    use awaken_agent_contract::store::thread_reader::ThreadReader;
+    use awaken_ext_builtin_tools::MessageSender;
+    use awaken_run_ingress::OutboxMessageSender;
+
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    // A run parks on thread-1, waiting for input.
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        Phase::Waiting
+    );
+
+    // The send_message host adapter, addressed by thread, stages a delivery.
+    let sender = OutboxMessageSender::new(store.clone(), commit.clone() as Arc<dyn ThreadReader>);
+    sender
+        .send("thread-1", "hello from another agent")
+        .await
+        .expect("send to a waiting thread");
+    // Sending to a thread with no waiting run fails closed.
+    assert!(sender.send("thread-2", "nobody home").await.is_err());
+
+    // Relaying the outbox resumes the parked run with the message as input.
+    let processed = ingress.relay_outbox(0).await.expect("relay");
+    assert_eq!(
+        processed,
+        vec![(
+            RunId("run-1".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        )]
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "an input resume does not run the gated tool"
+    );
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.text_content() == "hello from another agent")
+    );
+}

@@ -71,8 +71,15 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
         ),
         task_tool(
             "send_message",
-            "Send a message",
-            path_arg("content", "message body"),
+            "Send a message to another thread",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "target_thread": { "type": "string", "description": "id of the thread to message" },
+                    "content": { "type": "string", "description": "message body" },
+                },
+                "required": ["target_thread", "content"],
+            }),
         ),
         task_tool(
             "cancel_task",

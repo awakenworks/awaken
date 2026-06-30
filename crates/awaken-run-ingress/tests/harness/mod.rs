@@ -403,6 +403,27 @@ pub async fn assert_cancel<S: awaken_run_ingress::DispatchStore>(store: &S) {
         None,
         "a running run is not durably cancelled"
     );
+
+    // A parked run on a thread is resolvable by thread (send_message addressing).
+    let thread_id = ThreadId(THREAD.to_string());
+    assert!(store.parked_run(&thread_id).await.unwrap().is_none());
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-3")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    store
+        .settle(
+            &RunId("run-3".to_string()),
+            awaken_run_ingress::DispatchOutcome::Parked,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.parked_run(&thread_id).await.unwrap(),
+        Some(RunId("run-3".to_string()))
+    );
 }
 
 /// Drop every commit- and dispatch-schema table for a prefix (plus the shared

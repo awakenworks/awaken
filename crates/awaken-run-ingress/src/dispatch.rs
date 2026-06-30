@@ -132,6 +132,11 @@ pub trait RunDispatch: Send + Sync {
     /// `None` if the run is currently running (use live cancel), already
     /// dead-lettered, or unknown.
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError>;
+
+    /// The run currently parked on a thread, if any. A thread is the stable
+    /// addressable unit (a run is one ephemeral execution); this resolves a
+    /// thread-addressed delivery to the run waiting on it.
+    async fn parked_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError>;
 }
 
 /// A pending input as stored, with its optimistic-concurrency `revision`. The
