@@ -18,8 +18,8 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
-    PendingInput, PendingRecord, RunDispatch, SubmitOptions,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchStatus, DispatchSummary, Lease,
+    MessageOutbox, PendingInbox, PendingInput, PendingRecord, RunDispatch, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -370,6 +370,29 @@ impl RunDispatch for PostgresDispatchStore {
 
     async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
         self.run_ids_by_status("superseded").await
+    }
+
+    async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
+        let p = &self.prefix;
+        let rows = sqlx::query(&format!(
+            "SELECT run_id, thread_id, status, attempt_count FROM {p}_dispatch \
+             ORDER BY created_at"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(DispatchSummary {
+                    run_id: RunId(row.try_get("run_id").map_err(reject)?),
+                    thread_id: ThreadId(row.try_get("thread_id").map_err(reject)?),
+                    status: DispatchStatus::from_db(
+                        &row.try_get::<String, _>("status").map_err(reject)?,
+                    ),
+                    attempt_count: row.try_get::<i64, _>("attempt_count").map_err(reject)? as u64,
+                })
+            })
+            .collect()
     }
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {

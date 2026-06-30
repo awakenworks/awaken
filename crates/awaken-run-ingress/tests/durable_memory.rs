@@ -833,3 +833,8 @@ async fn dead_letter_ttl_gc_store_spec() {
 async fn renew_owned_leases_store_spec() {
     harness::assert_renew_owned_leases(&MemoryDispatchStore::new()).await;
 }
+
+#[tokio::test]
+async fn list_dispatches_store_spec() {
+    harness::assert_list_dispatches(&MemoryDispatchStore::new()).await;
+}

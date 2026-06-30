@@ -18,8 +18,8 @@ use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
-    PendingInput, PendingRecord, RunDispatch, SubmitOptions,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchStatus, DispatchSummary, Lease,
+    MessageOutbox, PendingInbox, PendingInput, PendingRecord, RunDispatch, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -427,6 +427,33 @@ impl RunDispatch for SqliteDispatchStore {
 
     async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
         self.run_ids_by_status("superseded").await
+    }
+
+    async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
+        self.with_conn(move |conn, p| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT run_id, thread_id, status, attempt_count FROM {p}_dispatch \
+                     ORDER BY created_at"
+                ))
+                .map_err(reject)?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(DispatchSummary {
+                        run_id: RunId(r.get::<_, String>(0)?),
+                        thread_id: ThreadId(r.get::<_, String>(1)?),
+                        status: DispatchStatus::from_db(&r.get::<_, String>(2)?),
+                        attempt_count: r.get::<_, i64>(3)? as u64,
+                    })
+                })
+                .map_err(reject)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(reject)?);
+            }
+            Ok(out)
+        })
+        .await
     }
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {

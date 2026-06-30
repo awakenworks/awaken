@@ -14,8 +14,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
-    PendingInput, PendingRecord, RunDispatch, SubmitOptions,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchStatus, DispatchSummary, Lease,
+    MessageOutbox, PendingInbox, PendingInput, PendingRecord, RunDispatch, SubmitOptions,
 };
 use crate::request::RunExecutionRequest;
 
@@ -26,6 +26,18 @@ enum Status {
     Parked,
     DeadLetter,
     Superseded,
+}
+
+impl Status {
+    fn public(self) -> DispatchStatus {
+        match self {
+            Status::Pending => DispatchStatus::Pending,
+            Status::Running => DispatchStatus::Running,
+            Status::Parked => DispatchStatus::Parked,
+            Status::DeadLetter => DispatchStatus::DeadLetter,
+            Status::Superseded => DispatchStatus::Superseded,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -396,6 +408,22 @@ impl RunDispatch for MemoryDispatchStore {
                 )
             })
             .cloned()
+            .collect())
+    }
+
+    async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .order
+            .iter()
+            .filter_map(|run| {
+                state.rows.get(run).map(|row| DispatchSummary {
+                    run_id: run.clone(),
+                    thread_id: row.request.thread_id().clone(),
+                    status: row.status.public(),
+                    attempt_count: row.attempt_count,
+                })
+            })
             .collect())
     }
 

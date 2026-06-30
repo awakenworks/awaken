@@ -22,7 +22,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use crate::Error;
 use crate::capability::RunIngressCapabilities;
 use crate::clock::Clock;
-use crate::dispatch::{DispatchStore, PendingInput, SubmitOptions};
+use crate::dispatch::{DispatchStore, DispatchSummary, PendingInput, SubmitOptions};
 use crate::request::RunExecutionRequest;
 use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
@@ -102,6 +102,12 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
     /// The run ids superseded by a newer submission on their thread (ADR-0022).
     pub async fn superseded(&self) -> Result<Vec<RunId>, Error> {
         Ok(self.worker.store().superseded().await?)
+    }
+
+    /// An operational summary of every dispatch row, in enqueue order — the query
+    /// surface for monitoring and maintenance (ADR-0025).
+    pub async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, Error> {
+        Ok(self.worker.store().list_dispatches().await?)
     }
 
     /// Deliver durable input to a parked run and drive its resume. The input is

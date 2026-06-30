@@ -81,6 +81,47 @@ pub enum DispatchOutcome {
     Parked,
 }
 
+/// The lifecycle status of a dispatch, for the operational query surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchStatus {
+    /// Fresh, not yet claimed.
+    Pending,
+    /// Claimed and executing under a lease.
+    Running,
+    /// Parked on a committed waiting ticket.
+    Parked,
+    /// Dead-lettered past its crash-retry budget (ADR-0015).
+    DeadLetter,
+    /// Superseded by a newer submission on its thread (ADR-0022).
+    Superseded,
+}
+
+impl DispatchStatus {
+    /// Map the stored status text (the SQL backends' `status` column) to the
+    /// public status. An unknown value maps to `Pending` (never observed).
+    pub fn from_db(s: &str) -> Self {
+        match s {
+            "running" => Self::Running,
+            "parked" => Self::Parked,
+            "dead_letter" => Self::DeadLetter,
+            "superseded" => Self::Superseded,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// An operational view of one dispatch row, for monitoring and maintenance — the
+/// `RunDispatch` query role (ADR-0025). Carries no live handle, just committed
+/// queue state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchSummary {
+    pub run_id: RunId,
+    pub thread_id: ThreadId,
+    pub status: DispatchStatus,
+    /// Consecutive crash-recoveries without a settle.
+    pub attempt_count: u64,
+}
+
 /// Dispatch-level options for an accepted run. Defaults to ordinary priority and
 /// no caller dedupe key — `enqueue` uses these so existing callers are unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -201,6 +242,10 @@ pub trait RunDispatch: Send + Sync {
     /// The run ids superseded by a newer submission on their thread (ADR-0022),
     /// for operations — the mirror of [`dead_letters`](Self::dead_letters).
     async fn superseded(&self) -> Result<Vec<RunId>, DispatchError>;
+
+    /// Every dispatch row's operational summary, in enqueue order — the query
+    /// surface for monitoring and maintenance (ADR-0025).
+    async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError>;
 }
 
 /// A pending input as stored, with its optimistic-concurrency `revision`. The

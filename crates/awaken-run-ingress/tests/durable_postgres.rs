@@ -384,3 +384,15 @@ async fn renew_owned_leases_on_postgres() {
     harness::assert_renew_owned_leases(&store).await;
     reset(&pool, prefix).await;
 }
+
+#[tokio::test]
+async fn list_dispatches_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_list";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_list_dispatches(&store).await;
+    reset(&pool, prefix).await;
+}

@@ -31,8 +31,9 @@ mod worker;
 pub use capability::RunIngressCapabilities;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchStore, Lease, MessageOutbox,
-    PendingInbox, PendingInput, PendingRecord, RunDispatch, SubmitOptions,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchStatus, DispatchStore,
+    DispatchSummary, Lease, MessageOutbox, PendingInbox, PendingInput, PendingRecord, RunDispatch,
+    SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;

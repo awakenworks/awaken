@@ -596,6 +596,27 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::DispatchStore>(sto
     assert!(store.dead_letters().await.unwrap().is_empty());
 }
 
+/// Shared spec for the dispatch query surface (ADR-0025): list_dispatches reports
+/// each row's status and attempts. Every backend matches.
+pub async fn assert_list_dispatches<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::{DispatchStatus, RunExecutionRequest};
+
+    // A fresh run is Pending; once claimed it is Running.
+    store
+        .enqueue(RunExecutionRequest::new(activation("r1")))
+        .await
+        .unwrap();
+    let listed = store.list_dispatches().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].run_id, RunId("r1".to_string()));
+    assert_eq!(listed[0].status, DispatchStatus::Pending);
+    assert_eq!(listed[0].attempt_count, 0);
+
+    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    let listed = store.list_dispatches().await.unwrap();
+    assert_eq!(listed[0].status, DispatchStatus::Running);
+}
+
 /// Shared spec for the daemon's bulk lease renewal (ADR-0024): renewing an owner's
 /// in-flight leases keeps them from being reclaimed. Every backend matches.
 pub async fn assert_renew_owned_leases<S: awaken_run_ingress::DispatchStore>(store: &S) {
