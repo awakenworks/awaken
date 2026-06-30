@@ -426,6 +426,99 @@ pub async fn assert_cancel<S: awaken_run_ingress::DispatchStore>(store: &S) {
     );
 }
 
+/// Shared spec for priority, dedupe, and dead-letter GC. Every backend matches.
+pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SubmitOptions};
+    let req = |id: &str| RunExecutionRequest::new(activation(id));
+
+    // Priority: the higher-priority fresh run is claimed first.
+    store
+        .enqueue_with(req("low"), SubmitOptions::default())
+        .await
+        .unwrap();
+    store
+        .enqueue_with(
+            req("high"),
+            SubmitOptions {
+                priority: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .claim("w", 1_000, 0)
+            .await
+            .unwrap()
+            .unwrap()
+            .request
+            .run_id()
+            .0,
+        "high"
+    );
+    assert_eq!(
+        store
+            .claim("w", 1_000, 0)
+            .await
+            .unwrap()
+            .unwrap()
+            .request
+            .run_id()
+            .0,
+        "low"
+    );
+    store
+        .settle(&RunId("high".to_string()), DispatchOutcome::Done, &[])
+        .await
+        .unwrap();
+    store
+        .settle(&RunId("low".to_string()), DispatchOutcome::Done, &[])
+        .await
+        .unwrap();
+
+    // Dedupe: a second enqueue carrying a live dedupe key is a no-op.
+    let key = SubmitOptions {
+        dedupe_key: Some("k".to_string()),
+        ..Default::default()
+    };
+    store.enqueue_with(req("d1"), key.clone()).await.unwrap();
+    store.enqueue_with(req("d2"), key).await.unwrap();
+    assert_eq!(
+        store
+            .claim("w", 1_000, 0)
+            .await
+            .unwrap()
+            .unwrap()
+            .request
+            .run_id()
+            .0,
+        "d1"
+    );
+    assert!(
+        store.claim("w", 1_000, 0).await.unwrap().is_none(),
+        "the duplicate was not enqueued"
+    );
+    store
+        .settle(&RunId("d1".to_string()), DispatchOutcome::Done, &[])
+        .await
+        .unwrap();
+
+    // GC: a dead-lettered run is purged.
+    store
+        .enqueue_with(req("poison"), SubmitOptions::default())
+        .await
+        .unwrap();
+    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert_eq!(store.reap(0, 100).await.unwrap(), 1);
+    assert_eq!(
+        store.dead_letters().await.unwrap(),
+        vec![RunId("poison".to_string())]
+    );
+    assert_eq!(store.purge_dead_letters().await.unwrap(), 1);
+    assert!(store.dead_letters().await.unwrap().is_empty());
+}
+
 /// Drop every commit- and dispatch-schema table for a prefix (plus the shared
 /// migration ledger) so each test starts from a clean, isolated schema.
 pub async fn reset(pool: &PgPool, prefix: &str) {

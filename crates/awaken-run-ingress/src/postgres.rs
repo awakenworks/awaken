@@ -19,7 +19,7 @@ use sqlx::types::Json;
 
 use crate::dispatch::{
     CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
-    PendingInput, PendingRecord, RunDispatch,
+    PendingInput, PendingRecord, RunDispatch, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -68,15 +68,26 @@ impl PostgresDispatchStore {
 
 #[async_trait]
 impl RunDispatch for PostgresDispatchStore {
-    async fn enqueue(&self, request: RunExecutionRequest) -> Result<(), DispatchError> {
+    async fn enqueue_with(
+        &self,
+        request: RunExecutionRequest,
+        options: SubmitOptions,
+    ) -> Result<(), DispatchError> {
         let p = &self.prefix;
+        // Insert unless the run id exists, or a live (non-dead-letter) dispatch
+        // already carries the same dedupe key. A NULL dedupe key never matches.
         sqlx::query(&format!(
-            "INSERT INTO {p}_dispatch (run_id, thread_id, request, status) \
-             VALUES ($1, $2, $3, 'pending') ON CONFLICT (run_id) DO NOTHING"
+            "INSERT INTO {p}_dispatch (run_id, thread_id, request, status, priority, dedupe_key) \
+             SELECT $1, $2, $3, 'pending', $4, $5 \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM {p}_dispatch WHERE dedupe_key = $5 AND status <> 'dead_letter') \
+             ON CONFLICT (run_id) DO NOTHING"
         ))
         .bind(&request.run_id().0)
         .bind(&request.thread_id().0)
         .bind(Json(&request))
+        .bind(options.priority)
+        .bind(options.dedupe_key.as_deref())
         .execute(&self.pool)
         .await
         .map_err(reject)?;
@@ -109,7 +120,8 @@ impl RunDispatch for PostgresDispatchStore {
         );
         let fresh = format!(
             "SELECT run_id, request FROM {p}_dispatch \
-             WHERE status = 'pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+             WHERE status = 'pending' ORDER BY priority DESC, created_at \
+             FOR UPDATE SKIP LOCKED LIMIT 1"
         );
 
         // Track whether this is a recovery pick (an expired-lease running row),
@@ -327,6 +339,26 @@ impl RunDispatch for PostgresDispatchStore {
         .await
         .map_err(reject)?;
         Ok(run.map(RunId))
+    }
+
+    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
+        let p = &self.prefix;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        sqlx::query(&format!(
+            "DELETE FROM {p}_pending WHERE run_id IN \
+             (SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter')"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let result = sqlx::query(&format!(
+            "DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        tx.commit().await.map_err(reject)?;
+        Ok(result.rows_affected() as usize)
     }
 }
 

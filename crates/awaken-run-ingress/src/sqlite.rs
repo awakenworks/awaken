@@ -19,7 +19,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::dispatch::{
     CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
-    PendingInput, PendingRecord, RunDispatch,
+    PendingInput, PendingRecord, RunDispatch, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -87,17 +87,34 @@ impl SqliteDispatchStore {
 
 #[async_trait]
 impl RunDispatch for SqliteDispatchStore {
-    async fn enqueue(&self, request: RunExecutionRequest) -> Result<(), DispatchError> {
+    async fn enqueue_with(
+        &self,
+        request: RunExecutionRequest,
+        options: SubmitOptions,
+    ) -> Result<(), DispatchError> {
         let run_id = request.run_id().0.clone();
         let thread_id = request.thread_id().0.clone();
         let request_json = json(&request)?;
         self.with_conn(move |conn, p| {
+            // Insert unless the run id exists or a live dispatch already carries
+            // the dedupe key. A NULL dedupe key never matches.
             conn.execute(
                 &format!(
-                    "INSERT INTO {p}_dispatch (run_id, thread_id, request, status) \
-                     VALUES (?1,?2,?3,'pending') ON CONFLICT(run_id) DO NOTHING"
+                    "INSERT INTO {p}_dispatch \
+                     (run_id, thread_id, request, status, priority, dedupe_key) \
+                     SELECT ?1,?2,?3,'pending',?4,?5 \
+                     WHERE NOT EXISTS ( \
+                         SELECT 1 FROM {p}_dispatch \
+                         WHERE dedupe_key = ?5 AND status <> 'dead_letter') \
+                     ON CONFLICT(run_id) DO NOTHING"
                 ),
-                params![run_id, thread_id, request_json],
+                params![
+                    run_id,
+                    thread_id,
+                    request_json,
+                    options.priority,
+                    options.dedupe_key
+                ],
             )
             .map_err(reject)?;
             Ok(())
@@ -134,7 +151,7 @@ impl RunDispatch for SqliteDispatchStore {
             );
             let fresh = format!(
                 "SELECT run_id, request FROM {p}_dispatch \
-                 WHERE status = 'pending' ORDER BY created_at LIMIT 1"
+                 WHERE status = 'pending' ORDER BY priority DESC, created_at LIMIT 1"
             );
 
             let row = |sql: &str,
@@ -385,6 +402,31 @@ impl RunDispatch for SqliteDispatchStore {
                 .optional()
                 .map_err(reject)?;
             Ok(run.map(RunId))
+        })
+        .await
+    }
+
+    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            tx.execute(
+                &format!(
+                    "DELETE FROM {p}_pending WHERE run_id IN \
+                     (SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter')"
+                ),
+                [],
+            )
+            .map_err(reject)?;
+            let n = tx
+                .execute(
+                    &format!("DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"),
+                    [],
+                )
+                .map_err(reject)?;
+            tx.commit().map_err(reject)?;
+            Ok(n)
         })
         .await
     }

@@ -604,3 +604,8 @@ async fn send_message_delivers_to_a_threads_parked_run() {
             .any(|m| m.text_content() == "hello from another agent")
     );
 }
+
+#[tokio::test]
+async fn priority_dedupe_gc_store_spec() {
+    harness::assert_priority_dedupe_gc(&MemoryDispatchStore::new()).await;
+}

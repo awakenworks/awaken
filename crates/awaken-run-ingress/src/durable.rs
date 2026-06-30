@@ -123,6 +123,12 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
         Ok(self.worker.store().dead_letters().await?)
     }
 
+    /// Operator GC: remove every dead-lettered dispatch and its pending input.
+    /// Returns how many were purged.
+    pub async fn purge_dead_letters(&self) -> Result<usize, Error> {
+        Ok(self.worker.store().purge_dead_letters().await?)
+    }
+
     /// Return a dead-lettered run to the queue at a fresh budget.
     pub async fn requeue(&self, run_id: &RunId) -> Result<bool, Error> {
         Ok(self.worker.store().requeue(run_id).await?)

@@ -15,7 +15,7 @@ use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
     CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
-    PendingInput, PendingRecord, RunDispatch,
+    PendingInput, PendingRecord, RunDispatch, SubmitOptions,
 };
 use crate::request::RunExecutionRequest;
 
@@ -34,6 +34,8 @@ struct Row {
     lease: Option<Lease>,
     /// Consecutive crash-recoveries without a settle; reset when the run parks.
     attempt_count: u64,
+    priority: i64,
+    dedupe_key: Option<String>,
 }
 
 /// A pending input with its optimistic-concurrency revision.
@@ -117,7 +119,8 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
             Status::DeadLetter => false,
         }
     };
-    for band in [Status::Running, Status::Parked, Status::Pending] {
+    // Recovery and wake are first-match in enqueue order.
+    for band in [Status::Running, Status::Parked] {
         for run in &state.order {
             if let Some(row) = state.rows.get(run)
                 && runnable(band, run, row)
@@ -126,16 +129,41 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
             }
         }
     }
-    None
+    // Fresh work is ordered by priority (highest first), then enqueue order. Keep
+    // the first run at the best priority (strictly-greater replaces), so equal
+    // priorities stay FIFO.
+    let mut best: Option<(&RunId, i64)> = None;
+    for run in &state.order {
+        if let Some(row) = state.rows.get(run)
+            && row.status == Status::Pending
+            && best.is_none_or(|(_, p)| row.priority > p)
+        {
+            best = Some((run, row.priority));
+        }
+    }
+    best.map(|(run, _)| run.clone())
 }
 
 #[async_trait]
 impl RunDispatch for MemoryDispatchStore {
-    async fn enqueue(&self, request: RunExecutionRequest) -> Result<(), DispatchError> {
+    async fn enqueue_with(
+        &self,
+        request: RunExecutionRequest,
+        options: SubmitOptions,
+    ) -> Result<(), DispatchError> {
         let mut state = lock(&self.state)?;
         let run_id = request.run_id().clone();
-        // Idempotent: a re-enqueued run is a no-op (exactly-once effect).
+        // Idempotent by run id; and a no-op while a live dispatch shares the
+        // caller's dedupe key.
         if state.rows.contains_key(&run_id) {
+            return Ok(());
+        }
+        if let Some(key) = &options.dedupe_key
+            && state
+                .rows
+                .values()
+                .any(|r| r.dedupe_key.as_deref() == Some(key) && r.status != Status::DeadLetter)
+        {
             return Ok(());
         }
         state.rows.insert(
@@ -145,6 +173,8 @@ impl RunDispatch for MemoryDispatchStore {
                 status: Status::Pending,
                 lease: None,
                 attempt_count: 0,
+                priority: options.priority,
+                dedupe_key: options.dedupe_key,
             },
         );
         state.order.push(run_id);
@@ -301,6 +331,22 @@ impl RunDispatch for MemoryDispatchStore {
                 })
             })
             .cloned())
+    }
+
+    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let dead: Vec<RunId> = state
+            .rows
+            .iter()
+            .filter(|(_, row)| row.status == Status::DeadLetter)
+            .map(|(run, _)| run.clone())
+            .collect();
+        for run in &dead {
+            state.rows.remove(run);
+            state.order.retain(|r| r != run);
+            state.pending.retain(|p| &p.input.run_id != run);
+        }
+        Ok(dead.len())
     }
 }
 

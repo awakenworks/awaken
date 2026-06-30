@@ -81,12 +81,35 @@ pub enum DispatchOutcome {
     Parked,
 }
 
+/// Dispatch-level options for an accepted run. Defaults to ordinary priority and
+/// no caller dedupe key — `enqueue` uses these so existing callers are unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubmitOptions {
+    /// Higher runs first among fresh (not-yet-started) work; default 0.
+    pub priority: i64,
+    /// A caller idempotency key. While a dispatch with this key is live, another
+    /// enqueue carrying it is a no-op — dedup beyond the run id (e.g. for an
+    /// at-least-once producer). Cleared once the run finishes.
+    pub dedupe_key: Option<String>,
+}
+
 /// Durable run-dispatch queue: activation opportunity, claim, lease, recovery.
 #[async_trait]
 pub trait RunDispatch: Send + Sync {
-    /// Idempotently record an accepted run. Re-enqueueing the same run id is a
-    /// no-op, so an at-least-once submit has an exactly-once effect per run.
-    async fn enqueue(&self, request: RunExecutionRequest) -> Result<(), DispatchError>;
+    /// Idempotently record an accepted run at default options. Re-enqueueing the
+    /// same run id is a no-op, so an at-least-once submit has an exactly-once
+    /// effect per run.
+    async fn enqueue(&self, request: RunExecutionRequest) -> Result<(), DispatchError> {
+        self.enqueue_with(request, SubmitOptions::default()).await
+    }
+
+    /// Record an accepted run with dispatch options (priority, dedupe key). A
+    /// dedupe key already live makes this a no-op.
+    async fn enqueue_with(
+        &self,
+        request: RunExecutionRequest,
+        options: SubmitOptions,
+    ) -> Result<(), DispatchError>;
 
     /// Claim one runnable dispatch for `owner`, single owner per run: a fresh
     /// `pending` run, a parked run with pending input (a wake), or a running
@@ -137,6 +160,10 @@ pub trait RunDispatch: Send + Sync {
     /// addressable unit (a run is one ephemeral execution); this resolves a
     /// thread-addressed delivery to the run waiting on it.
     async fn parked_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError>;
+
+    /// Remove every dead-lettered dispatch (and its pending input) — operator GC.
+    /// Returns how many were purged.
+    async fn purge_dead_letters(&self) -> Result<usize, DispatchError>;
 }
 
 /// A pending input as stored, with its optimistic-concurrency `revision`. The

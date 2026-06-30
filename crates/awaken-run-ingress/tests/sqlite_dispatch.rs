@@ -155,3 +155,9 @@ async fn cancel_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
     harness::assert_cancel(&store).await;
 }
+
+#[tokio::test]
+async fn priority_dedupe_gc_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_priority_dedupe_gc(&store).await;
+}
