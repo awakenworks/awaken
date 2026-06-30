@@ -16,7 +16,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::llm::{
@@ -252,9 +252,6 @@ pub fn activation(run: &str) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }

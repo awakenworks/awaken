@@ -14,7 +14,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -86,7 +86,7 @@ impl RunExecutionContext {
     /// Build the runtime-facing context for one attempt, carrying the supplied
     /// cancellation token so the host can steer an in-flight run.
     pub(crate) fn runtime_context(&self, cancel: CancellationToken) -> RuntimeRunContext {
-        let mut context = RuntimeRunContext::new(PersistenceMode::ReadWrite)
+        let mut context = RuntimeRunContext::new()
             .with_commit(self.commit.clone())
             .with_cancellation(cancel);
         if let Some(reader) = &self.reader {

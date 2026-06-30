@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use awaken_agent_contract::agent::run::Phase;
 
-use crate::activation::{RunOptions, TraceContext};
+use crate::activation::TraceContext;
 use crate::execution::Error;
 use crate::runtime_context::RuntimeRunContext;
 use crate::snapshot::AgentSnapshotInput;
@@ -22,7 +22,6 @@ pub struct RunWithSnapshotCommand {
     pub thread_id: awaken_agent_contract::agent::thread::Id,
     pub snapshot: AgentSnapshotInput,
     pub input: Vec<awaken_agent_contract::agent::message::Message>,
-    pub options: RunOptions,
     pub trace: TraceContext,
 }
 

@@ -38,7 +38,7 @@ async fn main() {
     // 3. Assemble the runtime and run one turn.
     let runtime = Runtime::new().with_llm(Arc::new(GreeterLlm));
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let phase = runtime
         .run(&runnable, "Say hi.", context)
         .await

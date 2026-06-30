@@ -14,7 +14,6 @@ use awaken_run_ingress::{
 };
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_runtime::{RunIngress, Runtime};
-use awaken_runtime_contract::activation::PersistenceMode;
 use awaken_runtime_contract::control::Error as ControlError;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
@@ -87,7 +86,7 @@ async fn durable_ingress_foreground_submit_and_cancel() {
     let ingress = DurableRunIngress::new(runtime, store, commit.clone());
 
     // Foreground submit executes inline through the runtime (additive, G6).
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let phase = ingress
         .submit(activation("run-fg"), context)
         .await

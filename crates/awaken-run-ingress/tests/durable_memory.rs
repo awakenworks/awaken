@@ -20,7 +20,6 @@ use awaken_run_ingress::{
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress};
-use awaken_runtime_contract::activation::PersistenceMode;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -322,7 +321,7 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
     // Worker got partway: it claimed (took a lease) and committed the resume,
     // then crashed before settle. Drive those two steps by hand.
     let _claimed = store.claim("dead-worker", 1_000, 0).await.unwrap();
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let phase = runtime
         .resume(allow_command(), commit.as_ref(), context)
         .await
@@ -704,7 +703,7 @@ async fn a_recovered_scheduled_action_is_performed() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     // The run parked on a committed ScheduledAction (the action has not run).
-    let ctx = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let ctx = RuntimeRunContext::new().with_commit(commit.clone());
     let phase = runtime.execute(activation("run-1"), ctx).await.unwrap();
     assert_eq!(phase, Phase::Waiting);
     assert_eq!(ran.load(Ordering::SeqCst), 0);

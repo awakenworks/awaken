@@ -56,7 +56,7 @@ async fn main() {
     //    separate install/register, no hand-built activation. Swap the in-memory
     //    commit for a SQLite coordinator to persist across restarts.
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let phase = runtime.run(&config, "Say hi.", context).await.expect("run");
 
     // 5. Inspect the committed transcript.

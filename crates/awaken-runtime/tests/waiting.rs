@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::kind::Kind as EventKind;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, replay_latest_phase};
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
@@ -147,9 +147,6 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }
@@ -167,7 +164,7 @@ fn resume_command(result: ResumeResult) -> ResumeCommand {
 }
 
 async fn suspend(commit: &Arc<MemoryCommitCoordinator>, runtime: &Runtime) {
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, Phase::Waiting);
 }
@@ -200,7 +197,7 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
     );
 
     // An allow decision resumes: the pending tool executes and the run completes.
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .resume(
             resume_command(ResumeResult::Decision {
@@ -254,7 +251,7 @@ async fn deny_resume_feeds_a_blocked_result_without_running_the_tool() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     suspend(&commit, &runtime).await;
 
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .resume(
             resume_command(ResumeResult::Decision {
@@ -289,7 +286,7 @@ async fn resume_with_wrong_fingerprint_fails_closed() {
         note: None,
     });
     command.catalog_fingerprint = "wrong".to_string();
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let err = runtime
         .resume(command, commit.as_ref(), context)
         .await
@@ -306,7 +303,7 @@ async fn second_resume_after_completion_is_not_waiting() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     suspend(&commit, &runtime).await;
 
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     runtime
         .resume(
             resume_command(ResumeResult::Decision {
@@ -320,7 +317,7 @@ async fn second_resume_after_completion_is_not_waiting() {
         .expect("first resume completes");
 
     // The ticket was consumed; a stale second resume fails closed.
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let err = runtime
         .resume(
             resume_command(ResumeResult::Decision {
@@ -342,7 +339,7 @@ async fn resume_with_a_client_tool_result_is_used_directly() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     suspend(&commit, &runtime).await;
 
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .resume(
             resume_command(ResumeResult::ToolResult(ToolOutput::ok(
@@ -373,7 +370,7 @@ async fn resume_with_input_injects_a_user_message() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     suspend(&commit, &runtime).await;
 
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .resume(
             resume_command(ResumeResult::Input("the answer is 42".to_string())),

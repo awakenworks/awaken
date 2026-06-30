@@ -10,7 +10,7 @@ use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
@@ -112,9 +112,6 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }
@@ -129,7 +126,7 @@ async fn permanent_inference_error_commits_a_terminal_failed_reason() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
     assert!(matches!(
@@ -169,7 +166,7 @@ async fn transient_error_is_retried_until_exhausted_then_failed() {
         .with_infer_retries(2);
     install(&runtime);
 
-    let context = RuntimeRunContext::new(PersistenceMode::Disabled);
+    let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
     assert!(matches!(
@@ -191,7 +188,7 @@ async fn transient_error_then_success_recovers() {
         .with_infer_retries(3);
     install(&runtime);
 
-    let context = RuntimeRunContext::new(PersistenceMode::Disabled);
+    let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));

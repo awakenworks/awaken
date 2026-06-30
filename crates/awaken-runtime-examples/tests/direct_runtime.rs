@@ -31,7 +31,7 @@ async fn direct_runtime_example_runs_to_completion() {
         .with_gate(Arc::new(PermissionGate::new(Arc::new(policy))));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ctx = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
     let phase = runtime.run(&config, "Say hi.", ctx).await.expect("run");
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));

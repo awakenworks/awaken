@@ -93,7 +93,7 @@ pub mod prelude {
     };
     pub use awaken_runtime::memory::MemoryCommitCoordinator;
     pub use awaken_runtime::{PermissionGate, RunInput, Runtime};
-    pub use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+    pub use awaken_runtime_contract::activation::RunActivation;
     pub use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
     pub use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
     pub use awaken_runtime_contract::execution::RunExecutor;

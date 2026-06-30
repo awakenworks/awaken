@@ -1,33 +1,7 @@
 pub mod awaken_runtime_contract
 pub mod awaken_runtime_contract::activation
-pub enum awaken_runtime_contract::activation::PersistenceMode
-pub awaken_runtime_contract::activation::PersistenceMode::Disabled
-pub awaken_runtime_contract::activation::PersistenceMode::ReadOnly
-pub awaken_runtime_contract::activation::PersistenceMode::ReadWrite
-impl core::clone::Clone for awaken_runtime_contract::activation::PersistenceMode
-pub fn awaken_runtime_contract::activation::PersistenceMode::clone(&self) -> awaken_runtime_contract::activation::PersistenceMode
-impl core::cmp::Eq for awaken_runtime_contract::activation::PersistenceMode
-impl core::cmp::PartialEq for awaken_runtime_contract::activation::PersistenceMode
-pub fn awaken_runtime_contract::activation::PersistenceMode::eq(&self, &awaken_runtime_contract::activation::PersistenceMode) -> bool
-impl core::default::Default for awaken_runtime_contract::activation::PersistenceMode
-pub fn awaken_runtime_contract::activation::PersistenceMode::default() -> awaken_runtime_contract::activation::PersistenceMode
-impl core::fmt::Debug for awaken_runtime_contract::activation::PersistenceMode
-pub fn awaken_runtime_contract::activation::PersistenceMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_runtime_contract::activation::PersistenceMode
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::activation::PersistenceMode
-impl serde_core::ser::Serialize for awaken_runtime_contract::activation::PersistenceMode
-pub fn awaken_runtime_contract::activation::PersistenceMode::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::activation::PersistenceMode
-pub fn awaken_runtime_contract::activation::PersistenceMode::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_runtime_contract::activation::PersistenceMode
-impl core::marker::Send for awaken_runtime_contract::activation::PersistenceMode
-impl core::marker::Sync for awaken_runtime_contract::activation::PersistenceMode
-impl core::marker::Unpin for awaken_runtime_contract::activation::PersistenceMode
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::activation::PersistenceMode
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::activation::PersistenceMode
 pub struct awaken_runtime_contract::activation::RunActivation
 pub awaken_runtime_contract::activation::RunActivation::input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_runtime_contract::activation::RunActivation::options: awaken_runtime_contract::activation::RunOptions
 pub awaken_runtime_contract::activation::RunActivation::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::activation::RunActivation::snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub awaken_runtime_contract::activation::RunActivation::thread_id: awaken_agent_contract::agent::thread::Id
@@ -49,28 +23,6 @@ impl core::marker::Sync for awaken_runtime_contract::activation::RunActivation
 impl core::marker::Unpin for awaken_runtime_contract::activation::RunActivation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::activation::RunActivation
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::activation::RunActivation
-pub struct awaken_runtime_contract::activation::RunOptions
-pub awaken_runtime_contract::activation::RunOptions::persistence: awaken_runtime_contract::activation::PersistenceMode
-impl core::clone::Clone for awaken_runtime_contract::activation::RunOptions
-pub fn awaken_runtime_contract::activation::RunOptions::clone(&self) -> awaken_runtime_contract::activation::RunOptions
-impl core::cmp::Eq for awaken_runtime_contract::activation::RunOptions
-impl core::cmp::PartialEq for awaken_runtime_contract::activation::RunOptions
-pub fn awaken_runtime_contract::activation::RunOptions::eq(&self, &awaken_runtime_contract::activation::RunOptions) -> bool
-impl core::default::Default for awaken_runtime_contract::activation::RunOptions
-pub fn awaken_runtime_contract::activation::RunOptions::default() -> awaken_runtime_contract::activation::RunOptions
-impl core::fmt::Debug for awaken_runtime_contract::activation::RunOptions
-pub fn awaken_runtime_contract::activation::RunOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::activation::RunOptions
-impl serde_core::ser::Serialize for awaken_runtime_contract::activation::RunOptions
-pub fn awaken_runtime_contract::activation::RunOptions::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::activation::RunOptions
-pub fn awaken_runtime_contract::activation::RunOptions::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_runtime_contract::activation::RunOptions
-impl core::marker::Send for awaken_runtime_contract::activation::RunOptions
-impl core::marker::Sync for awaken_runtime_contract::activation::RunOptions
-impl core::marker::Unpin for awaken_runtime_contract::activation::RunOptions
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::activation::RunOptions
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::activation::RunOptions
 pub struct awaken_runtime_contract::activation::TraceContext
 pub awaken_runtime_contract::activation::TraceContext::trace_id: core::option::Option<alloc::string::String>
 impl core::clone::Clone for awaken_runtime_contract::activation::TraceContext
@@ -1032,12 +984,11 @@ pub mod awaken_runtime_contract::runtime_context
 pub struct awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>>
-pub awaken_runtime_contract::runtime_context::RuntimeRunContext::persistence: awaken_runtime_contract::activation::PersistenceMode
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_cancelled(&self) -> bool
-pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new(awaken_runtime_contract::activation::PersistenceMode) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new() -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation(self, tokio_util::sync::cancellation_token::CancellationToken) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>) -> Self
@@ -1140,7 +1091,6 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot:
 pub mod awaken_runtime_contract::snapshot_exec
 pub struct awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
 pub awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::options: awaken_runtime_contract::activation::RunOptions
 pub awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::snapshot: awaken_runtime_contract::snapshot::AgentSnapshotInput
 pub awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::thread_id: awaken_agent_contract::agent::thread::Id
@@ -1620,7 +1570,6 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeCommand
 pub struct awaken_runtime_contract::RunActivation
 pub awaken_runtime_contract::RunActivation::input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_runtime_contract::RunActivation::options: awaken_runtime_contract::activation::RunOptions
 pub awaken_runtime_contract::RunActivation::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::RunActivation::snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub awaken_runtime_contract::RunActivation::thread_id: awaken_agent_contract::agent::thread::Id
@@ -1644,7 +1593,6 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::activa
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::activation::RunActivation
 pub struct awaken_runtime_contract::RunWithSnapshotCommand
 pub awaken_runtime_contract::RunWithSnapshotCommand::input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_runtime_contract::RunWithSnapshotCommand::options: awaken_runtime_contract::activation::RunOptions
 pub awaken_runtime_contract::RunWithSnapshotCommand::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::RunWithSnapshotCommand::snapshot: awaken_runtime_contract::snapshot::AgentSnapshotInput
 pub awaken_runtime_contract::RunWithSnapshotCommand::thread_id: awaken_agent_contract::agent::thread::Id
@@ -1726,12 +1674,11 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::catalog::
 pub struct awaken_runtime_contract::RuntimeRunContext
 pub awaken_runtime_contract::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>>
-pub awaken_runtime_contract::RuntimeRunContext::persistence: awaken_runtime_contract::activation::PersistenceMode
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_cancelled(&self) -> bool
-pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new(awaken_runtime_contract::activation::PersistenceMode) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new() -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation(self, tokio_util::sync::cancellation_token::CancellationToken) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>) -> Self

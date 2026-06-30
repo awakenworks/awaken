@@ -10,7 +10,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::{RuntimeCapabilityCatalog, RuntimeCapabilitySource};
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
@@ -107,17 +107,11 @@ async fn a_system_role_message_is_carried_into_inference() {
                 content: vec![ContentBlock::text("hi")],
             },
         ],
-        options: RunOptions {
-            persistence: PersistenceMode::Disabled,
-        },
         trace: Default::default(),
     };
 
     let outcome = runtime
-        .execute(
-            activation,
-            RuntimeRunContext::new(PersistenceMode::Disabled),
-        )
+        .execute(activation, RuntimeRunContext::new())
         .await
         .expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));

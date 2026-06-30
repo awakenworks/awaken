@@ -7,7 +7,6 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Phase};
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime_contract::activation::PersistenceMode;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::runnable::RunnableConfig;
@@ -39,7 +38,7 @@ async fn run_installs_and_executes_in_one_call() {
         .build();
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ctx = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
     // One call: installs the catalog, runs a fresh turn. No prior install_catalog.
     let phase = runtime.run(&config, "Say hi.", ctx).await.expect("run");

@@ -12,7 +12,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_runtime_contract::activation::{RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::catalog::RuntimeCatalogInstaller;
 use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::runnable::RunnableConfig;
@@ -39,7 +39,6 @@ impl Runtime {
             thread_id: ThreadId(next_id("thread")),
             snapshot: config.snapshot().clone(),
             input: input.into().0,
-            options: RunOptions::default(),
             trace: Default::default(),
         };
         self.execute(activation, context).await

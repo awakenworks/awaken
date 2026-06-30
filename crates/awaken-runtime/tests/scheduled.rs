@@ -14,7 +14,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingReason;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
@@ -167,15 +167,12 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }
 
 fn context(commit: &Arc<MemoryCommitCoordinator>) -> RuntimeRunContext {
-    RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone())
+    RuntimeRunContext::new().with_commit(commit.clone())
 }
 
 #[tokio::test]
@@ -330,10 +327,7 @@ async fn an_uncommitted_scheduled_action_is_not_wakeable() {
     // Execute with no commit boundary: the run reaches a parked phase, but the
     // candidate ticket is never persisted.
     let phase = runtime
-        .execute(
-            activation(),
-            RuntimeRunContext::new(PersistenceMode::ReadWrite),
-        )
+        .execute(activation(), RuntimeRunContext::new())
         .await
         .expect("runs");
     assert_eq!(phase, Phase::Waiting);

@@ -18,7 +18,6 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_runtime_contract::activation::PersistenceMode;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -55,7 +54,7 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
             .await
             .expect("coordinator"),
     );
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let phase = runtime
         .execute(activation("run-1"), context)
         .await
@@ -77,7 +76,7 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
     );
 
     // Resume against the rehydrated reader: the pending tool runs and the run ends.
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(restarted.clone());
+    let context = RuntimeRunContext::new().with_commit(restarted.clone());
     let phase = runtime
         .resume(allow_resume(), restarted.as_ref(), context)
         .await

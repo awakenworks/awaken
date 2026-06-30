@@ -27,7 +27,7 @@ async fn hello_agent_example_runs_to_completion() {
 
     let runtime = Runtime::new().with_llm(Arc::new(GreeterLlm));
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ctx = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
     let phase = runtime.run(&runnable, "Say hi.", ctx).await.expect("run");
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));

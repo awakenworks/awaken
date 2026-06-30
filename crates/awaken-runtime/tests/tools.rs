@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::event::Kind as StreamKind;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
@@ -145,9 +145,6 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("please echo")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }
@@ -162,7 +159,7 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
@@ -190,7 +187,7 @@ async fn denied_tool_call_never_executes_even_though_visible() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
@@ -221,10 +218,7 @@ async fn ask_decision_parks_the_run_in_waiting() {
     install(&runtime);
 
     let outcome = runtime
-        .execute(
-            activation(),
-            RuntimeRunContext::new(PersistenceMode::ReadWrite),
-        )
+        .execute(activation(), RuntimeRunContext::new())
         .await
         .expect("runs");
     assert_eq!(outcome, Phase::Waiting);
@@ -269,7 +263,7 @@ async fn unknown_tool_yields_a_model_visible_error_result() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
@@ -293,10 +287,7 @@ async fn without_a_gate_an_authorized_tool_runs() {
     install(&runtime);
 
     let outcome = runtime
-        .execute(
-            activation(),
-            RuntimeRunContext::new(PersistenceMode::Disabled),
-        )
+        .execute(activation(), RuntimeRunContext::new())
         .await
         .expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
@@ -332,7 +323,7 @@ async fn invalid_arguments_yield_a_model_visible_error_result() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
@@ -374,10 +365,7 @@ async fn real_tool_schema_is_projected_to_the_model() {
     install(&runtime);
 
     runtime
-        .execute(
-            activation(),
-            RuntimeRunContext::new(PersistenceMode::Disabled),
-        )
+        .execute(activation(), RuntimeRunContext::new())
         .await
         .expect("runs");
 
@@ -400,7 +388,7 @@ async fn gate_set_result_skips_execution_and_stages_supplied_result() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(
@@ -448,7 +436,7 @@ async fn a_loop_that_never_ends_naturally_terminates_on_the_step_ceiling() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     // The run ends on the step-ceiling guard, recorded as a single MaxSteps
     // authority — not mislabelled NaturalEnd, and carrying no fault.
@@ -480,7 +468,7 @@ async fn the_configured_step_ceiling_is_honored() {
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
     install(&runtime);
 
-    let context = RuntimeRunContext::new(PersistenceMode::Disabled);
+    let context = RuntimeRunContext::new();
     // The loop never ends naturally; it must stop at exactly the configured
     // ceiling (3), not the previously hard-coded 16.
     let outcome = runtime
@@ -534,7 +522,7 @@ async fn an_assistant_turn_interleaves_text_and_a_tool_call() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
@@ -582,7 +570,7 @@ async fn a_tool_call_streams_to_the_live_sink() {
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let sink = Arc::new(MemoryStreamSink::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite)
+    let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_stream_sink(sink.clone());
 

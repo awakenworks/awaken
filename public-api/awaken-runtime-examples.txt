@@ -14,7 +14,6 @@ pub use awaken_runtime_examples::prelude::ModelBinding
 pub use awaken_runtime_examples::prelude::PermissionGate
 pub use awaken_runtime_examples::prelude::PermissionRule
 pub use awaken_runtime_examples::prelude::PermissionRuleset
-pub use awaken_runtime_examples::prelude::PersistenceMode
 pub use awaken_runtime_examples::prelude::Phase
 pub use awaken_runtime_examples::prelude::ResolvedSpec
 pub use awaken_runtime_examples::prelude::Role
@@ -23,7 +22,6 @@ pub use awaken_runtime_examples::prelude::RunActivation
 pub use awaken_runtime_examples::prelude::RunExecutor
 pub use awaken_runtime_examples::prelude::RunId
 pub use awaken_runtime_examples::prelude::RunInput
-pub use awaken_runtime_examples::prelude::RunOptions
 pub use awaken_runtime_examples::prelude::RunnableConfig
 pub use awaken_runtime_examples::prelude::RunnableConfigBuilder
 pub use awaken_runtime_examples::prelude::Runtime

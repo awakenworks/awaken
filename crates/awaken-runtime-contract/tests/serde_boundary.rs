@@ -32,7 +32,6 @@ fn boundary_values_are_plain_serializable_data() {
 
     // Run activation crosses adapter -> ingress -> runtime as data.
     assert_boundary::<rc::activation::RunActivation>();
-    assert_boundary::<rc::activation::RunOptions>();
 
     // G29: the complete catalog install request handed to the runtime.
     assert_boundary::<rc::catalog::RuntimeCatalogInstall>();

@@ -12,7 +12,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::kind::Kind as EventKind;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
@@ -128,9 +128,6 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }
@@ -151,7 +148,7 @@ async fn tool_staged_state_is_committed_and_replayable() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 
@@ -198,7 +195,7 @@ async fn exclusive_conflict_fails_closed_and_commits_no_state() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
     assert_eq!(

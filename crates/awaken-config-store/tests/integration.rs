@@ -15,7 +15,7 @@ use awaken_config_store::{
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
@@ -101,13 +101,10 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     };
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ctx = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
     // The snapshot's fingerprints match the installed catalog, so resolution
     // passes and the run completes — config produced what the runtime consumed.

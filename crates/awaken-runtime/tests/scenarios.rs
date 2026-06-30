@@ -20,7 +20,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::event::Kind as StreamKind;
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_phase};
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::{Error, RunExecutor};
@@ -93,9 +93,6 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }
@@ -118,7 +115,7 @@ async fn live_stream_is_not_replay_truth() {
     let runtime = runtime();
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let sink = Arc::new(MemoryStreamSink::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite)
+    let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_stream_sink(sink.clone());
 
@@ -148,7 +145,7 @@ async fn cancel_commits_terminal_outcome() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let token = CancellationToken::new();
     token.cancel();
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite)
+    let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_cancellation(token);
 
