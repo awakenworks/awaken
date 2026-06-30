@@ -133,6 +133,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0027-scheduled-action-kind-axis.md` | Decision record | Not required | n/a |
 | `adr/0028-nats-store-deferral.md` | Decision record | Not required | n/a |
 | `adr/0029-built-in-runtime-namespace.md` | Decision record | Not required | n/a |
+| `adr/0030-permission-policy-axis.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 

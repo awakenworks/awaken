@@ -53,6 +53,7 @@ name = "awaken-runtime-contract"
 wrappers = [
     "awaken-runtime",
     "awaken-ext-builtin-tools",
+    "awaken-ext-permission",
     "awaken-provider-genai",
     "awaken-store-postgres",
     "awaken-store-sqlite",
