@@ -182,6 +182,20 @@ impl Runtime {
         crate::engine::cancel_run(run_id, thread_id, context).await
     }
 
+    /// Perform a committed `ScheduledAction` (ADR-0020): run the deferred action
+    /// the parked run committed and commit the resumed outcome. Fails closed if
+    /// the run is not parked on a `ScheduledAction` ticket.
+    pub async fn perform_scheduled_action(
+        &self,
+        run_id: &RunId,
+        reader: &dyn ThreadReader,
+        context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
+        now_ms: u64,
+    ) -> Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
+    {
+        crate::engine::perform_scheduled_action(self, run_id, reader, context, now_ms).await
+    }
+
     pub(crate) fn snapshot_by_id(
         &self,
         id: &ExecutableAgentSnapshotId,

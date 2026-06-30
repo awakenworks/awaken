@@ -114,6 +114,42 @@ pub(crate) async fn cancel_run(
     finish(&context, &thread_id, run_id, Checkpoint::cancelled()).await
 }
 
+/// Perform a committed `ScheduledAction` (ADR-0020): the run is parked on a
+/// ticket whose reason is `ScheduledAction`, holding the deferred action as its
+/// pending tool. Performing it is an allow-resume of that committed action — the
+/// system runs the action and commits the resumed outcome, validated against the
+/// committed request and idempotent (RS-SCH-001/004). A run parked for any other
+/// reason, or not parked at all, fails closed.
+pub(crate) async fn perform_scheduled_action(
+    runtime: &Runtime,
+    run_id: &RunId,
+    reader: &dyn ThreadReader,
+    context: RuntimeRunContext,
+    now_ms: u64,
+) -> Result<Phase> {
+    let ticket = reader
+        .waiting_ticket(run_id)
+        .ok_or_else(|| Error::Execution("run is not waiting".to_string()))?;
+    if ticket.reason != WaitingReason::ScheduledAction {
+        return Err(Error::Execution(
+            "run is not parked on a scheduled action".to_string(),
+        ));
+    }
+    let command = ResumeCommand {
+        correlation_id: ticket.correlation_id,
+        run_id: ticket.run_id,
+        thread_id: ticket.thread_id,
+        snapshot_id: ticket.snapshot_id,
+        catalog_fingerprint: ticket.catalog_fingerprint,
+        result: ResumeResult::Decision {
+            allow: true,
+            note: None,
+        },
+        now_ms,
+    };
+    resume_run(runtime, command, reader, context).await
+}
+
 /// Resume a parked run: validate the resume against the committed ticket, rebuild
 /// the transcript from committed messages, inject the resumed result, and drive
 /// the loop to a new terminal/parked state (G5/G28).
@@ -330,13 +366,40 @@ async fn drive(
                 GateOutcome::Suspend { ticket_id } => {
                     // Park the run on a structured ticket carrying the pending
                     // call so an allow decision can run it later.
-                    let ticket = waiting_ticket(resolved, run_id, &ticket_id, &call);
+                    let ticket = waiting_ticket(
+                        resolved,
+                        run_id,
+                        &ticket_id,
+                        &call,
+                        WaitingReason::ToolPermission,
+                    );
                     end = Some(End::Parked(ticket));
                     emit(
                         context,
                         run_id,
                         StreamKind::Waiting {
                             reason: "tool_permission".to_string(),
+                        },
+                    )
+                    .await;
+                    break;
+                }
+                GateOutcome::Schedule { correlation_id } => {
+                    // Commit a ScheduledAction (ADR-0020): the call is deferred and
+                    // performed later from the committed request, not decided.
+                    let ticket = waiting_ticket(
+                        resolved,
+                        run_id,
+                        &correlation_id,
+                        &call,
+                        WaitingReason::ScheduledAction,
+                    );
+                    end = Some(End::Parked(ticket));
+                    emit(
+                        context,
+                        run_id,
+                        StreamKind::Waiting {
+                            reason: "scheduled_action".to_string(),
                         },
                     )
                     .await;
@@ -458,6 +521,7 @@ fn waiting_ticket(
     run_id: &RunId,
     ticket_id: &str,
     call: &ToolCall,
+    reason: WaitingReason,
 ) -> WaitingTicket {
     WaitingTicket {
         correlation_id: ticket_id.to_string(),
@@ -465,7 +529,7 @@ fn waiting_ticket(
         thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
         snapshot_id: resolved.snapshot_id.0.clone(),
         catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
-        reason: WaitingReason::ToolPermission,
+        reason,
         call_id: Some(call.call_id.clone()),
         pending_tool: Some(PendingTool {
             tool_id: call.tool_id.clone(),
