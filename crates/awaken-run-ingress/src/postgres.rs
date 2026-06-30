@@ -112,6 +112,9 @@ impl RunDispatch for PostgresDispatchStore {
              WHERE status = 'pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
 
+        // Track whether this is a recovery pick (an expired-lease running row),
+        // which spends one crash-retry; a fresh or wake pick does not.
+        let mut recovery_pick = true;
         let picked = match sqlx::query(&recovery)
             .bind(now_ms as i64)
             .fetch_optional(&mut *tx)
@@ -119,18 +122,21 @@ impl RunDispatch for PostgresDispatchStore {
             .map_err(reject)?
         {
             Some(row) => Some(row),
-            None => match sqlx::query(&wake)
-                .bind(now_ms as i64)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(reject)?
-            {
-                Some(row) => Some(row),
-                None => sqlx::query(&fresh)
+            None => {
+                recovery_pick = false;
+                match sqlx::query(&wake)
+                    .bind(now_ms as i64)
                     .fetch_optional(&mut *tx)
                     .await
-                    .map_err(reject)?,
-            },
+                    .map_err(reject)?
+                {
+                    Some(row) => Some(row),
+                    None => sqlx::query(&fresh)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(reject)?,
+                }
+            }
         };
 
         let Some(row) = picked else {
@@ -141,11 +147,12 @@ impl RunDispatch for PostgresDispatchStore {
 
         let expires = now_ms + lease_ms;
         sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2 \
-             WHERE run_id = $3"
+            "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2, \
+             attempt_count = attempt_count + $3 WHERE run_id = $4"
         ))
         .bind(owner)
         .bind(expires as i64)
+        .bind(i64::from(recovery_pick))
         .bind(&run_id)
         .execute(&mut *tx)
         .await
@@ -225,7 +232,7 @@ impl RunDispatch for PostgresDispatchStore {
                 .map_err(reject)?;
                 sqlx::query(&format!(
                     "UPDATE {p}_dispatch SET status = 'parked', lease_owner = NULL, \
-                     lease_until = NULL WHERE run_id = $1"
+                     lease_until = NULL, attempt_count = 0 WHERE run_id = $1"
                 ))
                 .bind(&run_id.0)
                 .execute(&mut *tx)
@@ -235,6 +242,51 @@ impl RunDispatch for PostgresDispatchStore {
         }
         tx.commit().await.map_err(reject)?;
         Ok(())
+    }
+
+    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
+        let p = &self.prefix;
+        let result = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET status = 'dead_letter', lease_owner = NULL, lease_until = NULL \
+             WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < $1 \
+             AND attempt_count >= $2"
+        ))
+        .bind(now_ms as i64)
+        .bind(max_attempts as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(result.rows_affected() as usize)
+    }
+
+    async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
+        let p = &self.prefix;
+        let rows = sqlx::query(&format!(
+            "SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter' ORDER BY created_at"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        rows.into_iter()
+            .map(|row| {
+                row.try_get::<String, _>("run_id")
+                    .map(RunId)
+                    .map_err(reject)
+            })
+            .collect()
+    }
+
+    async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
+        let p = &self.prefix;
+        let result = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET status = 'pending', attempt_count = 0, lease_owner = NULL, \
+             lease_until = NULL WHERE run_id = $1 AND status = 'dead_letter'"
+        ))
+        .bind(&run_id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(result.rows_affected() > 0)
     }
 }
 

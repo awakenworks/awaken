@@ -150,12 +150,17 @@ impl RunDispatch for SqliteDispatchStore {
                 .map_err(reject)
             };
 
+            // A recovery pick (expired-lease running row) spends one crash-retry.
+            let mut recovery_pick = true;
             let picked = match row(&recovery, true)? {
                 Some(found) => Some(found),
-                None => match row(&wake, true)? {
-                    Some(found) => Some(found),
-                    None => row(&fresh, false)?,
-                },
+                None => {
+                    recovery_pick = false;
+                    match row(&wake, true)? {
+                        Some(found) => Some(found),
+                        None => row(&fresh, false)?,
+                    }
+                }
             };
 
             let Some((run_id, request_json)) = picked else {
@@ -168,9 +173,9 @@ impl RunDispatch for SqliteDispatchStore {
             tx.execute(
                 &format!(
                     "UPDATE {p}_dispatch SET status = 'running', lease_owner = ?1, \
-                     lease_until = ?2 WHERE run_id = ?3"
+                     lease_until = ?2, attempt_count = attempt_count + ?3 WHERE run_id = ?4"
                 ),
-                params![owner, expires as i64, run_id],
+                params![owner, expires as i64, i64::from(recovery_pick), run_id],
             )
             .map_err(reject)?;
 
@@ -263,7 +268,7 @@ impl RunDispatch for SqliteDispatchStore {
                     tx.execute(
                         &format!(
                             "UPDATE {p}_dispatch SET status = 'parked', lease_owner = NULL, \
-                             lease_until = NULL WHERE run_id = ?1"
+                             lease_until = NULL, attempt_count = 0 WHERE run_id = ?1"
                         ),
                         params![run_id],
                     )
@@ -272,6 +277,60 @@ impl RunDispatch for SqliteDispatchStore {
             }
             tx.commit().map_err(reject)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
+        self.with_conn(move |conn, p| {
+            let n = conn
+                .execute(
+                    &format!(
+                        "UPDATE {p}_dispatch SET status = 'dead_letter', lease_owner = NULL, \
+                         lease_until = NULL WHERE status = 'running' \
+                         AND lease_until IS NOT NULL AND lease_until < ?1 AND attempt_count >= ?2"
+                    ),
+                    params![now_ms as i64, max_attempts as i64],
+                )
+                .map_err(reject)?;
+            Ok(n)
+        })
+        .await
+    }
+
+    async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
+        self.with_conn(move |conn, p| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter' ORDER BY created_at"
+                ))
+                .map_err(reject)?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(reject)?;
+            let mut ids = Vec::new();
+            for row in rows {
+                ids.push(RunId(row.map_err(reject)?));
+            }
+            Ok(ids)
+        })
+        .await
+    }
+
+    async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
+        let run_id = run_id.0.clone();
+        self.with_conn(move |conn, p| {
+            let n = conn
+                .execute(
+                    &format!(
+                        "UPDATE {p}_dispatch SET status = 'pending', attempt_count = 0, \
+                         lease_owner = NULL, lease_until = NULL \
+                         WHERE run_id = ?1 AND status = 'dead_letter'"
+                    ),
+                    params![run_id],
+                )
+                .map_err(reject)?;
+            Ok(n > 0)
         })
         .await
     }

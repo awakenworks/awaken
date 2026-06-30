@@ -102,13 +102,29 @@ pub trait RunDispatch: Send + Sync {
     /// Settle a claimed dispatch. `Done` removes it and all its pending input;
     /// `Parked` returns it to the waiting state and drops only the `consumed`
     /// pending (by `message_id`), leaving input that arrived mid-attempt for the
-    /// next wake.
+    /// next wake. `Parked` also resets the crash-retry budget — a run that
+    /// reaches a checkpoint refreshes its attempts.
     async fn settle(
         &self,
         run_id: &RunId,
         outcome: DispatchOutcome,
         consumed: &[String],
     ) -> Result<(), DispatchError>;
+
+    /// Dead-letter every *crashed* dispatch — one whose lease expired without a
+    /// settle — that has used up its crash-retry budget (`attempt_count >=
+    /// max_attempts`). A dead-lettered dispatch is no longer claimed, so a poison
+    /// run cannot be reclaimed forever. Returns how many were dead-lettered
+    /// (ADR-0015). The crash-retry count increments only on recovery re-claims, so
+    /// a normal park/wake never spends the budget.
+    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError>;
+
+    /// The run ids currently dead-lettered, for operations.
+    async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError>;
+
+    /// Return a dead-lettered run to the queue at a fresh budget. Returns `true`
+    /// if a dead-lettered run with that id was requeued.
+    async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError>;
 }
 
 /// A pending input as stored, with its optimistic-concurrency `revision`. The

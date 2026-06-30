@@ -333,6 +333,42 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::DispatchStore>(store: &
     assert_eq!(claimed.pending[0].message_id, "sched");
 }
 
+/// Shared spec for the crash-retry budget and dead-letter (M5): a run reclaimed
+/// past its budget is dead-lettered and no longer claimed, and `requeue` brings
+/// it back. Every backend must match.
+pub async fn assert_dead_letter<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::RunExecutionRequest;
+    let run = RunId("run-1".to_string());
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+
+    // A fresh claim does not spend the budget; each later recovery (expired
+    // lease) does. With max_attempts = 2, two recoveries exhaust it.
+    assert!(store.claim("w", 100, 0).await.unwrap().is_some());
+    assert_eq!(store.reap(2, 200).await.unwrap(), 0, "still within budget");
+    assert!(store.claim("w", 100, 200).await.unwrap().is_some());
+    assert_eq!(store.reap(2, 400).await.unwrap(), 0);
+    assert!(store.claim("w", 100, 400).await.unwrap().is_some());
+
+    // Budget exhausted: reap dead-letters it; it is no longer claimable.
+    assert_eq!(store.reap(2, 600).await.unwrap(), 1, "dead-lettered");
+    assert!(
+        store.claim("w", 100, 700).await.unwrap().is_none(),
+        "a dead-lettered run is not claimed"
+    );
+    assert_eq!(store.dead_letters().await.unwrap(), vec![run.clone()]);
+
+    // Requeue restores it to a fresh budget.
+    assert!(store.requeue(&run).await.unwrap());
+    assert!(store.dead_letters().await.unwrap().is_empty());
+    assert!(
+        store.claim("w", 100, 800).await.unwrap().is_some(),
+        "a requeued run is claimable again"
+    );
+}
+
 /// Drop every commit- and dispatch-schema table for a prefix (plus the shared
 /// migration ledger) so each test starts from a clean, isolated schema.
 pub async fn reset(pool: &PgPool, prefix: &str) {

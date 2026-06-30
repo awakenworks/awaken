@@ -143,3 +143,9 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
     assert_eq!(claimed.request.run_id().0, "run-1");
     let _ = std::fs::remove_file(&path);
 }
+
+#[tokio::test]
+async fn dead_letter_budget_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_dead_letter(&store).await;
+}

@@ -472,3 +472,8 @@ async fn staged_delivery_relays_and_resumes_a_parked_run() {
 async fn scheduled_delivery_due_store_spec() {
     harness::assert_scheduled_due(&MemoryDispatchStore::new()).await;
 }
+
+#[tokio::test]
+async fn dead_letter_budget_store_spec() {
+    harness::assert_dead_letter(&MemoryDispatchStore::new()).await;
+}

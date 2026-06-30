@@ -22,6 +22,7 @@ const SPECS: [(i64, &str, &str); 3] = [
             status TEXT NOT NULL, \
             lease_owner TEXT, \
             lease_until BIGINT, \
+            attempt_count BIGINT NOT NULL DEFAULT 0, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
     ),
     (

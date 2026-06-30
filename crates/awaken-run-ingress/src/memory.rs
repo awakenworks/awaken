@@ -24,6 +24,7 @@ enum Status {
     Pending,
     Running,
     Parked,
+    DeadLetter,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +32,8 @@ struct Row {
     request: RunExecutionRequest,
     status: Status,
     lease: Option<Lease>,
+    /// Consecutive crash-recoveries without a settle; reset when the run parks.
+    attempt_count: u64,
 }
 
 /// A pending input with its optimistic-concurrency revision.
@@ -110,6 +113,8 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
                         .any(|p| &p.input.run_id == run && is_due(&p.input, now_ms))
             }
             Status::Pending => row.status == Status::Pending,
+            // Dead-lettered runs are never claimed.
+            Status::DeadLetter => false,
         }
     };
     for band in [Status::Running, Status::Parked, Status::Pending] {
@@ -139,6 +144,7 @@ impl RunDispatch for MemoryDispatchStore {
                 request,
                 status: Status::Pending,
                 lease: None,
+                attempt_count: 0,
             },
         );
         state.order.push(run_id);
@@ -162,10 +168,19 @@ impl RunDispatch for MemoryDispatchStore {
             owner: owner.to_string(),
             expires_ms: now_ms + lease_ms,
         };
+        // A recovery pick (an expired-lease running row) spends one crash-retry;
+        // a fresh or wake pick does not.
+        let was_recovery = matches!(
+            state.rows.get(&run_id).map(|r| r.status),
+            Some(Status::Running)
+        );
         let request = {
             let row = state.rows.get_mut(&run_id).expect("picked row exists");
             row.status = Status::Running;
             row.lease = Some(lease.clone());
+            if was_recovery {
+                row.attempt_count += 1;
+            }
             row.request.clone()
         };
 
@@ -203,6 +218,8 @@ impl RunDispatch for MemoryDispatchStore {
                 if let Some(row) = state.rows.get_mut(run_id) {
                     row.status = Status::Parked;
                     row.lease = None;
+                    // Reaching a checkpoint refreshes the crash-retry budget.
+                    row.attempt_count = 0;
                 }
                 // Drop only what the worker consumed; input that arrived during
                 // the attempt stays for the next wake.
@@ -212,6 +229,49 @@ impl RunDispatch for MemoryDispatchStore {
             }
         }
         Ok(())
+    }
+
+    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let mut reaped = 0;
+        for row in state.rows.values_mut() {
+            let expired = row.status == Status::Running
+                && row.lease.as_ref().is_some_and(|l| l.expires_ms <= now_ms);
+            if expired && row.attempt_count >= max_attempts {
+                row.status = Status::DeadLetter;
+                row.lease = None;
+                reaped += 1;
+            }
+        }
+        Ok(reaped)
+    }
+
+    async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .order
+            .iter()
+            .filter(|run| {
+                matches!(
+                    state.rows.get(run).map(|r| r.status),
+                    Some(Status::DeadLetter)
+                )
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
+        let mut state = lock(&self.state)?;
+        match state.rows.get_mut(run_id) {
+            Some(row) if row.status == Status::DeadLetter => {
+                row.status = Status::Pending;
+                row.lease = None;
+                row.attempt_count = 0;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 }
 

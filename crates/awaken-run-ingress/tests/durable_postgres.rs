@@ -251,3 +251,15 @@ async fn scheduled_delivery_due_on_postgres() {
     harness::assert_scheduled_due(&store).await;
     reset(&pool, prefix).await;
 }
+
+#[tokio::test]
+async fn dead_letter_budget_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_dlq";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_dead_letter(&store).await;
+    reset(&pool, prefix).await;
+}

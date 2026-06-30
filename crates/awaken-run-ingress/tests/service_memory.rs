@@ -133,6 +133,7 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
         clock.clone(),
         DispatchServiceConfig {
             poll_interval: Duration::from_secs(10),
+            ..Default::default()
         },
     );
 
@@ -172,6 +173,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
         clock.clone(),
         DispatchServiceConfig {
             poll_interval: Duration::from_secs(10),
+            ..Default::default()
         },
     );
 
@@ -243,6 +245,46 @@ async fn service_relays_a_cross_thread_send() {
         "relayed + resumed"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 1);
+
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn service_dead_letters_a_poison_run() {
+    // The daemon reaps a crashed run that exhausted its budget (M5).
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+
+    // Drive two crash-recoveries by hand so attempt_count reaches the budget.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 100, 0).await.unwrap().is_some()); // fresh
+    assert!(store.claim("w", 100, 200).await.unwrap().is_some()); // recovery -> attempt 1
+
+    let clock = Arc::new(ManualClock::new(400));
+    let service = ingress.spawn_service(
+        clock,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(10),
+            max_attempts: 1,
+        },
+    );
+    service.notify();
+
+    // The daemon's reap dead-letters the poison run.
+    let mut dead = Vec::new();
+    for _ in 0..600 {
+        dead = ingress.dead_letters().await.unwrap();
+        if !dead.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(dead, vec![RunId("run-1".to_string())]);
 
     service.shutdown().await;
 }

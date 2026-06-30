@@ -110,6 +110,23 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
         self.worker.store().relay().await?;
         self.worker.run_until_idle(now_ms).await
     }
+
+    /// Dead-letter crashed runs that have exhausted their crash-retry budget, so
+    /// a poison run is not reclaimed forever (ADR-0015). Returns how many were
+    /// dead-lettered.
+    pub async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, Error> {
+        Ok(self.worker.store().reap(max_attempts, now_ms).await?)
+    }
+
+    /// The run ids currently dead-lettered, for operations.
+    pub async fn dead_letters(&self) -> Result<Vec<RunId>, Error> {
+        Ok(self.worker.store().dead_letters().await?)
+    }
+
+    /// Return a dead-lettered run to the queue at a fresh budget.
+    pub async fn requeue(&self, run_id: &RunId) -> Result<bool, Error> {
+        Ok(self.worker.store().requeue(run_id).await?)
+    }
 }
 
 #[async_trait]

@@ -29,12 +29,16 @@ pub struct DispatchServiceConfig {
     /// Fallback drain cadence when no nudge arrives. Also the maximum delay
     /// before an expired lease is recovered.
     pub poll_interval: Duration,
+    /// Crash-retry budget: a dispatch reclaimed this many times without a settle
+    /// is dead-lettered instead of run again (ADR-0015).
+    pub max_attempts: u64,
 }
 
 impl Default for DispatchServiceConfig {
     fn default() -> Self {
         Self {
             poll_interval: Duration::from_millis(50),
+            max_attempts: 5,
         }
     }
 }
@@ -62,6 +66,7 @@ impl<S: DispatchStore + 'static> DispatchService<S> {
             notify.clone(),
             shutdown.clone(),
             config.poll_interval,
+            config.max_attempts,
         ));
         Self {
             worker,
@@ -108,22 +113,27 @@ impl<S: DispatchStore + 'static> DispatchService<S> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_loop<S: DispatchStore + 'static>(
     worker: Arc<DispatchWorker<S>>,
     clock: Arc<dyn Clock>,
     notify: Arc<Notify>,
     shutdown: CancellationToken,
     poll: Duration,
+    max_attempts: u64,
 ) {
     loop {
         if shutdown.is_cancelled() {
             break;
         }
-        // Relay staged cross-thread deliveries to their target pending input,
-        // then drain everything runnable now. A store error is transient: the
-        // next tick retries, so swallow it rather than kill the daemon.
+        // Dead-letter poison runs that have exhausted their crash-retry budget,
+        // relay staged cross-thread deliveries, then drain everything runnable
+        // now. A store error is transient: the next tick retries, so swallow it
+        // rather than kill the daemon.
+        let now = clock.now_ms();
+        let _ = worker.store().reap(max_attempts, now).await;
         let _ = worker.store().relay().await;
-        let _ = worker.run_until_idle(clock.now_ms()).await;
+        let _ = worker.run_until_idle(now).await;
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = notify.notified() => {}
