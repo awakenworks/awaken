@@ -149,11 +149,13 @@ cross-thread delivery uses a transactional outbox with idempotent
 append-then-delete (no 2PC)
 ([ADR-0013](../adr/0013-pending-lifecycle-and-cross-thread-outbox.md)); a nullable
 `available_at` schedules a delivery the daemon fires when due, so `scheduled_wake`
-is true ([ADR-0014](../adr/0014-scheduled-delivery.md)). Deferred (named, not
-built): a pure timer wake with no input (a reminder/`ScheduledAction`), per-run
-lease renewal, the `send_message` tool/effect wiring, dispatch
-query/maintenance/GC, supersession, dead-letter, and the `RunDispatch*`
-query/lifecycle store roles above.
+is true ([ADR-0014](../adr/0014-scheduled-delivery.md)). A crash-retry budget
+dead-letters a poison run past `max_attempts` recoveries, with `dead_letters`/
+`requeue` ops ([ADR-0015](../adr/0015-crash-retry-budget-and-dead-letter.md)).
+Deferred (named, not built): a pure timer wake with no input (a
+reminder/`ScheduledAction`), per-run lease renewal, the `send_message`
+tool/effect wiring, dispatch query/maintenance/GC, supersession/durable cancel,
+and the `RunDispatch*` query/lifecycle store roles above.
 
 ## Durable Semantics
 

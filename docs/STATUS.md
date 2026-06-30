@@ -118,6 +118,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0012-sqlite-and-postgres-store-backends.md` | Decision record | Not required | n/a |
 | `adr/0013-pending-lifecycle-and-cross-thread-outbox.md` | Decision record | Not required | n/a |
 | `adr/0014-scheduled-delivery.md` | Decision record | Not required | n/a |
+| `adr/0015-crash-retry-budget-and-dead-letter.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
