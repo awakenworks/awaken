@@ -91,6 +91,10 @@ pub struct SubmitOptions {
     /// enqueue carrying it is a no-op — dedup beyond the run id (e.g. for an
     /// at-least-once producer). Cleared once the run finishes.
     pub dedupe_key: Option<String>,
+    /// Supersede the thread's prior pending/parked work: the newest submission
+    /// wins, taking the highest epoch; the stale dispatches are marked superseded
+    /// and never claimed again (ADR-0022).
+    pub supersede: bool,
 }
 
 /// Durable run-dispatch queue: activation opportunity, claim, lease, recovery.
@@ -177,6 +181,10 @@ pub trait RunDispatch: Send + Sync {
     /// Remove every dead-lettered dispatch (and its pending input) — operator GC.
     /// Returns how many were purged.
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError>;
+
+    /// The run ids superseded by a newer submission on their thread (ADR-0022),
+    /// for operations — the mirror of [`dead_letters`](Self::dead_letters).
+    async fn superseded(&self) -> Result<Vec<RunId>, DispatchError>;
 }
 
 /// A pending input as stored, with its optimistic-concurrency `revision`. The

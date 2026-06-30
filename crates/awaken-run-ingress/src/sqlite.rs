@@ -83,6 +83,27 @@ impl SqliteDispatchStore {
         .await
         .map_err(|err| DispatchError::Rejected(err.to_string()))?
     }
+
+    /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in
+    /// enqueue order — backs the operational `dead_letters`/`superseded` queries.
+    async fn run_ids_by_status(&self, status: &'static str) -> Result<Vec<RunId>, DispatchError> {
+        self.with_conn(move |conn, p| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT run_id FROM {p}_dispatch WHERE status = ?1 ORDER BY created_at"
+                ))
+                .map_err(reject)?;
+            let rows = stmt
+                .query_map(params![status], |r| r.get::<_, String>(0))
+                .map_err(reject)?;
+            let mut ids = Vec::new();
+            for row in rows {
+                ids.push(RunId(row.map_err(reject)?));
+            }
+            Ok(ids)
+        })
+        .await
+    }
 }
 
 #[async_trait]
@@ -96,16 +117,44 @@ impl RunDispatch for SqliteDispatchStore {
         let thread_id = request.thread_id().0.clone();
         let request_json = json(&request)?;
         self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+
+            // Supersession: take the highest epoch on the thread and mark its
+            // prior pending/parked work superseded — newest wins (ADR-0022).
+            let mut epoch = 0i64;
+            if options.supersede {
+                epoch = tx
+                    .query_row(
+                        &format!(
+                            "SELECT COALESCE(MAX(epoch), 0) FROM {p}_dispatch WHERE thread_id = ?1"
+                        ),
+                        params![thread_id],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .map_err(reject)?
+                    + 1;
+                tx.execute(
+                    &format!(
+                        "UPDATE {p}_dispatch SET status = 'superseded', lease_owner = NULL, \
+                         lease_until = NULL WHERE thread_id = ?1 AND status IN ('pending', 'parked')"
+                    ),
+                    params![thread_id],
+                )
+                .map_err(reject)?;
+            }
+
             // Insert unless the run id exists or a live dispatch already carries
             // the dedupe key. A NULL dedupe key never matches.
-            conn.execute(
+            tx.execute(
                 &format!(
                     "INSERT INTO {p}_dispatch \
-                     (run_id, thread_id, request, status, priority, dedupe_key) \
-                     SELECT ?1,?2,?3,'pending',?4,?5 \
+                     (run_id, thread_id, request, status, priority, epoch, dedupe_key) \
+                     SELECT ?1,?2,?3,'pending',?4,?5,?6 \
                      WHERE NOT EXISTS ( \
                          SELECT 1 FROM {p}_dispatch \
-                         WHERE dedupe_key = ?5 AND status <> 'dead_letter') \
+                         WHERE dedupe_key = ?6 AND status <> 'dead_letter') \
                      ON CONFLICT(run_id) DO NOTHING"
                 ),
                 params![
@@ -113,10 +162,12 @@ impl RunDispatch for SqliteDispatchStore {
                     thread_id,
                     request_json,
                     options.priority,
+                    epoch,
                     options.dedupe_key
                 ],
             )
             .map_err(reject)?;
+            tx.commit().map_err(reject)?;
             Ok(())
         })
         .await
@@ -349,22 +400,11 @@ impl RunDispatch for SqliteDispatchStore {
     }
 
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
-        self.with_conn(move |conn, p| {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter' ORDER BY created_at"
-                ))
-                .map_err(reject)?;
-            let rows = stmt
-                .query_map([], |r| r.get::<_, String>(0))
-                .map_err(reject)?;
-            let mut ids = Vec::new();
-            for row in rows {
-                ids.push(RunId(row.map_err(reject)?));
-            }
-            Ok(ids)
-        })
-        .await
+        self.run_ids_by_status("dead_letter").await
+    }
+
+    async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
+        self.run_ids_by_status("superseded").await
     }
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {

@@ -25,6 +25,7 @@ enum Status {
     Running,
     Parked,
     DeadLetter,
+    Superseded,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +36,7 @@ struct Row {
     /// Consecutive crash-recoveries without a settle; reset when the run parks.
     attempt_count: u64,
     priority: i64,
+    epoch: i64,
     dedupe_key: Option<String>,
 }
 
@@ -115,8 +117,8 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
                         .any(|p| &p.input.run_id == run && is_due(&p.input, now_ms))
             }
             Status::Pending => row.status == Status::Pending,
-            // Dead-lettered runs are never claimed.
-            Status::DeadLetter => false,
+            // Dead-lettered and superseded runs are never claimed.
+            Status::DeadLetter | Status::Superseded => false,
         }
     };
     // Recovery and wake are first-match in enqueue order.
@@ -166,6 +168,28 @@ impl RunDispatch for MemoryDispatchStore {
         {
             return Ok(());
         }
+        // Supersession: take the highest epoch on the thread and mark its prior
+        // pending/parked work superseded — the newest submission wins (ADR-0022).
+        let thread = request.thread_id().clone();
+        let mut epoch = 0;
+        if options.supersede {
+            epoch = state
+                .rows
+                .values()
+                .filter(|r| *r.request.thread_id() == thread)
+                .map(|r| r.epoch)
+                .max()
+                .unwrap_or(0)
+                + 1;
+            for row in state.rows.values_mut() {
+                if *row.request.thread_id() == thread
+                    && matches!(row.status, Status::Pending | Status::Parked)
+                {
+                    row.status = Status::Superseded;
+                    row.lease = None;
+                }
+            }
+        }
         state.rows.insert(
             run_id.clone(),
             Row {
@@ -174,6 +198,7 @@ impl RunDispatch for MemoryDispatchStore {
                 lease: None,
                 attempt_count: 0,
                 priority: options.priority,
+                epoch,
                 dedupe_key: options.dedupe_key,
             },
         );
@@ -311,6 +336,21 @@ impl RunDispatch for MemoryDispatchStore {
                 matches!(
                     state.rows.get(run).map(|r| r.status),
                     Some(Status::DeadLetter)
+                )
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .order
+            .iter()
+            .filter(|run| {
+                matches!(
+                    state.rows.get(run).map(|r| r.status),
+                    Some(Status::Superseded)
                 )
             })
             .cloned()

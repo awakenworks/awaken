@@ -596,6 +596,53 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::DispatchStore>(sto
     assert!(store.dead_letters().await.unwrap().is_empty());
 }
 
+/// Shared spec for epoch supersession (ADR-0022): a superseding submit abandons
+/// the thread's prior parked work; only the newest run stays claimable. Every
+/// backend matches.
+pub async fn assert_supersession<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SubmitOptions};
+
+    // An older run parks on the thread.
+    store
+        .enqueue(RunExecutionRequest::new(activation("old")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    store
+        .settle(&RunId("old".to_string()), DispatchOutcome::Parked, &[])
+        .await
+        .unwrap();
+
+    // A superseding submit on the same thread supersedes the parked run.
+    store
+        .enqueue_with(
+            RunExecutionRequest::new(activation("new")),
+            SubmitOptions {
+                supersede: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.superseded().await.unwrap(),
+        vec![RunId("old".to_string())]
+    );
+
+    // Only the newest run is claimable; the superseded parked run is never woken.
+    assert_eq!(
+        store
+            .claim("w", 1_000, 0)
+            .await
+            .unwrap()
+            .unwrap()
+            .request
+            .run_id()
+            .0,
+        "new"
+    );
+}
+
 /// Shared spec for the idle-thread inbox (ADR-0021): unbound input is listed for
 /// its thread, and a Done settle that consumed it removes it. Every backend matches.
 pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::DispatchStore>(store: &S) {

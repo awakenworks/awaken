@@ -64,6 +64,26 @@ impl PostgresDispatchStore {
         .map_err(|err| StoreError::Migrate(err.to_string()))?;
         Ok(Self { pool, prefix })
     }
+
+    /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in
+    /// enqueue order — backs the operational `dead_letters`/`superseded` queries.
+    async fn run_ids_by_status(&self, status: &str) -> Result<Vec<RunId>, DispatchError> {
+        let p = &self.prefix;
+        let rows = sqlx::query(&format!(
+            "SELECT run_id FROM {p}_dispatch WHERE status = $1 ORDER BY created_at"
+        ))
+        .bind(status)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        rows.into_iter()
+            .map(|row| {
+                row.try_get::<String, _>("run_id")
+                    .map(RunId)
+                    .map_err(reject)
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -74,23 +94,50 @@ impl RunDispatch for PostgresDispatchStore {
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
         let p = &self.prefix;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+
+        // Supersession: take the highest epoch on the thread and mark its prior
+        // pending/parked work superseded — the newest submission wins (ADR-0022).
+        let mut epoch = 0i64;
+        if options.supersede {
+            let max: Option<i64> = sqlx::query_scalar(&format!(
+                "SELECT MAX(epoch) FROM {p}_dispatch WHERE thread_id = $1"
+            ))
+            .bind(&request.thread_id().0)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(reject)?;
+            epoch = max.unwrap_or(0) + 1;
+            sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET status = 'superseded', lease_owner = NULL, \
+                 lease_until = NULL WHERE thread_id = $1 AND status IN ('pending', 'parked')"
+            ))
+            .bind(&request.thread_id().0)
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?;
+        }
+
         // Insert unless the run id exists, or a live (non-dead-letter) dispatch
         // already carries the same dedupe key. A NULL dedupe key never matches.
         sqlx::query(&format!(
-            "INSERT INTO {p}_dispatch (run_id, thread_id, request, status, priority, dedupe_key) \
-             SELECT $1, $2, $3, 'pending', $4, $5 \
+            "INSERT INTO {p}_dispatch \
+             (run_id, thread_id, request, status, priority, epoch, dedupe_key) \
+             SELECT $1, $2, $3, 'pending', $4, $5, $6 \
              WHERE NOT EXISTS ( \
-                 SELECT 1 FROM {p}_dispatch WHERE dedupe_key = $5 AND status <> 'dead_letter') \
+                 SELECT 1 FROM {p}_dispatch WHERE dedupe_key = $6 AND status <> 'dead_letter') \
              ON CONFLICT (run_id) DO NOTHING"
         ))
         .bind(&request.run_id().0)
         .bind(&request.thread_id().0)
         .bind(Json(&request))
         .bind(options.priority)
+        .bind(epoch)
         .bind(options.dedupe_key.as_deref())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(reject)?;
+        tx.commit().await.map_err(reject)?;
         Ok(())
     }
 
@@ -298,20 +345,11 @@ impl RunDispatch for PostgresDispatchStore {
     }
 
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
-        let p = &self.prefix;
-        let rows = sqlx::query(&format!(
-            "SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter' ORDER BY created_at"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(reject)?;
-        rows.into_iter()
-            .map(|row| {
-                row.try_get::<String, _>("run_id")
-                    .map(RunId)
-                    .map_err(reject)
-            })
-            .collect()
+        self.run_ids_by_status("dead_letter").await
+    }
+
+    async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
+        self.run_ids_by_status("superseded").await
     }
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {

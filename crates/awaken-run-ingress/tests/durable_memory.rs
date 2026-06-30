@@ -782,3 +782,44 @@ async fn send_message_to_an_idle_thread_feeds_the_next_run() {
         "the unbound input is consumed"
     );
 }
+
+#[tokio::test]
+async fn supersession_store_spec() {
+    harness::assert_supersession(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn submit_superseding_abandons_prior_thread_work() {
+    // ADR-0022 at the ingress: a superseding submit supersedes the thread's
+    // parked run; only the newest run stays live.
+    let (runtime, _ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    // An older run parks on the thread.
+    assert_eq!(
+        ingress.submit_background(activation("old")).await.unwrap(),
+        Phase::Waiting
+    );
+    // A superseding submit on the same thread abandons the parked run.
+    ingress
+        .submit_superseding(activation("new"))
+        .await
+        .expect("superseding submit");
+    assert_eq!(
+        ingress.superseded().await.unwrap(),
+        vec![RunId("old".to_string())],
+        "the prior parked run is superseded"
+    );
+    // The superseded run is never woken again: recovery does not process it.
+    assert!(
+        !ingress
+            .recover(0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|(run, _)| run.0 == "old"),
+        "a superseded run is not claimable"
+    );
+}

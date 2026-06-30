@@ -22,7 +22,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use crate::Error;
 use crate::capability::RunIngressCapabilities;
 use crate::clock::Clock;
-use crate::dispatch::{DispatchStore, PendingInput};
+use crate::dispatch::{DispatchStore, PendingInput, SubmitOptions};
 use crate::request::RunExecutionRequest;
 use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
@@ -73,6 +73,35 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
         config: DispatchServiceConfig,
     ) -> DispatchService<S> {
         DispatchService::spawn(self.worker.clone(), clock, config)
+    }
+
+    /// Submit a run that supersedes the thread's prior pending/parked work
+    /// (ADR-0022): the newest submission wins, the stale dispatches are marked
+    /// superseded and never claimed again, then drive the new run. Superseded
+    /// runs are observable via [`superseded`](Self::superseded).
+    pub async fn submit_superseding(&self, activation: RunActivation) -> Result<Phase, Error> {
+        let run_id = activation.run_id.clone();
+        self.worker
+            .store()
+            .enqueue_with(
+                RunExecutionRequest::new(activation),
+                SubmitOptions {
+                    supersede: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let processed = self.worker.run_until_idle(0).await?;
+        phase_of(&processed, &run_id).ok_or_else(|| {
+            Error::from(ExecError::Execution(
+                "superseding run was not processed".into(),
+            ))
+        })
+    }
+
+    /// The run ids superseded by a newer submission on their thread (ADR-0022).
+    pub async fn superseded(&self) -> Result<Vec<RunId>, Error> {
+        Ok(self.worker.store().superseded().await?)
     }
 
     /// Deliver durable input to a parked run and drive its resume. The input is
