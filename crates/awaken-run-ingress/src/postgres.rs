@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
@@ -21,46 +20,8 @@ use sqlx::types::Json;
 use crate::dispatch::{
     Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput, RunDispatch,
 };
+use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
-
-/// Bundle id for the durable dispatch schema. Scoped so it never collides with
-/// the commit schema (`awaken.runtime_commit`) in a shared database.
-pub const BUNDLE_ID: &str = "awaken.run_dispatch";
-
-const SPECS: [(i64, &str, &str); 2] = [
-    (
-        1,
-        "run-dispatch queue: one row per accepted run with claim/lease state",
-        "CREATE TABLE {prefix}_dispatch (\
-            run_id TEXT PRIMARY KEY, \
-            thread_id TEXT NOT NULL, \
-            request {json} NOT NULL, \
-            status TEXT NOT NULL, \
-            lease_owner TEXT, \
-            lease_until BIGINT, \
-            created_at {timestamptz} NOT NULL DEFAULT {now})",
-    ),
-    (
-        2,
-        "thread pending input, delivered to the matching waiting-ticket correlation",
-        "CREATE TABLE {prefix}_pending (\
-            message_id TEXT PRIMARY KEY, \
-            run_id TEXT NOT NULL, \
-            thread_id TEXT NOT NULL, \
-            correlation_id TEXT NOT NULL, \
-            result {json} NOT NULL, \
-            created_at {timestamptz} NOT NULL DEFAULT {now})",
-    ),
-];
-
-/// Build the dispatch-schema migration bundle.
-pub fn dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
-    let migrations = SPECS
-        .iter()
-        .map(|(version, description, sql)| Migration::new(*version, *description, *sql))
-        .collect::<Result<Vec<_>, _>>()?;
-    MigrationBundle::new(BUNDLE_ID, migrations)
-}
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
 /// failures use the neutral [`DispatchError`].
@@ -293,15 +254,4 @@ impl PendingInbox for PostgresDispatchStore {
 
 fn reject(err: sqlx::Error) -> DispatchError {
     DispatchError::Rejected(err.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dispatch_bundle_lints_clean() {
-        let bundle = dispatch_bundle().expect("bundle builds");
-        awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
-    }
 }

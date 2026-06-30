@@ -138,6 +138,8 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-store-postgres",
+ "awaken-store-sqlite",
+ "rusqlite",
  "serde",
  "serde_json",
  "sqlx",

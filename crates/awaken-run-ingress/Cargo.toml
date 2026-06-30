@@ -15,10 +15,12 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
 awaken-store-postgres = { path = "../awaken-store-postgres" }
+awaken-store-sqlite = { path = "../awaken-store-sqlite" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
