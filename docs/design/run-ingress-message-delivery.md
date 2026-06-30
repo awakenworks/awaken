@@ -174,12 +174,15 @@ parked run is staged as unbound input the thread's next run consumes
 thread's prior pending/parked work by epoch, newest-wins
 ([ADR-0022](../adr/0022-epoch-supersession.md)). The daemon GCs dead-letters
 older than a configured ttl on its cadence
-([ADR-0023](../adr/0023-dead-letter-ttl-gc.md)). Deferred (named, not built):
+([ADR-0023](../adr/0023-dead-letter-ttl-gc.md)), a renewal heartbeat keeps a long
+run's lease fresh across a fleet
+([ADR-0024](../adr/0024-daemon-lease-renewal.md)), and `list_dispatches` is the
+operational query surface
+([ADR-0025](../adr/0025-dispatch-query-surface.md)). Deferred (named, not built):
 auto-activating a run from an idle-thread message (needs the thread-snapshot
 seam), committing a terminal Cancelled for superseded runs, force-superseding an
-in-flight running run, a NATS-backed store (JetStream durability), daemon-driven
-lease-renewal scheduling, a plugin-owned action-kind axis, and the `RunDispatch*`
-query/lifecycle store roles above.
+in-flight running run, a NATS-backed store (JetStream durability), and a
+plugin-owned action-kind axis.
 
 ## Durable Semantics
 
