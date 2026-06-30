@@ -1,6 +1,13 @@
 //! Reusable stub adapters for the runnable examples. The examples themselves are
 //! the teaching artifacts (`examples/*.rs`); this crate only holds the small,
 //! deterministic ports they wire so each example stays focused on *assembly*.
+//!
+//! The `coding-agent` feature adds a fuller example: a coding agent assembled from
+//! the built-in tools, the permission gate, and `RunnableConfig` (see
+//! [`coding_agent`]).
+
+#[cfg(feature = "coding-agent")]
+pub mod coding_agent;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
