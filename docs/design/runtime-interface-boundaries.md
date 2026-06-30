@@ -9,6 +9,13 @@ The goal is not to add a new abstraction layer. The goal is to name the existing
 axes, the few places where they intentionally meet, and the checks that keep the
 runtime small.
 
+> **Implemented run input (ADR-0032).** The `ExecutableAgentSnapshot` and its
+> `RuntimeCatalogInstall` are bundled into one consumed value, `RunnableConfig`
+> (snapshot + install under one fingerprint), built directly via
+> `RunnableConfig::builder` or by `compile()`. `Runtime::run` installs and executes
+> in one call. See
+> [config-to-run-execution-flow.md](config-to-run-execution-flow.md#implemented-run-input-runnableconfig-adr-0032).
+
 ## Contract Boundary Overlay
 
 This document names runtime-facing roles. Contract packaging still follows the

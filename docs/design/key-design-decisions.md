@@ -535,6 +535,13 @@ data by id, without knowing where the snapshot was stored or which config/admin
 workflow created it. `AgentId` remains a domain identifier, but
 `ExecutableAgentSnapshot` is the complete run/thread configuration identity.
 
+> **Amendment (2026-06-30, ADR-0032).** The snapshot and its catalog install are
+> bundled as one run input, `RunnableConfig` (built directly or by `compile()`);
+> `Runtime::run` installs and executes it in one call. The snapshot stays the
+> configuration identity — `RunnableConfig` carries it with the catalog it was
+> built against. See
+> [config-to-run-execution-flow.md](config-to-run-execution-flow.md#implemented-run-input-runnableconfig-adr-0032).
+
 ---
 
 ## D20 - Publication Coordination Is Outside Runtime

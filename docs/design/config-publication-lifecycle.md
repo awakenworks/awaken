@@ -6,6 +6,12 @@ compilation. Runtime owns only validation and installation of a complete
 published catalog through `RuntimeCatalogInstaller`. Neither side owns the
 other's authority.
 
+> **Implemented run input (ADR-0032).** The `compiled` artifact the runtime
+> consumes is realized as a single `RunnableConfig` (snapshot + install under one
+> fingerprint), built directly or by `compile()`. See
+> [config-to-run-execution-flow.md](config-to-run-execution-flow.md#implemented-run-input-runnableconfig-adr-0032).
+> The durable `StoredPublication` and the lifecycle below are unchanged.
+
 ## Lifecycle States
 
 | State | Owner | Meaning | Next states |

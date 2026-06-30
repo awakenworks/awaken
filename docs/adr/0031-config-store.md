@@ -62,6 +62,15 @@ produce-a-snapshot gap.
   ledger (ADR-0029), with no shared schema.
 - The richer lifecycle, graph validation, and audit remain deferred, named here.
 
+## Amendment (2026-06-30, ADR-0032)
+
+The seam (D1) and the `compile` output (D2) are now bundled into one value object,
+`RunnableConfig`, which pairs the snapshot and the install under one fingerprint —
+the runtime's single run input, buildable directly or by `compile`. The in-memory
+`Publication` struct is removed (subsumed by `RunnableConfig`); `compile` returns a
+`RunnableConfig`. The durable `StoredPublication` and the publication lifecycle are
+unchanged. See [ADR-0032](0032-runnable-config.md).
+
 ## References
 
 - [INVARIANTS.md](../INVARIANTS.md) — G4, G22, G28 (resolution fail-closed).
