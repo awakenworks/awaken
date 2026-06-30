@@ -76,6 +76,19 @@ impl ToolGateHook for ScheduleGate {
     async fn gate(&self, _c: &PermissionContext) -> GateOutcome {
         GateOutcome::Schedule {
             correlation_id: "sched-1".to_string(),
+            action_kind: None,
+        }
+    }
+}
+
+/// Schedules a *kind*-based action whose kind no selected plugin contributes.
+struct UnknownKindGate;
+#[async_trait::async_trait]
+impl ToolGateHook for UnknownKindGate {
+    async fn gate(&self, _c: &PermissionContext) -> GateOutcome {
+        GateOutcome::Schedule {
+            correlation_id: "sched-1".to_string(),
+            action_kind: Some("plugin-only-kind".to_string()),
         }
     }
 }
@@ -245,6 +258,29 @@ async fn performing_a_scheduled_action_twice_is_idempotent() {
         .expect_err("duplicate perform rejected");
     assert!(err.to_string().contains("not waiting"));
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the action ran exactly once");
+}
+
+#[tokio::test]
+async fn scheduling_an_unselected_plugin_action_kind_fails_closed() {
+    // RS-SCH-005: a scheduled-action kind absent from the resolved environment
+    // (its owning plugin is not selected) fails the run closed at the bound.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone(), Arc::new(UnknownKindGate));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    let phase = runtime
+        .execute(activation(), context(&commit))
+        .await
+        .expect("runs to a terminal");
+    assert_eq!(
+        phase,
+        Phase::Ended(EndCause::Error(
+            awaken_agent_contract::agent::run::Failure::CapabilityBound
+        ))
+    );
+    // No ticket is committed and the action never runs.
+    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

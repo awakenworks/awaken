@@ -33,6 +33,9 @@ pub struct CapabilityBound {
     pub tool_ids: Vec<String>,
     pub state_keys: Vec<String>,
     pub phase_hooks: Vec<PhaseHookPoint>,
+    /// Scheduled-action kinds this plugin may contribute (ADR-0027) — the
+    /// id-bearing axis G30 names alongside tools and state keys.
+    pub action_kinds: Vec<String>,
 }
 
 /// Declared plugin identity and bound. One `validate`-able home for config.
@@ -70,6 +73,8 @@ pub struct Contributions {
     pub tools: Vec<String>,
     pub state_keys: Vec<String>,
     pub phase_hooks: Vec<Arc<dyn PhaseHook>>,
+    /// Scheduled-action kinds this plugin contributes (ADR-0027).
+    pub action_kinds: Vec<String>,
 }
 
 impl Contributions {
@@ -79,6 +84,7 @@ impl Contributions {
             tools: Vec::new(),
             state_keys: Vec::new(),
             phase_hooks: Vec::new(),
+            action_kinds: Vec::new(),
         }
     }
 }
@@ -101,6 +107,8 @@ pub enum BoundViolation {
         plugin: String,
         point: PhaseHookPoint,
     },
+    #[error("plugin {plugin} contributes action kind {id:?} outside its declared bound")]
+    ActionKind { plugin: String, id: String },
 }
 
 /// Enforce that a plugin's actual contributions are a subset of its bound (G30).
@@ -132,6 +140,14 @@ pub fn enforce_bound(
             });
         }
     }
+    for kind in &contributions.action_kinds {
+        if !manifest.bound.action_kinds.contains(kind) {
+            return Err(BoundViolation::ActionKind {
+                plugin: manifest.id.clone(),
+                id: kind.clone(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -141,6 +157,12 @@ pub enum MergeError {
     Bound(#[from] BoundViolation),
     #[error("duplicate tool id {id:?} contributed by {first} and {second}")]
     DuplicateTool {
+        id: String,
+        first: String,
+        second: String,
+    },
+    #[error("duplicate action kind {id:?} contributed by {first} and {second}")]
+    DuplicateActionKind {
         id: String,
         first: String,
         second: String,
@@ -159,6 +181,9 @@ pub struct ResolvedExecutionEnv {
     pub tools: Vec<String>,
     pub state_keys: Vec<String>,
     pub phase_hooks: Vec<Arc<dyn PhaseHook>>,
+    /// Scheduled-action kinds the selected plugins contribute. A kind absent here
+    /// (its plugin is not selected for the run) cannot be staged (ADR-0027).
+    pub action_kinds: Vec<String>,
 }
 
 impl ResolvedExecutionEnv {
@@ -189,6 +214,9 @@ impl ResolvedExecutionEnv {
             std::collections::BTreeMap::new();
         let mut state_keys: Vec<String> = Vec::new();
         let mut phase_hooks: Vec<Arc<dyn PhaseHook>> = Vec::new();
+        let mut action_kinds: Vec<String> = Vec::new();
+        let mut action_owner: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
 
         for id in &order {
             let (_, contributions) = plugins
@@ -212,6 +240,17 @@ impl ResolvedExecutionEnv {
                 }
             }
             phase_hooks.extend(contributions.phase_hooks.iter().cloned());
+            for kind in &contributions.action_kinds {
+                if let Some(first) = action_owner.get(kind) {
+                    return Err(MergeError::DuplicateActionKind {
+                        id: kind.clone(),
+                        first: first.clone(),
+                        second: id.clone(),
+                    });
+                }
+                action_owner.insert(kind.clone(), id.clone());
+                action_kinds.push(kind.clone());
+            }
         }
 
         Ok(Self {
@@ -219,7 +258,14 @@ impl ResolvedExecutionEnv {
             tools,
             state_keys,
             phase_hooks,
+            action_kinds,
         })
+    }
+
+    /// Whether a scheduled-action `kind` is contributed by a selected plugin — the
+    /// fail-closed check before staging a kind-based scheduled action (ADR-0027).
+    pub fn permits_action_kind(&self, kind: &str) -> bool {
+        self.action_kinds.iter().any(|k| k == kind)
     }
 
     /// Hooks registered for one phase point, in dependency order.
@@ -292,11 +338,13 @@ mod tests {
                 tool_ids: vec!["t".into()],
                 state_keys: vec!["k".into()],
                 phase_hooks: vec![PhaseHookPoint::StepStart],
+                action_kinds: vec!["a".into()],
             },
         );
         let mut c = Contributions::new("p");
         c.tools.push("t".into());
         c.state_keys.push("k".into());
+        c.action_kinds.push("a".into());
         c.phase_hooks
             .push(Arc::new(FakeHook(PhaseHookPoint::StepStart)));
         assert!(enforce_bound(&m, &c).is_ok());
@@ -326,6 +374,42 @@ mod tests {
         assert!(matches!(
             enforce_bound(&m, &hook),
             Err(BoundViolation::Hook { .. })
+        ));
+
+        let mut kind = Contributions::new("p");
+        kind.action_kinds.push("a".into());
+        assert!(matches!(
+            enforce_bound(&m, &kind),
+            Err(BoundViolation::ActionKind { .. })
+        ));
+    }
+
+    fn with_action_kind(id: &str, kind: &str) -> (PluginManifest, Contributions) {
+        let m = manifest(
+            id,
+            CapabilityBound {
+                action_kinds: vec![kind.into()],
+                ..Default::default()
+            },
+        );
+        let mut c = Contributions::new(id);
+        c.action_kinds.push(kind.into());
+        (m, c)
+    }
+
+    #[test]
+    fn merge_collects_action_kinds_and_rejects_duplicates() {
+        // A selected plugin's action kind is in the resolved env; an unselected
+        // one's is absent (RS-SCH-005).
+        let env =
+            ResolvedExecutionEnv::merge(vec![with_action_kind("p", "remind")]).expect("merges");
+        assert!(env.permits_action_kind("remind"));
+        assert!(!env.permits_action_kind("not-contributed"));
+
+        let dup = vec![with_action_kind("a", "k"), with_action_kind("b", "k")];
+        assert!(matches!(
+            ResolvedExecutionEnv::merge(dup),
+            Err(MergeError::DuplicateActionKind { .. })
         ));
     }
 

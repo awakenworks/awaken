@@ -401,7 +401,19 @@ async fn drive(
                     .await;
                     break;
                 }
-                GateOutcome::Schedule { correlation_id } => {
+                GateOutcome::Schedule {
+                    correlation_id,
+                    action_kind,
+                } => {
+                    // A plugin-owned scheduled-action kind must be in the resolved
+                    // environment; an absent kind (its plugin not selected) fails
+                    // the run closed (RS-SCH-005, ADR-0027).
+                    if let Some(kind) = &action_kind
+                        && !env.permits_action_kind(kind)
+                    {
+                        end = Some(End::Ended(EndCause::Error(Failure::CapabilityBound)));
+                        break;
+                    }
                     // Commit a ScheduledAction (ADR-0020): the call is deferred and
                     // performed later from the committed request, not decided.
                     let ticket = waiting_ticket(
