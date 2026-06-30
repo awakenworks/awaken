@@ -136,6 +136,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-config-store"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-scoped-migration",
+ "awaken-store-sqlite",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-ext-builtin-tools"
 version = "0.1.0"
 dependencies = [
