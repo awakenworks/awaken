@@ -179,10 +179,18 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
+ "awaken-store-schema",
  "serde_json",
  "sqlx",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "awaken-store-schema"
+version = "0.1.0"
+dependencies = [
+ "awaken-scoped-migration",
 ]
 
 [[package]]
