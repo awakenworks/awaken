@@ -133,10 +133,13 @@ the realized behaviour, this document owns the boundary it must keep. Realized
 roles: `RunIngress` / `DirectRunIngress` / `DurableRunIngress`,
 `RunIngressCapabilities`, `RunExecutionRequest` / `RunExecutionContext`, the
 `RunDispatch` queue (enqueue, single-owner claim/lease, lease-expiry recovery)
-and the `PendingInbox` (idempotent append, freeze-at-boundary) backed by an
-in-memory reference store and a Postgres adapter. The worker decides
-execute-versus-resume from committed truth, so the queue never becomes a second
-authority. Deferred (named, not built): scheduled wake, lease renewal,
+and the `PendingInbox` (idempotent append) backed by an in-memory reference store
+and a Postgres adapter. The worker decides execute-versus-resume from committed
+truth, so the queue never becomes a second authority. Pending input is keyed to
+the waiting-ticket correlation it answers, so a resume that committed before the
+worker settled is never re-applied after a crash, without an atomic append+freeze
+([ADR-0010](../adr/0010-idempotent-pending-consumption.md)). Deferred (named, not
+built): scheduled wake, lease renewal,
 cross-thread `send_message` outbox, dispatch query/maintenance/GC, supersession,
 dead-letter, and the `RunDispatch*` query/lifecycle store roles above.
 
