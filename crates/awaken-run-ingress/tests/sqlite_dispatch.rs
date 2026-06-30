@@ -118,3 +118,28 @@ async fn scheduled_delivery_due_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
     harness::assert_scheduled_due(&store).await;
 }
+
+#[tokio::test]
+async fn sqlite_dispatch_opens_a_file_and_persists() {
+    let path =
+        std::env::temp_dir().join(format!("awaken_sqlite_dispatch_{}.db", std::process::id()));
+    let path = path.to_str().unwrap().to_string();
+    let _ = std::fs::remove_file(&path);
+
+    {
+        let store = SqliteDispatchStore::open(&path, "disp").expect("open a");
+        store
+            .enqueue(RunExecutionRequest::new(activation("run-1")))
+            .await
+            .unwrap();
+    }
+    // A fresh handle on the same file still has the enqueued run.
+    let restarted = SqliteDispatchStore::open(&path, "disp").expect("open b");
+    let claimed = restarted
+        .claim("w", 1_000, 0)
+        .await
+        .unwrap()
+        .expect("survived");
+    assert_eq!(claimed.request.run_id().0, "run-1");
+    let _ = std::fs::remove_file(&path);
+}

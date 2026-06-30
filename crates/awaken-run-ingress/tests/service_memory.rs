@@ -213,3 +213,36 @@ async fn service_fires_a_scheduled_delivery_when_due() {
 
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn service_relays_a_cross_thread_send() {
+    // The daemon relays staged cross-thread deliveries each tick (M3b).
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+    let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
+
+    service.submit(activation("run-1")).await.expect("submit");
+    assert!(wait_for(|| commit.commit_count() >= 1).await, "run parked");
+
+    // Stage a cross-thread delivery; the daemon relays then resumes the run.
+    service
+        .send(pending(
+            "x1",
+            "run-1",
+            ResumeResult::Decision {
+                allow: true,
+                note: None,
+            },
+        ))
+        .await
+        .expect("send");
+    assert!(
+        wait_for(|| commit.commit_count() >= 2).await,
+        "relayed + resumed"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+
+    service.shutdown().await;
+}
