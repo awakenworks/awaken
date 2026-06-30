@@ -170,11 +170,14 @@ delayed *delivery*) is a `WaitingReason`, staged by a gate `Schedule` and
 performed in-process by the worker
 ([ADR-0020](../adr/0020-scheduled-action.md)). A message to a thread with no
 parked run is staged as unbound input the thread's next run consumes
-([ADR-0021](../adr/0021-idle-thread-delivery.md)). Deferred (named, not built):
+([ADR-0021](../adr/0021-idle-thread-delivery.md)). A submission can supersede a
+thread's prior pending/parked work by epoch, newest-wins
+([ADR-0022](../adr/0022-epoch-supersession.md)). Deferred (named, not built):
 auto-activating a run from an idle-thread message (needs the thread-snapshot
-seam), time-windowed auto-GC, epoch-based supersession, a NATS-backed store
-(JetStream durability), daemon-driven lease-renewal scheduling, a plugin-owned
-action-kind axis, and the `RunDispatch*` query/lifecycle store roles above.
+seam), committing a terminal Cancelled for superseded runs, force-superseding an
+in-flight running run, time-windowed auto-GC, a NATS-backed store (JetStream
+durability), daemon-driven lease-renewal scheduling, a plugin-owned action-kind
+axis, and the `RunDispatch*` query/lifecycle store roles above.
 
 ## Durable Semantics
 
