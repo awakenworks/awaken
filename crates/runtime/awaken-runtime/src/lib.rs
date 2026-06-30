@@ -8,8 +8,10 @@ mod ingress;
 pub mod memory;
 mod permission;
 mod resolve;
+mod run;
 mod runtime;
 
 pub use ingress::{DirectRunIngress, RunIngress};
 pub use permission::PermissionGate;
+pub use run::RunInput;
 pub use runtime::Runtime;

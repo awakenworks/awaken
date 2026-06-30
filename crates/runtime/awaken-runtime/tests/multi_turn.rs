@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
@@ -108,9 +108,6 @@ fn turn(message_id: &str, text: &str) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text(text)],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }
@@ -122,7 +119,7 @@ async fn a_fresh_turn_continues_the_thread_with_a_reader() {
     let reader: Arc<dyn ThreadReader> = commit.clone();
 
     // Turn 1: the model sees only this turn's input.
-    let ctx = RuntimeRunContext::new(PersistenceMode::ReadWrite)
+    let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(reader.clone());
     let phase = runtime
@@ -133,7 +130,7 @@ async fn a_fresh_turn_continues_the_thread_with_a_reader() {
 
     // Turn 2: a fresh run on the same thread; the runtime loads turn 1 from the
     // committed history, so the model sees both user turns.
-    let ctx = RuntimeRunContext::new(PersistenceMode::ReadWrite)
+    let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(reader.clone());
     runtime
@@ -160,9 +157,9 @@ async fn without_a_reader_a_fresh_turn_starts_clean() {
     let runtime = runtime();
     let commit: Arc<MemoryCommitCoordinator> = Arc::new(MemoryCommitCoordinator::new());
 
-    let ctx = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let ctx = RuntimeRunContext::new().with_commit(commit.clone());
     runtime.execute(turn("t1", "First."), ctx).await.unwrap();
-    let ctx = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let ctx = RuntimeRunContext::new().with_commit(commit.clone());
     runtime.execute(turn("t2", "Second."), ctx).await.unwrap();
 
     let reply = commit

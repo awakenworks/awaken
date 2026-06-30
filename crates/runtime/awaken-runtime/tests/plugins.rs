@@ -12,7 +12,7 @@ use awaken_agent_contract::agent::state::{Command as StateCommand, Key, MergePol
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
-use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOptions};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
@@ -151,9 +151,6 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        options: RunOptions {
-            persistence: PersistenceMode::ReadWrite,
-        },
         trace: Default::default(),
     }
 }
@@ -169,7 +166,7 @@ async fn active_plugin_hook_stages_state_through_the_commit_path() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation(vec!["mark".to_string()]), context)
         .await
@@ -195,7 +192,7 @@ async fn inactive_plugin_contributes_nothing() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     // plugin_ids is empty: the plugin is inert and never resolved.
     runtime
         .execute(activation(Vec::new()), context)
@@ -214,7 +211,7 @@ async fn out_of_bound_plugin_fails_the_run_closed() {
     install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation(vec!["rogue".to_string()]), context)
         .await

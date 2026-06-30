@@ -17,7 +17,8 @@ mod store;
 mod postgres;
 mod sqlite;
 
-pub use compile::{CompileError, Publication, compile};
+pub use awaken_runtime_contract::runnable::{RunnableConfig, RunnableConfigBuilder};
+pub use compile::{CompileError, compile};
 pub use config::AgentConfig;
 pub use postgres::{PostgresConfigStore, StoreError as PostgresStoreError};
 pub use schema::config_bundle;
