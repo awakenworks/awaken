@@ -12,6 +12,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
+use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_runtime_contract::activation::{PersistenceMode, RunActivation};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -48,6 +49,7 @@ impl RunExecutionRequest {
 #[derive(Clone)]
 pub struct RunExecutionContext {
     commit: Arc<dyn CommitCoordinator>,
+    reader: Option<Arc<dyn ThreadReader>>,
     stream_sink: Option<Arc<dyn StreamSink>>,
 }
 
@@ -56,8 +58,17 @@ impl RunExecutionContext {
     pub fn new(commit: Arc<dyn CommitCoordinator>) -> Self {
         Self {
             commit,
+            reader: None,
             stream_sink: None,
         }
+    }
+
+    /// Provide the committed-history read port so a fresh run continues the
+    /// thread's conversation. Usually the same store as the commit.
+    #[must_use]
+    pub fn with_reader(mut self, reader: Arc<dyn ThreadReader>) -> Self {
+        self.reader = Some(reader);
+        self
     }
 
     /// Attach a best-effort live stream sink (live progress is never truth).
@@ -78,6 +89,9 @@ impl RunExecutionContext {
         let mut context = RuntimeRunContext::new(PersistenceMode::ReadWrite)
             .with_commit(self.commit.clone())
             .with_cancellation(cancel);
+        if let Some(reader) = &self.reader {
+            context = context.with_reader(reader.clone());
+        }
         if let Some(sink) = &self.stream_sink {
             context = context.with_stream_sink(sink.clone());
         }
