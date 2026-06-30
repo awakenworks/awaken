@@ -20,7 +20,7 @@ use awaken_runtime_contract::activation::{PersistenceMode, RunActivation, RunOpt
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resolved::{
@@ -155,6 +155,38 @@ fn install(runtime: &Runtime) {
 /// A runtime with a plain text model — fresh runs end naturally.
 pub fn text_runtime() -> Arc<Runtime> {
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(TextLlm("done"))));
+    install(&runtime);
+    runtime
+}
+
+/// Echoes the run's user-message text back as the assistant reply, so a test can
+/// observe exactly which input reached the model.
+struct EchoInputLlm;
+#[async_trait::async_trait]
+impl LlmExecutor for EchoInputLlm {
+    async fn infer(&self, r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let echoed = r
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, ChatRole::User))
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        Ok(ChatResponse {
+            output: AssistantOutput::text(echoed),
+            usage: None,
+        })
+    }
+}
+
+/// A runtime whose model echoes the user input it received — a probe for which
+/// messages actually reached the run.
+pub fn input_echo_runtime() -> Arc<Runtime> {
+    let runtime = Arc::new(Runtime::new().with_llm(Arc::new(EchoInputLlm)));
     install(&runtime);
     runtime
 }
@@ -562,6 +594,173 @@ pub async fn assert_priority_dedupe_gc<S: awaken_dispatch::DispatchStore>(store:
     );
     assert_eq!(store.purge_dead_letters().await.unwrap(), 1);
     assert!(store.dead_letters().await.unwrap().is_empty());
+}
+
+/// Shared spec for the dispatch query surface (ADR-0025): list_dispatches reports
+/// each row's status and attempts. Every backend matches.
+pub async fn assert_list_dispatches<S: awaken_dispatch::DispatchStore>(store: &S) {
+    use awaken_dispatch::{DispatchStatus, RunExecutionRequest};
+
+    // A fresh run is Pending; once claimed it is Running.
+    store
+        .enqueue(RunExecutionRequest::new(activation("r1")))
+        .await
+        .unwrap();
+    let listed = store.list_dispatches().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].run_id, RunId("r1".to_string()));
+    assert_eq!(listed[0].status, DispatchStatus::Pending);
+    assert_eq!(listed[0].attempt_count, 0);
+
+    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    let listed = store.list_dispatches().await.unwrap();
+    assert_eq!(listed[0].status, DispatchStatus::Running);
+}
+
+/// Shared spec for the daemon's bulk lease renewal (ADR-0024): renewing an owner's
+/// in-flight leases keeps them from being reclaimed. Every backend matches.
+pub async fn assert_renew_owned_leases<S: awaken_dispatch::DispatchStore>(store: &S) {
+    use awaken_dispatch::RunExecutionRequest;
+
+    // owner-a claims two runs at t=0 with a 100ms lease (expire at 100).
+    for run in ["r1", "r2"] {
+        store
+            .enqueue(RunExecutionRequest::new(activation(run)))
+            .await
+            .unwrap();
+        assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
+    }
+
+    // Renewing owner-a's leases at t=60 extends both to 160.
+    assert_eq!(
+        store.renew_owned_leases("owner-a", 100, 60).await.unwrap(),
+        2
+    );
+    // At t=120 the original lease would have expired, but the renewed one has not.
+    assert!(
+        store.claim("owner-b", 100, 120).await.unwrap().is_none(),
+        "renewed leases are not yet reclaimable"
+    );
+    // Past the renewed expiry, recovery reclaims.
+    assert!(store.claim("owner-b", 100, 200).await.unwrap().is_some());
+}
+
+/// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only
+/// dead-letters older than the cutoff; younger ones stay. Every backend matches.
+pub async fn assert_dead_letter_ttl_gc<S: awaken_dispatch::DispatchStore>(store: &S) {
+    use awaken_dispatch::RunExecutionRequest;
+
+    // A run is dead-lettered at t=1000 (claimed with a 1ms lease at t=0, then
+    // reaped at budget 0 once the lease has expired).
+    store
+        .enqueue(RunExecutionRequest::new(activation("poison")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert_eq!(store.reap(0, 1_000).await.unwrap(), 1);
+    assert_eq!(
+        store.dead_letters().await.unwrap(),
+        vec![RunId("poison".to_string())]
+    );
+
+    // A GC cutoff before the dead-letter time spares it; a cutoff at/after it purges.
+    assert_eq!(store.purge_dead_letters_before(999).await.unwrap(), 0);
+    assert_eq!(
+        store.dead_letters().await.unwrap().len(),
+        1,
+        "a younger dead-letter is spared"
+    );
+    assert_eq!(store.purge_dead_letters_before(1_000).await.unwrap(), 1);
+    assert!(store.dead_letters().await.unwrap().is_empty());
+}
+
+/// Shared spec for epoch supersession (ADR-0022): a superseding submit abandons
+/// the thread's prior parked work; only the newest run stays claimable. Every
+/// backend matches.
+pub async fn assert_supersession<S: awaken_dispatch::DispatchStore>(store: &S) {
+    use awaken_dispatch::{DispatchOutcome, RunExecutionRequest, SubmitOptions};
+
+    // An older run parks on the thread.
+    store
+        .enqueue(RunExecutionRequest::new(activation("old")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    store
+        .settle(&RunId("old".to_string()), DispatchOutcome::Parked, &[])
+        .await
+        .unwrap();
+
+    // A superseding submit on the same thread supersedes the parked run.
+    store
+        .enqueue_with(
+            RunExecutionRequest::new(activation("new")),
+            SubmitOptions {
+                supersede: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.superseded().await.unwrap(),
+        vec![RunId("old".to_string())]
+    );
+
+    // Only the newest run is claimable; the superseded parked run is never woken.
+    assert_eq!(
+        store
+            .claim("w", 1_000, 0)
+            .await
+            .unwrap()
+            .unwrap()
+            .request
+            .run_id()
+            .0,
+        "new"
+    );
+}
+
+/// Shared spec for the idle-thread inbox (ADR-0021): unbound input is listed for
+/// its thread, and a Done settle that consumed it removes it. Every backend matches.
+pub async fn assert_idle_thread_inbox<S: awaken_dispatch::DispatchStore>(store: &S) {
+    use awaken_dispatch::{DispatchOutcome, RunExecutionRequest};
+    use awaken_runtime_contract::resume::ResumeResult;
+
+    // Unbound idle-thread input (empty run/correlation) is listed for the thread.
+    let unbound = pending("u1", "", "", ResumeResult::Input("hi".to_string()));
+    assert!(store.append(unbound).await.unwrap());
+    let listed = store.list(&ThreadId(THREAD.to_string())).await.unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|r| r.input.message_id == "u1" && r.input.run_id.0.is_empty()),
+        "the unbound input is listed for its thread"
+    );
+
+    // A fresh run drains it: a Done settle that consumed it removes it.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    store.claim("w", 1_000, 0).await.unwrap();
+    store
+        .settle(
+            &RunId("run-1".to_string()),
+            DispatchOutcome::Done,
+            &["u1".to_string()],
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .list(&ThreadId(THREAD.to_string()))
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.input.message_id != "u1"),
+        "the consumed unbound input is removed on Done"
+    );
 }
 
 /// Shared spec for lease renewal (the multi-node liveness knob). A run's owner

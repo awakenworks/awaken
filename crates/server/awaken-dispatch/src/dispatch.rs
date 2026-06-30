@@ -81,6 +81,47 @@ pub enum DispatchOutcome {
     Parked,
 }
 
+/// The lifecycle status of a dispatch, for the operational query surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchStatus {
+    /// Fresh, not yet claimed.
+    Pending,
+    /// Claimed and executing under a lease.
+    Running,
+    /// Parked on a committed waiting ticket.
+    Parked,
+    /// Dead-lettered past its crash-retry budget (ADR-0015).
+    DeadLetter,
+    /// Superseded by a newer submission on its thread (ADR-0022).
+    Superseded,
+}
+
+impl DispatchStatus {
+    /// Map the stored status text (the SQL backends' `status` column) to the
+    /// public status. An unknown value maps to `Pending` (never observed).
+    pub fn from_db(s: &str) -> Self {
+        match s {
+            "running" => Self::Running,
+            "parked" => Self::Parked,
+            "dead_letter" => Self::DeadLetter,
+            "superseded" => Self::Superseded,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// An operational view of one dispatch row, for monitoring and maintenance — the
+/// `RunDispatch` query role (ADR-0025). Carries no live handle, just committed
+/// queue state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchSummary {
+    pub run_id: RunId,
+    pub thread_id: ThreadId,
+    pub status: DispatchStatus,
+    /// Consecutive crash-recoveries without a settle.
+    pub attempt_count: u64,
+}
+
 /// Dispatch-level options for an accepted run. Defaults to ordinary priority and
 /// no caller dedupe key — `enqueue` uses these so existing callers are unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -91,6 +132,10 @@ pub struct SubmitOptions {
     /// enqueue carrying it is a no-op — dedup beyond the run id (e.g. for an
     /// at-least-once producer). Cleared once the run finishes.
     pub dedupe_key: Option<String>,
+    /// Supersede the thread's prior pending/parked work: the newest submission
+    /// wins, taking the highest epoch; the stale dispatches are marked superseded
+    /// and never claimed again (ADR-0022).
+    pub supersede: bool,
 }
 
 /// Durable run-dispatch queue: activation opportunity, claim, lease, recovery.
@@ -135,6 +180,17 @@ pub trait RunDispatch: Send + Sync {
         now_ms: u64,
     ) -> Result<bool, DispatchError>;
 
+    /// Renew the lease on every running dispatch owned by `owner` to
+    /// `now_ms + lease_ms` — the daemon's bulk heartbeat that keeps its in-flight
+    /// runs from being reclaimed while they are still executing (ADR-0024).
+    /// Returns how many leases were renewed.
+    async fn renew_owned_leases(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError>;
+
     /// Settle a claimed dispatch. `Done` removes it and all its pending input;
     /// `Parked` returns it to the waiting state and drops only the `consumed`
     /// pending (by `message_id`), leaving input that arrived mid-attempt for the
@@ -177,6 +233,19 @@ pub trait RunDispatch: Send + Sync {
     /// Remove every dead-lettered dispatch (and its pending input) — operator GC.
     /// Returns how many were purged.
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError>;
+
+    /// Remove dead-lettered dispatches whose dead-letter time is at or before
+    /// `cutoff_ms` (and their pending input) — time-windowed GC the daemon runs on
+    /// a cadence (ADR-0023). Returns how many were purged.
+    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError>;
+
+    /// The run ids superseded by a newer submission on their thread (ADR-0022),
+    /// for operations — the mirror of [`dead_letters`](Self::dead_letters).
+    async fn superseded(&self) -> Result<Vec<RunId>, DispatchError>;
+
+    /// Every dispatch row's operational summary, in enqueue order — the query
+    /// surface for monitoring and maintenance (ADR-0025).
+    async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError>;
 }
 
 /// A pending input as stored, with its optimistic-concurrency `revision`. The

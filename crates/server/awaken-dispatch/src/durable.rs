@@ -22,7 +22,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use crate::Error;
 use crate::capability::RunIngressCapabilities;
 use crate::clock::Clock;
-use crate::dispatch::{DispatchStore, PendingInput};
+use crate::dispatch::{DispatchStore, DispatchSummary, PendingInput, SubmitOptions};
 use crate::request::RunExecutionRequest;
 use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
@@ -73,6 +73,41 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
         config: DispatchServiceConfig,
     ) -> DispatchService<S> {
         DispatchService::spawn(self.worker.clone(), clock, config)
+    }
+
+    /// Submit a run that supersedes the thread's prior pending/parked work
+    /// (ADR-0022): the newest submission wins, the stale dispatches are marked
+    /// superseded and never claimed again, then drive the new run. Superseded
+    /// runs are observable via [`superseded`](Self::superseded).
+    pub async fn submit_superseding(&self, activation: RunActivation) -> Result<Phase, Error> {
+        let run_id = activation.run_id.clone();
+        self.worker
+            .store()
+            .enqueue_with(
+                RunExecutionRequest::new(activation),
+                SubmitOptions {
+                    supersede: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let processed = self.worker.run_until_idle(0).await?;
+        phase_of(&processed, &run_id).ok_or_else(|| {
+            Error::from(ExecError::Execution(
+                "superseding run was not processed".into(),
+            ))
+        })
+    }
+
+    /// The run ids superseded by a newer submission on their thread (ADR-0022).
+    pub async fn superseded(&self) -> Result<Vec<RunId>, Error> {
+        Ok(self.worker.store().superseded().await?)
+    }
+
+    /// An operational summary of every dispatch row, in enqueue order — the query
+    /// surface for monitoring and maintenance (ADR-0025).
+    pub async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, Error> {
+        Ok(self.worker.store().list_dispatches().await?)
     }
 
     /// Deliver durable input to a parked run and drive its resume. The input is
@@ -127,6 +162,16 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
     /// Returns how many were purged.
     pub async fn purge_dead_letters(&self) -> Result<usize, Error> {
         Ok(self.worker.store().purge_dead_letters().await?)
+    }
+
+    /// Time-windowed GC: remove dead-letters dead-lettered at or before `cutoff_ms`
+    /// (ADR-0023). The daemon runs this on its cadence when a ttl is configured.
+    pub async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, Error> {
+        Ok(self
+            .worker
+            .store()
+            .purge_dead_letters_before(cutoff_ms)
+            .await?)
     }
 
     /// Return a dead-lettered run to the queue at a fresh budget.

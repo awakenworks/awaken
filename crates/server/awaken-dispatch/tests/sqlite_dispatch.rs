@@ -164,3 +164,33 @@ async fn lease_renewal_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
     harness::assert_lease_renewal(&store).await;
 }
+
+#[tokio::test]
+async fn idle_thread_inbox_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_idle_thread_inbox(&store).await;
+}
+
+#[tokio::test]
+async fn supersession_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_supersession(&store).await;
+}
+
+#[tokio::test]
+async fn dead_letter_ttl_gc_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_dead_letter_ttl_gc(&store).await;
+}
+
+#[tokio::test]
+async fn renew_owned_leases_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_renew_owned_leases(&store).await;
+}
+
+#[tokio::test]
+async fn list_dispatches_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_list_dispatches(&store).await;
+}
