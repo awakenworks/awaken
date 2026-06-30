@@ -125,6 +125,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-contract",
         "awaken-runtime",
         "awaken-ext-permission",
+        # dev-dep: `hello_agent` borrows the config domain's pure `compile()`.
+        "awaken-config-store",
         "async-trait",
         "serde_json",
         "tokio",
