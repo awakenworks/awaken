@@ -181,8 +181,9 @@ operational query surface
 ([ADR-0025](../adr/0025-dispatch-query-surface.md)). Deferred (named, not built):
 auto-activating a run from an idle-thread message (needs the thread-snapshot
 seam), committing a terminal Cancelled for superseded runs, force-superseding an
-in-flight running run, a NATS-backed store (JetStream durability), and a
-plugin-owned action-kind axis.
+in-flight running run, a NATS-backed store (JetStream durability), and resolving a
+scheduled-action kind to a concrete non-tool action runner (the kind axis itself
+is built, [ADR-0027](../adr/0027-scheduled-action-kind-axis.md)).
 
 ## Durable Semantics
 
