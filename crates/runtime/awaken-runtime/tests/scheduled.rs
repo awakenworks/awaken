@@ -76,6 +76,19 @@ impl ToolGateHook for ScheduleGate {
     async fn gate(&self, _c: &PermissionContext) -> GateOutcome {
         GateOutcome::Schedule {
             correlation_id: "sched-1".to_string(),
+            action_kind: None,
+        }
+    }
+}
+
+/// Schedules a *kind*-based action whose kind no selected plugin contributes.
+struct UnknownKindGate;
+#[async_trait::async_trait]
+impl ToolGateHook for UnknownKindGate {
+    async fn gate(&self, _c: &PermissionContext) -> GateOutcome {
+        GateOutcome::Schedule {
+            correlation_id: "sched-1".to_string(),
+            action_kind: Some("plugin-only-kind".to_string()),
         }
     }
 }
@@ -248,6 +261,29 @@ async fn performing_a_scheduled_action_twice_is_idempotent() {
 }
 
 #[tokio::test]
+async fn scheduling_an_unselected_plugin_action_kind_fails_closed() {
+    // RS-SCH-005: a scheduled-action kind absent from the resolved environment
+    // (its owning plugin is not selected) fails the run closed at the bound.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone(), Arc::new(UnknownKindGate));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    let phase = runtime
+        .execute(activation(), context(&commit))
+        .await
+        .expect("runs to a terminal");
+    assert_eq!(
+        phase,
+        Phase::Ended(EndCause::Error(
+            awaken_agent_contract::agent::run::Failure::CapabilityBound
+        ))
+    );
+    // No ticket is committed and the action never runs.
+    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn perform_on_a_non_scheduled_run_fails_closed() {
     // RS-SCH-004: a result for a run not parked on a scheduled action is rejected.
     let ran = Arc::new(AtomicUsize::new(0));
@@ -353,6 +389,48 @@ async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() 
         commit.waiting_for(&RunId("run-1".to_string())).is_some(),
         "the committed ticket is unchanged"
     );
+}
+
+#[tokio::test]
+async fn a_stop_policy_makes_a_late_scheduled_result_fail_closed() {
+    // RS-CTRL-002: a stop policy commits a terminal stop reason; a deferred result
+    // that arrives later is rejected without running the action or mutating facts.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    runtime
+        .execute(activation(), context(&commit))
+        .await
+        .expect("parks on a scheduled action");
+
+    // The host stop policy commits a terminal Stopped(reason).
+    let phase = runtime
+        .stop_run(
+            RunId("run-1".to_string()),
+            ThreadId("thread-1".to_string()),
+            "budget exhausted".to_string(),
+            context(&commit),
+        )
+        .await
+        .expect("stop");
+    assert_eq!(
+        phase,
+        Phase::Ended(EndCause::Stopped("budget exhausted".to_string()))
+    );
+
+    // A late scheduled perform is rejected; the action never runs.
+    let err = runtime
+        .perform_scheduled_action(
+            &RunId("run-1".to_string()),
+            commit.as_ref(),
+            context(&commit),
+            0,
+        )
+        .await
+        .expect_err("late perform rejected");
+    assert!(err.to_string().contains("not waiting"));
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

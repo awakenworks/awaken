@@ -50,7 +50,13 @@ pub enum GateOutcome {
     /// Defer this call as a committed `ScheduledAction` (ADR-0020): the run parks
     /// and the action is performed later (in-process or by recovery), not decided
     /// by a human. `correlation_id` keys the committed request and its resume.
-    Schedule { correlation_id: String },
+    /// `action_kind`, when set, names a plugin-owned scheduled-action kind that
+    /// must be present in the resolved environment, else the run fails closed
+    /// (ADR-0027); `None` is the ordinary tool-backed scheduled action.
+    Schedule {
+        correlation_id: String,
+        action_kind: Option<String>,
+    },
 }
 
 /// The final invocation gate. The loop calls this for every tool call; only an
