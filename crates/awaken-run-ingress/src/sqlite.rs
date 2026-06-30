@@ -14,10 +14,12 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::dispatch::{
-    Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput, RunDispatch,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput,
+    PendingRecord, RunDispatch,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -293,6 +295,121 @@ impl PendingInbox for SqliteDispatchStore {
         })
         .await
     }
+
+    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
+        let thread = thread_id.clone();
+        self.with_conn(move |conn, p| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT message_id, run_id, correlation_id, result, revision FROM {p}_pending \
+                     WHERE thread_id = ?1 ORDER BY created_at"
+                ))
+                .map_err(reject)?;
+            let rows = stmt
+                .query_map(params![thread.0], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                })
+                .map_err(reject)?;
+            let mut records = Vec::new();
+            for row in rows {
+                let (message_id, run_id, correlation_id, result, revision) = row.map_err(reject)?;
+                records.push(PendingRecord {
+                    input: PendingInput {
+                        message_id,
+                        run_id: RunId(run_id),
+                        thread_id: thread.clone(),
+                        correlation_id,
+                        result: serde_json::from_str(&result).map_err(json_err)?,
+                    },
+                    revision: revision as u64,
+                });
+            }
+            Ok(records)
+        })
+        .await
+    }
+
+    async fn retract(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+    ) -> Result<CasOutcome, DispatchError> {
+        let message_id = message_id.to_string();
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let outcome = match current_revision(&tx, p, &message_id)? {
+                None => CasOutcome::NotFound,
+                Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
+                Some(_) => {
+                    tx.execute(
+                        &format!("DELETE FROM {p}_pending WHERE message_id = ?1"),
+                        params![message_id],
+                    )
+                    .map_err(reject)?;
+                    CasOutcome::Applied
+                }
+            };
+            tx.commit().map_err(reject)?;
+            Ok(outcome)
+        })
+        .await
+    }
+
+    async fn edit(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+        result: ResumeResult,
+    ) -> Result<CasOutcome, DispatchError> {
+        let message_id = message_id.to_string();
+        let result_json = json(&result)?;
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let outcome = match current_revision(&tx, p, &message_id)? {
+                None => CasOutcome::NotFound,
+                Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
+                Some(_) => {
+                    tx.execute(
+                        &format!(
+                            "UPDATE {p}_pending SET result = ?1, revision = revision + 1 \
+                             WHERE message_id = ?2"
+                        ),
+                        params![result_json, message_id],
+                    )
+                    .map_err(reject)?;
+                    CasOutcome::Applied
+                }
+            };
+            tx.commit().map_err(reject)?;
+            Ok(outcome)
+        })
+        .await
+    }
+}
+
+fn current_revision(
+    tx: &rusqlite::Transaction<'_>,
+    prefix: &str,
+    message_id: &str,
+) -> Result<Option<u64>, DispatchError> {
+    tx.query_row(
+        &format!("SELECT revision FROM {prefix}_pending WHERE message_id = ?1"),
+        params![message_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()
+    .map_err(reject)
+    .map(|opt| opt.map(|r| r as u64))
 }
 
 fn json<T: serde::Serialize>(value: &T) -> Result<String, DispatchError> {

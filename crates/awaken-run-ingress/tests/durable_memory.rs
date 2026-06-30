@@ -411,3 +411,9 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn pending_edit_and_retract_are_revision_guarded() {
+    // M3a: the in-memory store is the spec for revision-guarded pending ops.
+    harness::assert_pending_revision_cas(&MemoryDispatchStore::new()).await;
+}

@@ -10,9 +10,12 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput, RunDispatch,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput,
+    PendingRecord, RunDispatch,
 };
 use crate::request::RunExecutionRequest;
 
@@ -30,13 +33,20 @@ struct Row {
     lease: Option<Lease>,
 }
 
+/// A pending input with its optimistic-concurrency revision.
+#[derive(Debug, Clone)]
+struct PendingRow {
+    input: PendingInput,
+    revision: u64,
+}
+
 #[derive(Debug, Default)]
 struct State {
     /// Enqueue order, so claim is deterministic (oldest first).
     order: Vec<RunId>,
     rows: HashMap<RunId, Row>,
     /// Undelivered pending input, in arrival order.
-    pending: Vec<PendingInput>,
+    pending: Vec<PendingRow>,
 }
 
 /// In-memory durable-ingress store. Cloneable handles share one state.
@@ -59,7 +69,12 @@ impl MemoryDispatchStore {
     pub fn pending_count(&self, run_id: &RunId) -> usize {
         self.state
             .lock()
-            .map(|s| s.pending.iter().filter(|p| &p.run_id == run_id).count())
+            .map(|s| {
+                s.pending
+                    .iter()
+                    .filter(|p| &p.input.run_id == run_id)
+                    .count()
+            })
             .unwrap_or(0)
     }
 }
@@ -81,7 +96,7 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
                     && row.lease.as_ref().is_some_and(|l| l.expires_ms <= now_ms)
             }
             Status::Parked => {
-                row.status == Status::Parked && state.pending.iter().any(|p| &p.run_id == run)
+                row.status == Status::Parked && state.pending.iter().any(|p| &p.input.run_id == run)
             }
             Status::Pending => row.status == Status::Pending,
         }
@@ -149,8 +164,8 @@ impl RunDispatch for MemoryDispatchStore {
         let pending = state
             .pending
             .iter()
-            .filter(|p| p.run_id == run_id)
-            .cloned()
+            .filter(|p| p.input.run_id == run_id)
+            .map(|p| p.input.clone())
             .collect();
 
         Ok(Some(Claimed {
@@ -171,7 +186,7 @@ impl RunDispatch for MemoryDispatchStore {
             DispatchOutcome::Done => {
                 state.rows.remove(run_id);
                 state.order.retain(|r| r != run_id);
-                state.pending.retain(|p| &p.run_id != run_id);
+                state.pending.retain(|p| &p.input.run_id != run_id);
             }
             DispatchOutcome::Parked => {
                 if let Some(row) = state.rows.get_mut(run_id) {
@@ -180,7 +195,9 @@ impl RunDispatch for MemoryDispatchStore {
                 }
                 // Drop only what the worker consumed; input that arrived during
                 // the attempt stays for the next wake.
-                state.pending.retain(|p| !consumed.contains(&p.message_id));
+                state
+                    .pending
+                    .retain(|p| !consumed.contains(&p.input.message_id));
             }
         }
         Ok(())
@@ -194,11 +211,66 @@ impl PendingInbox for MemoryDispatchStore {
         if state
             .pending
             .iter()
-            .any(|p| p.message_id == input.message_id)
+            .any(|p| p.input.message_id == input.message_id)
         {
             return Ok(false);
         }
-        state.pending.push(input);
+        state.pending.push(PendingRow { input, revision: 1 });
         Ok(true)
+    }
+
+    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .pending
+            .iter()
+            .filter(|p| &p.input.thread_id == thread_id)
+            .map(|p| PendingRecord {
+                input: p.input.clone(),
+                revision: p.revision,
+            })
+            .collect())
+    }
+
+    async fn retract(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+    ) -> Result<CasOutcome, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let Some(pos) = state
+            .pending
+            .iter()
+            .position(|p| p.input.message_id == message_id)
+        else {
+            return Ok(CasOutcome::NotFound);
+        };
+        if state.pending[pos].revision != expected_revision {
+            return Ok(CasOutcome::RevisionMismatch);
+        }
+        state.pending.remove(pos);
+        Ok(CasOutcome::Applied)
+    }
+
+    async fn edit(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+        result: ResumeResult,
+    ) -> Result<CasOutcome, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let Some(row) = state
+            .pending
+            .iter_mut()
+            .find(|p| p.input.message_id == message_id)
+        else {
+            return Ok(CasOutcome::NotFound);
+        };
+        if row.revision != expected_revision {
+            return Ok(CasOutcome::RevisionMismatch);
+        }
+        row.input.result = result;
+        row.revision += 1;
+        Ok(CasOutcome::Applied)
     }
 }

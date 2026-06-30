@@ -26,6 +26,7 @@ use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGa
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
+use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
@@ -201,6 +202,59 @@ pub async fn pool() -> Option<PgPool> {
             None
         }
     }
+}
+
+/// Shared spec for revision-guarded pending edit/retract (M3a): every backend
+/// must match this behaviour, so the test body lives here once.
+pub async fn assert_pending_revision_cas<S: awaken_run_ingress::PendingInbox>(store: &S) {
+    use awaken_run_ingress::{CasOutcome, PendingInput};
+    let thread = ThreadId(THREAD.to_string());
+    let input = |result| PendingInput {
+        message_id: "m1".to_string(),
+        run_id: RunId("run-1".to_string()),
+        thread_id: thread.clone(),
+        correlation_id: TICKET.to_string(),
+        result,
+    };
+    store
+        .append(input(ResumeResult::Input("a".to_string())))
+        .await
+        .unwrap();
+
+    let records = store.list(&thread).await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].revision, 1);
+
+    // A stale-revision edit is rejected; the correct revision applies and bumps.
+    assert_eq!(
+        store
+            .edit("m1", 99, ResumeResult::Input("b".to_string()))
+            .await
+            .unwrap(),
+        CasOutcome::RevisionMismatch
+    );
+    assert_eq!(
+        store
+            .edit("m1", 1, ResumeResult::Input("b".to_string()))
+            .await
+            .unwrap(),
+        CasOutcome::Applied
+    );
+    let records = store.list(&thread).await.unwrap();
+    assert_eq!(records[0].revision, 2);
+    assert_eq!(
+        records[0].input.result,
+        ResumeResult::Input("b".to_string())
+    );
+
+    // Retract is likewise guarded; a stale revision fails, the current one wins.
+    assert_eq!(
+        store.retract("m1", 1).await.unwrap(),
+        CasOutcome::RevisionMismatch
+    );
+    assert_eq!(store.retract("m1", 2).await.unwrap(), CasOutcome::Applied);
+    assert_eq!(store.retract("m1", 2).await.unwrap(), CasOutcome::NotFound);
+    assert!(store.list(&thread).await.unwrap().is_empty());
 }
 
 /// Drop every commit- and dispatch-schema table for a prefix (plus the shared

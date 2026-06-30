@@ -18,7 +18,8 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::dispatch::{
-    Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput, RunDispatch,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput,
+    PendingRecord, RunDispatch,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -250,6 +251,104 @@ impl PendingInbox for PostgresDispatchStore {
         .map_err(reject)?;
         Ok(result.rows_affected() > 0)
     }
+
+    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
+        let p = &self.prefix;
+        let rows = sqlx::query(&format!(
+            "SELECT message_id, run_id, correlation_id, result, revision FROM {p}_pending \
+             WHERE thread_id = $1 ORDER BY created_at"
+        ))
+        .bind(&thread_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+
+        let mut records = Vec::with_capacity(rows.len());
+        for row in rows {
+            let message_id: String = row.try_get("message_id").map_err(reject)?;
+            let run_id: String = row.try_get("run_id").map_err(reject)?;
+            let correlation_id: String = row.try_get("correlation_id").map_err(reject)?;
+            let Json(result): Json<ResumeResult> = row.try_get("result").map_err(reject)?;
+            let revision: i64 = row.try_get("revision").map_err(reject)?;
+            records.push(PendingRecord {
+                input: PendingInput {
+                    message_id,
+                    run_id: RunId(run_id),
+                    thread_id: thread_id.clone(),
+                    correlation_id,
+                    result,
+                },
+                revision: revision as u64,
+            });
+        }
+        Ok(records)
+    }
+
+    async fn retract(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+    ) -> Result<CasOutcome, DispatchError> {
+        let p = &self.prefix;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let outcome = match current_revision(&mut tx, p, message_id).await? {
+            None => CasOutcome::NotFound,
+            Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
+            Some(_) => {
+                sqlx::query(&format!("DELETE FROM {p}_pending WHERE message_id = $1"))
+                    .bind(message_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(reject)?;
+                CasOutcome::Applied
+            }
+        };
+        tx.commit().await.map_err(reject)?;
+        Ok(outcome)
+    }
+
+    async fn edit(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+        result: ResumeResult,
+    ) -> Result<CasOutcome, DispatchError> {
+        let p = &self.prefix;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let outcome = match current_revision(&mut tx, p, message_id).await? {
+            None => CasOutcome::NotFound,
+            Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
+            Some(_) => {
+                sqlx::query(&format!(
+                    "UPDATE {p}_pending SET result = $1, revision = revision + 1 \
+                     WHERE message_id = $2"
+                ))
+                .bind(Json(&result))
+                .bind(message_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+                CasOutcome::Applied
+            }
+        };
+        tx.commit().await.map_err(reject)?;
+        Ok(outcome)
+    }
+}
+
+async fn current_revision(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    prefix: &str,
+    message_id: &str,
+) -> Result<Option<u64>, DispatchError> {
+    let revision: Option<i64> = sqlx::query_scalar(&format!(
+        "SELECT revision FROM {prefix}_pending WHERE message_id = $1"
+    ))
+    .bind(message_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(reject)?;
+    Ok(revision.map(|r| r as u64))
 }
 
 fn reject(err: sqlx::Error) -> DispatchError {

@@ -213,3 +213,15 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
 
     reset(&pool, prefix).await;
 }
+
+#[tokio::test]
+async fn pending_revision_cas_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_cas";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_pending_revision_cas(&store).await;
+    reset(&pool, prefix).await;
+}

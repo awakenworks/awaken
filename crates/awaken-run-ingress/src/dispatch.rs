@@ -106,12 +106,58 @@ pub trait RunDispatch: Send + Sync {
     ) -> Result<(), DispatchError>;
 }
 
-/// Durable pending-input intake for a thread.
+/// A pending input as stored, with its optimistic-concurrency `revision`. The
+/// revision is store-assigned (1 on append, bumped on edit), so it is surfaced
+/// on reads — not part of [`PendingInput`], which is the caller's append payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingRecord {
+    pub input: PendingInput,
+    pub revision: u64,
+}
+
+/// The result of a revision-guarded pending edit/retract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CasOutcome {
+    /// The expected revision matched; the change was applied.
+    Applied,
+    /// The record exists but at a different revision (a concurrent change);
+    /// the operation is rejected, fail closed.
+    RevisionMismatch,
+    /// No pending record with that id (already consumed or never appended).
+    NotFound,
+}
+
+/// Durable pending-input intake and the thread-message operations over it.
+///
+/// `append` is the delivery path; `list`/`retract`/`edit` are the thread-message
+/// operations surface (run-ingress design: these are NOT `RunIngress` routes).
+/// Edit and retract are optimistic: they check the record's `revision` and fail
+/// closed on a mismatch, so a concurrent change is never silently overwritten.
+/// Records are mutable only before the worker consumes them.
 #[async_trait]
 pub trait PendingInbox: Send + Sync {
-    /// Idempotently append one pending input. Returns `true` if newly stored,
-    /// `false` if the `message_id` was already present (duplicate delivery).
+    /// Idempotently append one pending input at revision 1. Returns `true` if
+    /// newly stored, `false` if the `message_id` was already present.
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError>;
+
+    /// The thread's undelivered pending input, in arrival order, with revisions.
+    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError>;
+
+    /// Retract one pending record if it is still at `expected_revision`.
+    async fn retract(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+    ) -> Result<CasOutcome, DispatchError>;
+
+    /// Replace a pending record's result if it is still at `expected_revision`,
+    /// bumping the revision on success.
+    async fn edit(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+        result: ResumeResult,
+    ) -> Result<CasOutcome, DispatchError>;
 }
 
 /// The combined durable-ingress store. One object implements both aggregates so

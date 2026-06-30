@@ -33,6 +33,7 @@ const SPECS: [(i64, &str, &str); 2] = [
             thread_id TEXT NOT NULL, \
             correlation_id TEXT NOT NULL, \
             result {json} NOT NULL, \
+            revision BIGINT NOT NULL DEFAULT 1, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
     ),
 ];

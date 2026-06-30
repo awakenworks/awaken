@@ -99,3 +99,9 @@ async fn durable_loop_runs_entirely_on_sqlite() {
     let record = RunStore::get(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
     assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
 }
+
+#[tokio::test]
+async fn pending_revision_cas_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_pending_revision_cas(&store).await;
+}
