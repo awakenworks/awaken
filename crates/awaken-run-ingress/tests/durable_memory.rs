@@ -625,3 +625,39 @@ async fn local_wake_signal_delivers_a_held_hint() {
         .await
         .expect("the wake hint was delivered");
 }
+
+#[tokio::test]
+async fn ingress_dead_letter_and_purge_ops() {
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+
+    // A crashed run reaped through the ingress API.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert_eq!(ingress.reap(0, 100).await.unwrap(), 1);
+    assert_eq!(
+        ingress.dead_letters().await.unwrap(),
+        vec![RunId("run-1".to_string())]
+    );
+
+    // Requeue, re-reap, then GC through the ingress API.
+    assert!(ingress.requeue(&RunId("run-1".to_string())).await.unwrap());
+    assert!(ingress.dead_letters().await.unwrap().is_empty());
+    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert_eq!(ingress.reap(0, 200).await.unwrap(), 1);
+    assert_eq!(ingress.purge_dead_letters().await.unwrap(), 1);
+    assert!(ingress.dead_letters().await.unwrap().is_empty());
+
+    // Cancelling a run that no longer exists is false.
+    assert!(
+        !ingress
+            .cancel_durable(&RunId("run-1".to_string()))
+            .await
+            .unwrap()
+    );
+}
