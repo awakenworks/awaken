@@ -54,10 +54,13 @@ struct Projection {
     waiting: HashMap<RunId, WaitingTicket>,
 }
 
+/// The component namespace for this runtime's tables (see the Postgres store).
+/// Built in, not configured — one runtime is one component.
+const NS: &str = "runtime";
+
 /// A SQLite-backed [`Coordinator`] plus the read ports it serves.
 pub struct SqliteCommitCoordinator {
     conn: Arc<Mutex<Connection>>,
-    prefix: String,
     projection: Mutex<Projection>,
     /// Serializes commits so the fence is assigned without a race and the
     /// projection advances in commit order.
@@ -66,32 +69,29 @@ pub struct SqliteCommitCoordinator {
 
 impl SqliteCommitCoordinator {
     /// Open (or create) a database file, apply the commit migrations, and
-    /// hydrate the projection. `prefix` namespaces the tables.
-    pub fn open(path: &str, prefix: impl Into<String>) -> Result<Self, StoreError> {
+    /// hydrate the projection.
+    pub fn open(path: &str) -> Result<Self, StoreError> {
         let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn, prefix)
+        Self::from_connection(conn)
     }
 
     /// Open a private in-memory database (a fresh, isolated schema per call).
-    pub fn open_in_memory(prefix: impl Into<String>) -> Result<Self, StoreError> {
+    pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn, prefix)
+        Self::from_connection(conn)
     }
 
-    fn from_connection(conn: Connection, prefix: impl Into<String>) -> Result<Self, StoreError> {
-        let prefix = prefix.into();
+    fn from_connection(conn: Connection) -> Result<Self, StoreError> {
         let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration::sqlite::SqliteMigrationRunner::with_prefix(&prefix)
+        awaken_scoped_migration::sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|err| StoreError::Migrate(err.to_string()))?
             .run_bundle(&conn, &bundle)
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
 
-        let projection =
-            hydrate(&conn, &prefix).map_err(|err| StoreError::Hydrate(err.to_string()))?;
+        let projection = hydrate(&conn).map_err(|err| StoreError::Hydrate(err.to_string()))?;
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            prefix,
             projection: Mutex::new(projection),
             write_lock: tokio::sync::Mutex::new(()),
         })
@@ -134,13 +134,12 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         let next = lock(&self.projection)?.sequence + 1;
 
         let conn = self.conn.clone();
-        let prefix = self.prefix.clone();
         let data = commit.clone();
         tokio::task::spawn_blocking(move || {
             let mut guard = conn
                 .lock()
                 .map_err(|_| Error::Rejected("sqlite connection poisoned".to_string()))?;
-            write_commit(&mut guard, &prefix, next, &data)
+            write_commit(&mut guard, next, &data)
         })
         .await
         .map_err(|err| Error::Rejected(err.to_string()))??;
@@ -204,13 +203,8 @@ fn lock(projection: &Mutex<Projection>) -> Result<std::sync::MutexGuard<'_, Proj
 /// Write one staged commit in a single IMMEDIATE transaction (atomic, G1/G13).
 /// JSON columns are stored as serialized text — the schema renders `{json}` to
 /// TEXT on SQLite.
-fn write_commit(
-    conn: &mut Connection,
-    prefix: &str,
-    next: u64,
-    commit: &ThreadCommit,
-) -> Result<(), Error> {
-    let p = prefix;
+fn write_commit(conn: &mut Connection, next: u64, commit: &ThreadCommit) -> Result<(), Error> {
+    let p = NS;
     let run_id = &commit.run_fact.run_id.0;
     let thread_id = &commit.thread_id.0;
     let phase = json(&commit.run_fact.phase)?;
@@ -301,9 +295,9 @@ fn write_commit(
 }
 
 /// Rebuild the read projection from the committed log in SQLite.
-fn hydrate(conn: &Connection, prefix: &str) -> Result<Projection, rusqlite::Error> {
+fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
     let sequence = conn.query_row(
-        &format!("SELECT COALESCE(MAX(sequence), 0) FROM {prefix}_commit"),
+        &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
         [],
         |row| row.get::<_, i64>(0),
     )? as u64;
@@ -313,7 +307,7 @@ fn hydrate(conn: &Connection, prefix: &str) -> Result<Projection, rusqlite::Erro
     };
 
     let mut stmt = conn.prepare(&format!(
-        "SELECT thread_id, data FROM {prefix}_message ORDER BY id"
+        "SELECT thread_id, data FROM {NS}_message ORDER BY id"
     ))?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -327,7 +321,7 @@ fn hydrate(conn: &Connection, prefix: &str) -> Result<Projection, rusqlite::Erro
 
     // Fold the commit log in order so the latest fact per run wins (G32).
     let mut stmt = conn.prepare(&format!(
-        "SELECT run_id, thread_id, phase FROM {prefix}_commit ORDER BY sequence"
+        "SELECT run_id, thread_id, phase FROM {NS}_commit ORDER BY sequence"
     ))?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -350,7 +344,7 @@ fn hydrate(conn: &Connection, prefix: &str) -> Result<Projection, rusqlite::Erro
         }
     }
 
-    let mut stmt = conn.prepare(&format!("SELECT run_id, ticket FROM {prefix}_waiting"))?;
+    let mut stmt = conn.prepare(&format!("SELECT run_id, ticket FROM {NS}_waiting"))?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;

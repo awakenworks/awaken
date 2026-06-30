@@ -66,7 +66,7 @@ fn empty_commit(thread: &str, fact: RunFact, waiting: Option<WaitingTicket>) -> 
 
 #[tokio::test]
 async fn commit_persists_facts_messages_and_serves_reads() {
-    let store = SqliteCommitCoordinator::open_in_memory("t_commit").expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
     let thread = ThreadId("thread-1".to_string());
 
     let commit = ThreadCommit {
@@ -102,7 +102,7 @@ async fn commit_persists_facts_messages_and_serves_reads() {
 
 #[tokio::test]
 async fn fence_increments_monotonically() {
-    let store = SqliteCommitCoordinator::open_in_memory("t_fence").expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
     for expected in 1..=3u64 {
         let record = store
             .commit(empty_commit("thread-1", ended("run-1"), None))
@@ -115,7 +115,7 @@ async fn fence_increments_monotonically() {
 
 #[tokio::test]
 async fn waiting_ticket_parks_then_clears() {
-    let store = SqliteCommitCoordinator::open_in_memory("t_waiting").expect("open");
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
     let run = RunId("run-1".to_string());
 
     store
@@ -148,7 +148,7 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
     let _ = std::fs::remove_file(&path);
 
     {
-        let store = SqliteCommitCoordinator::open(&path, "t_hydrate").expect("open a");
+        let store = SqliteCommitCoordinator::open(&path).expect("open a");
         store
             .commit(ThreadCommit {
                 thread_id: ThreadId("thread-1".to_string()),
@@ -162,7 +162,7 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
             .expect("commit");
     } // store dropped — simulate a restart
 
-    let restarted = SqliteCommitCoordinator::open(&path, "t_hydrate").expect("open b");
+    let restarted = SqliteCommitCoordinator::open(&path).expect("open b");
     assert_eq!(restarted.commit_count(), 1, "the fence survives restart");
     assert_eq!(
         ThreadReader::committed_messages(&restarted, &ThreadId("thread-1".to_string()))[0]

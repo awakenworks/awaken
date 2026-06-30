@@ -51,7 +51,7 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
 
     // Execute against the Postgres commit boundary: the run parks on the gate.
     let commit = Arc::new(
-        PostgresCommitCoordinator::with_pool(pool.clone(), "runtime")
+        PostgresCommitCoordinator::with_pool(pool.clone())
             .await
             .expect("coordinator"),
     );
@@ -66,7 +66,7 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
 
     // A fresh coordinator on the same database rehydrates committed truth.
     let restarted = Arc::new(
-        PostgresCommitCoordinator::with_pool(pool.clone(), "runtime")
+        PostgresCommitCoordinator::with_pool(pool.clone())
             .await
             .expect("restart"),
     );

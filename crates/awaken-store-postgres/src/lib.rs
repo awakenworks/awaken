@@ -54,43 +54,43 @@ struct Projection {
     waiting: HashMap<RunId, WaitingTicket>,
 }
 
+/// The component namespace for this runtime's tables. One runtime is one
+/// component, so its commit and dispatch tables share this prefix; the scoped
+/// migration ledger isolates it from any other component in the same database.
+/// Built in, not configured.
+const NS: &str = "runtime";
+
 /// A Postgres-backed [`Coordinator`] plus the read ports it serves.
 pub struct PostgresCommitCoordinator {
     pool: PgPool,
-    prefix: String,
     projection: Mutex<Projection>,
 }
 
 impl PostgresCommitCoordinator {
     /// Connect, apply the commit-schema migrations, and hydrate the projection.
-    /// `prefix` namespaces the tables so several components can share a database.
-    pub async fn connect(url: &str, prefix: impl Into<String>) -> Result<Self, StoreError> {
+    pub async fn connect(url: &str) -> Result<Self, StoreError> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;
-        Self::with_pool(pool, prefix).await
+        Self::with_pool(pool).await
     }
 
-    /// Build from an existing pool: apply migrations and hydrate the projection.
-    pub async fn with_pool(pool: PgPool, prefix: impl Into<String>) -> Result<Self, StoreError> {
-        let prefix = prefix.into();
+    /// Build from an existing pool: apply migrations and hydrate the projection
+    /// under the runtime namespace.
+    pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
         let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
-            pool.clone(),
-            &prefix,
-        )
-        .map_err(|err| StoreError::Migrate(err.to_string()))?
-        .run_bundle(&bundle)
-        .await
-        .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|err| StoreError::Migrate(err.to_string()))?
+            .run_bundle(&bundle)
+            .await
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
 
-        let projection = hydrate(&pool, &prefix)
+        let projection = hydrate(&pool)
             .await
             .map_err(|err| StoreError::Hydrate(err.to_string()))?;
 
         Ok(Self {
             pool,
-            prefix,
             projection: Mutex::new(projection),
         })
     }
@@ -133,7 +133,7 @@ impl CommitCoordinator for PostgresCommitCoordinator {
         let run_id = commit.run_fact.run_id.clone();
         let thread_id = commit.thread_id.clone();
         let phase = commit.run_fact.phase.clone();
-        let p = &self.prefix;
+        let p = NS;
 
         let mut tx = self
             .pool
@@ -288,18 +288,18 @@ fn reject(err: sqlx::Error) -> Error {
 }
 
 /// Rebuild the read projection from the committed log in Postgres.
-async fn hydrate(pool: &PgPool, prefix: &str) -> Result<Projection, sqlx::Error> {
+async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
     let mut projection = Projection::default();
 
     let sequence: i64 = sqlx::query_scalar(&format!(
-        "SELECT COALESCE(MAX(sequence), 0) FROM {prefix}_commit"
+        "SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"
     ))
     .fetch_one(pool)
     .await?;
     projection.sequence = sequence.max(0) as u64;
 
     let message_rows = sqlx::query(&format!(
-        "SELECT thread_id, data FROM {prefix}_message ORDER BY id"
+        "SELECT thread_id, data FROM {NS}_message ORDER BY id"
     ))
     .fetch_all(pool)
     .await?;
@@ -311,7 +311,7 @@ async fn hydrate(pool: &PgPool, prefix: &str) -> Result<Projection, sqlx::Error>
 
     // Fold the commit log in order so the latest fact per run wins (G32).
     let commit_rows = sqlx::query(&format!(
-        "SELECT run_id, thread_id, phase FROM {prefix}_commit ORDER BY sequence"
+        "SELECT run_id, thread_id, phase FROM {NS}_commit ORDER BY sequence"
     ))
     .fetch_all(pool)
     .await?;
@@ -329,7 +329,7 @@ async fn hydrate(pool: &PgPool, prefix: &str) -> Result<Projection, sqlx::Error>
         );
     }
 
-    let waiting_rows = sqlx::query(&format!("SELECT run_id, ticket FROM {prefix}_waiting"))
+    let waiting_rows = sqlx::query(&format!("SELECT run_id, ticket FROM {NS}_waiting"))
         .fetch_all(pool)
         .await?;
     for row in waiting_rows {

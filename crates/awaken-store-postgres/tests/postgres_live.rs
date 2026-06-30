@@ -20,8 +20,9 @@ use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_store_postgres::PostgresCommitCoordinator;
+use sqlx::Executor;
 use sqlx::Row;
-use sqlx::postgres::PgPool;
+use sqlx::postgres::{PgPool, PgPoolOptions};
 
 fn database_url() -> String {
     std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
@@ -29,33 +30,45 @@ fn database_url() -> String {
     })
 }
 
-/// Connect, or return `None` (with a skip notice) when no Postgres is reachable.
-async fn pool() -> Option<PgPool> {
-    match PgPool::connect(&database_url()).await {
-        Ok(pool) => Some(pool),
-        Err(err) => {
-            println!("[skip] no Postgres reachable: {err}");
-            None
-        }
-    }
+/// The URL with `search_path` pinned to `schema`, for the `connect()` test which
+/// opens its own pool.
+fn database_url_in_schema(schema: &str) -> String {
+    let base = database_url();
+    let sep = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{sep}options=-c%20search_path%3D{schema}")
 }
 
-/// Drop the bundle tables and the migration ledger for a prefix so each test
-/// starts from a clean schema (isolated per `prefix`).
-async fn reset(pool: &PgPool, prefix: &str) {
-    for table in [
-        "commit",
-        "message",
-        "state_command",
-        "event",
-        "run_record",
-        "waiting",
-        "schema_migrations",
-    ] {
-        let _ = sqlx::query(&format!("DROP TABLE IF EXISTS {prefix}_{table} CASCADE"))
-            .execute(pool)
-            .await;
-    }
+/// A pool isolated to a fresh, empty Postgres schema. The production store takes
+/// no table prefix (one runtime is one component); test isolation lives entirely
+/// here, via `search_path`, and never leaks into the store's API. Returns `None`
+/// (skip) when no Postgres is reachable.
+async fn schema_pool(schema: &'static str) -> Option<PgPool> {
+    let admin = match PgPool::connect(&database_url()).await {
+        Ok(pool) => pool,
+        Err(err) => {
+            println!("[skip] no Postgres reachable: {err}");
+            return None;
+        }
+    };
+    let _ = admin
+        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        .await;
+    admin
+        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .await
+        .expect("create schema");
+    admin.close().await;
+    PgPoolOptions::new()
+        .after_connect(move |conn, _meta| {
+            Box::pin(async move {
+                conn.execute(format!("SET search_path = {schema}").as_str())
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&database_url())
+        .await
+        .ok()
 }
 
 fn message(id: &str, text: &str) -> Message {
@@ -96,11 +109,11 @@ fn ticket(run: &str, thread: &str) -> WaitingTicket {
 
 #[tokio::test]
 async fn commit_persists_facts_messages_and_serves_reads() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_commit";
-    reset(&pool, prefix).await;
+    let Some(pool) = schema_pool("t_commit").await else {
+        return;
+    };
 
-    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone(), prefix)
+    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("coordinator");
 
@@ -135,27 +148,25 @@ async fn commit_persists_facts_messages_and_serves_reads() {
     assert_eq!(messages[0].id.0, "m1");
 
     // The state command and event rows persisted in the same transaction.
-    let states: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {prefix}_state_command"))
+    let states: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_state_command")
         .fetch_one(&pool)
         .await
         .expect("count states");
     assert_eq!(states, 1);
-    let event_seq: i64 = sqlx::query(&format!("SELECT sequence FROM {prefix}_event"))
+    let event_seq: i64 = sqlx::query("SELECT sequence FROM runtime_event")
         .fetch_one(&pool)
         .await
         .expect("event row")
         .get("sequence");
     assert_eq!(event_seq, 1_000); // first commit (1) * 1000 + offset 0
-
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn fence_increments_monotonically() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_fence";
-    reset(&pool, prefix).await;
-    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone(), prefix)
+    let Some(pool) = schema_pool("t_fence").await else {
+        return;
+    };
+    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("coordinator");
 
@@ -174,15 +185,14 @@ async fn fence_increments_monotonically() {
         assert_eq!(record.sequence, expected);
     }
     assert_eq!(coordinator.commit_count(), 3);
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn waiting_ticket_parks_then_clears() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_waiting";
-    reset(&pool, prefix).await;
-    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone(), prefix)
+    let Some(pool) = schema_pool("t_waiting").await else {
+        return;
+    };
+    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("coordinator");
     let run = RunId("run-1".to_string());
@@ -215,16 +225,16 @@ async fn waiting_ticket_parks_then_clears() {
         ThreadReader::waiting_ticket(&coordinator, &run).is_none(),
         "a terminal run clears its ticket (fail closed)"
     );
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn connect_applies_migrations_and_serves_a_commit() {
-    let Some(probe) = pool().await else { return };
-    let prefix = "t_connect";
-    reset(&probe, prefix).await;
+    let schema = "t_connect";
+    if schema_pool(schema).await.is_none() {
+        return;
+    }
 
-    let coordinator = PostgresCommitCoordinator::connect(&database_url(), prefix)
+    let coordinator = PostgresCommitCoordinator::connect(&database_url_in_schema(schema))
         .await
         .expect("connect");
     coordinator
@@ -239,20 +249,19 @@ async fn connect_applies_migrations_and_serves_a_commit() {
         .await
         .expect("commit");
     assert_eq!(coordinator.commit_count(), 1);
-    reset(&probe, prefix).await;
 }
 
 #[tokio::test]
 async fn commit_maps_a_storage_failure_to_a_rejection() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_fail";
-    reset(&pool, prefix).await;
-    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone(), prefix)
+    let Some(pool) = schema_pool("t_fail").await else {
+        return;
+    };
+    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("coordinator");
 
     // Remove a table the commit must write to, forcing the transaction to fail.
-    sqlx::query(&format!("DROP TABLE {prefix}_commit"))
+    sqlx::query("DROP TABLE runtime_commit")
         .execute(&pool)
         .await
         .expect("drop");
@@ -272,17 +281,16 @@ async fn commit_maps_a_storage_failure_to_a_rejection() {
         err,
         awaken_agent_contract::commit::coordinator::Error::Rejected(_)
     ));
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn projection_rehydrates_from_postgres_after_reconnect() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_hydrate";
-    reset(&pool, prefix).await;
+    let Some(pool) = schema_pool("t_hydrate").await else {
+        return;
+    };
 
     {
-        let coordinator = PostgresCommitCoordinator::with_pool(pool.clone(), prefix)
+        let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
             .await
             .expect("coordinator a");
         coordinator
@@ -299,7 +307,7 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
     } // coordinator A dropped — simulate a restart
 
     // A fresh coordinator on the same database hydrates committed truth.
-    let restarted = PostgresCommitCoordinator::with_pool(pool.clone(), prefix)
+    let restarted = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("coordinator b");
     assert_eq!(restarted.commit_count(), 1, "fence survives restart");
@@ -318,5 +326,4 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
         ThreadReader::waiting_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
         "active ticket rehydrated"
     );
-    reset(&pool, prefix).await;
 }

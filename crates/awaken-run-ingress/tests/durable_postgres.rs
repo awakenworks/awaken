@@ -41,7 +41,7 @@ async fn durable_submit_parks_then_delivered_decision_resumes_on_postgres() {
 
     let (runtime, ran) = tool_runtime();
     let commit = Arc::new(
-        PostgresCommitCoordinator::with_pool(pool.clone(), "runtime")
+        PostgresCommitCoordinator::with_pool(pool.clone())
             .await
             .expect("commit"),
     );
@@ -156,7 +156,7 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
 
     let (runtime, ran) = tool_runtime();
     let commit = Arc::new(
-        PostgresCommitCoordinator::with_pool(pool.clone(), "runtime")
+        PostgresCommitCoordinator::with_pool(pool.clone())
             .await
             .expect("commit"),
     );
