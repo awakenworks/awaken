@@ -13,54 +13,16 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::dispatch::{
-    Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput, RunDispatch,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
+    PendingInput, PendingRecord, RunDispatch, SubmitOptions,
 };
+use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
-
-/// Bundle id for the durable dispatch schema. Scoped so it never collides with
-/// the commit schema (`awaken.runtime_commit`) in a shared database.
-pub const BUNDLE_ID: &str = "awaken.run_dispatch";
-
-const SPECS: [(i64, &str, &str); 2] = [
-    (
-        1,
-        "run-dispatch queue: one row per accepted run with claim/lease state",
-        "CREATE TABLE {prefix}_dispatch (\
-            run_id TEXT PRIMARY KEY, \
-            thread_id TEXT NOT NULL, \
-            request {json} NOT NULL, \
-            status TEXT NOT NULL, \
-            lease_owner TEXT, \
-            lease_until BIGINT, \
-            created_at {timestamptz} NOT NULL DEFAULT {now})",
-    ),
-    (
-        2,
-        "thread pending input, delivered to the matching waiting-ticket correlation",
-        "CREATE TABLE {prefix}_pending (\
-            message_id TEXT PRIMARY KEY, \
-            run_id TEXT NOT NULL, \
-            thread_id TEXT NOT NULL, \
-            correlation_id TEXT NOT NULL, \
-            result {json} NOT NULL, \
-            created_at {timestamptz} NOT NULL DEFAULT {now})",
-    ),
-];
-
-/// Build the dispatch-schema migration bundle.
-pub fn dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
-    let migrations = SPECS
-        .iter()
-        .map(|(version, description, sql)| Migration::new(*version, *description, *sql))
-        .collect::<Result<Vec<_>, _>>()?;
-    MigrationBundle::new(BUNDLE_ID, migrations)
-}
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
 /// failures use the neutral [`DispatchError`].
@@ -106,15 +68,26 @@ impl PostgresDispatchStore {
 
 #[async_trait]
 impl RunDispatch for PostgresDispatchStore {
-    async fn enqueue(&self, request: RunExecutionRequest) -> Result<(), DispatchError> {
+    async fn enqueue_with(
+        &self,
+        request: RunExecutionRequest,
+        options: SubmitOptions,
+    ) -> Result<(), DispatchError> {
         let p = &self.prefix;
+        // Insert unless the run id exists, or a live (non-dead-letter) dispatch
+        // already carries the same dedupe key. A NULL dedupe key never matches.
         sqlx::query(&format!(
-            "INSERT INTO {p}_dispatch (run_id, thread_id, request, status) \
-             VALUES ($1, $2, $3, 'pending') ON CONFLICT (run_id) DO NOTHING"
+            "INSERT INTO {p}_dispatch (run_id, thread_id, request, status, priority, dedupe_key) \
+             SELECT $1, $2, $3, 'pending', $4, $5 \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM {p}_dispatch WHERE dedupe_key = $5 AND status <> 'dead_letter') \
+             ON CONFLICT (run_id) DO NOTHING"
         ))
         .bind(&request.run_id().0)
         .bind(&request.thread_id().0)
         .bind(Json(&request))
+        .bind(options.priority)
+        .bind(options.dedupe_key.as_deref())
         .execute(&self.pool)
         .await
         .map_err(reject)?;
@@ -141,14 +114,19 @@ impl RunDispatch for PostgresDispatchStore {
         let wake = format!(
             "SELECT d.run_id, d.request FROM {p}_dispatch d \
              WHERE d.status = 'parked' AND EXISTS ( \
-                 SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id) \
+                 SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
+                 AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
              ORDER BY d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let fresh = format!(
             "SELECT run_id, request FROM {p}_dispatch \
-             WHERE status = 'pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+             WHERE status = 'pending' ORDER BY priority DESC, created_at \
+             FOR UPDATE SKIP LOCKED LIMIT 1"
         );
 
+        // Track whether this is a recovery pick (an expired-lease running row),
+        // which spends one crash-retry; a fresh or wake pick does not.
+        let mut recovery_pick = true;
         let picked = match sqlx::query(&recovery)
             .bind(now_ms as i64)
             .fetch_optional(&mut *tx)
@@ -156,17 +134,21 @@ impl RunDispatch for PostgresDispatchStore {
             .map_err(reject)?
         {
             Some(row) => Some(row),
-            None => match sqlx::query(&wake)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(reject)?
-            {
-                Some(row) => Some(row),
-                None => sqlx::query(&fresh)
+            None => {
+                recovery_pick = false;
+                match sqlx::query(&wake)
+                    .bind(now_ms as i64)
                     .fetch_optional(&mut *tx)
                     .await
-                    .map_err(reject)?,
-            },
+                    .map_err(reject)?
+                {
+                    Some(row) => Some(row),
+                    None => sqlx::query(&fresh)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(reject)?,
+                }
+            }
         };
 
         let Some(row) = picked else {
@@ -177,11 +159,12 @@ impl RunDispatch for PostgresDispatchStore {
 
         let expires = now_ms + lease_ms;
         sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2 \
-             WHERE run_id = $3"
+            "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2, \
+             attempt_count = attempt_count + $3 WHERE run_id = $4"
         ))
         .bind(owner)
         .bind(expires as i64)
+        .bind(i64::from(recovery_pick))
         .bind(&run_id)
         .execute(&mut *tx)
         .await
@@ -191,10 +174,11 @@ impl RunDispatch for PostgresDispatchStore {
         // here: settle removes exactly what the worker reports it consumed, so a
         // crash before settle leaves the input to be re-derived (ADR-0010).
         let rows = sqlx::query(&format!(
-            "SELECT message_id, thread_id, correlation_id, result FROM {p}_pending \
-             WHERE run_id = $1 ORDER BY created_at"
+            "SELECT message_id, thread_id, correlation_id, result, available_at FROM {p}_pending \
+             WHERE run_id = $1 AND (available_at IS NULL OR available_at <= $2) ORDER BY created_at"
         ))
         .bind(&run_id)
+        .bind(now_ms as i64)
         .fetch_all(&mut *tx)
         .await
         .map_err(reject)?;
@@ -205,11 +189,13 @@ impl RunDispatch for PostgresDispatchStore {
             let thread_id: String = prow.try_get("thread_id").map_err(reject)?;
             let correlation_id: String = prow.try_get("correlation_id").map_err(reject)?;
             let Json(result): Json<ResumeResult> = prow.try_get("result").map_err(reject)?;
+            let available_at: Option<i64> = prow.try_get("available_at").map_err(reject)?;
             pending.push(PendingInput {
                 message_id,
                 run_id: RunId(run_id.clone()),
                 thread_id: ThreadId(thread_id),
                 correlation_id,
+                available_at_ms: available_at.map(|t| t as u64),
                 result,
             });
         }
@@ -225,6 +211,27 @@ impl RunDispatch for PostgresDispatchStore {
             },
             pending,
         }))
+    }
+
+    async fn renew_lease(
+        &self,
+        run_id: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<bool, DispatchError> {
+        let p = &self.prefix;
+        let result = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET lease_until = $1 \
+             WHERE run_id = $2 AND status = 'running' AND lease_owner = $3"
+        ))
+        .bind((now_ms + lease_ms) as i64)
+        .bind(&run_id.0)
+        .bind(owner)
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn settle(
@@ -258,7 +265,7 @@ impl RunDispatch for PostgresDispatchStore {
                 .map_err(reject)?;
                 sqlx::query(&format!(
                     "UPDATE {p}_dispatch SET status = 'parked', lease_owner = NULL, \
-                     lease_until = NULL WHERE run_id = $1"
+                     lease_until = NULL, attempt_count = 0 WHERE run_id = $1"
                 ))
                 .bind(&run_id.0)
                 .execute(&mut *tx)
@@ -269,6 +276,111 @@ impl RunDispatch for PostgresDispatchStore {
         tx.commit().await.map_err(reject)?;
         Ok(())
     }
+
+    async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
+        let p = &self.prefix;
+        let result = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET status = 'dead_letter', lease_owner = NULL, lease_until = NULL \
+             WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < $1 \
+             AND attempt_count >= $2"
+        ))
+        .bind(now_ms as i64)
+        .bind(max_attempts as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(result.rows_affected() as usize)
+    }
+
+    async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
+        let p = &self.prefix;
+        let rows = sqlx::query(&format!(
+            "SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter' ORDER BY created_at"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        rows.into_iter()
+            .map(|row| {
+                row.try_get::<String, _>("run_id")
+                    .map(RunId)
+                    .map_err(reject)
+            })
+            .collect()
+    }
+
+    async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
+        let p = &self.prefix;
+        let result = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET status = 'pending', attempt_count = 0, lease_owner = NULL, \
+             lease_until = NULL WHERE run_id = $1 AND status = 'dead_letter'"
+        ))
+        .bind(&run_id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
+        let p = &self.prefix;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let thread: Option<String> = sqlx::query_scalar(&format!(
+            "SELECT thread_id FROM {p}_dispatch \
+             WHERE run_id = $1 AND status IN ('pending', 'parked')"
+        ))
+        .bind(&run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if thread.is_some() {
+            sqlx::query(&format!("DELETE FROM {p}_pending WHERE run_id = $1"))
+                .bind(&run_id.0)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+            sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE run_id = $1"))
+                .bind(&run_id.0)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+        }
+        tx.commit().await.map_err(reject)?;
+        Ok(thread.map(ThreadId))
+    }
+
+    async fn parked_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
+        let p = &self.prefix;
+        let run: Option<String> = sqlx::query_scalar(&format!(
+            "SELECT run_id FROM {p}_dispatch WHERE thread_id = $1 AND status = 'parked' \
+             ORDER BY created_at LIMIT 1"
+        ))
+        .bind(&thread_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(run.map(RunId))
+    }
+
+    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
+        let p = &self.prefix;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        sqlx::query(&format!(
+            "DELETE FROM {p}_pending WHERE run_id IN \
+             (SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter')"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let result = sqlx::query(&format!(
+            "DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        tx.commit().await.map_err(reject)?;
+        Ok(result.rows_affected() as usize)
+    }
 }
 
 #[async_trait]
@@ -276,32 +388,180 @@ impl PendingInbox for PostgresDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let p = &self.prefix;
         let result = sqlx::query(&format!(
-            "INSERT INTO {p}_pending (message_id, run_id, thread_id, correlation_id, result) \
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (message_id) DO NOTHING"
+            "INSERT INTO {p}_pending \
+             (message_id, run_id, thread_id, correlation_id, result, available_at) \
+             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (message_id) DO NOTHING"
         ))
         .bind(&input.message_id)
         .bind(&input.run_id.0)
         .bind(&input.thread_id.0)
         .bind(&input.correlation_id)
         .bind(Json(&input.result))
+        .bind(input.available_at_ms.map(|t| t as i64))
         .execute(&self.pool)
         .await
         .map_err(reject)?;
         Ok(result.rows_affected() > 0)
     }
+
+    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
+        let p = &self.prefix;
+        let rows = sqlx::query(&format!(
+            "SELECT message_id, run_id, correlation_id, result, revision, available_at \
+             FROM {p}_pending WHERE thread_id = $1 ORDER BY created_at"
+        ))
+        .bind(&thread_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+
+        let mut records = Vec::with_capacity(rows.len());
+        for row in rows {
+            let message_id: String = row.try_get("message_id").map_err(reject)?;
+            let run_id: String = row.try_get("run_id").map_err(reject)?;
+            let correlation_id: String = row.try_get("correlation_id").map_err(reject)?;
+            let Json(result): Json<ResumeResult> = row.try_get("result").map_err(reject)?;
+            let revision: i64 = row.try_get("revision").map_err(reject)?;
+            let available_at: Option<i64> = row.try_get("available_at").map_err(reject)?;
+            records.push(PendingRecord {
+                input: PendingInput {
+                    message_id,
+                    run_id: RunId(run_id),
+                    thread_id: thread_id.clone(),
+                    correlation_id,
+                    available_at_ms: available_at.map(|t| t as u64),
+                    result,
+                },
+                revision: revision as u64,
+            });
+        }
+        Ok(records)
+    }
+
+    async fn retract(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+    ) -> Result<CasOutcome, DispatchError> {
+        let p = &self.prefix;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let outcome = match current_revision(&mut tx, p, message_id).await? {
+            None => CasOutcome::NotFound,
+            Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
+            Some(_) => {
+                sqlx::query(&format!("DELETE FROM {p}_pending WHERE message_id = $1"))
+                    .bind(message_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(reject)?;
+                CasOutcome::Applied
+            }
+        };
+        tx.commit().await.map_err(reject)?;
+        Ok(outcome)
+    }
+
+    async fn edit(
+        &self,
+        message_id: &str,
+        expected_revision: u64,
+        result: ResumeResult,
+    ) -> Result<CasOutcome, DispatchError> {
+        let p = &self.prefix;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let outcome = match current_revision(&mut tx, p, message_id).await? {
+            None => CasOutcome::NotFound,
+            Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
+            Some(_) => {
+                sqlx::query(&format!(
+                    "UPDATE {p}_pending SET result = $1, revision = revision + 1 \
+                     WHERE message_id = $2"
+                ))
+                .bind(Json(&result))
+                .bind(message_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+                CasOutcome::Applied
+            }
+        };
+        tx.commit().await.map_err(reject)?;
+        Ok(outcome)
+    }
+}
+
+#[async_trait]
+impl MessageOutbox for PostgresDispatchStore {
+    async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
+        let p = &self.prefix;
+        let result = sqlx::query(&format!(
+            "INSERT INTO {p}_outbox (message_id, payload) VALUES ($1, $2) \
+             ON CONFLICT (message_id) DO NOTHING"
+        ))
+        .bind(&input.message_id)
+        .bind(Json(&input))
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn relay(&self) -> Result<usize, DispatchError> {
+        let p = &self.prefix;
+        let staged = sqlx::query(&format!("SELECT message_id, payload FROM {p}_outbox"))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(reject)?;
+
+        let mut relayed = 0;
+        for row in staged {
+            let message_id: String = row.try_get("message_id").map_err(reject)?;
+            let Json(input): Json<PendingInput> = row.try_get("payload").map_err(reject)?;
+
+            // One transaction per message: idempotent target append, then drop
+            // the outbox row. A crash before the delete re-appends (a no-op).
+            let mut tx = self.pool.begin().await.map_err(reject)?;
+            sqlx::query(&format!(
+                "INSERT INTO {p}_pending \
+                 (message_id, run_id, thread_id, correlation_id, result, available_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (message_id) DO NOTHING"
+            ))
+            .bind(&input.message_id)
+            .bind(&input.run_id.0)
+            .bind(&input.thread_id.0)
+            .bind(&input.correlation_id)
+            .bind(Json(&input.result))
+            .bind(input.available_at_ms.map(|t| t as i64))
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?;
+            sqlx::query(&format!("DELETE FROM {p}_outbox WHERE message_id = $1"))
+                .bind(&message_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+            tx.commit().await.map_err(reject)?;
+            relayed += 1;
+        }
+        Ok(relayed)
+    }
+}
+
+async fn current_revision(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    prefix: &str,
+    message_id: &str,
+) -> Result<Option<u64>, DispatchError> {
+    let revision: Option<i64> = sqlx::query_scalar(&format!(
+        "SELECT revision FROM {prefix}_pending WHERE message_id = $1"
+    ))
+    .bind(message_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(reject)?;
+    Ok(revision.map(|r| r as u64))
 }
 
 fn reject(err: sqlx::Error) -> DispatchError {
     DispatchError::Rejected(err.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dispatch_bundle_lints_clean() {
-        let bundle = dispatch_bundle().expect("bundle builds");
-        awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
-    }
 }

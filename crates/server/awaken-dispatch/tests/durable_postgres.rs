@@ -25,13 +25,12 @@ use awaken_store_postgres::PostgresCommitCoordinator;
 use harness::{THREAD, TICKET, activation, database_url, pool, reset, tool_runtime};
 
 fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
-    PendingInput {
-        message_id: message_id.to_string(),
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId(THREAD.to_string()),
-        correlation_id: correlation.to_string(),
-        result: ResumeResult::Decision { allow, note: None },
-    }
+    harness::pending(
+        message_id,
+        "run-1",
+        correlation,
+        ResumeResult::Decision { allow, note: None },
+    )
 }
 
 #[tokio::test]
@@ -69,6 +68,7 @@ async fn durable_submit_parks_then_delivered_decision_resumes_on_postgres() {
                 run_id: RunId("run-1".to_string()),
                 thread_id: ThreadId(THREAD.to_string()),
                 correlation_id: TICKET.to_string(),
+                available_at_ms: None,
                 result: ResumeResult::Decision {
                     allow: true,
                     note: None,
@@ -210,6 +210,129 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
     assert_eq!(ran.load(Ordering::SeqCst), 1);
     let record = RunStore::get(&*commit, &RunId("run-1".to_string())).expect("record");
     assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
+
+    reset(&pool, prefix).await;
+}
+
+#[tokio::test]
+async fn pending_revision_cas_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_cas";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_pending_revision_cas(&store).await;
+    reset(&pool, prefix).await;
+}
+
+#[tokio::test]
+async fn cross_thread_outbox_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_outbox";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_cross_thread_outbox(&store).await;
+    reset(&pool, prefix).await;
+}
+
+#[tokio::test]
+async fn scheduled_delivery_due_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_sched";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_scheduled_due(&store).await;
+    reset(&pool, prefix).await;
+}
+
+#[tokio::test]
+async fn dead_letter_budget_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_dlq";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_dead_letter(&store).await;
+    reset(&pool, prefix).await;
+}
+
+#[tokio::test]
+async fn cancel_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_cancel";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_cancel(&store).await;
+    reset(&pool, prefix).await;
+}
+
+#[tokio::test]
+async fn priority_dedupe_gc_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_pdg";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_priority_dedupe_gc(&store).await;
+    reset(&pool, prefix).await;
+}
+
+#[tokio::test]
+async fn lease_renewal_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_renew";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_lease_renewal(&store).await;
+    reset(&pool, prefix).await;
+}
+
+#[tokio::test]
+async fn two_workers_claim_distinct_runs_on_postgres() {
+    // The durable store is already a distributed queue: two concurrent claims
+    // (FOR UPDATE SKIP LOCKED) take different runs, never the same one.
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_multi";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-2")))
+        .await
+        .unwrap();
+
+    let (a, b) = tokio::join!(store.claim("wa", 1_000, 0), store.claim("wb", 1_000, 0));
+    let a = a
+        .unwrap()
+        .expect("worker a claims")
+        .request
+        .run_id()
+        .0
+        .clone();
+    let b = b
+        .unwrap()
+        .expect("worker b claims")
+        .request
+        .run_id()
+        .0
+        .clone();
+    assert_ne!(a, b, "two concurrent workers claim distinct runs");
 
     reset(&pool, prefix).await;
 }

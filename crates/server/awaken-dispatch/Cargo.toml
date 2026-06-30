@@ -8,6 +8,7 @@ license.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-runtime = { path = "../../runtime/awaken-runtime" }
+awaken-ext-builtin-tools = { path = "../../runtime/awaken-ext-builtin-tools" }
 async-trait.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
@@ -15,10 +16,19 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres", "sqlite"] }
+async-nats = { version = "0.38", optional = true }
+futures-lite = { version = "2", optional = true }
+
+[features]
+# Optional cross-node wake signal over NATS. Off by default — the default build
+# and test suite stay free of the NATS driver; enable for a multi-node fleet.
+nats = ["dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
 awaken-store-postgres = { path = "../../stores/awaken-store-postgres" }
+awaken-store-sqlite = { path = "../../stores/awaken-store-sqlite" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

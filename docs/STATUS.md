@@ -78,3 +78,11 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0009-durable-run-ingress-slice.md` | Decision record | Not required | n/a |
 | `adr/0010-idempotent-pending-consumption.md` | Decision record | Not required | n/a |
 | `adr/0011-autonomous-dispatch-service.md` | Decision record | Not required | n/a |
+| `adr/0012-sqlite-and-postgres-store-backends.md` | Decision record | Not required | n/a |
+| `adr/0013-pending-lifecycle-and-cross-thread-outbox.md` | Decision record | Not required | n/a |
+| `adr/0014-scheduled-delivery.md` | Decision record | Not required | n/a |
+| `adr/0015-crash-retry-budget-and-dead-letter.md` | Decision record | Not required | n/a |
+| `adr/0016-durable-cancel.md` | Decision record | Not required | n/a |
+| `adr/0017-send-message-over-outbox.md` | Decision record | Not required | n/a |
+| `adr/0018-priority-dedupe-gc.md` | Decision record | Not required | n/a |
+| `adr/0019-distributed-dispatch-and-wake-signal.md` | Decision record | Not required | n/a |

@@ -34,13 +34,7 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
 }
 
 fn pending(message_id: &str, run: &str, result: ResumeResult) -> PendingInput {
-    PendingInput {
-        message_id: message_id.to_string(),
-        run_id: RunId(run.to_string()),
-        thread_id: ThreadId(THREAD.to_string()),
-        correlation_id: TICKET.to_string(),
-        result,
-    }
+    harness::pending(message_id, run, TICKET, result)
 }
 
 #[tokio::test]
@@ -132,12 +126,13 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
         clock.clone(),
         DispatchServiceConfig {
             poll_interval: Duration::from_secs(10),
+            ..Default::default()
         },
     );
 
     // Advance past the lease and nudge: the daemon reclaims and runs the dispatch.
     clock.set(2_000);
-    service.notify();
+    service.notify().await;
     assert!(
         wait_for(|| commit.commit_count() >= 1).await,
         "recovery ran the crashed dispatch"
@@ -155,5 +150,134 @@ async fn shutdown_is_clean_with_no_work() {
     let ingress = DurableRunIngress::new(runtime, store, commit);
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
     // No work submitted: shutdown still returns promptly.
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn service_fires_a_scheduled_delivery_when_due() {
+    // M4 end to end: a delivery scheduled for the future does not resume the run
+    // until the daemon's clock reaches it.
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+    let clock = Arc::new(ManualClock::new(0));
+    let service = ingress.spawn_service(
+        clock.clone(),
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(10),
+            ..Default::default()
+        },
+    );
+
+    service.submit(activation("run-1")).await.expect("submit");
+    assert!(wait_for(|| commit.commit_count() >= 1).await, "run parked");
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+
+    // Deliver an input scheduled for t=2000; at t=0 it must not fire.
+    service
+        .deliver(PendingInput {
+            message_id: "sched".to_string(),
+            run_id: RunId("run-1".to_string()),
+            thread_id: ThreadId(THREAD.to_string()),
+            correlation_id: TICKET.to_string(),
+            available_at_ms: Some(2_000),
+            result: ResumeResult::Decision {
+                allow: true,
+                note: None,
+            },
+        })
+        .await
+        .expect("deliver");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        commit.commit_count(),
+        1,
+        "a scheduled delivery does not fire early"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+
+    // Advance the clock past the schedule and nudge: the daemon fires it.
+    clock.set(2_000);
+    service.notify().await;
+    assert!(
+        wait_for(|| commit.commit_count() >= 2).await,
+        "fired when due"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn service_relays_a_cross_thread_send() {
+    // The daemon relays staged cross-thread deliveries each tick (M3b).
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+    let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
+
+    service.submit(activation("run-1")).await.expect("submit");
+    assert!(wait_for(|| commit.commit_count() >= 1).await, "run parked");
+
+    // Stage a cross-thread delivery; the daemon relays then resumes the run.
+    service
+        .send(pending(
+            "x1",
+            "run-1",
+            ResumeResult::Decision {
+                allow: true,
+                note: None,
+            },
+        ))
+        .await
+        .expect("send");
+    assert!(
+        wait_for(|| commit.commit_count() >= 2).await,
+        "relayed + resumed"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn service_dead_letters_a_poison_run() {
+    // The daemon reaps a crashed run that exhausted its budget (M5).
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+
+    // Drive two crash-recoveries by hand so attempt_count reaches the budget.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 100, 0).await.unwrap().is_some()); // fresh
+    assert!(store.claim("w", 100, 200).await.unwrap().is_some()); // recovery -> attempt 1
+
+    let clock = Arc::new(ManualClock::new(400));
+    let service = ingress.spawn_service(
+        clock,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(10),
+            max_attempts: 1,
+        },
+    );
+    service.notify().await;
+
+    // The daemon's reap dead-letters the poison run.
+    let mut dead = Vec::new();
+    for _ in 0..600 {
+        dead = ingress.dead_letters().await.unwrap();
+        if !dead.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(dead, vec![RunId("run-1".to_string())]);
+
     service.shutdown().await;
 }
