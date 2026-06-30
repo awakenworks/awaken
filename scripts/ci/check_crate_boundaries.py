@@ -99,6 +99,25 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
     },
+    # Config domain store: compiles a declarative config into a published
+    # snapshot/install and persists it under the `config` namespace. Depends on
+    # the contract (the published language) and the store drivers; the dev-only
+    # round-trip test composes the runtime.
+    "awaken-config-store": {
+        "awaken-runtime-contract",
+        "awaken-runtime",
+        "awaken-agent-contract",
+        "awaken-store-sqlite",
+        "awaken-scoped-migration",
+        "async-trait",
+        "sqlx",
+        "rusqlite",
+        "sha2",
+        "tokio",
+        "serde",
+        "serde_json",
+        "thiserror",
+    },
     # SQLite durable store: the sibling backend, allowed to name the `rusqlite`
     # driver. Same neutral commit/read ports, embedded engine (ADR-0012).
     "awaken-store-sqlite": {
