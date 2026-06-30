@@ -129,6 +129,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0023-dead-letter-ttl-gc.md` | Decision record | Not required | n/a |
 | `adr/0024-daemon-lease-renewal.md` | Decision record | Not required | n/a |
 | `adr/0025-dispatch-query-surface.md` | Decision record | Not required | n/a |
+| `adr/0026-stop-policy.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
