@@ -1,0 +1,22 @@
+pub mod awaken_runtime_examples
+pub struct awaken_runtime_examples::EchoTool
+impl awaken_runtime_contract::tool::RawTool for awaken_runtime_examples::EchoTool
+pub fn awaken_runtime_examples::EchoTool::id(&self) -> &str
+pub fn awaken_runtime_examples::EchoTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::marker::Freeze for awaken_runtime_examples::EchoTool
+impl core::marker::Send for awaken_runtime_examples::EchoTool
+impl core::marker::Sync for awaken_runtime_examples::EchoTool
+impl core::marker::Unpin for awaken_runtime_examples::EchoTool
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_examples::EchoTool
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_examples::EchoTool
+pub struct awaken_runtime_examples::ScriptedLlm
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_runtime_examples::ScriptedLlm
+pub fn awaken_runtime_examples::ScriptedLlm::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::default::Default for awaken_runtime_examples::ScriptedLlm
+pub fn awaken_runtime_examples::ScriptedLlm::default() -> awaken_runtime_examples::ScriptedLlm
+impl !core::marker::Freeze for awaken_runtime_examples::ScriptedLlm
+impl core::marker::Send for awaken_runtime_examples::ScriptedLlm
+impl core::marker::Sync for awaken_runtime_examples::ScriptedLlm
+impl core::marker::Unpin for awaken_runtime_examples::ScriptedLlm
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_examples::ScriptedLlm
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_examples::ScriptedLlm
