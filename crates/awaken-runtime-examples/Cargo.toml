@@ -12,3 +12,8 @@ awaken-ext-permission = { path = "../awaken-ext-permission" }
 async-trait.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+# `hello_agent` reuses the config domain's pure `compile()` to derive the
+# fingerprint — the embedded path borrows the producer, not the cloud storage.
+awaken-config-store = { path = "../awaken-config-store" }
