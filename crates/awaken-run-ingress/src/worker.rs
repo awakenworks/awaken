@@ -58,7 +58,9 @@ impl<S: DispatchStore> DispatchWorker<S> {
         Self {
             runtime,
             store,
-            exec: RunExecutionContext::new(commit.clone()),
+            // The same store is the commit boundary and the history reader, so a
+            // durable fresh run continues the thread's conversation.
+            exec: RunExecutionContext::new(commit.clone()).with_reader(commit.clone()),
             reader: commit.clone(),
             runs: commit,
             owner: owner.into(),

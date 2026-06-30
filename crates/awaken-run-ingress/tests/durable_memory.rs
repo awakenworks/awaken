@@ -73,9 +73,12 @@ async fn durable_submit_persists_then_runs_to_completion() {
         .expect("durable submit");
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
 
-    // Committed truth holds the run; the dispatch was settled and removed.
+    // Committed truth holds the run: the user turn then the assistant reply (the
+    // input is committed so a later turn sees it).
     assert_eq!(commit.commit_count(), 1);
-    assert_eq!(commit.committed().messages[0].text_content(), "done");
+    let messages = commit.committed().messages;
+    assert_eq!(messages[0].text_content(), "go");
+    assert_eq!(messages.last().unwrap().text_content(), "done");
     assert_eq!(store.dispatch_count(), 0, "a finished dispatch is removed");
 }
 

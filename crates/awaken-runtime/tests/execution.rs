@@ -105,12 +105,15 @@ async fn one_model_step_commits_facts_and_streams_progress() {
         .expect("run executes");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 
-    // Committed truth: one commit, the assistant message, and a run fact.
+    // Committed truth: one commit, the user turn and the assistant reply, and a
+    // run fact. The user input is committed so the next turn sees it.
     assert_eq!(commit.commit_count(), 1);
     let committed = commit.committed();
-    assert_eq!(committed.messages.len(), 1);
-    assert_eq!(committed.messages[0].text_content(), "hi there");
-    assert_eq!(committed.messages[0].role, Role::Assistant);
+    assert_eq!(committed.messages.len(), 2);
+    assert_eq!(committed.messages[0].text_content(), "hello");
+    assert_eq!(committed.messages[0].role, Role::User);
+    assert_eq!(committed.messages[1].text_content(), "hi there");
+    assert_eq!(committed.messages[1].role, Role::Assistant);
 
     // Replay reads committed facts, not the live stream.
     assert_eq!(
