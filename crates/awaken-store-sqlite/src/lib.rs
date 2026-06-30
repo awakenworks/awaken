@@ -1,0 +1,373 @@
+//! SQLite durable implementation of the runtime commit boundary.
+//!
+//! [`SqliteCommitCoordinator`] is the embedded sibling of the Postgres backend:
+//! it implements the same neutral [`Coordinator`] write boundary (G1/G13) and the
+//! `RunStore` / `ThreadReader` read ports against an in-process SQLite database,
+//! using the *same* portable commit schema ([`awaken_store_schema`]). It satisfies
+//! the identical commit contract (ADR-0006): the committed fact log is the
+//! authority and the `run_record` table is a derived cache equal to the latest
+//! fact (G32).
+//!
+//! SQLite's driver (`rusqlite`) is synchronous, so each `commit` runs the SQL
+//! transaction on a blocking thread; the async write boundary is preserved.
+//! Commits are serialized by a write lock, so the monotonic fence is assigned
+//! without a race, mirroring SQLite's own single-writer model. The synchronous
+//! read ports are served from an in-memory projection rebuilt from the log on
+//! construction (durable across restart) and advanced in lockstep with each
+//! commit — never an independent authority.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::agent::run::{Id as RunId, Phase, Record as RunRecord};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::agent::waiting::WaitingTicket;
+use awaken_agent_contract::commit::coordinator::{Coordinator as CommitCoordinator, Error};
+use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::store::thread_reader::ThreadReader;
+use rusqlite::{Connection, TransactionBehavior, params};
+
+pub use awaken_store_schema::{COMMIT_BUNDLE_ID as BUNDLE_ID, commit_bundle};
+
+/// Errors from constructing or migrating the store. Commit-time failures use the
+/// neutral [`Coordinator`] error.
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("open: {0}")]
+    Open(String),
+    #[error("migrate: {0}")]
+    Migrate(String),
+    #[error("hydrate: {0}")]
+    Hydrate(String),
+}
+
+/// In-memory projection of committed truth, rebuilt on construction and advanced
+/// with every commit. Serves the synchronous read ports.
+#[derive(Debug, Default)]
+struct Projection {
+    sequence: u64,
+    messages: Vec<(ThreadId, Message)>,
+    run_records: HashMap<RunId, RunRecord>,
+    waiting: HashMap<RunId, WaitingTicket>,
+}
+
+/// A SQLite-backed [`Coordinator`] plus the read ports it serves.
+pub struct SqliteCommitCoordinator {
+    conn: Arc<Mutex<Connection>>,
+    prefix: String,
+    projection: Mutex<Projection>,
+    /// Serializes commits so the fence is assigned without a race and the
+    /// projection advances in commit order.
+    write_lock: tokio::sync::Mutex<()>,
+}
+
+impl SqliteCommitCoordinator {
+    /// Open (or create) a database file, apply the commit migrations, and
+    /// hydrate the projection. `prefix` namespaces the tables.
+    pub fn open(path: &str, prefix: impl Into<String>) -> Result<Self, StoreError> {
+        let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
+        Self::from_connection(conn, prefix)
+    }
+
+    /// Open a private in-memory database (a fresh, isolated schema per call).
+    pub fn open_in_memory(prefix: impl Into<String>) -> Result<Self, StoreError> {
+        let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
+        Self::from_connection(conn, prefix)
+    }
+
+    fn from_connection(conn: Connection, prefix: impl Into<String>) -> Result<Self, StoreError> {
+        let prefix = prefix.into();
+        let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+        awaken_scoped_migration::sqlite::SqliteMigrationRunner::with_prefix(&prefix)
+            .map_err(|err| StoreError::Migrate(err.to_string()))?
+            .run_bundle(&conn, &bundle)
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+
+        let projection =
+            hydrate(&conn, &prefix).map_err(|err| StoreError::Hydrate(err.to_string()))?;
+
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            prefix,
+            projection: Mutex::new(projection),
+            write_lock: tokio::sync::Mutex::new(()),
+        })
+    }
+
+    /// Number of commits applied so far (the durable fence).
+    pub fn commit_count(&self) -> u64 {
+        self.projection.lock().map(|p| p.sequence).unwrap_or(0)
+    }
+
+    /// Committed messages for a thread, in commit order.
+    pub fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
+        self.projection
+            .lock()
+            .map(|p| {
+                p.messages
+                    .iter()
+                    .filter(|(tid, _)| tid == thread_id)
+                    .map(|(_, m)| m.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The active waiting ticket for a run, if it is currently parked.
+    pub fn waiting_for(&self, run_id: &RunId) -> Option<WaitingTicket> {
+        self.projection
+            .lock()
+            .ok()
+            .and_then(|p| p.waiting.get(run_id).cloned())
+    }
+}
+
+#[async_trait]
+impl CommitCoordinator for SqliteCommitCoordinator {
+    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        // Serialize commits: assign the fence and advance the projection without
+        // a race, matching SQLite's single-writer model.
+        let _writing = self.write_lock.lock().await;
+        let next = lock(&self.projection)?.sequence + 1;
+
+        let conn = self.conn.clone();
+        let prefix = self.prefix.clone();
+        let data = commit.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = conn
+                .lock()
+                .map_err(|_| Error::Rejected("sqlite connection poisoned".to_string()))?;
+            write_commit(&mut guard, &prefix, next, &data)
+        })
+        .await
+        .map_err(|err| Error::Rejected(err.to_string()))??;
+
+        // The transaction is durable; advance the in-memory projection to match.
+        let phase = commit.run_fact.phase.clone();
+        let run_id = commit.run_fact.run_id.clone();
+        let thread_id = commit.thread_id.clone();
+        let parked = matches!((&commit.waiting, &phase), (Some(_), Phase::Waiting));
+
+        let mut projection = lock(&self.projection)?;
+        projection.sequence = next;
+        for message in commit.messages {
+            projection.messages.push((thread_id.clone(), message));
+        }
+        projection.run_records.insert(
+            run_id.clone(),
+            RunRecord {
+                id: run_id.clone(),
+                thread_id,
+                phase,
+            },
+        );
+        if parked {
+            projection
+                .waiting
+                .insert(run_id, commit.waiting.expect("parked has a ticket"));
+        } else {
+            projection.waiting.remove(&run_id);
+        }
+
+        Ok(CommitRecord { sequence: next })
+    }
+}
+
+impl RunStore for SqliteCommitCoordinator {
+    fn get(&self, id: &RunId) -> Option<RunRecord> {
+        self.projection
+            .lock()
+            .ok()
+            .and_then(|p| p.run_records.get(id).cloned())
+    }
+}
+
+impl ThreadReader for SqliteCommitCoordinator {
+    fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
+        SqliteCommitCoordinator::committed_messages(self, thread_id)
+    }
+
+    fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
+        self.waiting_for(run_id)
+    }
+}
+
+fn lock(projection: &Mutex<Projection>) -> Result<std::sync::MutexGuard<'_, Projection>, Error> {
+    projection
+        .lock()
+        .map_err(|_| Error::Rejected("commit projection poisoned".to_string()))
+}
+
+/// Write one staged commit in a single IMMEDIATE transaction (atomic, G1/G13).
+/// JSON columns are stored as serialized text — the schema renders `{json}` to
+/// TEXT on SQLite.
+fn write_commit(
+    conn: &mut Connection,
+    prefix: &str,
+    next: u64,
+    commit: &ThreadCommit,
+) -> Result<(), Error> {
+    let p = prefix;
+    let run_id = &commit.run_fact.run_id.0;
+    let thread_id = &commit.thread_id.0;
+    let phase = json(&commit.run_fact.phase)?;
+
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(reject)?;
+
+    tx.execute(
+        &format!(
+            "INSERT INTO {p}_commit (sequence, thread_id, run_id, phase) VALUES (?1,?2,?3,?4)"
+        ),
+        params![next as i64, thread_id, run_id, phase],
+    )
+    .map_err(reject)?;
+
+    for message in &commit.messages {
+        tx.execute(
+            &format!(
+                "INSERT INTO {p}_message (commit_sequence, thread_id, data) VALUES (?1,?2,?3)"
+            ),
+            params![next as i64, thread_id, json(message)?],
+        )
+        .map_err(reject)?;
+    }
+
+    for command in &commit.state {
+        tx.execute(
+            &format!(
+                "INSERT INTO {p}_state_command (commit_sequence, thread_id, data) VALUES (?1,?2,?3)"
+            ),
+            params![next as i64, thread_id, json(command)?],
+        )
+        .map_err(reject)?;
+    }
+
+    for (offset, draft) in commit.events.iter().enumerate() {
+        let sequence = next * 1_000 + offset as u64;
+        tx.execute(
+            &format!(
+                "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES (?1,?2,?3,?4)"
+            ),
+            params![
+                sequence as i64,
+                run_id,
+                json(&draft.kind)?,
+                json(&draft.payload)?
+            ],
+        )
+        .map_err(reject)?;
+    }
+
+    tx.execute(
+        &format!(
+            "INSERT INTO {p}_run_record (run_id, thread_id, phase) VALUES (?1,?2,?3) \
+             ON CONFLICT(run_id) DO UPDATE SET thread_id = excluded.thread_id, \
+             phase = excluded.phase, updated_at = CURRENT_TIMESTAMP"
+        ),
+        params![run_id, thread_id, phase],
+    )
+    .map_err(reject)?;
+
+    // Park or clear the waiting ticket atomically with the checkpoint (G5).
+    let parked = matches!(
+        (&commit.waiting, &commit.run_fact.phase),
+        (Some(_), Phase::Waiting)
+    );
+    if parked {
+        let ticket = commit.waiting.as_ref().expect("parked has a ticket");
+        tx.execute(
+            &format!(
+                "INSERT INTO {p}_waiting (run_id, ticket) VALUES (?1,?2) \
+                 ON CONFLICT(run_id) DO UPDATE SET ticket = excluded.ticket"
+            ),
+            params![run_id, json(ticket)?],
+        )
+        .map_err(reject)?;
+    } else {
+        tx.execute(
+            &format!("DELETE FROM {p}_waiting WHERE run_id = ?1"),
+            params![run_id],
+        )
+        .map_err(reject)?;
+    }
+
+    tx.commit().map_err(reject)?;
+    Ok(())
+}
+
+/// Rebuild the read projection from the committed log in SQLite.
+fn hydrate(conn: &Connection, prefix: &str) -> Result<Projection, rusqlite::Error> {
+    let sequence = conn.query_row(
+        &format!("SELECT COALESCE(MAX(sequence), 0) FROM {prefix}_commit"),
+        [],
+        |row| row.get::<_, i64>(0),
+    )? as u64;
+    let mut projection = Projection {
+        sequence,
+        ..Default::default()
+    };
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT thread_id, data FROM {prefix}_message ORDER BY id"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (thread_id, data) = row?;
+        if let Ok(message) = serde_json::from_str::<Message>(&data) {
+            projection.messages.push((ThreadId(thread_id), message));
+        }
+    }
+
+    // Fold the commit log in order so the latest fact per run wins (G32).
+    let mut stmt = conn.prepare(&format!(
+        "SELECT run_id, thread_id, phase FROM {prefix}_commit ORDER BY sequence"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (run_id, thread_id, phase) = row?;
+        if let Ok(phase) = serde_json::from_str::<Phase>(&phase) {
+            projection.run_records.insert(
+                RunId(run_id.clone()),
+                RunRecord {
+                    id: RunId(run_id),
+                    thread_id: ThreadId(thread_id),
+                    phase,
+                },
+            );
+        }
+    }
+
+    let mut stmt = conn.prepare(&format!("SELECT run_id, ticket FROM {prefix}_waiting"))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (run_id, ticket) = row?;
+        if let Ok(ticket) = serde_json::from_str::<WaitingTicket>(&ticket) {
+            projection.waiting.insert(RunId(run_id), ticket);
+        }
+    }
+
+    Ok(projection)
+}
+
+fn json<T: serde::Serialize>(value: &T) -> Result<String, Error> {
+    serde_json::to_string(value).map_err(|err| Error::Rejected(err.to_string()))
+}
+
+fn reject(err: rusqlite::Error) -> Error {
+    Error::Rejected(err.to_string())
+}
