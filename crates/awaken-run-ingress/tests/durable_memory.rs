@@ -57,6 +57,7 @@ fn pending_for(
         run_id: RunId(run.to_string()),
         thread_id: ThreadId(THREAD.to_string()),
         correlation_id: correlation.to_string(),
+        available_at_ms: None,
         result,
     }
 }
@@ -465,4 +466,9 @@ async fn staged_delivery_relays_and_resumes_a_parked_run() {
         )]
     );
     assert_eq!(ran.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn scheduled_delivery_due_store_spec() {
+    harness::assert_scheduled_due(&MemoryDispatchStore::new()).await;
 }

@@ -34,6 +34,7 @@ const SPECS: [(i64, &str, &str); 3] = [
             correlation_id TEXT NOT NULL, \
             result {json} NOT NULL, \
             revision BIGINT NOT NULL DEFAULT 1, \
+            available_at BIGINT, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
     ),
     (

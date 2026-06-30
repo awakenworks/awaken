@@ -87,6 +87,11 @@ fn lock(state: &Mutex<State>) -> Result<std::sync::MutexGuard<'_, State>, Dispat
         .map_err(|_| DispatchError::Rejected("dispatch store poisoned".to_string()))
 }
 
+/// A pending input is deliverable when it has no schedule or its time has come.
+fn is_due(input: &PendingInput, now_ms: u64) -> bool {
+    input.available_at_ms.is_none_or(|t| t <= now_ms)
+}
+
 /// Pick the next runnable run, oldest-first within each priority band: reclaim an
 /// expired lease (recovery), then wake a parked run with pending input, then a
 /// fresh pending run. This is the claim policy the Postgres store must match.
@@ -98,7 +103,11 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
                     && row.lease.as_ref().is_some_and(|l| l.expires_ms <= now_ms)
             }
             Status::Parked => {
-                row.status == Status::Parked && state.pending.iter().any(|p| &p.input.run_id == run)
+                row.status == Status::Parked
+                    && state
+                        .pending
+                        .iter()
+                        .any(|p| &p.input.run_id == run && is_due(&p.input, now_ms))
             }
             Status::Pending => row.status == Status::Pending,
         }
@@ -166,7 +175,7 @@ impl RunDispatch for MemoryDispatchStore {
         let pending = state
             .pending
             .iter()
-            .filter(|p| p.input.run_id == run_id)
+            .filter(|p| p.input.run_id == run_id && is_due(&p.input, now_ms))
             .map(|p| p.input.clone())
             .collect();
 

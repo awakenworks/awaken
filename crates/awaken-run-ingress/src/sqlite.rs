@@ -128,7 +128,8 @@ impl RunDispatch for SqliteDispatchStore {
             let wake = format!(
                 "SELECT run_id, request FROM {p}_dispatch d \
                  WHERE d.status = 'parked' AND EXISTS ( \
-                     SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id) \
+                     SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
+                     AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
                  ORDER BY created_at LIMIT 1"
             );
             let fresh = format!(
@@ -151,7 +152,7 @@ impl RunDispatch for SqliteDispatchStore {
 
             let picked = match row(&recovery, true)? {
                 Some(found) => Some(found),
-                None => match row(&wake, false)? {
+                None => match row(&wake, true)? {
                     Some(found) => Some(found),
                     None => row(&fresh, false)?,
                 },
@@ -178,28 +179,33 @@ impl RunDispatch for SqliteDispatchStore {
             let pending = {
                 let mut stmt = tx
                     .prepare(&format!(
-                        "SELECT message_id, thread_id, correlation_id, result FROM {p}_pending \
-                         WHERE run_id = ?1 ORDER BY created_at"
+                        "SELECT message_id, thread_id, correlation_id, result, available_at \
+                         FROM {p}_pending \
+                         WHERE run_id = ?1 AND (available_at IS NULL OR available_at <= ?2) \
+                         ORDER BY created_at"
                     ))
                     .map_err(reject)?;
                 let rows = stmt
-                    .query_map(params![run_id], |r| {
+                    .query_map(params![run_id, now_ms as i64], |r| {
                         Ok((
                             r.get::<_, String>(0)?,
                             r.get::<_, String>(1)?,
                             r.get::<_, String>(2)?,
                             r.get::<_, String>(3)?,
+                            r.get::<_, Option<i64>>(4)?,
                         ))
                     })
                     .map_err(reject)?;
                 let mut pending = Vec::new();
                 for row in rows {
-                    let (message_id, thread_id, correlation_id, result) = row.map_err(reject)?;
+                    let (message_id, thread_id, correlation_id, result, available_at) =
+                        row.map_err(reject)?;
                     pending.push(PendingInput {
                         message_id,
                         run_id: RunId(run_id.clone()),
                         thread_id: ThreadId(thread_id),
                         correlation_id,
+                        available_at_ms: available_at.map(|t| t as u64),
                         result: serde_json::from_str(&result).map_err(json_err)?,
                     });
                 }
@@ -279,15 +285,17 @@ impl PendingInbox for SqliteDispatchStore {
             let changed = conn
                 .execute(
                     &format!(
-                        "INSERT INTO {p}_pending (message_id, run_id, thread_id, correlation_id, result) \
-                         VALUES (?1,?2,?3,?4,?5) ON CONFLICT(message_id) DO NOTHING"
+                        "INSERT INTO {p}_pending \
+                         (message_id, run_id, thread_id, correlation_id, result, available_at) \
+                         VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id) DO NOTHING"
                     ),
                     params![
                         input.message_id,
                         input.run_id.0,
                         input.thread_id.0,
                         input.correlation_id,
-                        result_json
+                        result_json,
+                        input.available_at_ms.map(|t| t as i64)
                     ],
                 )
                 .map_err(reject)?;
@@ -301,8 +309,8 @@ impl PendingInbox for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let mut stmt = conn
                 .prepare(&format!(
-                    "SELECT message_id, run_id, correlation_id, result, revision FROM {p}_pending \
-                     WHERE thread_id = ?1 ORDER BY created_at"
+                    "SELECT message_id, run_id, correlation_id, result, revision, available_at \
+                     FROM {p}_pending WHERE thread_id = ?1 ORDER BY created_at"
                 ))
                 .map_err(reject)?;
             let rows = stmt
@@ -313,18 +321,21 @@ impl PendingInbox for SqliteDispatchStore {
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
                         r.get::<_, i64>(4)?,
+                        r.get::<_, Option<i64>>(5)?,
                     ))
                 })
                 .map_err(reject)?;
             let mut records = Vec::new();
             for row in rows {
-                let (message_id, run_id, correlation_id, result, revision) = row.map_err(reject)?;
+                let (message_id, run_id, correlation_id, result, revision, available_at) =
+                    row.map_err(reject)?;
                 records.push(PendingRecord {
                     input: PendingInput {
                         message_id,
                         run_id: RunId(run_id),
                         thread_id: thread.clone(),
                         correlation_id,
+                        available_at_ms: available_at.map(|t| t as u64),
                         result: serde_json::from_str(&result).map_err(json_err)?,
                     },
                     revision: revision as u64,
@@ -439,15 +450,17 @@ impl MessageOutbox for SqliteDispatchStore {
                     .map_err(reject)?;
                 tx.execute(
                     &format!(
-                        "INSERT INTO {p}_pending (message_id, run_id, thread_id, correlation_id, result) \
-                         VALUES (?1,?2,?3,?4,?5) ON CONFLICT(message_id) DO NOTHING"
+                        "INSERT INTO {p}_pending \
+                         (message_id, run_id, thread_id, correlation_id, result, available_at) \
+                         VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id) DO NOTHING"
                     ),
                     params![
                         input.message_id,
                         input.run_id.0,
                         input.thread_id.0,
                         input.correlation_id,
-                        result_json
+                        result_json,
+                        input.available_at_ms.map(|t| t as i64)
                     ],
                 )
                 .map_err(reject)?;

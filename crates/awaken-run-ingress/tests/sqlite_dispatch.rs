@@ -27,6 +27,7 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId(THREAD.to_string()),
         correlation_id: correlation.to_string(),
+        available_at_ms: None,
         result: ResumeResult::Decision { allow, note: None },
     }
 }
@@ -110,4 +111,10 @@ async fn pending_revision_cas_on_sqlite() {
 async fn cross_thread_outbox_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
     harness::assert_cross_thread_outbox(&store).await;
+}
+
+#[tokio::test]
+async fn scheduled_delivery_due_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_scheduled_due(&store).await;
 }

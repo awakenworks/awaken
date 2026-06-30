@@ -29,12 +29,13 @@ impl RunIngressCapabilities {
         scheduled_wake: false,
     };
 
-    /// Durable ingress: persists, recovers, and replays. Scheduled wake is a
-    /// later slice (the queue stores no timer yet), so it stays false.
+    /// Durable ingress: persists, recovers, replays, and fires a delivery on a
+    /// durable schedule (pending input carries an `available_at`; the daemon
+    /// fires it when due, ADR-0014).
     pub const DURABLE: Self = Self {
         durable: true,
         recoverable: true,
         replayable: true,
-        scheduled_wake: false,
+        scheduled_wake: true,
     };
 }

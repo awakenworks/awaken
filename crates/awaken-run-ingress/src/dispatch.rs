@@ -42,6 +42,11 @@ pub struct PendingInput {
     /// carries the same correlation, so a resume that already committed (and
     /// advanced or cleared the ticket) is never re-applied (ADR-0010).
     pub correlation_id: String,
+    /// Earliest delivery time (epoch millis). `None` is deliverable immediately;
+    /// a future time schedules the wake — the claim skips it until it is due and
+    /// the daemon's poll fires it when the clock reaches it (ADR-0014).
+    #[serde(default)]
+    pub available_at_ms: Option<u64>,
     /// What this input delivers back into the parked run on resume.
     pub result: ResumeResult,
 }

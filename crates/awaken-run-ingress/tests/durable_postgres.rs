@@ -30,6 +30,7 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId(THREAD.to_string()),
         correlation_id: correlation.to_string(),
+        available_at_ms: None,
         result: ResumeResult::Decision { allow, note: None },
     }
 }
@@ -69,6 +70,7 @@ async fn durable_submit_parks_then_delivered_decision_resumes_on_postgres() {
                 run_id: RunId("run-1".to_string()),
                 thread_id: ThreadId(THREAD.to_string()),
                 correlation_id: TICKET.to_string(),
+                available_at_ms: None,
                 result: ResumeResult::Decision {
                     allow: true,
                     note: None,
@@ -235,5 +237,17 @@ async fn cross_thread_outbox_on_postgres() {
         .await
         .expect("dispatch");
     harness::assert_cross_thread_outbox(&store).await;
+    reset(&pool, prefix).await;
+}
+
+#[tokio::test]
+async fn scheduled_delivery_due_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_sched";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_scheduled_due(&store).await;
     reset(&pool, prefix).await;
 }

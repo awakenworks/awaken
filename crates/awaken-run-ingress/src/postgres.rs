@@ -103,7 +103,8 @@ impl RunDispatch for PostgresDispatchStore {
         let wake = format!(
             "SELECT d.run_id, d.request FROM {p}_dispatch d \
              WHERE d.status = 'parked' AND EXISTS ( \
-                 SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id) \
+                 SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
+                 AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
              ORDER BY d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let fresh = format!(
@@ -119,6 +120,7 @@ impl RunDispatch for PostgresDispatchStore {
         {
             Some(row) => Some(row),
             None => match sqlx::query(&wake)
+                .bind(now_ms as i64)
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(reject)?
@@ -153,10 +155,11 @@ impl RunDispatch for PostgresDispatchStore {
         // here: settle removes exactly what the worker reports it consumed, so a
         // crash before settle leaves the input to be re-derived (ADR-0010).
         let rows = sqlx::query(&format!(
-            "SELECT message_id, thread_id, correlation_id, result FROM {p}_pending \
-             WHERE run_id = $1 ORDER BY created_at"
+            "SELECT message_id, thread_id, correlation_id, result, available_at FROM {p}_pending \
+             WHERE run_id = $1 AND (available_at IS NULL OR available_at <= $2) ORDER BY created_at"
         ))
         .bind(&run_id)
+        .bind(now_ms as i64)
         .fetch_all(&mut *tx)
         .await
         .map_err(reject)?;
@@ -167,11 +170,13 @@ impl RunDispatch for PostgresDispatchStore {
             let thread_id: String = prow.try_get("thread_id").map_err(reject)?;
             let correlation_id: String = prow.try_get("correlation_id").map_err(reject)?;
             let Json(result): Json<ResumeResult> = prow.try_get("result").map_err(reject)?;
+            let available_at: Option<i64> = prow.try_get("available_at").map_err(reject)?;
             pending.push(PendingInput {
                 message_id,
                 run_id: RunId(run_id.clone()),
                 thread_id: ThreadId(thread_id),
                 correlation_id,
+                available_at_ms: available_at.map(|t| t as u64),
                 result,
             });
         }
@@ -238,14 +243,16 @@ impl PendingInbox for PostgresDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let p = &self.prefix;
         let result = sqlx::query(&format!(
-            "INSERT INTO {p}_pending (message_id, run_id, thread_id, correlation_id, result) \
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (message_id) DO NOTHING"
+            "INSERT INTO {p}_pending \
+             (message_id, run_id, thread_id, correlation_id, result, available_at) \
+             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (message_id) DO NOTHING"
         ))
         .bind(&input.message_id)
         .bind(&input.run_id.0)
         .bind(&input.thread_id.0)
         .bind(&input.correlation_id)
         .bind(Json(&input.result))
+        .bind(input.available_at_ms.map(|t| t as i64))
         .execute(&self.pool)
         .await
         .map_err(reject)?;
@@ -255,8 +262,8 @@ impl PendingInbox for PostgresDispatchStore {
     async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
         let p = &self.prefix;
         let rows = sqlx::query(&format!(
-            "SELECT message_id, run_id, correlation_id, result, revision FROM {p}_pending \
-             WHERE thread_id = $1 ORDER BY created_at"
+            "SELECT message_id, run_id, correlation_id, result, revision, available_at \
+             FROM {p}_pending WHERE thread_id = $1 ORDER BY created_at"
         ))
         .bind(&thread_id.0)
         .fetch_all(&self.pool)
@@ -270,12 +277,14 @@ impl PendingInbox for PostgresDispatchStore {
             let correlation_id: String = row.try_get("correlation_id").map_err(reject)?;
             let Json(result): Json<ResumeResult> = row.try_get("result").map_err(reject)?;
             let revision: i64 = row.try_get("revision").map_err(reject)?;
+            let available_at: Option<i64> = row.try_get("available_at").map_err(reject)?;
             records.push(PendingRecord {
                 input: PendingInput {
                     message_id,
                     run_id: RunId(run_id),
                     thread_id: thread_id.clone(),
                     correlation_id,
+                    available_at_ms: available_at.map(|t| t as u64),
                     result,
                 },
                 revision: revision as u64,
@@ -368,14 +377,16 @@ impl MessageOutbox for PostgresDispatchStore {
             // the outbox row. A crash before the delete re-appends (a no-op).
             let mut tx = self.pool.begin().await.map_err(reject)?;
             sqlx::query(&format!(
-                "INSERT INTO {p}_pending (message_id, run_id, thread_id, correlation_id, result) \
-                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (message_id) DO NOTHING"
+                "INSERT INTO {p}_pending \
+                 (message_id, run_id, thread_id, correlation_id, result, available_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (message_id) DO NOTHING"
             ))
             .bind(&input.message_id)
             .bind(&input.run_id.0)
             .bind(&input.thread_id.0)
             .bind(&input.correlation_id)
             .bind(Json(&input.result))
+            .bind(input.available_at_ms.map(|t| t as i64))
             .execute(&mut *tx)
             .await
             .map_err(reject)?;

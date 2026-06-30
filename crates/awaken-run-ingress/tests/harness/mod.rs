@@ -214,6 +214,7 @@ pub async fn assert_pending_revision_cas<S: awaken_run_ingress::PendingInbox>(st
         run_id: RunId("run-1".to_string()),
         thread_id: thread.clone(),
         correlation_id: TICKET.to_string(),
+        available_at_ms: None,
         result,
     };
     store
@@ -268,6 +269,7 @@ pub async fn assert_cross_thread_outbox<S: awaken_run_ingress::DispatchStore>(st
         run_id: RunId("run-2".to_string()),
         thread_id: target.clone(),
         correlation_id: "c2".to_string(),
+        available_at_ms: None,
         result: ResumeResult::Input("hi".to_string()),
     };
 
@@ -282,6 +284,53 @@ pub async fn assert_cross_thread_outbox<S: awaken_run_ingress::DispatchStore>(st
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].input.message_id, "x1");
     assert_eq!(store.relay().await.unwrap(), 0, "the outbox was drained");
+}
+
+/// Shared spec for scheduled delivery (M4): a future-dated pending input is not
+/// claimable until its time has come; every backend must gate the wake the same.
+pub async fn assert_scheduled_due<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::{DispatchOutcome, PendingInput, RunExecutionRequest};
+    let run = RunId("run-1".to_string());
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    // Claim the fresh run, then park it so it can be woken by a delivery.
+    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    store
+        .settle(&run, DispatchOutcome::Parked, &[])
+        .await
+        .unwrap();
+
+    // Schedule a delivery for t=1000.
+    store
+        .append(PendingInput {
+            message_id: "sched".to_string(),
+            run_id: run.clone(),
+            thread_id: ThreadId(THREAD.to_string()),
+            correlation_id: TICKET.to_string(),
+            available_at_ms: Some(1_000),
+            result: ResumeResult::Decision {
+                allow: true,
+                note: None,
+            },
+        })
+        .await
+        .unwrap();
+
+    // Before its time, the run is not claimable; at its time, it wakes with the
+    // now-due input in hand.
+    assert!(
+        store.claim("w", 1_000, 500).await.unwrap().is_none(),
+        "a future delivery is not yet claimable"
+    );
+    let claimed = store
+        .claim("w", 1_000, 1_000)
+        .await
+        .unwrap()
+        .expect("a due delivery is claimable");
+    assert_eq!(claimed.pending.len(), 1);
+    assert_eq!(claimed.pending[0].message_id, "sched");
 }
 
 /// Drop every commit- and dispatch-schema table for a prefix (plus the shared
