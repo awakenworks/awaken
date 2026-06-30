@@ -287,3 +287,54 @@ async fn priority_dedupe_gc_on_postgres() {
     harness::assert_priority_dedupe_gc(&store).await;
     reset(&pool, prefix).await;
 }
+
+#[tokio::test]
+async fn lease_renewal_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_renew";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_lease_renewal(&store).await;
+    reset(&pool, prefix).await;
+}
+
+#[tokio::test]
+async fn two_workers_claim_distinct_runs_on_postgres() {
+    // The durable store is already a distributed queue: two concurrent claims
+    // (FOR UPDATE SKIP LOCKED) take different runs, never the same one.
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_multi";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-2")))
+        .await
+        .unwrap();
+
+    let (a, b) = tokio::join!(store.claim("wa", 1_000, 0), store.claim("wb", 1_000, 0));
+    let a = a
+        .unwrap()
+        .expect("worker a claims")
+        .request
+        .run_id()
+        .0
+        .clone();
+    let b = b
+        .unwrap()
+        .expect("worker b claims")
+        .request
+        .run_id()
+        .0
+        .clone();
+    assert_ne!(a, b, "two concurrent workers claim distinct runs");
+
+    reset(&pool, prefix).await;
+}

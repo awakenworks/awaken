@@ -25,6 +25,7 @@ mod request;
 mod send_message;
 mod service;
 mod sqlite;
+mod wake;
 mod worker;
 
 pub use capability::RunIngressCapabilities;
@@ -41,6 +42,9 @@ pub use request::{RunExecutionContext, RunExecutionRequest};
 pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
+#[cfg(feature = "nats")]
+pub use wake::NatsWakeSignal;
+pub use wake::{LocalWakeSignal, WakeSignal};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker};
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or

@@ -519,6 +519,39 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::DispatchStore>(sto
     assert!(store.dead_letters().await.unwrap().is_empty());
 }
 
+/// Shared spec for lease renewal (the multi-node liveness knob). A run's owner
+/// extends its lease so another node's recovery cannot steal it; a non-owner
+/// cannot renew; an un-renewed lease still expires. Every backend matches.
+pub async fn assert_lease_renewal<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::RunExecutionRequest;
+    let run = RunId("run-1".to_string());
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
+
+    // owner-a renews at t=50 (extends to 150); a recovery claim at t=120 cannot
+    // steal it because the lease has not expired.
+    assert!(store.renew_lease(&run, "owner-a", 100, 50).await.unwrap());
+    assert!(
+        store.claim("owner-b", 100, 120).await.unwrap().is_none(),
+        "a renewed lease is not yet expired"
+    );
+    // A non-owner cannot renew.
+    assert!(!store.renew_lease(&run, "owner-b", 100, 130).await.unwrap());
+
+    // Once the renewed lease expires, recovery reclaims for the new owner.
+    assert_eq!(
+        store
+            .claim("owner-b", 100, 200)
+            .await
+            .unwrap()
+            .map(|c| c.lease.owner),
+        Some("owner-b".to_string())
+    );
+}
+
 /// Drop every commit- and dispatch-schema table for a prefix (plus the shared
 /// migration ledger) so each test starts from a clean, isolated schema.
 pub async fn reset(pool: &PgPool, prefix: &str) {

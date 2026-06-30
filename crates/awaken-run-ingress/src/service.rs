@@ -11,7 +11,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -21,6 +20,7 @@ use crate::Error;
 use crate::clock::Clock;
 use crate::dispatch::{DispatchStore, PendingInput};
 use crate::request::RunExecutionRequest;
+use crate::wake::{LocalWakeSignal, WakeSignal};
 use crate::worker::DispatchWorker;
 
 /// How the daemon paces itself.
@@ -46,31 +46,41 @@ impl Default for DispatchServiceConfig {
 /// A running daemon draining one dispatch queue against a runtime.
 pub struct DispatchService<S> {
     worker: Arc<DispatchWorker<S>>,
-    notify: Arc<Notify>,
+    wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     handle: JoinHandle<()>,
 }
 
 impl<S: DispatchStore + 'static> DispatchService<S> {
-    /// Start the daemon on the current tokio runtime.
+    /// Start the daemon with the single-process wake signal.
     pub fn spawn(
         worker: Arc<DispatchWorker<S>>,
         clock: Arc<dyn Clock>,
         config: DispatchServiceConfig,
     ) -> Self {
-        let notify = Arc::new(Notify::new());
+        Self::spawn_with_wake(worker, clock, config, Arc::new(LocalWakeSignal::new()))
+    }
+
+    /// Start the daemon with a chosen [`WakeSignal`] — a `LocalWakeSignal` for one
+    /// process, or a cross-node signal (e.g. NATS) so a fleet need not busy-poll.
+    pub fn spawn_with_wake(
+        worker: Arc<DispatchWorker<S>>,
+        clock: Arc<dyn Clock>,
+        config: DispatchServiceConfig,
+        wake: Arc<dyn WakeSignal>,
+    ) -> Self {
         let shutdown = CancellationToken::new();
         let handle = tokio::spawn(run_loop(
             worker.clone(),
             clock,
-            notify.clone(),
+            wake.clone(),
             shutdown.clone(),
             config.poll_interval,
             config.max_attempts,
         ));
         Self {
             worker,
-            notify,
+            wake,
             shutdown,
             handle,
         }
@@ -82,33 +92,33 @@ impl<S: DispatchStore + 'static> DispatchService<S> {
             .store()
             .enqueue(RunExecutionRequest::new(activation))
             .await?;
-        self.notify.notify_one();
+        let _ = self.wake.publish().await;
         Ok(())
     }
 
     /// Durably deliver pending input and nudge the daemon to resume the run.
     pub async fn deliver(&self, input: PendingInput) -> Result<(), Error> {
         self.worker.store().append(input).await?;
-        self.notify.notify_one();
+        let _ = self.wake.publish().await;
         Ok(())
     }
 
     /// Stage a cross-thread delivery and nudge the daemon to relay it (M3b).
     pub async fn send(&self, input: PendingInput) -> Result<(), Error> {
         self.worker.store().stage(input).await?;
-        self.notify.notify_one();
+        let _ = self.wake.publish().await;
         Ok(())
     }
 
     /// Wake the daemon to drain immediately.
-    pub fn notify(&self) {
-        self.notify.notify_one();
+    pub async fn notify(&self) {
+        let _ = self.wake.publish().await;
     }
 
     /// Stop the daemon and wait for the in-flight drain to finish.
     pub async fn shutdown(self) {
         self.shutdown.cancel();
-        self.notify.notify_one();
+        let _ = self.wake.publish().await;
         let _ = self.handle.await;
     }
 }
@@ -117,7 +127,7 @@ impl<S: DispatchStore + 'static> DispatchService<S> {
 async fn run_loop<S: DispatchStore + 'static>(
     worker: Arc<DispatchWorker<S>>,
     clock: Arc<dyn Clock>,
-    notify: Arc<Notify>,
+    wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     poll: Duration,
     max_attempts: u64,
@@ -136,7 +146,7 @@ async fn run_loop<S: DispatchStore + 'static>(
         let _ = worker.run_until_idle(now).await;
         tokio::select! {
             _ = shutdown.cancelled() => break,
-            _ = notify.notified() => {}
+            _ = wake.wait() => {}
             _ = tokio::time::sleep(poll) => {}
         }
     }

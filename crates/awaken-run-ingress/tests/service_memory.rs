@@ -139,7 +139,7 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
 
     // Advance past the lease and nudge: the daemon reclaims and runs the dispatch.
     clock.set(2_000);
-    service.notify();
+    service.notify().await;
     assert!(
         wait_for(|| commit.commit_count() >= 1).await,
         "recovery ran the crashed dispatch"
@@ -206,7 +206,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
 
     // Advance the clock past the schedule and nudge: the daemon fires it.
     clock.set(2_000);
-    service.notify();
+    service.notify().await;
     assert!(
         wait_for(|| commit.commit_count() >= 2).await,
         "fired when due"
@@ -273,7 +273,7 @@ async fn service_dead_letters_a_poison_run() {
             max_attempts: 1,
         },
     );
-    service.notify();
+    service.notify().await;
 
     // The daemon's reap dead-letters the poison run.
     let mut dead = Vec::new();

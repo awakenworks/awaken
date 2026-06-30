@@ -122,6 +122,19 @@ pub trait RunDispatch: Send + Sync {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
 
+    /// Extend the lease on a run this `owner` is executing, so a long run is not
+    /// reclaimed by another node's recovery while it is still making progress.
+    /// Returns `true` if the lease was renewed (the run is still owned by
+    /// `owner`); `false` if it was lost (stolen, settled, or unknown) — the holder
+    /// should then stop. This is the multi-node liveness knob (ADR-0019).
+    async fn renew_lease(
+        &self,
+        run_id: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<bool, DispatchError>;
+
     /// Settle a claimed dispatch. `Done` removes it and all its pending input;
     /// `Parked` returns it to the waiting state and drops only the `consumed`
     /// pending (by `message_id`), leaving input that arrived mid-attempt for the

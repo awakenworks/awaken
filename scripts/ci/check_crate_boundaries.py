@@ -118,6 +118,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "sqlx",
         "rusqlite",
+        "async-nats",
+        "futures-lite",
         "tokio",
         "tokio-util",
         "serde",

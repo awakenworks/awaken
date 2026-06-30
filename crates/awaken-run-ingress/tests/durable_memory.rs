@@ -609,3 +609,19 @@ async fn send_message_delivers_to_a_threads_parked_run() {
 async fn priority_dedupe_gc_store_spec() {
     harness::assert_priority_dedupe_gc(&MemoryDispatchStore::new()).await;
 }
+
+#[tokio::test]
+async fn lease_renewal_store_spec() {
+    harness::assert_lease_renewal(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn local_wake_signal_delivers_a_held_hint() {
+    use awaken_run_ingress::{LocalWakeSignal, WakeSignal};
+    let wake = LocalWakeSignal::new();
+    // A hint published before anyone waits is held (one permit), so wait returns.
+    wake.publish().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), wake.wait())
+        .await
+        .expect("the wake hint was delivered");
+}

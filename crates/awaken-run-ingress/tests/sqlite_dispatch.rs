@@ -161,3 +161,9 @@ async fn priority_dedupe_gc_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
     harness::assert_priority_dedupe_gc(&store).await;
 }
+
+#[tokio::test]
+async fn lease_renewal_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_lease_renewal(&store).await;
+}
