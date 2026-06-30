@@ -124,6 +124,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0018-priority-dedupe-gc.md` | Decision record | Not required | n/a |
 | `adr/0019-distributed-dispatch-and-wake-signal.md` | Decision record | Not required | n/a |
 | `adr/0020-scheduled-action.md` | Decision record | Not required | n/a |
+| `adr/0021-idle-thread-delivery.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 

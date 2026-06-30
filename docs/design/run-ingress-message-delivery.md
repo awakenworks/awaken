@@ -168,11 +168,13 @@ replaces the daemon's notify
 recovered from committed state for consistency, distinct from this layer's
 delayed *delivery*) is a `WaitingReason`, staged by a gate `Schedule` and
 performed in-process by the worker
-([ADR-0020](../adr/0020-scheduled-action.md)). Deferred (named, not built):
-unsolicited delivery to an idle thread (new-input semantics), time-windowed
-auto-GC, epoch-based supersession, a NATS-backed store (JetStream durability),
-daemon-driven lease-renewal scheduling, a plugin-owned action-kind axis, and the
-`RunDispatch*` query/lifecycle store roles above.
+([ADR-0020](../adr/0020-scheduled-action.md)). A message to a thread with no
+parked run is staged as unbound input the thread's next run consumes
+([ADR-0021](../adr/0021-idle-thread-delivery.md)). Deferred (named, not built):
+auto-activating a run from an idle-thread message (needs the thread-snapshot
+seam), time-windowed auto-GC, epoch-based supersession, a NATS-backed store
+(JetStream durability), daemon-driven lease-renewal scheduling, a plugin-owned
+action-kind axis, and the `RunDispatch*` query/lifecycle store roles above.
 
 ## Durable Semantics
 
