@@ -79,18 +79,32 @@ impl core::marker::Sync for awaken_runtime::DirectRunIngress
 impl core::marker::Unpin for awaken_runtime::DirectRunIngress
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::DirectRunIngress
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime::DirectRunIngress
+pub struct awaken_runtime::PermissionGate
+impl awaken_runtime::PermissionGate
+pub fn awaken_runtime::PermissionGate::new(alloc::sync::Arc<dyn awaken_runtime_contract::permission::PermissionPolicy>) -> Self
+impl awaken_runtime_contract::permission::ToolGateHook for awaken_runtime::PermissionGate
+pub fn awaken_runtime::PermissionGate::gate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::marker::Freeze for awaken_runtime::PermissionGate
+impl core::marker::Send for awaken_runtime::PermissionGate
+impl core::marker::Sync for awaken_runtime::PermissionGate
+impl core::marker::Unpin for awaken_runtime::PermissionGate
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::PermissionGate
+impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime::PermissionGate
 pub struct awaken_runtime::Runtime
 impl awaken_runtime::Runtime
-pub fn awaken_runtime::Runtime::load_snapshot(&self, &awaken_runtime_contract::snapshot::AgentSnapshotInput) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolver::Error>
-impl awaken_runtime::Runtime
+pub async fn awaken_runtime::Runtime::cancel_run(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
 pub fn awaken_runtime::Runtime::new() -> Self
+pub async fn awaken_runtime::Runtime::perform_scheduled_action(&self, &awaken_agent_contract::agent::run::Id, &dyn awaken_agent_contract::store::thread_reader::ThreadReader, awaken_runtime_contract::runtime_context::RuntimeRunContext, u64) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
 pub fn awaken_runtime::Runtime::register_snapshot(&self, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 pub async fn awaken_runtime::Runtime::resume(&self, awaken_runtime_contract::resume::ResumeCommand, &dyn awaken_agent_contract::store::thread_reader::ThreadReader, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
+pub async fn awaken_runtime::Runtime::stop_run(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, alloc::string::String, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
 pub fn awaken_runtime::Runtime::with_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
 pub fn awaken_runtime::Runtime::with_infer_retries(self, usize) -> Self
 pub fn awaken_runtime::Runtime::with_llm(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime::Runtime::with_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::plugin::Plugin>) -> Self
 pub fn awaken_runtime::Runtime::with_tool(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> Self
+impl awaken_runtime::Runtime
+pub fn awaken_runtime::Runtime::load_snapshot(&self, &awaken_runtime_contract::snapshot::AgentSnapshotInput) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolver::Error>
 impl awaken_runtime_contract::capability::RuntimeCapabilitySource for awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::runtime_capabilities(&self) -> awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 impl awaken_runtime_contract::catalog::RuntimeCatalogInstaller for awaken_runtime::Runtime
