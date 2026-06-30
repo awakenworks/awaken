@@ -210,6 +210,43 @@ async fn scheduled_action_commits_then_perform_runs_it() {
 }
 
 #[tokio::test]
+async fn performing_a_scheduled_action_twice_is_idempotent() {
+    // RS-SCH-001 (idempotency): a duplicate perform after the action committed is
+    // rejected, not run again.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    runtime
+        .execute(activation(), context(&commit))
+        .await
+        .expect("parks on a scheduled action");
+    runtime
+        .perform_scheduled_action(
+            &RunId("run-1".to_string()),
+            commit.as_ref(),
+            context(&commit),
+            0,
+        )
+        .await
+        .expect("first perform");
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+
+    // The ticket is cleared, so a second perform finds nothing to do.
+    let err = runtime
+        .perform_scheduled_action(
+            &RunId("run-1".to_string()),
+            commit.as_ref(),
+            context(&commit),
+            0,
+        )
+        .await
+        .expect_err("duplicate perform rejected");
+    assert!(err.to_string().contains("not waiting"));
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "the action ran exactly once");
+}
+
+#[tokio::test]
 async fn perform_on_a_non_scheduled_run_fails_closed() {
     // RS-SCH-004: a result for a run not parked on a scheduled action is rejected.
     let ran = Arc::new(AtomicUsize::new(0));

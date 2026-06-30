@@ -14,12 +14,13 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
-    DispatchOutcome, DurableRunIngress, MemoryDispatchStore, PendingInbox, PendingInput,
-    RunDispatch, RunExecutionRequest, RunIngressCapabilities,
+    DispatchOutcome, DispatchWorker, DurableRunIngress, MemoryDispatchStore, PendingInbox,
+    PendingInput, RunDispatch, RunExecutionRequest, RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress};
 use awaken_runtime_contract::activation::PersistenceMode;
+use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
@@ -680,4 +681,45 @@ async fn daemon_performs_a_scheduled_action_to_completion() {
         0,
         "the run settled Done, not Parked"
     );
+}
+
+#[tokio::test]
+async fn a_recovered_scheduled_action_is_performed() {
+    // RS-SCH-006: a run that committed a ScheduledAction park and then crashed
+    // before performing it (dispatch left 'running' with an expired lease) is
+    // recovered by another worker and performed from the committed request.
+    let (runtime, ran) = schedule_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    // The run parked on a committed ScheduledAction (the action has not run).
+    let ctx = RuntimeRunContext::new(PersistenceMode::ReadWrite).with_commit(commit.clone());
+    let phase = runtime.execute(activation("run-1"), ctx).await.unwrap();
+    assert_eq!(phase, Phase::Waiting);
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+
+    // Its dispatch is a crashed in-flight claim: 'running', lease expired at 10,
+    // never settled.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    store.claim("dead-worker", 10, 0).await.unwrap();
+
+    // A live worker recovers it after the lease expires and performs the action.
+    let worker = DispatchWorker::new(runtime, store.clone(), commit, "live-worker");
+    let processed = worker.tick(100).await.unwrap();
+    assert_eq!(
+        processed,
+        Some((
+            RunId("run-1".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        ))
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the recovered action ran once"
+    );
+    assert_eq!(store.dispatch_count(), 0, "settled Done after recovery");
 }
