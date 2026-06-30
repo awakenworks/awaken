@@ -96,6 +96,20 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
     pub async fn recover(&self, now_ms: u64) -> Result<Vec<(RunId, Phase)>, Error> {
         self.worker.run_until_idle(now_ms).await
     }
+
+    /// Stage a cross-thread delivery to another thread's parked run (M3b). It is
+    /// relayed by [`relay_outbox`](Self::relay_outbox) or the daemon. Returns
+    /// whether it was newly staged (idempotent by `message_id`).
+    pub async fn stage_cross_thread(&self, input: PendingInput) -> Result<bool, Error> {
+        Ok(self.worker.store().stage(input).await?)
+    }
+
+    /// Relay staged cross-thread deliveries to their target pending input, then
+    /// drive any run that became wakeable. Returns each processed run and phase.
+    pub async fn relay_outbox(&self, now_ms: u64) -> Result<Vec<(RunId, Phase)>, Error> {
+        self.worker.store().relay().await?;
+        self.worker.run_until_idle(now_ms).await
+    }
 }
 
 #[async_trait]

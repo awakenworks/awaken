@@ -257,6 +257,33 @@ pub async fn assert_pending_revision_cas<S: awaken_run_ingress::PendingInbox>(st
     assert!(store.list(&thread).await.unwrap().is_empty());
 }
 
+/// Shared spec for the cross-thread outbox + relay (M3b): every backend must
+/// match. A staged delivery is not visible as pending until relayed; relay is
+/// idempotent and moves it to the *target* thread's pending input.
+pub async fn assert_cross_thread_outbox<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::PendingInput;
+    let target = ThreadId("thread-2".to_string());
+    let input = PendingInput {
+        message_id: "x1".to_string(),
+        run_id: RunId("run-2".to_string()),
+        thread_id: target.clone(),
+        correlation_id: "c2".to_string(),
+        result: ResumeResult::Input("hi".to_string()),
+    };
+
+    // Staging is idempotent and does not yet appear as pending on the target.
+    assert!(store.stage(input.clone()).await.unwrap());
+    assert!(!store.stage(input.clone()).await.unwrap());
+    assert!(store.list(&target).await.unwrap().is_empty());
+
+    // Relay moves it to the target thread's pending input, and is then drained.
+    assert_eq!(store.relay().await.unwrap(), 1);
+    let records = store.list(&target).await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].input.message_id, "x1");
+    assert_eq!(store.relay().await.unwrap(), 0, "the outbox was drained");
+}
+
 /// Drop every commit- and dispatch-schema table for a prefix (plus the shared
 /// migration ledger) so each test starts from a clean, isolated schema.
 pub async fn reset(pool: &PgPool, prefix: &str) {
@@ -269,6 +296,7 @@ pub async fn reset(pool: &PgPool, prefix: &str) {
         "waiting",
         "dispatch",
         "pending",
+        "outbox",
         "schema_migrations",
     ] {
         let _ = sqlx::query(&format!("DROP TABLE IF EXISTS {prefix}_{table} CASCADE"))

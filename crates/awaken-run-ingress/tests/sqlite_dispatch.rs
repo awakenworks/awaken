@@ -105,3 +105,9 @@ async fn pending_revision_cas_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
     harness::assert_pending_revision_cas(&store).await;
 }
+
+#[tokio::test]
+async fn cross_thread_outbox_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    harness::assert_cross_thread_outbox(&store).await;
+}

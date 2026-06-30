@@ -225,3 +225,15 @@ async fn pending_revision_cas_on_postgres() {
     harness::assert_pending_revision_cas(&store).await;
     reset(&pool, prefix).await;
 }
+
+#[tokio::test]
+async fn cross_thread_outbox_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_outbox";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_cross_thread_outbox(&store).await;
+    reset(&pool, prefix).await;
+}

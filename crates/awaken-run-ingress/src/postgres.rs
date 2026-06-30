@@ -18,8 +18,8 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput,
-    PendingRecord, RunDispatch,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
+    PendingInput, PendingRecord, RunDispatch,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -333,6 +333,61 @@ impl PendingInbox for PostgresDispatchStore {
         };
         tx.commit().await.map_err(reject)?;
         Ok(outcome)
+    }
+}
+
+#[async_trait]
+impl MessageOutbox for PostgresDispatchStore {
+    async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
+        let p = &self.prefix;
+        let result = sqlx::query(&format!(
+            "INSERT INTO {p}_outbox (message_id, payload) VALUES ($1, $2) \
+             ON CONFLICT (message_id) DO NOTHING"
+        ))
+        .bind(&input.message_id)
+        .bind(Json(&input))
+        .execute(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn relay(&self) -> Result<usize, DispatchError> {
+        let p = &self.prefix;
+        let staged = sqlx::query(&format!("SELECT message_id, payload FROM {p}_outbox"))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(reject)?;
+
+        let mut relayed = 0;
+        for row in staged {
+            let message_id: String = row.try_get("message_id").map_err(reject)?;
+            let Json(input): Json<PendingInput> = row.try_get("payload").map_err(reject)?;
+
+            // One transaction per message: idempotent target append, then drop
+            // the outbox row. A crash before the delete re-appends (a no-op).
+            let mut tx = self.pool.begin().await.map_err(reject)?;
+            sqlx::query(&format!(
+                "INSERT INTO {p}_pending (message_id, run_id, thread_id, correlation_id, result) \
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (message_id) DO NOTHING"
+            ))
+            .bind(&input.message_id)
+            .bind(&input.run_id.0)
+            .bind(&input.thread_id.0)
+            .bind(&input.correlation_id)
+            .bind(Json(&input.result))
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?;
+            sqlx::query(&format!("DELETE FROM {p}_outbox WHERE message_id = $1"))
+                .bind(&message_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+            tx.commit().await.map_err(reject)?;
+            relayed += 1;
+        }
+        Ok(relayed)
     }
 }
 

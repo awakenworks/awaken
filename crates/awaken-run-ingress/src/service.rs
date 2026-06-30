@@ -88,6 +88,13 @@ impl<S: DispatchStore + 'static> DispatchService<S> {
         Ok(())
     }
 
+    /// Stage a cross-thread delivery and nudge the daemon to relay it (M3b).
+    pub async fn send(&self, input: PendingInput) -> Result<(), Error> {
+        self.worker.store().stage(input).await?;
+        self.notify.notify_one();
+        Ok(())
+    }
+
     /// Wake the daemon to drain immediately.
     pub fn notify(&self) {
         self.notify.notify_one();
@@ -112,8 +119,10 @@ async fn run_loop<S: DispatchStore + 'static>(
         if shutdown.is_cancelled() {
             break;
         }
-        // Drain everything runnable now. A store error is transient: the next
-        // tick retries, so swallow it rather than kill the daemon.
+        // Relay staged cross-thread deliveries to their target pending input,
+        // then drain everything runnable now. A store error is transient: the
+        // next tick retries, so swallow it rather than kill the daemon.
+        let _ = worker.store().relay().await;
         let _ = worker.run_until_idle(clock.now_ms()).await;
         tokio::select! {
             _ = shutdown.cancelled() => break,

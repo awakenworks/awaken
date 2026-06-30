@@ -417,3 +417,52 @@ async fn pending_edit_and_retract_are_revision_guarded() {
     // M3a: the in-memory store is the spec for revision-guarded pending ops.
     harness::assert_pending_revision_cas(&MemoryDispatchStore::new()).await;
 }
+
+#[tokio::test]
+async fn cross_thread_outbox_store_spec() {
+    harness::assert_cross_thread_outbox(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn staged_delivery_relays_and_resumes_a_parked_run() {
+    // M3b end to end: a parked run is resumed by a cross-thread delivery that is
+    // staged in the outbox and relayed to its pending input.
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        Phase::Waiting
+    );
+
+    // Stage the delivery (as if from another thread); it is not pending yet.
+    let staged = ingress
+        .stage_cross_thread(pending(
+            "x1",
+            "run-1",
+            ResumeResult::Decision {
+                allow: true,
+                note: None,
+            },
+        ))
+        .await
+        .unwrap();
+    assert!(staged);
+    assert_eq!(store.pending_count(&RunId("run-1".to_string())), 0);
+
+    // Relay moves it to pending and drives the run to completion.
+    let processed = ingress.relay_outbox(0).await.expect("relay");
+    assert_eq!(
+        processed,
+        vec![(
+            RunId("run-1".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        )]
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+}

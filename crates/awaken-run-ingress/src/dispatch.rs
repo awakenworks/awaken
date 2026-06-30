@@ -160,9 +160,32 @@ pub trait PendingInbox: Send + Sync {
     ) -> Result<CasOutcome, DispatchError>;
 }
 
-/// The combined durable-ingress store. One object implements both aggregates so
-/// a wake can freeze pending input within a claim; the worker and host depend on
-/// this bundle, not on a concrete store.
-pub trait DispatchStore: RunDispatch + PendingInbox {}
+/// Durable cross-thread delivery via a transactional outbox.
+///
+/// A run on one thread stages a delivery to *another* thread's pending input;
+/// the outbox holds it until a relay moves it. The relay is idempotent without a
+/// `delivered` flag or two-phase commit: in one store transaction it appends the
+/// payload to the target pending input (idempotent by `message_id`) and deletes
+/// the outbox row. A crash between the two leaves the outbox row, so the next
+/// relay re-appends (a no-op) and deletes — at-least-once with an exactly-once
+/// effect (run-ingress design: cross-thread uses outbox + idempotent target
+/// append, never 2PC).
+#[async_trait]
+pub trait MessageOutbox: Send + Sync {
+    /// Idempotently stage a cross-thread delivery. The payload carries the target
+    /// run/thread it is destined for; the same `message_id` keys both the outbox
+    /// row and the eventual pending append.
+    async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError>;
 
-impl<T: RunDispatch + PendingInbox> DispatchStore for T {}
+    /// Relay every staged delivery to its target thread's pending input, one
+    /// store transaction per message. Returns how many were relayed.
+    async fn relay(&self) -> Result<usize, DispatchError>;
+}
+
+/// The combined durable-ingress store. One object implements all aggregates so a
+/// wake can freeze pending input within a claim and a relay can move outbox to
+/// pending in one transaction; the worker and host depend on this bundle, not on
+/// a concrete store.
+pub trait DispatchStore: RunDispatch + PendingInbox + MessageOutbox {}
+
+impl<T: RunDispatch + PendingInbox + MessageOutbox> DispatchStore for T {}

@@ -18,8 +18,8 @@ use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput,
-    PendingRecord, RunDispatch,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
+    PendingInput, PendingRecord, RunDispatch,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -392,6 +392,74 @@ impl PendingInbox for SqliteDispatchStore {
             };
             tx.commit().map_err(reject)?;
             Ok(outcome)
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl MessageOutbox for SqliteDispatchStore {
+    async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
+        let payload = json(&input)?;
+        self.with_conn(move |conn, p| {
+            let changed = conn
+                .execute(
+                    &format!(
+                        "INSERT INTO {p}_outbox (message_id, payload) VALUES (?1,?2) \
+                         ON CONFLICT(message_id) DO NOTHING"
+                    ),
+                    params![input.message_id, payload],
+                )
+                .map_err(reject)?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
+    async fn relay(&self) -> Result<usize, DispatchError> {
+        self.with_conn(move |conn, p| {
+            let staged: Vec<(String, String)> = {
+                let mut stmt = conn
+                    .prepare(&format!("SELECT message_id, payload FROM {p}_outbox"))
+                    .map_err(reject)?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                    .map_err(reject)?;
+                rows.collect::<Result<_, _>>().map_err(reject)?
+            };
+
+            let mut relayed = 0;
+            for (message_id, payload) in staged {
+                let input: PendingInput = serde_json::from_str(&payload).map_err(json_err)?;
+                let result_json = json(&input.result)?;
+                // One transaction per message: idempotent target append, then
+                // drop the outbox row.
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(reject)?;
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_pending (message_id, run_id, thread_id, correlation_id, result) \
+                         VALUES (?1,?2,?3,?4,?5) ON CONFLICT(message_id) DO NOTHING"
+                    ),
+                    params![
+                        input.message_id,
+                        input.run_id.0,
+                        input.thread_id.0,
+                        input.correlation_id,
+                        result_json
+                    ],
+                )
+                .map_err(reject)?;
+                tx.execute(
+                    &format!("DELETE FROM {p}_outbox WHERE message_id = ?1"),
+                    params![message_id],
+                )
+                .map_err(reject)?;
+                tx.commit().map_err(reject)?;
+                relayed += 1;
+            }
+            Ok(relayed)
         })
         .await
     }

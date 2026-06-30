@@ -11,7 +11,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 /// the commit schema (`awaken.runtime_commit`) in a shared database.
 pub const BUNDLE_ID: &str = "awaken.run_dispatch";
 
-const SPECS: [(i64, &str, &str); 2] = [
+const SPECS: [(i64, &str, &str); 3] = [
     (
         1,
         "run-dispatch queue: one row per accepted run with claim/lease state",
@@ -34,6 +34,14 @@ const SPECS: [(i64, &str, &str); 2] = [
             correlation_id TEXT NOT NULL, \
             result {json} NOT NULL, \
             revision BIGINT NOT NULL DEFAULT 1, \
+            created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
+    (
+        3,
+        "cross-thread outbox: staged deliveries awaiting relay to a target thread",
+        "CREATE TABLE {prefix}_outbox (\
+            message_id TEXT PRIMARY KEY, \
+            payload {json} NOT NULL, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
     ),
 ];

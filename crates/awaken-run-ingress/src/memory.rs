@@ -14,8 +14,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, PendingInbox, PendingInput,
-    PendingRecord, RunDispatch,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
+    PendingInput, PendingRecord, RunDispatch,
 };
 use crate::request::RunExecutionRequest;
 
@@ -47,6 +47,8 @@ struct State {
     rows: HashMap<RunId, Row>,
     /// Undelivered pending input, in arrival order.
     pending: Vec<PendingRow>,
+    /// Cross-thread deliveries staged for relay, in arrival order.
+    outbox: Vec<PendingInput>,
 }
 
 /// In-memory durable-ingress store. Cloneable handles share one state.
@@ -272,5 +274,38 @@ impl PendingInbox for MemoryDispatchStore {
         row.input.result = result;
         row.revision += 1;
         Ok(CasOutcome::Applied)
+    }
+}
+
+#[async_trait]
+impl MessageOutbox for MemoryDispatchStore {
+    async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
+        let mut state = lock(&self.state)?;
+        if state
+            .outbox
+            .iter()
+            .any(|i| i.message_id == input.message_id)
+        {
+            return Ok(false);
+        }
+        state.outbox.push(input);
+        Ok(true)
+    }
+
+    async fn relay(&self) -> Result<usize, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let staged = std::mem::take(&mut state.outbox);
+        let relayed = staged.len();
+        for input in staged {
+            // Idempotent target append: skip a message already pending.
+            if !state
+                .pending
+                .iter()
+                .any(|p| p.input.message_id == input.message_id)
+            {
+                state.pending.push(PendingRow { input, revision: 1 });
+            }
+        }
+        Ok(relayed)
     }
 }
