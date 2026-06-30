@@ -231,6 +231,7 @@ async fn finalize(
         let failed = Checkpoint {
             new_messages: checkpoint.new_messages,
             staged_state: Vec::new(),
+            audit: checkpoint.audit,
             end: End::Ended(EndCause::Error(Failure::StateConflict)),
         };
         return finish(context, thread_id, run_id, failed).await;
@@ -243,6 +244,9 @@ async fn finalize(
 struct Checkpoint {
     new_messages: Vec<Message>,
     staged_state: Vec<StateCommand>,
+    /// Permission-audit drafts produced this attempt, committed with the run's
+    /// facts so an authorization decision is explainable (ADR-0030).
+    audit: Vec<EventDraft>,
     end: End,
 }
 
@@ -273,8 +277,29 @@ impl Checkpoint {
         Self {
             new_messages: Vec::new(),
             staged_state: Vec::new(),
+            audit: Vec::new(),
             end: End::Ended(cause),
         }
+    }
+}
+
+/// Build the audit draft for one gated tool call (ADR-0030). The decision label
+/// is the permission-relevant view of the gate outcome.
+fn permission_audit(call: &ToolCall, outcome: &GateOutcome) -> EventDraft {
+    let decision = match outcome {
+        GateOutcome::Allow => "allow",
+        GateOutcome::Block { .. } => "deny",
+        GateOutcome::Suspend { .. } => "ask",
+        GateOutcome::SetResult(_) => "set_result",
+        GateOutcome::Schedule { .. } => "schedule",
+    };
+    EventDraft {
+        kind: EventKind::PermissionDecided,
+        payload: serde_json::json!({
+            "tool_id": call.tool_id,
+            "call_id": call.call_id,
+            "decision": decision,
+        }),
     }
 }
 
@@ -296,6 +321,8 @@ async fn drive(
     })?;
 
     let mut staged_state: Vec<StateCommand> = Vec::new();
+    // Permission-audit drafts accumulated across the attempt's gate decisions.
+    let mut audit: Vec<EventDraft> = Vec::new();
     // The loop's terminal decision. It stays `None` only if the loop runs to its
     // step ceiling, which is itself a terminus (`MaxSteps`).
     let mut end: Option<End> = None;
@@ -374,7 +401,12 @@ async fn drive(
 
         // Otherwise run each requested tool and feed the results back.
         for call in calls {
-            let output = match gate_decision(runtime, &call).await {
+            let outcome = gate_decision(runtime, &call).await;
+            // Audit the decision of a real (policy-backed) gate (ADR-0030).
+            if runtime.gate().is_some() {
+                audit.push(permission_audit(&call, &outcome));
+            }
+            let output = match outcome {
                 GateOutcome::Allow => execute_tool(runtime, &call).await,
                 GateOutcome::Block { reason } => {
                     ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
@@ -461,6 +493,7 @@ async fn drive(
     Ok(Checkpoint {
         new_messages,
         staged_state,
+        audit,
         end,
     })
 }
@@ -746,6 +779,7 @@ async fn finish(
     let Checkpoint {
         new_messages,
         staged_state,
+        audit,
         end,
     } = checkpoint;
 
@@ -778,6 +812,8 @@ async fn finish(
                 payload: serde_json::json!({ "run_id": run_id.0 }),
             });
         }
+        // Permission-audit drafts ride the same commit as the run's facts (G1).
+        events.extend(audit);
         let commit = ThreadCommit {
             thread_id: thread_id.clone(),
             run_fact: RunFact {
