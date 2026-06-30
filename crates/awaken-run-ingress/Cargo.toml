@@ -15,7 +15,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
-awaken-scoped-migration = { path = "../../../awaken-foundation/crates/awaken-scoped-migration", features = ["postgres"] }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres"] }
 
 [dev-dependencies]
 awaken-store-postgres = { path = "../awaken-store-postgres" }

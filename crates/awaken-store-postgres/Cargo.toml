@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-scoped-migration = { path = "../../../awaken-foundation/crates/awaken-scoped-migration", features = ["postgres"] }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres"] }
 async-trait.workspace = true
 serde_json.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
