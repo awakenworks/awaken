@@ -126,6 +126,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0020-scheduled-action.md` | Decision record | Not required | n/a |
 | `adr/0021-idle-thread-delivery.md` | Decision record | Not required | n/a |
 | `adr/0022-epoch-supersession.md` | Decision record | Not required | n/a |
+| `adr/0023-dead-letter-ttl-gc.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
