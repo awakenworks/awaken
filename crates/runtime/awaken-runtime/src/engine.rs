@@ -87,7 +87,15 @@ pub(crate) async fn run_agent_loop(
 
     emit(&context, &run_id, StreamKind::RunStarted).await;
 
-    let transcript = activation.input.clone();
+    // A fresh run continues the thread's conversation: seed the transcript with
+    // the committed history (when a reader is wired), then this turn's input. The
+    // input is also committed, so the next turn sees this user turn too.
+    let mut transcript = context
+        .reader
+        .as_ref()
+        .map(|reader| reader.committed_messages(&thread_id))
+        .unwrap_or_default();
+    transcript.extend(activation.input.iter().cloned());
     let checkpoint = drive(
         runtime,
         &resolved,
@@ -95,7 +103,7 @@ pub(crate) async fn run_agent_loop(
         &run_id,
         &context,
         transcript,
-        Vec::new(),
+        activation.input,
         0,
     )
     .await?;
