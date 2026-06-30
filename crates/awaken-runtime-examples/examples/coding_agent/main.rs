@@ -14,14 +14,12 @@
 //! The agent reads/searches/edits files under the current directory; it asks
 //! before each `write`/`edit`/`bash` (answer `y` to allow).
 
-use std::sync::Arc;
-
 use awaken_runtime_examples::coding_agent::model::build_executor;
 use awaken_runtime_examples::coding_agent::{CodingSession, build_runtime, coding_config, tui};
 
 fn main() -> anyhow::Result<()> {
     let model = std::env::var("AWAKEN_MODEL").unwrap_or_else(|_| "MiniMax-M3".to_string());
-    let llm = Arc::new(build_executor()?);
+    let llm = build_executor()?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

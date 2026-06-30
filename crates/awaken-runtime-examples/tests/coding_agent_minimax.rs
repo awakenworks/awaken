@@ -8,10 +8,8 @@
 //! ```
 #![cfg(feature = "coding-agent-tui")]
 
-use std::sync::Arc;
-
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, LlmExecutor};
+use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_examples::coding_agent::model::build_executor;
 use awaken_runtime_examples::coding_agent::{
@@ -59,7 +57,7 @@ async fn minimax_endpoint_authenticates_and_reaches_the_model() {
 #[ignore = "requires MINIMAX_API_KEY and network"]
 async fn minimax_agent_edits_a_real_file() {
     let model = std::env::var("AWAKEN_MODEL").unwrap_or_else(|_| "MiniMax-M3".to_string());
-    let llm = Arc::new(build_executor().expect("build executor"));
+    let llm = build_executor().expect("build executor");
     let session = CodingSession::new(build_runtime(llm), coding_config(&model));
 
     let dir = std::env::temp_dir().join(format!("awaken_minimax_{}", std::process::id()));
