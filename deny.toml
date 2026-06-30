@@ -82,5 +82,6 @@ reason = "runtime core; contracts must not depend on the kernel (G2, G18)"
 name = "awaken-ext-builtin-tools"
 wrappers = [
     "awaken-run-ingress",
+    "awaken-runtime-examples",
 ]
 reason = "extensions sit on top; the runtime core must stay extension-agnostic (G2)"

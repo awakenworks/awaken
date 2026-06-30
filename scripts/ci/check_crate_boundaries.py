@@ -127,6 +127,13 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-permission",
         # dev-dep: `hello_agent` borrows the config domain's pure `compile()`.
         "awaken-config-store",
+        # coding-agent example (feature-gated): built-in tools, a real model, a TUI.
+        "awaken-ext-builtin-tools",
+        "awaken-provider-genai",
+        "genai",
+        "ratatui",
+        "crossterm",
+        "anyhow",
         "async-trait",
         "serde_json",
         "tokio",
