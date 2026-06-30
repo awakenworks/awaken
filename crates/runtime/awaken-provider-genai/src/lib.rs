@@ -200,8 +200,11 @@ pub fn to_genai_request(request: &ChatRequest) -> GenaiChatRequest {
         let genai_message = match message.role {
             ChatRole::System => ChatMessage::system(parts),
             ChatRole::Assistant => ChatMessage::assistant(parts),
-            // A tool-role message without structured tool framing is plain input.
-            ChatRole::User | ChatRole::Tool => ChatMessage::user(parts),
+            ChatRole::User => ChatMessage::user(parts),
+            // A tool result must be a tool-role message correlated by tool-call id,
+            // or a strict provider rejects the turn ("tool_call_ids did not have
+            // response messages").
+            ChatRole::Tool => ChatMessage::tool(parts),
         };
         messages.push(genai_message);
     }

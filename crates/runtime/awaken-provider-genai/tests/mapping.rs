@@ -56,6 +56,28 @@ fn maps_roles_and_tools_onto_genai_request() {
 }
 
 #[test]
+fn tool_result_maps_to_a_genai_tool_message() {
+    // A tool result must become a genai *tool* message (not a user message), or a
+    // strict provider rejects the multi-turn tool conversation with
+    // "tool_call_ids did not have response messages". Regression for that bug.
+    let request = ChatRequest {
+        model_binding: binding("gpt-4o-mini"),
+        messages: vec![ChatMessage {
+            role: ChatRole::Tool,
+            content: vec![ContentBlock::tool_result(
+                "call-1",
+                vec![ContentBlock::text("file body")],
+            )],
+        }],
+        tools: Vec::new(),
+    };
+
+    let genai = to_genai_request(&request);
+    assert_eq!(genai.messages.len(), 1);
+    assert!(matches!(genai.messages[0].role, GenaiRole::Tool));
+}
+
+#[test]
 fn image_block_maps_to_a_binary_part() {
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
