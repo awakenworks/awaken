@@ -67,7 +67,7 @@ async fn append_is_idempotent() {
 async fn durable_loop_runs_entirely_on_sqlite() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(SqliteDispatchStore::open_in_memory().expect("dispatch"));
-    let commit = Arc::new(SqliteCommitCoordinator::open_in_memory("rt").expect("commit"));
+    let commit = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("commit"));
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
 
     // Durable submit parks on the gate.
