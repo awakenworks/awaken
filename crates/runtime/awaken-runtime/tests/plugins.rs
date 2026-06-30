@@ -75,6 +75,7 @@ impl Plugin for MarkPlugin {
                 tool_ids: Vec::new(),
                 state_keys: vec!["phase".to_string()],
                 phase_hooks: vec![PhaseHookPoint::StepStart],
+                action_kinds: Vec::new(),
             },
         }
     }

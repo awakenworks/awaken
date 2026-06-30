@@ -182,6 +182,21 @@ impl Runtime {
         crate::engine::cancel_run(run_id, thread_id, context).await
     }
 
+    /// Stop a not-running run with a terminal `Stopped(reason)` fact — a host stop
+    /// policy (budget, step ceiling) making the run terminal and clearing its
+    /// waiting ticket, so a later resume or scheduled result fails closed
+    /// (ADR-0026).
+    pub async fn stop_run(
+        &self,
+        run_id: RunId,
+        thread_id: awaken_agent_contract::agent::thread::Id,
+        reason: String,
+        context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
+    {
+        crate::engine::stop_run(run_id, thread_id, reason, context).await
+    }
+
     /// Perform a committed `ScheduledAction` (ADR-0020): run the deferred action
     /// the parked run committed and commit the resumed outcome. Fails closed if
     /// the run is not parked on a `ScheduledAction` ticket.
