@@ -164,6 +164,7 @@ dependencies = [
 [[package]]
 name = "awaken-scoped-migration"
 version = "0.1.0-dev"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=d98b40c90fdac65c329eb279bf5052818906a1de#d98b40c90fdac65c329eb279bf5052818906a1de"
 dependencies = [
  "sha2",
  "sqlx",
