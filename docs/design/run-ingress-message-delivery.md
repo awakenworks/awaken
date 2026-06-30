@@ -181,9 +181,13 @@ operational query surface
 ([ADR-0025](../adr/0025-dispatch-query-surface.md)). Deferred (named, not built):
 auto-activating a run from an idle-thread message (needs the thread-snapshot
 seam), committing a terminal Cancelled for superseded runs, force-superseding an
-in-flight running run, a NATS-backed store (JetStream durability), and resolving a
-scheduled-action kind to a concrete non-tool action runner (the kind axis itself
-is built, [ADR-0027](../adr/0027-scheduled-action-kind-axis.md)).
+in-flight running run, resolving a scheduled-action kind to a concrete non-tool
+action runner (the kind axis itself is built,
+[ADR-0027](../adr/0027-scheduled-action-kind-axis.md)), and a NATS-backed store
+(deferred by evidence — Postgres already gives distributed claim, and a KV store
+cannot be verified without a server,
+[ADR-0028](../adr/0028-nats-store-deferral.md); the NATS wake signal is built
+and live-tested).
 
 ## Durable Semantics
 
