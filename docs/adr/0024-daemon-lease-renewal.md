@@ -1,6 +1,8 @@
 # ADR-0024: Daemon Lease-Renewal Heartbeat
 
 - Status: Accepted
+- Amends: ADR-0019 — schedules the `renew_lease` it introduced; kept as its own
+  number for history, but it is a refinement, not an independent decision.
 - Date: 2026-06-30
 - Depends on: ADR-0011, ADR-0019
 

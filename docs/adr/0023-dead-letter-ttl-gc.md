@@ -1,6 +1,8 @@
 # ADR-0023: Time-Windowed Dead-Letter GC
 
 - Status: Accepted
+- Amends: ADR-0018 — the auto-GC it named deferred; kept as its own number for
+  history, but it is a refinement, not an independent decision (ADR-0001 bar).
 - Date: 2026-06-30
 - Depends on: ADR-0015, ADR-0018
 
