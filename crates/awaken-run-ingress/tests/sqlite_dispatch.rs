@@ -31,7 +31,7 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
 
 #[tokio::test]
 async fn enqueue_is_idempotent_and_expired_lease_is_reclaimed() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     store
         .enqueue(RunExecutionRequest::new(activation("run-1")))
         .await
@@ -51,7 +51,7 @@ async fn enqueue_is_idempotent_and_expired_lease_is_reclaimed() {
 
 #[tokio::test]
 async fn append_is_idempotent() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     let input = pending("msg-1", TICKET, true);
     assert!(
         store.append(input.clone()).await.unwrap(),
@@ -66,7 +66,7 @@ async fn append_is_idempotent() {
 #[tokio::test]
 async fn durable_loop_runs_entirely_on_sqlite() {
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(SqliteDispatchStore::open_in_memory("disp").expect("dispatch"));
+    let store = Arc::new(SqliteDispatchStore::open_in_memory().expect("dispatch"));
     let commit = Arc::new(SqliteCommitCoordinator::open_in_memory("rt").expect("commit"));
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
 
@@ -100,19 +100,19 @@ async fn durable_loop_runs_entirely_on_sqlite() {
 
 #[tokio::test]
 async fn pending_revision_cas_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_pending_revision_cas(&store).await;
 }
 
 #[tokio::test]
 async fn cross_thread_outbox_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_cross_thread_outbox(&store).await;
 }
 
 #[tokio::test]
 async fn scheduled_delivery_due_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_scheduled_due(&store).await;
 }
 
@@ -124,14 +124,14 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
     let _ = std::fs::remove_file(&path);
 
     {
-        let store = SqliteDispatchStore::open(&path, "disp").expect("open a");
+        let store = SqliteDispatchStore::open(&path).expect("open a");
         store
             .enqueue(RunExecutionRequest::new(activation("run-1")))
             .await
             .unwrap();
     }
     // A fresh handle on the same file still has the enqueued run.
-    let restarted = SqliteDispatchStore::open(&path, "disp").expect("open b");
+    let restarted = SqliteDispatchStore::open(&path).expect("open b");
     let claimed = restarted
         .claim("w", 1_000, 0)
         .await
@@ -143,54 +143,54 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
 
 #[tokio::test]
 async fn dead_letter_budget_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_dead_letter(&store).await;
 }
 
 #[tokio::test]
 async fn cancel_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_cancel(&store).await;
 }
 
 #[tokio::test]
 async fn priority_dedupe_gc_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_priority_dedupe_gc(&store).await;
 }
 
 #[tokio::test]
 async fn lease_renewal_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_lease_renewal(&store).await;
 }
 
 #[tokio::test]
 async fn idle_thread_inbox_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_idle_thread_inbox(&store).await;
 }
 
 #[tokio::test]
 async fn supersession_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_supersession(&store).await;
 }
 
 #[tokio::test]
 async fn dead_letter_ttl_gc_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_dead_letter_ttl_gc(&store).await;
 }
 
 #[tokio::test]
 async fn renew_owned_leases_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_renew_owned_leases(&store).await;
 }
 
 #[tokio::test]
 async fn list_dispatches_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory("disp").expect("open");
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_list_dispatches(&store).await;
 }

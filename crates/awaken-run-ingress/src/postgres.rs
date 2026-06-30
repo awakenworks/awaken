@@ -1,8 +1,8 @@
 //! Postgres durable implementation of the dispatch-store ports.
 //!
-//! Two tables back the two aggregates: `{prefix}_dispatch` is the run-dispatch
+//! Two tables back the two aggregates: `runtime_dispatch` is the run-dispatch
 //! queue (one row per accepted run, carrying the serializable
-//! [`RunExecutionRequest`] and its claim/lease state) and `{prefix}_pending` is
+//! [`RunExecutionRequest`] and its claim/lease state) and `runtime_pending` is
 //! the thread's pending input. Claim is a single transaction using
 //! `FOR UPDATE SKIP LOCKED`, so concurrent workers each take a distinct run
 //! (single owner per run) without a global lock. The claim policy — recover an
@@ -34,41 +34,42 @@ pub enum StoreError {
     Migrate(String),
 }
 
+/// The component namespace for this runtime's tables. One runtime is one
+/// component, so all its tables (dispatch and commit) share this prefix; the
+/// scoped migration ledger isolates it from any other component in the same
+/// database. It is built in, not configured.
+const NS: &str = "runtime";
+
 /// A Postgres-backed dispatch store.
 pub struct PostgresDispatchStore {
     pool: PgPool,
-    prefix: String,
 }
 
 impl PostgresDispatchStore {
     /// Connect and apply the dispatch-schema migrations.
-    pub async fn connect(url: &str, prefix: impl Into<String>) -> Result<Self, StoreError> {
+    pub async fn connect(url: &str) -> Result<Self, StoreError> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;
-        Self::with_pool(pool, prefix).await
+        Self::with_pool(pool).await
     }
 
-    /// Build from an existing pool: apply migrations. `prefix` namespaces the
-    /// tables so the dispatch and commit schemas can share one database.
-    pub async fn with_pool(pool: PgPool, prefix: impl Into<String>) -> Result<Self, StoreError> {
-        let prefix = prefix.into();
+    /// Build from an existing pool: apply the dispatch migrations under the
+    /// runtime namespace.
+    pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
         let bundle = dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
-            pool.clone(),
-            &prefix,
-        )
-        .map_err(|err| StoreError::Migrate(err.to_string()))?
-        .run_bundle(&bundle)
-        .await
-        .map_err(|err| StoreError::Migrate(err.to_string()))?;
-        Ok(Self { pool, prefix })
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|err| StoreError::Migrate(err.to_string()))?
+            .run_bundle(&bundle)
+            .await
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        Ok(Self { pool })
     }
 
     /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in
     /// enqueue order — backs the operational `dead_letters`/`superseded` queries.
     async fn run_ids_by_status(&self, status: &str) -> Result<Vec<RunId>, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let rows = sqlx::query(&format!(
             "SELECT run_id FROM {p}_dispatch WHERE status = $1 ORDER BY created_at"
         ))
@@ -93,7 +94,7 @@ impl RunDispatch for PostgresDispatchStore {
         request: RunExecutionRequest,
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
 
         // Supersession: take the highest epoch on the thread and mark its prior
@@ -147,7 +148,7 @@ impl RunDispatch for PostgresDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
 
         // Priority: recover an expired lease, then wake a parked run with pending
@@ -267,7 +268,7 @@ impl RunDispatch for PostgresDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<bool, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let result = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET lease_until = $1 \
              WHERE run_id = $2 AND status = 'running' AND lease_owner = $3"
@@ -287,7 +288,7 @@ impl RunDispatch for PostgresDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<usize, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let result = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET lease_until = $1 \
              WHERE status = 'running' AND lease_owner = $2"
@@ -306,7 +307,7 @@ impl RunDispatch for PostgresDispatchStore {
         outcome: DispatchOutcome,
         consumed: &[String],
     ) -> Result<(), DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         match outcome {
             DispatchOutcome::Done => {
@@ -349,7 +350,7 @@ impl RunDispatch for PostgresDispatchStore {
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let result = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET status = 'dead_letter', lease_owner = NULL, \
              lease_until = NULL, dead_lettered_at = $1 \
@@ -373,7 +374,7 @@ impl RunDispatch for PostgresDispatchStore {
     }
 
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let rows = sqlx::query(&format!(
             "SELECT run_id, thread_id, status, attempt_count FROM {p}_dispatch \
              ORDER BY created_at"
@@ -396,7 +397,7 @@ impl RunDispatch for PostgresDispatchStore {
     }
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let result = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET status = 'pending', attempt_count = 0, lease_owner = NULL, \
              lease_until = NULL WHERE run_id = $1 AND status = 'dead_letter'"
@@ -409,7 +410,7 @@ impl RunDispatch for PostgresDispatchStore {
     }
 
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let thread: Option<String> = sqlx::query_scalar(&format!(
             "SELECT thread_id FROM {p}_dispatch \
@@ -436,7 +437,7 @@ impl RunDispatch for PostgresDispatchStore {
     }
 
     async fn parked_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let run: Option<String> = sqlx::query_scalar(&format!(
             "SELECT run_id FROM {p}_dispatch WHERE thread_id = $1 AND status = 'parked' \
              ORDER BY created_at LIMIT 1"
@@ -449,7 +450,7 @@ impl RunDispatch for PostgresDispatchStore {
     }
 
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         sqlx::query(&format!(
             "DELETE FROM {p}_pending WHERE run_id IN \
@@ -469,7 +470,7 @@ impl RunDispatch for PostgresDispatchStore {
     }
 
     async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let cond = "status = 'dead_letter' AND dead_lettered_at IS NOT NULL \
                     AND dead_lettered_at <= $1";
         let mut tx = self.pool.begin().await.map_err(reject)?;
@@ -494,7 +495,7 @@ impl RunDispatch for PostgresDispatchStore {
 #[async_trait]
 impl PendingInbox for PostgresDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let result = sqlx::query(&format!(
             "INSERT INTO {p}_pending \
              (message_id, run_id, thread_id, correlation_id, result, available_at) \
@@ -513,7 +514,7 @@ impl PendingInbox for PostgresDispatchStore {
     }
 
     async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let rows = sqlx::query(&format!(
             "SELECT message_id, run_id, correlation_id, result, revision, available_at \
              FROM {p}_pending WHERE thread_id = $1 ORDER BY created_at"
@@ -551,9 +552,9 @@ impl PendingInbox for PostgresDispatchStore {
         message_id: &str,
         expected_revision: u64,
     ) -> Result<CasOutcome, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let outcome = match current_revision(&mut tx, p, message_id).await? {
+        let outcome = match current_revision(&mut tx, message_id).await? {
             None => CasOutcome::NotFound,
             Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
             Some(_) => {
@@ -575,9 +576,9 @@ impl PendingInbox for PostgresDispatchStore {
         expected_revision: u64,
         result: ResumeResult,
     ) -> Result<CasOutcome, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let outcome = match current_revision(&mut tx, p, message_id).await? {
+        let outcome = match current_revision(&mut tx, message_id).await? {
             None => CasOutcome::NotFound,
             Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
             Some(_) => {
@@ -601,7 +602,7 @@ impl PendingInbox for PostgresDispatchStore {
 #[async_trait]
 impl MessageOutbox for PostgresDispatchStore {
     async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let result = sqlx::query(&format!(
             "INSERT INTO {p}_outbox (message_id, payload) VALUES ($1, $2) \
              ON CONFLICT (message_id) DO NOTHING"
@@ -615,7 +616,7 @@ impl MessageOutbox for PostgresDispatchStore {
     }
 
     async fn relay(&self) -> Result<usize, DispatchError> {
-        let p = &self.prefix;
+        let p = NS;
         let staged = sqlx::query(&format!("SELECT message_id, payload FROM {p}_outbox"))
             .fetch_all(&self.pool)
             .await
@@ -657,11 +658,10 @@ impl MessageOutbox for PostgresDispatchStore {
 
 async fn current_revision(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    prefix: &str,
     message_id: &str,
 ) -> Result<Option<u64>, DispatchError> {
     let revision: Option<i64> = sqlx::query_scalar(&format!(
-        "SELECT revision FROM {prefix}_pending WHERE message_id = $1"
+        "SELECT revision FROM {NS}_pending WHERE message_id = $1"
     ))
     .bind(message_id)
     .fetch_optional(&mut **tx)

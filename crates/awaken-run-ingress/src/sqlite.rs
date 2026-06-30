@@ -35,50 +35,51 @@ pub enum StoreError {
 }
 
 /// A SQLite-backed dispatch store.
+/// The component namespace for this runtime's tables (see the Postgres store).
+/// Built in, not configured — one runtime is one component.
+const NS: &str = "runtime";
+
 pub struct SqliteDispatchStore {
     conn: Arc<Mutex<Connection>>,
-    prefix: String,
 }
 
 impl SqliteDispatchStore {
     /// Open (or create) a database file and apply the dispatch migrations.
-    pub fn open(path: &str, prefix: impl Into<String>) -> Result<Self, StoreError> {
+    pub fn open(path: &str) -> Result<Self, StoreError> {
         let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn, prefix)
+        Self::from_connection(conn)
     }
 
     /// Open a private in-memory database.
-    pub fn open_in_memory(prefix: impl Into<String>) -> Result<Self, StoreError> {
+    pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
-        Self::from_connection(conn, prefix)
+        Self::from_connection(conn)
     }
 
-    fn from_connection(conn: Connection, prefix: impl Into<String>) -> Result<Self, StoreError> {
-        let prefix = prefix.into();
+    fn from_connection(conn: Connection) -> Result<Self, StoreError> {
         let bundle = dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration::sqlite::SqliteMigrationRunner::with_prefix(&prefix)
+        awaken_scoped_migration::sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|err| StoreError::Migrate(err.to_string()))?
             .run_bundle(&conn, &bundle)
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            prefix,
         })
     }
 
-    /// Run a closure with the locked connection on a blocking thread.
+    /// Run a closure with the locked connection on a blocking thread. The closure
+    /// receives the runtime table namespace.
     async fn with_conn<T, F>(&self, f: F) -> Result<T, DispatchError>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection, &str) -> Result<T, DispatchError> + Send + 'static,
     {
         let conn = self.conn.clone();
-        let prefix = self.prefix.clone();
         tokio::task::spawn_blocking(move || {
             let mut guard = conn
                 .lock()
                 .map_err(|_| DispatchError::Rejected("dispatch connection poisoned".to_string()))?;
-            f(&mut guard, &prefix)
+            f(&mut guard, NS)
         })
         .await
         .map_err(|err| DispatchError::Rejected(err.to_string()))?

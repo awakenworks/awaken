@@ -22,7 +22,7 @@ use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 
-use harness::{THREAD, TICKET, activation, database_url, pool, reset, tool_runtime};
+use harness::{THREAD, TICKET, activation, tool_runtime};
 
 fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
     harness::pending(
@@ -35,18 +35,18 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
 
 #[tokio::test]
 async fn durable_submit_parks_then_delivered_decision_resumes_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_e2e";
-    reset(&pool, prefix).await;
+    let Some(pool) = harness::schema_pool("t_e2e").await else {
+        return;
+    };
 
     let (runtime, ran) = tool_runtime();
     let commit = Arc::new(
-        PostgresCommitCoordinator::with_pool(pool.clone(), prefix)
+        PostgresCommitCoordinator::with_pool(pool.clone(), "runtime")
             .await
             .expect("commit"),
     );
     let store = Arc::new(
-        PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        PostgresDispatchStore::with_pool(pool.clone())
             .await
             .expect("dispatch"),
     );
@@ -84,19 +84,17 @@ async fn durable_submit_parks_then_delivered_decision_resumes_on_postgres() {
     // Committed truth is terminal.
     let record = RunStore::get(&*commit, &RunId("run-1".to_string())).expect("run record");
     assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
-
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn enqueued_dispatch_survives_a_restart() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_durable";
-    reset(&pool, prefix).await;
+    let Some(pool) = harness::schema_pool("t_durable").await else {
+        return;
+    };
 
     // Enqueue a run, then drop the store to simulate a process restart.
     {
-        let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        let store = PostgresDispatchStore::with_pool(pool.clone())
             .await
             .expect("dispatch a");
         store
@@ -106,7 +104,7 @@ async fn enqueued_dispatch_survives_a_restart() {
     }
 
     // A fresh store on the same database still has the accepted run to claim.
-    let restarted = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let restarted = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch b");
     let claimed = restarted
@@ -115,18 +113,19 @@ async fn enqueued_dispatch_survives_a_restart() {
         .expect("claim")
         .expect("the enqueued run survived restart");
     assert_eq!(claimed.request.run_id().0, "run-1");
-
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn postgres_connect_applies_migrations_and_claim_recovers_a_lease() {
-    let Some(probe) = pool().await else { return };
-    let prefix = "t_pg_recover";
-    reset(&probe, prefix).await;
+    // Create the isolated schema; connect() opens its own pool, so pin its
+    // search_path via the URL.
+    let schema = "t_pg_recover";
+    if harness::schema_pool(schema).await.is_none() {
+        return;
+    }
 
     // connect() (not with_pool) applies the dispatch migrations on a fresh pool.
-    let store = PostgresDispatchStore::connect(&database_url(), prefix)
+    let store = PostgresDispatchStore::connect(&harness::database_url_in_schema(schema))
         .await
         .expect("connect");
     store
@@ -147,24 +146,22 @@ async fn postgres_connect_applies_migrations_and_claim_recovers_a_lease() {
         Some("b".to_string()),
         "the expired lease was reclaimed"
     );
-
-    reset(&probe, prefix).await;
 }
 
 #[tokio::test]
 async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_stale";
-    reset(&pool, prefix).await;
+    let Some(pool) = harness::schema_pool("t_pg_stale").await else {
+        return;
+    };
 
     let (runtime, ran) = tool_runtime();
     let commit = Arc::new(
-        PostgresCommitCoordinator::with_pool(pool.clone(), prefix)
+        PostgresCommitCoordinator::with_pool(pool.clone(), "runtime")
             .await
             .expect("commit"),
     );
     let store = Arc::new(
-        PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        PostgresDispatchStore::with_pool(pool.clone())
             .await
             .expect("dispatch"),
     );
@@ -210,102 +207,93 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
     assert_eq!(ran.load(Ordering::SeqCst), 1);
     let record = RunStore::get(&*commit, &RunId("run-1".to_string())).expect("record");
     assert_eq!(record.phase, Phase::Ended(EndCause::NaturalEnd));
-
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn pending_revision_cas_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_cas";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_cas").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_pending_revision_cas(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn cross_thread_outbox_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_outbox";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_outbox").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_cross_thread_outbox(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn scheduled_delivery_due_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_sched";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_sched").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_scheduled_due(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn dead_letter_budget_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_dlq";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_dlq").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_dead_letter(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn cancel_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_cancel";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_cancel").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_cancel(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn priority_dedupe_gc_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_pdg";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_pdg").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_priority_dedupe_gc(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn lease_renewal_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_renew";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_renew").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_lease_renewal(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn two_workers_claim_distinct_runs_on_postgres() {
     // The durable store is already a distributed queue: two concurrent claims
     // (FOR UPDATE SKIP LOCKED) take different runs, never the same one.
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_multi";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_multi").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     store
@@ -333,66 +321,59 @@ async fn two_workers_claim_distinct_runs_on_postgres() {
         .0
         .clone();
     assert_ne!(a, b, "two concurrent workers claim distinct runs");
-
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn idle_thread_inbox_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_idle";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_idle").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_idle_thread_inbox(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn supersession_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_super";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_super").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_supersession(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn dead_letter_ttl_gc_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_ttlgc";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_ttlgc").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_dead_letter_ttl_gc(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn renew_owned_leases_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_renewall";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_renewall").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_renew_owned_leases(&store).await;
-    reset(&pool, prefix).await;
 }
 
 #[tokio::test]
 async fn list_dispatches_on_postgres() {
-    let Some(pool) = pool().await else { return };
-    let prefix = "t_pg_list";
-    reset(&pool, prefix).await;
-    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+    let Some(pool) = harness::schema_pool("t_pg_list").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
     harness::assert_list_dispatches(&store).await;
-    reset(&pool, prefix).await;
 }

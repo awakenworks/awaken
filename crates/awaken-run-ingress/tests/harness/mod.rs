@@ -261,7 +261,8 @@ pub fn activation(run: &str) -> RunActivation {
 
 // --- Live Postgres helpers, shared by the live suites -----------------------
 
-use sqlx::postgres::PgPool;
+use sqlx::Executor;
+use sqlx::postgres::{PgPool, PgPoolOptions};
 
 /// The test database URL: `AWAKEN_TEST_DATABASE_URL`, or the local dev container.
 pub fn database_url() -> String {
@@ -280,6 +281,43 @@ pub async fn pool() -> Option<PgPool> {
             None
         }
     }
+}
+
+/// The test database URL with `search_path` pinned to `schema`, for the one test
+/// that exercises `connect()` (which opens its own pool, so it cannot use
+/// `schema_pool`'s `after_connect` hook).
+pub fn database_url_in_schema(schema: &str) -> String {
+    let base = database_url();
+    let sep = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{sep}options=-c%20search_path%3D{schema}")
+}
+
+/// A pool isolated to a fresh, empty Postgres schema, so parallel tests do not
+/// collide on the runtime's fixed table names. The production store takes no
+/// table prefix (one runtime is one component); test isolation lives entirely in
+/// the test, via `search_path` — it never leaks into the store's API. Returns
+/// `None` (skip) when no Postgres is reachable.
+pub async fn schema_pool(schema: &'static str) -> Option<PgPool> {
+    let admin = pool().await?;
+    let _ = admin
+        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        .await;
+    admin
+        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .await
+        .expect("create schema");
+    admin.close().await;
+    PgPoolOptions::new()
+        .after_connect(move |conn, _meta| {
+            Box::pin(async move {
+                conn.execute(format!("SET search_path = {schema}").as_str())
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&database_url())
+        .await
+        .ok()
 }
 
 /// Shared spec for revision-guarded pending edit/retract (M3a): every backend
@@ -795,25 +833,4 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::DispatchStore>(store: &
             .map(|c| c.lease.owner),
         Some("owner-b".to_string())
     );
-}
-
-/// Drop every commit- and dispatch-schema table for a prefix (plus the shared
-/// migration ledger) so each test starts from a clean, isolated schema.
-pub async fn reset(pool: &PgPool, prefix: &str) {
-    for table in [
-        "commit",
-        "message",
-        "state_command",
-        "event",
-        "run_record",
-        "waiting",
-        "dispatch",
-        "pending",
-        "outbox",
-        "schema_migrations",
-    ] {
-        let _ = sqlx::query(&format!("DROP TABLE IF EXISTS {prefix}_{table} CASCADE"))
-            .execute(pool)
-            .await;
-    }
 }
