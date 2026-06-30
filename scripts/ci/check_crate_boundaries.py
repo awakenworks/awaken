@@ -118,6 +118,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
     },
+    # Host-layer teaching examples: the one place that wires every concrete
+    # adapter into a runnable runtime. Composition root, so it may name them all.
+    "awaken-runtime-examples": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-runtime",
+        "awaken-ext-permission",
+        "async-trait",
+        "serde_json",
+        "tokio",
+    },
     # SQLite durable store: the sibling backend, allowed to name the `rusqlite`
     # driver. Same neutral commit/read ports, embedded engine (ADR-0012).
     "awaken-store-sqlite": {
