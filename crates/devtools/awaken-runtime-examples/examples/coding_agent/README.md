@@ -30,6 +30,9 @@ Model selection (env):
 - `AWAKEN_MODEL` — the model ref (default `MiniMax-M3`).
 - **MiniMax** (Anthropic-compatible endpoint): set `MINIMAX_API_KEY`, and
   optionally `MINIMAX_BASE_URL` (default `https://api.minimaxi.com/anthropic`).
+- **Kimi Code** (OpenAI-compatible endpoint): set `KIMI_API_KEY`, and optionally
+  `KIMI_BASE_URL` (default `https://api.kimi.com/coding/v1`); use
+  `AWAKEN_MODEL=kimi-k2.7-code`.
 - Otherwise `genai`'s default client reads `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`.
 
 Type a request; the agent reads/searches/edits files under the current directory
@@ -47,19 +50,18 @@ A scripted model reads a real temp file, asks to edit it, and the edit is applie
 on approval (and not applied on denial) — proving the agent mutates code and that
 the permission gate gates mutations.
 
-Live, against a real model through the MiniMax config (ignored by default; needs
-network and a funded key):
+Live, against a real model (ignored by default; needs network and a funded key).
+Verified end to end with Kimi K2.7 — the agent reads the file, edits it (after the
+approval prompt), and reports the change:
 
 ```text
-MINIMAX_API_KEY=… MINIMAX_BASE_URL=https://api.minimaxi.com/anthropic \
-AWAKEN_MODEL=MiniMax-M3 \
+KIMI_API_KEY=… AWAKEN_MODEL=kimi-k2.7-code \
   cargo test -p awaken-runtime-examples --features coding-agent-tui \
-    --test coding_agent_minimax -- --ignored --nocapture
+    --test coding_agent_minimax minimax_agent_edits_a_real_file \
+    -- --ignored --nocapture
 ```
 
-Two checks: `minimax_endpoint_authenticates_and_reaches_the_model` proves the
-`genai` client routes to the MiniMax model via the Anthropic adapter at the custom
-endpoint; `minimax_agent_edits_a_real_file` runs the full agent against the live
-model. The first passes whenever the endpoint is reachable; the second needs the
-account to have credits (a `2056` "Token Plan" quota response means the wiring is
-correct but the plan is exhausted).
+`minimax_endpoint_authenticates_and_reaches_the_model` is a lighter check that the
+`genai` client routes to the configured model/endpoint (it passes whenever the
+endpoint is reachable — e.g. with the MiniMax config, even when its plan quota is
+exhausted, a `2056` response proves the wiring is correct).
