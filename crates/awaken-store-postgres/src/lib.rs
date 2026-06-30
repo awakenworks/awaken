@@ -13,8 +13,6 @@
 //! with each commit. The projection is never an independent authority — it always
 //! equals what replay would derive from the log.
 
-mod migrations;
-
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -32,7 +30,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
-pub use migrations::{BUNDLE_ID, commit_bundle};
+pub use awaken_store_schema::{COMMIT_BUNDLE_ID as BUNDLE_ID, commit_bundle};
 
 /// Errors from constructing or migrating the store. Commit-time failures use the
 /// neutral [`Coordinator`] error.

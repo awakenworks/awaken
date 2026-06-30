@@ -67,16 +67,37 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
     },
-    # Postgres durable store: the only crate allowed to name the SQL driver
-    # (`sqlx`) and the migration ledger (`awaken-scoped-migration`). It implements
-    # the neutral CommitCoordinator / read ports against Postgres; the driver
-    # lives here and nowhere else (ADR-0006 commit contract, ADR-0007 boundary).
+    # Durable commit schema: the portable migration bundle shared by every store
+    # backend. It names the migrator but no SQL driver, so the same schema drives
+    # both the Postgres and SQLite runners without duplication (ADR-0012).
+    "awaken-store-schema": {
+        "awaken-scoped-migration",
+    },
+    # Postgres durable store: a crate allowed to name the SQL driver (`sqlx`) and
+    # the migration runner. It implements the neutral CommitCoordinator / read
+    # ports against Postgres; the driver lives here, not in runtime core
+    # (ADR-0006 commit contract, ADR-0007 boundary).
     "awaken-store-postgres": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
+        "awaken-store-schema",
         "awaken-scoped-migration",
         "async-trait",
         "sqlx",
+        "tokio",
+        "serde",
+        "serde_json",
+        "thiserror",
+    },
+    # SQLite durable store: the sibling backend, allowed to name the `rusqlite`
+    # driver. Same neutral commit/read ports, embedded engine (ADR-0012).
+    "awaken-store-sqlite": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-store-schema",
+        "awaken-scoped-migration",
+        "async-trait",
+        "rusqlite",
         "tokio",
         "serde",
         "serde_json",

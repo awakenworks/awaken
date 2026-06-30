@@ -12,7 +12,9 @@
 #   awaken-runtime            -> the two contracts; the kernel
 #   awaken-ext-builtin-tools  -> contract/kernel surface; first-party extensions
 #   awaken-provider-genai     -> contracts only; the model-SDK adapter (no kernel dep)
-#   awaken-store-postgres     -> contracts only; durable commit-store adapter (no kernel dep)
+#   awaken-store-schema       -> migrator only; portable commit schema (no driver, no kernel)
+#   awaken-store-postgres     -> contracts + schema; durable commit-store adapter (sqlx)
+#   awaken-store-sqlite       -> contracts + schema; durable commit-store adapter (rusqlite)
 #   awaken-run-ingress        -> kernel + store adapter; the durable run host (ADR-0009)
 #
 # Each rule denies a crate, then lists via `wrappers` the ONLY crates allowed to
@@ -40,6 +42,7 @@ wrappers = [
     "awaken-ext-builtin-tools",
     "awaken-provider-genai",
     "awaken-store-postgres",
+    "awaken-store-sqlite",
     "awaken-run-ingress",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
@@ -52,6 +55,7 @@ wrappers = [
     "awaken-ext-builtin-tools",
     "awaken-provider-genai",
     "awaken-store-postgres",
+    "awaken-store-sqlite",
     "awaken-run-ingress",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
