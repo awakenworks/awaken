@@ -17,11 +17,13 @@ use serde::Deserialize;
 
 use crate::erasure::erase;
 
-/// Deliver a message into the multi-agent message lifecycle. The host backs this
-/// with the runtime's message ingress.
+/// Deliver a message to another thread in the multi-agent message lifecycle. A
+/// thread is the stable, addressable unit (a run is one ephemeral execution); the
+/// host backs this with the runtime's message ingress, resolving the target
+/// thread's pending boundary and staging a durable delivery.
 #[async_trait]
 pub trait MessageSender: Send + Sync {
-    async fn send(&self, content: &str) -> Result<(), ToolError>;
+    async fn send(&self, target_thread: &str, content: &str) -> Result<(), ToolError>;
 }
 
 /// Cancel a task (run) by id. The host backs this with the runtime's live
@@ -50,6 +52,7 @@ impl SendMessageTool {
 
 #[derive(Deserialize)]
 pub struct SendMessageArgs {
+    pub target_thread: String,
     pub content: String,
 }
 
@@ -61,8 +64,8 @@ impl Tool for SendMessageTool {
         "send_message"
     }
     async fn call(&self, args: SendMessageArgs) -> Result<String, ToolError> {
-        self.0.send(&args.content).await?;
-        Ok("message sent".to_string())
+        self.0.send(&args.target_thread, &args.content).await?;
+        Ok(format!("message sent to {}", args.target_thread))
     }
 }
 

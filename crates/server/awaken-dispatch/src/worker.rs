@@ -17,6 +17,7 @@ use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
 use crate::Error;
@@ -86,6 +87,12 @@ impl<S: DispatchStore> DispatchWorker<S> {
 
     pub fn store(&self) -> &Arc<S> {
         &self.store
+    }
+
+    /// A runtime context bound to this worker's commit boundary, for an
+    /// out-of-band commit such as a durable cancel.
+    pub(crate) fn execution_context(&self) -> RuntimeRunContext {
+        self.exec.runtime_context(CancellationToken::new())
     }
 
     /// Claim and process at most one runnable dispatch. Returns the processed

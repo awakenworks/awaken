@@ -141,10 +141,35 @@ worker settled is never re-applied after a crash, without an atomic append+freez
 ([ADR-0010](../adr/0010-idempotent-pending-consumption.md)). A `DispatchService`
 daemon drains the queue on a nudge or poll and recovers crashed leases on a
 `Clock` injected at the edge, keeping the worker deterministic
-([ADR-0011](../adr/0011-autonomous-dispatch-service.md)). Deferred (named, not
-built): scheduled wake, per-run lease renewal,
-cross-thread `send_message` outbox, dispatch query/maintenance/GC, supersession,
-dead-letter, and the `RunDispatch*` query/lifecycle store roles above.
+([ADR-0011](../adr/0011-autonomous-dispatch-service.md)). The commit and dispatch
+layers run on Postgres or embedded SQLite over one portable schema
+([ADR-0012](../adr/0012-sqlite-and-postgres-store-backends.md)). Pending input is
+mutable before consumption under revision-guarded `edit`/`retract`, and
+cross-thread delivery uses a transactional outbox with idempotent
+append-then-delete (no 2PC)
+([ADR-0013](../adr/0013-pending-lifecycle-and-cross-thread-outbox.md)); a nullable
+`available_at` schedules a delivery the daemon fires when due, so `scheduled_wake`
+is true ([ADR-0014](../adr/0014-scheduled-delivery.md)). A crash-retry budget
+dead-letters a poison run past `max_attempts` recoveries, with `dead_letters`/
+`requeue` ops ([ADR-0015](../adr/0015-crash-retry-budget-and-dead-letter.md)).
+A queued or parked run is cancelled durably — the dispatch is removed and a
+terminal `Cancelled` fact is committed through the one finish boundary
+([ADR-0016](../adr/0016-durable-cancel.md)). The `send_message` builtin tool is
+backed by the outbox through a host adapter, addressed by thread
+([ADR-0017](../adr/0017-send-message-over-outbox.md)). Fresh work is claimed by
+priority, an `enqueue_with` dedupe key dedups concurrent submissions, and
+`purge_dead_letters` is an operator GC over dead-lettered rows
+([ADR-0018](../adr/0018-priority-dedupe-gc.md)). Multi-node dispatch works on
+Postgres (concurrent distinct claim via `SKIP LOCKED`), `renew_lease` keeps a
+long run owned, and a pluggable `WakeSignal` (local, or feature-gated NATS)
+replaces the daemon's notify
+([ADR-0019](../adr/0019-distributed-dispatch-and-wake-signal.md)). Deferred
+(named, not built): `ScheduledAction` (ADR-0003 mechanism #1 — a committed in-run
+deferred-action request recovered from committed state for consistency, distinct
+from this layer's delayed *delivery*), unsolicited delivery to an idle thread
+(new-input semantics), time-windowed auto-GC, epoch-based supersession, a
+NATS-backed store (JetStream durability), daemon-driven lease-renewal scheduling,
+and the `RunDispatch*` query/lifecycle store roles above.
 
 ## Durable Semantics
 

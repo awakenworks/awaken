@@ -52,13 +52,7 @@ fn pending_for(
     correlation: &str,
     result: ResumeResult,
 ) -> PendingInput {
-    PendingInput {
-        message_id: message_id.to_string(),
-        run_id: RunId(run.to_string()),
-        thread_id: ThreadId(THREAD.to_string()),
-        correlation_id: correlation.to_string(),
-        result,
-    }
+    harness::pending(message_id, run, correlation, result)
 }
 
 #[tokio::test]
@@ -410,4 +404,253 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
         .expect("good delivery");
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn pending_edit_and_retract_are_revision_guarded() {
+    // M3a: the in-memory store is the spec for revision-guarded pending ops.
+    harness::assert_pending_revision_cas(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn cross_thread_outbox_store_spec() {
+    harness::assert_cross_thread_outbox(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn staged_delivery_relays_and_resumes_a_parked_run() {
+    // M3b end to end: a parked run is resumed by a cross-thread delivery that is
+    // staged in the outbox and relayed to its pending input.
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        Phase::Waiting
+    );
+
+    // Stage the delivery (as if from another thread); it is not pending yet.
+    let staged = ingress
+        .stage_cross_thread(pending(
+            "x1",
+            "run-1",
+            ResumeResult::Decision {
+                allow: true,
+                note: None,
+            },
+        ))
+        .await
+        .unwrap();
+    assert!(staged);
+    assert_eq!(store.pending_count(&RunId("run-1".to_string())), 0);
+
+    // Relay moves it to pending and drives the run to completion.
+    let processed = ingress.relay_outbox(0).await.expect("relay");
+    assert_eq!(
+        processed,
+        vec![(
+            RunId("run-1".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        )]
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn scheduled_delivery_due_store_spec() {
+    harness::assert_scheduled_due(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn dead_letter_budget_store_spec() {
+    harness::assert_dead_letter(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn cancel_store_spec() {
+    harness::assert_cancel(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn cancel_durable_commits_cancelled_for_a_parked_run() {
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        Phase::Waiting
+    );
+    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_some());
+
+    // Durable cancel commits a terminal Cancelled and clears the ticket.
+    assert!(
+        ingress
+            .cancel_durable(&RunId("run-1".to_string()))
+            .await
+            .unwrap()
+    );
+    let record = awaken_agent_contract::store::run_store::RunStore::get(
+        commit.as_ref(),
+        &RunId("run-1".to_string()),
+    )
+    .expect("run record");
+    assert_eq!(record.phase, Phase::Ended(EndCause::Cancelled));
+    assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
+    assert_eq!(store.dispatch_count(), 0);
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn cancel_durable_for_a_queued_run_that_never_ran() {
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    // Enqueue without driving, then cancel: a terminal Cancelled is committed
+    // even though the run never executed.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    assert!(
+        ingress
+            .cancel_durable(&RunId("run-1".to_string()))
+            .await
+            .unwrap()
+    );
+    let record = awaken_agent_contract::store::run_store::RunStore::get(
+        commit.as_ref(),
+        &RunId("run-1".to_string()),
+    )
+    .expect("run record");
+    assert_eq!(record.phase, Phase::Ended(EndCause::Cancelled));
+    assert_eq!(store.dispatch_count(), 0);
+
+    // Cancelling again is a no-op.
+    assert!(
+        !ingress
+            .cancel_durable(&RunId("run-1".to_string()))
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn send_message_delivers_to_a_threads_parked_run() {
+    use awaken_agent_contract::store::thread_reader::ThreadReader;
+    use awaken_ext_builtin_tools::MessageSender;
+    use awaken_dispatch::OutboxMessageSender;
+
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    // A run parks on thread-1, waiting for input.
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        Phase::Waiting
+    );
+
+    // The send_message host adapter, addressed by thread, stages a delivery.
+    let sender = OutboxMessageSender::new(store.clone(), commit.clone() as Arc<dyn ThreadReader>);
+    sender
+        .send("thread-1", "hello from another agent")
+        .await
+        .expect("send to a waiting thread");
+    // Sending to a thread with no waiting run fails closed.
+    assert!(sender.send("thread-2", "nobody home").await.is_err());
+
+    // Relaying the outbox resumes the parked run with the message as input.
+    let processed = ingress.relay_outbox(0).await.expect("relay");
+    assert_eq!(
+        processed,
+        vec![(
+            RunId("run-1".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        )]
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "an input resume does not run the gated tool"
+    );
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.text_content() == "hello from another agent")
+    );
+}
+
+#[tokio::test]
+async fn priority_dedupe_gc_store_spec() {
+    harness::assert_priority_dedupe_gc(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn lease_renewal_store_spec() {
+    harness::assert_lease_renewal(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn local_wake_signal_delivers_a_held_hint() {
+    use awaken_dispatch::{LocalWakeSignal, WakeSignal};
+    let wake = LocalWakeSignal::new();
+    // A hint published before anyone waits is held (one permit), so wait returns.
+    wake.publish().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), wake.wait())
+        .await
+        .expect("the wake hint was delivered");
+}
+
+#[tokio::test]
+async fn ingress_dead_letter_and_purge_ops() {
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+
+    // A crashed run reaped through the ingress API.
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert_eq!(ingress.reap(0, 100).await.unwrap(), 1);
+    assert_eq!(
+        ingress.dead_letters().await.unwrap(),
+        vec![RunId("run-1".to_string())]
+    );
+
+    // Requeue, re-reap, then GC through the ingress API.
+    assert!(ingress.requeue(&RunId("run-1".to_string())).await.unwrap());
+    assert!(ingress.dead_letters().await.unwrap().is_empty());
+    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert_eq!(ingress.reap(0, 200).await.unwrap(), 1);
+    assert_eq!(ingress.purge_dead_letters().await.unwrap(), 1);
+    assert!(ingress.dead_letters().await.unwrap().is_empty());
+
+    // Cancelling a run that no longer exists is false.
+    assert!(
+        !ingress
+            .cancel_durable(&RunId("run-1".to_string()))
+            .await
+            .unwrap()
+    );
 }

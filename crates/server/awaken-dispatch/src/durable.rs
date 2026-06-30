@@ -96,6 +96,58 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
     pub async fn recover(&self, now_ms: u64) -> Result<Vec<(RunId, Phase)>, Error> {
         self.worker.run_until_idle(now_ms).await
     }
+
+    /// Stage a cross-thread delivery to another thread's parked run (M3b). It is
+    /// relayed by [`relay_outbox`](Self::relay_outbox) or the daemon. Returns
+    /// whether it was newly staged (idempotent by `message_id`).
+    pub async fn stage_cross_thread(&self, input: PendingInput) -> Result<bool, Error> {
+        Ok(self.worker.store().stage(input).await?)
+    }
+
+    /// Relay staged cross-thread deliveries to their target pending input, then
+    /// drive any run that became wakeable. Returns each processed run and phase.
+    pub async fn relay_outbox(&self, now_ms: u64) -> Result<Vec<(RunId, Phase)>, Error> {
+        self.worker.store().relay().await?;
+        self.worker.run_until_idle(now_ms).await
+    }
+
+    /// Dead-letter crashed runs that have exhausted their crash-retry budget, so
+    /// a poison run is not reclaimed forever (ADR-0015). Returns how many were
+    /// dead-lettered.
+    pub async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, Error> {
+        Ok(self.worker.store().reap(max_attempts, now_ms).await?)
+    }
+
+    /// The run ids currently dead-lettered, for operations.
+    pub async fn dead_letters(&self) -> Result<Vec<RunId>, Error> {
+        Ok(self.worker.store().dead_letters().await?)
+    }
+
+    /// Operator GC: remove every dead-lettered dispatch and its pending input.
+    /// Returns how many were purged.
+    pub async fn purge_dead_letters(&self) -> Result<usize, Error> {
+        Ok(self.worker.store().purge_dead_letters().await?)
+    }
+
+    /// Return a dead-lettered run to the queue at a fresh budget.
+    pub async fn requeue(&self, run_id: &RunId) -> Result<bool, Error> {
+        Ok(self.worker.store().requeue(run_id).await?)
+    }
+
+    /// Durably cancel a not-running run: remove its dispatch and pending input,
+    /// then commit a terminal `Cancelled` fact so its committed phase reflects the
+    /// cancellation (clearing any waiting ticket). Returns `true` if cancelled; a
+    /// currently-running run is not cancelled here — use `cancel` (live control).
+    pub async fn cancel_durable(&self, run_id: &RunId) -> Result<bool, Error> {
+        let Some(thread_id) = self.worker.store().cancel(run_id).await? else {
+            return Ok(false);
+        };
+        self.worker
+            .runtime()
+            .cancel_run(run_id.clone(), thread_id, self.worker.execution_context())
+            .await?;
+        Ok(true)
+    }
 }
 
 #[async_trait]

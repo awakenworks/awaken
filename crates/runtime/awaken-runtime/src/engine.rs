@@ -102,6 +102,18 @@ pub(crate) async fn run_agent_loop(
     finalize(&context, &thread_id, run_id, checkpoint).await
 }
 
+/// Cancel a run that is not executing (a queued or parked run) by committing a
+/// terminal `Cancelled` fact through the one finish boundary (G31). This clears
+/// any waiting ticket, so a parked run can no longer be resumed. An in-flight run
+/// is cancelled cooperatively through `LiveRunControl` instead, not here.
+pub(crate) async fn cancel_run(
+    run_id: RunId,
+    thread_id: ThreadId,
+    context: RuntimeRunContext,
+) -> Result<Phase> {
+    finish(&context, &thread_id, run_id, Checkpoint::cancelled()).await
+}
+
 /// Resume a parked run: validate the resume against the committed ticket, rebuild
 /// the transcript from committed messages, inject the resumed result, and drive
 /// the loop to a new terminal/parked state (G5/G28).
