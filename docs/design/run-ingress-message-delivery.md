@@ -156,11 +156,15 @@ A queued or parked run is cancelled durably — the dispatch is removed and a
 terminal `Cancelled` fact is committed through the one finish boundary
 ([ADR-0016](../adr/0016-durable-cancel.md)). The `send_message` builtin tool is
 backed by the outbox through a host adapter, addressed by thread
-([ADR-0017](../adr/0017-send-message-over-outbox.md)). Deferred (named, not
-built): a pure timer wake with no input (a reminder/`ScheduledAction`), per-run
-lease renewal, unsolicited delivery to an idle thread (new-input semantics),
-dispatch query/maintenance/GC, epoch-based supersession, and the `RunDispatch*`
-query/lifecycle store roles above.
+([ADR-0017](../adr/0017-send-message-over-outbox.md)). Fresh work is claimed by
+priority, an `enqueue_with` dedupe key dedups concurrent submissions, and
+`purge_dead_letters` is an operator GC over dead-lettered rows
+([ADR-0018](../adr/0018-priority-dedupe-gc.md)). Deferred (named, not built): a
+pure timer wake with no input (a reminder/`ScheduledAction`), per-run lease
+renewal, unsolicited delivery to an idle thread (new-input semantics),
+time-windowed auto-GC, epoch-based supersession, a distributed (multi-node)
+backend with wake signals, and the `RunDispatch*` query/lifecycle store roles
+above.
 
 ## Durable Semantics
 
