@@ -8,6 +8,7 @@ members = [
     "crates/runtime/awaken-provider-genai",
     "crates/stores/awaken-store-schema",
     "crates/stores/awaken-store-postgres",
+    "crates/stores/awaken-store-sqlite",
     "crates/server/awaken-dispatch",
 ]
 
