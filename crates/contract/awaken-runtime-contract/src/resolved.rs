@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+/// The content address of a resolved catalog: `sha256` of the canonical config.
+/// It is **derived, not chosen** — a producer (`awaken-config-store::compile`)
+/// computes it and stamps it into the snapshot and the install; the runtime only
+/// re-checks the parts agree (fail-closed). The public field exists for transport
+/// and deserialization, not for authoring: never hand-pick a value here — compile
+/// a config instead, or the runtime's resolution will reject the mismatch.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CatalogFingerprint(pub String);
 
