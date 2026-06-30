@@ -12,7 +12,8 @@
 #   awaken-runtime            -> the two contracts; the kernel
 #   awaken-ext-builtin-tools  -> contract/kernel surface; first-party extensions
 #   awaken-provider-genai     -> contracts only; the model-SDK adapter (no kernel dep)
-#   awaken-run-ingress        (planned host; named in key-design-decisions.md)
+#   awaken-store-postgres     -> contracts only; durable commit-store adapter (no kernel dep)
+#   awaken-run-ingress        -> kernel + store adapter; the durable run host (ADR-0009)
 #
 # Each rule denies a crate, then lists via `wrappers` the ONLY crates allowed to
 # depend on it (its legitimate upper layers). A depender not in the list is a

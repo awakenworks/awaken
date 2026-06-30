@@ -125,6 +125,21 @@ An internal launcher or host service may exist, but it is not a stable
 cross-boundary role unless it gains authority beyond preparing a request and
 calling `RunExecutor`.
 
+## Implemented Slice
+
+A first slice of this boundary ships in the `awaken-run-ingress` crate
+([ADR-0009](../adr/0009-durable-run-ingress-slice.md)); the Rustdoc there co-owns
+the realized behaviour, this document owns the boundary it must keep. Realized
+roles: `RunIngress` / `DirectRunIngress` / `DurableRunIngress`,
+`RunIngressCapabilities`, `RunExecutionRequest` / `RunExecutionContext`, the
+`RunDispatch` queue (enqueue, single-owner claim/lease, lease-expiry recovery)
+and the `PendingInbox` (idempotent append, freeze-at-boundary) backed by an
+in-memory reference store and a Postgres adapter. The worker decides
+execute-versus-resume from committed truth, so the queue never becomes a second
+authority. Deferred (named, not built): scheduled wake, lease renewal,
+cross-thread `send_message` outbox, dispatch query/maintenance/GC, supersession,
+dead-letter, and the `RunDispatch*` query/lifecycle store roles above.
+
 ## Durable Semantics
 
 Durable behavior is additive:

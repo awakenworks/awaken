@@ -112,6 +112,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0006-fact-authority-run-record-is-cache.md` | Decision record | Not required | n/a |
 | `adr/0007-runtime-owns-tool-execution.md` | Decision record | Not required | n/a |
 | `adr/0008-durable-postgres-commit-backend.md` | Decision record | Not required | n/a |
+| `adr/0009-durable-run-ingress-slice.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
@@ -119,7 +120,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 |---|---|---|
 | Runtime protocol/license | Current repository | Protocol/specification, SDK-facing schemas, examples, and conformance tests use Apache-2.0; code packages may carry their own package/file license metadata |
 | Runtime core | Current repository | Keep runtime-owned crates/package open and neutral; use `RuntimeCatalogInstaller`, snapshot execution ports, serializable `ResolvedSpec`, and committed state/effect facts without owning config publication compilation |
-| Dispatch/server | Adjacent server/config package or repository | Use `RunIngress` with direct `DirectRunIngress` and durable `DurableRunIngress`; depend on runtime, never the reverse |
+| Dispatch/server | `awaken-run-ingress` (host crate) + adjacent server/config package | Use `RunIngress` with direct `DirectRunIngress` (runtime) and durable `DurableRunIngress` (`awaken-run-ingress`, [ADR-0009](adr/0009-durable-run-ingress-slice.md)); the host depends on runtime and the store adapter, never the reverse |
 | Config publication | Config domain / adjacent server-config package | Keep `ConfigPublicationCoordinator` and `RegistryCompiler` outside runtime core; hand runtime a complete catalog install request through `RuntimeCatalogInstaller` |
 | Hosted product adapters | Downstream product package or repository | Implement public DTOs/events behind anti-corruption adapters; product hosting vocabulary does not enter neutral runtime/protocol/config code |
 | Credentials/vaults | Credential domain / Product | Opaque refs into runtime; no grant from selection/probe |
@@ -132,12 +133,15 @@ The following should not be implemented as broad subsystems from these docs alon
 - a product-first managed crate family as the core architecture;
 - a universal execution abstraction that replaces `RunIngress` or durable ingress
   internals before a concrete server slice requires it. The shipped surface is
-  `DirectRunIngress` plus a fail-closed `submit_background` (tested). A durable
-  `CommitCoordinator` backend now exists (`awaken-store-postgres`,
-  [ADR-0008](adr/0008-durable-postgres-commit-backend.md)), so a `DurableRunIngress`
-  has something to persist to; its queue/worker remains future work. The commit
-  contract any backend must satisfy is fixed by
-  [ADR-0006](adr/0006-fact-authority-run-record-is-cache.md);
+  `DirectRunIngress` plus durable `DurableRunIngress` (`awaken-run-ingress`,
+  [ADR-0009](adr/0009-durable-run-ingress-slice.md)): a durable submit persists an
+  accepted run, a worker claims and runs it under a single-owner lease, an expired
+  lease is recovered, and a parked run resumes through delivered input — all over
+  the durable `CommitCoordinator` backend ([ADR-0008](adr/0008-durable-postgres-commit-backend.md)).
+  That slice is intentionally minimal: scheduled wake, lease renewal, cross-thread
+  outbox, dispatch query/maintenance, supersession, and dead-letter are named as
+  deferred in ADR-0009, not built. The commit contract any backend must satisfy is
+  fixed by [ADR-0006](adr/0006-fact-authority-run-record-is-cache.md);
 - product-specific vaults, sessions, and outcome fields inside runtime crates.
 - a manager/controller that owns config loading, registry compilation, catalog
   install, live control, and execution as one runtime object;
