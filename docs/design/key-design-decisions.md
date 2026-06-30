@@ -219,7 +219,7 @@ Crate boundaries:
 | `awaken-protocol-replay-contract` | protocol replay contract: public stream replay rows, cursors, redaction state, and replay-log ports | runtime truth, run-dispatch lifecycle, adapter-specific DTO logic |
 | `awaken-config-contract` | config-domain contract: config store ports, registry graph, model/agent definitions, published config, registry/audit records, and materialized runtime input data | live runtime objects, runtime commit authority, protocol projection, admin assistant tool execution |
 | `awaken-admin-contract` | optional admin-only route DTOs or reusable admin API values, if they become stable enough to share | general config publication, registry graph, materialized runtime input data |
-| `awaken-run-ingress` | durable run host: input buffer, dispatch coordinator, recovery, event staging, and live control | protocol encoders, store backends, runtime-domain event definitions |
+| `awaken-dispatch` | durable run host: input buffer, dispatch coordinator, recovery, event staging, and live control | protocol encoders, store backends, runtime-domain event definitions |
 | `awaken-stores` | event/fact log, run-dispatch store, protocol replay store, config/audit backend implementations | runtime normalization, protocol DTO mapping |
 | `awaken-protocol-*` | protocol DTOs/encoders such as A2A, AG-UI, AI SDK; split only when stable and reused | agent kernel logic |
 | `awaken-ext-*` | plugins/extensions such as permission, MCP, goal, and skills | core runtime ownership |

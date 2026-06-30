@@ -12,7 +12,8 @@
 #   awaken-runtime            -> the two contracts; the kernel
 #   awaken-ext-builtin-tools  -> contract/kernel surface; first-party extensions
 #   awaken-provider-genai     -> contracts only; the model-SDK adapter (no kernel dep)
-#   awaken-run-ingress        (planned host; named in key-design-decisions.md)
+#   awaken-store-postgres     -> contracts only; durable commit-store adapter (no kernel dep)
+#   awaken-dispatch        -> kernel + store adapter; the durable run host (ADR-0009)
 #
 # Each rule denies a crate, then lists via `wrappers` the ONLY crates allowed to
 # depend on it (its legitimate upper layers). A depender not in the list is a
@@ -39,7 +40,7 @@ wrappers = [
     "awaken-ext-builtin-tools",
     "awaken-provider-genai",
     "awaken-store-postgres",
-    "awaken-run-ingress",
+    "awaken-dispatch",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
 
@@ -51,7 +52,7 @@ wrappers = [
     "awaken-ext-builtin-tools",
     "awaken-provider-genai",
     "awaken-store-postgres",
-    "awaken-run-ingress",
+    "awaken-dispatch",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
 
@@ -60,7 +61,7 @@ reason = "contract layer; agent-contract must not depend on it (no upward edge)"
 name = "awaken-runtime"
 wrappers = [
     "awaken-ext-builtin-tools",
-    "awaken-run-ingress",
+    "awaken-dispatch",
 ]
 reason = "runtime core; contracts must not depend on the kernel (G2, G18)"
 
@@ -69,6 +70,6 @@ reason = "runtime core; contracts must not depend on the kernel (G2, G18)"
 [[bans.deny]]
 name = "awaken-ext-builtin-tools"
 wrappers = [
-    "awaken-run-ingress",
+    "awaken-dispatch",
 ]
 reason = "extensions sit on top; the runtime core must stay extension-agnostic (G2)"
