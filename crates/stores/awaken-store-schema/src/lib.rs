@@ -1,23 +1,23 @@
-//! The durable commit schema, managed by `awaken-scoped-migration`.
+//! The durable commit schema, shared by every store backend.
 //!
-//! One scoped [`MigrationBundle`] owns the runtime's commit tables. Each table
-//! mirrors a field of [`CommittedThread`](crate::CommittedThread): the append-only
-//! commit/run-fact log (the phase authority and the fence, G31/G32), the message
-//! transcript, the state-command log, committed events, the run-record cache (a
-//! projection of the latest fact, G32), and active waiting tickets. The SQL uses
-//! the migrator's portable tokens so the same bundle could target SQLite, but the
-//! runtime ships only the Postgres runner.
+//! The commit tables are a faithful projection of the staged `ThreadCommit`
+//! (ADR-0008): the append-only commit/run-fact log (the phase authority and the
+//! fence, G31/G32), the message transcript, the state-command log, committed
+//! events, the run-record cache (a projection of the latest fact, G32), and
+//! active waiting tickets. The schema is one portable [`MigrationBundle`] using
+//! the migrator's dialect-neutral tokens, so the *same* bundle drives both the
+//! Postgres (`sqlx`) and SQLite (`rusqlite`) runners. This crate names no SQL
+//! driver — it owns the schema, the backends own the runner.
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 /// The bundle id for the runtime commit schema. Scoped so it never collides with
 /// another component's migrations in the same database.
-pub const BUNDLE_ID: &str = "awaken.runtime_commit";
+pub const COMMIT_BUNDLE_ID: &str = "awaken.runtime_commit";
 
 /// `(version, description, portable SQL)` for each commit table — one row per
-/// field of the committed thread. Data-driven so the bundle is one mapping over
-/// the specs rather than repeated construction.
-const SPECS: [(i64, &str, &str); 6] = [
+/// field of the committed thread.
+const COMMIT_SPECS: [(i64, &str, &str); 6] = [
     (
         1,
         "commit log: run-fact phase authority and the monotonic fence",
@@ -76,11 +76,11 @@ const SPECS: [(i64, &str, &str); 6] = [
 /// Build the commit-schema migration bundle. The version stream is independent
 /// and strictly increasing; later schema changes append new specs.
 pub fn commit_bundle() -> Result<MigrationBundle, MigrationError> {
-    let migrations = SPECS
+    let migrations = COMMIT_SPECS
         .iter()
         .map(|(version, description, sql)| Migration::new(*version, *description, *sql))
         .collect::<Result<Vec<_>, _>>()?;
-    MigrationBundle::new(BUNDLE_ID, migrations)
+    MigrationBundle::new(COMMIT_BUNDLE_ID, migrations)
 }
 
 #[cfg(test)]
@@ -90,8 +90,6 @@ mod tests {
     #[test]
     fn commit_bundle_lints_clean() {
         let bundle = commit_bundle().expect("bundle builds");
-        // lint enforces unique strictly-increasing versions and bundle
-        // independence (no migration references a table it does not create).
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
     }
 

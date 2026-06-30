@@ -1,0 +1,11 @@
+[package]
+name = "awaken-store-schema"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de" }
+
+[lints]
+workspace = true
