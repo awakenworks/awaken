@@ -388,7 +388,7 @@ impl RunDispatch for SqliteDispatchStore {
                 .execute(
                     &format!(
                         "UPDATE {p}_dispatch SET status = 'dead_letter', lease_owner = NULL, \
-                         lease_until = NULL WHERE status = 'running' \
+                         lease_until = NULL, dead_lettered_at = ?1 WHERE status = 'running' \
                          AND lease_until IS NOT NULL AND lease_until < ?1 AND attempt_count >= ?2"
                     ),
                     params![now_ms as i64, max_attempts as i64],
@@ -496,6 +496,33 @@ impl RunDispatch for SqliteDispatchStore {
                 .execute(
                     &format!("DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"),
                     [],
+                )
+                .map_err(reject)?;
+            tx.commit().map_err(reject)?;
+            Ok(n)
+        })
+        .await
+    }
+
+    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
+        self.with_conn(move |conn, p| {
+            let cond = "status = 'dead_letter' AND dead_lettered_at IS NOT NULL \
+                        AND dead_lettered_at <= ?1";
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            tx.execute(
+                &format!(
+                    "DELETE FROM {p}_pending WHERE run_id IN \
+                     (SELECT run_id FROM {p}_dispatch WHERE {cond})"
+                ),
+                params![cutoff_ms as i64],
+            )
+            .map_err(reject)?;
+            let n = tx
+                .execute(
+                    &format!("DELETE FROM {p}_dispatch WHERE {cond}"),
+                    params![cutoff_ms as i64],
                 )
                 .map_err(reject)?;
             tx.commit().map_err(reject)?;

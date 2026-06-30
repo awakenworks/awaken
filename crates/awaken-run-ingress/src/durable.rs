@@ -158,6 +158,16 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
         Ok(self.worker.store().purge_dead_letters().await?)
     }
 
+    /// Time-windowed GC: remove dead-letters dead-lettered at or before `cutoff_ms`
+    /// (ADR-0023). The daemon runs this on its cadence when a ttl is configured.
+    pub async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, Error> {
+        Ok(self
+            .worker
+            .store()
+            .purge_dead_letters_before(cutoff_ms)
+            .await?)
+    }
+
     /// Return a dead-lettered run to the queue at a fresh budget.
     pub async fn requeue(&self, run_id: &RunId) -> Result<bool, Error> {
         Ok(self.worker.store().requeue(run_id).await?)

@@ -823,3 +823,8 @@ async fn submit_superseding_abandons_prior_thread_work() {
         "a superseded run is not claimable"
     );
 }
+
+#[tokio::test]
+async fn dead_letter_ttl_gc_store_spec() {
+    harness::assert_dead_letter_ttl_gc(&MemoryDispatchStore::new()).await;
+}

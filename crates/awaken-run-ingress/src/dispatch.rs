@@ -182,6 +182,11 @@ pub trait RunDispatch: Send + Sync {
     /// Returns how many were purged.
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError>;
 
+    /// Remove dead-lettered dispatches whose dead-letter time is at or before
+    /// `cutoff_ms` (and their pending input) — time-windowed GC the daemon runs on
+    /// a cadence (ADR-0023). Returns how many were purged.
+    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError>;
+
     /// The run ids superseded by a newer submission on their thread (ADR-0022),
     /// for operations — the mirror of [`dead_letters`](Self::dead_letters).
     async fn superseded(&self) -> Result<Vec<RunId>, DispatchError>;

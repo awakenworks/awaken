@@ -38,6 +38,8 @@ struct Row {
     priority: i64,
     epoch: i64,
     dedupe_key: Option<String>,
+    /// When the run was dead-lettered (epoch ms), for time-windowed GC.
+    dead_lettered_at: Option<u64>,
 }
 
 /// A pending input with its optimistic-concurrency revision.
@@ -72,6 +74,24 @@ impl MemoryDispatchStore {
     /// Number of live dispatch rows (test introspection).
     pub fn dispatch_count(&self) -> usize {
         self.state.lock().map(|s| s.rows.len()).unwrap_or(0)
+    }
+
+    /// Remove dead-lettered rows matching `keep` (and their pending), returning
+    /// the count — shared by the unconditional and time-windowed GC.
+    fn purge_dead(&self, keep: impl Fn(&Row) -> bool) -> Result<usize, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let dead: Vec<RunId> = state
+            .rows
+            .iter()
+            .filter(|(_, row)| row.status == Status::DeadLetter && keep(row))
+            .map(|(run, _)| run.clone())
+            .collect();
+        for run in &dead {
+            state.rows.remove(run);
+            state.order.retain(|r| r != run);
+            state.pending.retain(|p| &p.input.run_id != run);
+        }
+        Ok(dead.len())
     }
 
     /// Unconsumed pending inputs for a run (test introspection).
@@ -200,6 +220,7 @@ impl RunDispatch for MemoryDispatchStore {
                 priority: options.priority,
                 epoch,
                 dedupe_key: options.dedupe_key,
+                dead_lettered_at: None,
             },
         );
         state.order.push(run_id);
@@ -321,6 +342,7 @@ impl RunDispatch for MemoryDispatchStore {
             if expired && row.attempt_count >= max_attempts {
                 row.status = Status::DeadLetter;
                 row.lease = None;
+                row.dead_lettered_at = Some(now_ms);
                 reaped += 1;
             }
         }
@@ -400,19 +422,11 @@ impl RunDispatch for MemoryDispatchStore {
     }
 
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        let mut state = lock(&self.state)?;
-        let dead: Vec<RunId> = state
-            .rows
-            .iter()
-            .filter(|(_, row)| row.status == Status::DeadLetter)
-            .map(|(run, _)| run.clone())
-            .collect();
-        for run in &dead {
-            state.rows.remove(run);
-            state.order.retain(|r| r != run);
-            state.pending.retain(|p| &p.input.run_id != run);
-        }
-        Ok(dead.len())
+        self.purge_dead(|_| true)
+    }
+
+    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
+        self.purge_dead(|row| row.dead_lettered_at.is_some_and(|at| at <= cutoff_ms))
     }
 }
 

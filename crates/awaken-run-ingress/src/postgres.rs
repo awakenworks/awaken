@@ -332,7 +332,8 @@ impl RunDispatch for PostgresDispatchStore {
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
         let p = &self.prefix;
         let result = sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET status = 'dead_letter', lease_owner = NULL, lease_until = NULL \
+            "UPDATE {p}_dispatch SET status = 'dead_letter', lease_owner = NULL, \
+             lease_until = NULL, dead_lettered_at = $1 \
              WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < $1 \
              AND attempt_count >= $2"
         ))
@@ -421,6 +422,28 @@ impl RunDispatch for PostgresDispatchStore {
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
+        tx.commit().await.map_err(reject)?;
+        Ok(result.rows_affected() as usize)
+    }
+
+    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
+        let p = &self.prefix;
+        let cond = "status = 'dead_letter' AND dead_lettered_at IS NOT NULL \
+                    AND dead_lettered_at <= $1";
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        sqlx::query(&format!(
+            "DELETE FROM {p}_pending WHERE run_id IN \
+             (SELECT run_id FROM {p}_dispatch WHERE {cond})"
+        ))
+        .bind(cutoff_ms as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let result = sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE {cond}"))
+            .bind(cutoff_ms as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?;
         tx.commit().await.map_err(reject)?;
         Ok(result.rows_affected() as usize)
     }

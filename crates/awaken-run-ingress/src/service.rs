@@ -31,6 +31,9 @@ pub struct DispatchServiceConfig {
     /// Crash-retry budget: a dispatch reclaimed this many times without a settle
     /// is dead-lettered instead of run again (ADR-0015).
     pub max_attempts: u64,
+    /// If set, dead-letters older than this are GC'd on the poll cadence; `None`
+    /// keeps them until an operator purges them (ADR-0023).
+    pub dead_letter_ttl: Option<Duration>,
 }
 
 impl Default for DispatchServiceConfig {
@@ -38,6 +41,7 @@ impl Default for DispatchServiceConfig {
         Self {
             poll_interval: Duration::from_millis(50),
             max_attempts: 5,
+            dead_letter_ttl: None,
         }
     }
 }
@@ -74,8 +78,7 @@ impl<S: DispatchStore + 'static> DispatchService<S> {
             clock,
             wake.clone(),
             shutdown.clone(),
-            config.poll_interval,
-            config.max_attempts,
+            config,
         ));
         Self {
             worker,
@@ -122,31 +125,34 @@ impl<S: DispatchStore + 'static> DispatchService<S> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_loop<S: DispatchStore + 'static>(
     worker: Arc<DispatchWorker<S>>,
     clock: Arc<dyn Clock>,
     wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
-    poll: Duration,
-    max_attempts: u64,
+    config: DispatchServiceConfig,
 ) {
     loop {
         if shutdown.is_cancelled() {
             break;
         }
         // Dead-letter poison runs that have exhausted their crash-retry budget,
-        // relay staged cross-thread deliveries, then drain everything runnable
-        // now. A store error is transient: the next tick retries, so swallow it
-        // rather than kill the daemon.
+        // GC aged dead-letters if a ttl is set, relay staged cross-thread
+        // deliveries, then drain everything runnable now. A store error is
+        // transient: the next tick retries, so swallow it rather than kill the
+        // daemon.
         let now = clock.now_ms();
-        let _ = worker.store().reap(max_attempts, now).await;
+        let _ = worker.store().reap(config.max_attempts, now).await;
+        if let Some(ttl) = config.dead_letter_ttl {
+            let cutoff = now.saturating_sub(ttl.as_millis() as u64);
+            let _ = worker.store().purge_dead_letters_before(cutoff).await;
+        }
         let _ = worker.store().relay().await;
         let _ = worker.run_until_idle(now).await;
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = wake.wait() => {}
-            _ = tokio::time::sleep(poll) => {}
+            _ = tokio::time::sleep(config.poll_interval) => {}
         }
     }
 }

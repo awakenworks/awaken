@@ -25,6 +25,7 @@ const SPECS: [(i64, &str, &str); 3] = [
             attempt_count BIGINT NOT NULL DEFAULT 0, \
             priority BIGINT NOT NULL DEFAULT 0, \
             epoch BIGINT NOT NULL DEFAULT 0, \
+            dead_lettered_at BIGINT, \
             dedupe_key TEXT, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
     ),

@@ -596,6 +596,35 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::DispatchStore>(sto
     assert!(store.dead_letters().await.unwrap().is_empty());
 }
 
+/// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only
+/// dead-letters older than the cutoff; younger ones stay. Every backend matches.
+pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::DispatchStore>(store: &S) {
+    use awaken_run_ingress::RunExecutionRequest;
+
+    // A run is dead-lettered at t=1000 (claimed with a 1ms lease at t=0, then
+    // reaped at budget 0 once the lease has expired).
+    store
+        .enqueue(RunExecutionRequest::new(activation("poison")))
+        .await
+        .unwrap();
+    assert!(store.claim("w", 1, 0).await.unwrap().is_some());
+    assert_eq!(store.reap(0, 1_000).await.unwrap(), 1);
+    assert_eq!(
+        store.dead_letters().await.unwrap(),
+        vec![RunId("poison".to_string())]
+    );
+
+    // A GC cutoff before the dead-letter time spares it; a cutoff at/after it purges.
+    assert_eq!(store.purge_dead_letters_before(999).await.unwrap(), 0);
+    assert_eq!(
+        store.dead_letters().await.unwrap().len(),
+        1,
+        "a younger dead-letter is spared"
+    );
+    assert_eq!(store.purge_dead_letters_before(1_000).await.unwrap(), 1);
+    assert!(store.dead_letters().await.unwrap().is_empty());
+}
+
 /// Shared spec for epoch supersession (ADR-0022): a superseding submit abandons
 /// the thread's prior parked work; only the newest run stays claimable. Every
 /// backend matches.

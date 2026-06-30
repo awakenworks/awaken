@@ -264,6 +264,7 @@ async fn service_dead_letters_a_poison_run() {
         DispatchServiceConfig {
             poll_interval: Duration::from_secs(10),
             max_attempts: 1,
+            ..Default::default()
         },
     );
     service.notify().await;

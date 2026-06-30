@@ -360,3 +360,15 @@ async fn supersession_on_postgres() {
     harness::assert_supersession(&store).await;
     reset(&pool, prefix).await;
 }
+
+#[tokio::test]
+async fn dead_letter_ttl_gc_on_postgres() {
+    let Some(pool) = pool().await else { return };
+    let prefix = "t_pg_ttlgc";
+    reset(&pool, prefix).await;
+    let store = PostgresDispatchStore::with_pool(pool.clone(), prefix)
+        .await
+        .expect("dispatch");
+    harness::assert_dead_letter_ttl_gc(&store).await;
+    reset(&pool, prefix).await;
+}
