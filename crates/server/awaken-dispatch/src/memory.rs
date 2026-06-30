@@ -14,8 +14,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, Lease, MessageOutbox, PendingInbox,
-    PendingInput, PendingRecord, RunDispatch, SubmitOptions,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchStatus, DispatchSummary, Lease,
+    MessageOutbox, PendingInbox, PendingInput, PendingRecord, RunDispatch, SubmitOptions,
 };
 use crate::request::RunExecutionRequest;
 
@@ -25,6 +25,19 @@ enum Status {
     Running,
     Parked,
     DeadLetter,
+    Superseded,
+}
+
+impl Status {
+    fn public(self) -> DispatchStatus {
+        match self {
+            Status::Pending => DispatchStatus::Pending,
+            Status::Running => DispatchStatus::Running,
+            Status::Parked => DispatchStatus::Parked,
+            Status::DeadLetter => DispatchStatus::DeadLetter,
+            Status::Superseded => DispatchStatus::Superseded,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -35,7 +48,10 @@ struct Row {
     /// Consecutive crash-recoveries without a settle; reset when the run parks.
     attempt_count: u64,
     priority: i64,
+    epoch: i64,
     dedupe_key: Option<String>,
+    /// When the run was dead-lettered (epoch ms), for time-windowed GC.
+    dead_lettered_at: Option<u64>,
 }
 
 /// A pending input with its optimistic-concurrency revision.
@@ -70,6 +86,24 @@ impl MemoryDispatchStore {
     /// Number of live dispatch rows (test introspection).
     pub fn dispatch_count(&self) -> usize {
         self.state.lock().map(|s| s.rows.len()).unwrap_or(0)
+    }
+
+    /// Remove dead-lettered rows matching `keep` (and their pending), returning
+    /// the count — shared by the unconditional and time-windowed GC.
+    fn purge_dead(&self, keep: impl Fn(&Row) -> bool) -> Result<usize, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let dead: Vec<RunId> = state
+            .rows
+            .iter()
+            .filter(|(_, row)| row.status == Status::DeadLetter && keep(row))
+            .map(|(run, _)| run.clone())
+            .collect();
+        for run in &dead {
+            state.rows.remove(run);
+            state.order.retain(|r| r != run);
+            state.pending.retain(|p| &p.input.run_id != run);
+        }
+        Ok(dead.len())
     }
 
     /// Unconsumed pending inputs for a run (test introspection).
@@ -115,8 +149,8 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
                         .any(|p| &p.input.run_id == run && is_due(&p.input, now_ms))
             }
             Status::Pending => row.status == Status::Pending,
-            // Dead-lettered runs are never claimed.
-            Status::DeadLetter => false,
+            // Dead-lettered and superseded runs are never claimed.
+            Status::DeadLetter | Status::Superseded => false,
         }
     };
     // Recovery and wake are first-match in enqueue order.
@@ -166,6 +200,28 @@ impl RunDispatch for MemoryDispatchStore {
         {
             return Ok(());
         }
+        // Supersession: take the highest epoch on the thread and mark its prior
+        // pending/parked work superseded — the newest submission wins (ADR-0022).
+        let thread = request.thread_id().clone();
+        let mut epoch = 0;
+        if options.supersede {
+            epoch = state
+                .rows
+                .values()
+                .filter(|r| *r.request.thread_id() == thread)
+                .map(|r| r.epoch)
+                .max()
+                .unwrap_or(0)
+                + 1;
+            for row in state.rows.values_mut() {
+                if *row.request.thread_id() == thread
+                    && matches!(row.status, Status::Pending | Status::Parked)
+                {
+                    row.status = Status::Superseded;
+                    row.lease = None;
+                }
+            }
+        }
         state.rows.insert(
             run_id.clone(),
             Row {
@@ -174,7 +230,9 @@ impl RunDispatch for MemoryDispatchStore {
                 lease: None,
                 attempt_count: 0,
                 priority: options.priority,
+                epoch,
                 dedupe_key: options.dedupe_key,
+                dead_lettered_at: None,
             },
         );
         state.order.push(run_id);
@@ -253,6 +311,26 @@ impl RunDispatch for MemoryDispatchStore {
         }
     }
 
+    async fn renew_owned_leases(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<usize, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let mut renewed = 0;
+        for row in state.rows.values_mut() {
+            if row.status == Status::Running && row.lease.as_ref().is_some_and(|l| l.owner == owner)
+            {
+                if let Some(lease) = row.lease.as_mut() {
+                    lease.expires_ms = now_ms + lease_ms;
+                }
+                renewed += 1;
+            }
+        }
+        Ok(renewed)
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,
@@ -264,7 +342,11 @@ impl RunDispatch for MemoryDispatchStore {
             DispatchOutcome::Done => {
                 state.rows.remove(run_id);
                 state.order.retain(|r| r != run_id);
-                state.pending.retain(|p| &p.input.run_id != run_id);
+                // Drop the run's own pending and anything else the worker consumed
+                // this attempt (e.g. unbound idle-thread input, ADR-0021).
+                state.pending.retain(|p| {
+                    &p.input.run_id != run_id && !consumed.contains(&p.input.message_id)
+                });
             }
             DispatchOutcome::Parked => {
                 if let Some(row) = state.rows.get_mut(run_id) {
@@ -292,6 +374,7 @@ impl RunDispatch for MemoryDispatchStore {
             if expired && row.attempt_count >= max_attempts {
                 row.status = Status::DeadLetter;
                 row.lease = None;
+                row.dead_lettered_at = Some(now_ms);
                 reaped += 1;
             }
         }
@@ -310,6 +393,37 @@ impl RunDispatch for MemoryDispatchStore {
                 )
             })
             .cloned()
+            .collect())
+    }
+
+    async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .order
+            .iter()
+            .filter(|run| {
+                matches!(
+                    state.rows.get(run).map(|r| r.status),
+                    Some(Status::Superseded)
+                )
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .order
+            .iter()
+            .filter_map(|run| {
+                state.rows.get(run).map(|row| DispatchSummary {
+                    run_id: run.clone(),
+                    thread_id: row.request.thread_id().clone(),
+                    status: row.status.public(),
+                    attempt_count: row.attempt_count,
+                })
+            })
             .collect())
     }
 
@@ -356,19 +470,11 @@ impl RunDispatch for MemoryDispatchStore {
     }
 
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        let mut state = lock(&self.state)?;
-        let dead: Vec<RunId> = state
-            .rows
-            .iter()
-            .filter(|(_, row)| row.status == Status::DeadLetter)
-            .map(|(run, _)| run.clone())
-            .collect();
-        for run in &dead {
-            state.rows.remove(run);
-            state.order.retain(|r| r != run);
-            state.pending.retain(|p| &p.input.run_id != run);
-        }
-        Ok(dead.len())
+        self.purge_dead(|_| true)
+    }
+
+    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
+        self.purge_dead(|row| row.dead_lettered_at.is_some_and(|at| at <= cutoff_ms))
     }
 }
 

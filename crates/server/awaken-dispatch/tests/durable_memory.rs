@@ -13,9 +13,10 @@ use std::sync::atomic::Ordering;
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_ext_builtin_tools::MessageSender;
 use awaken_dispatch::{
-    DispatchOutcome, DispatchWorker, DurableRunIngress, MemoryDispatchStore, PendingInbox,
-    PendingInput, RunDispatch, RunExecutionRequest, RunIngressCapabilities,
+    DispatchOutcome, DispatchWorker, DurableRunIngress, MemoryDispatchStore, OutboxMessageSender,
+    PendingInbox, PendingInput, RunDispatch, RunExecutionRequest, RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress};
@@ -24,7 +25,10 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
-use harness::{FP, SNAP, THREAD, TICKET, activation, schedule_runtime, text_runtime, tool_runtime};
+use harness::{
+    FP, SNAP, THREAD, TICKET, activation, input_echo_runtime, schedule_runtime, text_runtime,
+    tool_runtime,
+};
 
 fn allow_command() -> ResumeCommand {
     ResumeCommand {
@@ -573,8 +577,12 @@ async fn send_message_delivers_to_a_threads_parked_run() {
         .send("thread-1", "hello from another agent")
         .await
         .expect("send to a waiting thread");
-    // Sending to a thread with no waiting run fails closed.
-    assert!(sender.send("thread-2", "nobody home").await.is_err());
+    // Sending to a thread with no waiting run is staged unbound (ADR-0021), not
+    // an error: it is held for that thread's next run.
+    sender
+        .send("thread-2", "for later")
+        .await
+        .expect("idle-thread send is queued");
 
     // Relaying the outbox resumes the parked run with the message as input.
     let processed = ingress.relay_outbox(0).await.expect("relay");
@@ -722,4 +730,111 @@ async fn a_recovered_scheduled_action_is_performed() {
         "the recovered action ran once"
     );
     assert_eq!(store.dispatch_count(), 0, "settled Done after recovery");
+}
+
+#[tokio::test]
+async fn send_message_to_an_idle_thread_feeds_the_next_run() {
+    // ADR-0021: a message to a thread with no parked run is queued unbound, then
+    // consumed by the thread's next run as new input.
+    let runtime = input_echo_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    // Agent A messages a thread with no run in flight: it is staged unbound.
+    let sender = OutboxMessageSender::new(store.clone(), commit.clone());
+    sender
+        .send(THREAD, "hello from A")
+        .await
+        .expect("send to idle thread");
+
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    ingress.relay_outbox(0).await.expect("relay");
+    let listed = store.list(&ThreadId(THREAD.to_string())).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(
+        listed[0].input.run_id.0.is_empty(),
+        "queued input is unbound"
+    );
+
+    // The thread's next run consumes the queued message as new input.
+    let phase = ingress
+        .submit_background(activation("run-1"))
+        .await
+        .expect("submit");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let assistant = commit
+        .committed()
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Assistant)
+        .expect("assistant reply")
+        .clone();
+    assert!(
+        assistant.text_content().contains("hello from A"),
+        "the idle-thread message reached the run input"
+    );
+    assert!(
+        store
+            .list(&ThreadId(THREAD.to_string()))
+            .await
+            .unwrap()
+            .is_empty(),
+        "the unbound input is consumed"
+    );
+}
+
+#[tokio::test]
+async fn supersession_store_spec() {
+    harness::assert_supersession(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn submit_superseding_abandons_prior_thread_work() {
+    // ADR-0022 at the ingress: a superseding submit supersedes the thread's
+    // parked run; only the newest run stays live.
+    let (runtime, _ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+
+    // An older run parks on the thread.
+    assert_eq!(
+        ingress.submit_background(activation("old")).await.unwrap(),
+        Phase::Waiting
+    );
+    // A superseding submit on the same thread abandons the parked run.
+    ingress
+        .submit_superseding(activation("new"))
+        .await
+        .expect("superseding submit");
+    assert_eq!(
+        ingress.superseded().await.unwrap(),
+        vec![RunId("old".to_string())],
+        "the prior parked run is superseded"
+    );
+    // The superseded run is never woken again: recovery does not process it.
+    assert!(
+        !ingress
+            .recover(0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|(run, _)| run.0 == "old"),
+        "a superseded run is not claimable"
+    );
+}
+
+#[tokio::test]
+async fn dead_letter_ttl_gc_store_spec() {
+    harness::assert_dead_letter_ttl_gc(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn renew_owned_leases_store_spec() {
+    harness::assert_renew_owned_leases(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn list_dispatches_store_spec() {
+    harness::assert_list_dispatches(&MemoryDispatchStore::new()).await;
 }
