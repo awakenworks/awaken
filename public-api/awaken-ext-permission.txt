@@ -1,0 +1,155 @@
+pub mod awaken_ext_permission
+pub enum awaken_ext_permission::Mode
+pub awaken_ext_permission::Mode::AcceptEdits
+pub awaken_ext_permission::Mode::BypassPermissions
+pub awaken_ext_permission::Mode::Default
+pub awaken_ext_permission::Mode::Plan
+impl core::clone::Clone for awaken_ext_permission::Mode
+pub fn awaken_ext_permission::Mode::clone(&self) -> awaken_ext_permission::Mode
+impl core::cmp::Eq for awaken_ext_permission::Mode
+impl core::cmp::PartialEq for awaken_ext_permission::Mode
+pub fn awaken_ext_permission::Mode::eq(&self, &awaken_ext_permission::Mode) -> bool
+impl core::default::Default for awaken_ext_permission::Mode
+pub fn awaken_ext_permission::Mode::default() -> awaken_ext_permission::Mode
+impl core::fmt::Debug for awaken_ext_permission::Mode
+pub fn awaken_ext_permission::Mode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_permission::Mode
+impl core::marker::StructuralPartialEq for awaken_ext_permission::Mode
+impl serde_core::ser::Serialize for awaken_ext_permission::Mode
+pub fn awaken_ext_permission::Mode::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_permission::Mode
+pub fn awaken_ext_permission::Mode::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_permission::Mode
+impl core::marker::Send for awaken_ext_permission::Mode
+impl core::marker::Sync for awaken_ext_permission::Mode
+impl core::marker::Unpin for awaken_ext_permission::Mode
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::Mode
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::Mode
+pub enum awaken_ext_permission::PermissionRuleScope
+pub awaken_ext_permission::PermissionRuleScope::Local
+pub awaken_ext_permission::PermissionRuleScope::Project
+pub awaken_ext_permission::PermissionRuleScope::Session
+pub awaken_ext_permission::PermissionRuleScope::User
+impl core::clone::Clone for awaken_ext_permission::PermissionRuleScope
+pub fn awaken_ext_permission::PermissionRuleScope::clone(&self) -> awaken_ext_permission::PermissionRuleScope
+impl core::cmp::Eq for awaken_ext_permission::PermissionRuleScope
+impl core::cmp::PartialEq for awaken_ext_permission::PermissionRuleScope
+pub fn awaken_ext_permission::PermissionRuleScope::eq(&self, &awaken_ext_permission::PermissionRuleScope) -> bool
+impl core::default::Default for awaken_ext_permission::PermissionRuleScope
+pub fn awaken_ext_permission::PermissionRuleScope::default() -> awaken_ext_permission::PermissionRuleScope
+impl core::fmt::Debug for awaken_ext_permission::PermissionRuleScope
+pub fn awaken_ext_permission::PermissionRuleScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_permission::PermissionRuleScope
+impl core::marker::StructuralPartialEq for awaken_ext_permission::PermissionRuleScope
+impl serde_core::ser::Serialize for awaken_ext_permission::PermissionRuleScope
+pub fn awaken_ext_permission::PermissionRuleScope::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_permission::PermissionRuleScope
+pub fn awaken_ext_permission::PermissionRuleScope::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_permission::PermissionRuleScope
+impl core::marker::Send for awaken_ext_permission::PermissionRuleScope
+impl core::marker::Sync for awaken_ext_permission::PermissionRuleScope
+impl core::marker::Unpin for awaken_ext_permission::PermissionRuleScope
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::PermissionRuleScope
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::PermissionRuleScope
+pub enum awaken_ext_permission::ToolPermissionBehavior
+pub awaken_ext_permission::ToolPermissionBehavior::Allow
+pub awaken_ext_permission::ToolPermissionBehavior::Ask
+pub awaken_ext_permission::ToolPermissionBehavior::Deny
+impl core::clone::Clone for awaken_ext_permission::ToolPermissionBehavior
+pub fn awaken_ext_permission::ToolPermissionBehavior::clone(&self) -> awaken_ext_permission::ToolPermissionBehavior
+impl core::cmp::Eq for awaken_ext_permission::ToolPermissionBehavior
+impl core::cmp::PartialEq for awaken_ext_permission::ToolPermissionBehavior
+pub fn awaken_ext_permission::ToolPermissionBehavior::eq(&self, &awaken_ext_permission::ToolPermissionBehavior) -> bool
+impl core::fmt::Debug for awaken_ext_permission::ToolPermissionBehavior
+pub fn awaken_ext_permission::ToolPermissionBehavior::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_permission::ToolPermissionBehavior
+impl core::marker::StructuralPartialEq for awaken_ext_permission::ToolPermissionBehavior
+impl serde_core::ser::Serialize for awaken_ext_permission::ToolPermissionBehavior
+pub fn awaken_ext_permission::ToolPermissionBehavior::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_permission::ToolPermissionBehavior
+pub fn awaken_ext_permission::ToolPermissionBehavior::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_permission::ToolPermissionBehavior
+impl core::marker::Send for awaken_ext_permission::ToolPermissionBehavior
+impl core::marker::Sync for awaken_ext_permission::ToolPermissionBehavior
+impl core::marker::Unpin for awaken_ext_permission::ToolPermissionBehavior
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::ToolPermissionBehavior
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::ToolPermissionBehavior
+pub struct awaken_ext_permission::PermissionRule
+pub awaken_ext_permission::PermissionRule::behavior: awaken_ext_permission::ToolPermissionBehavior
+pub awaken_ext_permission::PermissionRule::pattern: awaken_ext_permission::ToolCallPattern
+pub awaken_ext_permission::PermissionRule::scope: awaken_ext_permission::PermissionRuleScope
+impl awaken_ext_permission::PermissionRule
+pub fn awaken_ext_permission::PermissionRule::new(awaken_ext_permission::ToolCallPattern, awaken_ext_permission::ToolPermissionBehavior) -> Self
+impl core::clone::Clone for awaken_ext_permission::PermissionRule
+pub fn awaken_ext_permission::PermissionRule::clone(&self) -> awaken_ext_permission::PermissionRule
+impl core::fmt::Debug for awaken_ext_permission::PermissionRule
+pub fn awaken_ext_permission::PermissionRule::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_permission::PermissionRule
+impl core::marker::Send for awaken_ext_permission::PermissionRule
+impl core::marker::Sync for awaken_ext_permission::PermissionRule
+impl core::marker::Unpin for awaken_ext_permission::PermissionRule
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::PermissionRule
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::PermissionRule
+pub struct awaken_ext_permission::PermissionRuleset
+pub awaken_ext_permission::PermissionRuleset::default_behavior: awaken_ext_permission::ToolPermissionBehavior
+pub awaken_ext_permission::PermissionRuleset::mode: awaken_ext_permission::Mode
+pub awaken_ext_permission::PermissionRuleset::rules: alloc::vec::Vec<awaken_ext_permission::PermissionRule>
+impl awaken_ext_permission::PermissionRuleset
+pub fn awaken_ext_permission::PermissionRuleset::decide(&self, &str, &serde_json::value::Value) -> awaken_ext_permission::ToolPermissionBehavior
+impl core::clone::Clone for awaken_ext_permission::PermissionRuleset
+pub fn awaken_ext_permission::PermissionRuleset::clone(&self) -> awaken_ext_permission::PermissionRuleset
+impl core::default::Default for awaken_ext_permission::PermissionRuleset
+pub fn awaken_ext_permission::PermissionRuleset::default() -> Self
+impl core::fmt::Debug for awaken_ext_permission::PermissionRuleset
+pub fn awaken_ext_permission::PermissionRuleset::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_permission::PermissionRuleset
+impl core::marker::Send for awaken_ext_permission::PermissionRuleset
+impl core::marker::Sync for awaken_ext_permission::PermissionRuleset
+impl core::marker::Unpin for awaken_ext_permission::PermissionRuleset
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::PermissionRuleset
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::PermissionRuleset
+pub struct awaken_ext_permission::RulePermissionPolicy
+impl awaken_ext_permission::RulePermissionPolicy
+pub fn awaken_ext_permission::RulePermissionPolicy::new(awaken_ext_permission::PermissionRuleset) -> Self
+impl awaken_runtime_contract::permission::PermissionPolicy for awaken_ext_permission::RulePermissionPolicy
+pub fn awaken_ext_permission::RulePermissionPolicy::decide<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::PermissionDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::marker::Freeze for awaken_ext_permission::RulePermissionPolicy
+impl core::marker::Send for awaken_ext_permission::RulePermissionPolicy
+impl core::marker::Sync for awaken_ext_permission::RulePermissionPolicy
+impl core::marker::Unpin for awaken_ext_permission::RulePermissionPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::RulePermissionPolicy
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::RulePermissionPolicy
+pub struct awaken_ext_permission::Specificity(_)
+impl core::clone::Clone for awaken_ext_permission::Specificity
+pub fn awaken_ext_permission::Specificity::clone(&self) -> awaken_ext_permission::Specificity
+impl core::cmp::Eq for awaken_ext_permission::Specificity
+impl core::cmp::Ord for awaken_ext_permission::Specificity
+pub fn awaken_ext_permission::Specificity::cmp(&self, &awaken_ext_permission::Specificity) -> core::cmp::Ordering
+impl core::cmp::PartialEq for awaken_ext_permission::Specificity
+pub fn awaken_ext_permission::Specificity::eq(&self, &awaken_ext_permission::Specificity) -> bool
+impl core::cmp::PartialOrd for awaken_ext_permission::Specificity
+pub fn awaken_ext_permission::Specificity::partial_cmp(&self, &awaken_ext_permission::Specificity) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for awaken_ext_permission::Specificity
+pub fn awaken_ext_permission::Specificity::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_permission::Specificity
+impl core::marker::StructuralPartialEq for awaken_ext_permission::Specificity
+impl core::marker::Freeze for awaken_ext_permission::Specificity
+impl core::marker::Send for awaken_ext_permission::Specificity
+impl core::marker::Sync for awaken_ext_permission::Specificity
+impl core::marker::Unpin for awaken_ext_permission::Specificity
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::Specificity
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::Specificity
+pub struct awaken_ext_permission::ToolCallPattern
+impl awaken_ext_permission::ToolCallPattern
+pub fn awaken_ext_permission::ToolCallPattern::matches(&self, &str, &serde_json::value::Value) -> core::option::Option<awaken_ext_permission::Specificity>
+pub fn awaken_ext_permission::ToolCallPattern::parse(&str) -> core::result::Result<Self, alloc::string::String>
+impl core::clone::Clone for awaken_ext_permission::ToolCallPattern
+pub fn awaken_ext_permission::ToolCallPattern::clone(&self) -> awaken_ext_permission::ToolCallPattern
+impl core::fmt::Debug for awaken_ext_permission::ToolCallPattern
+pub fn awaken_ext_permission::ToolCallPattern::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_permission::ToolCallPattern
+impl core::marker::Send for awaken_ext_permission::ToolCallPattern
+impl core::marker::Sync for awaken_ext_permission::ToolCallPattern
+impl core::marker::Unpin for awaken_ext_permission::ToolCallPattern
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::ToolCallPattern
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::ToolCallPattern

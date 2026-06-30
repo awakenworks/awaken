@@ -33,11 +33,11 @@ crates=$(cargo metadata --no-deps --format-version 1 \
   | python3 -c "import json,sys; print('\n'.join(sorted(p['name'] for p in json.load(sys.stdin)['packages'])))")
 
 # Crates excluded from the public-API gate. cargo-public-api needs a nightly
-# rustdoc, and awaken-store-postgres pulls awaken-scoped-migration (rust-version
-# 1.96) which the available nightly toolchain predates, so the tool cannot build
-# it here. Its public surface is small and reviewed in code; re-enable when the
-# nightly toolchain reaches 1.96.
-excluded="awaken-store-postgres"
+# rustdoc, and awaken-scoped-migration (rust-version 1.96) predates the available
+# nightly toolchain, so the tool cannot build any crate that pulls it. Every
+# scoped-migration dependant is excluded for this reason; their public surface is
+# small and reviewed in code. Re-enable when the nightly toolchain reaches 1.96.
+excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store"
 
 fail=0
 for c in $crates; do
