@@ -135,6 +135,30 @@ Any removal is a separate, explicit change, not silent deletion.
 - One-time cost: reconciling existing documents to the vocabulary in D3 and
   trimming the D5 meta-process tables.
 
+## Amendment (2026-06-30): the bar for a new ADR
+
+D1 says new load-bearing decisions are ADRs but never defined *load-bearing*, so
+the corpus grew one ADR per delivered slice — the dispatch subsystem alone took
+~17 (0009–0027). This tightens D1: an ADR is for a **contested decision**, not a
+feature record.
+
+A new ADR is warranted only when all three hold:
+
+1. **A rejected alternative.** Two or more viable approaches existed and one was
+   chosen over the others for a stated reason. One obvious option → no decision.
+2. **Re-litigation risk.** A future reader would otherwise reopen the question.
+   If a code comment or design doc settles it, it is not an ADR.
+3. **Reach.** It crosses crates or changes a `Gn` invariant. A local
+   implementation detail is not an ADR.
+
+Otherwise the change is a **dated amendment to the ADR it refines** (per D1's
+append-mostly rule), or just a commit plus the owning design/code update. A
+refinement of a prior ADR's *deferred* item is always an amendment to that ADR,
+never a new number — keeping one decision in one home (D6). Self-check: if a
+draft's `## Context` cites something a previous ADR "deferred" or "named", it is
+that ADR's amendment. This bar is judgment, not mechanizable; `check_adr.py`
+checks structure only.
+
 ## References
 
 - `INVARIANTS.md` — guardrail index with enforcers (D2).

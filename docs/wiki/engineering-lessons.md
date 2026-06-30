@@ -73,3 +73,11 @@ Lessons are retrieval hooks. The linked owner remains authoritative.
 - Fact: config publish ordering and registry compilation should live in config-side services; runtime should expose a catalog install port and continue with snapshot resolution and execution after install.
 - Links: guardrails G18, G23, and G29; [config flow facts](config-to-run-execution-flow-facts.md)
 - Verification: dependency-direction checks, runtime public API checks, and publication/install transaction tests.
+
+## FACT-LESSON-009: An ADR records a contested decision, not a feature slice
+
+- Status: active
+- Owner: [ADR-0001 Amendment (2026-06-30)](../adr/0001-documentation-model-and-vocabulary-alignment.md#amendment-2026-06-30-the-bar-for-a-new-adr)
+- Fact: a new ADR needs a rejected alternative, re-litigation risk, and cross-crate or invariant reach; a refinement of a prior ADR's deferred item is an amendment to that ADR, not a new number.
+- Links: ADR-0001 D1 and D6
+- Verification: `check_adr.py` structure check (the bar itself is review judgment).
