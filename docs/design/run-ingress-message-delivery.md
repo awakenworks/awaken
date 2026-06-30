@@ -163,13 +163,16 @@ priority, an `enqueue_with` dedupe key dedups concurrent submissions, and
 Postgres (concurrent distinct claim via `SKIP LOCKED`), `renew_lease` keeps a
 long run owned, and a pluggable `WakeSignal` (local, or feature-gated NATS)
 replaces the daemon's notify
-([ADR-0019](../adr/0019-distributed-dispatch-and-wake-signal.md)). Deferred
-(named, not built): `ScheduledAction` (ADR-0003 mechanism #1 — a committed in-run
-deferred-action request recovered from committed state for consistency, distinct
-from this layer's delayed *delivery*), unsolicited delivery to an idle thread
-(new-input semantics), time-windowed auto-GC, epoch-based supersession, a
-NATS-backed store (JetStream durability), daemon-driven lease-renewal scheduling,
-and the `RunDispatch*` query/lifecycle store roles above.
+([ADR-0019](../adr/0019-distributed-dispatch-and-wake-signal.md)).
+`ScheduledAction` (ADR-0003 mechanism #1 — a committed in-run deferred action,
+recovered from committed state for consistency, distinct from this layer's
+delayed *delivery*) is a `WaitingReason`, staged by a gate `Schedule` and
+performed in-process by the worker
+([ADR-0020](../adr/0020-scheduled-action.md)). Deferred (named, not built):
+unsolicited delivery to an idle thread (new-input semantics), time-windowed
+auto-GC, epoch-based supersession, a NATS-backed store (JetStream durability),
+daemon-driven lease-renewal scheduling, a plugin-owned action-kind axis, and the
+`RunDispatch*` query/lifecycle store roles above.
 
 ## Durable Semantics
 

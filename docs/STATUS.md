@@ -86,3 +86,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0017-send-message-over-outbox.md` | Decision record | Not required | n/a |
 | `adr/0018-priority-dedupe-gc.md` | Decision record | Not required | n/a |
 | `adr/0019-distributed-dispatch-and-wake-signal.md` | Decision record | Not required | n/a |
+| `adr/0020-scheduled-action.md` | Decision record | Not required | n/a |
