@@ -2,6 +2,22 @@
 //! Stream surface, and the headline case — a run started by the AI SDK adapter
 //! that parks on a client-executed tool is resumed by the Managed Agents adapter
 //! on the *same thread*, and the result is visible back through the AI SDK.
+//!
+//! Conformance matrix — every protocol adapter is held to the same six categories,
+//! each in its own wire vocabulary (Managed: HTTP status + JSON envelope; AI SDK:
+//! UI Message Stream; AG-UI: run event stream):
+//!
+//! | # | category                    | Managed        | AI SDK          | AG-UI           |
+//! |---|-----------------------------|----------------|-----------------|-----------------|
+//! | 1 | turn / streaming            | server.rs echo | echo_turn       | echo_turn       |
+//! | 2 | history read-back           | server.rs      | history_reflects| via cross-proto |
+//! | 3 | client-tool park + resume   | server.rs      | parks_then_*    | parks_then_*    |
+//! | 4 | driver error → wire format  | server.rs      | resume_without* | resume_without* |
+//! | 5 | malformed body → wire format| ManagedJson    | malformed_body  | malformed_body  |
+//! | 6 | interrupt                   | server.rs      | (shared host)   | (shared host)   |
+//!
+//! Errors never leak axum's default plain-text 400: each adapter's JSON extractor
+//! converts a decode failure into its own error frame (categories 4 and 5).
 
 use awaken_server_local::{build_custom_router, build_echo_router};
 use axum::Router;
@@ -288,5 +304,87 @@ async fn ag_ui_parks_then_managed_resumes_visible_via_ai_sdk() {
                 .map(|t| t.contains("got: 42"))
                 .unwrap_or(false))),
         "answer delivered via Managed should appear in AI SDK history: {body}"
+    );
+}
+
+// ── Category 4/5: errors convert to each protocol's wire format ──────────────
+
+#[tokio::test]
+async fn ai_sdk_malformed_body_returns_stream_error() {
+    // A body that fails to decode must surface as a UI Message Stream error frame
+    // (status 200, error in-stream), not axum's plain-text 400.
+    let app = build_echo_router();
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/ai-sdk/agents/assistant/runs",
+        json!({ "messages": 5 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "AI SDK streams the error: {body}");
+    let events = sse_events(&body);
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "error" && e["errorText"].is_string()),
+        "malformed body → stream error frame: {body}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "finish" && e["finishReason"] == "error"),
+        "error stream finishes with reason error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn ai_sdk_driver_error_returns_stream_error() {
+    // Empty messages on a fresh thread is a resume with no parked run — a driver
+    // error, which must also stream as an AI SDK error frame.
+    let app = build_echo_router();
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/ai-sdk/threads/t-noparked/runs",
+        json!({ "threadId": "t-noparked", "messages": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        sse_events(&body).iter().any(|e| e["type"] == "error"),
+        "driver error → stream error frame: {body}"
+    );
+}
+
+#[tokio::test]
+async fn ag_ui_malformed_body_returns_run_error() {
+    // A body that fails to decode must surface as a bare RUN_ERROR event.
+    let app = build_echo_router();
+    let (status, body) = call(&app, "POST", "/v1/ag-ui", json!({ "messages": 5 })).await;
+    assert_eq!(status, StatusCode::OK, "AG-UI streams the error: {body}");
+    assert!(
+        sse_events(&body)
+            .iter()
+            .any(|e| e["type"] == "RUN_ERROR" && e["message"].is_string()),
+        "malformed body → RUN_ERROR event: {body}"
+    );
+}
+
+#[tokio::test]
+async fn ag_ui_driver_error_returns_run_error() {
+    // A resume with no parked run is a driver error → RUN_ERROR (bracketed by the
+    // RUN_STARTED the run began with).
+    let app = build_echo_router();
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/ag-ui",
+        json!({ "threadId": "ag-noparked", "runId": "r1", "messages": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        sse_events(&body).iter().any(|e| e["type"] == "RUN_ERROR"),
+        "driver error → RUN_ERROR event: {body}"
     );
 }
