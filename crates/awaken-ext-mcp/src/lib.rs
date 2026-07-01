@@ -22,6 +22,7 @@ pub mod config;
 pub mod error;
 pub mod id_mapping;
 pub mod jsonrpc;
+pub mod plugin;
 pub mod progress;
 mod router;
 pub mod sampling;
@@ -33,7 +34,8 @@ pub mod types;
 pub use client::{McpConnection, connect_tools};
 pub use config::{McpServerConnectionConfig, TransportTypeId};
 pub use error::McpError;
-pub use id_mapping::to_tool_id;
+pub use id_mapping::{to_tool_id, tool_namespace};
+pub use plugin::{McpPlugin, McpServer};
 pub use progress::{McpProgressUpdate, normalize_progress};
 pub use sampling::{
     SamplingError, SamplingHandler, SamplingMessage, SamplingRequest, SamplingResponse,
