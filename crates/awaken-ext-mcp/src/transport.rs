@@ -83,4 +83,10 @@ pub trait McpToolTransport: Send + Sync {
             "resources/read".to_string(),
         ))
     }
+
+    /// Whether the connection is still usable. Defaults to `true` for stateless
+    /// transports; a process-backed transport reports its child's liveness.
+    fn is_alive(&self) -> bool {
+        true
+    }
 }

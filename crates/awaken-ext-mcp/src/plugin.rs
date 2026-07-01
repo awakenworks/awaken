@@ -103,6 +103,16 @@ impl McpServer {
     pub fn version(&self) -> u64 {
         self.registry.lock().unwrap().version
     }
+
+    /// The server's name.
+    pub fn name(&self) -> &str {
+        &self.server_name
+    }
+
+    /// Whether the underlying transport is still usable.
+    pub fn is_alive(&self) -> bool {
+        self.transport.is_alive()
+    }
 }
 
 /// The plugin projecting an [`McpServer`]'s live tools into the runtime.
