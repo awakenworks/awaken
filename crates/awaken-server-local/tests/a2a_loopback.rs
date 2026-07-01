@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_server_local::{A2aTransport, DelegatingModel, EchoModel, SharedHost, build_router};
+use awaken_server_local::{
+    A2aTransport, DelegatingModel, EchoModel, SharedHost, build_custom_router, build_router,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
@@ -121,5 +123,36 @@ async fn a_remote_transport_failure_surfaces_as_a_tool_error() {
             .iter()
             .any(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:")),
         "the parent completes even when the remote agent is unreachable"
+    );
+}
+
+/// A remote agent that parks (its A2A task is `input-required`) is surfaced to the
+/// delegating parent as a tool error — this seam runs the delegate to completion,
+/// so a mid-run pause on the remote is not a silent hang. Mirrors goal/awaken-next
+/// mapping a remote `InputRequired` task to a caller-visible signal.
+#[tokio::test]
+async fn a_remote_input_required_task_surfaces_to_the_parent() {
+    // The remote awaken A2A server parks on a client-executed tool, so its
+    // `message:send` returns a task in the `input-required` state.
+    let remote = build_custom_router();
+    let transport = Arc::new(RouterTransport { app: remote });
+
+    let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
+        .with_remote_a2a("researcher", transport);
+
+    host.run_turn("t", vec![user("u1", "research the answer")])
+        .await
+        .unwrap();
+
+    let history = host.committed_messages("t").await;
+    let reply = history
+        .iter()
+        .rev()
+        .find(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:"))
+        .map(text_of)
+        .expect("the parent commits a reply from the (failed) delegation");
+    assert!(
+        reply.contains("requires further input"),
+        "a remote input-required task surfaces as a tool error: {reply:?}"
     );
 }
