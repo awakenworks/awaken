@@ -245,5 +245,66 @@ mod tests {
             serde_json::to_value(TaskState::InputRequired).unwrap(),
             json!("TASK_STATE_INPUT_REQUIRED")
         );
+        assert_eq!(
+            serde_json::to_value(TaskState::Completed).unwrap(),
+            json!("TASK_STATE_COMPLETED")
+        );
+    }
+
+    #[test]
+    fn message_text_concatenates_parts() {
+        let m = Message {
+            task_id: Some("task-t".into()),
+            context_id: Some("t".into()),
+            message_id: "m1".into(),
+            role: MessageRole::User,
+            parts: vec![Part::text("hello "), Part::text("world")],
+        };
+        assert_eq!(m.text(), "hello world");
+    }
+
+    #[test]
+    fn task_roundtrips_with_camel_case_fields() {
+        let task = Task {
+            id: "task-t".into(),
+            context_id: "t".into(),
+            status: TaskStatus {
+                state: TaskState::Completed,
+                message: Some(Message::agent_text("s", "done")),
+            },
+            history: vec![Message::agent_text("a1", "done")],
+        };
+        let value = serde_json::to_value(&task).unwrap();
+        // A2A uses camelCase on the wire; the state carries its enum token.
+        assert!(value.get("contextId").is_some());
+        assert_eq!(value["status"]["state"], "TASK_STATE_COMPLETED");
+        let parsed: Task = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, task);
+    }
+
+    #[test]
+    fn agent_card_roundtrips_over_the_v1_fields() {
+        let card = AgentCard {
+            name: "assistant".into(),
+            description: "Awaken agent".into(),
+            version: "0.0.0".into(),
+            protocol_version: "1.0".into(),
+            capabilities: AgentCapabilities {
+                streaming: false,
+                push_notifications: false,
+            },
+            default_input_modes: vec!["text/plain".into()],
+            default_output_modes: vec!["text/plain".into()],
+            skills: vec![AgentSkill {
+                id: "chat".into(),
+                name: "Chat".into(),
+                tags: vec!["chat".into()],
+            }],
+        };
+        let value = serde_json::to_value(&card).unwrap();
+        assert_eq!(value["protocolVersion"], "1.0");
+        assert_eq!(value["capabilities"]["streaming"], false);
+        let parsed: AgentCard = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, card);
     }
 }
