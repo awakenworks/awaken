@@ -196,6 +196,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-protocol-ag-ui"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "axum",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tower",
+]
+
+[[package]]
+name = "awaken-protocol-ai-sdk"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "axum",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tower",
+]
+
+[[package]]
 name = "awaken-protocol-managed"
 version = "0.0.0"
 dependencies = [
@@ -327,6 +359,8 @@ dependencies = [
  "awaken-ext-builtin-tools",
  "awaken-ext-goal",
  "awaken-ext-permission",
+ "awaken-protocol-ag-ui",
+ "awaken-protocol-ai-sdk",
  "awaken-protocol-managed",
  "awaken-runtime",
  "awaken-runtime-contract",
@@ -334,6 +368,7 @@ dependencies = [
  "axum",
  "http-body-util",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tower",
 ]
