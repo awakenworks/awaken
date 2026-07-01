@@ -405,7 +405,7 @@ impl RuntimeSession {
             .provider
             .create(&SandboxSpec::new(session))
             .await
-            .map_err(|e| RunError(e.to_string()))?;
+            .map_err(|e| RunError::internal(e.to_string()))?;
         let ctx = Arc::new(SessionCtx {
             runtime: build_runtime(self.llm.clone(), env.root.clone()),
             config: server_config(&self.model_ref, &self.client_tools),
@@ -434,7 +434,7 @@ impl RuntimeSession {
         want_client: bool,
     ) -> Result<(), RunError> {
         if ticket.call_id.as_deref() != Some(tool_use_id) {
-            return Err(RunError(format!(
+            return Err(RunError::bad_request(format!(
                 "tool_use_id {tool_use_id:?} does not match the pending tool"
             )));
         }
@@ -442,7 +442,7 @@ impl RuntimeSession {
             .pending_tool
             .as_ref()
             .map(|t| t.tool_id.as_str())
-            .ok_or_else(|| RunError("parked run has no pending tool".to_string()))?;
+            .ok_or_else(|| RunError::internal("parked run has no pending tool"))?;
         let is_client = self.client_tools.contains(pending_tool_id);
         if is_client != want_client {
             let (got, expected) = if want_client {
@@ -450,7 +450,7 @@ impl RuntimeSession {
             } else {
                 ("client-executed", "user.custom_tool_result")
             };
-            return Err(RunError(format!(
+            return Err(RunError::bad_request(format!(
                 "pending tool is {got}; answer it with {expected}"
             )));
         }
@@ -469,8 +469,8 @@ impl SessionRuntime for RuntimeSession {
         let ctx = self.ctx_for(thread).await?;
         let mut st = ctx.state.lock().await;
         if st.parked.is_some() {
-            return Err(RunError(
-                "session is awaiting a tool confirmation".to_string(),
+            return Err(RunError::bad_request(
+                "session is awaiting a tool confirmation",
             ));
         }
         // Prepend any buffered `system.message`s ahead of the user turn.
@@ -479,7 +479,7 @@ impl SessionRuntime for RuntimeSession {
             .runtime
             .start_turn(&ctx.config, thread, input, Self::context(&ctx))
             .await
-            .map_err(|e| RunError(e.to_string()))?;
+            .map_err(|e| RunError::internal(e.to_string()))?;
         Ok(build_outcome(
             &ctx,
             &mut st,
@@ -500,11 +500,11 @@ impl SessionRuntime for RuntimeSession {
         let run_id = st
             .parked
             .clone()
-            .ok_or_else(|| RunError("no parked run to resume".to_string()))?;
+            .ok_or_else(|| RunError::bad_request("no parked run to resume"))?;
         let ticket = ctx
             .commit
             .waiting_ticket(&run_id)
-            .ok_or_else(|| RunError("parked run has no waiting ticket".to_string()))?;
+            .ok_or_else(|| RunError::internal("parked run has no waiting ticket"))?;
         // Fail closed: the confirmation must name the pending tool, and that tool
         // must be a built-in awaiting approval (not a client-executed one).
         self.check_pending(&ticket, tool_use_id, false)?;
@@ -518,7 +518,7 @@ impl SessionRuntime for RuntimeSession {
             .runtime
             .resume(command, &*ctx.commit, Self::context(&ctx))
             .await
-            .map_err(|e| RunError(e.to_string()))?;
+            .map_err(|e| RunError::internal(e.to_string()))?;
         Ok(build_outcome(
             &ctx,
             &mut st,
@@ -540,11 +540,11 @@ impl SessionRuntime for RuntimeSession {
         let run_id = st
             .parked
             .clone()
-            .ok_or_else(|| RunError("no parked run to resume".to_string()))?;
+            .ok_or_else(|| RunError::bad_request("no parked run to resume"))?;
         let ticket = ctx
             .commit
             .waiting_ticket(&run_id)
-            .ok_or_else(|| RunError("parked run has no waiting ticket".to_string()))?;
+            .ok_or_else(|| RunError::internal("parked run has no waiting ticket"))?;
         // Fail closed: the result must name the pending tool, and that tool must be
         // client-executed (else this would fabricate a built-in tool's output).
         self.check_pending(&ticket, tool_use_id, true)?;
@@ -561,7 +561,7 @@ impl SessionRuntime for RuntimeSession {
             .runtime
             .resume(command, &*ctx.commit, Self::context(&ctx))
             .await
-            .map_err(|e| RunError(e.to_string()))?;
+            .map_err(|e| RunError::internal(e.to_string()))?;
         Ok(build_outcome(
             &ctx,
             &mut st,
@@ -618,7 +618,7 @@ impl SessionRuntime for RuntimeSession {
                     ResumeResult::allow()
                 })
                 .await
-                .map_err(|e| RunError(e.to_string()))?;
+                .map_err(|e| RunError::internal(e.to_string()))?;
             iteration += 1;
         }
         Ok(OutcomeReport { iterations })

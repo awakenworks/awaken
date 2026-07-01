@@ -7,8 +7,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_protocol_managed::dto::StopReason;
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
-    TurnOutcome, router,
+    Decision, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
+    SessionRuntime, TurnOutcome, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -85,7 +85,7 @@ impl SessionRuntime for EchoFake {
         _tool_use_id: &str,
         _decision: Decision,
     ) -> Result<TurnOutcome, RunError> {
-        Err(RunError("no parked run".into()))
+        Err(RunError::internal("no parked run"))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
@@ -97,7 +97,7 @@ impl SessionRuntime for EchoFake {
         _r: &str,
         _m: u32,
     ) -> Result<OutcomeReport, RunError> {
-        Err(RunError("no outcome".into()))
+        Err(RunError::internal("no outcome"))
     }
     async fn resume_custom(
         &self,
@@ -106,10 +106,72 @@ impl SessionRuntime for EchoFake {
         _content: &str,
         _is_error: bool,
     ) -> Result<TurnOutcome, RunError> {
-        Err(RunError("no custom".into()))
+        Err(RunError::internal("no custom"))
     }
     fn model(&self) -> String {
         "test-model".into()
+    }
+}
+
+/// A runtime whose turn fails; the `kind` selects the HTTP status.
+struct FailingFake(RunErrorKind);
+
+#[async_trait::async_trait]
+impl SessionRuntime for FailingFake {
+    async fn run_turn(&self, _a: &str, _t: &str, _u: &str) -> Result<TurnOutcome, RunError> {
+        Err(match self.0 {
+            RunErrorKind::BadRequest => RunError::bad_request("nope"),
+            RunErrorKind::Internal => RunError::internal("boom"),
+        })
+    }
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+        Err(RunError::internal("no resume"))
+    }
+    async fn resume_custom(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _c: &str,
+        _e: bool,
+    ) -> Result<TurnOutcome, RunError> {
+        Err(RunError::internal("no custom"))
+    }
+    async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+    async fn define_outcome(
+        &self,
+        _t: &str,
+        _d: &str,
+        _r: &str,
+        _m: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Err(RunError::internal("no outcome"))
+    }
+    fn model(&self) -> String {
+        "test-model".into()
+    }
+}
+
+#[tokio::test]
+async fn run_error_kind_maps_to_http_status() {
+    for (kind, want) in [
+        (RunErrorKind::BadRequest, StatusCode::BAD_REQUEST),
+        (RunErrorKind::Internal, StatusCode::INTERNAL_SERVER_ERROR),
+    ] {
+        let app = router(Arc::new(ManagedState::new(FailingFake(kind))));
+        let id = create(&app).await;
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/events"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }))
+                    .unwrap(),
+            ))
+            .unwrap();
+        let status = app.clone().oneshot(req).await.unwrap().status();
+        assert_eq!(status, want, "{kind:?}");
     }
 }
 
@@ -200,7 +262,7 @@ impl SessionRuntime for ParkingFake {
         _r: &str,
         _m: u32,
     ) -> Result<OutcomeReport, RunError> {
-        Err(RunError("no outcome".into()))
+        Err(RunError::internal("no outcome"))
     }
     async fn resume_custom(
         &self,
@@ -209,7 +271,7 @@ impl SessionRuntime for ParkingFake {
         _content: &str,
         _is_error: bool,
     ) -> Result<TurnOutcome, RunError> {
-        Err(RunError("no custom".into()))
+        Err(RunError::internal("no custom"))
     }
     fn model(&self) -> String {
         "test-model".into()
@@ -222,10 +284,10 @@ struct OutcomeFake;
 #[async_trait::async_trait]
 impl SessionRuntime for OutcomeFake {
     async fn run_turn(&self, _a: &str, _t: &str, _u: &str) -> Result<TurnOutcome, RunError> {
-        Err(RunError("no turn".into()))
+        Err(RunError::internal("no turn"))
     }
     async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
-        Err(RunError("no resume".into()))
+        Err(RunError::internal("no resume"))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
@@ -267,7 +329,7 @@ impl SessionRuntime for OutcomeFake {
         _content: &str,
         _is_error: bool,
     ) -> Result<TurnOutcome, RunError> {
-        Err(RunError("no custom".into()))
+        Err(RunError::internal("no custom"))
     }
     fn model(&self) -> String {
         "test-model".into()
@@ -410,7 +472,7 @@ impl SessionRuntime for CustomToolFake {
         })
     }
     async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
-        Err(RunError("expected custom result".into()))
+        Err(RunError::internal("expected custom result"))
     }
     async fn resume_custom(
         &self,
@@ -445,7 +507,7 @@ impl SessionRuntime for CustomToolFake {
         _r: &str,
         _m: u32,
     ) -> Result<OutcomeReport, RunError> {
-        Err(RunError("no outcome".into()))
+        Err(RunError::internal("no outcome"))
     }
     fn model(&self) -> String {
         "test-model".into()

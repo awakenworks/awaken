@@ -17,6 +17,6 @@ mod state;
 
 pub use router::router;
 pub use state::{
-    Decision, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
-    StateError, TurnOutcome,
+    Decision, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
+    SessionRuntime, StateError, TurnOutcome,
 };

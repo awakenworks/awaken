@@ -112,9 +112,39 @@ pub trait SessionRuntime: Send + Sync {
     fn model(&self) -> String;
 }
 
+/// A runtime failure. `kind` classifies who is at fault so the router can map it
+/// to the right HTTP status: a `BadRequest` is the caller's (an unknown park, a
+/// mismatched id, a wrong-binding resume); `Internal` is the runtime's.
 #[derive(Debug, thiserror::Error)]
-#[error("run failed: {0}")]
-pub struct RunError(pub String);
+#[error("run failed: {message}")]
+pub struct RunError {
+    pub message: String,
+    pub kind: RunErrorKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunErrorKind {
+    Internal,
+    BadRequest,
+}
+
+impl RunError {
+    /// A runtime-side failure (provider error, corrupt state) — maps to `500`.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: RunErrorKind::Internal,
+        }
+    }
+
+    /// A caller-side failure (bad id, wrong binding, no park) — maps to `400`.
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: RunErrorKind::BadRequest,
+        }
+    }
+}
 
 struct SessionRecord {
     agent_id: String,

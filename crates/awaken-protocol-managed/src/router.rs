@@ -17,7 +17,7 @@ use tokio_stream::Stream;
 use crate::dto::{
     CreateSessionRequest, ListEventsResponse, SendEventsRequest, SendEventsResponse, Session,
 };
-use crate::state::{ManagedState, StateError};
+use crate::state::{ManagedState, RunErrorKind, StateError};
 
 /// Build the Managed Agents router. Mount it at the server root; the paths are the
 /// public `/v1/sessions...` surface the SDK expects.
@@ -36,7 +36,10 @@ pub fn router(state: Arc<ManagedState>) -> Router {
 fn status(err: StateError) -> StatusCode {
     match err {
         StateError::NotFound => StatusCode::NOT_FOUND,
-        StateError::Run(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        StateError::Run(e) => match e.kind {
+            RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+            RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        },
     }
 }
 

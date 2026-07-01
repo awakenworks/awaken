@@ -433,7 +433,7 @@ async fn custom_result_fails_closed_on_mismatch() {
     .await;
     assert_eq!(
         status,
-        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::BAD_REQUEST,
         "mismatched id must fail closed"
     );
 
@@ -447,7 +447,7 @@ async fn custom_result_fails_closed_on_mismatch() {
     .await;
     assert_eq!(
         status,
-        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::BAD_REQUEST,
         "wrong binding must fail closed"
     );
 
@@ -495,7 +495,7 @@ async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
     .await;
     assert_eq!(
         status,
-        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::BAD_REQUEST,
         "built-in park must reject a custom result"
     );
 
