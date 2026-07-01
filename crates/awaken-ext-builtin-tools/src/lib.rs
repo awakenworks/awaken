@@ -5,13 +5,11 @@
 //! (ADR-0007): typed [`Tool`](awaken_runtime_contract::tool::Tool)s erased into
 //! the runtime's `RawTool` registry.
 
-mod delegation;
 mod erasure;
 mod hand;
 mod task;
 mod web;
 
-pub use delegation::{AgentRunArgs, AgentRunTool, AgentRunner, delegation_tools};
 pub use erasure::{Erased, erase};
 pub use hand::{
     BashArgs, BashTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs, GrepTool, ReadArgs,
