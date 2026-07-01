@@ -20,6 +20,10 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Phase};
+use awaken_protocol_a2a::port::{
+    A2aRuntime, DriverError as A2aErr, Pending as A2aPending, Resume as A2aResume,
+    StepOutcome as A2aStep,
+};
 use awaken_protocol_ag_ui::port::{
     AgUiRuntime, DriverError as AgErr, Pending as AgPending, Resume as AgResume,
     StepOutcome as AgStep,
@@ -505,6 +509,94 @@ impl AiSdkRuntime for AiSdkHost {
     }
 }
 
+// ── A2A adapter over the shared host ────────────────────────────────────────
+
+fn to_a2a_error(err: HostError) -> A2aErr {
+    match err.kind {
+        HostErrorKind::BadRequest => A2aErr::BadRequest(err.message),
+        HostErrorKind::Internal => A2aErr::Internal(err.message),
+    }
+}
+
+fn to_a2a_pending(pending: Option<PendingTool>) -> Option<A2aPending> {
+    pending.map(|p| A2aPending {
+        tool_use_id: p.tool_use_id,
+        name: p.name,
+        input: p.input,
+        client_executed: p.client_executed,
+    })
+}
+
+fn to_a2a_step(result: TurnResult) -> A2aStep {
+    A2aStep {
+        waiting: matches!(result.phase, Phase::Waiting),
+        exhausted: matches!(result.phase, Phase::Ended(EndCause::MaxSteps)),
+        new_messages: result.new_messages,
+        pending: to_a2a_pending(result.pending),
+    }
+}
+
+/// The A2A `A2aRuntime` port implemented over the shared host — a fourth twin of
+/// [`ManagedHost`] / [`AiSdkHost`] / [`AgUiHost`] over the same `Arc<SharedHost>`.
+pub struct A2aHost {
+    host: Arc<SharedHost>,
+}
+
+impl A2aHost {
+    pub fn new(host: Arc<SharedHost>) -> Self {
+        Self { host }
+    }
+}
+
+#[async_trait::async_trait]
+impl A2aRuntime for A2aHost {
+    async fn run_turn(
+        &self,
+        thread: &str,
+        _agent: Option<String>,
+        messages: Vec<Message>,
+    ) -> Result<A2aStep, A2aErr> {
+        let result = self
+            .host
+            .run_turn(thread, messages)
+            .await
+            .map_err(to_a2a_error)?;
+        Ok(to_a2a_step(result))
+    }
+
+    async fn resume(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        resume: A2aResume,
+    ) -> Result<A2aStep, A2aErr> {
+        let resume = match resume {
+            A2aResume::Confirm { allow, note } => HostResume::Confirm { allow, note },
+            A2aResume::ClientResult { content, is_error } => {
+                HostResume::ClientResult { content, is_error }
+            }
+        };
+        let result = self
+            .host
+            .resume(thread, tool_use_id, resume)
+            .await
+            .map_err(to_a2a_error)?;
+        Ok(to_a2a_step(result))
+    }
+
+    async fn pending(&self, thread: &str) -> Option<A2aPending> {
+        to_a2a_pending(self.host.pending_tool(thread).await)
+    }
+
+    async fn history(&self, thread: &str) -> Vec<Message> {
+        self.host.committed_messages(thread).await
+    }
+
+    fn model(&self) -> String {
+        self.host.model()
+    }
+}
+
 // ── AG-UI adapter over the shared host ──────────────────────────────────────
 
 fn to_ag_error(err: HostError) -> AgErr {
@@ -603,7 +695,8 @@ fn mount(host: Arc<SharedHost>) -> Router {
     let managed = router(Arc::new(ManagedState::new(ManagedHost::new(host.clone()))));
     let ai_sdk = awaken_protocol_ai_sdk::router(Arc::new(AiSdkHost::new(host.clone())));
     let ag_ui = awaken_protocol_ag_ui::router(Arc::new(AgUiHost::new(host.clone())));
-    managed.merge(ai_sdk).merge(ag_ui)
+    let a2a = awaken_protocol_a2a::router(Arc::new(A2aHost::new(host.clone())));
+    managed.merge(ai_sdk).merge(ag_ui).merge(a2a)
 }
 
 /// Build the server router backed by the kernel with the given model.

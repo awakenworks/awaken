@@ -8,7 +8,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Json, Path, State};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{FromRequest, Json, Path, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -22,6 +23,28 @@ type Runtime = Arc<dyn AiSdkRuntime>;
 
 /// The AI SDK v6 header `DefaultChatTransport` uses to identify the stream format.
 const AI_SDK_STREAM_HEADER: &str = "x-vercel-ai-ui-message-stream";
+
+/// A JSON body extractor for the AI SDK routes. On a decode failure (malformed
+/// JSON, wrong field type, bad content-type) it returns the UI Message Stream
+/// error frame (`error` + `finish("error")`) rather than axum's plain-text 400,
+/// so `useChat` sees the failure as a stream error like any driver error.
+struct AiSdkJson<T>(T);
+
+#[async_trait::async_trait]
+impl<S, T> FromRequest<S> for AiSdkJson<T>
+where
+    Json<T>: FromRequest<S, Rejection = JsonRejection>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(Self(value)),
+            Err(rejection) => Err(sse_error(DriverError::BadRequest(rejection.body_text()))),
+        }
+    }
+}
 
 /// Build the AI SDK router. Mount it alongside other protocol routers; the paths
 /// are the `/v1/ai-sdk/...` surface the `useChat` transport expects.
@@ -37,14 +60,17 @@ pub fn router(runtime: Runtime) -> Router {
         .with_state(runtime)
 }
 
-async fn chat(State(rt): State<Runtime>, Json(payload): Json<AiSdkChatRequest>) -> Response {
+async fn chat(
+    State(rt): State<Runtime>,
+    AiSdkJson(payload): AiSdkJson<AiSdkChatRequest>,
+) -> Response {
     run(rt, payload).await
 }
 
 async fn chat_threaded(
     State(rt): State<Runtime>,
     Path(thread_id): Path<String>,
-    Json(mut payload): Json<AiSdkChatRequest>,
+    AiSdkJson(mut payload): AiSdkJson<AiSdkChatRequest>,
 ) -> Response {
     payload.thread_id = Some(thread_id);
     run(rt, payload).await
@@ -53,7 +79,7 @@ async fn chat_threaded(
 async fn chat_agent_scoped(
     State(rt): State<Runtime>,
     Path(agent_id): Path<String>,
-    Json(mut payload): Json<AiSdkChatRequest>,
+    AiSdkJson(mut payload): AiSdkJson<AiSdkChatRequest>,
 ) -> Response {
     payload.agent_id = Some(agent_id);
     run(rt, payload).await
