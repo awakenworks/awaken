@@ -80,6 +80,22 @@ impl StdioTransport {
         Self::spawn_and_init(command, args, env, config, timeout, Some(request_handler)).await
     }
 
+    /// Spawn with a sampling handler bound: server-initiated
+    /// `sampling/createMessage` runs through `sampling`, everything else is
+    /// rejected method-not-found.
+    pub async fn connect_with_sampling(
+        command: &str,
+        args: &[String],
+        env: HashMap<String, String>,
+        config: Option<Value>,
+        timeout: Duration,
+        sampling: Arc<dyn crate::sampling::SamplingHandler>,
+    ) -> Result<Self, McpTransportError> {
+        let handler: Arc<dyn ServerRequestHandler> =
+            Arc::new(crate::sampling::SamplingBridge::new(sampling));
+        Self::spawn_and_init(command, args, env, config, timeout, Some(handler)).await
+    }
+
     async fn spawn_and_init(
         command: &str,
         args: &[String],

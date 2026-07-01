@@ -24,6 +24,7 @@ pub mod id_mapping;
 pub mod jsonrpc;
 pub mod progress;
 mod router;
+pub mod sampling;
 pub mod stdio;
 pub mod tool;
 pub mod transport;
@@ -34,6 +35,9 @@ pub use config::{McpServerConnectionConfig, TransportTypeId};
 pub use error::McpError;
 pub use id_mapping::to_tool_id;
 pub use progress::{McpProgressUpdate, normalize_progress};
+pub use sampling::{
+    SamplingError, SamplingHandler, SamplingMessage, SamplingRequest, SamplingResponse,
+};
 pub use stdio::{DEFAULT_TIMEOUT, StdioTransport};
 pub use tool::{McpRawTool, mcp_tool_descriptor};
 pub use transport::{ListChangedKind, McpToolTransport};
