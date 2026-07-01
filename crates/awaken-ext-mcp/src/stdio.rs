@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -18,10 +19,12 @@ use mcp::transport::McpTransportError;
 use mcp::{CallToolParams, CallToolResult, InitializeParams, ListToolsResult, McpToolDefinition};
 use serde_json::Value;
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 
-use crate::jsonrpc::{JsonRpcPeer, ServerNotification, ServerRequestHandler};
-use crate::transport::McpToolTransport;
+use crate::jsonrpc::{JsonRpcPeer, ServerRequestHandler};
+use crate::progress::McpProgressUpdate;
+use crate::router::{NotificationSinks, spawn_router};
+use crate::transport::{ListChangedKind, McpToolTransport};
 use crate::types::{
     ListPromptsResult, ListResourcesResult, McpPromptDefinition, McpPromptResult,
     McpResourceDefinition,
@@ -37,8 +40,10 @@ pub struct StdioTransport {
     /// The child is kept alive here (its stdio is owned by the peer's tasks);
     /// `kill_on_drop` reaps it when this transport is dropped.
     child: Mutex<Child>,
-    /// Server notifications, taken once by whoever drives refresh/progress.
-    notifications: Mutex<Option<mpsc::Receiver<ServerNotification>>>,
+    /// Typed notification sinks fed by the background router.
+    sinks: Arc<NotificationSinks>,
+    /// Allocates a unique `progressToken` per progress-tracked call.
+    next_progress_token: AtomicI64,
 }
 
 impl StdioTransport {
@@ -105,11 +110,14 @@ impl StdioTransport {
             .ok_or_else(|| McpTransportError::TransportError("child has no stdin".to_string()))?;
 
         let (peer, notifications) = JsonRpcPeer::new(stdout, stdin, request_handler);
+        let sinks = Arc::new(NotificationSinks::new());
+        spawn_router(notifications, Arc::clone(&sinks));
         let transport = Self {
             peer,
             timeout,
             child: Mutex::new(child),
-            notifications: Mutex::new(Some(notifications)),
+            sinks,
+            next_progress_token: AtomicI64::new(1),
         };
         transport.initialize(config).await?;
         Ok(transport)
@@ -128,10 +136,15 @@ impl StdioTransport {
         Ok(())
     }
 
-    /// Take the server-notification receiver. Returns `None` on a second call —
-    /// only one consumer drives notifications.
-    pub async fn take_notifications(&self) -> Option<mpsc::Receiver<ServerNotification>> {
-        self.notifications.lock().await.take()
+    /// Subscribe to `list_changed` signals (tool/prompt/resource catalog
+    /// changes) — the dynamic-refresh trigger.
+    pub fn subscribe_list_changed(&self) -> broadcast::Receiver<ListChangedKind> {
+        self.sinks.list_changed.subscribe()
+    }
+
+    /// Subscribe to `resources/updated` uris.
+    pub fn subscribe_resource_updated(&self) -> broadcast::Receiver<String> {
+        self.sinks.resource_updated.subscribe()
     }
 
     /// Whether the connection is still open.
@@ -179,6 +192,31 @@ impl McpToolTransport for StdioTransport {
         // Preserve the raw result — including `isError` — so the three-state
         // mapping in `McpRawTool` stays intact.
         let call_result: CallToolResult = serde_json::from_value(result)?;
+        Ok(call_result)
+    }
+
+    async fn call_tool_with_progress(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        progress_tx: mpsc::Sender<McpProgressUpdate>,
+    ) -> Result<CallToolResult, McpTransportError> {
+        // Register the per-call progress channel under a fresh token, thread the
+        // token through `_meta`, and clean up once the call returns.
+        let token = self.next_progress_token.fetch_add(1, Ordering::SeqCst);
+        self.sinks.progress.lock().await.insert(token, progress_tx);
+        let params = CallToolParams {
+            name: tool_name.to_string(),
+            arguments: Some(arguments),
+            task: None,
+            meta: Some(serde_json::json!({ "progressToken": token })),
+        };
+        let result = self
+            .peer
+            .request("tools/call", serde_json::to_value(&params)?, self.timeout)
+            .await;
+        self.sinks.progress.lock().await.remove(&token);
+        let call_result: CallToolResult = serde_json::from_value(result?)?;
         Ok(call_result)
     }
 
