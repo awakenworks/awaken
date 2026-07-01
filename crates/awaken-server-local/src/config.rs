@@ -19,7 +19,7 @@ use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::runnable::RunnableConfig;
-use awaken_sandbox_local::{IsolatedRoot, rooted_hand_tools};
+use awaken_sandbox_local::Environment;
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
 
@@ -121,13 +121,13 @@ pub(crate) fn server_config(
         .build()
 }
 
-/// A per-thread runtime whose hand tools are rooted in `root`. No `agent_run`
-/// executor is registered: a delegate call is advertised by the config but the
-/// kernel runs it via the injected resolver, not the tool registry.
-pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, root: IsolatedRoot) -> Runtime {
+/// A per-thread runtime whose hand tools come from `env` (placement-agnostic). No
+/// `agent_run` executor is registered: a delegate call is advertised by the config
+/// but the kernel runs it via the injected resolver, not the tool registry.
+pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, env: &Environment) -> Runtime {
     let gate = PermissionGate::new(Arc::new(server_policy()));
     let mut runtime = Runtime::new().with_llm(llm).with_gate(Arc::new(gate));
-    for tool in rooted_hand_tools(root) {
+    for tool in env.hand_tools() {
         runtime = runtime.with_tool(tool);
     }
     runtime

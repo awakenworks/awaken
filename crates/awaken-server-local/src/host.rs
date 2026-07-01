@@ -34,7 +34,7 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::ToolOutput;
-use awaken_sandbox_local::{IsolatedRoot, LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use crate::config::{build_runtime, server_config};
@@ -166,9 +166,9 @@ pub(crate) struct SessionCtx {
     config: RunnableConfig,
     pub(crate) commit: Arc<HostCommit>,
     pub(crate) thread_id: ThreadId,
-    /// The thread's isolated sandbox root, reused to build a goal-enabled runtime
-    /// for `define_outcome` (same tools, same root).
-    root: IsolatedRoot,
+    /// The thread's sandbox environment, reused to build a goal-enabled runtime
+    /// for `define_outcome` (same tools, same environment).
+    env: Environment,
     /// The in-flight run's cancellation token, so a concurrent `interrupt` (a
     /// separate request) can cancel it. A plain `std::sync::Mutex` (brief locks),
     /// held by neither the run loop nor the state lock, so interrupt never blocks
@@ -384,7 +384,7 @@ impl SharedHost {
             .map_err(|e| HostError::internal(e.to_string()))?;
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread)?);
-        let mut runtime = build_runtime(self.llm.clone(), env.root.clone());
+        let mut runtime = build_runtime(self.llm.clone(), &env);
         // Delegation is a runtime concern: inject the resolver so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
         if let Some(resolver) = self.agent_resolver() {
@@ -412,7 +412,7 @@ impl SharedHost {
             config,
             commit,
             thread_id,
-            root: env.root.clone(),
+            env,
             cancel: std::sync::Mutex::new(None),
             state: tokio::sync::Mutex::new(state),
         });
@@ -589,7 +589,7 @@ impl SharedHost {
         // run-end guard steers revisions until the goal is met or the budget is
         // spent. The host drives one run and projects the rounds it committed. The
         // guard shares the thread's committed history and sandbox root.
-        let goal_runtime = build_runtime(self.llm.clone(), ctx.root.clone())
+        let goal_runtime = build_runtime(self.llm.clone(), &ctx.env)
             .with_plugin(Arc::new(GoalPlugin::new(goal, self.grader.clone())));
         // The goal run auto-approves tools to drive to a deliverable, so it does not
         // advertise `agent_run` (which parks and is host-fulfilled, not auto-run).
