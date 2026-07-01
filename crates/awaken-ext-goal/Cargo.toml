@@ -7,3 +7,8 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+async-trait.workspace = true
+awaken-runtime-contract.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

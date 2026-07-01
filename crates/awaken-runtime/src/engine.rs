@@ -25,7 +25,9 @@ use awaken_runtime_contract::llm::{
     ChatMessage, ChatRequest, ChatRole, DeltaSink, ToolCall, ToolSchema,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
-use awaken_runtime_contract::plugin::{PhaseContext, PhaseHookPoint, ResolvedExecutionEnv};
+use awaken_runtime_contract::plugin::{
+    PhaseContext, PhaseHookPoint, ResolvedExecutionEnv, RunEndContext, RunEndDecision,
+};
 use awaken_runtime_contract::resolved::{ResolvedRun, ResolvedSpec, ToolDescriptor};
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
@@ -337,6 +339,11 @@ async fn drive(
     // Forwards streamed text chunks to the live stream during each inference.
     let delta_sink = StreamDeltaSink { context, run_id };
 
+    // How many times a run-end guard has steered this run. It is both the
+    // guard's iteration signal and the runtime's run-scoped continuation count;
+    // `max_steps` remains the hard runaway backstop, since each steer costs a step.
+    let mut forced_continuations: usize = 0;
+
     // The agent's configured ceiling guards against a non-terminating tool cycle;
     // a natural-end text turn ends the loop earlier.
     for step in 0..resolved.spec.max_steps {
@@ -401,10 +408,46 @@ async fn drive(
         transcript.push(assistant.clone());
         new_messages.push(assistant);
 
-        // A text-only turn (no tool requests) is a natural end.
+        // A text-only turn (no tool requests) is a natural end — unless a run-end
+        // guard steers another turn. The runtime owns *when* the loop stops; a
+        // guard supplies the predicate and any feedback. Its `detail` is opaque
+        // (anti-corruption): the kernel forwards it, never interprets it.
         if calls.is_empty() {
-            end = Some(End::Ended(EndCause::NaturalEnd));
-            break;
+            match consult_run_end(env, run_id, &transcript, forced_continuations).await {
+                RunEndOutcome::Steer { feedback, detail } => {
+                    emit(
+                        context,
+                        run_id,
+                        StreamKind::Continuation {
+                            steered: true,
+                            detail,
+                        },
+                    )
+                    .await;
+                    let message = feedback_message(run_id, forced_continuations, feedback);
+                    transcript.push(message.clone());
+                    new_messages.push(message);
+                    forced_continuations += 1;
+                    continue;
+                }
+                RunEndOutcome::Complete { detail } => {
+                    emit(
+                        context,
+                        run_id,
+                        StreamKind::Continuation {
+                            steered: false,
+                            detail,
+                        },
+                    )
+                    .await;
+                    end = Some(End::Ended(EndCause::NaturalEnd));
+                    break;
+                }
+                RunEndOutcome::End => {
+                    end = Some(End::Ended(EndCause::NaturalEnd));
+                    break;
+                }
+            }
         }
 
         // Otherwise run each requested tool and feed the results back.
@@ -582,6 +625,63 @@ async fn run_phase_hooks(
             point,
         };
         staged_state.extend(hook.on_phase(&ctx).await);
+    }
+}
+
+/// The runtime's view of a run-end consultation, folding the registered guards'
+/// decisions: the first guard that steers wins; otherwise the run ends carrying
+/// the last guard's completion detail; with no guards at all it just ends.
+enum RunEndOutcome {
+    End,
+    Complete {
+        detail: serde_json::Value,
+    },
+    Steer {
+        feedback: String,
+        detail: serde_json::Value,
+    },
+}
+
+/// Consult the run-end continuation guards at a natural-end boundary. Guards are
+/// consulted in dependency order; a `Steer` short-circuits (a guard wants another
+/// turn). Their `detail` is opaque to the runtime (G2 neutrality) — forwarded,
+/// never interpreted.
+async fn consult_run_end(
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    conversation: &[Message],
+    forced_continuations: usize,
+) -> RunEndOutcome {
+    let guards = env.run_end_guards();
+    if guards.is_empty() {
+        return RunEndOutcome::End;
+    }
+    let mut completion = None;
+    for guard in guards {
+        let ctx = RunEndContext {
+            run_id: run_id.clone(),
+            conversation,
+            forced_continuations,
+        };
+        match guard.evaluate(&ctx).await {
+            RunEndDecision::Steer { feedback, detail } => {
+                return RunEndOutcome::Steer { feedback, detail };
+            }
+            RunEndDecision::Complete { detail } => completion = Some(detail),
+        }
+    }
+    completion
+        .map(|detail| RunEndOutcome::Complete { detail })
+        .unwrap_or(RunEndOutcome::End)
+}
+
+/// The user message a steered continuation injects before looping. Its id is
+/// run-scoped and distinct from the step-based assistant/tool message ids.
+fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
+    Message {
+        id: MessageId(format!("{}-steer-{nth}", run_id.0)),
+        role: Role::User,
+        content: vec![ContentBlock::text(feedback)],
     }
 }
 

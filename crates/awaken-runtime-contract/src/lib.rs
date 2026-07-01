@@ -25,8 +25,13 @@ pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use permission::{GateOutcome, PermissionDecision, PermissionPolicy, ToolGateHook};
 pub use plugin::{
     CapabilityBound, Contributions, PhaseHook, PhaseHookPoint, Plugin, PluginManifest,
-    ResolvedExecutionEnv,
+    ResolvedExecutionEnv, RunEndContext, RunEndDecision, RunEndGuard,
 };
+// The conversation/id types surfaced through this crate's own ports (e.g.
+// `RunEndContext.conversation: &[Message]`). Re-exported so an extension that
+// consumes those ports names them here, without a direct `agent-contract` edge.
+pub use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+pub use awaken_agent_contract::agent::run::Id as RunId;
 pub use resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 pub use resolver::{AgentSnapshotResolver, RunResolver};
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
