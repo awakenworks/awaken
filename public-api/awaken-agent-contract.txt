@@ -1069,6 +1069,64 @@ impl core::marker::Sync for awaken_agent_contract::fact::thread::Fact
 impl core::marker::Unpin for awaken_agent_contract::fact::thread::Fact
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::fact::thread::Fact
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::fact::thread::Fact
+pub mod awaken_agent_contract::project
+pub enum awaken_agent_contract::project::AgentEvent
+pub awaken_agent_contract::project::AgentEvent::AssistantMessage
+pub awaken_agent_contract::project::AgentEvent::AssistantMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_agent_contract::project::AgentEvent::AssistantMessage::id: alloc::string::String
+pub awaken_agent_contract::project::AgentEvent::RunFinished
+pub awaken_agent_contract::project::AgentEvent::RunFinished::exhausted: bool
+pub awaken_agent_contract::project::AgentEvent::RunStarted
+pub awaken_agent_contract::project::AgentEvent::ToolCall
+pub awaken_agent_contract::project::AgentEvent::ToolCall::disposition: awaken_agent_contract::project::ToolDisposition
+pub awaken_agent_contract::project::AgentEvent::ToolCall::id: alloc::string::String
+pub awaken_agent_contract::project::AgentEvent::ToolCall::input: serde_json::value::Value
+pub awaken_agent_contract::project::AgentEvent::ToolCall::name: alloc::string::String
+pub awaken_agent_contract::project::AgentEvent::ToolResult
+pub awaken_agent_contract::project::AgentEvent::ToolResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_agent_contract::project::AgentEvent::ToolResult::id: alloc::string::String
+pub awaken_agent_contract::project::AgentEvent::ToolResult::is_error: bool
+pub awaken_agent_contract::project::AgentEvent::Waiting
+pub awaken_agent_contract::project::AgentEvent::Waiting::pending_tool_use_id: core::option::Option<alloc::string::String>
+impl core::clone::Clone for awaken_agent_contract::project::AgentEvent
+pub fn awaken_agent_contract::project::AgentEvent::clone(&self) -> awaken_agent_contract::project::AgentEvent
+impl core::cmp::PartialEq for awaken_agent_contract::project::AgentEvent
+pub fn awaken_agent_contract::project::AgentEvent::eq(&self, &awaken_agent_contract::project::AgentEvent) -> bool
+impl core::fmt::Debug for awaken_agent_contract::project::AgentEvent
+pub fn awaken_agent_contract::project::AgentEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::project::AgentEvent
+impl core::marker::Freeze for awaken_agent_contract::project::AgentEvent
+impl core::marker::Send for awaken_agent_contract::project::AgentEvent
+impl core::marker::Sync for awaken_agent_contract::project::AgentEvent
+impl core::marker::Unpin for awaken_agent_contract::project::AgentEvent
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::project::AgentEvent
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::project::AgentEvent
+pub enum awaken_agent_contract::project::ToolDisposition
+pub awaken_agent_contract::project::ToolDisposition::Executed
+pub awaken_agent_contract::project::ToolDisposition::PendingBuiltin
+pub awaken_agent_contract::project::ToolDisposition::PendingClient
+impl core::clone::Clone for awaken_agent_contract::project::ToolDisposition
+pub fn awaken_agent_contract::project::ToolDisposition::clone(&self) -> awaken_agent_contract::project::ToolDisposition
+impl core::cmp::Eq for awaken_agent_contract::project::ToolDisposition
+impl core::cmp::PartialEq for awaken_agent_contract::project::ToolDisposition
+pub fn awaken_agent_contract::project::ToolDisposition::eq(&self, &awaken_agent_contract::project::ToolDisposition) -> bool
+impl core::fmt::Debug for awaken_agent_contract::project::ToolDisposition
+pub fn awaken_agent_contract::project::ToolDisposition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_agent_contract::project::ToolDisposition
+impl core::marker::Freeze for awaken_agent_contract::project::ToolDisposition
+impl core::marker::Send for awaken_agent_contract::project::ToolDisposition
+impl core::marker::Sync for awaken_agent_contract::project::ToolDisposition
+impl core::marker::Unpin for awaken_agent_contract::project::ToolDisposition
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::project::ToolDisposition
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::project::ToolDisposition
+pub trait awaken_agent_contract::project::Transcoder
+pub type awaken_agent_contract::project::Transcoder::Output
+pub fn awaken_agent_contract::project::Transcoder::transcode(&mut self, &awaken_agent_contract::project::AgentEvent) -> alloc::vec::Vec<Self::Output>
+pub fn awaken_agent_contract::project::Transcoder::transcode_all(&mut self, &[awaken_agent_contract::project::AgentEvent]) -> alloc::vec::Vec<Self::Output>
+pub fn awaken_agent_contract::project::project_messages(&[awaken_agent_contract::agent::message::Message], core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::project::AgentEvent>
+pub fn awaken_agent_contract::project::project_step(&[awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::Phase, core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::project::AgentEvent>
+pub fn awaken_agent_contract::project::terminal(&awaken_agent_contract::agent::run::Phase, core::option::Option<(&str, bool)>) -> awaken_agent_contract::project::AgentEvent
+pub fn awaken_agent_contract::project::terminal_waiting(core::option::Option<&str>) -> awaken_agent_contract::project::AgentEvent
 pub mod awaken_agent_contract::store
 pub mod awaken_agent_contract::store::event_log
 pub trait awaken_agent_contract::store::event_log::EventLog
