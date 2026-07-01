@@ -31,6 +31,15 @@ use crate::host::{
 /// The delegation tool id: a call to it parks and the host fulfills it.
 pub(crate) const AGENT_RUN: &str = "agent_run";
 
+/// The result of running a delegate one step.
+pub(crate) enum DelegateOutcome {
+    /// The delegate finished with this reply.
+    Done(String),
+    /// A remote delegate needs more input (its A2A task is `input-required`); the
+    /// parent parks for the user to supply it, delivered as a follow-up turn.
+    NeedsInput,
+}
+
 /// The `(agent_id, input)` a delegate `agent_run` call carries.
 fn delegate_args(arguments: &serde_json::Value) -> (String, String) {
     let field = |key: &str| {
@@ -182,7 +191,7 @@ async fn delegate_over_a2a(
     input: &str,
     context_id: &str,
     cancellation: Option<&CancellationToken>,
-) -> Result<String, HostError> {
+) -> Result<DelegateOutcome, HostError> {
     let request = json!({
         "agentId": agent_id,
         "message": {
@@ -239,14 +248,15 @@ async fn delegate_over_a2a(
     }
 
     match task.status.state {
-        TaskState::Completed => Ok(task
-            .status
-            .message
-            .map(|message| message.text())
-            .unwrap_or_default()),
-        TaskState::InputRequired => Err(HostError::bad_request(
-            "remote A2A agent requires further input",
+        TaskState::Completed => Ok(DelegateOutcome::Done(
+            task.status
+                .message
+                .map(|message| message.text())
+                .unwrap_or_default(),
         )),
+        // The remote agent asked for more input: park the parent so the user can
+        // supply it (delivered as a follow-up `message:send` on the same context).
+        TaskState::InputRequired => Ok(DelegateOutcome::NeedsInput),
         TaskState::Failed => Err(HostError::internal("remote A2A agent failed")),
         TaskState::Working => unreachable!("loop exits only on a terminal state"),
     }
@@ -282,7 +292,7 @@ impl SharedHost {
         agent_id: &str,
         input: &str,
         cancellation: Option<&CancellationToken>,
-    ) -> Result<String, HostError> {
+    ) -> Result<DelegateOutcome, HostError> {
         if let Some(transport) = self.remote_agents.get(agent_id) {
             let context_id = format!("deleg-{agent_id}");
             return delegate_over_a2a(
@@ -318,9 +328,32 @@ impl SharedHost {
             })
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(latest_assistant_text(
+        Ok(DelegateOutcome::Done(latest_assistant_text(
             &commit.committed_messages(&ThreadId(thread)),
-        ))
+        )))
+    }
+
+    /// Deliver the user's `content` to a remote A2A agent that previously asked for
+    /// input (a follow-up `message:send` on the same context), returning the next
+    /// step. Errors if the agent is not a registered remote.
+    pub(crate) async fn deliver_remote_input(
+        &self,
+        agent_id: &str,
+        content: &str,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<DelegateOutcome, HostError> {
+        let transport = self.remote_agents.get(agent_id).ok_or_else(|| {
+            HostError::internal(format!("agent {agent_id:?} is not a remote agent"))
+        })?;
+        let context_id = format!("deleg-{agent_id}");
+        delegate_over_a2a(
+            transport.as_ref(),
+            agent_id,
+            content,
+            &context_id,
+            cancellation,
+        )
+        .await
     }
 
     /// Fulfill delegate `agent_run` parks in place: while the run is parked on a
@@ -328,22 +361,26 @@ impl SharedHost {
     /// delegation is transparent to the caller. The parent's park is durable, so a
     /// crash mid-delegation recovers here on the next drive. Non-delegate parks
     /// (client tools, HITL) are returned untouched for the caller to answer.
+    ///
+    /// Returns the terminal/parked phase and whether the run is now parked awaiting
+    /// *remote input*: a remote delegate asked for more input, so the parent stays
+    /// parked for the user to supply it (via `resume` with a client result).
     pub(crate) async fn fulfill_delegations(
         &self,
         ctx: &SessionCtx,
         run_id: &RunId,
         mut phase: Phase,
-    ) -> Result<Phase, HostError> {
+    ) -> Result<(Phase, bool), HostError> {
         loop {
             if !matches!(phase, Phase::Waiting) {
-                return Ok(phase);
+                return Ok((phase, false));
             }
             let Some(ticket) = ctx.commit.waiting_ticket(run_id) else {
-                return Ok(phase);
+                return Ok((phase, false));
             };
             let pending = match &ticket.pending_tool {
                 Some(tool) if tool.tool_id == AGENT_RUN => tool.clone(),
-                _ => return Ok(phase),
+                _ => return Ok((phase, false)),
             };
             let call_id = ticket.call_id.clone().unwrap_or_default();
             let (agent_id, input) = delegate_args(&pending.arguments);
@@ -351,7 +388,9 @@ impl SharedHost {
             // aborts it (and cancels the remote task).
             let token = ctx.register_cancel();
             let output = match self.run_delegate(&agent_id, &input, Some(&token)).await {
-                Ok(text) => ToolOutput::ok(&call_id, text),
+                Ok(DelegateOutcome::Done(text)) => ToolOutput::ok(&call_id, text),
+                // The remote needs input: leave the parent parked for the user.
+                Ok(DelegateOutcome::NeedsInput) => return Ok((phase, true)),
                 Err(err) => ToolOutput::error(&call_id, err.to_string()),
             };
             let command = ResumeCommand::from_ticket(&ticket, ResumeResult::ToolResult(output), 0);
