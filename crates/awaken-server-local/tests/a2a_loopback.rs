@@ -2,7 +2,7 @@
 //!
 //! A parent awaken agent delegates (`agent_run`) to a *remote* agent that is
 //! itself an awaken A2A server. The delegation is fulfilled by posting a real
-//! `message:send` (serialized JSON) to that server through an [`A2aTransport`],
+//! `message:send` (serialized JSON) to that server through an [`Transport`],
 //! reading the completed `Task`, and resuming the parent with the reply — proving
 //! the inbound router and the outbound client agree on the same wire, in-process
 //! and without a socket (the transport calls the router via `oneshot`).
@@ -12,8 +12,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_server_local::{
-    A2aResponse, A2aTransport, DelegatingModel, EchoModel, HttpA2aTransport, SharedHost,
-    build_router,
+    DelegatingModel, EchoModel, HttpTransport, Response, SharedHost, Transport, build_router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -21,20 +20,20 @@ use axum::http::Request;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-/// An `A2aTransport` that calls an in-process awaken A2A server via `oneshot`, so
+/// An `Transport` that calls an in-process awaken A2A server via `oneshot`, so
 /// a delegation crosses the real A2A wire without opening a socket.
 struct RouterTransport {
     app: Router,
 }
 
 #[async_trait::async_trait]
-impl A2aTransport for RouterTransport {
+impl Transport for RouterTransport {
     async fn request(
         &self,
         method: &str,
         path: &str,
         body: Option<Vec<u8>>,
-    ) -> Result<A2aResponse, String> {
+    ) -> Result<Response, String> {
         let req = Request::builder()
             .method(method)
             .uri(path)
@@ -54,7 +53,7 @@ impl A2aTransport for RouterTransport {
             .await
             .map_err(|e| e.to_string())?
             .to_bytes();
-        Ok(A2aResponse {
+        Ok(Response {
             status,
             body: bytes.to_vec(),
         })
@@ -112,13 +111,13 @@ async fn a_delegate_call_is_fulfilled_over_the_a2a_wire() {
 async fn a_remote_transport_failure_surfaces_as_a_tool_error() {
     struct BrokenTransport;
     #[async_trait::async_trait]
-    impl A2aTransport for BrokenTransport {
+    impl Transport for BrokenTransport {
         async fn request(
             &self,
             _method: &str,
             _path: &str,
             _body: Option<Vec<u8>>,
-        ) -> Result<A2aResponse, String> {
+        ) -> Result<Response, String> {
             Err("connection refused".to_string())
         }
     }
@@ -153,7 +152,7 @@ async fn a_delegate_call_reaches_a_remote_over_real_http() {
         axum::serve(listener, remote).await.unwrap();
     });
 
-    let transport = Arc::new(HttpA2aTransport::new(format!("http://{addr}")));
+    let transport = Arc::new(HttpTransport::new(format!("http://{addr}")));
     let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
         .with_remote_a2a("researcher", transport);
 
@@ -187,13 +186,13 @@ async fn a_working_task_is_polled_to_completion() {
         gets: AtomicUsize,
     }
     #[async_trait::async_trait]
-    impl A2aTransport for PollingTransport {
+    impl Transport for PollingTransport {
         async fn request(
             &self,
             method: &str,
             _path: &str,
             _body: Option<Vec<u8>>,
-        ) -> Result<A2aResponse, String> {
+        ) -> Result<Response, String> {
             let json = if method == "POST" {
                 // message:send → a working task with an id to poll.
                 r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_WORKING"}}}"#
@@ -204,7 +203,7 @@ async fn a_working_task_is_polled_to_completion() {
                 r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"polled answer"}]}}}}"#
                     .to_string()
             };
-            Ok(A2aResponse {
+            Ok(Response {
                 status: 200,
                 body: json.into_bytes(),
             })
@@ -251,16 +250,16 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
         cancelled: Arc<AtomicBool>,
     }
     #[async_trait::async_trait]
-    impl A2aTransport for HangingTransport {
+    impl Transport for HangingTransport {
         async fn request(
             &self,
             method: &str,
             path: &str,
             _body: Option<Vec<u8>>,
-        ) -> Result<A2aResponse, String> {
+        ) -> Result<Response, String> {
             if path.ends_with(":cancel") {
                 self.cancelled.store(true, Ordering::SeqCst);
-                return Ok(A2aResponse {
+                return Ok(Response {
                     status: 200,
                     body: b"{}".to_vec(),
                 });
@@ -268,7 +267,7 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
             if method == "GET" {
                 self.polled.notify_one();
             }
-            Ok(A2aResponse {
+            Ok(Response {
                 status: 200,
                 body: WORKING.as_bytes().to_vec(),
             })
@@ -321,20 +320,20 @@ async fn a_remote_input_required_parks_the_parent_then_resumes() {
         sends: AtomicUsize,
     }
     #[async_trait::async_trait]
-    impl A2aTransport for TwoStepTransport {
+    impl Transport for TwoStepTransport {
         async fn request(
             &self,
             method: &str,
             _path: &str,
             _body: Option<Vec<u8>>,
-        ) -> Result<A2aResponse, String> {
+        ) -> Result<Response, String> {
             assert_eq!(method, "POST", "only message:send is used (no polling)");
             let json = if self.sends.fetch_add(1, Ordering::SeqCst) == 0 {
                 r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_INPUT_REQUIRED"}}}"#
             } else {
                 r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"final answer"}]}}}}"#
             };
-            Ok(A2aResponse {
+            Ok(Response {
                 status: 200,
                 body: json.as_bytes().to_vec(),
             })
@@ -409,15 +408,15 @@ async fn a_remote_agent_card_is_discoverable() {
 async fn remote_artifacts_are_included_in_the_reply() {
     struct ArtifactTransport;
     #[async_trait::async_trait]
-    impl A2aTransport for ArtifactTransport {
+    impl Transport for ArtifactTransport {
         async fn request(
             &self,
             _method: &str,
             _path: &str,
             _body: Option<Vec<u8>>,
-        ) -> Result<A2aResponse, String> {
+        ) -> Result<Response, String> {
             let json = r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"summary"}]}},"artifacts":[{"parts":[{"text":"the report body"}]}]}}"#;
-            Ok(A2aResponse {
+            Ok(Response {
                 status: 200,
                 body: json.as_bytes().to_vec(),
             })

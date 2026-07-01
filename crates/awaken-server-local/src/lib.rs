@@ -45,9 +45,11 @@ use axum::Router;
 
 use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult, block_text};
 
-pub use crate::delegate::{A2aResponse, A2aTransport, HttpA2aTransport};
+// The A2A transport a remote delegate uses is the A2A bounded context's; re-export
+// it so composition-root callers configure a remote agent from one import.
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
+pub use awaken_protocol_a2a::{HttpTransport, Response, Transport};
 
 /// A deterministic, network-free model: it replies with the last user turn's
 /// text, so the server runs end-to-end in CI and under the TypeScript SDK e2e
