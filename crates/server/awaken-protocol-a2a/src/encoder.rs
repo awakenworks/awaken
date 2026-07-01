@@ -50,6 +50,7 @@ pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome
             message: status_message,
         },
         history: messages,
+        artifacts: Vec::new(),
     }
 }
 
