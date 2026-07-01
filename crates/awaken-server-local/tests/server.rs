@@ -1,6 +1,6 @@
-//! Server integration tests through the *real* kernel: the echo path end-to-end,
-//! a rooted write->read round-trip inside a session's sandbox, and per-session
-//! file isolation (two sessions writing the same relative path stay separate).
+//! Server integration tests through the *real* kernel: the echo path, and a full
+//! HITL round-trip where a mutating tool parks for approval, is confirmed, runs
+//! rooted in the session's sandbox, and the read-back proves isolation.
 
 use std::sync::Arc;
 
@@ -46,8 +46,18 @@ fn event_types(list: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// Run one turn on `session`, returning the projected events.
-async fn turn(app: &Router, session: &str, text: &str) -> serde_json::Value {
+async fn create_session(app: &Router) -> String {
+    let s = json_call(
+        app,
+        "POST",
+        "/v1/sessions",
+        serde_json::json!({ "agent": "assistant" }),
+    )
+    .await;
+    s["id"].as_str().unwrap().to_string()
+}
+
+async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Value {
     json_call(
         app,
         "POST",
@@ -64,22 +74,28 @@ async fn turn(app: &Router, session: &str, text: &str) -> serde_json::Value {
     .await
 }
 
-async fn create_session(app: &Router) -> String {
-    let s = json_call(
+async fn confirm(app: &Router, session: &str, tool_use_id: &str) -> serde_json::Value {
+    json_call(
         app,
         "POST",
-        "/v1/sessions",
-        serde_json::json!({ "agent": "assistant" }),
+        &format!("/v1/sessions/{session}/events"),
+        serde_json::json!({ "events": [{ "type": "user.tool_confirmation", "tool_use_id": tool_use_id, "result": "allow" }] }),
     )
     .await;
-    s["id"].as_str().unwrap().to_string()
+    json_call(
+        app,
+        "GET",
+        &format!("/v1/sessions/{session}/events"),
+        serde_json::Value::Null,
+    )
+    .await
 }
 
 #[tokio::test]
 async fn echo_turn_end_to_end() {
     let app = build_router(Arc::new(EchoModel), "echo-model");
     let id = create_session(&app).await;
-    let list = turn(&app, &id, "hi there").await;
+    let list = send_message(&app, &id, "hi there").await;
     assert_eq!(
         event_types(&list),
         vec!["agent.message", "session.status_idle"]
@@ -91,18 +107,10 @@ async fn echo_turn_end_to_end() {
         .find(|e| e["type"] == "agent.message")
         .unwrap();
     assert_eq!(msg["content"][0]["text"], "Echo: hi there");
-    let idle = list["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["type"] == "session.status_idle")
-        .unwrap();
-    assert_eq!(idle["stop_reason"]["type"], "end_turn");
 }
 
-/// A stateless probe model: it writes the user's text to a relative `probe.txt`,
-/// reads it back, then replies. Stateless (decides from the transcript), so one
-/// shared instance drives multiple sessions correctly.
+/// Stateless probe: write the user's text to a relative `probe.txt`, read it back,
+/// reply. `write` is asked (parks); `read` is allowed (runs).
 struct WriteReadProbe;
 
 #[async_trait::async_trait]
@@ -150,7 +158,6 @@ impl LlmExecutor for WriteReadProbe {
     }
 }
 
-/// The text of the `read` tool result in a projected event list.
 fn read_result_text(list: &serde_json::Value) -> String {
     let results: Vec<&serde_json::Value> = list["data"]
         .as_array()
@@ -158,27 +165,32 @@ fn read_result_text(list: &serde_json::Value) -> String {
         .iter()
         .filter(|e| e["type"] == "agent.tool_result")
         .collect();
-    // The second tool_result is the read (the first is the write ack).
-    let read = results.last().unwrap();
-    read["content"][0]["text"].as_str().unwrap().to_string()
+    results.last().unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 #[tokio::test]
-async fn rooted_write_then_read_round_trips() {
+async fn hitl_write_parks_then_confirms_and_reads_rooted() {
     let app = build_router(Arc::new(WriteReadProbe), "scripted");
     let id = create_session(&app).await;
-    let list = turn(&app, &id, "HELLO-SANDBOX").await;
+
+    // The write is asked -> the run parks.
+    let list = send_message(&app, &id, "HELLO-SANDBOX").await;
     assert_eq!(
         event_types(&list),
-        vec![
-            "agent.tool_use",
-            "agent.tool_result",
-            "agent.tool_use",
-            "agent.tool_result",
-            "agent.message",
-            "session.status_idle"
-        ]
+        vec!["agent.tool_use", "session.status_idle"]
     );
+    let idle = list["data"].as_array().unwrap().last().unwrap();
+    assert_eq!(idle["stop_reason"]["type"], "requires_action");
+    assert_eq!(idle["stop_reason"]["event_ids"][0], "w");
+
+    // Confirm -> write runs (rooted), read runs (allowed), reply.
+    let list = confirm(&app, &id, "w").await;
+    assert!(event_types(&list).contains(&"agent.message".to_string()));
+    let last = list["data"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["stop_reason"]["type"], "end_turn");
     assert!(read_result_text(&list).contains("HELLO-SANDBOX"));
 }
 
@@ -188,9 +200,10 @@ async fn sessions_are_isolated() {
     let one = create_session(&app).await;
     let two = create_session(&app).await;
 
-    // Both sessions write the same relative path `probe.txt`, but into their own roots.
-    let list_one = turn(&app, &one, "SECRET-ONE").await;
-    let list_two = turn(&app, &two, "SECRET-TWO").await;
+    send_message(&app, &one, "SECRET-ONE").await;
+    let list_one = confirm(&app, &one, "w").await;
+    send_message(&app, &two, "SECRET-TWO").await;
+    let list_two = confirm(&app, &two, "w").await;
 
     let read_one = read_result_text(&list_one);
     let read_two = read_result_text(&list_two);

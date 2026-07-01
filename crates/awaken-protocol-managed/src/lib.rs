@@ -16,4 +16,4 @@ mod router;
 mod state;
 
 pub use router::router;
-pub use state::{ManagedState, RunError, SessionRuntime, StateError, TurnOutcome};
+pub use state::{Decision, ManagedState, RunError, SessionRuntime, StateError, TurnOutcome};

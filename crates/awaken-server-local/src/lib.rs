@@ -3,13 +3,14 @@
 //! It implements the adapter's [`SessionRuntime`] port over the neutral kernel.
 //! Each public session gets its own **sandboxed environment** (an isolated root)
 //! and a per-session runtime whose built-in tools are *rooted* in that
-//! environment, so one session cannot touch another's files. A `user.message`
-//! runs one turn to a terminal phase and the committed messages are projected to
-//! public events by the adapter.
+//! environment. A `user.message` runs one turn; if a tool needs approval the run
+//! **parks** (`session.status_idle{requires_action}`) and a later
+//! `user.tool_confirmation` resumes it — the durable park/resume path, delivered
+//! out-of-band (ADR-0033), the twin of `run_to_completion`.
 //!
-//! Per-environment composition keeps the kernel sandbox-agnostic (ADR-0034 D6): a
-//! rooted tool is just a `RawTool` the host composes. Distribution stays out —
-//! remote relays and multi-node ingress plug in through seams, not here.
+//! Per-environment composition keeps the kernel sandbox-agnostic (ADR-0034 D6);
+//! distribution stays out — remote relays and multi-node ingress plug in through
+//! seams, not here.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::run::{EndCause, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_ext_builtin_tools::{Toolset, builtin_tools};
@@ -26,14 +27,16 @@ use awaken_ext_permission::{
     ToolPermissionBehavior,
 };
 use awaken_protocol_managed::dto::StopReason;
-use awaken_protocol_managed::{ManagedState, RunError, SessionRuntime, TurnOutcome, router};
+use awaken_protocol_managed::{
+    Decision, ManagedState, RunError, SessionRuntime, TurnOutcome, router,
+};
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor,
+    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
-use awaken_runtime_contract::resume::ResumeResult;
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_sandbox_local::{
@@ -70,6 +73,48 @@ impl LlmExecutor for EchoModel {
     }
 }
 
+/// A deterministic probe model for the HITL e2e: it writes the user's text to a
+/// relative `probe.txt` (asked -> parks for confirmation), reads it back (allowed
+/// -> runs), then replies. Stateless: it decides from the transcript.
+pub struct ProbeModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for ProbeModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let tool_results = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .count();
+        let user_text = request
+            .messages
+            .iter()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        let output = match tool_results {
+            0 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "w".into(),
+                tool_id: "write".into(),
+                arguments: serde_json::json!({ "path": "probe.txt", "content": user_text }),
+            }]),
+            1 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "r".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({ "path": "probe.txt" }),
+            }]),
+            _ => AssistantOutput::text("done"),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+        })
+    }
+}
+
 fn block_text(content: &[ContentBlock]) -> String {
     content
         .iter()
@@ -81,8 +126,8 @@ fn block_text(content: &[ContentBlock]) -> String {
         .join("")
 }
 
-/// read/glob/grep allowed, mutations asked (ADR-0030). Under `approval_mode: auto`
-/// (M1) an asked tool is auto-approved.
+/// read/glob/grep allowed, mutations asked (ADR-0030). With `approval_mode:
+/// human_approval` an asked tool parks for a `user.tool_confirmation`.
 fn server_policy() -> RulePermissionPolicy {
     let allow = |name: &str| {
         PermissionRule::new(
@@ -124,16 +169,68 @@ fn build_runtime(llm: Arc<dyn LlmExecutor>, root: IsolatedRoot) -> Runtime {
     runtime
 }
 
-/// One session's live state: an isolated runtime, its config, and its history.
+/// A session's mutable position: the run awaiting confirmation (if any) and how
+/// many committed messages have already been projected.
+#[derive(Default)]
+struct SessionState {
+    parked: Option<RunId>,
+    consumed: usize,
+}
+
+/// One session's live state: an isolated runtime, its config, its history, and
+/// its position.
 struct SessionCtx {
     runtime: Runtime,
     config: RunnableConfig,
     commit: Arc<MemoryCommitCoordinator>,
+    thread_id: ThreadId,
+    state: tokio::sync::Mutex<SessionState>,
+}
+
+/// Turn a step's terminal phase into an outcome: project only the newly committed
+/// messages, and set `parked` / `pending` when the run stopped for approval.
+fn build_outcome(
+    ctx: &SessionCtx,
+    st: &mut SessionState,
+    run_id: RunId,
+    phase: Phase,
+) -> TurnOutcome {
+    let all = ctx.commit.committed_messages(&ctx.thread_id);
+    let messages = all[st.consumed..].to_vec();
+    st.consumed = all.len();
+    match phase {
+        Phase::Waiting => {
+            let pending = ctx.commit.waiting_ticket(&run_id).and_then(|t| t.call_id);
+            st.parked = Some(run_id);
+            TurnOutcome {
+                messages,
+                stop: StopReason::RequiresAction {
+                    event_ids: Vec::new(),
+                },
+                pending,
+            }
+        }
+        Phase::Ended(EndCause::MaxSteps) => {
+            st.parked = None;
+            TurnOutcome {
+                messages,
+                stop: StopReason::RetriesExhausted,
+                pending: None,
+            }
+        }
+        _ => {
+            st.parked = None;
+            TurnOutcome {
+                messages,
+                stop: StopReason::EndTurn,
+                pending: None,
+            }
+        }
+    }
 }
 
 /// The `SessionRuntime` implementation over the kernel. Each session is a
-/// sandboxed environment with its own rooted runtime; sessions are created lazily
-/// on first turn.
+/// sandboxed environment with its own rooted runtime; sessions are created lazily.
 pub struct RuntimeSession {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
@@ -158,7 +255,6 @@ impl RuntimeSession {
         }
     }
 
-    /// Get or lazily create a session's sandboxed runtime.
     async fn ctx_for(&self, session: &str) -> Result<Arc<SessionCtx>, RunError> {
         let mut sessions = self.sessions.lock().await;
         if let Some(ctx) = sessions.get(session) {
@@ -173,9 +269,17 @@ impl RuntimeSession {
             runtime: build_runtime(self.llm.clone(), env.root.clone()),
             config: server_config(&self.model_ref),
             commit: Arc::new(MemoryCommitCoordinator::new()),
+            thread_id: ThreadId(session.to_string()),
+            state: tokio::sync::Mutex::new(SessionState::default()),
         });
         sessions.insert(session.to_string(), ctx.clone());
         Ok(ctx)
+    }
+
+    fn context(ctx: &SessionCtx) -> RuntimeRunContext {
+        RuntimeRunContext::new()
+            .with_commit(ctx.commit.clone())
+            .with_reader(ctx.commit.clone())
     }
 }
 
@@ -188,29 +292,43 @@ impl SessionRuntime for RuntimeSession {
         user_text: &str,
     ) -> Result<TurnOutcome, RunError> {
         let ctx = self.ctx_for(thread).await?;
-        let thread_id = ThreadId(thread.to_string());
-        let before = ctx.commit.committed_messages(&thread_id).len();
-        let context = RuntimeRunContext::new()
-            .with_commit(ctx.commit.clone())
-            .with_reader(ctx.commit.clone());
-        // M1 approval_mode `auto`: an asked tool is auto-approved. HITL arrives in M3.
-        let phase = ctx
+        let mut st = ctx.state.lock().await;
+        if st.parked.is_some() {
+            return Err(RunError(
+                "session is awaiting a tool confirmation".to_string(),
+            ));
+        }
+        let (run_id, phase) = ctx
             .runtime
-            .run_to_completion(&ctx.config, thread, user_text, context, |_ticket| {
-                ResumeResult::allow()
-            })
+            .start_turn(&ctx.config, thread, user_text, Self::context(&ctx))
             .await
             .map_err(|e| RunError(e.to_string()))?;
-        let all = ctx.commit.committed_messages(&thread_id);
-        let messages = all[before..].to_vec();
-        let stop = match phase {
-            Phase::Ended(EndCause::MaxSteps) => StopReason::RetriesExhausted,
-            Phase::Waiting => StopReason::RequiresAction {
-                event_ids: Vec::new(),
-            },
-            _ => StopReason::EndTurn,
+        Ok(build_outcome(&ctx, &mut st, run_id, phase))
+    }
+
+    async fn resume(&self, thread: &str, decision: Decision) -> Result<TurnOutcome, RunError> {
+        let ctx = self.ctx_for(thread).await?;
+        let mut st = ctx.state.lock().await;
+        let run_id = st
+            .parked
+            .clone()
+            .ok_or_else(|| RunError("no parked run to resume".to_string()))?;
+        let ticket = ctx
+            .commit
+            .waiting_ticket(&run_id)
+            .ok_or_else(|| RunError("parked run has no waiting ticket".to_string()))?;
+        let result = if decision.allow {
+            ResumeResult::allow()
+        } else {
+            ResumeResult::deny(decision.note)
         };
-        Ok(TurnOutcome { messages, stop })
+        let command = ResumeCommand::from_ticket(&ticket, result, 0);
+        let phase = ctx
+            .runtime
+            .resume(command, &*ctx.commit, Self::context(&ctx))
+            .await
+            .map_err(|e| RunError(e.to_string()))?;
+        Ok(build_outcome(&ctx, &mut st, run_id, phase))
     }
 
     fn model(&self) -> String {
