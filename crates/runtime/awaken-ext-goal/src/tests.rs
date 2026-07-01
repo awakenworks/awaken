@@ -201,11 +201,37 @@ fn last_deliverable_skips_trailing_tool_and_empty_turns() {
         assistant("   "),
         tool_msg("tool output"),
     ];
-    assert_eq!(last_deliverable(&convo), "the real answer");
+    assert_eq!(
+        last_deliverable(&convo),
+        Some("the real answer".to_string())
+    );
 
     // Only a whitespace assistant turn and a tool tail → no deliverable.
     let empty = [user("do it"), assistant("  "), tool_msg("out")];
-    assert_eq!(last_deliverable(&empty), "");
+    assert_eq!(last_deliverable(&empty), None);
+}
+
+#[tokio::test]
+async fn no_deliverable_completes_failed_without_grading() {
+    // The grader would say `satisfied`; it must not be consulted. A whitespace
+    // assistant turn and a trailing tool message leave nothing to judge, so the
+    // run ends `failed` (short-circuit) rather than the grader's verdict.
+    let convo = [user("do it"), assistant("   "), tool_msg("out")];
+    let d = evaluate(&fixed_guard(spec(3), met("ok")), &convo, 0).await;
+    assert!(matches!(d, RunEndDecision::Complete { .. }));
+    assert_eq!(result_token(&d), "failed");
+    assert_eq!(explanation(&d), "nothing produced to judge");
+}
+
+#[tokio::test]
+async fn zero_budget_completes_max_iterations_without_grading() {
+    // A zero revision budget settles the run before any grade call: the grader
+    // would say `satisfied`, but the budget short-circuit wins.
+    let mut goal = spec(3);
+    goal.max_iterations = 0;
+    let d = evaluate(&fixed_guard(goal, met("ok")), &[assistant("done")], 0).await;
+    assert!(matches!(d, RunEndDecision::Complete { .. }));
+    assert_eq!(result_token(&d), "max_iterations_reached");
 }
 
 // ── GoalSpec / classify / GoalOutcome vocabulary ────────────────────────────

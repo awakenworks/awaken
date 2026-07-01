@@ -330,21 +330,32 @@ pub fn classify(verdict: &Verdict, iteration: u32, max_iterations: u32) -> GoalO
 }
 
 /// The deliverable the grader judges: the newest assistant message with
-/// non-empty text. The run-end guard fires after a text turn, so there is always
-/// one; an empty transcript yields an empty deliverable (the grader decides).
-fn last_deliverable(conversation: &[Message]) -> String {
+/// non-empty text, scanning from the tail so a trailing tool message or an empty
+/// assistant turn is skipped. `None` when the run produced nothing substantive —
+/// the guard then ends the run without grading rather than judging an empty
+/// string.
+fn last_deliverable(conversation: &[Message]) -> Option<String> {
     conversation
         .iter()
         .rev()
         .find(|m| m.role == Role::Assistant && !m.text_content().trim().is_empty())
         .map(Message::text_content)
-        .unwrap_or_default()
 }
 
 /// The opaque round detail crossing into the kernel: this crate's classification
 /// as data, so the runtime forwards it without learning goal vocabulary (ACL).
 fn round_detail(outcome: GoalOutcome, explanation: &str) -> Value {
     serde_json::json!({ "result": outcome.token(), "explanation": explanation })
+}
+
+/// A terminal decision: end the run classified `outcome`, carrying the
+/// classification as opaque `detail`. The single place the guard builds a
+/// `Complete`, so every terminal path — a met/failed verdict, a spent budget, an
+/// empty run — reads the same.
+fn conclude(outcome: GoalOutcome, explanation: &str) -> RunEndDecision {
+    RunEndDecision::Complete {
+        detail: round_detail(outcome, explanation),
+    }
 }
 
 /// Run-end continuation guard that drives the grade→revise loop. This crate owns
@@ -372,7 +383,27 @@ impl RunEndGuard for GoalGuard {
     }
 
     async fn evaluate(&self, ctx: &RunEndContext<'_>) -> RunEndDecision {
-        let deliverable = last_deliverable(ctx.conversation);
+        // Degenerate inputs are settled before the grader is consulted, so a spent
+        // budget or an empty run never costs a judge call.
+
+        // A zero revision budget is spent before it starts: end now, classified as
+        // the budget being reached. Handles a `max_iterations` of 0 from any
+        // construction path, not just the clamped `GoalSpec::new`.
+        if self.spec.max_iterations == 0 {
+            return conclude(
+                GoalOutcome::MaxIterationsReached,
+                "revision budget exhausted",
+            );
+        }
+
+        // Nothing substantive was produced → there is no deliverable to judge. End
+        // rather than grade an empty string (which a keyword grader would steer a
+        // pointless revision over). Folded into `Failed`, the same fail-open
+        // terminal bucket as an unjudgeable grade, so no non-Managed token leaks.
+        let Some(deliverable) = last_deliverable(ctx.conversation) else {
+            return conclude(GoalOutcome::Failed, "nothing produced to judge");
+        };
+
         let verdict = match self
             .grader
             .grade(&self.spec, &deliverable, ctx.cancellation)
@@ -381,20 +412,14 @@ impl RunEndGuard for GoalGuard {
             Ok(verdict) => verdict,
             // Fail-open: a grader that errors or can't parse never traps the run
             // in unbounded revision — it ends, classified Failed.
-            Err(GraderError(reason)) => {
-                return RunEndDecision::Complete {
-                    detail: round_detail(GoalOutcome::Failed, &reason),
-                };
-            }
+            Err(GraderError(reason)) => return conclude(GoalOutcome::Failed, &reason),
         };
         // `forced_continuations` counts the steers already taken; this consult is
         // the next iteration (1-based).
         let iteration = ctx.forced_continuations as u32 + 1;
         let outcome = classify(&verdict, iteration, self.spec.max_iterations);
         if outcome.is_terminal() {
-            RunEndDecision::Complete {
-                detail: round_detail(outcome, &verdict.explanation),
-            }
+            conclude(outcome, &verdict.explanation)
         } else {
             // Unmet within budget → steer one revision turn. The feedback carries
             // the grader's reason so the agent knows what to fix.
