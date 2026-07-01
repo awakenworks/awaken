@@ -53,7 +53,7 @@ const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repo
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// A filesystem-safe database filename stem for a thread id (durable store).
-fn sanitize_thread(thread: &str) -> String {
+pub(crate) fn sanitize_thread(thread: &str) -> String {
     thread
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
@@ -270,7 +270,7 @@ pub(crate) struct SessionCtx {
     pub(crate) runtime: Runtime,
     config: RunnableConfig,
     pub(crate) commit: Arc<HostCommit>,
-    thread_id: ThreadId,
+    pub(crate) thread_id: ThreadId,
     /// The thread's isolated sandbox root, reused to build a goal-enabled runtime
     /// for `define_outcome` (same tools, same root).
     root: IsolatedRoot,
@@ -374,7 +374,7 @@ pub struct SharedHost {
     /// When set, each thread commits to a durable SQLite database at
     /// `store_dir/<thread>.db`, so a parked run survives a process restart. When
     /// `None`, sessions use an in-memory coordinator (ephemeral).
-    store_dir: Option<PathBuf>,
+    pub(crate) store_dir: Option<PathBuf>,
     /// Delegate agents fulfilled over A2A (agent id → transport) instead of a local
     /// sub-run. `run_delegate` routes to these first.
     pub(crate) remote_agents: HashMap<String, Arc<dyn A2aTransport>>,
@@ -675,7 +675,7 @@ impl SharedHost {
             let outcome = if *is_error {
                 Err(HostError::bad_request("delegation aborted by the user"))
             } else {
-                self.deliver_remote_input(&agent_id, content, Some(&token))
+                self.deliver_remote_input(thread, &agent_id, content, Some(&token))
                     .await
             };
             let output = match outcome {
@@ -1065,5 +1065,130 @@ mod tests {
             "the sub-agent result reached the parent after recovery"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A remote delegation that crashes mid-poll reattaches to the in-flight task
+    /// on recovery (via the persisted task-id handle) instead of resubmitting: the
+    /// remote sees exactly one `message:send`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_remote_delegation_reattaches_after_a_restart() {
+        use crate::delegate::A2aResponse;
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+        const WORKING: &str =
+            r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_WORKING"}}}"#;
+        const DONE: &str = r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"reattached answer"}]}}}}"#;
+
+        struct ReattachTransport {
+            sends: AtomicUsize,
+            complete: AtomicBool,
+            polled: Arc<tokio::sync::Notify>,
+        }
+        #[async_trait::async_trait]
+        impl crate::delegate::A2aTransport for ReattachTransport {
+            async fn request(
+                &self,
+                method: &str,
+                _path: &str,
+                _body: Option<Vec<u8>>,
+            ) -> Result<A2aResponse, String> {
+                if method == "POST" {
+                    self.sends.fetch_add(1, Ordering::SeqCst);
+                    return Ok(A2aResponse {
+                        status: 200,
+                        body: WORKING.as_bytes().to_vec(),
+                    });
+                }
+                self.polled.notify_one();
+                let json = if self.complete.load(Ordering::SeqCst) {
+                    DONE
+                } else {
+                    WORKING
+                };
+                Ok(A2aResponse {
+                    status: 200,
+                    body: json.as_bytes().to_vec(),
+                })
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "awaken-reattach-{}-{}",
+            std::process::id(),
+            BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let thread = "reattach-1";
+        let polled = Arc::new(tokio::sync::Notify::new());
+        let transport = Arc::new(ReattachTransport {
+            sends: AtomicUsize::new(0),
+            complete: AtomicBool::new(false),
+            polled: polled.clone(),
+        });
+
+        // 1. First process: submit + poll (working), then "crash" mid-poll. The
+        //    task id is persisted; the remote saw exactly one message:send.
+        {
+            let host = Arc::new(
+                SharedHost::new(Arc::new(crate::DelegatingModel), "parent")
+                    .with_remote_a2a("researcher", transport.clone())
+                    .with_store_dir(dir.clone()),
+            );
+            let driver = host.clone();
+            let task = tokio::spawn(async move {
+                let _ = driver
+                    .run_turn(thread, vec![user_msg("u1", "research")])
+                    .await;
+            });
+            polled.notified().await;
+            task.abort();
+            let _ = task.await;
+        }
+        assert_eq!(
+            transport.sends.load(Ordering::SeqCst),
+            1,
+            "the remote received exactly one message:send before the crash"
+        );
+
+        // 2. Recovery: the remote task now completes. A rebuilt host reattaches to
+        //    the persisted task id (a fetch, not a resubmit) and finishes the parent.
+        transport.complete.store(true, Ordering::SeqCst);
+        let host = SharedHost::new(Arc::new(crate::DelegatingModel), "parent")
+            .with_remote_a2a("researcher", transport.clone())
+            .with_store_dir(dir.clone());
+        let ctx = host.ctx_for(thread).await.unwrap();
+        let run_id = ctx
+            .state
+            .lock()
+            .await
+            .parked
+            .clone()
+            .expect("the parked delegate run is recovered");
+        let (phase, _) = host
+            .fulfill_delegations(&ctx, &run_id, Phase::Waiting)
+            .await
+            .unwrap();
+        assert!(
+            matches!(phase, Phase::Ended(_)),
+            "the reattached run completes"
+        );
+        assert_eq!(
+            transport.sends.load(Ordering::SeqCst),
+            1,
+            "recovery reattached (no second message:send)"
+        );
+        let history = ctx.commit.committed_messages(&ctx.thread_id);
+        assert!(
+            history
+                .iter()
+                .any(|m| block_text(&m.content).contains("delegate said: reattached answer")),
+            "the reattached result reached the parent"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A minimal user message for the delegation tests.
+    fn user_msg(id: &str, text: &str) -> Message {
+        Message::text(MessageId(id.into()), Role::User, text)
     }
 }

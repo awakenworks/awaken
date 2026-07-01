@@ -7,6 +7,7 @@
 //! park is durable, a crash mid-delegation is recovered on the next drive.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -25,7 +26,7 @@ use serde_json::json;
 
 use crate::host::{
     BASE_SEQ, HostError, SessionCtx, SharedHost, build_runtime, latest_assistant_text,
-    server_config,
+    sanitize_thread, server_config,
 };
 
 /// The delegation tool id: a call to it parks and the host fulfills it.
@@ -180,18 +181,15 @@ fn ok_status(response: &A2aResponse, what: &str) -> Result<(), HostError> {
     }
 }
 
-/// Fulfill a delegate call over A2A: post a `message:send`, poll the returned
-/// `Task` to a terminal state while it is `working`, and read the remote agent's
-/// reply. The stable `context_id` lets the remote keep this delegation's history
-/// across turns. A non-completed terminal (input-required/failed) is surfaced as a
-/// tool error, since this seam runs the delegate to completion.
-async fn delegate_over_a2a(
+/// Submit a delegation turn to a remote agent (`message:send`) and return the
+/// initial `Task`. The stable `context_id` lets the remote keep this delegation's
+/// history across turns.
+async fn submit_a2a(
     transport: &dyn A2aTransport,
     agent_id: &str,
     input: &str,
     context_id: &str,
-    cancellation: Option<&CancellationToken>,
-) -> Result<DelegateOutcome, HostError> {
+) -> Result<Task, HostError> {
     let request = json!({
         "agentId": agent_id,
         "message": {
@@ -207,11 +205,30 @@ async fn delegate_over_a2a(
         .await
         .map_err(HostError::internal)?;
     ok_status(&response, "message:send")?;
-    let mut task = read_send_response(&response.body)?;
+    read_send_response(&response.body)
+}
 
-    // Poll while the remote task is still working (an async A2A backend returns a
-    // task before it is done), bounded so a stuck remote cannot hang forever. A
-    // parent interrupt cancels the wait and best-effort cancels the remote task.
+/// Fetch a remote task by id (`tasks/get`) — used to reattach to an in-flight task
+/// after a restart, instead of resubmitting.
+async fn fetch_task(transport: &dyn A2aTransport, task_id: &str) -> Result<Task, HostError> {
+    let path = format!("/v1/a2a/tasks/{task_id}");
+    let response = transport
+        .request("GET", &path, None)
+        .await
+        .map_err(HostError::internal)?;
+    ok_status(&response, "tasks/get")?;
+    read_task(&response.body)
+}
+
+/// Poll `task` to a terminal state while it is `working` (an async A2A backend
+/// returns a task before it is done), bounded so a stuck remote cannot hang
+/// forever. A parent interrupt cancels the wait and best-effort cancels the remote
+/// task. A non-completed terminal (input-required/failed) maps accordingly.
+async fn poll_to_terminal(
+    transport: &dyn A2aTransport,
+    mut task: Task,
+    cancellation: Option<&CancellationToken>,
+) -> Result<DelegateOutcome, HostError> {
     let mut polls = 0usize;
     while matches!(task.status.state, TaskState::Working) {
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
@@ -224,13 +241,7 @@ async fn delegate_over_a2a(
             ));
         }
         polls += 1;
-        let path = format!("/v1/a2a/tasks/{}", task.id);
-        let response = transport
-            .request("GET", &path, None)
-            .await
-            .map_err(HostError::internal)?;
-        ok_status(&response, "tasks/get")?;
-        task = read_task(&response.body)?;
+        task = fetch_task(transport, &task.id).await?;
         if matches!(task.status.state, TaskState::Working) {
             match cancellation {
                 Some(token) => {
@@ -284,25 +295,83 @@ impl SharedHost {
         self
     }
 
+    /// The durable file that records a thread's in-flight remote task id, so a
+    /// crash mid-delegation reattaches instead of resubmitting. `None` (no store
+    /// dir) means no reattach — an in-memory session cannot survive a restart.
+    fn remote_handle_path(&self, thread: &str) -> Option<PathBuf> {
+        self.store_dir
+            .as_ref()
+            .map(|dir| dir.join(format!("{}.remote", sanitize_thread(thread))))
+    }
+
+    /// Persist a thread's in-flight remote `(agent_id, task_id)`.
+    fn persist_remote_handle(&self, thread: &str, agent_id: &str, task_id: &str) {
+        if let Some(path) = self.remote_handle_path(thread) {
+            let record = json!({ "agent_id": agent_id, "task_id": task_id }).to_string();
+            let _ = std::fs::write(path, record);
+        }
+    }
+
+    /// The persisted in-flight task id for `thread` if it matches `agent_id`.
+    fn load_remote_handle(&self, thread: &str, agent_id: &str) -> Option<String> {
+        let path = self.remote_handle_path(thread)?;
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        if value.get("agent_id")?.as_str()? != agent_id {
+            return None;
+        }
+        value.get("task_id")?.as_str().map(str::to_string)
+    }
+
+    /// Clear a thread's in-flight remote handle (the task reached a terminal state).
+    fn clear_remote_handle(&self, thread: &str) {
+        if let Some(path) = self.remote_handle_path(thread) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Fulfill a remote delegation: reattach to a persisted in-flight task if one
+    /// exists (after a restart), else submit a fresh `message:send` and persist its
+    /// task id before polling — so a crash mid-poll reattaches rather than
+    /// resubmitting (at-most-once submission). The handle is cleared on a terminal.
+    async fn remote_fulfill(
+        &self,
+        thread: &str,
+        agent_id: &str,
+        input: &str,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<DelegateOutcome, HostError> {
+        let transport = self.remote_agents.get(agent_id).ok_or_else(|| {
+            HostError::internal(format!("agent {agent_id:?} is not a remote agent"))
+        })?;
+        let context_id = format!("deleg-{agent_id}");
+        let task = match self.load_remote_handle(thread, agent_id) {
+            Some(task_id) => fetch_task(transport.as_ref(), &task_id).await?,
+            None => {
+                let task = submit_a2a(transport.as_ref(), agent_id, input, &context_id).await?;
+                self.persist_remote_handle(thread, agent_id, &task.id);
+                task
+            }
+        };
+        let outcome = poll_to_terminal(transport.as_ref(), task, cancellation).await;
+        self.clear_remote_handle(thread);
+        outcome
+    }
+
     /// Run a delegate to completion and return its last reply, failing closed when
     /// the target is not in the roster. A remote agent is fulfilled over A2A; a
     /// local one is a fresh rooted sub-run with no delegation tool (no recursion).
     pub(crate) async fn run_delegate(
         &self,
+        thread: &str,
         agent_id: &str,
         input: &str,
         cancellation: Option<&CancellationToken>,
     ) -> Result<DelegateOutcome, HostError> {
-        if let Some(transport) = self.remote_agents.get(agent_id) {
-            let context_id = format!("deleg-{agent_id}");
-            return delegate_over_a2a(
-                transport.as_ref(),
-                agent_id,
-                input,
-                &context_id,
-                cancellation,
-            )
-            .await;
+        if self.remote_agents.contains_key(agent_id) {
+            return self
+                .remote_fulfill(thread, agent_id, input, cancellation)
+                .await;
         }
         if !self.delegates.contains(agent_id) {
             return Err(HostError::bad_request(format!(
@@ -338,22 +407,13 @@ impl SharedHost {
     /// step. Errors if the agent is not a registered remote.
     pub(crate) async fn deliver_remote_input(
         &self,
+        thread: &str,
         agent_id: &str,
         content: &str,
         cancellation: Option<&CancellationToken>,
     ) -> Result<DelegateOutcome, HostError> {
-        let transport = self.remote_agents.get(agent_id).ok_or_else(|| {
-            HostError::internal(format!("agent {agent_id:?} is not a remote agent"))
-        })?;
-        let context_id = format!("deleg-{agent_id}");
-        delegate_over_a2a(
-            transport.as_ref(),
-            agent_id,
-            content,
-            &context_id,
-            cancellation,
-        )
-        .await
+        self.remote_fulfill(thread, agent_id, content, cancellation)
+            .await
     }
 
     /// Fulfill delegate `agent_run` parks in place: while the run is parked on a
@@ -387,7 +447,10 @@ impl SharedHost {
             // Guard the delegation with a cancel token so a concurrent `interrupt`
             // aborts it (and cancels the remote task).
             let token = ctx.register_cancel();
-            let output = match self.run_delegate(&agent_id, &input, Some(&token)).await {
+            let output = match self
+                .run_delegate(&ctx.thread_id.0, &agent_id, &input, Some(&token))
+                .await
+            {
                 Ok(DelegateOutcome::Done(text)) => ToolOutput::ok(&call_id, text),
                 // The remote needs input: leave the parent parked for the user.
                 Ok(DelegateOutcome::NeedsInput) => return Ok((phase, true)),
