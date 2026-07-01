@@ -38,6 +38,12 @@ pub fn to_tool_id(server_name: &str, tool_name: &str) -> Result<String, McpError
     Ok(format!("mcp__{s}__{t}"))
 }
 
+/// The id *prefix* every tool from `server_name` shares — the namespace bound a
+/// plugin declares for its dynamic tools (`mcp__{sanitized_server}__`).
+pub fn tool_namespace(server_name: &str) -> Result<String, McpError> {
+    Ok(format!("mcp__{}__", sanitize_component(server_name)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
