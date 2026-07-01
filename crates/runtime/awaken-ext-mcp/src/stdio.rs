@@ -279,4 +279,8 @@ impl McpToolTransport for StdioTransport {
             )
             .await
     }
+
+    fn is_alive(&self) -> bool {
+        self.peer.is_alive()
+    }
 }
