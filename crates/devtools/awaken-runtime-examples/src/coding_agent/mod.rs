@@ -20,11 +20,8 @@ pub mod model;
 pub mod tui;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Phase};
+use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
@@ -35,12 +32,10 @@ use awaken_ext_permission::{
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{PermissionGate, Runtime};
-use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::catalog::RuntimeCatalogInstaller;
-use awaken_runtime_contract::execution::{Error, RunExecutor};
+use awaken_runtime_contract::execution::Error;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
-use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
@@ -110,29 +105,22 @@ pub enum Approval {
 
 /// One coding conversation on a single thread. Turns share the commit coordinator
 /// (which is also the history reader), so each fresh run continues the
-/// conversation.
+/// conversation. This holds only the session's state — the runtime owns the
+/// install/register, id generation, and the park→resume loop.
 pub struct CodingSession {
     runtime: Runtime,
     config: RunnableConfig,
     commit: Arc<MemoryCommitCoordinator>,
     thread_id: ThreadId,
-    seq: AtomicU64,
 }
 
 impl CodingSession {
     pub fn new(runtime: Runtime, config: RunnableConfig) -> Self {
-        // Install the config's catalog once; turns resolve the snapshot against it.
-        // Register the snapshot too, so a resumed run can resolve it by id.
-        runtime
-            .install_catalog(config.install().clone())
-            .expect("the coding config's catalog installs");
-        runtime.register_snapshot(config.snapshot().clone());
         Self {
             runtime,
             config,
             commit: Arc::new(MemoryCommitCoordinator::new()),
             thread_id: ThreadId("coding".to_string()),
-            seq: AtomicU64::new(1),
         }
     }
 
@@ -147,52 +135,25 @@ impl CodingSession {
             .with_reader(self.commit.clone())
     }
 
-    /// Run one user turn to a terminal phase, asking `approve` for each mutation
-    /// the agent wants to perform. Returns the messages committed this turn.
+    /// Run one user turn to a terminal phase, asking `approve` before each mutating
+    /// tool. Returns the messages committed this turn.
     pub async fn turn<F>(&self, input: &str, mut approve: F) -> Result<Vec<Message>, Error>
     where
         F: FnMut(&WaitingTicket) -> Approval,
     {
-        let run_id = RunId(format!("run-{}", self.seq.fetch_add(1, Ordering::Relaxed)));
         let before = self.commit.committed_messages(&self.thread_id).len();
-
-        let activation = RunActivation {
-            run_id: run_id.clone(),
-            thread_id: self.thread_id.clone(),
-            snapshot: self.config.snapshot().clone(),
-            input: vec![Message {
-                id: MessageId(format!("{}-in", run_id.0)),
-                role: Role::User,
-                content: vec![ContentBlock::text(input)],
-            }],
-            trace: Default::default(),
-        };
-
-        let mut phase = self.runtime.execute(activation, self.context()).await?;
-
-        // A mutating tool parks the run on a permission ticket; resume with the
-        // caller's decision until the run reaches a terminal phase.
-        while phase == Phase::Waiting {
-            let ticket = self
-                .commit
-                .waiting_ticket(&run_id)
-                .ok_or_else(|| Error::Execution("waiting run has no ticket".to_string()))?;
-            let allow = matches!(approve(&ticket), Approval::Allow);
-            let command = ResumeCommand {
-                correlation_id: ticket.correlation_id.clone(),
-                run_id: run_id.clone(),
-                thread_id: ticket.thread_id.clone(),
-                snapshot_id: ticket.snapshot_id.clone(),
-                catalog_fingerprint: ticket.catalog_fingerprint.clone(),
-                result: ResumeResult::Decision { allow, note: None },
-                now_ms: 0,
-            };
-            phase = self
-                .runtime
-                .resume(command, self.commit.as_ref(), self.context())
-                .await?;
-        }
-
+        self.runtime
+            .run_to_completion(
+                &self.config,
+                self.thread_id.0.as_str(),
+                input,
+                self.context(),
+                |ticket| match approve(ticket) {
+                    Approval::Allow => ResumeResult::allow(),
+                    Approval::Deny => ResumeResult::deny(None),
+                },
+            )
+            .await?;
         Ok(self.commit.committed_messages(&self.thread_id)[before..].to_vec())
     }
 }

@@ -136,6 +136,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0030-permission-policy-axis.md` | Decision record | Not required | n/a |
 | `adr/0031-config-store.md` | Decision record | Not required | n/a |
 | `adr/0032-runnable-config.md` | Decision record | Not required | n/a |
+| `adr/0033-in-process-run-driver.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
