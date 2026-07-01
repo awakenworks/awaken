@@ -32,10 +32,13 @@ pub use plugin::{
 // consumes those ports names them here, without a direct `agent-contract` edge.
 pub use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 pub use awaken_agent_contract::agent::run::Id as RunId;
+// The cancellation token surfaced through `RunEndContext`/`RuntimeRunContext`;
+// re-exported so an extension forwards it without a direct `tokio-util` edge.
 pub use resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 pub use resolver::{AgentSnapshotResolver, RunResolver};
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
 pub use runnable::{RunnableConfig, RunnableConfigBuilder};
 pub use runtime_context::RuntimeRunContext;
 pub use snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
+pub use tokio_util::sync::CancellationToken;
 pub use tool::{RawTool, Tool, ToolExecutor, ToolOutput};

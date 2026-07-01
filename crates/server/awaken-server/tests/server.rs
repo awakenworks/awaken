@@ -730,3 +730,93 @@ async fn sessions_are_isolated() {
         "two: {read_two}"
     );
 }
+
+/// A model that blocks on its second inference (the first revision round) so a
+/// concurrent `user.interrupt` HTTP request can land mid-outcome. Its reply never
+/// contains the rubric, so the outcome would otherwise loop to the budget.
+struct GatedReviseModel {
+    gate: std::sync::Arc<tokio::sync::Notify>,
+    reached: std::sync::Arc<tokio::sync::Notify>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for GatedReviseModel {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        use std::sync::atomic::Ordering;
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            self.reached.notify_one();
+            self.gate.notified().await;
+        }
+        Ok(ChatResponse {
+            output: AssistantOutput::text("a rough draft"),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_user_interrupt_reports_interrupted() {
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+    let app = build_router(
+        Arc::new(GatedReviseModel {
+            gate: gate.clone(),
+            reached: reached.clone(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }),
+        "scripted",
+    );
+    let id = create_session(&app).await;
+
+    // Drive an outcome whose rubric is never met; the model blocks it mid second
+    // round. Run it on a task so the test can interrupt concurrently.
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let task = tokio::spawn(async move {
+        json_call(
+            &app2,
+            "POST",
+            &format!("/v1/sessions/{id2}/events"),
+            serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish it", "rubric": { "type": "text", "content": "FINAL" }, "max_iterations": 5 }] }),
+        )
+        .await
+    });
+
+    // Once the loop is blocked mid-run, send `user.interrupt` on a concurrent
+    // request, then release the gate.
+    reached.notified().await;
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.interrupt" }] }),
+    )
+    .await;
+    gate.notify_one();
+    task.await.unwrap();
+
+    // The projected outcome ends `interrupted`, not satisfied/max_iterations.
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let ends: Vec<&serde_json::Value> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "span.outcome_evaluation_end")
+        .collect();
+    assert_eq!(ends.first().unwrap()["result"], "needs_revision");
+    assert_eq!(
+        ends.last().unwrap()["result"],
+        "interrupted",
+        "user.interrupt must end the outcome as interrupted"
+    );
+}
