@@ -17,7 +17,7 @@ use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_sandbox_local::{LocalSandboxProvider, SandboxProvider, SandboxSpec};
 
-use crate::host::{build_runtime, latest_assistant_text, server_config};
+use crate::config::{build_runtime, latest_assistant_text, server_config};
 
 /// Run a sub-agent named `name` with `input` to completion and return its last
 /// assistant line. `cancellation`, when set, is forwarded so cancelling the parent
