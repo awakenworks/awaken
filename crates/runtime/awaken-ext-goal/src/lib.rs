@@ -16,7 +16,7 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, Plugin, PluginManifest, RunEndContext, RunEndDecision,
     RunEndGuard,
 };
-use awaken_runtime_contract::{Message, Role};
+use awaken_runtime_contract::{CancellationToken, Message, Role};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -152,7 +152,15 @@ pub struct GraderError(pub String);
 /// returns immediately. An `Err` means the grader could not judge (fail-open).
 #[async_trait]
 pub trait Grader: Send + Sync {
-    async fn grade(&self, goal: &GoalSpec, deliverable: &str) -> Result<Verdict, GraderError>;
+    /// Grade `deliverable` against `goal`. `cancellation`, when set, is the parent
+    /// run's token: a grader that spawns a judge sub-run forwards it so cancelling
+    /// the run cancels the judge too.
+    async fn grade(
+        &self,
+        goal: &GoalSpec,
+        deliverable: &str,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<Verdict, GraderError>;
 }
 
 /// A deterministic grader: the deliverable meets the goal iff it contains the
@@ -162,7 +170,12 @@ pub struct KeywordGrader;
 
 #[async_trait]
 impl Grader for KeywordGrader {
-    async fn grade(&self, goal: &GoalSpec, deliverable: &str) -> Result<Verdict, GraderError> {
+    async fn grade(
+        &self,
+        goal: &GoalSpec,
+        deliverable: &str,
+        _cancellation: Option<&CancellationToken>,
+    ) -> Result<Verdict, GraderError> {
         let verdict = if goal.rubric.is_empty() || deliverable.contains(&goal.rubric) {
             Verdict {
                 result: GradeResult::Satisfied,
@@ -178,12 +191,16 @@ impl Grader for KeywordGrader {
     }
 }
 
-/// A request to run one judge sub-agent: the judge agent id and the prompt.
+/// A request to run one judge sub-agent: the judge agent id, the prompt, and the
+/// parent run's cancellation token (forwarded so the judge sub-run cancels with
+/// the run rather than being orphaned).
 pub struct DelegateRequest {
     /// The agent that grades this deliverable.
     pub agent_id: String,
     /// The judge prompt (goal + rubric + deliverable, asking for a JSON verdict).
     pub prompt: String,
+    /// Parent run cancellation, forwarded into the judge sub-run.
+    pub cancellation: Option<CancellationToken>,
 }
 
 /// A judge sub-run's reply: the judge's last assistant text, if any.
@@ -276,10 +293,16 @@ fn parse_verdict(reply: Option<&str>) -> Result<Verdict, GraderError> {
 
 #[async_trait]
 impl Grader for DelegateGrader {
-    async fn grade(&self, goal: &GoalSpec, deliverable: &str) -> Result<Verdict, GraderError> {
+    async fn grade(
+        &self,
+        goal: &GoalSpec,
+        deliverable: &str,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<Verdict, GraderError> {
         let request = DelegateRequest {
             agent_id: self.judge_agent_id(goal).to_string(),
             prompt: judge_prompt(goal, deliverable),
+            cancellation: cancellation.cloned(),
         };
         let reply = self
             .runner
@@ -350,7 +373,11 @@ impl RunEndGuard for GoalGuard {
 
     async fn evaluate(&self, ctx: &RunEndContext<'_>) -> RunEndDecision {
         let deliverable = last_deliverable(ctx.conversation);
-        let verdict = match self.grader.grade(&self.spec, &deliverable).await {
+        let verdict = match self
+            .grader
+            .grade(&self.spec, &deliverable, ctx.cancellation)
+            .await
+        {
             Ok(verdict) => verdict,
             // Fail-open: a grader that errors or can't parse never traps the run
             // in unbounded revision — it ends, classified Failed.
