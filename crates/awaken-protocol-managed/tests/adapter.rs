@@ -79,7 +79,12 @@ impl SessionRuntime for EchoFake {
             pending: None,
         })
     }
-    async fn resume(&self, _thread: &str, _decision: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _decision: Decision,
+    ) -> Result<TurnOutcome, RunError> {
         Err(RunError("no parked run".into()))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
@@ -97,6 +102,7 @@ impl SessionRuntime for EchoFake {
     async fn resume_custom(
         &self,
         _thread: &str,
+        _tool_use_id: &str,
         _content: &str,
         _is_error: bool,
     ) -> Result<TurnOutcome, RunError> {
@@ -161,7 +167,12 @@ impl SessionRuntime for ParkingFake {
             }),
         })
     }
-    async fn resume(&self, _thread: &str, decision: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        decision: Decision,
+    ) -> Result<TurnOutcome, RunError> {
         assert!(decision.allow);
         Ok(TurnOutcome {
             messages: vec![
@@ -194,6 +205,7 @@ impl SessionRuntime for ParkingFake {
     async fn resume_custom(
         &self,
         _thread: &str,
+        _tool_use_id: &str,
         _content: &str,
         _is_error: bool,
     ) -> Result<TurnOutcome, RunError> {
@@ -212,7 +224,7 @@ impl SessionRuntime for OutcomeFake {
     async fn run_turn(&self, _a: &str, _t: &str, _u: &str) -> Result<TurnOutcome, RunError> {
         Err(RunError("no turn".into()))
     }
-    async fn resume(&self, _t: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
         Err(RunError("no resume".into()))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
@@ -251,6 +263,7 @@ impl SessionRuntime for OutcomeFake {
     async fn resume_custom(
         &self,
         _thread: &str,
+        _tool_use_id: &str,
         _content: &str,
         _is_error: bool,
     ) -> Result<TurnOutcome, RunError> {
@@ -396,12 +409,13 @@ impl SessionRuntime for CustomToolFake {
             }),
         })
     }
-    async fn resume(&self, _t: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
         Err(RunError("expected custom result".into()))
     }
     async fn resume_custom(
         &self,
         _t: &str,
+        _tid: &str,
         content: &str,
         _e: bool,
     ) -> Result<TurnOutcome, RunError> {

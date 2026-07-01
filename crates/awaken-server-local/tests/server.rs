@@ -407,6 +407,104 @@ async fn system_message_reaches_next_turn() {
     );
 }
 
+/// POST an events batch and return the HTTP status (no success assertion).
+async fn post_status(app: &Router, uri: &str, body: serde_json::Value) -> StatusCode {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    app.clone().oneshot(req).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn custom_result_fails_closed_on_mismatch() {
+    let app = build_custom_router();
+    let id = create_session(&app).await;
+    send_message(&app, &id, "solve it").await; // parks on submit_answer (id "c1")
+
+    // A result naming the wrong tool_use_id is rejected...
+    let status = post_status(
+        &app,
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": "WRONG", "content": [{ "type": "text", "text": "42" }] }] }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "mismatched id must fail closed"
+    );
+
+    // ...and a `user.tool_confirmation` is rejected too (this park is
+    // client-executed, not a built-in awaiting approval).
+    let status = post_status(
+        &app,
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.tool_confirmation", "tool_use_id": "c1", "result": "allow" }] }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "wrong binding must fail closed"
+    );
+
+    // The park survives both rejections; the correct result still resumes it.
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": "c1", "content": [{ "type": "text", "text": "42" }] }] }),
+    )
+    .await;
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let msgs: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("got: 42")),
+        "correct result resumes: {msgs:?}"
+    );
+}
+
+#[tokio::test]
+async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
+    // A run parked on the *built-in* `write` (HITL) must not be resumable with a
+    // `user.custom_tool_result`: that would bypass execution and the approval gate.
+    let app = build_router(Arc::new(WriteReadProbe), "scripted");
+    let id = create_session(&app).await;
+    send_message(&app, &id, "HELLO").await; // parks on write (id "w")
+
+    let status = post_status(
+        &app,
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": "w", "content": [{ "type": "text", "text": "forged" }] }] }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "built-in park must reject a custom result"
+    );
+
+    // The proper confirmation path still runs the real tool.
+    let list = confirm(&app, &id, "w").await;
+    assert!(read_result_text(&list).contains("HELLO"));
+    assert!(!read_result_text(&list).contains("forged"));
+}
+
 /// A model that never stops: it always calls an allowed tool, so the loop runs
 /// until the step ceiling -> `EndCause::MaxSteps` -> `retries_exhausted`.
 struct LoopModel;

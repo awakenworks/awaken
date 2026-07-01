@@ -422,6 +422,40 @@ impl RuntimeSession {
             .with_commit(ctx.commit.clone())
             .with_reader(ctx.commit.clone())
     }
+
+    /// Fail closed before resuming: the client's asserted `tool_use_id` must name
+    /// the run's pending tool, and that tool's binding must match the inbound
+    /// event — a `user.custom_tool_result` may only answer a client-executed tool
+    /// (`want_client == true`), a `user.tool_confirmation` only a built-in one.
+    fn check_pending(
+        &self,
+        ticket: &awaken_agent_contract::agent::waiting::WaitingTicket,
+        tool_use_id: &str,
+        want_client: bool,
+    ) -> Result<(), RunError> {
+        if ticket.call_id.as_deref() != Some(tool_use_id) {
+            return Err(RunError(format!(
+                "tool_use_id {tool_use_id:?} does not match the pending tool"
+            )));
+        }
+        let pending_tool_id = ticket
+            .pending_tool
+            .as_ref()
+            .map(|t| t.tool_id.as_str())
+            .ok_or_else(|| RunError("parked run has no pending tool".to_string()))?;
+        let is_client = self.client_tools.contains(pending_tool_id);
+        if is_client != want_client {
+            let (got, expected) = if want_client {
+                ("built-in", "user.tool_confirmation")
+            } else {
+                ("client-executed", "user.custom_tool_result")
+            };
+            return Err(RunError(format!(
+                "pending tool is {got}; answer it with {expected}"
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -455,7 +489,12 @@ impl SessionRuntime for RuntimeSession {
         ))
     }
 
-    async fn resume(&self, thread: &str, decision: Decision) -> Result<TurnOutcome, RunError> {
+    async fn resume(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        decision: Decision,
+    ) -> Result<TurnOutcome, RunError> {
         let ctx = self.ctx_for(thread).await?;
         let mut st = ctx.state.lock().await;
         let run_id = st
@@ -466,6 +505,9 @@ impl SessionRuntime for RuntimeSession {
             .commit
             .waiting_ticket(&run_id)
             .ok_or_else(|| RunError("parked run has no waiting ticket".to_string()))?;
+        // Fail closed: the confirmation must name the pending tool, and that tool
+        // must be a built-in awaiting approval (not a client-executed one).
+        self.check_pending(&ticket, tool_use_id, false)?;
         let result = if decision.allow {
             ResumeResult::allow()
         } else {
@@ -489,6 +531,7 @@ impl SessionRuntime for RuntimeSession {
     async fn resume_custom(
         &self,
         thread: &str,
+        tool_use_id: &str,
         content: &str,
         is_error: bool,
     ) -> Result<TurnOutcome, RunError> {
@@ -502,6 +545,9 @@ impl SessionRuntime for RuntimeSession {
             .commit
             .waiting_ticket(&run_id)
             .ok_or_else(|| RunError("parked run has no waiting ticket".to_string()))?;
+        // Fail closed: the result must name the pending tool, and that tool must be
+        // client-executed (else this would fabricate a built-in tool's output).
+        self.check_pending(&ticket, tool_use_id, true)?;
         let call_id = ticket.call_id.clone().unwrap_or_default();
         // The client executed the tool; inject its result directly (the kernel
         // does not run anything for a `ToolResult` resume).

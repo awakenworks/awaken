@@ -75,12 +75,22 @@ pub trait SessionRuntime: Send + Sync {
     ) -> Result<TurnOutcome, RunError>;
 
     /// Answer a built-in tool the run parked on (allow/deny) and continue.
-    async fn resume(&self, thread: &str, decision: Decision) -> Result<TurnOutcome, RunError>;
+    /// `tool_use_id` is the client's asserted target; implementations must fail
+    /// closed when it does not name the run's pending built-in tool.
+    async fn resume(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        decision: Decision,
+    ) -> Result<TurnOutcome, RunError>;
 
     /// Deliver a client-executed tool's result to the parked run and continue.
+    /// `tool_use_id` is the client's asserted target; implementations must fail
+    /// closed when it does not name the run's pending client-executed tool.
     async fn resume_custom(
         &self,
         thread: &str,
+        tool_use_id: &str,
         content: &str,
         is_error: bool,
     ) -> Result<TurnOutcome, RunError>;
@@ -288,24 +298,29 @@ impl ManagedState {
                     self.append_turn(session_id, outcome)?;
                 }
                 InboundEvent::UserToolConfirmation {
+                    tool_use_id,
                     result,
                     deny_message,
-                    ..
                 } => {
                     let decision = Decision {
                         allow: matches!(result, ConfirmResult::Allow),
                         note: deny_message.clone(),
                     };
-                    let outcome = self.runtime.resume(session_id, decision).await?;
+                    let outcome = self
+                        .runtime
+                        .resume(session_id, tool_use_id, decision)
+                        .await?;
                     self.append_turn(session_id, outcome)?;
                 }
                 InboundEvent::UserCustomToolResult {
-                    content, is_error, ..
+                    custom_tool_use_id,
+                    content,
+                    is_error,
                 } => {
                     let text = content.as_deref().map(content_text).unwrap_or_default();
                     let outcome = self
                         .runtime
-                        .resume_custom(session_id, &text, *is_error)
+                        .resume_custom(session_id, custom_tool_use_id, &text, *is_error)
                         .await?;
                     self.append_turn(session_id, outcome)?;
                 }
