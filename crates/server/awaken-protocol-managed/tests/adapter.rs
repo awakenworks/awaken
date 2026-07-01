@@ -7,7 +7,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_protocol_managed::dto::StopReason;
 use awaken_protocol_managed::{
-    Decision, ManagedState, RunError, SessionRuntime, TurnOutcome, router,
+    Decision, ManagedState, OutcomeIteration, OutcomeReport, RunError, SessionRuntime, TurnOutcome,
+    router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -81,6 +82,15 @@ impl SessionRuntime for EchoFake {
     async fn resume(&self, _thread: &str, _decision: Decision) -> Result<TurnOutcome, RunError> {
         Err(RunError("no parked run".into()))
     }
+    async fn define_outcome(
+        &self,
+        _t: &str,
+        _d: &str,
+        _r: &str,
+        _m: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Err(RunError("no outcome".into()))
+    }
     fn model(&self) -> String {
         "test-model".into()
     }
@@ -153,9 +163,103 @@ impl SessionRuntime for ParkingFake {
             pending: None,
         })
     }
+    async fn define_outcome(
+        &self,
+        _t: &str,
+        _d: &str,
+        _r: &str,
+        _m: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Err(RunError("no outcome".into()))
+    }
     fn model(&self) -> String {
         "test-model".into()
     }
+}
+
+/// A fake outcome loop: one revision then satisfied.
+struct OutcomeFake;
+
+#[async_trait::async_trait]
+impl SessionRuntime for OutcomeFake {
+    async fn run_turn(&self, _a: &str, _t: &str, _u: &str) -> Result<TurnOutcome, RunError> {
+        Err(RunError("no turn".into()))
+    }
+    async fn resume(&self, _t: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+        Err(RunError("no resume".into()))
+    }
+    async fn define_outcome(
+        &self,
+        _t: &str,
+        _d: &str,
+        _r: &str,
+        _m: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Ok(OutcomeReport {
+            iterations: vec![
+                OutcomeIteration {
+                    messages: Vec::new(),
+                    outcome_id: "outc_1".into(),
+                    iteration: 1,
+                    result: "needs_revision".into(),
+                    explanation: "add FINAL".into(),
+                },
+                OutcomeIteration {
+                    messages: vec![Message::text(
+                        Id("r".into()),
+                        Role::Assistant,
+                        "FINAL answer",
+                    )],
+                    outcome_id: "outc_1".into(),
+                    iteration: 2,
+                    result: "satisfied".into(),
+                    explanation: "ok".into(),
+                },
+            ],
+        })
+    }
+    fn model(&self) -> String {
+        "test-model".into()
+    }
+}
+
+#[tokio::test]
+async fn outcome_loop_projects_evaluations() {
+    let app = router(Arc::new(ManagedState::new(OutcomeFake)));
+    let id = create(&app).await;
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish", "rubric": "FINAL", "max_iterations": 3 }] }),
+    )
+    .await;
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        types(&list),
+        vec![
+            "span.outcome_evaluation_start",
+            "span.outcome_evaluation_end",
+            "agent.message",
+            "span.outcome_evaluation_start",
+            "span.outcome_evaluation_end",
+            "session.status_idle"
+        ]
+    );
+    let ends: Vec<&serde_json::Value> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "span.outcome_evaluation_end")
+        .collect();
+    assert_eq!(ends[0]["result"], "needs_revision");
+    assert_eq!(ends[1]["result"], "satisfied");
 }
 
 #[tokio::test]

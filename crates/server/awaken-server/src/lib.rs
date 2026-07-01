@@ -18,17 +18,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_ext_builtin_tools::{Toolset, builtin_tools};
+use awaken_ext_goal::{GoalSpec, Grader, KeywordGrader, classify};
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
 };
 use awaken_protocol_managed::dto::StopReason;
 use awaken_protocol_managed::{
-    Decision, ManagedState, RunError, SessionRuntime, TurnOutcome, router,
+    Decision, ManagedState, OutcomeIteration, OutcomeReport, RunError, SessionRuntime, TurnOutcome,
+    router,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{PermissionGate, Runtime};
@@ -110,6 +113,35 @@ impl LlmExecutor for ProbeModel {
         };
         Ok(ChatResponse {
             output,
+            usage: None,
+        })
+    }
+}
+
+/// A deterministic model for the outcome e2e: replies with a draft, and revises to
+/// include "FINAL" once it sees the goal loop's feedback. Stateless.
+pub struct ReviseModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for ReviseModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        let reply = if last_user.contains("did not meet the goal") {
+            "FINAL answer"
+        } else {
+            "a rough draft"
+        };
+        Ok(ChatResponse {
+            output: AssistantOutput::text(reply),
             usage: None,
         })
     }
@@ -235,6 +267,7 @@ pub struct RuntimeSession {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
     provider: LocalSandboxProvider,
+    grader: Arc<dyn Grader>,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
 }
 
@@ -251,6 +284,7 @@ impl RuntimeSession {
             llm: llm.clone(),
             model_ref: model_ref.into(),
             provider: LocalSandboxProvider::new(base),
+            grader: Arc::new(KeywordGrader),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -331,9 +365,66 @@ impl SessionRuntime for RuntimeSession {
         Ok(build_outcome(&ctx, &mut st, run_id, phase))
     }
 
+    async fn define_outcome(
+        &self,
+        thread: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        let ctx = self.ctx_for(thread).await?;
+        let mut st = ctx.state.lock().await;
+        let goal = GoalSpec::new(description, rubric, max_iterations);
+        let outcome_id = format!("outc_{thread}");
+        let mut iterations = Vec::new();
+        let mut iteration = 1;
+        loop {
+            let all = ctx.commit.committed_messages(&ctx.thread_id);
+            let messages = all[st.consumed..].to_vec();
+            st.consumed = all.len();
+            let deliverable = latest_assistant_text(&all);
+            let verdict = self.grader.grade(&goal, &deliverable);
+            let outcome = classify(&verdict, iteration, goal.max_iterations);
+            iterations.push(OutcomeIteration {
+                messages,
+                outcome_id: outcome_id.clone(),
+                iteration,
+                result: outcome.token().to_string(),
+                explanation: verdict.explanation.clone(),
+            });
+            if outcome.is_terminal() {
+                break;
+            }
+            // Re-dispatch a revision round with feedback; outcome rounds auto-approve
+            // tools (the goal loop drives to a deliverable).
+            let feedback = format!(
+                "Your previous answer did not meet the goal ({description}). {} Revise it.",
+                verdict.explanation
+            );
+            ctx.runtime
+                .run_to_completion(&ctx.config, thread, feedback, Self::context(&ctx), |_| {
+                    ResumeResult::allow()
+                })
+                .await
+                .map_err(|e| RunError(e.to_string()))?;
+            iteration += 1;
+        }
+        Ok(OutcomeReport { iterations })
+    }
+
     fn model(&self) -> String {
         self.model_ref.clone()
     }
+}
+
+/// The text of the last assistant message in a transcript.
+fn latest_assistant_text(messages: &[awaken_agent_contract::agent::message::Message]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::Assistant)
+        .map(|m| block_text(&m.content))
+        .unwrap_or_default()
 }
 
 /// Build the Managed Agents router backed by the kernel with the given model.

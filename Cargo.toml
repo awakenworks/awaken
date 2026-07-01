@@ -15,6 +15,7 @@ members = [
     "crates/server/awaken-dispatch",
     "crates/server/awaken-protocol-managed",
     "crates/worker/awaken-sandbox-local",
+    "crates/runtime/awaken-ext-goal",
     "crates/server/awaken-server",
 ]
 
