@@ -1,0 +1,102 @@
+pub mod awaken_sandbox_local
+pub struct awaken_sandbox_local::Environment
+pub awaken_sandbox_local::Environment::id: alloc::string::String
+pub awaken_sandbox_local::Environment::root: awaken_sandbox_local::IsolatedRoot
+impl core::clone::Clone for awaken_sandbox_local::Environment
+pub fn awaken_sandbox_local::Environment::clone(&self) -> awaken_sandbox_local::Environment
+impl core::fmt::Debug for awaken_sandbox_local::Environment
+pub fn awaken_sandbox_local::Environment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_sandbox_local::Environment
+impl core::marker::Send for awaken_sandbox_local::Environment
+impl core::marker::Sync for awaken_sandbox_local::Environment
+impl core::marker::Unpin for awaken_sandbox_local::Environment
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::Environment
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::Environment
+pub struct awaken_sandbox_local::EscapeError(pub alloc::string::String)
+impl core::error::Error for awaken_sandbox_local::EscapeError
+impl core::fmt::Debug for awaken_sandbox_local::EscapeError
+pub fn awaken_sandbox_local::EscapeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_sandbox_local::EscapeError
+pub fn awaken_sandbox_local::EscapeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_sandbox_local::EscapeError
+impl core::marker::Send for awaken_sandbox_local::EscapeError
+impl core::marker::Sync for awaken_sandbox_local::EscapeError
+impl core::marker::Unpin for awaken_sandbox_local::EscapeError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::EscapeError
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::EscapeError
+pub struct awaken_sandbox_local::IsolatedRoot
+impl awaken_sandbox_local::IsolatedRoot
+pub fn awaken_sandbox_local::IsolatedRoot::new(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn awaken_sandbox_local::IsolatedRoot::resolve(&self, &str) -> core::result::Result<std::path::PathBuf, awaken_sandbox_local::EscapeError>
+pub fn awaken_sandbox_local::IsolatedRoot::root(&self) -> &std::path::Path
+impl core::clone::Clone for awaken_sandbox_local::IsolatedRoot
+pub fn awaken_sandbox_local::IsolatedRoot::clone(&self) -> awaken_sandbox_local::IsolatedRoot
+impl core::fmt::Debug for awaken_sandbox_local::IsolatedRoot
+pub fn awaken_sandbox_local::IsolatedRoot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_sandbox_local::IsolatedRoot
+impl core::marker::Send for awaken_sandbox_local::IsolatedRoot
+impl core::marker::Sync for awaken_sandbox_local::IsolatedRoot
+impl core::marker::Unpin for awaken_sandbox_local::IsolatedRoot
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::IsolatedRoot
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::IsolatedRoot
+pub struct awaken_sandbox_local::LocalSandboxProvider
+impl awaken_sandbox_local::LocalSandboxProvider
+pub fn awaken_sandbox_local::LocalSandboxProvider::new(impl core::convert::Into<std::path::PathBuf>) -> Self
+impl awaken_sandbox_local::SandboxProvider for awaken_sandbox_local::LocalSandboxProvider
+pub fn awaken_sandbox_local::LocalSandboxProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_sandbox_local::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_local::Environment, awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_sandbox_local::LocalSandboxProvider::teardown<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::marker::Freeze for awaken_sandbox_local::LocalSandboxProvider
+impl core::marker::Send for awaken_sandbox_local::LocalSandboxProvider
+impl core::marker::Sync for awaken_sandbox_local::LocalSandboxProvider
+impl core::marker::Unpin for awaken_sandbox_local::LocalSandboxProvider
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::LocalSandboxProvider
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::LocalSandboxProvider
+pub struct awaken_sandbox_local::RootedTool
+impl awaken_sandbox_local::RootedTool
+pub fn awaken_sandbox_local::RootedTool::new(alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>, awaken_sandbox_local::IsolatedRoot) -> Self
+impl awaken_runtime_contract::tool::RawTool for awaken_sandbox_local::RootedTool
+pub fn awaken_sandbox_local::RootedTool::id(&self) -> &str
+pub fn awaken_sandbox_local::RootedTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::marker::Freeze for awaken_sandbox_local::RootedTool
+impl core::marker::Send for awaken_sandbox_local::RootedTool
+impl core::marker::Sync for awaken_sandbox_local::RootedTool
+impl core::marker::Unpin for awaken_sandbox_local::RootedTool
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::RootedTool
+impl !core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::RootedTool
+pub struct awaken_sandbox_local::SandboxError(pub alloc::string::String)
+impl core::error::Error for awaken_sandbox_local::SandboxError
+impl core::fmt::Debug for awaken_sandbox_local::SandboxError
+pub fn awaken_sandbox_local::SandboxError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_sandbox_local::SandboxError
+pub fn awaken_sandbox_local::SandboxError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_sandbox_local::SandboxError
+impl core::marker::Send for awaken_sandbox_local::SandboxError
+impl core::marker::Sync for awaken_sandbox_local::SandboxError
+impl core::marker::Unpin for awaken_sandbox_local::SandboxError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::SandboxError
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::SandboxError
+pub struct awaken_sandbox_local::SandboxSpec
+pub awaken_sandbox_local::SandboxSpec::constraints: core::option::Option<serde_json::value::Value>
+pub awaken_sandbox_local::SandboxSpec::id: alloc::string::String
+pub awaken_sandbox_local::SandboxSpec::mounts: alloc::vec::Vec<serde_json::value::Value>
+impl awaken_sandbox_local::SandboxSpec
+pub fn awaken_sandbox_local::SandboxSpec::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for awaken_sandbox_local::SandboxSpec
+pub fn awaken_sandbox_local::SandboxSpec::clone(&self) -> awaken_sandbox_local::SandboxSpec
+impl core::default::Default for awaken_sandbox_local::SandboxSpec
+pub fn awaken_sandbox_local::SandboxSpec::default() -> awaken_sandbox_local::SandboxSpec
+impl core::fmt::Debug for awaken_sandbox_local::SandboxSpec
+pub fn awaken_sandbox_local::SandboxSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_sandbox_local::SandboxSpec
+impl core::marker::Send for awaken_sandbox_local::SandboxSpec
+impl core::marker::Sync for awaken_sandbox_local::SandboxSpec
+impl core::marker::Unpin for awaken_sandbox_local::SandboxSpec
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::SandboxSpec
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::SandboxSpec
+pub trait awaken_sandbox_local::SandboxProvider: core::marker::Send + core::marker::Sync
+pub fn awaken_sandbox_local::SandboxProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_sandbox_local::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_local::Environment, awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_sandbox_local::SandboxProvider::teardown<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_sandbox_local::SandboxProvider for awaken_sandbox_local::LocalSandboxProvider
+pub fn awaken_sandbox_local::LocalSandboxProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_sandbox_local::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_local::Environment, awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_sandbox_local::LocalSandboxProvider::teardown<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_local::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_sandbox_local::rooted_hand_tools(awaken_sandbox_local::IsolatedRoot) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
