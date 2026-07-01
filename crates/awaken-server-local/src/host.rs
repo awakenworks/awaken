@@ -324,34 +324,20 @@ struct KernelJudgeRunner {
 impl DelegateRunner for KernelJudgeRunner {
     async fn run(&self, request: DelegateRequest) -> Result<DelegateReply, DelegateError> {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
-        let env = self
-            .provider
-            .create(&SandboxSpec::new(format!("{}-judge-{n}", request.agent_id)))
-            .await
-            .map_err(|e| DelegateError(e.to_string()))?;
-        let runtime = build_runtime(self.llm.clone(), env.root);
-        let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
-        let commit = Arc::new(MemoryCommitCoordinator::new());
-        let thread = format!("judge-thread-{n}");
-        let mut ctx = RuntimeRunContext::new()
-            .with_commit(commit.clone())
-            .with_reader(commit.clone());
-        // Forward the parent run's cancellation so cancelling the outcome run
-        // cancels the judge sub-run too, rather than orphaning it.
-        if let Some(token) = request.cancellation {
-            ctx = ctx.with_cancellation(token);
-        }
-        runtime
-            .run_to_completion(&config, thread.clone(), request.prompt, ctx, |_| {
-                ResumeResult::allow()
-            })
-            .await
-            .map_err(|e| DelegateError(e.to_string()))?;
-        Ok(DelegateReply {
-            text: Some(latest_assistant_text(
-                &commit.committed_messages(&ThreadId(thread)),
-            )),
-        })
+        // The judge sees only its prompt (a fresh window); its cancellation is the
+        // parent run's, so cancelling the outcome cancels the judge too.
+        let name = format!("{}-judge-{n}", request.agent_id);
+        let text = crate::subagent::run_subagent(
+            self.llm.clone(),
+            &self.model_ref,
+            &self.provider,
+            &name,
+            &request.prompt,
+            request.cancellation,
+        )
+        .await
+        .map_err(DelegateError)?;
+        Ok(DelegateReply { text: Some(text) })
     }
 }
 
