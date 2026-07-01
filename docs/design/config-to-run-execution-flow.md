@@ -272,6 +272,14 @@ The earlier in-memory `Publication` value is removed — `RunnableConfig` subsum
 it. The durable `StoredPublication` and the publication lifecycle
 ([config-publication-lifecycle.md](config-publication-lifecycle.md)) are unchanged.
 
+**Driving a run (ADR-0033).** The runtime consumes a `RunnableConfig` through two
+in-process entries over the `execute`/`resume` primitives: `run` (single-shot) and
+`run_to_completion(config, thread, input, ctx, decide)`, which owns the
+`execute → (park → decide → resume)* → end` loop. A parked run is a question
+(`WaitingTicket`); the answer is a `ResumeResult`, supplied in-process by the
+`decide` closure or across a boundary by the durable dispatch queue — the same
+protocol, two drivers.
+
 ## Snapshot Execution And Inspection Contract
 
 The runtime also has an internal execution and inspection contract for
