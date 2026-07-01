@@ -15,7 +15,12 @@ struct FixedGrader(Verdict);
 
 #[async_trait]
 impl Grader for FixedGrader {
-    async fn grade(&self, _goal: &GoalSpec, _deliverable: &str) -> Result<Verdict, GraderError> {
+    async fn grade(
+        &self,
+        _goal: &GoalSpec,
+        _deliverable: &str,
+        _cancellation: Option<&CancellationToken>,
+    ) -> Result<Verdict, GraderError> {
         Ok(self.0.clone())
     }
 }
@@ -67,6 +72,7 @@ async fn evaluate(guard: &GoalGuard, conversation: &[Message], fc: usize) -> Run
         run_id: RunId("run-1".into()),
         conversation,
         forced_continuations: fc,
+        cancellation: None,
     };
     guard.evaluate(&ctx).await
 }
@@ -216,16 +222,19 @@ async fn keyword_grader_matches_rubric_substring_and_fails_open_on_empty() {
     let goal = GoalSpec::new("finish", "FINAL", 3);
     let met = |v: Verdict| v.result == GradeResult::Satisfied;
     assert!(met(grader
-        .grade(&goal, "here is the FINAL text")
+        .grade(&goal, "here is the FINAL text", None)
         .await
         .unwrap()));
-    assert!(!met(grader.grade(&goal, "a draft").await.unwrap()));
+    assert!(!met(grader.grade(&goal, "a draft", None).await.unwrap()));
     // Case-sensitive substring: a lowercase token does not satisfy the rubric.
-    assert!(!met(grader.grade(&goal, "the final text").await.unwrap()));
+    assert!(!met(grader
+        .grade(&goal, "the final text", None)
+        .await
+        .unwrap()));
     // An empty rubric is met by anything (fail-open).
     let empty = GoalSpec::new("finish", "", 3);
-    assert!(met(grader.grade(&empty, "").await.unwrap()));
-    assert!(met(grader.grade(&empty, "whatever").await.unwrap()));
+    assert!(met(grader.grade(&empty, "", None).await.unwrap()));
+    assert!(met(grader.grade(&empty, "whatever", None).await.unwrap()));
 }
 
 #[test]
@@ -385,7 +394,7 @@ async fn delegate_grader_parses_a_satisfied_verdict() {
         "judge",
     );
     let v = grader
-        .grade(&agent_goal(GraderRef::Default), "done")
+        .grade(&agent_goal(GraderRef::Default), "done", None)
         .await
         .unwrap();
     assert_eq!(v.result, GradeResult::Satisfied);
@@ -401,7 +410,7 @@ async fn delegate_grader_parses_a_needs_revision_verdict_amid_prose() {
         "judge",
     );
     let v = grader
-        .grade(&agent_goal(GraderRef::Default), "done")
+        .grade(&agent_goal(GraderRef::Default), "done", None)
         .await
         .unwrap();
     assert_eq!(v.result, GradeResult::NeedsRevision);
@@ -417,7 +426,7 @@ async fn delegate_grader_parses_a_failed_verdict() {
         "judge",
     );
     let v = grader
-        .grade(&agent_goal(GraderRef::Default), "done")
+        .grade(&agent_goal(GraderRef::Default), "done", None)
         .await
         .unwrap();
     assert_eq!(v.result, GradeResult::Failed);
@@ -431,7 +440,7 @@ async fn delegate_grader_reports_a_malformed_reply_as_error() {
     );
     assert!(
         grader
-            .grade(&agent_goal(GraderRef::Default), "done")
+            .grade(&agent_goal(GraderRef::Default), "done", None)
             .await
             .is_err()
     );
@@ -448,7 +457,7 @@ async fn delegate_grader_reports_a_run_failure_as_error() {
     );
     assert!(
         grader
-            .grade(&agent_goal(GraderRef::Default), "done")
+            .grade(&agent_goal(GraderRef::Default), "done", None)
             .await
             .is_err()
     );
@@ -462,7 +471,7 @@ async fn delegate_grader_routes_default_and_explicit_agent() {
     ));
     let grader = DelegateGrader::new(runner.clone(), "default-judge");
     grader
-        .grade(&agent_goal(GraderRef::Default), "done")
+        .grade(&agent_goal(GraderRef::Default), "done", None)
         .await
         .unwrap();
     assert_eq!(
@@ -478,10 +487,39 @@ async fn delegate_grader_routes_default_and_explicit_agent() {
     let goal = agent_goal(GraderRef::Agent {
         agent_id: "specialist".into(),
     });
-    grader.grade(&goal, "done").await.unwrap();
+    grader.grade(&goal, "done", None).await.unwrap();
     assert_eq!(
         runner.seen_agent.lock().unwrap().as_deref(),
         Some("specialist")
+    );
+}
+
+#[tokio::test]
+async fn delegate_grader_forwards_cancellation_into_the_judge() {
+    // A runner that records whether the parent cancellation reached it.
+    #[derive(Default)]
+    struct CancelCapturingRunner {
+        saw_cancellation: std::sync::Mutex<bool>,
+    }
+    #[async_trait]
+    impl DelegateRunner for CancelCapturingRunner {
+        async fn run(&self, request: DelegateRequest) -> Result<DelegateReply, DelegateError> {
+            *self.saw_cancellation.lock().unwrap() = request.cancellation.is_some();
+            Ok(DelegateReply {
+                text: Some(r#"{"result": "satisfied", "explanation": "ok"}"#.into()),
+            })
+        }
+    }
+    let runner = Arc::new(CancelCapturingRunner::default());
+    let grader = DelegateGrader::new(runner.clone(), "judge");
+    let token = CancellationToken::new();
+    grader
+        .grade(&agent_goal(GraderRef::Default), "done", Some(&token))
+        .await
+        .unwrap();
+    assert!(
+        *runner.saw_cancellation.lock().unwrap(),
+        "parent cancellation must reach the judge sub-run (no orphaned judge)"
     );
 }
 
@@ -500,7 +538,12 @@ struct ErrGrader;
 
 #[async_trait]
 impl Grader for ErrGrader {
-    async fn grade(&self, _goal: &GoalSpec, _deliverable: &str) -> Result<Verdict, GraderError> {
+    async fn grade(
+        &self,
+        _goal: &GoalSpec,
+        _deliverable: &str,
+        _cancellation: Option<&CancellationToken>,
+    ) -> Result<Verdict, GraderError> {
         Err(GraderError("judge unavailable".into()))
     }
 }

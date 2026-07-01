@@ -439,7 +439,15 @@ async fn drive(
         // guard supplies the predicate and any feedback. Its `detail` is opaque
         // (anti-corruption): the kernel forwards it, never interprets it.
         if calls.is_empty() {
-            match consult_run_end(env, run_id, &transcript, forced_continuations).await {
+            match consult_run_end(
+                env,
+                run_id,
+                &transcript,
+                forced_continuations,
+                context.cancellation.as_ref(),
+            )
+            .await
+            {
                 RunEndOutcome::Steer { feedback, detail } => {
                     // Live progress (best-effort) and durable truth (committed with
                     // the run): the round is both streamed and recorded, so the
@@ -682,6 +690,7 @@ async fn consult_run_end(
     run_id: &RunId,
     conversation: &[Message],
     forced_continuations: usize,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> RunEndOutcome {
     let guards = env.run_end_guards();
     if guards.is_empty() {
@@ -693,6 +702,7 @@ async fn consult_run_end(
             run_id: run_id.clone(),
             conversation,
             forced_continuations,
+            cancellation,
         };
         match guard.evaluate(&ctx).await {
             RunEndDecision::Steer { feedback, detail } => {

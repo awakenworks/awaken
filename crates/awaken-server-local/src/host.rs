@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
@@ -34,6 +34,7 @@ use awaken_ext_permission::{
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{PermissionGate, Runtime};
+use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
@@ -269,14 +270,26 @@ struct SessionCtx {
     /// The thread's sandbox environment, reused to build a goal-enabled runtime
     /// for `define_outcome` (same tools, same environment).
     env: Environment,
+    /// The in-flight run's cancellation token, so a concurrent `interrupt` (a
+    /// separate request) can cancel it. A plain `std::sync::Mutex` (brief locks),
+    /// held by neither the run loop nor the state lock, so interrupt never blocks
+    /// on the loop that holds `state`.
+    cancel: std::sync::Mutex<Option<CancellationToken>>,
     state: tokio::sync::Mutex<SessionState>,
 }
 
 impl SessionCtx {
+    /// A run context carrying a fresh cancellation token, registered on this ctx so
+    /// a concurrent `interrupt` can cancel the run it drives. Only one run is in
+    /// flight per thread at a time (the `state` lock serializes them), so the slot
+    /// always holds the current run's token.
     fn context(&self) -> RuntimeRunContext {
+        let token = CancellationToken::new();
+        *self.cancel.lock().expect("cancel mutex poisoned") = Some(token.clone());
         RuntimeRunContext::new()
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
+            .with_cancellation(token)
     }
 }
 
@@ -358,9 +371,14 @@ impl DelegateRunner for KernelJudgeRunner {
         let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let thread = format!("judge-thread-{n}");
-        let ctx = RuntimeRunContext::new()
+        let mut ctx = RuntimeRunContext::new()
             .with_commit(commit.clone())
             .with_reader(commit.clone());
+        // Forward the parent run's cancellation so cancelling the outcome run
+        // cancels the judge sub-run too, rather than orphaning it.
+        if let Some(token) = request.cancellation {
+            ctx = ctx.with_cancellation(token);
+        }
         runtime
             .run_to_completion(&config, thread.clone(), request.prompt, ctx, |_| {
                 ResumeResult::allow()
@@ -515,6 +533,7 @@ impl SharedHost {
             commit: Arc::new(MemoryCommitCoordinator::new()),
             thread_id: ThreadId(thread.to_string()),
             env,
+            cancel: std::sync::Mutex::new(None),
             state: tokio::sync::Mutex::new(SessionState::default()),
         });
         sessions.insert(thread.to_string(), ctx.clone());
@@ -552,6 +571,19 @@ impl SharedHost {
     pub async fn add_system(&self, thread: &str, text: &str) -> Result<(), HostError> {
         let ctx = self.ctx_for(thread).await?;
         ctx.state.lock().await.pending_system.push(text.to_string());
+        Ok(())
+    }
+
+    /// Interrupt the run in flight on `thread`, if any: cancel its token so the
+    /// runtime observes it at the next step boundary and ends the run `Cancelled`
+    /// (an outcome loop then reports `interrupted`). A no-op when nothing is
+    /// running. Never blocks on the run's own state lock — it only touches the
+    /// separate cancel slot — so it works from a concurrent request.
+    pub async fn interrupt(&self, thread: &str) -> Result<(), HostError> {
+        let ctx = self.ctx_for(thread).await?;
+        if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
+            token.cancel();
+        }
         Ok(())
     }
 
@@ -664,8 +696,8 @@ impl SharedHost {
 
         // One run: the guard re-derives and grades the deliverable, then steers
         // revisions. Outcome rounds auto-approve tools. Empty input re-infers over
-        // the committed history.
-        goal_runtime
+        // the committed history. A concurrent `interrupt` cancels this run.
+        let phase = goal_runtime
             .run_to_completion(
                 &config,
                 thread,
@@ -691,7 +723,7 @@ impl SharedHost {
 
         let outcome_id = format!("outc_{thread}");
         let all = ctx.commit.committed_messages(&ctx.thread_id);
-        let iterations = fresh
+        let mut iterations: Vec<HostOutcomeIteration> = fresh
             .iter()
             .enumerate()
             .map(|(i, detail)| HostOutcomeIteration {
@@ -702,6 +734,18 @@ impl SharedHost {
                 explanation: detail_str(detail, "explanation"),
             })
             .collect();
+        // An interrupted run ends `Cancelled` before the guard can conclude, so
+        // no terminal `Continuation` was committed. Report the outcome as
+        // `interrupted` — distinct from satisfied/failed/max_iterations.
+        if matches!(phase, Phase::Ended(EndCause::Cancelled)) {
+            iterations.push(HostOutcomeIteration {
+                messages: Vec::new(),
+                outcome_id: outcome_id.clone(),
+                iteration: iterations.len() as u32 + 1,
+                result: "interrupted".to_string(),
+                explanation: "the outcome was interrupted".to_string(),
+            });
+        }
         Ok(HostOutcomeReport { iterations })
     }
 
@@ -794,4 +838,85 @@ fn pending_from_ticket(
         input: tool.arguments,
         client_executed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
+    use std::sync::atomic::AtomicUsize;
+
+    /// A model that blocks on its second inference (the first revision round) until
+    /// a gate is released, so a concurrent `interrupt` can land while the outcome
+    /// loop is mid-run. Its reply never contains the rubric, so the guard steers.
+    struct GatedModel {
+        gate: Arc<tokio::sync::Notify>,
+        reached: Arc<tokio::sync::Notify>,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for GatedModel {
+        async fn infer(
+            &self,
+            _request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                self.reached.notify_one();
+                self.gate.notified().await;
+            }
+            Ok(ChatResponse {
+                output: AssistantOutput::text("a rough draft"),
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interrupt_cancels_the_run_and_reports_interrupted() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let model = Arc::new(GatedModel {
+            gate: gate.clone(),
+            reached: reached.clone(),
+            calls: AtomicUsize::new(0),
+        });
+        let host = Arc::new(SharedHost::new(model, "scripted"));
+
+        // Drive an outcome whose rubric is never met, so it would loop; the model
+        // blocks it mid second round.
+        let driver = host.clone();
+        let task =
+            tokio::spawn(async move { driver.define_outcome("t1", "finish", "FINAL", 5).await });
+
+        // Once the loop is blocked mid-run, interrupt it, then release the gate.
+        reached.notified().await;
+        host.interrupt("t1").await.expect("interrupt");
+        gate.notify_one();
+
+        let report = task.await.expect("join").expect("define_outcome");
+        // Round 1 graded needs_revision; the interrupt ended the run before the
+        // second round could conclude, so the outcome reports interrupted.
+        assert_eq!(report.iterations[0].result, "needs_revision");
+        assert_eq!(
+            report.iterations.last().expect("a round").result,
+            "interrupted"
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupt_is_a_noop_when_nothing_runs() {
+        let host = SharedHost::new(
+            Arc::new(GatedModel {
+                gate: Arc::new(tokio::sync::Notify::new()),
+                reached: Arc::new(tokio::sync::Notify::new()),
+                calls: AtomicUsize::new(0),
+            }),
+            "scripted",
+        );
+        // No run in flight → interrupt succeeds and does nothing.
+        host.interrupt("idle-thread")
+            .await
+            .expect("interrupt is a no-op");
+    }
 }

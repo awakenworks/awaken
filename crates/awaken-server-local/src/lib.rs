@@ -380,6 +380,10 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)
     }
 
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
+        self.host.interrupt(thread).await.map_err(to_run_error)
+    }
+
     async fn define_outcome(
         &self,
         thread: &str,

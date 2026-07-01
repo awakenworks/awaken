@@ -98,6 +98,12 @@ pub trait SessionRuntime: Send + Sync {
     /// Buffer a system message; it is prepended to the next turn's input.
     async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError>;
 
+    /// Interrupt the run in flight on `thread` (a `user.interrupt`): cancel it so
+    /// an in-progress outcome ends `interrupted`. A no-op when nothing is running.
+    async fn interrupt(&self, _thread: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+
     /// Define an outcome and drive the grade->revise loop over `thread`, bounded by
     /// `max_iterations`; `rubric` is the normalized requirement text.
     async fn define_outcome(
@@ -375,10 +381,13 @@ impl ManagedState {
                     let text = content_text(content);
                     self.runtime.add_system(session_id, &text).await?;
                 }
-                // `user.interrupt`, `user.pause`, `user.resume`: accept-only in the
-                // single-machine model. A turn runs synchronously to its pause or
-                // end within one request, so between requests there is no in-flight
-                // turn to interrupt or pause; the receipt is the acknowledgement.
+                // `user.interrupt`: cancel the run in flight on this thread (from a
+                // concurrent request), so an in-progress outcome ends `interrupted`.
+                InboundEvent::UserInterrupt { .. } => {
+                    self.runtime.interrupt(session_id).await?;
+                }
+                // `user.pause`, `user.resume`: accept-only; the receipt is the
+                // acknowledgement.
                 _ => {}
             }
         }
