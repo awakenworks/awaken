@@ -5,13 +5,11 @@
 //! (ADR-0007): typed [`Tool`](awaken_runtime_contract::tool::Tool)s erased into
 //! the runtime's `RawTool` registry.
 
-mod delegation;
 mod erasure;
 mod hand;
 mod task;
 mod web;
 
-pub use delegation::{AgentRunArgs, AgentRunTool, AgentRunner, delegation_tools};
 pub use erasure::{Erased, erase};
 pub use hand::{
     BashArgs, BashTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs, GrepTool, ReadArgs,
@@ -25,6 +23,10 @@ pub use web::{WebFetchArgs, WebFetchTool, WebSearchArgs, WebSearchTool, web_hand
 
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use serde::{Deserialize, Serialize};
+
+/// The delegation tool id. The model-visible descriptor and the runtime resolver
+/// that backs it (`AgentResolver::tool_id`) must agree on this one value.
+pub const AGENT_RUN: &str = "agent_run";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Toolset {
@@ -95,7 +97,7 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
             toolset: Toolset::Delegation,
             descriptor: ToolDescriptor::pinned(
                 "builtin:delegation",
-                "agent_run",
+                AGENT_RUN,
                 "Delegate a sub-run to another agent",
                 agent_run_args(),
             ),
