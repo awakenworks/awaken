@@ -52,12 +52,12 @@ where
 /// the `/v1/a2a...` surface an A2A `HTTP+JSON` client posts to.
 pub fn router(runtime: Runtime) -> Router {
     Router::new()
-        .route("/v1/a2a/message:send", post(message_send))
+        .route(crate::client::MESSAGE_SEND_PATH, post(message_send))
         .route(
             "/v1/a2a/agents/:agent_id/message:send",
             post(message_send_scoped),
         )
-        .route("/v1/a2a/agent-card", get(card))
+        .route(crate::client::AGENT_CARD_PATH, get(card))
         .with_state(runtime)
 }
 

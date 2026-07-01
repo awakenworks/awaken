@@ -12,6 +12,9 @@ async-trait.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 axum = "0.7"
+# Outbound client transport (the inbound router uses axum; the outbound client
+# calls a remote A2A agent over HTTP).
+ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
