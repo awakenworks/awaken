@@ -400,6 +400,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-local",
+ "awaken-store-sqlite",
  "axum",
  "http-body-util",
  "serde_json",

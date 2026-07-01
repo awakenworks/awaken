@@ -92,6 +92,17 @@ impl Runtime {
         Ok((run_id, phase))
     }
 
+    /// Idempotently install a config's catalog and register its snapshot, so a run
+    /// parked under this config can be resumed without a prior `start_turn` — e.g.
+    /// after a restart, when a session is rebuilt from a durable store and the
+    /// waiting ticket's snapshot must resolve. Safe to call repeatedly.
+    pub fn install_for_resume(&self, config: &RunnableConfig) -> Result<(), Error> {
+        self.install_catalog(config.install().clone())
+            .map_err(|err| Error::Execution(err.to_string()))?;
+        self.register_snapshot(config.snapshot().clone());
+        Ok(())
+    }
+
     /// Install the config's catalog and register its snapshot (both idempotent),
     /// then build a fresh activation on `thread` — the shared prefix of `run` and
     /// `run_to_completion`. Registering the snapshot lets a resume resolve it by id.

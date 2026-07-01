@@ -14,6 +14,7 @@ awaken-protocol-ai-sdk = { path = "../awaken-protocol-ai-sdk" }
 awaken-protocol-ag-ui = { path = "../awaken-protocol-ag-ui" }
 awaken-protocol-a2a = { path = "../awaken-protocol-a2a" }
 awaken-sandbox-local = { path = "../awaken-sandbox-local" }
+awaken-store-sqlite = { path = "../awaken-store-sqlite" }
 awaken-ext-goal = { path = "../awaken-ext-goal" }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true

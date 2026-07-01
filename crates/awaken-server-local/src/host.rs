@@ -42,12 +42,22 @@ use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::{ToolError, ToolOutput};
 use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use crate::hub::{ThreadEvent, ThreadEventHub};
+use crate::store::HostCommit;
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
 
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A filesystem-safe database filename stem for a thread id (durable store).
+fn sanitize_thread(thread: &str) -> String {
+    thread
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
 
 /// Concatenate the text of a content-block list.
 pub(crate) fn block_text(content: &[ContentBlock]) -> String {
@@ -265,7 +275,7 @@ struct SessionState {
 struct SessionCtx {
     runtime: Runtime,
     config: RunnableConfig,
-    commit: Arc<MemoryCommitCoordinator>,
+    commit: Arc<HostCommit>,
     thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build a goal-enabled runtime
     /// for `define_outcome` (same tools, same environment).
@@ -403,6 +413,10 @@ pub struct SharedHost {
     delegates: HashSet<String>,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
     hub: Arc<ThreadEventHub>,
+    /// When set, each thread commits to a durable SQLite database at
+    /// `store_dir/<thread>.db`, so a parked run survives a process restart. When
+    /// `None`, sessions use an in-memory coordinator (ephemeral).
+    store_dir: Option<PathBuf>,
 }
 
 impl SharedHost {
@@ -477,7 +491,17 @@ impl SharedHost {
             delegates,
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
+            store_dir: None,
         }
+    }
+
+    /// Persist every thread's committed truth to a durable SQLite database under
+    /// `dir` (one file per thread). A run parked on a thread survives a restart:
+    /// a host rebuilt over the same directory recovers the parked position and can
+    /// resume it. Without this, sessions are in-memory and lost on restart.
+    pub fn with_store_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.store_dir = Some(dir.into());
+        self
     }
 
     /// The model id echoed by adapters in their session/agent objects.
@@ -516,6 +540,21 @@ impl SharedHost {
         }))
     }
 
+    /// Build a thread's commit boundary: a durable SQLite database under the
+    /// configured store directory, or an in-memory coordinator when none is set.
+    fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
+        match &self.store_dir {
+            Some(dir) => {
+                std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
+                let path = dir.join(format!("{}.db", sanitize_thread(thread)));
+                let sqlite = SqliteCommitCoordinator::open(&path.to_string_lossy())
+                    .map_err(|e| HostError::internal(e.to_string()))?;
+                Ok(HostCommit::Sqlite(sqlite))
+            }
+            None => Ok(HostCommit::Memory(MemoryCommitCoordinator::new())),
+        }
+    }
+
     async fn ctx_for(&self, thread: &str) -> Result<Arc<SessionCtx>, HostError> {
         let mut sessions = self.sessions.lock().await;
         if let Some(ctx) = sessions.get(thread) {
@@ -526,15 +565,34 @@ impl SharedHost {
             .create(&SandboxSpec::new(thread))
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
+        let thread_id = ThreadId(thread.to_string());
+        let commit = Arc::new(self.build_commit(thread)?);
         let runtime = build_runtime(self.llm.clone(), &env, self.agent_runner());
+        let config = server_config(&self.model_ref, &self.client_tools, &self.delegates, &[]);
+        // Recover the session's position from committed truth: a durable store may
+        // already hold this thread's history and a parked run (e.g. after a
+        // restart). `consumed_rounds` starts past any prior outcome rounds so a new
+        // `define_outcome` reports only the rounds it produces.
+        let mut state = SessionState {
+            consumed_rounds: commit.continuation_payloads(&thread_id).len(),
+            ..SessionState::default()
+        };
+        if let Some((run_id, _)) = commit.open_wait_for_thread(&thread_id) {
+            // Prime the fresh runtime so the parked run's snapshot resolves on
+            // resume — `start_turn` would normally have installed it.
+            runtime
+                .install_for_resume(&config)
+                .map_err(|e| HostError::internal(e.to_string()))?;
+            state.parked = Some(run_id);
+        }
         let ctx = Arc::new(SessionCtx {
             runtime,
-            config: server_config(&self.model_ref, &self.client_tools, &self.delegates, &[]),
-            commit: Arc::new(MemoryCommitCoordinator::new()),
-            thread_id: ThreadId(thread.to_string()),
+            config,
+            commit,
+            thread_id,
             env,
             cancel: std::sync::Mutex::new(None),
-            state: tokio::sync::Mutex::new(SessionState::default()),
+            state: tokio::sync::Mutex::new(state),
         });
         sessions.insert(thread.to_string(), ctx.clone());
         Ok(ctx)
@@ -711,13 +769,7 @@ impl SharedHost {
         // Project from DURABLE truth: the committed `Continuation` events the run
         // recorded, each carrying the round's opaque detail (result + explanation).
         // A `consumed_rounds` cursor scopes this to the rounds this call produced.
-        let committed = ctx.commit.committed();
-        let rounds: Vec<serde_json::Value> = committed
-            .events
-            .iter()
-            .filter(|event| event.kind == awaken_agent_contract::event::kind::Kind::Continuation)
-            .map(|event| event.payload.clone())
-            .collect();
+        let rounds: Vec<serde_json::Value> = ctx.commit.continuation_payloads(&ctx.thread_id);
         let fresh = &rounds[st.consumed_rounds.min(rounds.len())..];
         st.consumed_rounds = rounds.len();
 
