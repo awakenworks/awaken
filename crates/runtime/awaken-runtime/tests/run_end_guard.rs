@@ -249,6 +249,23 @@ async fn guard_steers_then_completes_and_surfaces_each_round() {
     assert_eq!(events[2].1, serde_json::json!({ "done": true }));
     // Each steer injected the feedback as a committed user turn.
     assert_eq!(count_user_text(&commit, "revise"), 2);
+
+    // Durable truth (not just the best-effort stream): every round was committed
+    // as a `Continuation` event, transactionally with the run.
+    let committed: Vec<serde_json::Value> = commit
+        .committed()
+        .events
+        .into_iter()
+        .filter(|e| e.kind == awaken_agent_contract::event::kind::Kind::Continuation)
+        .map(|e| e.payload)
+        .collect();
+    assert_eq!(
+        committed.len(),
+        3,
+        "all rounds are durable, not just streamed"
+    );
+    assert_eq!(committed[0], serde_json::json!({ "round": 0 }));
+    assert_eq!(committed[2], serde_json::json!({ "done": true }));
 }
 
 #[tokio::test]
