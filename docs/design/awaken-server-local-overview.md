@@ -191,17 +191,29 @@ other repositories and plugs in without changing the kernel (C) or the adapter (
 
 ## 6. Status and ownership
 
-- **Built (✅):** the kernel (C), extensions' builtin tools + permission (D), ingress
-  (B), and stores (F) exist and are tested.
-- **To build (🔨):** the sandbox / tool-relay layer (E), the managed adapter (A), and
-  `awaken-ext-goal`. Their authority will be owned by planned ADRs (a Managed-adapter
-  ADR and a Sandbox/MCP-relay ADR); until those land, this page names the components
-  but does not own their catalogs.
-- This document owns nothing beyond the assembly map; it links to the owners above.
+The single-machine assembly is built and tested end-to-end, including
+SDK-driven e2e (`e2e/`, Anthropic TypeScript SDK) for the managed surface.
+
+- **Built (✅):** the kernel (C); built-in tools + permission (D); ingress (B) and
+  stores (F); the **managed adapter** (A) — sessions, messages, SSE, HITL
+  `tool_confirmation`, and `define_outcome` outcome events; per-environment
+  **sandbox isolation** (E) via `awaken-sandbox-local` (rooted tools + a stable
+  `SandboxProvider` seam); and **`awaken-ext-goal`** (grade→revise loop, above the
+  kernel). Milestones: adapter+server (M1), sandbox isolation (M2), HITL (M3),
+  outcome (M4), seam fixation (M5).
+- **Seam, not built here (E):** the per-environment **MCP tool relay** is the
+  distributed packaging of tool exposure; single-machine isolation uses rooted
+  `RawTool`s directly, and the relay plugs in from another repository (§5).
+- **Owning ADRs (planned):** a Managed-adapter ADR and a Sandbox/relay ADR will
+  own these roles' catalogs; until they land this page names the components and
+  links to their existing owners.
 - **Boundary rule:** this repository ships only the in-process side of every §5
   seam and contains no remote / multi-node / management-plane code; distributed
   implementations live in separate repositories and must not require changes to the
-  kernel (C) or the adapter (A).
+  kernel (C) or the adapter (A). The seams are fixed and tested: `SandboxProvider`
+  accepts an out-of-repo implementation, `SandboxSpec` carries `mounts` /
+  `constraints` data, and the `ToolExecutor` port stays defined but unused until a
+  distributed cross-cutting execution policy needs it.
 
 ## Guardrails
 
