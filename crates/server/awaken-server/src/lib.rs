@@ -607,6 +607,20 @@ pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> 
     mount(Arc::new(SharedHost::new(llm, model_ref)))
 }
 
+/// A router whose outcomes are graded by a judge sub-agent (`judge_agent_id`) run
+/// through the kernel, rather than the deterministic keyword grader.
+pub fn build_graded_router(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    judge_agent_id: impl Into<String>,
+) -> Router {
+    mount(Arc::new(SharedHost::with_judge(
+        llm,
+        model_ref,
+        judge_agent_id,
+    )))
+}
+
 /// The default deterministic router (echo model) — the CI / e2e server.
 pub fn build_echo_router() -> Router {
     build_router(Arc::new(EchoModel), "echo-model")
