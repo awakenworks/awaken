@@ -176,6 +176,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-ext-goal"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "awaken-ext-permission"
 version = "0.1.0"
 dependencies = [
@@ -317,6 +325,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-ext-builtin-tools",
+ "awaken-ext-goal",
  "awaken-ext-permission",
  "awaken-protocol-managed",
  "awaken-runtime",

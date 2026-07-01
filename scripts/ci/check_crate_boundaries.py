@@ -192,7 +192,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
         "http-body-util",
     },
-    # Local sandbox: per-environment path isolation. It wraps the built-in tools
+    # Goal / outcome extension: pure vocabulary + a deterministic grader over the
+    # neutral verdict contract. No runtime deps; the re-dispatch loop lives in the host.
+    "awaken-ext-goal": {"serde", "serde_json"},
+        # Local sandbox: per-environment path isolation. It wraps the built-in tools
     # (jailing their paths to an IsolatedRoot), so it depends on the extension it
     # wraps and the neutral tool port. The remote/container provider lives in a
     # distributed repo and plugs in through the `SandboxProvider` trait.
@@ -211,6 +214,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-server-local": {
         "awaken-protocol-managed",
         "awaken-sandbox-local",
+        "awaken-ext-goal",
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime",

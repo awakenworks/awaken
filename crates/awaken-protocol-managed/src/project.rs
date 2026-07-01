@@ -30,14 +30,9 @@ impl ProjectedEvent {
     }
 }
 
-/// Project the messages committed during one step. `pending` is the tool-use id
-/// the run parked on (when `stop` is `RequiresAction`), which marks that tool
-/// `ask` and populates `requires_action.event_ids`.
-pub fn project_turn(
-    messages: &[Message],
-    stop: StopReason,
-    pending: Option<&str>,
-) -> Vec<ProjectedEvent> {
+/// Project just the agent-visible events for a batch of committed messages (no
+/// terminal `session.status_idle`). Used by both a turn and an outcome iteration.
+pub fn project_messages(messages: &[Message], pending: Option<&str>) -> Vec<ProjectedEvent> {
     let mut out = Vec::new();
     for message in messages {
         match message.role {
@@ -89,6 +84,19 @@ pub fn project_turn(
             Role::User | Role::System => {}
         }
     }
+    out
+}
+
+/// Project the messages committed during one step, then a terminal
+/// `session.status_idle`. `pending` is the tool-use id the run parked on (when
+/// `stop` is `RequiresAction`), which marks that tool `ask` and populates
+/// `requires_action.event_ids`.
+pub fn project_turn(
+    messages: &[Message],
+    stop: StopReason,
+    pending: Option<&str>,
+) -> Vec<ProjectedEvent> {
+    let mut out = project_messages(messages, pending);
     let stop_reason = match stop {
         StopReason::RequiresAction { .. } => StopReason::RequiresAction {
             event_ids: pending.map(|p| vec![p.to_string()]).unwrap_or_default(),

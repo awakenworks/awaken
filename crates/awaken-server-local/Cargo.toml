@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 awaken-protocol-managed = { path = "../awaken-protocol-managed" }
 awaken-sandbox-local = { path = "../awaken-sandbox-local" }
+awaken-ext-goal = { path = "../awaken-ext-goal" }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-runtime = { path = "../awaken-runtime" }

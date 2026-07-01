@@ -15,6 +15,7 @@ members = [
     "crates/awaken-run-ingress",
     "crates/awaken-protocol-managed",
     "crates/awaken-sandbox-local",
+    "crates/awaken-ext-goal",
     "crates/awaken-server-local",
 ]
 

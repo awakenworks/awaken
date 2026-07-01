@@ -194,6 +194,92 @@ async fn hitl_write_parks_then_confirms_and_reads_rooted() {
     assert!(read_result_text(&list).contains("HELLO-SANDBOX"));
 }
 
+/// A model that replies with a draft, and revises to include "FINAL" once it sees
+/// the goal-loop's feedback. Stateless: it keys off the last user message.
+struct ReviseModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for ReviseModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let reply = if last_user.contains("did not meet the goal") {
+            "FINAL answer"
+        } else {
+            "a rough draft"
+        };
+        Ok(ChatResponse {
+            output: AssistantOutput::text(reply),
+            usage: None,
+        })
+    }
+}
+
+async fn define_outcome(app: &Router, session: &str, rubric: &str) -> serde_json::Value {
+    json_call(
+        app,
+        "POST",
+        &format!("/v1/sessions/{session}/events"),
+        serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish it", "rubric": rubric, "max_iterations": 3 }] }),
+    )
+    .await;
+    json_call(
+        app,
+        "GET",
+        &format!("/v1/sessions/{session}/events"),
+        serde_json::Value::Null,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn outcome_iterates_until_satisfied() {
+    let app = build_router(Arc::new(ReviseModel), "scripted");
+    let id = create_session(&app).await;
+
+    // A draft, then define an outcome the draft misses -> revise -> satisfied.
+    send_message(&app, &id, "write something").await;
+    let list = define_outcome(&app, &id, "FINAL").await;
+
+    let ends: Vec<&serde_json::Value> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "span.outcome_evaluation_end")
+        .collect();
+    assert!(ends.len() >= 2, "expected at least two evaluation rounds");
+    assert_eq!(ends.first().unwrap()["result"], "needs_revision");
+    assert_eq!(ends.last().unwrap()["result"], "satisfied");
+    // The revision that satisfied the goal was projected.
+    let messages: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("FINAL")),
+        "messages: {messages:?}"
+    );
+}
+
 #[tokio::test]
 async fn sessions_are_isolated() {
     let app = build_router(Arc::new(WriteReadProbe), "scripted");
