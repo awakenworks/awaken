@@ -192,6 +192,7 @@ are checked separately by the OKF/wiki hooks.
 | `tool-and-capability.md` | Tools, capability checks, permissions, pinned descriptors |
 | `run-ingress-message-delivery.md` | Boundary guidance for run ingress, durable dispatch, pending input, and message delivery |
 | `anthropic-alignment-and-sessions.md` | Boundary guidance for downstream protocol/product adapters and anti-corruption mapping |
+| `awaken-server-local-overview.md` | Single-machine assembly of runtime kernel + sandbox/tool-relay + Managed adapter: component map, interaction flow, and distributed seams |
 | `credentials-and-vaults.md` | Boundary guidance for product-owned credential lifecycle and authorization boundaries |
 | `resources-memory-files-skills.md` | Boundary guidance for resource data plane, skills, and out-of-process execution |
 | `observability-eval-dataset-boundary.md` | Trace, dataset, eval, and analytics boundaries |
