@@ -280,6 +280,36 @@ async fn outcome_iterates_until_satisfied() {
     );
 }
 
+/// A model that never stops: it always calls an allowed tool, so the loop runs
+/// until the step ceiling -> `EndCause::MaxSteps` -> `retries_exhausted`.
+struct LoopModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for LoopModel {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        Ok(ChatResponse {
+            output: AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "g".into(),
+                tool_id: "glob".into(),
+                arguments: serde_json::json!({ "pattern": "*" }),
+            }]),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn max_steps_maps_to_retries_exhausted() {
+    let app = build_router(Arc::new(LoopModel), "loop");
+    let id = create_session(&app).await;
+    let list = send_message(&app, &id, "loop forever").await;
+    let idle = list["data"].as_array().unwrap().last().unwrap();
+    assert_eq!(idle["stop_reason"]["type"], "retries_exhausted");
+}
+
 #[tokio::test]
 async fn sessions_are_isolated() {
     let app = build_router(Arc::new(WriteReadProbe), "scripted");

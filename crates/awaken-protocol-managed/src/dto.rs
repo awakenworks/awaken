@@ -213,6 +213,22 @@ pub enum OutboundKind {
     },
 }
 
+impl OutboundKind {
+    /// The public `type` string — also the SSE `event:` name the SDK dispatches on.
+    pub fn type_str(&self) -> &'static str {
+        match self {
+            OutboundKind::AgentMessage { .. } => "agent.message",
+            OutboundKind::AgentToolUse { .. } => "agent.tool_use",
+            OutboundKind::AgentToolResult { .. } => "agent.tool_result",
+            OutboundKind::AgentCustomToolUse { .. } => "agent.custom_tool_use",
+            OutboundKind::SessionStatusRunning {} => "session.status_running",
+            OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
+            OutboundKind::SpanOutcomeEvaluationStart { .. } => "span.outcome_evaluation_start",
+            OutboundKind::SpanOutcomeEvaluationEnd { .. } => "span.outcome_evaluation_end",
+        }
+    }
+}
+
 /// A committed public event: `id` + `type` + kind fields + `processed_at`. This
 /// is what a receipt references, a list returns, and the SSE stream delivers.
 #[derive(Debug, Clone, Serialize)]
@@ -221,6 +237,13 @@ pub struct Event {
     #[serde(flatten)]
     pub kind: OutboundKind,
     pub processed_at: Option<String>,
+}
+
+impl Event {
+    /// The public event `type`, used as the SSE `event:` field.
+    pub fn type_str(&self) -> &'static str {
+        self.kind.type_str()
+    }
 }
 
 /// `GET .../events` response.

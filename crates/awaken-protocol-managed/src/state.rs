@@ -87,6 +87,7 @@ pub struct RunError(pub String);
 
 struct SessionRecord {
     agent_id: String,
+    session: Session,
     events: Vec<Event>,
 }
 
@@ -153,10 +154,20 @@ impl ManagedState {
             id,
             SessionRecord {
                 agent_id,
+                session: session.clone(),
                 events: Vec::new(),
             },
         );
         session
+    }
+
+    /// `GET /v1/sessions/{id}`.
+    pub fn get_session(&self, id: &str) -> Result<Session, StateError> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .get(id)
+            .map(|r| r.session.clone())
+            .ok_or(StateError::NotFound)
     }
 
     /// Append one step's projected events to the session, minting ids where the

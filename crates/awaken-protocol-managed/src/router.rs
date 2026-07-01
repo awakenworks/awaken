@@ -24,6 +24,7 @@ use crate::state::{ManagedState, StateError};
 pub fn router(state: Arc<ManagedState>) -> Router {
     Router::new()
         .route("/v1/sessions", post(create_session))
+        .route("/v1/sessions/:id", get(retrieve_session))
         .route(
             "/v1/sessions/:id/events",
             post(send_events).get(list_events),
@@ -44,6 +45,13 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> Json<Session> {
     Json(state.create_session(req))
+}
+
+async fn retrieve_session(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Session>, StatusCode> {
+    state.get_session(&id).map(Json).map_err(status)
 }
 
 async fn send_events(
@@ -67,8 +75,11 @@ async fn stream_events(
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, StatusCode> {
     let events = state.stream_events(&id).map_err(status)?;
     let frames = events.into_iter().map(|event| {
+        // The SDK's Stream dispatches on the SSE `event:` name, so set it to the
+        // event type; the JSON body carries the same `type` plus the fields.
+        let name = event.type_str();
         let data = serde_json::to_string(&event).expect("event serializes");
-        Ok(SseEvent::default().data(data))
+        Ok(SseEvent::default().event(name).data(data))
     });
     Ok(Sse::new(tokio_stream::iter(frames)).keep_alive(KeepAlive::default()))
 }

@@ -331,6 +331,42 @@ async fn hitl_park_confirm_resume() {
 }
 
 #[tokio::test]
+async fn retrieve_session_and_sse_event_names() {
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let id = create(&app).await;
+
+    // GET /v1/sessions/{id} returns the session.
+    let session = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(session["id"], id);
+    assert_eq!(session["type"], "session");
+
+    // Run a turn, then the SSE stream carries `event:` lines named by type.
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
+    )
+    .await;
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/v1/sessions/{id}/events/stream"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let sse = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(sse.contains("event: agent.message"), "sse: {sse}");
+    assert!(sse.contains("event: session.status_idle"), "sse: {sse}");
+}
+
+#[tokio::test]
 async fn unknown_session_is_404() {
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let req = Request::builder()

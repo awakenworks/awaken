@@ -1,9 +1,8 @@
-// End-to-end test: drive `awaken-server-local` with the official Anthropic
-// TypeScript SDK (@anthropic-ai/sdk), proving the server is wire-compatible with
-// the Managed Agents runtime protocol. Spawns the server, creates a session,
-// sends a `user.message`, and lists the projected events via the SDK.
+// Comprehensive Managed Agents e2e with the official Anthropic TypeScript SDK
+// (echo model). Covers: session create + retrieve, single and multi-turn
+// messages, event list, SSE stream (events.stream), and error handling.
 //
-// Run: (from e2e/)  npm install && npm test
+// Run: (from e2e/)  npm install && node managed_e2e.mjs
 
 import assert from 'node:assert/strict';
 import net from 'node:net';
@@ -33,58 +32,75 @@ function waitForPort(port, timeoutMs) {
   });
 }
 
+async function listTypes(client, sessionId) {
+  const events = [];
+  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
+  return events;
+}
+
+async function sendMessage(client, sessionId, text) {
+  await client.beta.sessions.events.send(sessionId, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+    betas: BETAS,
+  });
+}
+
 async function main() {
-  // The server compiles on first run; allow generous startup time.
   const server = spawn('cargo', ['run', '--quiet', '-p', 'awaken-server-local'], {
     cwd: REPO_ROOT,
     env: { ...process.env, AWAKEN_HTTP_ADDR: ADDR },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   server.on('exit', (code) => {
-    if (code !== null && code !== 0) {
-      console.error(`server exited early with code ${code}`);
-      process.exit(1);
-    }
+    if (code !== null && code !== 0) { console.error(`server exited early: ${code}`); process.exit(1); }
   });
 
   try {
     await waitForPort(PORT, 180_000);
-
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${ADDR}` });
 
-    // 1. Create a session (SDK -> POST /v1/sessions).
-    const session = await client.beta.sessions.create({
-      agent: 'assistant',
-      environment_id: 'env_local',
-      betas: BETAS,
-    });
+    // --- create + retrieve ---
+    const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     assert.equal(session.type, 'session');
     assert.equal(session.status, 'idle');
-    assert.ok(session.id.startsWith('sesn_'), `session id: ${session.id}`);
+    assert.ok(session.id.startsWith('sesn_'));
 
-    // 2. Send a user.message (SDK -> POST /v1/sessions/{id}/events).
-    const receipt = await client.beta.sessions.events.send(session.id, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'hi there' }] }],
-      betas: BETAS,
-    });
-    assert.equal(receipt.data[0].type, 'user.message');
+    const retrieved = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
+    assert.equal(retrieved.id, session.id);
+    assert.equal(retrieved.agent.id, 'assistant');
+    console.log('  ok: create + retrieve');
 
-    // 3. List the projected events (SDK -> GET /v1/sessions/{id}/events, paginated).
-    const events = [];
-    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-      events.push(ev);
-    }
-    const types = events.map((e) => e.type);
-    assert.ok(types.includes('agent.message'), `types: ${types}`);
-    assert.ok(types.includes('session.status_idle'), `types: ${types}`);
+    // --- single message ---
+    await sendMessage(client, session.id, 'hi there');
+    let events = await listTypes(client, session.id);
+    assert.deepEqual(events.map((e) => e.type), ['agent.message', 'session.status_idle']);
+    assert.equal(events.find((e) => e.type === 'agent.message').content[0].text, 'Echo: hi there');
+    assert.equal(events.find((e) => e.type === 'session.status_idle').stop_reason.type, 'end_turn');
+    console.log('  ok: single message + list');
 
-    const agentMsg = events.find((e) => e.type === 'agent.message');
-    assert.equal(agentMsg.content[0].text, 'Echo: hi there');
+    // --- multi-turn conversation ---
+    await sendMessage(client, session.id, 'second');
+    events = await listTypes(client, session.id);
+    const messages = events.filter((e) => e.type === 'agent.message').map((e) => e.content[0].text);
+    assert.deepEqual(messages, ['Echo: hi there', 'Echo: second']);
+    console.log('  ok: multi-turn conversation');
 
-    const idle = events.find((e) => e.type === 'session.status_idle');
-    assert.equal(idle.stop_reason.type, 'end_turn');
+    // --- SSE stream (events.stream) ---
+    const stream = await client.beta.sessions.events.stream(session.id, { betas: BETAS });
+    const streamedTypes = [];
+    for await (const ev of stream) streamedTypes.push(ev.type);
+    assert.ok(streamedTypes.includes('agent.message'), `stream types: ${streamedTypes}`);
+    assert.ok(streamedTypes.includes('session.status_idle'), `stream types: ${streamedTypes}`);
+    console.log('  ok: SSE stream via events.stream');
 
-    console.log('E2E PASS: Anthropic TS SDK drove the Managed Agents surface end-to-end.');
+    // --- errors: unknown session ---
+    await assert.rejects(
+      () => client.beta.sessions.retrieve('sesn_does_not_exist', { betas: BETAS }),
+      (err) => { assert.equal(err.status, 404); return true; },
+    );
+    console.log('  ok: unknown session -> 404');
+
+    console.log('E2E PASS: Managed Agents lifecycle/messages/stream/errors via TS SDK.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);
