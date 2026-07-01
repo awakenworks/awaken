@@ -6,13 +6,20 @@
 //! notification, sampling, and progress channels — land in later phases; the
 //! method set grows additively as they do.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use mcp::transport::McpTransportError;
 use mcp::{CallToolResult, McpToolDefinition};
 use serde_json::Value;
 
+use crate::types::{McpPromptDefinition, McpPromptResult, McpResourceDefinition};
+
 /// Raw MCP client transport: the wire operations `McpRawTool` needs to expose an
-/// external server's tools as runtime tools.
+/// external server's tools as runtime tools, plus the prompt/resource surfaces a
+/// host may consult. Tools are mandatory; prompts and resources default to
+/// "unsupported" so a tools-only transport (or a test fake) need not implement
+/// them.
 #[async_trait]
 pub trait McpToolTransport: Send + Sync {
     /// Discover the server's tools (`tools/list`).
@@ -27,4 +34,30 @@ pub trait McpToolTransport: Send + Sync {
         tool_name: &str,
         arguments: Value,
     ) -> Result<CallToolResult, McpTransportError>;
+
+    /// List the server's prompts (`prompts/list`). Defaults to none.
+    async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+        Ok(Vec::new())
+    }
+
+    /// Render a prompt (`prompts/get`). Defaults to unsupported.
+    async fn get_prompt(
+        &self,
+        _name: &str,
+        _arguments: Option<HashMap<String, String>>,
+    ) -> Result<McpPromptResult, McpTransportError> {
+        Err(McpTransportError::NotSupported("prompts/get".to_string()))
+    }
+
+    /// List the server's resources (`resources/list`). Defaults to none.
+    async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+        Ok(Vec::new())
+    }
+
+    /// Read a resource by uri (`resources/read`). Defaults to unsupported.
+    async fn read_resource(&self, _uri: &str) -> Result<Value, McpTransportError> {
+        Err(McpTransportError::NotSupported(
+            "resources/read".to_string(),
+        ))
+    }
 }

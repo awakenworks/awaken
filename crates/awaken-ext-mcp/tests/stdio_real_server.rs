@@ -32,6 +32,7 @@ async fn everything_server_echo_round_trips() {
     .expect("spawn + handshake with the everything server");
 
     let transport: Arc<dyn McpToolTransport> = Arc::new(transport);
+    let conn_transport = Arc::clone(&transport);
     let conn = connect_tools("everything", transport)
         .await
         .expect("discover tools");
@@ -53,4 +54,20 @@ async fn everything_server_echo_round_trips() {
         .expect("echo invokes");
     assert!(!out.is_error);
     assert!(out.content.contains("hello mcp"));
+
+    // The everything server also exposes prompts and resources.
+    let prompts = conn_transport.list_prompts().await.expect("list prompts");
+    assert!(!prompts.is_empty(), "server advertises prompts");
+
+    let resources = conn_transport
+        .list_resources()
+        .await
+        .expect("list resources");
+    assert!(!resources.is_empty(), "server advertises resources");
+    let first = &resources[0];
+    let read = conn_transport
+        .read_resource(&first.uri)
+        .await
+        .expect("read resource");
+    assert!(read.is_object() || read.is_array() || read.is_string());
 }

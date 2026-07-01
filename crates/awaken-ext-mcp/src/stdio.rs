@@ -19,6 +19,10 @@ use mcp::{
 use serde_json::Value;
 
 use crate::transport::McpToolTransport;
+use crate::types::{
+    ListPromptsResult, ListResourcesResult, McpPromptDefinition, McpPromptResult,
+    McpResourceDefinition,
+};
 
 /// Per-request timeout used when a caller does not supply one.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -122,5 +126,49 @@ impl McpToolTransport for StdioTransport {
         // mapping in `McpRawTool` stays intact.
         let call_result: CallToolResult = serde_json::from_value(result)?;
         Ok(call_result)
+    }
+
+    async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+        let result = self
+            .inner
+            .send_request_with_timeout("prompts/list", Some(serde_json::json!({})), self.timeout)
+            .await?;
+        let parsed: ListPromptsResult = serde_json::from_value(result)?;
+        Ok(parsed.prompts)
+    }
+
+    async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: Option<HashMap<String, String>>,
+    ) -> Result<McpPromptResult, McpTransportError> {
+        let result = self
+            .inner
+            .send_request_with_timeout(
+                "prompts/get",
+                Some(serde_json::json!({ "name": name, "arguments": arguments })),
+                self.timeout,
+            )
+            .await?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+        let result = self
+            .inner
+            .send_request_with_timeout("resources/list", Some(serde_json::json!({})), self.timeout)
+            .await?;
+        let parsed: ListResourcesResult = serde_json::from_value(result)?;
+        Ok(parsed.resources)
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
+        self.inner
+            .send_request_with_timeout(
+                "resources/read",
+                Some(serde_json::json!({ "uri": uri })),
+                self.timeout,
+            )
+            .await
     }
 }
