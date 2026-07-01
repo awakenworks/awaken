@@ -16,6 +16,7 @@ members = [
     "crates/server/awaken-protocol-managed",
     "crates/server/awaken-protocol-ai-sdk",
     "crates/server/awaken-protocol-ag-ui",
+    "crates/server/awaken-protocol-a2a",
     "crates/worker/awaken-sandbox-local",
     "crates/runtime/awaken-ext-goal",
     "crates/runtime/awaken-ext-mcp",

@@ -214,6 +214,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-protocol-a2a"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "axum",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "awaken-protocol-ag-ui"
 version = "1.0.0-dev"
 dependencies = [
@@ -377,6 +392,7 @@ dependencies = [
  "awaken-ext-builtin-tools",
  "awaken-ext-goal",
  "awaken-ext-permission",
+ "awaken-protocol-a2a",
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",
  "awaken-protocol-managed",
