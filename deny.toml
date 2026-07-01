@@ -46,6 +46,7 @@ wrappers = [
     "awaken-store-postgres",
     "awaken-store-sqlite",
     "awaken-run-ingress",
+    "awaken-ext-mcp",
     "awaken-protocol-managed",
     "awaken-protocol-ai-sdk",
     "awaken-protocol-ag-ui",
@@ -61,6 +62,7 @@ wrappers = [
     "awaken-ext-builtin-tools",
     "awaken-ext-permission",
     "awaken-ext-goal",
+    "awaken-ext-mcp",
     "awaken-config-store",
     "awaken-runtime-examples",
     "awaken-provider-genai",
@@ -80,6 +82,7 @@ wrappers = [
     "awaken-config-store",
     "awaken-runtime-examples",
     "awaken-run-ingress",
+    "awaken-ext-mcp",
     "awaken-server-local",
 ]
 reason = "runtime core; contracts must not depend on the kernel (G2, G18)"

@@ -234,6 +234,29 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-contract",
         "tokio",
     },
+    # MCP client extension: connects to external Model Context Protocol servers
+    # and exposes their tools as runtime `RawTool`s. Like the other extensions it
+    # depends only on the runtime contract; as an adapter to an external wire
+    # protocol it may name the `mcp` SDK and its transport stack (`reqwest` for
+    # HTTP, `nix` for stdio subprocess signals, `futures`/`tracing`). The kernel
+    # stays out — sampling, credentials, and refresh reach it through host-injected
+    # ports, not an `awaken-runtime` dependency. `awaken-runtime`/`awaken-agent-contract`
+    # are dev-only, for the end-to-end tool-call test (composition root in tests).
+    "awaken-ext-mcp": {
+        "awaken-runtime-contract",
+        "awaken-agent-contract",
+        "awaken-runtime",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tokio",
+        "tracing",
+        "futures",
+        "mcp",
+        "reqwest",
+        "nix",
+    },
         # Local sandbox: per-environment path isolation. It wraps the built-in tools
     # (jailing their paths to an IsolatedRoot), so it depends on the extension it
     # wraps and the neutral tool port. The remote/container provider lives in a
