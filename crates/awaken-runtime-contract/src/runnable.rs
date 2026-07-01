@@ -65,6 +65,7 @@ pub struct RunnableConfigBuilder {
     max_steps: usize,
     model_binding: ModelBinding,
     tools: Vec<ToolDescriptor>,
+    plugin_ids: Vec<String>,
     fingerprint: Option<String>,
 }
 
@@ -76,6 +77,7 @@ impl RunnableConfigBuilder {
             max_steps: DEFAULT_MAX_STEPS,
             model_binding: ModelBinding::default(),
             tools: Vec::new(),
+            plugin_ids: Vec::new(),
             fingerprint: None,
         }
     }
@@ -115,6 +117,14 @@ impl RunnableConfigBuilder {
         self
     }
 
+    /// Select the plugins active for this run by id. A plugin installed on the
+    /// runtime only contributes when its id is listed here (G30).
+    #[must_use]
+    pub fn plugins(mut self, plugin_ids: impl IntoIterator<Item = String>) -> Self {
+        self.plugin_ids.extend(plugin_ids);
+        self
+    }
+
     /// Set the fingerprint explicitly — a content hash from a compiler. When unset,
     /// the agent id is used as the consistency token, which is enough for direct,
     /// in-process use where content-addressing is not needed.
@@ -138,7 +148,7 @@ impl RunnableConfigBuilder {
                 max_steps: self.max_steps,
                 model_binding: self.model_binding,
                 tool_descriptors: self.tools,
-                plugin_ids: Vec::new(),
+                plugin_ids: self.plugin_ids,
             },
             fingerprint: fp.clone(),
         };
