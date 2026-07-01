@@ -238,6 +238,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "axum",
         "tower",
         "http-body-util",
+        "ureq",
     },
     # Goal / outcome extension: goal vocabulary, a deterministic grader, and a
     # run-end continuation guard that drives the grade→revise loop inside the
@@ -309,7 +310,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "axum",
         "tower",
         "http-body-util",
-        "ureq",
     },
 }
 
