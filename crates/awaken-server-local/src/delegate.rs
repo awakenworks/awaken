@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
+use awaken_ext_builtin_tools::AGENT_RUN;
 use awaken_protocol_a2a::client::{self as a2a, Transport};
 use awaken_protocol_a2a::{AgentCard, Task, TaskState};
 use awaken_runtime_contract::CancellationToken;
@@ -22,10 +23,6 @@ use awaken_sandbox_local::LocalSandboxProvider;
 use serde_json::{Value, json};
 
 use crate::host::{BASE_SEQ, HostError, SharedHost};
-
-/// The delegation tool id the resolver backs. Model-visible; not named by the
-/// kernel (the kernel matches on `AgentResolver::tool_id`).
-pub(crate) const AGENT_RUN: &str = "agent_run";
 
 /// Bound on task polling before giving up, so a stuck remote cannot hang a
 /// delegation forever.
