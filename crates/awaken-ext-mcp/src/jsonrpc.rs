@@ -40,6 +40,7 @@ pub trait ServerRequestHandler: Send + Sync {
 }
 
 /// A server->client request failed; becomes a JSON-RPC error reply.
+#[derive(Debug, Clone)]
 pub struct ServerRequestError {
     pub code: i64,
     pub message: String,
