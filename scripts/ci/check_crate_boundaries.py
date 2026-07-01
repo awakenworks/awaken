@@ -293,6 +293,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-ai-sdk",
         "awaken-protocol-ag-ui",
         "awaken-protocol-a2a",
+        "awaken-provider-genai",
         "awaken-sandbox-local",
         "awaken-ext-goal",
         "awaken-agent-contract",

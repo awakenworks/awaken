@@ -29,3 +29,6 @@ axum = "0.7"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Real-model integration test only (gated, `--ignored`): drive an adapter over a
+# live Anthropic-compatible endpoint through the genai provider.
+awaken-provider-genai = { path = "../awaken-provider-genai" }
