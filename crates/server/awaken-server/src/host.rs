@@ -21,9 +21,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_ext_builtin_tools::{
-    AgentRunner, Toolset, builtin_tools, delegation_tools, executable_hand_tools,
-};
+use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
 use awaken_ext_goal::{
     DelegateError, DelegateGrader, DelegateReply, DelegateRequest, DelegateRunner, GoalPlugin,
     GoalSpec, Grader, KeywordGrader,
@@ -40,14 +38,27 @@ use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::tool::{ToolError, ToolOutput};
-use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_runtime_contract::tool::ToolOutput;
+use awaken_sandbox_local::{
+    IsolatedRoot, LocalSandboxProvider, SandboxProvider, SandboxSpec, rooted_hand_tools,
+};
+use awaken_store_sqlite::SqliteCommitCoordinator;
 
+use crate::delegate::{A2aTransport, DelegateOutcome};
 use crate::hub::{ThreadEvent, ThreadEventHub};
+use crate::store::HostCommit;
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
 
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A filesystem-safe database filename stem for a thread id (durable store).
+pub(crate) fn sanitize_thread(thread: &str) -> String {
+    thread
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
 
 /// Concatenate the text of a content-block list.
 pub(crate) fn block_text(content: &[ContentBlock]) -> String {
@@ -165,12 +176,10 @@ fn server_policy() -> RulePermissionPolicy {
     RulePermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::Ask,
         mode: Mode::Default,
-        rules: vec![
-            allow("read"),
-            allow("glob"),
-            allow("grep"),
-            allow("agent_run"),
-        ],
+        // `agent_run` is intentionally absent: it falls through to `Ask`, so a
+        // delegate call parks (no executor is registered for it) and the host
+        // fulfills the park by running the sub-agent (delegation-as-park).
+        rules: vec![allow("read"), allow("glob"), allow("grep")],
     })
 }
 
@@ -206,7 +215,7 @@ fn delegation_descriptor() -> ToolDescriptor {
         .expect("agent_run descriptor exists")
 }
 
-fn server_config(
+pub(crate) fn server_config(
     model_ref: &str,
     client_tools: &HashSet<String>,
     delegates: &HashSet<String>,
@@ -226,24 +235,15 @@ fn server_config(
         .build()
 }
 
-/// Build a per-thread runtime whose hand tools come from `env` — placement-agnostic:
-/// the host registers whatever tools the environment yields (rooted in-process
-/// today, relay-into-a-sandbox for a distributed provider). When a `delegation`
-/// runner is supplied, `agent_run` is registered too.
-fn build_runtime(
-    llm: Arc<dyn LlmExecutor>,
-    env: &Environment,
-    delegation: Option<Arc<dyn AgentRunner>>,
-) -> Runtime {
+/// Build a per-thread runtime whose hand tools are rooted in `root`. When a
+/// No `agent_run` executor is registered: a delegate call is advertised by the
+/// config but parks (gate `Ask`), and the host fulfills it by running the
+/// sub-agent — so delegation pauses durably instead of blocking inline.
+pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, root: IsolatedRoot) -> Runtime {
     let gate = PermissionGate::new(Arc::new(server_policy()));
     let mut runtime = Runtime::new().with_llm(llm).with_gate(Arc::new(gate));
-    for tool in env.hand_tools() {
+    for tool in rooted_hand_tools(root) {
         runtime = runtime.with_tool(tool);
-    }
-    if let Some(runner) = delegation {
-        for tool in delegation_tools(runner) {
-            runtime = runtime.with_tool(tool);
-        }
     }
     runtime
 }
@@ -257,19 +257,23 @@ struct SessionState {
     /// How many committed `Continuation` (outcome) rounds have already been
     /// projected, so a second `define_outcome` on the thread reports only its own.
     consumed_rounds: usize,
+    /// True when the parked delegate is waiting for the *user* to supply input to
+    /// forward to a remote A2A agent (its task is `input-required`). A `resume`
+    /// with a client result delivers it as a follow-up `message:send`.
+    awaiting_remote_input: bool,
 }
 
 /// One thread's live state: an isolated runtime, its config, its commit
-/// coordinator (the source of committed truth), its sandbox environment, and its
+/// coordinator (the source of committed truth), its sandbox root, and its
 /// position.
-struct SessionCtx {
-    runtime: Runtime,
+pub(crate) struct SessionCtx {
+    pub(crate) runtime: Runtime,
     config: RunnableConfig,
-    commit: Arc<MemoryCommitCoordinator>,
-    thread_id: ThreadId,
-    /// The thread's sandbox environment, reused to build a goal-enabled runtime
-    /// for `define_outcome` (same tools, same environment).
-    env: Environment,
+    pub(crate) commit: Arc<HostCommit>,
+    pub(crate) thread_id: ThreadId,
+    /// The thread's isolated sandbox root, reused to build a goal-enabled runtime
+    /// for `define_outcome` (same tools, same root).
+    root: IsolatedRoot,
     /// The in-flight run's cancellation token, so a concurrent `interrupt` (a
     /// separate request) can cancel it. A plain `std::sync::Mutex` (brief locks),
     /// held by neither the run loop nor the state lock, so interrupt never blocks
@@ -283,7 +287,7 @@ impl SessionCtx {
     /// a concurrent `interrupt` can cancel the run it drives. Only one run is in
     /// flight per thread at a time (the `state` lock serializes them), so the slot
     /// always holds the current run's token.
-    fn context(&self) -> RuntimeRunContext {
+    pub(crate) fn context(&self) -> RuntimeRunContext {
         let token = CancellationToken::new();
         *self.cancel.lock().expect("cancel mutex poisoned") = Some(token.clone());
         RuntimeRunContext::new()
@@ -291,50 +295,14 @@ impl SessionCtx {
             .with_reader(self.commit.clone())
             .with_cancellation(token)
     }
-}
 
-/// Backs `agent_run` with an in-process sub-run: validates the target against the
-/// roster (fail closed), drives a fresh rooted runtime over the same model to
-/// completion, and returns the delegate's last assistant line. The sub-runtime
-/// has no delegation tool, so a delegate cannot recurse.
-struct LocalAgentRunner {
-    llm: Arc<dyn LlmExecutor>,
-    model_ref: String,
-    roster: HashSet<String>,
-    provider: LocalSandboxProvider,
-    seq: AtomicU64,
-}
-
-#[async_trait::async_trait]
-impl AgentRunner for LocalAgentRunner {
-    async fn run(&self, agent_id: &str, input: &str) -> Result<String, ToolError> {
-        if !self.roster.contains(agent_id) {
-            return Err(ToolError::Execution(format!(
-                "delegate agent {agent_id:?} is not in the roster"
-            )));
-        }
-        let n = self.seq.fetch_add(1, Ordering::SeqCst);
-        let env = self
-            .provider
-            .create(&SandboxSpec::new(format!("{agent_id}-sub-{n}")))
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let runtime = build_runtime(self.llm.clone(), &env, None);
-        let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
-        let commit = Arc::new(MemoryCommitCoordinator::new());
-        let thread = format!("sub-thread-{n}");
-        let ctx = RuntimeRunContext::new()
-            .with_commit(commit.clone())
-            .with_reader(commit.clone());
-        runtime
-            .run_to_completion(&config, thread.clone(), input, ctx, |_| {
-                ResumeResult::allow()
-            })
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        Ok(latest_assistant_text(
-            &commit.committed_messages(&ThreadId(thread)),
-        ))
+    /// Register a fresh cancellation token in the thread's cancel slot and return
+    /// it, so a concurrent `interrupt` cancels the work it guards (e.g. an
+    /// in-flight remote delegation between parks).
+    pub(crate) fn register_cancel(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        *self.cancel.lock().expect("cancel mutex poisoned") = Some(token.clone());
+        token
     }
 }
 
@@ -367,7 +335,7 @@ impl DelegateRunner for KernelJudgeRunner {
             .create(&SandboxSpec::new(format!("{}-judge-{n}", request.agent_id)))
             .await
             .map_err(|e| DelegateError(e.to_string()))?;
-        let runtime = build_runtime(self.llm.clone(), &env, None);
+        let runtime = build_runtime(self.llm.clone(), env.root);
         let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let thread = format!("judge-thread-{n}");
@@ -395,14 +363,21 @@ impl DelegateRunner for KernelJudgeRunner {
 
 /// The protocol-neutral, thread-keyed session substrate shared by every adapter.
 pub struct SharedHost {
-    llm: Arc<dyn LlmExecutor>,
-    model_ref: String,
-    provider: LocalSandboxProvider,
+    pub(crate) llm: Arc<dyn LlmExecutor>,
+    pub(crate) model_ref: String,
+    pub(crate) provider: LocalSandboxProvider,
     grader: Arc<dyn Grader>,
     client_tools: HashSet<String>,
-    delegates: HashSet<String>,
+    pub(crate) delegates: HashSet<String>,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
     hub: Arc<ThreadEventHub>,
+    /// When set, each thread commits to a durable SQLite database at
+    /// `store_dir/<thread>.db`, so a parked run survives a process restart. When
+    /// `None`, sessions use an in-memory coordinator (ephemeral).
+    pub(crate) store_dir: Option<PathBuf>,
+    /// Delegate agents fulfilled over A2A (agent id → transport) instead of a local
+    /// sub-run. `run_delegate` routes to these first.
+    pub(crate) remote_agents: HashMap<String, Arc<dyn A2aTransport>>,
 }
 
 impl SharedHost {
@@ -477,7 +452,18 @@ impl SharedHost {
             delegates,
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
+            store_dir: None,
+            remote_agents: HashMap::new(),
         }
+    }
+
+    /// Persist every thread's committed truth to a durable SQLite database under
+    /// `dir` (one file per thread). A run parked on a thread survives a restart:
+    /// a host rebuilt over the same directory recovers the parked position and can
+    /// resume it. Without this, sessions are in-memory and lost on restart.
+    pub fn with_store_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.store_dir = Some(dir.into());
+        self
     }
 
     /// The model id echoed by adapters in their session/agent objects.
@@ -495,25 +481,19 @@ impl SharedHost {
         &self.hub
     }
 
-    /// The delegation runner for a thread, or `None` when no roster is set.
-    fn agent_runner(&self) -> Option<Arc<dyn AgentRunner>> {
-        if self.delegates.is_empty() {
-            return None;
+    /// Build a thread's commit boundary: a durable SQLite database under the
+    /// configured store directory, or an in-memory coordinator when none is set.
+    fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
+        match &self.store_dir {
+            Some(dir) => {
+                std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
+                let path = dir.join(format!("{}.db", sanitize_thread(thread)));
+                let sqlite = SqliteCommitCoordinator::open(&path.to_string_lossy())
+                    .map_err(|e| HostError::internal(e.to_string()))?;
+                Ok(HostCommit::Sqlite(sqlite))
+            }
+            None => Ok(HostCommit::Memory(MemoryCommitCoordinator::new())),
         }
-        let base: PathBuf = std::env::temp_dir()
-            .join("awaken-server")
-            .join(format!(
-                "{}-sub-{}",
-                std::process::id(),
-                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-            ));
-        Some(Arc::new(LocalAgentRunner {
-            llm: self.llm.clone(),
-            model_ref: self.model_ref.clone(),
-            roster: self.delegates.clone(),
-            provider: LocalSandboxProvider::new(base),
-            seq: AtomicU64::new(0),
-        }))
     }
 
     async fn ctx_for(&self, thread: &str) -> Result<Arc<SessionCtx>, HostError> {
@@ -526,15 +506,34 @@ impl SharedHost {
             .create(&SandboxSpec::new(thread))
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
-        let runtime = build_runtime(self.llm.clone(), &env, self.agent_runner());
+        let thread_id = ThreadId(thread.to_string());
+        let commit = Arc::new(self.build_commit(thread)?);
+        let runtime = build_runtime(self.llm.clone(), env.root.clone());
+        let config = server_config(&self.model_ref, &self.client_tools, &self.delegates, &[]);
+        // Recover the session's position from committed truth: a durable store may
+        // already hold this thread's history and a parked run (e.g. after a
+        // restart). `consumed_rounds` starts past any prior outcome rounds so a new
+        // `define_outcome` reports only the rounds it produces.
+        let mut state = SessionState {
+            consumed_rounds: commit.continuation_payloads(&thread_id).len(),
+            ..SessionState::default()
+        };
+        if let Some((run_id, _)) = commit.open_wait_for_thread(&thread_id) {
+            // Prime the fresh runtime so the parked run's snapshot resolves on
+            // resume — `start_turn` would normally have installed it.
+            runtime
+                .install_for_resume(&config)
+                .map_err(|e| HostError::internal(e.to_string()))?;
+            state.parked = Some(run_id);
+        }
         let ctx = Arc::new(SessionCtx {
             runtime,
-            config: server_config(&self.model_ref, &self.client_tools, &self.delegates, &[]),
-            commit: Arc::new(MemoryCommitCoordinator::new()),
-            thread_id: ThreadId(thread.to_string()),
-            env,
+            config,
+            commit,
+            thread_id,
+            root: env.root.clone(),
             cancel: std::sync::Mutex::new(None),
-            state: tokio::sync::Mutex::new(SessionState::default()),
+            state: tokio::sync::Mutex::new(state),
         });
         sessions.insert(thread.to_string(), ctx.clone());
         Ok(ctx)
@@ -596,8 +595,20 @@ impl SharedHost {
     ) -> Result<TurnResult, HostError> {
         let ctx = self.ctx_for(thread).await?;
         let mut st = ctx.state.lock().await;
-        if st.parked.is_some() {
-            return Err(HostError::bad_request("thread is awaiting a tool decision"));
+        // A thread parked on a delegate call that was never fulfilled (e.g. a
+        // restart recovered it from the store) is driven to completion first; a
+        // non-delegate park (client tool, HITL, or awaiting remote input) must be
+        // answered before a new turn.
+        if let Some(run_id) = st.parked.clone() {
+            let (phase, awaiting) = self
+                .fulfill_delegations(&ctx, &run_id, Phase::Waiting)
+                .await?;
+            if matches!(phase, Phase::Waiting) {
+                st.awaiting_remote_input = awaiting;
+                return Err(HostError::bad_request("thread is awaiting a tool decision"));
+            }
+            st.parked = None;
+            st.awaiting_remote_input = false;
         }
         let mut messages: Vec<Message> = std::mem::take(&mut st.pending_system)
             .into_iter()
@@ -616,6 +627,8 @@ impl SharedHost {
             .start_turn(&ctx.config, thread, messages, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
+        let (phase, awaiting) = self.fulfill_delegations(&ctx, &run_id, phase).await?;
+        st.awaiting_remote_input = awaiting;
         Ok(self.finish_step(&ctx, &mut st, run_id, phase, before, thread))
     }
 
@@ -638,6 +651,55 @@ impl SharedHost {
             .commit
             .waiting_ticket(&run_id)
             .ok_or_else(|| HostError::internal("parked run has no waiting ticket"))?;
+
+        // Deliver user input to a remote A2A delegate that asked for it: a
+        // follow-up `message:send` on the same context, then continue the parent.
+        if st.awaiting_remote_input
+            && let HostResume::ClientResult { content, is_error } = &resume
+        {
+            if ticket.call_id.as_deref() != Some(tool_use_id) {
+                return Err(HostError::bad_request(format!(
+                    "tool_use_id {tool_use_id:?} does not match the pending delegate"
+                )));
+            }
+            let call_id = ticket.call_id.clone().unwrap_or_default();
+            let agent_id = ticket
+                .pending_tool
+                .as_ref()
+                .and_then(|tool| tool.arguments.get("agent_id"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let before = ctx.commit.committed_messages(&ctx.thread_id).len();
+            let token = ctx.register_cancel();
+            let outcome = if *is_error {
+                Err(HostError::bad_request("delegation aborted by the user"))
+            } else {
+                self.deliver_remote_input(thread, &agent_id, content, Some(&token))
+                    .await
+            };
+            let output = match outcome {
+                // Still needs input: stay parked for the user, do not re-send.
+                Ok(DelegateOutcome::NeedsInput) => {
+                    return Ok(self.finish_step(
+                        &ctx,
+                        &mut st,
+                        run_id,
+                        Phase::Waiting,
+                        before,
+                        thread,
+                    ));
+                }
+                Ok(DelegateOutcome::Done(text)) => ToolOutput::ok(&call_id, text),
+                Err(err) => ToolOutput::error(&call_id, err.to_string()),
+            };
+            st.awaiting_remote_input = false;
+            let phase = self.resume_parent(&ctx, &ticket, output).await?;
+            let (phase, awaiting) = self.fulfill_delegations(&ctx, &run_id, phase).await?;
+            st.awaiting_remote_input = awaiting;
+            return Ok(self.finish_step(&ctx, &mut st, run_id, phase, before, thread));
+        }
+
         self.check_pending(&ticket, tool_use_id, resume.wants_client())?;
         let result = match resume {
             HostResume::Confirm { allow, note } => {
@@ -664,7 +726,23 @@ impl SharedHost {
             .resume(command, &*ctx.commit, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
+        let (phase, awaiting) = self.fulfill_delegations(&ctx, &run_id, phase).await?;
+        st.awaiting_remote_input = awaiting;
         Ok(self.finish_step(&ctx, &mut st, run_id, phase, before, thread))
+    }
+
+    /// Resume the parent run parked on `ticket` with a delegate tool result.
+    async fn resume_parent(
+        &self,
+        ctx: &SessionCtx,
+        ticket: &WaitingTicket,
+        output: ToolOutput,
+    ) -> Result<Phase, HostError> {
+        let command = ResumeCommand::from_ticket(ticket, ResumeResult::ToolResult(output), 0);
+        ctx.runtime
+            .resume(command, &*ctx.commit, ctx.context())
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))
     }
 
     /// Define an outcome and drive the grade->revise loop over `thread`, bounded
@@ -684,13 +762,15 @@ impl SharedHost {
         // The runtime owns the grade->revise loop: a goal-enabled runtime whose
         // run-end guard steers revisions until the goal is met or the budget is
         // spent. The host drives one run and projects the rounds it committed. The
-        // guard shares the thread's committed history and sandbox environment.
-        let goal_runtime = build_runtime(self.llm.clone(), &ctx.env, self.agent_runner())
+        // guard shares the thread's committed history and sandbox root.
+        let goal_runtime = build_runtime(self.llm.clone(), ctx.root.clone())
             .with_plugin(Arc::new(GoalPlugin::new(goal, self.grader.clone())));
+        // The goal run auto-approves tools to drive to a deliverable, so it does not
+        // advertise `agent_run` (which parks and is host-fulfilled, not auto-run).
         let config = server_config(
             &self.model_ref,
             &self.client_tools,
-            &self.delegates,
+            &HashSet::new(),
             &["goal".to_string()],
         );
 
@@ -711,13 +791,7 @@ impl SharedHost {
         // Project from DURABLE truth: the committed `Continuation` events the run
         // recorded, each carrying the round's opaque detail (result + explanation).
         // A `consumed_rounds` cursor scopes this to the rounds this call produced.
-        let committed = ctx.commit.committed();
-        let rounds: Vec<serde_json::Value> = committed
-            .events
-            .iter()
-            .filter(|event| event.kind == awaken_agent_contract::event::kind::Kind::Continuation)
-            .map(|event| event.payload.clone())
-            .collect();
+        let rounds: Vec<serde_json::Value> = ctx.commit.continuation_payloads(&ctx.thread_id);
         let fresh = &rounds[st.consumed_rounds.min(rounds.len())..];
         st.consumed_rounds = rounds.len();
 
@@ -765,10 +839,17 @@ impl SharedHost {
         let (pending, waiting) = match &phase {
             Phase::Waiting => {
                 st.parked = Some(run_id.clone());
-                let pending = ctx
+                let mut pending = ctx
                     .commit
                     .waiting_ticket(&run_id)
                     .and_then(|t| pending_from_ticket(&t, &self.client_tools));
+                // A delegate parked awaiting remote input is client-executed from the
+                // caller's view: the user supplies the content to forward.
+                if st.awaiting_remote_input
+                    && let Some(pending) = pending.as_mut()
+                {
+                    pending.client_executed = true;
+                }
                 (pending, true)
             }
             _ => {
@@ -843,6 +924,7 @@ fn pending_from_ticket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::delegate::AGENT_RUN;
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
     use std::sync::atomic::AtomicUsize;
 
@@ -918,5 +1000,195 @@ mod tests {
         host.interrupt("idle-thread")
             .await
             .expect("interrupt is a no-op");
+    }
+
+    /// A delegate `agent_run` call parks durably; a crash before it is fulfilled is
+    /// recovered by a rebuilt host, which drives the sub-agent and completes the
+    /// parent — the sub-result reaches it exactly as if there had been no restart.
+    #[tokio::test]
+    async fn delegate_park_survives_a_restart_and_is_fulfilled_on_recovery() {
+        let dir = std::env::temp_dir().join(format!(
+            "awaken-deleg-{}-{}",
+            std::process::id(),
+            BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let thread = "deleg-durable";
+        let delegates = HashSet::from(["researcher".to_string()]);
+
+        // 1. First process: start a turn that parks on `agent_run`, then drop the
+        //    host WITHOUT fulfilling — a crash right after the durable park commit.
+        let run_id = {
+            let host = SharedHost::with_delegates(
+                Arc::new(crate::DelegatingModel),
+                "scripted",
+                delegates.clone(),
+            )
+            .with_store_dir(dir.clone());
+            let ctx = host.ctx_for(thread).await.unwrap();
+            let msg = Message::text(MessageId("u1".into()), Role::User, "research the answer");
+            let (run_id, phase) = ctx
+                .runtime
+                .start_turn(&ctx.config, thread, vec![msg], ctx.context())
+                .await
+                .unwrap();
+            assert!(matches!(phase, Phase::Waiting), "the delegate call parks");
+            let ticket = ctx.commit.waiting_ticket(&run_id).unwrap();
+            assert_eq!(ticket.pending_tool.as_ref().unwrap().tool_id, AGENT_RUN);
+            run_id
+        };
+
+        // 2. A new host over the same store recovers the parked delegate call and
+        //    fulfills it — the sub-agent's result reaches the parent.
+        let host =
+            SharedHost::with_delegates(Arc::new(crate::DelegatingModel), "scripted", delegates)
+                .with_store_dir(dir.clone());
+        let ctx = host.ctx_for(thread).await.unwrap();
+        assert_eq!(
+            ctx.state.lock().await.parked.as_ref(),
+            Some(&run_id),
+            "the rebuilt host recovers the parked delegate run"
+        );
+        let (phase, _awaiting) = host
+            .fulfill_delegations(&ctx, &run_id, Phase::Waiting)
+            .await
+            .unwrap();
+        assert!(
+            matches!(phase, Phase::Ended(_)),
+            "the recovered delegation drives to completion"
+        );
+        let history = ctx.commit.committed_messages(&ctx.thread_id);
+        assert!(
+            history
+                .iter()
+                .any(|m| block_text(&m.content).contains("delegate said: researched: 42")),
+            "the sub-agent result reached the parent after recovery"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A remote delegation that crashes mid-poll reattaches to the in-flight task
+    /// on recovery (via the persisted task-id handle) instead of resubmitting: the
+    /// remote sees exactly one `message:send`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_remote_delegation_reattaches_after_a_restart() {
+        use crate::delegate::A2aResponse;
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+        const WORKING: &str =
+            r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_WORKING"}}}"#;
+        const DONE: &str = r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"reattached answer"}]}}}}"#;
+
+        struct ReattachTransport {
+            sends: AtomicUsize,
+            complete: AtomicBool,
+            polled: Arc<tokio::sync::Notify>,
+        }
+        #[async_trait::async_trait]
+        impl crate::delegate::A2aTransport for ReattachTransport {
+            async fn request(
+                &self,
+                method: &str,
+                _path: &str,
+                _body: Option<Vec<u8>>,
+            ) -> Result<A2aResponse, String> {
+                if method == "POST" {
+                    self.sends.fetch_add(1, Ordering::SeqCst);
+                    return Ok(A2aResponse {
+                        status: 200,
+                        body: WORKING.as_bytes().to_vec(),
+                    });
+                }
+                self.polled.notify_one();
+                let json = if self.complete.load(Ordering::SeqCst) {
+                    DONE
+                } else {
+                    WORKING
+                };
+                Ok(A2aResponse {
+                    status: 200,
+                    body: json.as_bytes().to_vec(),
+                })
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "awaken-reattach-{}-{}",
+            std::process::id(),
+            BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let thread = "reattach-1";
+        let polled = Arc::new(tokio::sync::Notify::new());
+        let transport = Arc::new(ReattachTransport {
+            sends: AtomicUsize::new(0),
+            complete: AtomicBool::new(false),
+            polled: polled.clone(),
+        });
+
+        // 1. First process: submit + poll (working), then "crash" mid-poll. The
+        //    task id is persisted; the remote saw exactly one message:send.
+        {
+            let host = Arc::new(
+                SharedHost::new(Arc::new(crate::DelegatingModel), "parent")
+                    .with_remote_a2a("researcher", transport.clone())
+                    .with_store_dir(dir.clone()),
+            );
+            let driver = host.clone();
+            let task = tokio::spawn(async move {
+                let _ = driver
+                    .run_turn(thread, vec![user_msg("u1", "research")])
+                    .await;
+            });
+            polled.notified().await;
+            task.abort();
+            let _ = task.await;
+        }
+        assert_eq!(
+            transport.sends.load(Ordering::SeqCst),
+            1,
+            "the remote received exactly one message:send before the crash"
+        );
+
+        // 2. Recovery: the remote task now completes. A rebuilt host reattaches to
+        //    the persisted task id (a fetch, not a resubmit) and finishes the parent.
+        transport.complete.store(true, Ordering::SeqCst);
+        let host = SharedHost::new(Arc::new(crate::DelegatingModel), "parent")
+            .with_remote_a2a("researcher", transport.clone())
+            .with_store_dir(dir.clone());
+        let ctx = host.ctx_for(thread).await.unwrap();
+        let run_id = ctx
+            .state
+            .lock()
+            .await
+            .parked
+            .clone()
+            .expect("the parked delegate run is recovered");
+        let (phase, _) = host
+            .fulfill_delegations(&ctx, &run_id, Phase::Waiting)
+            .await
+            .unwrap();
+        assert!(
+            matches!(phase, Phase::Ended(_)),
+            "the reattached run completes"
+        );
+        assert_eq!(
+            transport.sends.load(Ordering::SeqCst),
+            1,
+            "recovery reattached (no second message:send)"
+        );
+        let history = ctx.commit.committed_messages(&ctx.thread_id);
+        assert!(
+            history
+                .iter()
+                .any(|m| block_text(&m.content).contains("delegate said: reattached answer")),
+            "the reattached result reached the parent"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A minimal user message for the delegation tests.
+    fn user_msg(id: &str, text: &str) -> Message {
+        Message::text(MessageId(id.into()), Role::User, text)
     }
 }

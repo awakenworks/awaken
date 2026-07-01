@@ -11,8 +11,10 @@
 //! distribution stays out — remote relays and multi-node ingress plug in through
 //! seams, not here.
 
+mod delegate;
 mod host;
 mod hub;
+mod store;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -41,9 +43,10 @@ use awaken_runtime_contract::llm::{
 };
 use axum::Router;
 
-use crate::host::{HostError, HostErrorKind, HostResume, PendingTool, TurnResult, block_text};
+use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult, block_text};
 
-pub use crate::host::SharedHost;
+pub use crate::delegate::{A2aResponse, A2aTransport, HttpA2aTransport};
+pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 
 /// A deterministic, network-free model: it replies with the last user turn's
