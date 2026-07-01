@@ -15,7 +15,6 @@ pub mod resume;
 pub mod runnable;
 pub mod runtime_context;
 pub mod snapshot;
-pub mod snapshot_exec;
 pub mod tool;
 
 pub use activation::RunActivation;
@@ -34,5 +33,4 @@ pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
 pub use runnable::{RunnableConfig, RunnableConfigBuilder};
 pub use runtime_context::RuntimeRunContext;
 pub use snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
-pub use snapshot_exec::{RunWithSnapshotCommand, RunWithSnapshotExecutor};
 pub use tool::{RawTool, Tool, ToolExecutor, ToolOutput};
