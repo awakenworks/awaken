@@ -34,7 +34,7 @@ pub(crate) async fn run_subagent(
         .create(&SandboxSpec::new(name))
         .await
         .map_err(|e| e.to_string())?;
-    let runtime = build_runtime(llm, env.root);
+    let runtime = build_runtime(llm, &env);
     let config = server_config(model_ref, &HashSet::new(), &HashSet::new(), &[]);
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let mut ctx = RuntimeRunContext::new()
