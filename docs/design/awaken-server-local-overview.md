@@ -1,6 +1,6 @@
-# awaken-server-local — Architecture Overview
+# awaken-server — Architecture Overview
 
-`awaken-server-local` is the single-machine **assembly binary**: it composes the
+`awaken-server` is the single-machine **assembly binary**: it composes the
 neutral runtime kernel, a sandbox / tool-relay layer, and a Managed Agents
 protocol adapter into one process that serves the minimal Managed Agents *runtime*
 surface.

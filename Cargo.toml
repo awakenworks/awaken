@@ -13,6 +13,8 @@ members = [
     "crates/stores/awaken-store-postgres",
     "crates/stores/awaken-store-sqlite",
     "crates/server/awaken-dispatch",
+    "crates/server/awaken-protocol-managed",
+    "crates/server/awaken-server",
 ]
 
 [workspace.package]
