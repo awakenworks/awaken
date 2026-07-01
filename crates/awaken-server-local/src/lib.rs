@@ -45,7 +45,7 @@ use axum::Router;
 
 use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult, block_text};
 
-pub use crate::delegate::A2aTransport;
+pub use crate::delegate::{A2aResponse, A2aTransport};
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 

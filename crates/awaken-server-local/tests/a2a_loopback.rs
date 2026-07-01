@@ -12,7 +12,8 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_server_local::{
-    A2aTransport, DelegatingModel, EchoModel, SharedHost, build_custom_router, build_router,
+    A2aResponse, A2aTransport, DelegatingModel, EchoModel, SharedHost, build_custom_router,
+    build_router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -20,20 +21,25 @@ use axum::http::Request;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-/// An `A2aTransport` that posts to an in-process awaken A2A server via `oneshot`,
-/// so a delegation crosses the real A2A wire without opening a socket.
+/// An `A2aTransport` that calls an in-process awaken A2A server via `oneshot`, so
+/// a delegation crosses the real A2A wire without opening a socket.
 struct RouterTransport {
     app: Router,
 }
 
 #[async_trait::async_trait]
 impl A2aTransport for RouterTransport {
-    async fn message_send(&self, body: Vec<u8>) -> Result<Vec<u8>, String> {
+    async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<A2aResponse, String> {
         let req = Request::builder()
-            .method("POST")
-            .uri("/v1/a2a/message:send")
+            .method(method)
+            .uri(path)
             .header("content-type", "application/json")
-            .body(Body::from(body))
+            .body(body.map(Body::from).unwrap_or_else(Body::empty))
             .map_err(|e| e.to_string())?;
         let resp = self
             .app
@@ -41,13 +47,17 @@ impl A2aTransport for RouterTransport {
             .oneshot(req)
             .await
             .map_err(|e| e.to_string())?;
+        let status = resp.status().as_u16();
         let bytes = resp
             .into_body()
             .collect()
             .await
             .map_err(|e| e.to_string())?
             .to_bytes();
-        Ok(bytes.to_vec())
+        Ok(A2aResponse {
+            status,
+            body: bytes.to_vec(),
+        })
     }
 }
 
@@ -103,7 +113,12 @@ async fn a_remote_transport_failure_surfaces_as_a_tool_error() {
     struct BrokenTransport;
     #[async_trait::async_trait]
     impl A2aTransport for BrokenTransport {
-        async fn message_send(&self, _body: Vec<u8>) -> Result<Vec<u8>, String> {
+        async fn request(
+            &self,
+            _method: &str,
+            _path: &str,
+            _body: Option<Vec<u8>>,
+        ) -> Result<A2aResponse, String> {
             Err("connection refused".to_string())
         }
     }
@@ -123,6 +138,66 @@ async fn a_remote_transport_failure_surfaces_as_a_tool_error() {
             .iter()
             .any(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:")),
         "the parent completes even when the remote agent is unreachable"
+    );
+}
+
+/// An async remote agent that returns a `working` task first and completes only
+/// after a poll: the outbound client polls `tasks/get` to a terminal state and the
+/// reply reaches the parent. Mirrors goal/awaken-next `poll_to_completion`.
+#[tokio::test]
+async fn a_working_task_is_polled_to_completion() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Returns a `working` task on `message:send`, then a `completed` task on the
+    /// first `tasks/get`.
+    struct PollingTransport {
+        gets: AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl A2aTransport for PollingTransport {
+        async fn request(
+            &self,
+            method: &str,
+            _path: &str,
+            _body: Option<Vec<u8>>,
+        ) -> Result<A2aResponse, String> {
+            let json = if method == "POST" {
+                // message:send → a working task with an id to poll.
+                r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_WORKING"}}}"#
+                    .to_string()
+            } else {
+                // tasks/get → completed, carrying the reply.
+                self.gets.fetch_add(1, Ordering::SeqCst);
+                r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"polled answer"}]}}}}"#
+                    .to_string()
+            };
+            Ok(A2aResponse {
+                status: 200,
+                body: json.into_bytes(),
+            })
+        }
+    }
+
+    let transport = Arc::new(PollingTransport {
+        gets: AtomicUsize::new(0),
+    });
+    let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
+        .with_remote_a2a("researcher", transport);
+
+    host.run_turn("t", vec![user("u1", "research the answer")])
+        .await
+        .unwrap();
+
+    let history = host.committed_messages("t").await;
+    let reply = history
+        .iter()
+        .rev()
+        .find(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:"))
+        .map(text_of)
+        .expect("the parent commits a reply from the polled task");
+    assert!(
+        reply.contains("delegate said: polled answer"),
+        "a working task was polled to completion and its reply reached the parent: {reply:?}"
     );
 }
 

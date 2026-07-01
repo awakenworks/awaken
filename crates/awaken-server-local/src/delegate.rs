@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_protocol_a2a::{SendMessageResponse, TaskState};
+use awaken_protocol_a2a::{SendMessageResponse, Task, TaskState};
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -42,18 +42,67 @@ fn delegate_args(arguments: &serde_json::Value) -> (String, String) {
     (field("agent_id"), field("input"))
 }
 
-/// Sends an A2A `message:send` to a remote agent and returns the raw response
-/// bytes. The composition root supplies the transport (HTTP, or an in-process
-/// router for tests) — the host never names the wire mechanism.
-#[async_trait]
-pub trait A2aTransport: Send + Sync {
-    async fn message_send(&self, body: Vec<u8>) -> Result<Vec<u8>, String>;
+/// A raw A2A HTTP+JSON response: the status code and the body bytes.
+pub struct A2aResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
 }
 
-/// Fulfill a delegate call over A2A: build a `message:send`, post it through the
-/// transport, and read the remote agent's reply off the returned `Task`. The
-/// stable `context_id` lets the remote keep this delegation's history across
-/// turns. A non-completed task (working/input-required/failed) is surfaced as a
+/// Performs an A2A HTTP+JSON request against a remote agent. The composition root
+/// supplies the transport (HTTP with credentials, or an in-process router for
+/// tests) — the host never names the wire mechanism. `path` is the A2A route
+/// (e.g. `/v1/a2a/message:send`); the transport prepends the remote base and any
+/// auth.
+#[async_trait]
+pub trait A2aTransport: Send + Sync {
+    async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<A2aResponse, String>;
+}
+
+/// A2A route the outbound client posts a turn to.
+const MESSAGE_SEND_PATH: &str = "/v1/a2a/message:send";
+/// Bound on task polling before giving up, so a stuck remote cannot hang a
+/// delegation forever.
+const MAX_TASK_POLLS: usize = 600;
+/// Delay between task polls while a remote task is still `working`.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Read a `Task` from a `message:send` response (a `{ "task": ... }` envelope).
+fn read_send_response(body: &[u8]) -> Result<Task, HostError> {
+    let response: SendMessageResponse =
+        serde_json::from_slice(body).map_err(|e| HostError::internal(e.to_string()))?;
+    Ok(response.task)
+}
+
+/// Read a `Task` from a `tasks/get` response, accepting either a bare task or a
+/// `{ "task": ... }` envelope.
+fn read_task(body: &[u8]) -> Result<Task, HostError> {
+    if let Ok(response) = serde_json::from_slice::<SendMessageResponse>(body) {
+        return Ok(response.task);
+    }
+    serde_json::from_slice::<Task>(body).map_err(|e| HostError::internal(e.to_string()))
+}
+
+/// Fail on a non-2xx A2A response.
+fn ok_status(response: &A2aResponse, what: &str) -> Result<(), HostError> {
+    if (200..300).contains(&response.status) {
+        Ok(())
+    } else {
+        Err(HostError::internal(format!(
+            "remote A2A {what} failed: HTTP {}",
+            response.status
+        )))
+    }
+}
+
+/// Fulfill a delegate call over A2A: post a `message:send`, poll the returned
+/// `Task` to a terminal state while it is `working`, and read the remote agent's
+/// reply. The stable `context_id` lets the remote keep this delegation's history
+/// across turns. A non-completed terminal (input-required/failed) is surfaced as a
 /// tool error, since this seam runs the delegate to completion.
 async fn delegate_over_a2a(
     transport: &dyn A2aTransport,
@@ -71,13 +120,35 @@ async fn delegate_over_a2a(
         }
     });
     let body = serde_json::to_vec(&request).map_err(|e| HostError::internal(e.to_string()))?;
-    let bytes = transport
-        .message_send(body)
+    let response = transport
+        .request("POST", MESSAGE_SEND_PATH, Some(body))
         .await
         .map_err(HostError::internal)?;
-    let response: SendMessageResponse =
-        serde_json::from_slice(&bytes).map_err(|e| HostError::internal(e.to_string()))?;
-    let task = response.task;
+    ok_status(&response, "message:send")?;
+    let mut task = read_send_response(&response.body)?;
+
+    // Poll while the remote task is still working (an async A2A backend returns a
+    // task before it is done), bounded so a stuck remote cannot hang forever.
+    let mut polls = 0usize;
+    while matches!(task.status.state, TaskState::Working) {
+        if polls >= MAX_TASK_POLLS {
+            return Err(HostError::internal(
+                "remote A2A task did not reach a terminal state in time",
+            ));
+        }
+        polls += 1;
+        let path = format!("/v1/a2a/tasks/{}", task.id);
+        let response = transport
+            .request("GET", &path, None)
+            .await
+            .map_err(HostError::internal)?;
+        ok_status(&response, "tasks/get")?;
+        task = read_task(&response.body)?;
+        if matches!(task.status.state, TaskState::Working) {
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
+
     match task.status.state {
         TaskState::Completed => Ok(task
             .status
@@ -87,8 +158,8 @@ async fn delegate_over_a2a(
         TaskState::InputRequired => Err(HostError::bad_request(
             "remote A2A agent requires further input",
         )),
-        TaskState::Working => Err(HostError::internal("remote A2A agent is still working")),
         TaskState::Failed => Err(HostError::internal("remote A2A agent failed")),
+        TaskState::Working => unreachable!("loop exits only on a terminal state"),
     }
 }
 
