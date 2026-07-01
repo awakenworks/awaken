@@ -107,6 +107,19 @@ async function main() {
     );
     console.log('  ok: unknown session -> 404 + not_found_error envelope');
 
+    // --- errors: a malformed body is rejected in the same envelope shape ---
+    const bad = await fetch(`http://${ADDR}/v1/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{ not valid json',
+    });
+    assert.equal(bad.status, 400);
+    const badBody = await bad.json();
+    assert.equal(badBody.type, 'error');
+    assert.equal(badBody.error.type, 'invalid_request_error');
+    assert.ok(badBody.error.message, 'decode-failure message is populated');
+    console.log('  ok: malformed body -> 400 + invalid_request_error envelope');
+
     console.log('E2E PASS: Managed Agents lifecycle/messages/stream/errors via TS SDK.');
     process.exitCode = 0;
   } catch (err) {

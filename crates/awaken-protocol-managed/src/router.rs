@@ -7,7 +7,8 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{FromRequest, Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::{get, post};
@@ -19,6 +20,35 @@ use crate::dto::{
     Session,
 };
 use crate::state::{ManagedState, RunErrorKind, StateError};
+
+/// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
+/// (malformed JSON, missing/mistyped field, wrong content-type) it returns the
+/// Anthropic error envelope (`invalid_request_error`) instead of axum's default
+/// plain-text rejection, so the SDK parses the failure like any other API error.
+/// Using it only in this router keeps the behavior confined to the managed surface.
+struct ManagedJson<T>(T);
+
+#[async_trait::async_trait]
+impl<S, T> FromRequest<S> for ManagedJson<T>
+where
+    Json<T>: FromRequest<S, Rejection = JsonRejection>,
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, Json<ErrorResponse>);
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(Self(value)),
+            Err(rejection) => Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "invalid_request_error",
+                    rejection.body_text(),
+                )),
+            )),
+        }
+    }
+}
 
 /// Build the Managed Agents router. Mount it at the server root; the paths are the
 /// public `/v1/sessions...` surface the SDK expects.
@@ -56,7 +86,7 @@ fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
 
 async fn create_session(
     State(state): State<Arc<ManagedState>>,
-    Json(req): Json<CreateSessionRequest>,
+    ManagedJson(req): ManagedJson<CreateSessionRequest>,
 ) -> Json<Session> {
     Json(state.create_session(req))
 }
@@ -71,7 +101,7 @@ async fn retrieve_session(
 async fn send_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-    Json(req): Json<SendEventsRequest>,
+    ManagedJson(req): ManagedJson<SendEventsRequest>,
 ) -> Result<Json<SendEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
     state
         .send_events(&id, req)
