@@ -353,11 +353,30 @@ async fn drive(
 
     // The agent's configured ceiling guards against a non-terminating tool cycle;
     // a natural-end text turn ends the loop earlier.
+    //
+    // A plugin whose tool set is dynamic (e.g. an MCP server firing
+    // `tools/list_changed`) advances its `live_version`; when it changes, the
+    // execution environment is re-resolved at this step boundary so the model
+    // sees the current tool face. Static runs never re-resolve (version stays
+    // `None`), so this is zero-overhead for them.
+    let mut live_env: Option<ResolvedExecutionEnv> = None;
+    let mut last_live_version = runtime.active_live_version(&resolved.spec.plugin_ids);
     for step in 0..resolved.spec.max_steps {
         if context.is_cancelled() {
             end = Some(End::Ended(EndCause::Cancelled));
             break;
         }
+
+        let current_live_version = runtime.active_live_version(&resolved.spec.plugin_ids);
+        if current_live_version != last_live_version {
+            // Best-effort: a failed re-resolution keeps the prior environment
+            // rather than aborting the run.
+            if let Ok(refreshed) = runtime.resolve_plugin_env(&resolved.spec.plugin_ids) {
+                live_env = Some(refreshed);
+            }
+            last_live_version = current_live_version;
+        }
+        let env: &ResolvedExecutionEnv = live_env.as_ref().unwrap_or(env);
 
         // Phase hooks contribute state through the commit path only (G9/G30).
         run_phase_hooks(
@@ -377,7 +396,7 @@ async fn drive(
         )
         .await;
 
-        let request = build_chat_request(&resolved.spec, &transcript);
+        let request = build_chat_request(&resolved.spec, &transcript, &env.dynamic_descriptors());
         // A transient inference failure retries with backoff; a permanent failure
         // (or exhausted retries) commits a typed terminal reason (G26).
         let response =
@@ -470,7 +489,7 @@ async fn drive(
                 audit.push(permission_audit(&call, &outcome));
             }
             let output = match outcome {
-                GateOutcome::Allow => execute_tool(runtime, &call).await,
+                GateOutcome::Allow => execute_tool(runtime, Some(env), &call).await,
                 GateOutcome::Block { reason } => {
                     ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
                 }
@@ -761,7 +780,7 @@ async fn resume_into_messages(
                     tool_id: pending.tool_id.clone(),
                     arguments: pending.arguments.clone(),
                 };
-                let output = execute_tool(runtime, &call).await;
+                let output = execute_tool(runtime, None, &call).await;
                 let state = output.state.clone();
                 (
                     vec![tool_result_message_from(&call_id, &output.content)],
@@ -805,9 +824,19 @@ async fn gate_decision(runtime: &Runtime, call: &ToolCall) -> GateOutcome {
 }
 
 /// Invoke an authorized tool, turning a missing tool or a tool error into a
-/// model-visible error result rather than aborting the run.
-async fn execute_tool(runtime: &Runtime, call: &ToolCall) -> ToolOutput {
-    match runtime.tool(&call.tool_id) {
+/// model-visible error result rather than aborting the run. A plugin-contributed
+/// dynamic tool (from `env`) takes precedence over the static registry, so an
+/// MCP server's live tools resolve; `env` is `None` on the resume path, which
+/// only re-runs a statically registered pending tool.
+async fn execute_tool(
+    runtime: &Runtime,
+    env: Option<&ResolvedExecutionEnv>,
+    call: &ToolCall,
+) -> ToolOutput {
+    let tool = env
+        .and_then(|env| env.dynamic_tool(&call.tool_id))
+        .or_else(|| runtime.tool(&call.tool_id).cloned());
+    match tool {
         Some(tool) => match tool.invoke(call.clone()).await {
             Ok(output) => output,
             Err(err) => ToolOutput::error(&call.call_id, err.to_string()),
@@ -817,8 +846,14 @@ async fn execute_tool(runtime: &Runtime, call: &ToolCall) -> ToolOutput {
 }
 
 /// Build a model request from the resolved binding, transcript, and visible
-/// tool descriptors.
-pub(crate) fn build_chat_request(spec: &ResolvedSpec, transcript: &[Message]) -> ChatRequest {
+/// tool descriptors. `dynamic` carries any plugin-contributed tools live for
+/// this step (e.g. an MCP server's current tool set), merged after the pinned
+/// config descriptors so the model sees both.
+pub(crate) fn build_chat_request(
+    spec: &ResolvedSpec,
+    transcript: &[Message],
+    dynamic: &[ToolDescriptor],
+) -> ChatRequest {
     // The agent's instructions lead the request as a system message, ahead of the
     // transcript. Empty instructions contribute no system message.
     let mut messages = Vec::with_capacity(transcript.len() + 1);
@@ -829,10 +864,16 @@ pub(crate) fn build_chat_request(spec: &ResolvedSpec, transcript: &[Message]) ->
         });
     }
     messages.extend(transcript.iter().map(to_chat_message));
+    let tools = spec
+        .tool_descriptors
+        .iter()
+        .chain(dynamic.iter())
+        .map(to_tool_schema)
+        .collect();
     ChatRequest {
         model_binding: spec.model_binding.clone(),
         messages,
-        tools: spec.tool_descriptors.iter().map(to_tool_schema).collect(),
+        tools,
     }
 }
 
@@ -1001,7 +1042,7 @@ mod tests {
 
     #[test]
     fn instructions_lead_the_request_as_a_system_message() {
-        let request = build_chat_request(&spec("be helpful"), &[user_message()]);
+        let request = build_chat_request(&spec("be helpful"), &[user_message()], &[]);
         assert_eq!(request.messages.len(), 2);
         assert!(matches!(request.messages[0].role, ChatRole::System));
         assert_eq!(
@@ -1013,7 +1054,7 @@ mod tests {
 
     #[test]
     fn empty_instructions_contribute_no_system_message() {
-        let request = build_chat_request(&spec(""), &[user_message()]);
+        let request = build_chat_request(&spec(""), &[user_message()], &[]);
         assert_eq!(request.messages.len(), 1);
         assert!(matches!(request.messages[0].role, ChatRole::User));
     }
