@@ -22,6 +22,8 @@ pub mod config;
 pub mod error;
 pub mod id_mapping;
 pub mod jsonrpc;
+pub mod progress;
+mod router;
 pub mod stdio;
 pub mod tool;
 pub mod transport;
@@ -31,9 +33,10 @@ pub use client::{McpConnection, connect_tools};
 pub use config::{McpServerConnectionConfig, TransportTypeId};
 pub use error::McpError;
 pub use id_mapping::to_tool_id;
+pub use progress::{McpProgressUpdate, normalize_progress};
 pub use stdio::{DEFAULT_TIMEOUT, StdioTransport};
 pub use tool::{McpRawTool, mcp_tool_descriptor};
-pub use transport::McpToolTransport;
+pub use transport::{ListChangedKind, McpToolTransport};
 pub use types::{
     McpPromptArgument, McpPromptDefinition, McpPromptMessage, McpPromptResult,
     McpResourceDefinition,

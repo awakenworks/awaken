@@ -70,4 +70,35 @@ async fn everything_server_echo_round_trips() {
         .await
         .expect("read resource");
     assert!(read.is_object() || read.is_array() || read.is_string());
+
+    // The long-running-operation tool emits progress notifications; assert at
+    // least one reaches the per-call channel. The call drops its progress sender
+    // when it returns, so this loop drains the buffer and then ends. The wire
+    // name (not the sanitized id) must be used for the call.
+    let tools = conn_transport.list_tools().await.expect("list tools");
+    let lro = tools
+        .iter()
+        .find(|t| {
+            awaken_ext_mcp::to_tool_id("everything", &t.name)
+                .ok()
+                .as_deref()
+                == Some("mcp__everything__trigger_long_running_operation")
+        })
+        .expect("long-running-operation tool present");
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let result = conn_transport
+        .call_tool_with_progress(
+            &lro.name,
+            serde_json::json!({ "duration": 1, "steps": 3 }),
+            tx,
+        )
+        .await
+        .expect("long op runs");
+    assert!(!result.is_error.unwrap_or(false), "{:?}", result.content);
+    let mut progress_count = 0usize;
+    while let Some(update) = rx.recv().await {
+        assert!(update.progress >= 0.0);
+        progress_count += 1;
+    }
+    assert!(progress_count >= 1, "received at least one progress update");
 }
