@@ -59,6 +59,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/tool-and-capability.md` | Runtime-owned | Capability segmentation, neutral ToolExecutor port, builtin-tools placement, unified delegation tool, and permission boundary |
 | `design/run-ingress-message-delivery.md` | Boundary-only | Dispatch/server boundary for run ingress, durable delivery, pending input, and message handoff |
 | `design/anthropic-alignment-and-sessions.md` | Product-owned | Downstream product adapter guidance |
+| `design/awaken-server-local-overview.md` | Product-owned | Single-machine assembly overview; navigation map linking component owners; sandbox/relay, managed adapter, and goal are to-build |
 | `design/credentials-and-vaults.md` | Product-owned | Credential/product concern; runtime sees opaque refs only |
 | `design/resources-memory-files-skills.md` | Product-owned | Resource data plane and out-of-process execution stay outside runtime core |
 | `design/observability-eval-dataset-boundary.md` | Boundary-only | Separates traces, datasets, eval, and analytics from runtime truth |
@@ -99,6 +100,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/tool-and-capability.md` | Role owner | Required | self |
 | `design/run-ingress-message-delivery.md` | Role owner | Required | self |
 | `design/anthropic-alignment-and-sessions.md` | Product/downstream mapping | Not required | n/a |
+| `design/awaken-server-local-overview.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
 | `design/resources-memory-files-skills.md` | Product/downstream mapping | Not required | n/a |
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
@@ -137,6 +139,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0031-config-store.md` | Decision record | Not required | n/a |
 | `adr/0032-runnable-config.md` | Decision record | Not required | n/a |
 | `adr/0033-in-process-run-driver.md` | Decision record | Not required | n/a |
+| `adr/0034-runtime-axis-model-and-orthogonality.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
