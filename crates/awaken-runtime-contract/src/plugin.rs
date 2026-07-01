@@ -18,6 +18,9 @@ use awaken_agent_contract::agent::state::Command as StateCommand;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::resolved::ToolDescriptor;
+use crate::tool::RawTool;
+
 /// The phases a hook can observe in one model/tool step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PhaseHookPoint {
@@ -39,6 +42,11 @@ pub struct CapabilityBound {
     pub action_kinds: Vec<String>,
     /// Run-end continuation guard ids this plugin may contribute.
     pub run_end_guards: Vec<String>,
+    /// Id *prefixes* a plugin may contribute dynamic tools under. A dynamic
+    /// tool's id must start with one of these — the namespace bound that keeps a
+    /// plugin whose tool ids are not known at composition time (e.g. an MCP
+    /// server's `tools/list_changed` set) honest under G30.
+    pub tool_namespaces: Vec<String>,
 }
 
 /// Declared plugin identity and bound. One `validate`-able home for config.
@@ -109,6 +117,16 @@ pub trait RunEndGuard: Send + Sync {
     async fn evaluate(&self, ctx: &RunEndContext<'_>) -> RunEndDecision;
 }
 
+/// A tool contributed with its executable behavior and descriptor. Used by
+/// plugins whose tool set is dynamic (e.g. an MCP server's live tools), where
+/// the id is not known at composition time and so cannot be pre-registered on
+/// the runtime like a static built-in tool.
+#[derive(Clone)]
+pub struct DynamicTool {
+    pub descriptor: ToolDescriptor,
+    pub tool: Arc<dyn RawTool>,
+}
+
 /// One plugin's resolved contributions. Built once by `Plugin::resolve`; holds
 /// live hook behavior, so it is runtime-side wiring, not serialized truth.
 #[derive(Clone)]
@@ -121,6 +139,8 @@ pub struct Contributions {
     pub action_kinds: Vec<String>,
     /// Run-end continuation guards this plugin contributes.
     pub run_end_guards: Vec<Arc<dyn RunEndGuard>>,
+    /// Tools contributed with their executable behavior, for dynamic tool sets.
+    pub dynamic_tools: Vec<DynamicTool>,
 }
 
 impl Contributions {
@@ -132,6 +152,7 @@ impl Contributions {
             phase_hooks: Vec::new(),
             action_kinds: Vec::new(),
             run_end_guards: Vec::new(),
+            dynamic_tools: Vec::new(),
         }
     }
 }
@@ -141,6 +162,14 @@ impl Contributions {
 pub trait Plugin: Send + Sync {
     fn manifest(&self) -> PluginManifest;
     fn resolve(&self) -> Contributions;
+
+    /// A monotonically advancing version for a plugin whose contributions can
+    /// change during a run (e.g. an MCP server firing `tools/list_changed`).
+    /// The runtime re-resolves the plugin at a safe step boundary when this
+    /// advances. `None` (the default) means the plugin is static.
+    fn live_version(&self) -> Option<u64> {
+        None
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -210,6 +239,20 @@ pub fn enforce_bound(
             });
         }
     }
+    for dynamic in &contributions.dynamic_tools {
+        let id = dynamic.tool.id();
+        let permitted = manifest
+            .bound
+            .tool_namespaces
+            .iter()
+            .any(|ns| id.starts_with(ns.as_str()));
+        if !permitted {
+            return Err(BoundViolation::Tool {
+                plugin: manifest.id.clone(),
+                id: id.to_string(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -249,6 +292,10 @@ pub struct ResolvedExecutionEnv {
     /// Run-end continuation guards the selected plugins contribute, in dependency
     /// order. Consulted at the natural-end boundary.
     pub run_end_guards: Vec<Arc<dyn RunEndGuard>>,
+    /// Dynamic tools (descriptor + executable) contributed by the selected
+    /// plugins, in dependency order. Merged into the model-visible tool face and
+    /// consulted for execution alongside the runtime's static tool registry.
+    pub dynamic_tools: Vec<DynamicTool>,
 }
 
 impl ResolvedExecutionEnv {
@@ -280,6 +327,7 @@ impl ResolvedExecutionEnv {
         let mut state_keys: Vec<String> = Vec::new();
         let mut phase_hooks: Vec<Arc<dyn PhaseHook>> = Vec::new();
         let mut run_end_guards: Vec<Arc<dyn RunEndGuard>> = Vec::new();
+        let mut dynamic_tools: Vec<DynamicTool> = Vec::new();
         let mut action_kinds: Vec<String> = Vec::new();
         let mut action_owner: std::collections::BTreeMap<String, String> =
             std::collections::BTreeMap::new();
@@ -299,6 +347,18 @@ impl ResolvedExecutionEnv {
                 }
                 tool_owner.insert(tool.clone(), id.clone());
                 tools.push(tool.clone());
+            }
+            for dynamic in &contributions.dynamic_tools {
+                let tool_id = dynamic.tool.id().to_string();
+                if let Some(first) = tool_owner.get(&tool_id) {
+                    return Err(MergeError::DuplicateTool {
+                        id: tool_id,
+                        first: first.clone(),
+                        second: id.clone(),
+                    });
+                }
+                tool_owner.insert(tool_id, id.clone());
+                dynamic_tools.push(dynamic.clone());
             }
             for key in &contributions.state_keys {
                 if !state_keys.contains(key) {
@@ -327,6 +387,7 @@ impl ResolvedExecutionEnv {
             phase_hooks,
             action_kinds,
             run_end_guards,
+            dynamic_tools,
         })
     }
 
@@ -334,6 +395,23 @@ impl ResolvedExecutionEnv {
     /// fail-closed check before staging a kind-based scheduled action (ADR-0027).
     pub fn permits_action_kind(&self, kind: &str) -> bool {
         self.action_kinds.iter().any(|k| k == kind)
+    }
+
+    /// The descriptors of all contributed dynamic tools, in dependency order —
+    /// merged into the model-visible tool face for a step.
+    pub fn dynamic_descriptors(&self) -> Vec<ToolDescriptor> {
+        self.dynamic_tools
+            .iter()
+            .map(|d| d.descriptor.clone())
+            .collect()
+    }
+
+    /// Look up a dynamic tool's executable behavior by id.
+    pub fn dynamic_tool(&self, id: &str) -> Option<Arc<dyn RawTool>> {
+        self.dynamic_tools
+            .iter()
+            .find(|d| d.tool.id() == id)
+            .map(|d| Arc::clone(&d.tool))
     }
 
     /// Hooks registered for one phase point, in dependency order.
@@ -562,5 +640,81 @@ mod tests {
         assert_eq!(env.hooks_for(PhaseHookPoint::StepStart).len(), 1);
         assert_eq!(env.hooks_for(PhaseHookPoint::StepEnd).len(), 1);
         assert_eq!(env.hooks_for(PhaseHookPoint::BeforeInference).len(), 0);
+    }
+
+    struct FakeRawTool(&'static str);
+
+    #[async_trait]
+    impl crate::tool::RawTool for FakeRawTool {
+        fn id(&self) -> &str {
+            self.0
+        }
+        async fn invoke(
+            &self,
+            call: crate::tool::ToolCall,
+        ) -> Result<crate::tool::ToolOutput, crate::tool::ToolError> {
+            Ok(crate::tool::ToolOutput::ok(call.call_id, "ok"))
+        }
+    }
+
+    fn dynamic_tool(id: &'static str) -> DynamicTool {
+        DynamicTool {
+            descriptor: crate::resolved::ToolDescriptor::pinned(
+                "mcp",
+                id,
+                "a dynamic tool",
+                serde_json::json!({ "type": "object" }),
+            ),
+            tool: Arc::new(FakeRawTool(id)),
+        }
+    }
+
+    #[test]
+    fn enforce_bound_accepts_a_dynamic_tool_within_its_namespace() {
+        let m = manifest(
+            "p",
+            CapabilityBound {
+                tool_namespaces: vec!["mcp__srv__".into()],
+                ..Default::default()
+            },
+        );
+        let mut c = Contributions::new("p");
+        c.dynamic_tools.push(dynamic_tool("mcp__srv__echo"));
+        assert!(enforce_bound(&m, &c).is_ok());
+    }
+
+    #[test]
+    fn enforce_bound_rejects_a_dynamic_tool_outside_its_namespace() {
+        let m = manifest(
+            "p",
+            CapabilityBound {
+                tool_namespaces: vec!["mcp__srv__".into()],
+                ..Default::default()
+            },
+        );
+        let mut c = Contributions::new("p");
+        c.dynamic_tools.push(dynamic_tool("other__x"));
+        assert!(matches!(
+            enforce_bound(&m, &c),
+            Err(BoundViolation::Tool { .. })
+        ));
+    }
+
+    #[test]
+    fn merge_exposes_dynamic_descriptors_and_lookup() {
+        let m = manifest(
+            "p",
+            CapabilityBound {
+                tool_namespaces: vec!["mcp__srv__".into()],
+                ..Default::default()
+            },
+        );
+        let mut c = Contributions::new("p");
+        c.dynamic_tools.push(dynamic_tool("mcp__srv__echo"));
+        let env = ResolvedExecutionEnv::merge(vec![(m, c)]).expect("merges");
+        assert_eq!(env.dynamic_descriptors().len(), 1);
+        assert_eq!(env.dynamic_descriptors()[0].id, "mcp__srv__echo");
+        assert!(env.dynamic_tool("mcp__srv__echo").is_some());
+        assert!(env.dynamic_tool("missing").is_none());
     }
 }
