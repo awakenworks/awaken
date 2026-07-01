@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
-use awaken_server_local::{EchoModel, build_custom_router, build_router};
+use awaken_server_local::{EchoModel, build_custom_router, build_delegation_router, build_router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -503,6 +503,61 @@ async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
     let list = confirm(&app, &id, "w").await;
     assert!(read_result_text(&list).contains("HELLO"));
     assert!(!read_result_text(&list).contains("forged"));
+}
+
+/// Every agent text a turn produced: assistant messages and tool results.
+fn all_agent_text(list: &serde_json::Value) -> String {
+    list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message" || e["type"] == "agent.tool_result")
+        .filter_map(|e| e["content"][0]["text"].as_str())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+#[tokio::test]
+async fn delegation_runs_a_subagent_and_returns_its_result() {
+    let app = build_delegation_router();
+    let id = create_session(&app).await;
+    let list = send_message(&app, &id, "research the answer").await;
+
+    // `agent_run` is allowed inline: a sub-run executes and its result flows back.
+    let msgs: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("delegate said: researched: 42")),
+        "sub-agent output reached the main agent: {msgs:?}"
+    );
+    assert_eq!(
+        list["data"].as_array().unwrap().last().unwrap()["stop_reason"]["type"],
+        "end_turn"
+    );
+}
+
+#[tokio::test]
+async fn delegation_fails_closed_on_unrostered_agent() {
+    // `ghost` is not in the roster; the sub-run must never start.
+    let app = build_delegation_router();
+    let id = create_session(&app).await;
+    let list = send_message(&app, &id, "use the ghost agent").await;
+
+    let text = all_agent_text(&list);
+    assert!(
+        text.contains("roster"),
+        "roster rejection is surfaced: {text}"
+    );
+    assert!(
+        !text.contains("researched: 42"),
+        "no sub-run output leaked: {text}"
+    );
 }
 
 /// A model that reports the tool ids it was offered, so a test can assert the

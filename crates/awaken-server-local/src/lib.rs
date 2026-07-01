@@ -22,7 +22,9 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
+use awaken_ext_builtin_tools::{
+    AgentRunner, Toolset, builtin_tools, delegation_tools, executable_hand_tools,
+};
 use awaken_ext_goal::{GoalSpec, Grader, KeywordGrader, classify};
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
@@ -42,7 +44,7 @@ use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::tool::ToolOutput;
+use awaken_runtime_contract::tool::{ToolError, ToolOutput};
 use awaken_sandbox_local::{
     IsolatedRoot, LocalSandboxProvider, SandboxProvider, SandboxSpec, rooted_hand_tools,
 };
@@ -215,6 +217,73 @@ fn turn_input(system: Vec<String>, user_text: &str) -> Vec<Message> {
     messages
 }
 
+/// A deterministic model for the delegation e2e. When it holds `agent_run` it
+/// delegates (to `researcher`, or to `ghost` if the user asks for it) and then
+/// reports the delegate's result; without `agent_run` it answers plainly, so the
+/// same model serves as the delegate sub-agent.
+pub struct DelegatingModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for DelegatingModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let has_delegation = request.tools.iter().any(|t| t.id == "agent_run");
+        if !has_delegation {
+            // The delegate sub-agent: no delegation tool, so just answer.
+            return Ok(ChatResponse {
+                output: AssistantOutput::text("researched: 42"),
+                usage: None,
+            });
+        }
+        let tool_results = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .count();
+        let output = if tool_results == 0 {
+            let user = request
+                .messages
+                .iter()
+                .find(|m| m.role == ChatRole::User)
+                .map(|m| block_text(&m.content))
+                .unwrap_or_default();
+            let agent_id = if user.contains("ghost") {
+                "ghost"
+            } else {
+                "researcher"
+            };
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "d1".into(),
+                tool_id: "agent_run".into(),
+                arguments: serde_json::json!({ "agent_id": agent_id, "input": "do the research" }),
+            }])
+        } else {
+            let result = request
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == ChatRole::Tool)
+                .map(|m| {
+                    m.content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolResult { content, .. } => Some(block_text(content)),
+                            _ => None,
+                        })
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            AssistantOutput::text(format!("delegate said: {result}"))
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+        })
+    }
+}
+
 fn block_text(content: &[ContentBlock]) -> String {
     content
         .iter()
@@ -238,7 +307,14 @@ fn server_policy() -> RulePermissionPolicy {
     RulePermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::Ask,
         mode: Mode::Default,
-        rules: vec![allow("read"), allow("glob"), allow("grep")],
+        // `agent_run` is a first-class capability (spawn a sub-run), allowed
+        // inline; its own roster check fails closed on an unknown delegate.
+        rules: vec![
+            allow("read"),
+            allow("glob"),
+            allow("grep"),
+            allow("agent_run"),
+        ],
     })
 }
 
@@ -271,9 +347,25 @@ fn client_tool_descriptor(id: &str) -> ToolDescriptor {
     )
 }
 
-fn server_config(model_ref: &str, client_tools: &HashSet<String>) -> RunnableConfig {
+/// The `agent_run` delegation descriptor (advertised only when a roster is set).
+fn delegation_descriptor() -> ToolDescriptor {
+    builtin_tools()
+        .into_iter()
+        .find(|t| t.toolset == Toolset::Delegation)
+        .map(|t| t.descriptor)
+        .expect("agent_run descriptor exists")
+}
+
+fn server_config(
+    model_ref: &str,
+    client_tools: &HashSet<String>,
+    delegates: &HashSet<String>,
+) -> RunnableConfig {
     let mut tools = hand_tool_descriptors();
     tools.extend(client_tools.iter().map(|id| client_tool_descriptor(id)));
+    if !delegates.is_empty() {
+        tools.push(delegation_descriptor());
+    }
     RunnableConfig::builder("assistant")
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
@@ -282,12 +374,23 @@ fn server_config(model_ref: &str, client_tools: &HashSet<String>) -> RunnableCon
         .build()
 }
 
-/// Build a per-session runtime whose hand tools are rooted in `root`.
-fn build_runtime(llm: Arc<dyn LlmExecutor>, root: IsolatedRoot) -> Runtime {
+/// Build a per-session runtime whose hand tools are rooted in `root`. When a
+/// `delegation` runner is supplied, `agent_run` is registered too, so the agent
+/// can spawn an in-process sub-run.
+fn build_runtime(
+    llm: Arc<dyn LlmExecutor>,
+    root: IsolatedRoot,
+    delegation: Option<Arc<dyn AgentRunner>>,
+) -> Runtime {
     let gate = PermissionGate::new(Arc::new(server_policy()));
     let mut runtime = Runtime::new().with_llm(llm).with_gate(Arc::new(gate));
     for tool in rooted_hand_tools(root) {
         runtime = runtime.with_tool(tool);
+    }
+    if let Some(runner) = delegation {
+        for tool in delegation_tools(runner) {
+            runtime = runtime.with_tool(tool);
+        }
     }
     runtime
 }
@@ -365,6 +468,51 @@ fn build_outcome(
     }
 }
 
+/// Backs `agent_run` with an in-process sub-run: it validates the target against
+/// the delegate roster (fail closed), then drives a fresh rooted runtime over the
+/// same model to completion and returns the delegate's last assistant line. The
+/// sub-runtime has no delegation tool, so a delegate cannot recurse.
+struct LocalAgentRunner {
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: String,
+    roster: HashSet<String>,
+    provider: LocalSandboxProvider,
+    seq: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl AgentRunner for LocalAgentRunner {
+    async fn run(&self, agent_id: &str, input: &str) -> Result<String, ToolError> {
+        if !self.roster.contains(agent_id) {
+            return Err(ToolError::Execution(format!(
+                "delegate agent {agent_id:?} is not in the roster"
+            )));
+        }
+        let n = self.seq.fetch_add(1, Ordering::SeqCst);
+        let env = self
+            .provider
+            .create(&SandboxSpec::new(format!("{agent_id}-sub-{n}")))
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let runtime = build_runtime(self.llm.clone(), env.root, None);
+        let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let thread = format!("sub-thread-{n}");
+        let ctx = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit.clone());
+        runtime
+            .run_to_completion(&config, thread.clone(), input, ctx, |_| {
+                ResumeResult::allow()
+            })
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        Ok(latest_assistant_text(
+            &commit.committed_messages(&ThreadId(thread)),
+        ))
+    }
+}
+
 /// The `SessionRuntime` implementation over the kernel. Each session is a
 /// sandboxed environment with its own rooted runtime; sessions are created lazily.
 pub struct RuntimeSession {
@@ -373,12 +521,13 @@ pub struct RuntimeSession {
     provider: LocalSandboxProvider,
     grader: Arc<dyn Grader>,
     client_tools: HashSet<String>,
+    delegates: HashSet<String>,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
 }
 
 impl RuntimeSession {
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
-        Self::with_client_tools(llm, model_ref, HashSet::new())
+        Self::configured(llm, model_ref, HashSet::new(), HashSet::new())
     }
 
     /// A session runtime with client-executed tools: those ids are model-visible
@@ -388,6 +537,25 @@ impl RuntimeSession {
         model_ref: impl Into<String>,
         client_tools: HashSet<String>,
     ) -> Self {
+        Self::configured(llm, model_ref, client_tools, HashSet::new())
+    }
+
+    /// A session runtime that can delegate to the agents in `delegates` via
+    /// `agent_run` (an in-process sub-run); calls outside the roster fail closed.
+    pub fn with_delegates(
+        llm: Arc<dyn LlmExecutor>,
+        model_ref: impl Into<String>,
+        delegates: HashSet<String>,
+    ) -> Self {
+        Self::configured(llm, model_ref, HashSet::new(), delegates)
+    }
+
+    fn configured(
+        llm: Arc<dyn LlmExecutor>,
+        model_ref: impl Into<String>,
+        client_tools: HashSet<String>,
+        delegates: HashSet<String>,
+    ) -> Self {
         let base: PathBuf = std::env::temp_dir()
             .join("awaken-server-local")
             .join(format!(
@@ -396,13 +564,35 @@ impl RuntimeSession {
                 BASE_SEQ.fetch_add(1, Ordering::SeqCst)
             ));
         Self {
-            llm: llm.clone(),
+            llm,
             model_ref: model_ref.into(),
             provider: LocalSandboxProvider::new(base),
             grader: Arc::new(KeywordGrader),
             client_tools,
+            delegates,
             sessions: tokio::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The delegation runner for a session, or `None` when no roster is set.
+    fn agent_runner(&self) -> Option<Arc<dyn AgentRunner>> {
+        if self.delegates.is_empty() {
+            return None;
+        }
+        let base: PathBuf = std::env::temp_dir()
+            .join("awaken-server-local")
+            .join(format!(
+                "{}-sub-{}",
+                std::process::id(),
+                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+            ));
+        Some(Arc::new(LocalAgentRunner {
+            llm: self.llm.clone(),
+            model_ref: self.model_ref.clone(),
+            roster: self.delegates.clone(),
+            provider: LocalSandboxProvider::new(base),
+            seq: AtomicU64::new(0),
+        }))
     }
 
     async fn ctx_for(&self, session: &str) -> Result<Arc<SessionCtx>, RunError> {
@@ -416,8 +606,8 @@ impl RuntimeSession {
             .await
             .map_err(|e| RunError::internal(e.to_string()))?;
         let ctx = Arc::new(SessionCtx {
-            runtime: build_runtime(self.llm.clone(), env.root.clone()),
-            config: server_config(&self.model_ref, &self.client_tools),
+            runtime: build_runtime(self.llm.clone(), env.root.clone(), self.agent_runner()),
+            config: server_config(&self.model_ref, &self.client_tools, &self.delegates),
             commit: Arc::new(MemoryCommitCoordinator::new()),
             thread_id: ThreadId(session.to_string()),
             state: tokio::sync::Mutex::new(SessionState::default()),
@@ -664,5 +854,14 @@ pub fn build_custom_router() -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let session =
         RuntimeSession::with_client_tools(Arc::new(CustomToolModel), "custom", client_tools);
+    router(Arc::new(ManagedState::new(session)))
+}
+
+/// A router whose agent can delegate to a `researcher` sub-agent via `agent_run`
+/// (the multi-agent e2e). `ghost` is deliberately absent from the roster so the
+/// fail-closed path can be exercised.
+pub fn build_delegation_router() -> Router {
+    let roster = HashSet::from(["researcher".to_string()]);
+    let session = RuntimeSession::with_delegates(Arc::new(DelegatingModel), "delegate", roster);
     router(Arc::new(ManagedState::new(session)))
 }
