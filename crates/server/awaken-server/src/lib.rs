@@ -11,6 +11,7 @@
 //! distribution stays out — remote relays and multi-node ingress plug in through
 //! seams, not here.
 
+mod config;
 mod delegate;
 mod host;
 mod hub;
@@ -44,7 +45,8 @@ use awaken_runtime_contract::llm::{
 };
 use axum::Router;
 
-use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult, block_text};
+use crate::config::block_text;
+use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
 
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
