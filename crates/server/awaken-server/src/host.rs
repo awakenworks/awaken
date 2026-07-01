@@ -40,9 +40,7 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::{ToolError, ToolOutput};
-use awaken_sandbox_local::{
-    IsolatedRoot, LocalSandboxProvider, SandboxProvider, SandboxSpec, rooted_hand_tools,
-};
+use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
 
 use crate::hub::{ThreadEvent, ThreadEventHub};
 
@@ -227,16 +225,18 @@ fn server_config(
         .build()
 }
 
-/// Build a per-thread runtime whose hand tools are rooted in `root`. When a
-/// `delegation` runner is supplied, `agent_run` is registered too.
+/// Build a per-thread runtime whose hand tools come from `env` — placement-agnostic:
+/// the host registers whatever tools the environment yields (rooted in-process
+/// today, relay-into-a-sandbox for a distributed provider). When a `delegation`
+/// runner is supplied, `agent_run` is registered too.
 fn build_runtime(
     llm: Arc<dyn LlmExecutor>,
-    root: IsolatedRoot,
+    env: &Environment,
     delegation: Option<Arc<dyn AgentRunner>>,
 ) -> Runtime {
     let gate = PermissionGate::new(Arc::new(server_policy()));
     let mut runtime = Runtime::new().with_llm(llm).with_gate(Arc::new(gate));
-    for tool in rooted_hand_tools(root) {
+    for tool in env.hand_tools() {
         runtime = runtime.with_tool(tool);
     }
     if let Some(runner) = delegation {
@@ -259,16 +259,16 @@ struct SessionState {
 }
 
 /// One thread's live state: an isolated runtime, its config, its commit
-/// coordinator (the source of committed truth), its sandbox root, and its
+/// coordinator (the source of committed truth), its sandbox environment, and its
 /// position.
 struct SessionCtx {
     runtime: Runtime,
     config: RunnableConfig,
     commit: Arc<MemoryCommitCoordinator>,
     thread_id: ThreadId,
-    /// The thread's isolated sandbox root, reused to build a goal-enabled runtime
-    /// for `define_outcome` (same tools, same root).
-    root: IsolatedRoot,
+    /// The thread's sandbox environment, reused to build a goal-enabled runtime
+    /// for `define_outcome` (same tools, same environment).
+    env: Environment,
     state: tokio::sync::Mutex<SessionState>,
 }
 
@@ -306,7 +306,7 @@ impl AgentRunner for LocalAgentRunner {
             .create(&SandboxSpec::new(format!("{agent_id}-sub-{n}")))
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let runtime = build_runtime(self.llm.clone(), env.root, None);
+        let runtime = build_runtime(self.llm.clone(), &env, None);
         let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let thread = format!("sub-thread-{n}");
@@ -354,7 +354,7 @@ impl DelegateRunner for KernelJudgeRunner {
             .create(&SandboxSpec::new(format!("{}-judge-{n}", request.agent_id)))
             .await
             .map_err(|e| DelegateError(e.to_string()))?;
-        let runtime = build_runtime(self.llm.clone(), env.root, None);
+        let runtime = build_runtime(self.llm.clone(), &env, None);
         let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let thread = format!("judge-thread-{n}");
@@ -508,12 +508,13 @@ impl SharedHost {
             .create(&SandboxSpec::new(thread))
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
+        let runtime = build_runtime(self.llm.clone(), &env, self.agent_runner());
         let ctx = Arc::new(SessionCtx {
-            runtime: build_runtime(self.llm.clone(), env.root.clone(), self.agent_runner()),
+            runtime,
             config: server_config(&self.model_ref, &self.client_tools, &self.delegates, &[]),
             commit: Arc::new(MemoryCommitCoordinator::new()),
             thread_id: ThreadId(thread.to_string()),
-            root: env.root.clone(),
+            env,
             state: tokio::sync::Mutex::new(SessionState::default()),
         });
         sessions.insert(thread.to_string(), ctx.clone());
@@ -651,8 +652,8 @@ impl SharedHost {
         // The runtime owns the grade->revise loop: a goal-enabled runtime whose
         // run-end guard steers revisions until the goal is met or the budget is
         // spent. The host drives one run and projects the rounds it committed. The
-        // guard shares the thread's committed history and sandbox root.
-        let goal_runtime = build_runtime(self.llm.clone(), ctx.root.clone(), self.agent_runner())
+        // guard shares the thread's committed history and sandbox environment.
+        let goal_runtime = build_runtime(self.llm.clone(), &ctx.env, self.agent_runner())
             .with_plugin(Arc::new(GoalPlugin::new(goal, self.grader.clone())));
         let config = server_config(
             &self.model_ref,
