@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_protocol_a2a::{SendMessageResponse, Task, TaskState};
+use awaken_protocol_a2a::{AgentCard, SendMessageResponse, Task, TaskState};
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
@@ -259,18 +259,34 @@ async fn poll_to_terminal(
     }
 
     match task.status.state {
-        TaskState::Completed => Ok(DelegateOutcome::Done(
-            task.status
-                .message
-                .map(|message| message.text())
-                .unwrap_or_default(),
-        )),
+        TaskState::Completed => Ok(DelegateOutcome::Done(completed_reply(&task))),
         // The remote agent asked for more input: park the parent so the user can
         // supply it (delivered as a follow-up `message:send` on the same context).
         TaskState::InputRequired => Ok(DelegateOutcome::NeedsInput),
         TaskState::Failed => Err(HostError::internal("remote A2A agent failed")),
         TaskState::Working => unreachable!("loop exits only on a terminal state"),
     }
+}
+
+/// The reply text of a completed task: the status message plus any artifact text
+/// the remote produced (A2A `TextAndArtifacts`).
+fn completed_reply(task: &Task) -> String {
+    let mut reply = task
+        .status
+        .message
+        .as_ref()
+        .map(|message| message.text())
+        .unwrap_or_default();
+    for artifact in &task.artifacts {
+        let text = artifact.text();
+        if !text.is_empty() {
+            if !reply.is_empty() {
+                reply.push('\n');
+            }
+            reply.push_str(&text);
+        }
+    }
+    reply
 }
 
 /// Best-effort cancel of a remote A2A task (A2A `tasks:cancel`). Failures are
@@ -356,6 +372,22 @@ impl SharedHost {
         let outcome = poll_to_terminal(transport.as_ref(), task, cancellation).await;
         self.clear_remote_handle(thread);
         outcome
+    }
+
+    /// Fetch a remote delegate's A2A agent card (discovery): its advertised name,
+    /// version, capabilities, and skills. Fails if the agent is not a registered
+    /// remote.
+    pub async fn remote_agent_card(&self, agent_id: &str) -> Result<AgentCard, HostError> {
+        let transport = self.remote_agents.get(agent_id).ok_or_else(|| {
+            HostError::internal(format!("agent {agent_id:?} is not a remote agent"))
+        })?;
+        let response = transport
+            .request("GET", "/v1/a2a/agent-card", None)
+            .await
+            .map_err(HostError::internal)?;
+        ok_status(&response, "agent-card")?;
+        serde_json::from_slice::<AgentCard>(&response.body)
+            .map_err(|e| HostError::internal(e.to_string()))
     }
 
     /// Run a delegate to completion and return its last reply, failing closed when

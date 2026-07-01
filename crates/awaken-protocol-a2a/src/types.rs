@@ -99,6 +99,31 @@ pub struct Task {
     pub status: TaskStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<Message>,
+    /// Durable outputs a completed task produced (A2A `artifacts`). This slice
+    /// carries their text parts; richer artifact kinds are omitted until needed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<Artifact>,
+}
+
+/// A task artifact: a named, durable output made of parts (text only here).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Artifact {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Part>,
+}
+
+impl Artifact {
+    /// The concatenated text of this artifact's text parts.
+    pub fn text(&self) -> String {
+        self.parts
+            .iter()
+            .filter_map(|part| part.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("")
+    }
 }
 
 /// The `message:send` request body.
@@ -273,10 +298,15 @@ mod tests {
                 message: Some(Message::agent_text("s", "done")),
             },
             history: vec![Message::agent_text("a1", "done")],
+            artifacts: vec![Artifact {
+                name: Some("out".into()),
+                parts: vec![Part::text("artifact body")],
+            }],
         };
         let value = serde_json::to_value(&task).unwrap();
         // A2A uses camelCase on the wire; the state carries its enum token.
         assert!(value.get("contextId").is_some());
+        assert_eq!(value["artifacts"][0]["parts"][0]["text"], "artifact body");
         assert_eq!(value["status"]["state"], "TASK_STATE_COMPLETED");
         let parsed: Task = serde_json::from_value(value).unwrap();
         assert_eq!(parsed, task);
