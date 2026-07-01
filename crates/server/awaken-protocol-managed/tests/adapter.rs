@@ -670,14 +670,102 @@ async fn retrieve_session_and_sse_event_names() {
     assert!(sse.contains("event: session.status_idle"), "sse: {sse}");
 }
 
+/// Read a response's status and JSON body.
+async fn raw_call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Body,
+) -> (StatusCode, serde_json::Value) {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, json)
+}
+
 #[tokio::test]
-async fn unknown_session_is_404() {
+async fn unknown_session_is_404_with_error_envelope() {
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let (status, body) = raw_call(&app, "GET", "/v1/sessions/nope/events", Body::empty()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // The Anthropic error envelope the SDK parses.
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "not_found_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty()),
+        "message is populated: {body}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_body_is_400_with_error_envelope() {
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    // Syntactically broken JSON on a managed route.
+    let (status, body) = raw_call(&app, "POST", "/v1/sessions", Body::from("{ not json ")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn missing_content_type_is_400_with_error_envelope() {
+    // A body without `content-type: application/json` is rejected as an invalid
+    // request in the envelope shape (not axum's plain-text default).
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let req = Request::builder()
-        .method("GET")
-        .uri("/v1/sessions/nope/events")
-        .body(Body::empty())
+        .method("POST")
+        .uri("/v1/sessions")
+        .body(Body::from("{}"))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+}
+
+#[tokio::test]
+async fn caller_fault_is_400_with_invalid_request_envelope() {
+    // A caller-fault RunError -> 400 + the invalid_request envelope.
+    let app = router(Arc::new(ManagedState::new(FailingFake(
+        RunErrorKind::BadRequest,
+    ))));
+    let id = create(&app).await;
+    let (status, body) = raw_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        Body::from(
+            serde_json::to_vec(&serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }))
+                .unwrap(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty())
+    );
 }
