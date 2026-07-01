@@ -1,12 +1,10 @@
-//! Task and delegation tools over fake service ports — the tool surface in
-//! isolation from any runtime backing.
+//! Task tools over fake service ports — the tool surface in isolation from any
+//! runtime backing.
 
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use awaken_ext_builtin_tools::{
-    AgentRunner, MessageRecovery, MessageSender, TaskCanceller, delegation_tools, task_tools,
-};
+use awaken_ext_builtin_tools::{MessageRecovery, MessageSender, TaskCanceller, task_tools};
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError};
 
 fn call(id: &str, args: serde_json::Value) -> ToolCall {
@@ -57,17 +55,6 @@ struct FixedRecovery(&'static str);
 impl MessageRecovery for FixedRecovery {
     async fn recover(&self) -> Result<String, ToolError> {
         Ok(self.0.to_string())
-    }
-}
-
-struct EchoRunner;
-#[async_trait::async_trait]
-impl AgentRunner for EchoRunner {
-    async fn run(&self, agent_id: &str, input: &str) -> Result<String, ToolError> {
-        if agent_id == "unknown" {
-            return Err(ToolError::Execution("agent not in roster".to_string()));
-        }
-        Ok(format!("{agent_id} handled: {input}"))
     }
 }
 
@@ -179,30 +166,4 @@ async fn recover_failed_messages_takes_no_args_and_returns_a_summary() {
         .await
         .expect("recover");
     assert_eq!(out.content, "recovered 2 messages");
-}
-
-#[tokio::test]
-async fn agent_run_returns_the_delegate_result() {
-    let tools = delegation_tools(Arc::new(EchoRunner));
-    let out = find(&tools, "agent_run")
-        .invoke(call(
-            "agent_run",
-            serde_json::json!({ "agent_id": "researcher", "input": "find X" }),
-        ))
-        .await
-        .expect("agent_run");
-    assert_eq!(out.content, "researcher handled: find X");
-}
-
-#[tokio::test]
-async fn agent_run_fails_closed_on_unknown_agent() {
-    let tools = delegation_tools(Arc::new(EchoRunner));
-    let err = find(&tools, "agent_run")
-        .invoke(call(
-            "agent_run",
-            serde_json::json!({ "agent_id": "unknown", "input": "x" }),
-        ))
-        .await
-        .expect_err("not in roster");
-    assert!(matches!(err, ToolError::Execution(_)));
 }
