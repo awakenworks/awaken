@@ -1,11 +1,13 @@
 //! `awaken-ext-goal` — goal / outcome evaluation as an extension (never in the
-//! kernel, ADR-0034 D6 / ADR-0062). A run reaches a terminal deliverable; a
-//! [`Grader`] judges it against a [`GoalSpec`]; if it needs revision an
-//! above-kernel coordinator re-dispatches a round with feedback, bounded by
-//! `max_iterations`. The kernel knows none of this — it just runs turns.
+//! kernel). At a run's natural end a [`GoalGuard`] judges the deliverable against
+//! a [`GoalSpec`] through a [`Grader`]; if it needs revision the guard steers one
+//! more turn with feedback, bounded by `max_iterations`. The runtime owns *when*
+//! the loop stops (the run-end guard hook); this crate owns the break decision.
 //!
-//! The neutral crate owns the vocabulary and the grader contract; the loop that
-//! re-dispatches turns lives in the host (server), which drives the runtime.
+//! The grader is async: [`KeywordGrader`] is a deterministic offline judge, while
+//! [`DelegateGrader`] runs a real judge sub-agent through a host-supplied
+//! [`DelegateRunner`]. This crate depends only on the runtime contract; the host
+//! wires the concrete delegation.
 
 use std::sync::Arc;
 
@@ -22,6 +24,21 @@ use serde_json::Value;
 /// bound all share this one constant.
 const GOAL_PLUGIN_ID: &str = "goal";
 
+/// Which agent judges the deliverable (used by a delegating grader). A goal that
+/// does not say defaults to the grader's own configured judge.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GraderRef {
+    /// The grader's configured default judge agent.
+    #[default]
+    Default,
+    /// A specific resolvable judge agent id.
+    Agent {
+        /// Identifier of the grading agent.
+        agent_id: String,
+    },
+}
+
 /// A goal to grade a deliverable against. `rubric` is the requirement text (a
 /// Managed `user.define_outcome` rubric normalizes to this via [`rubric_text`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +46,9 @@ pub struct GoalSpec {
     pub description: String,
     pub rubric: String,
     pub max_iterations: u32,
+    /// Which agent grades the deliverable when a delegating grader is used.
+    #[serde(default)]
+    pub grader: GraderRef,
 }
 
 impl GoalSpec {
@@ -41,6 +61,7 @@ impl GoalSpec {
             description: description.into(),
             rubric: rubric.into(),
             max_iterations: max_iterations.max(1),
+            grader: GraderRef::Default,
         }
     }
 }
@@ -60,8 +81,25 @@ pub fn rubric_text(rubric: &Value) -> String {
     }
 }
 
-/// The classification of one evaluation round. Producer-defined (ADR-0062 D4);
-/// the host projects it to a public result token.
+/// The **grader's** judgement for one deliverable — nothing about iteration
+/// budgets or lifecycle (those are the loop's concern, [`GoalOutcome`]). Keeping
+/// the grader verdict separate from the loop result is the boundary that lets a
+/// grader stay a faithful judge: it never needs to know how many revisions are
+/// left (separation of concerns; cf. `awaken-ext-outcome`'s `GradeResult`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GradeResult {
+    /// The deliverable meets every rubric criterion.
+    Satisfied,
+    /// The deliverable misses one or more criteria and should be revised.
+    NeedsRevision,
+    /// The rubric fundamentally does not match the task (not a revision matter).
+    Failed,
+}
+
+/// The **loop's** classification of one evaluation round: a grader verdict folded
+/// with the iteration budget and lifecycle. The host projects it to a public
+/// result token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GoalOutcome {
     /// The deliverable met the rubric.
@@ -70,8 +108,10 @@ pub enum GoalOutcome {
     NeedsRevision,
     /// The iteration budget is spent without meeting the rubric.
     MaxIterationsReached,
-    /// The grader could not judge (fail-open: end rather than loop forever).
+    /// The grader could not judge, or the rubric does not fit the task.
     Failed,
+    /// The run was interrupted (e.g. cancelled) before the outcome concluded.
+    Interrupted,
 }
 
 impl GoalOutcome {
@@ -82,27 +122,37 @@ impl GoalOutcome {
             GoalOutcome::NeedsRevision => "needs_revision",
             GoalOutcome::MaxIterationsReached => "max_iterations_reached",
             GoalOutcome::Failed => "failed",
+            GoalOutcome::Interrupted => "interrupted",
         }
     }
 
-    /// Whether the goal loop should stop (terminal) at this outcome.
+    /// Whether the goal loop should stop (terminal) at this outcome. Only a
+    /// revision keeps it going.
     pub fn is_terminal(&self) -> bool {
         !matches!(self, GoalOutcome::NeedsRevision)
     }
 }
 
-/// One graded verdict: whether the deliverable is met, plus the rationale.
+/// One graded verdict: the grader's [`GradeResult`] plus the rationale handed
+/// back to the agent as revision guidance.
 #[derive(Debug, Clone)]
 pub struct Verdict {
-    pub met: bool,
+    pub result: GradeResult,
     pub explanation: String,
 }
 
-/// Judges a deliverable against a goal. A concrete grader is any resolvable judge
-/// (ADR-0062 D4); the host may run a sub-agent instead. This crate ships a
-/// deterministic [`KeywordGrader`] for tests and offline use.
+/// A grader could not judge (a judge run failed, or its reply did not parse). The
+/// guard fails open on this: it ends the run classified [`GoalOutcome::Failed`]
+/// rather than looping forever.
+#[derive(Debug, Clone)]
+pub struct GraderError(pub String);
+
+/// Judges a deliverable against a goal. Async so a real grader can run a judge
+/// sub-agent before deciding; a stub or the deterministic [`KeywordGrader`]
+/// returns immediately. An `Err` means the grader could not judge (fail-open).
+#[async_trait]
 pub trait Grader: Send + Sync {
-    fn grade(&self, goal: &GoalSpec, deliverable: &str) -> Verdict;
+    async fn grade(&self, goal: &GoalSpec, deliverable: &str) -> Result<Verdict, GraderError>;
 }
 
 /// A deterministic grader: the deliverable meets the goal iff it contains the
@@ -110,31 +160,149 @@ pub trait Grader: Send + Sync {
 /// loop runs in CI and under the SDK e2e without an API key.
 pub struct KeywordGrader;
 
+#[async_trait]
 impl Grader for KeywordGrader {
-    fn grade(&self, goal: &GoalSpec, deliverable: &str) -> Verdict {
-        if goal.rubric.is_empty() || deliverable.contains(&goal.rubric) {
+    async fn grade(&self, goal: &GoalSpec, deliverable: &str) -> Result<Verdict, GraderError> {
+        let verdict = if goal.rubric.is_empty() || deliverable.contains(&goal.rubric) {
             Verdict {
-                met: true,
+                result: GradeResult::Satisfied,
                 explanation: format!("deliverable satisfies the rubric ({:?})", goal.rubric),
             }
         } else {
             Verdict {
-                met: false,
+                result: GradeResult::NeedsRevision,
                 explanation: format!("deliverable must satisfy the rubric ({:?})", goal.rubric),
             }
+        };
+        Ok(verdict)
+    }
+}
+
+/// A request to run one judge sub-agent: the judge agent id and the prompt.
+pub struct DelegateRequest {
+    /// The agent that grades this deliverable.
+    pub agent_id: String,
+    /// The judge prompt (goal + rubric + deliverable, asking for a JSON verdict).
+    pub prompt: String,
+}
+
+/// A judge sub-run's reply: the judge's last assistant text, if any.
+pub struct DelegateReply {
+    pub text: Option<String>,
+}
+
+/// A judge sub-run failed to execute (backend/transport error).
+#[derive(Debug, Clone)]
+pub struct DelegateError(pub String);
+
+/// Runs a judge sub-agent and returns its reply. This crate declares the
+/// capability it needs; the host implements it over the kernel's delegation, so
+/// `awaken-ext-goal` stays a single-contract extension with no kernel dependency.
+#[async_trait]
+pub trait DelegateRunner: Send + Sync {
+    async fn run(&self, request: DelegateRequest) -> Result<DelegateReply, DelegateError>;
+}
+
+/// A grader backed by a real judge sub-agent. It routes to the judge named by the
+/// goal's [`GraderRef`] (`Default` → the configured default judge, `Agent` → a
+/// specific one), runs it in its own child context, and parses a structured
+/// [`Verdict`] from the reply. A run/parse failure is a [`GraderError`]; the
+/// fail-open policy lives in the guard, so this stays a faithful judge.
+pub struct DelegateGrader {
+    runner: Arc<dyn DelegateRunner>,
+    default_judge_agent_id: String,
+}
+
+impl DelegateGrader {
+    /// Grade through `runner`, defaulting to `default_judge_agent_id` when a goal
+    /// selects [`GraderRef::Default`].
+    pub fn new(runner: Arc<dyn DelegateRunner>, default_judge_agent_id: impl Into<String>) -> Self {
+        Self {
+            runner,
+            default_judge_agent_id: default_judge_agent_id.into(),
+        }
+    }
+
+    fn judge_agent_id<'a>(&'a self, goal: &'a GoalSpec) -> &'a str {
+        match &goal.grader {
+            GraderRef::Default => &self.default_judge_agent_id,
+            GraderRef::Agent { agent_id } => agent_id,
         }
     }
 }
 
-/// Classify a verdict at a given iteration into an outcome, applying the
-/// iteration budget. `iteration` is 1-based.
+fn judge_prompt(goal: &GoalSpec, deliverable: &str) -> String {
+    format!(
+        "You are an impartial grader. Score the artifact against the rubric. Respond with \
+         ONLY a JSON object of the form {{\"result\": \"satisfied\"|\"needs_revision\"|\"failed\", \
+         \"explanation\": <string>}} and nothing else. Use \"satisfied\" only when every criterion \
+         is met; \"needs_revision\" when one or more fail but the rubric fits the task; \"failed\" \
+         only when the rubric fundamentally does not match the task.\n\nGoal: {goal}\n\nRubric:\n\
+         {rubric}\n\nArtifact:\n{deliverable}",
+        goal = goal.description,
+        rubric = goal.rubric,
+    )
+}
+
+/// Parse a verdict from the judge's reply, tolerating prose around the JSON.
+fn parse_verdict(reply: Option<&str>) -> Result<Verdict, GraderError> {
+    let text = reply.ok_or_else(|| GraderError("judge returned no reply".into()))?;
+    let json = match (text.find('{'), text.rfind('}')) {
+        (Some(start), Some(end)) if start <= end => &text[start..=end],
+        _ => return Err(GraderError("no JSON object in judge reply".into())),
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| GraderError(format!("unparseable verdict: {e}")))?;
+    let result = parsed
+        .get("result")
+        .and_then(Value::as_str)
+        .and_then(|s| match s {
+            "satisfied" => Some(GradeResult::Satisfied),
+            "needs_revision" => Some(GradeResult::NeedsRevision),
+            "failed" => Some(GradeResult::Failed),
+            _ => None,
+        })
+        .ok_or_else(|| GraderError("judge verdict missing a valid `result`".into()))?;
+    let explanation = parsed
+        .get("explanation")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok(Verdict {
+        result,
+        explanation,
+    })
+}
+
+#[async_trait]
+impl Grader for DelegateGrader {
+    async fn grade(&self, goal: &GoalSpec, deliverable: &str) -> Result<Verdict, GraderError> {
+        let request = DelegateRequest {
+            agent_id: self.judge_agent_id(goal).to_string(),
+            prompt: judge_prompt(goal, deliverable),
+        };
+        let reply = self
+            .runner
+            .run(request)
+            .await
+            .map_err(|DelegateError(reason)| GraderError(format!("judge run failed: {reason}")))?;
+        parse_verdict(reply.text.as_deref())
+    }
+}
+
+/// Fold a grader [`Verdict`] and the iteration budget into a loop [`GoalOutcome`]
+/// (`iteration` is 1-based). This is the **only** place the budget meets the
+/// verdict — the grader itself never sees iteration counts.
 pub fn classify(verdict: &Verdict, iteration: u32, max_iterations: u32) -> GoalOutcome {
-    if verdict.met {
-        GoalOutcome::Satisfied
-    } else if iteration >= max_iterations {
-        GoalOutcome::MaxIterationsReached
-    } else {
-        GoalOutcome::NeedsRevision
+    match verdict.result {
+        GradeResult::Satisfied => GoalOutcome::Satisfied,
+        // A rubric that does not fit the task will never be met; end, do not burn
+        // the budget revising against it.
+        GradeResult::Failed => GoalOutcome::Failed,
+        GradeResult::NeedsRevision if iteration >= max_iterations => {
+            GoalOutcome::MaxIterationsReached
+        }
+        GradeResult::NeedsRevision => GoalOutcome::NeedsRevision,
     }
 }
 
@@ -182,7 +350,16 @@ impl RunEndGuard for GoalGuard {
 
     async fn evaluate(&self, ctx: &RunEndContext<'_>) -> RunEndDecision {
         let deliverable = last_deliverable(ctx.conversation);
-        let verdict = self.grader.grade(&self.spec, &deliverable);
+        let verdict = match self.grader.grade(&self.spec, &deliverable).await {
+            Ok(verdict) => verdict,
+            // Fail-open: a grader that errors or can't parse never traps the run
+            // in unbounded revision — it ends, classified Failed.
+            Err(GraderError(reason)) => {
+                return RunEndDecision::Complete {
+                    detail: round_detail(GoalOutcome::Failed, &reason),
+                };
+            }
+        };
         // `forced_continuations` counts the steers already taken; this consult is
         // the next iteration (1-based).
         let iteration = ctx.forced_continuations as u32 + 1;

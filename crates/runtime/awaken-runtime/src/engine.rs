@@ -342,7 +342,14 @@ async fn drive(
     // How many times a run-end guard has steered this run. It is both the
     // guard's iteration signal and the runtime's run-scoped continuation count;
     // `max_steps` remains the hard runaway backstop, since each steer costs a step.
-    let mut forced_continuations: usize = 0;
+    // Recovered from the committed transcript by counting this run's own steer
+    // feedback messages, so the count (and thus the guard's budget) survives a
+    // park/resume mid-loop rather than restarting at zero.
+    let steer_prefix = steer_id_prefix(run_id);
+    let mut forced_continuations = transcript
+        .iter()
+        .filter(|message| message.id.0.starts_with(&steer_prefix))
+        .count();
 
     // The agent's configured ceiling guards against a non-terminating tool cycle;
     // a natural-end text turn ends the loop earlier.
@@ -415,6 +422,10 @@ async fn drive(
         if calls.is_empty() {
             match consult_run_end(env, run_id, &transcript, forced_continuations).await {
                 RunEndOutcome::Steer { feedback, detail } => {
+                    // Live progress (best-effort) and durable truth (committed with
+                    // the run): the round is both streamed and recorded, so the
+                    // round history survives a crash/resume (G1/G13).
+                    audit.push(continuation_event(&detail));
                     emit(
                         context,
                         run_id,
@@ -431,6 +442,7 @@ async fn drive(
                     continue;
                 }
                 RunEndOutcome::Complete { detail } => {
+                    audit.push(continuation_event(&detail));
                     emit(
                         context,
                         run_id,
@@ -675,11 +687,27 @@ async fn consult_run_end(
         .unwrap_or(RunEndOutcome::End)
 }
 
+/// A committed event for one run-end continuation round. The opaque `detail` is
+/// forwarded verbatim (the kernel never interprets it, G2); committing it makes
+/// the round history durable truth the host projects, not a best-effort stream.
+fn continuation_event(detail: &serde_json::Value) -> EventDraft {
+    EventDraft {
+        kind: EventKind::Continuation,
+        payload: detail.clone(),
+    }
+}
+
+/// The id prefix shared by a run's steer-feedback messages. Counting committed
+/// messages with this prefix recovers `forced_continuations` after a resume.
+fn steer_id_prefix(run_id: &RunId) -> String {
+    format!("{}-steer-", run_id.0)
+}
+
 /// The user message a steered continuation injects before looping. Its id is
 /// run-scoped and distinct from the step-based assistant/tool message ids.
 fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
     Message {
-        id: MessageId(format!("{}-steer-{nth}", run_id.0)),
+        id: MessageId(format!("{}{nth}", steer_id_prefix(run_id))),
         role: Role::User,
         content: vec![ContentBlock::text(feedback)],
     }
