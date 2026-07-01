@@ -291,6 +291,15 @@ impl SessionCtx {
             .with_reader(self.commit.clone())
             .with_cancellation(token)
     }
+
+    /// Register a fresh cancellation token in the thread's cancel slot and return
+    /// it, so a concurrent `interrupt` cancels the work it guards (e.g. an
+    /// in-flight remote delegation between parks).
+    pub(crate) fn register_cancel(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        *self.cancel.lock().expect("cancel mutex poisoned") = Some(token.clone());
+        token
+    }
 }
 
 /// Read a string field from an opaque round detail, defaulting to empty.

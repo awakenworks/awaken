@@ -16,6 +16,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_protocol_a2a::{SendMessageResponse, Task, TaskState};
 use awaken_runtime::memory::MemoryCommitCoordinator;
+use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::ToolOutput;
@@ -180,6 +181,7 @@ async fn delegate_over_a2a(
     agent_id: &str,
     input: &str,
     context_id: &str,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<String, HostError> {
     let request = json!({
         "agentId": agent_id,
@@ -199,9 +201,14 @@ async fn delegate_over_a2a(
     let mut task = read_send_response(&response.body)?;
 
     // Poll while the remote task is still working (an async A2A backend returns a
-    // task before it is done), bounded so a stuck remote cannot hang forever.
+    // task before it is done), bounded so a stuck remote cannot hang forever. A
+    // parent interrupt cancels the wait and best-effort cancels the remote task.
     let mut polls = 0usize;
     while matches!(task.status.state, TaskState::Working) {
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            cancel_remote_task(transport, &task.id).await;
+            return Err(HostError::internal("remote A2A delegation was cancelled"));
+        }
         if polls >= MAX_TASK_POLLS {
             return Err(HostError::internal(
                 "remote A2A task did not reach a terminal state in time",
@@ -216,7 +223,18 @@ async fn delegate_over_a2a(
         ok_status(&response, "tasks/get")?;
         task = read_task(&response.body)?;
         if matches!(task.status.state, TaskState::Working) {
-            tokio::time::sleep(POLL_INTERVAL).await;
+            match cancellation {
+                Some(token) => {
+                    tokio::select! {
+                        _ = tokio::time::sleep(POLL_INTERVAL) => {}
+                        _ = token.cancelled() => {
+                            cancel_remote_task(transport, &task.id).await;
+                            return Err(HostError::internal("remote A2A delegation was cancelled"));
+                        }
+                    }
+                }
+                None => tokio::time::sleep(POLL_INTERVAL).await,
+            }
         }
     }
 
@@ -232,6 +250,13 @@ async fn delegate_over_a2a(
         TaskState::Failed => Err(HostError::internal("remote A2A agent failed")),
         TaskState::Working => unreachable!("loop exits only on a terminal state"),
     }
+}
+
+/// Best-effort cancel of a remote A2A task (A2A `tasks:cancel`). Failures are
+/// ignored — the local delegation already ended cancelled.
+async fn cancel_remote_task(transport: &dyn A2aTransport, task_id: &str) {
+    let path = format!("/v1/a2a/tasks/{task_id}:cancel");
+    let _ = transport.request("POST", &path, None).await;
 }
 
 impl SharedHost {
@@ -256,10 +281,18 @@ impl SharedHost {
         &self,
         agent_id: &str,
         input: &str,
+        cancellation: Option<&CancellationToken>,
     ) -> Result<String, HostError> {
         if let Some(transport) = self.remote_agents.get(agent_id) {
             let context_id = format!("deleg-{agent_id}");
-            return delegate_over_a2a(transport.as_ref(), agent_id, input, &context_id).await;
+            return delegate_over_a2a(
+                transport.as_ref(),
+                agent_id,
+                input,
+                &context_id,
+                cancellation,
+            )
+            .await;
         }
         if !self.delegates.contains(agent_id) {
             return Err(HostError::bad_request(format!(
@@ -314,7 +347,10 @@ impl SharedHost {
             };
             let call_id = ticket.call_id.clone().unwrap_or_default();
             let (agent_id, input) = delegate_args(&pending.arguments);
-            let output = match self.run_delegate(&agent_id, &input).await {
+            // Guard the delegation with a cancel token so a concurrent `interrupt`
+            // aborts it (and cancels the remote task).
+            let token = ctx.register_cancel();
+            let output = match self.run_delegate(&agent_id, &input, Some(&token)).await {
                 Ok(text) => ToolOutput::ok(&call_id, text),
                 Err(err) => ToolOutput::error(&call_id, err.to_string()),
             };

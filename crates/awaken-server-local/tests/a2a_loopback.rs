@@ -234,6 +234,82 @@ async fn a_working_task_is_polled_to_completion() {
     );
 }
 
+/// A parent interrupt during a remote delegation cancels the remote task and the
+/// delegation ends as a tool error — mirrors goal's `RemoteAbort` / tasks:cancel.
+#[tokio::test]
+async fn a_parent_interrupt_cancels_the_remote_task() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
+
+    const WORKING: &str =
+        r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_WORKING"}}}"#;
+
+    /// A remote whose task never completes; it records a `tasks:cancel` and signals
+    /// each poll so the test can interrupt mid-flight.
+    struct HangingTransport {
+        polled: Arc<Notify>,
+        cancelled: Arc<AtomicBool>,
+    }
+    #[async_trait::async_trait]
+    impl A2aTransport for HangingTransport {
+        async fn request(
+            &self,
+            method: &str,
+            path: &str,
+            _body: Option<Vec<u8>>,
+        ) -> Result<A2aResponse, String> {
+            if path.ends_with(":cancel") {
+                self.cancelled.store(true, Ordering::SeqCst);
+                return Ok(A2aResponse {
+                    status: 200,
+                    body: b"{}".to_vec(),
+                });
+            }
+            if method == "GET" {
+                self.polled.notify_one();
+            }
+            Ok(A2aResponse {
+                status: 200,
+                body: WORKING.as_bytes().to_vec(),
+            })
+        }
+    }
+
+    let polled = Arc::new(Notify::new());
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let transport = Arc::new(HangingTransport {
+        polled: polled.clone(),
+        cancelled: cancelled.clone(),
+    });
+    let host = Arc::new(
+        SharedHost::new(Arc::new(DelegatingModel), "parent")
+            .with_remote_a2a("researcher", transport),
+    );
+
+    let driver = host.clone();
+    let task =
+        tokio::spawn(async move { driver.run_turn("t", vec![user("u1", "research")]).await });
+
+    // Once the remote task has been polled, interrupt the parent thread.
+    polled.notified().await;
+    host.interrupt("t").await.unwrap();
+
+    task.await
+        .unwrap()
+        .expect("the turn completes after cancel");
+    assert!(
+        cancelled.load(Ordering::SeqCst),
+        "the remote task received tasks:cancel"
+    );
+    let history = host.committed_messages("t").await;
+    assert!(
+        history
+            .iter()
+            .any(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:")),
+        "the parent resumed with the cancellation as a tool result"
+    );
+}
+
 /// A remote agent that parks (its A2A task is `input-required`) is surfaced to the
 /// delegating parent as a tool error — this seam runs the delegate to completion,
 /// so a mid-run pause on the remote is not a silent hang. Mirrors goal/awaken-next
