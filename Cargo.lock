@@ -288,6 +288,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-sandbox-local"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-ext-builtin-tools",
+ "awaken-runtime-contract",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-scoped-migration"
 version = "0.1.0-dev"
 source = "git+https://github.com/awakenworks/awaken-foundation?rev=d98b40c90fdac65c329eb279bf5052818906a1de#d98b40c90fdac65c329eb279bf5052818906a1de"
@@ -309,6 +321,7 @@ dependencies = [
  "awaken-protocol-managed",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "awaken-sandbox-local",
  "axum",
  "http-body-util",
  "serde_json",
