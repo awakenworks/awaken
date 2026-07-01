@@ -337,3 +337,186 @@ async fn a_guard_outside_its_bound_fails_the_run_closed() {
         "a run-end guard outside the declared bound fails closed (G30)"
     );
 }
+
+// ── Multiple guards: consulted in order, first steer wins ───────────────────
+
+/// A configurable guard: always complete, or steer while under a cap. It also
+/// records the last message text it saw, to prove the runtime hands it the real
+/// conversation.
+#[derive(Clone, Copy)]
+enum Behavior {
+    Complete,
+    SteerUntil(usize),
+}
+
+struct ProgrammableGuard {
+    id: &'static str,
+    behavior: Behavior,
+    last_seen: Arc<Mutex<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl RunEndGuard for ProgrammableGuard {
+    fn id(&self) -> &str {
+        self.id
+    }
+    async fn evaluate(&self, ctx: &RunEndContext<'_>) -> RunEndDecision {
+        *self.last_seen.lock().unwrap() = ctx.conversation.last().map(|m| m.text_content());
+        let steer =
+            matches!(self.behavior, Behavior::SteerUntil(n) if ctx.forced_continuations < n);
+        if steer {
+            RunEndDecision::Steer {
+                feedback: "revise".to_string(),
+                detail: serde_json::json!({ "g": self.id }),
+            }
+        } else {
+            RunEndDecision::Complete {
+                detail: serde_json::json!({ "g": self.id }),
+            }
+        }
+    }
+}
+
+struct ProgrammableGuardPlugin {
+    id: &'static str,
+    behavior: Behavior,
+    last_seen: Arc<Mutex<Option<String>>>,
+}
+
+impl Plugin for ProgrammableGuardPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: self.id.to_string(),
+            requires: Vec::new(),
+            config_sections: Vec::new(),
+            bound: CapabilityBound {
+                run_end_guards: vec![self.id.to_string()],
+                ..Default::default()
+            },
+        }
+    }
+    fn resolve(&self) -> Contributions {
+        let mut c = Contributions::new(self.id);
+        c.run_end_guards.push(Arc::new(ProgrammableGuard {
+            id: self.id,
+            behavior: self.behavior,
+            last_seen: self.last_seen.clone(),
+        }));
+        c
+    }
+}
+
+fn programmable(
+    id: &'static str,
+    behavior: Behavior,
+) -> (Arc<ProgrammableGuardPlugin>, Arc<Mutex<Option<String>>>) {
+    let last_seen = Arc::new(Mutex::new(None));
+    (
+        Arc::new(ProgrammableGuardPlugin {
+            id,
+            behavior,
+            last_seen: last_seen.clone(),
+        }),
+        last_seen,
+    )
+}
+
+#[tokio::test]
+async fn a_later_guards_steer_overrides_an_earlier_guards_completion() {
+    // g1 always completes; g2 (consulted after it) steers below its cap. Because
+    // any guard steering keeps the run going, g2's steer wins over g1's completion
+    // until g2's cap, then the run ends.
+    let (g1, _) = programmable("g1", Behavior::Complete);
+    let (g2, _) = programmable("g2", Behavior::SteerUntil(2));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(EchoLlm))
+        .with_plugin(g1)
+        .with_plugin(g2);
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let collector = Arc::new(ContinuationCollector::default());
+    let context = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_stream_sink(collector.clone());
+
+    let phase = runtime
+        .execute(
+            activation(vec!["g1".to_string(), "g2".to_string()], 16),
+            context,
+        )
+        .await
+        .expect("runs");
+
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let events = collector.events.lock().unwrap();
+    // Two rounds steered by g2, then a completion.
+    assert_eq!(events.len(), 3);
+    assert!(
+        events[0].0 && events[1].0,
+        "g2 steered the first two rounds"
+    );
+    assert!(!events[2].0, "the run then completed");
+    assert_eq!(count_user_text(&commit, "revise"), 2);
+}
+
+#[tokio::test]
+async fn all_completing_guards_end_with_the_last_guards_detail() {
+    // No guard steers → the run ends, carrying the last consulted guard's detail.
+    let (g1, _) = programmable("g1", Behavior::Complete);
+    let (g2, _) = programmable("g2", Behavior::Complete);
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(EchoLlm))
+        .with_plugin(g1)
+        .with_plugin(g2);
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let collector = Arc::new(ContinuationCollector::default());
+    let context = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_stream_sink(collector.clone());
+
+    let phase = runtime
+        .execute(
+            activation(vec!["g1".to_string(), "g2".to_string()], 16),
+            context,
+        )
+        .await
+        .expect("runs");
+
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let events = collector.events.lock().unwrap();
+    assert_eq!(events.len(), 1, "one completion round, no steers");
+    assert!(!events[0].0);
+    assert_eq!(
+        events[0].1,
+        serde_json::json!({ "g": "g2" }),
+        "last guard's detail"
+    );
+    assert_eq!(count_user_text(&commit, "revise"), 0);
+}
+
+#[tokio::test]
+async fn a_guard_receives_the_run_conversation() {
+    // EchoLlm turns the input "go" into an assistant "go"; the guard must see that
+    // committed transcript at the natural-end boundary.
+    let (plugin, last_seen) = programmable("g1", Behavior::Complete);
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(EchoLlm))
+        .with_plugin(plugin);
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    runtime
+        .execute(activation(vec!["g1".to_string()], 16), context)
+        .await
+        .expect("runs");
+
+    assert_eq!(
+        last_seen.lock().unwrap().as_deref(),
+        Some("go"),
+        "the guard saw the run's own assistant deliverable"
+    );
+}
