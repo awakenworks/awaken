@@ -32,7 +32,13 @@ impl ProjectedEvent {
 
 /// Project just the agent-visible events for a batch of committed messages (no
 /// terminal `session.status_idle`). Used by both a turn and an outcome iteration.
-pub fn project_messages(messages: &[Message], pending: Option<&str>) -> Vec<ProjectedEvent> {
+/// `pending` is `(tool_use_id, client_executed)` of the tool the run parked on:
+/// a client-executed pending tool becomes `agent.custom_tool_use`, a built-in one
+/// `agent.tool_use{ask}`; any other tool call is `agent.tool_use{allow}` (it ran).
+pub fn project_messages(
+    messages: &[Message],
+    pending: Option<(&str, bool)>,
+) -> Vec<ProjectedEvent> {
     let mut out = Vec::new();
     for message in messages {
         match message.role {
@@ -50,19 +56,28 @@ pub fn project_messages(messages: &[Message], pending: Option<&str>) -> Vec<Proj
                 }
                 for block in &message.content {
                     if let ContentBlock::ToolUse { id, name, input } = block {
-                        let permission = if pending == Some(id.as_str()) {
-                            "ask"
+                        let is_pending = pending.map(|p| p.0) == Some(id.as_str());
+                        let client = is_pending && pending.map(|p| p.1).unwrap_or(false);
+                        if client {
+                            out.push(ProjectedEvent::with_id(
+                                id.clone(),
+                                OutboundKind::AgentCustomToolUse {
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                },
+                            ));
                         } else {
-                            "allow"
-                        };
-                        out.push(ProjectedEvent::with_id(
-                            id.clone(),
-                            OutboundKind::AgentToolUse {
-                                name: name.clone(),
-                                input: input.clone(),
-                                evaluated_permission: Some(permission.to_string()),
-                            },
-                        ));
+                            out.push(ProjectedEvent::with_id(
+                                id.clone(),
+                                OutboundKind::AgentToolUse {
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                    evaluated_permission: Some(
+                                        if is_pending { "ask" } else { "allow" }.to_string(),
+                                    ),
+                                },
+                            ));
+                        }
                     }
                 }
             }
@@ -94,12 +109,12 @@ pub fn project_messages(messages: &[Message], pending: Option<&str>) -> Vec<Proj
 pub fn project_turn(
     messages: &[Message],
     stop: StopReason,
-    pending: Option<&str>,
+    pending: Option<(&str, bool)>,
 ) -> Vec<ProjectedEvent> {
     let mut out = project_messages(messages, pending);
     let stop_reason = match stop {
         StopReason::RequiresAction { .. } => StopReason::RequiresAction {
-            event_ids: pending.map(|p| vec![p.to_string()]).unwrap_or_default(),
+            event_ids: pending.map(|p| vec![p.0.to_string()]).unwrap_or_default(),
         },
         other => other,
     };
