@@ -8,7 +8,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
-use awaken_server_local::{EchoModel, build_custom_router, build_delegation_router, build_router};
+use awaken_server_local::{
+    EchoModel, build_custom_router, build_delegation_router, build_graded_router, build_router,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -278,6 +280,74 @@ async fn outcome_iterates_until_satisfied() {
         messages.iter().any(|m| m.contains("FINAL")),
         "messages: {messages:?}"
     );
+}
+
+/// A model serving both roles for the judge-graded outcome test: as a judge (it
+/// sees the grading prompt) it returns a JSON verdict — met iff the deliverable
+/// carries the `FINAL` marker; as the doer it drafts, then revises to `FINAL`
+/// once it sees the loop's feedback.
+struct GradedModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for GradedModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let reply = if last_user.contains("You are grading a deliverable") {
+            // Judge: the deliverable is met iff it carries the FINAL marker.
+            if last_user.contains("FINAL") {
+                r#"{"met": true, "explanation": "carries the marker"}"#.to_string()
+            } else {
+                r#"{"met": false, "explanation": "add the completion marker"}"#.to_string()
+            }
+        } else if last_user.contains("did not meet the goal") {
+            "FINAL answer".to_string()
+        } else {
+            "a rough draft".to_string()
+        };
+        Ok(ChatResponse {
+            output: AssistantOutput::text(reply),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn outcome_graded_by_a_judge_subagent() {
+    // The rubric is prose, not a keyword — a keyword grader would never match it
+    // and would exhaust the budget. The judge sub-agent grades it instead, so the
+    // revision that adds the FINAL marker is accepted.
+    let app = build_graded_router(Arc::new(GradedModel), "scripted", "judge");
+    let id = create_session(&app).await;
+
+    send_message(&app, &id, "write something").await;
+    let list = define_outcome(&app, &id, "the deliverable is complete").await;
+
+    let ends: Vec<&serde_json::Value> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "span.outcome_evaluation_end")
+        .collect();
+    assert!(ends.len() >= 2, "expected at least two judge-graded rounds");
+    assert_eq!(ends.first().unwrap()["result"], "needs_revision");
+    assert_eq!(ends.last().unwrap()["result"], "satisfied");
 }
 
 #[tokio::test]
