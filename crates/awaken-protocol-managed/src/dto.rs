@@ -10,6 +10,37 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// The Anthropic error envelope: `{ "type": "error", "error": { "type", "message" } }`.
+/// The SDK parses this shape to populate `err.error.type` / `err.error.message`;
+/// `error.type` is the status-keyed discriminator (`not_found_error`,
+/// `invalid_request_error`, `api_error`, …).
+#[derive(Debug, Clone, Serialize)]
+pub struct ErrorResponse {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub error: ApiError,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApiError {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub message: String,
+}
+
+impl ErrorResponse {
+    /// Build an envelope with `type: "error"` and the given inner error type.
+    pub fn new(error_type: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind: "error",
+            error: ApiError {
+                kind: error_type,
+                message: message.into(),
+            },
+        }
+    }
+}
+
 /// `agent` in a create-session request: either a bare id string or an object.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]

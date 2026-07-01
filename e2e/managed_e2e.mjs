@@ -93,12 +93,19 @@ async function main() {
     assert.ok(streamedTypes.includes('session.status_idle'), `stream types: ${streamedTypes}`);
     console.log('  ok: SSE stream via events.stream');
 
-    // --- errors: unknown session ---
+    // --- errors: unknown session (status + Anthropic error envelope) ---
     await assert.rejects(
       () => client.beta.sessions.retrieve('sesn_does_not_exist', { betas: BETAS }),
-      (err) => { assert.equal(err.status, 404); return true; },
+      (err) => {
+        assert.equal(err.status, 404);
+        // `err.error` is the parsed body: { type: 'error', error: { type, message } }.
+        assert.equal(err.error?.type, 'error');
+        assert.equal(err.error?.error?.type, 'not_found_error');
+        assert.ok(err.error?.error?.message, 'error message is populated');
+        return true;
+      },
     );
-    console.log('  ok: unknown session -> 404');
+    console.log('  ok: unknown session -> 404 + not_found_error envelope');
 
     console.log('E2E PASS: Managed Agents lifecycle/messages/stream/errors via TS SDK.');
     process.exitCode = 0;

@@ -15,7 +15,8 @@ use axum::{Json, Router};
 use tokio_stream::Stream;
 
 use crate::dto::{
-    CreateSessionRequest, ListEventsResponse, SendEventsRequest, SendEventsResponse, Session,
+    CreateSessionRequest, ErrorResponse, ListEventsResponse, SendEventsRequest, SendEventsResponse,
+    Session,
 };
 use crate::state::{ManagedState, RunErrorKind, StateError};
 
@@ -33,14 +34,24 @@ pub fn router(state: Arc<ManagedState>) -> Router {
         .with_state(state)
 }
 
-fn status(err: StateError) -> StatusCode {
-    match err {
-        StateError::NotFound => StatusCode::NOT_FOUND,
+/// Map a domain error to `(status, Anthropic error envelope)`. The `error.type`
+/// is the status-keyed discriminator the SDK expects; the message is preserved so
+/// a caller sees *why* (e.g. a mismatched resume id), not a bare status code.
+fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
+    let (status, kind, message) = match err {
+        StateError::NotFound => (
+            StatusCode::NOT_FOUND,
+            "not_found_error",
+            "session not found".to_string(),
+        ),
         StateError::Run(e) => match e.kind {
-            RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
-            RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            RunErrorKind::BadRequest => {
+                (StatusCode::BAD_REQUEST, "invalid_request_error", e.message)
+            }
+            RunErrorKind::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "api_error", e.message),
         },
-    }
+    };
+    (status, Json(ErrorResponse::new(kind, message)))
 }
 
 async fn create_session(
@@ -53,30 +64,35 @@ async fn create_session(
 async fn retrieve_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<Session>, StatusCode> {
-    state.get_session(&id).map(Json).map_err(status)
+) -> Result<Json<Session>, (StatusCode, Json<ErrorResponse>)> {
+    state.get_session(&id).map(Json).map_err(error_response)
 }
 
 async fn send_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
     Json(req): Json<SendEventsRequest>,
-) -> Result<Json<SendEventsResponse>, StatusCode> {
-    state.send_events(&id, req).await.map(Json).map_err(status)
+) -> Result<Json<SendEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    state
+        .send_events(&id, req)
+        .await
+        .map(Json)
+        .map_err(error_response)
 }
 
 async fn list_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<ListEventsResponse>, StatusCode> {
-    state.list_events(&id).map(Json).map_err(status)
+) -> Result<Json<ListEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    state.list_events(&id).map(Json).map_err(error_response)
 }
 
 async fn stream_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, StatusCode> {
-    let events = state.stream_events(&id).map_err(status)?;
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, (StatusCode, Json<ErrorResponse>)>
+{
+    let events = state.stream_events(&id).map_err(error_response)?;
     let frames = events.into_iter().map(|event| {
         // The SDK's Stream dispatches on the SSE `event:` name, so set it to the
         // event type; the JSON body carries the same `type` plus the fields.
