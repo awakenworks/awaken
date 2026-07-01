@@ -54,3 +54,35 @@ async fn run_installs_and_executes_in_one_call() {
         "the assistant reply was committed"
     );
 }
+
+#[tokio::test]
+async fn run_to_completion_drives_an_ungated_run_without_asking() {
+    // No gate → no park → `decide` is never called; the run reaches a terminal
+    // phase in one shot. (The gated park→resume path is covered by the coding-agent
+    // example's tests.)
+    let runtime = Runtime::new().with_llm(Arc::new(TextLlm("done")));
+    let config = RunnableConfig::builder("assistant")
+        .model(ModelBinding::new("demo", "stub", "stub"))
+        .build();
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ctx = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_reader(commit.clone());
+
+    let phase = runtime
+        .run_to_completion(&config, "thread-1", "hi", ctx, |_| {
+            unreachable!("an ungated run never parks")
+        })
+        .await
+        .expect("run to completion");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.text_content() == "done"),
+        "the reply was committed"
+    );
+}
