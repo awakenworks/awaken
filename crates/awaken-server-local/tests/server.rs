@@ -1,12 +1,12 @@
-//! Server integration tests: drive the Managed Agents surface through the *real*
-//! kernel (not a fake runtime). Proves the echo path end-to-end and that a
-//! built-in hand tool (`read`) actually executes in-process under the runtime.
+//! Server integration tests through the *real* kernel: the echo path end-to-end,
+//! a rooted write->read round-trip inside a session's sandbox, and per-session
+//! file isolation (two sessions writing the same relative path stay separate).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
 use awaken_server_local::{EchoModel, build_router};
 use axum::Router;
@@ -46,33 +46,40 @@ fn event_types(list: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-#[tokio::test]
-async fn echo_turn_end_to_end() {
-    let app = build_router(Arc::new(EchoModel), "echo-model");
-    let session = json_call(
-        &app,
+/// Run one turn on `session`, returning the projected events.
+async fn turn(app: &Router, session: &str, text: &str) -> serde_json::Value {
+    json_call(
+        app,
+        "POST",
+        &format!("/v1/sessions/{session}/events"),
+        serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }] }),
+    )
+    .await;
+    json_call(
+        app,
+        "GET",
+        &format!("/v1/sessions/{session}/events"),
+        serde_json::Value::Null,
+    )
+    .await
+}
+
+async fn create_session(app: &Router) -> String {
+    let s = json_call(
+        app,
         "POST",
         "/v1/sessions",
         serde_json::json!({ "agent": "assistant" }),
     )
     .await;
-    let id = session["id"].as_str().unwrap().to_string();
+    s["id"].as_str().unwrap().to_string()
+}
 
-    json_call(
-        &app,
-        "POST",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi there" }] }] }),
-    )
-    .await;
-
-    let list = json_call(
-        &app,
-        "GET",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::Value::Null,
-    )
-    .await;
+#[tokio::test]
+async fn echo_turn_end_to_end() {
+    let app = build_router(Arc::new(EchoModel), "echo-model");
+    let id = create_session(&app).await;
+    let list = turn(&app, &id, "hi there").await;
     assert_eq!(
         event_types(&list),
         vec!["agent.message", "session.status_idle"]
@@ -93,27 +100,48 @@ async fn echo_turn_end_to_end() {
     assert_eq!(idle["stop_reason"]["type"], "end_turn");
 }
 
-/// A model that reads one file then replies — proves the `read` built-in tool
-/// runs in-process through the real runtime and its result reaches the wire.
-struct ReadThenReply {
-    path: String,
-    step: AtomicUsize,
-}
+/// A stateless probe model: it writes the user's text to a relative `probe.txt`,
+/// reads it back, then replies. Stateless (decides from the transcript), so one
+/// shared instance drives multiple sessions correctly.
+struct WriteReadProbe;
 
 #[async_trait::async_trait]
-impl LlmExecutor for ReadThenReply {
+impl LlmExecutor for WriteReadProbe {
     async fn infer(
         &self,
-        _request: ChatRequest,
+        request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let output = if self.step.fetch_add(1, Ordering::SeqCst) == 0 {
-            AssistantOutput::from_tool_calls(vec![ToolCall {
-                call_id: "r1".into(),
+        let tool_results = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .count();
+        let user_text = request
+            .messages
+            .iter()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let output = match tool_results {
+            0 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "w".into(),
+                tool_id: "write".into(),
+                arguments: serde_json::json!({ "path": "probe.txt", "content": user_text }),
+            }]),
+            1 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "r".into(),
                 tool_id: "read".into(),
-                arguments: serde_json::json!({ "path": self.path }),
-            }])
-        } else {
-            AssistantOutput::text("done")
+                arguments: serde_json::json!({ "path": "probe.txt" }),
+            }]),
+            _ => AssistantOutput::text("done"),
         };
         Ok(ChatResponse {
             output,
@@ -122,61 +150,56 @@ impl LlmExecutor for ReadThenReply {
     }
 }
 
+/// The text of the `read` tool result in a projected event list.
+fn read_result_text(list: &serde_json::Value) -> String {
+    let results: Vec<&serde_json::Value> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.tool_result")
+        .collect();
+    // The second tool_result is the read (the first is the write ack).
+    let read = results.last().unwrap();
+    read["content"][0]["text"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
-async fn builtin_read_tool_runs_in_process() {
-    let path = std::env::temp_dir().join("awaken_m1_read_probe.txt");
-    std::fs::write(&path, "SANDBOX_PROBE_CONTENT").unwrap();
-
-    let model = ReadThenReply {
-        path: path.to_string_lossy().to_string(),
-        step: AtomicUsize::new(0),
-    };
-    let app = build_router(Arc::new(model), "scripted");
-    let session = json_call(
-        &app,
-        "POST",
-        "/v1/sessions",
-        serde_json::json!({ "agent": "assistant" }),
-    )
-    .await;
-    let id = session["id"].as_str().unwrap().to_string();
-
-    json_call(
-        &app,
-        "POST",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "read it" }] }] }),
-    )
-    .await;
-
-    let list = json_call(
-        &app,
-        "GET",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::Value::Null,
-    )
-    .await;
+async fn rooted_write_then_read_round_trips() {
+    let app = build_router(Arc::new(WriteReadProbe), "scripted");
+    let id = create_session(&app).await;
+    let list = turn(&app, &id, "HELLO-SANDBOX").await;
     assert_eq!(
         event_types(&list),
         vec![
+            "agent.tool_use",
+            "agent.tool_result",
             "agent.tool_use",
             "agent.tool_result",
             "agent.message",
             "session.status_idle"
         ]
     );
-    // The tool actually ran: its result carries the file's content.
-    let result = list["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["type"] == "agent.tool_result")
-        .unwrap();
-    let text = result["content"][0]["text"].as_str().unwrap();
-    assert!(
-        text.contains("SANDBOX_PROBE_CONTENT"),
-        "tool_result was: {text}"
-    );
+    assert!(read_result_text(&list).contains("HELLO-SANDBOX"));
+}
 
-    let _ = std::fs::remove_file(&path);
+#[tokio::test]
+async fn sessions_are_isolated() {
+    let app = build_router(Arc::new(WriteReadProbe), "scripted");
+    let one = create_session(&app).await;
+    let two = create_session(&app).await;
+
+    // Both sessions write the same relative path `probe.txt`, but into their own roots.
+    let list_one = turn(&app, &one, "SECRET-ONE").await;
+    let list_two = turn(&app, &two, "SECRET-TWO").await;
+
+    let read_one = read_result_text(&list_one);
+    let read_two = read_result_text(&list_two);
+    assert!(
+        read_one.contains("SECRET-ONE") && !read_one.contains("SECRET-TWO"),
+        "one: {read_one}"
+    );
+    assert!(
+        read_two.contains("SECRET-TWO") && !read_two.contains("SECRET-ONE"),
+        "two: {read_two}"
+    );
 }

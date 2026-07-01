@@ -192,12 +192,25 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
         "http-body-util",
     },
+    # Local sandbox: per-environment path isolation. It wraps the built-in tools
+    # (jailing their paths to an IsolatedRoot), so it depends on the extension it
+    # wraps and the neutral tool port. The remote/container provider lives in a
+    # distributed repo and plugs in through the `SandboxProvider` trait.
+    "awaken-sandbox-local": {
+        "awaken-runtime-contract",
+        "awaken-ext-builtin-tools",
+        "async-trait",
+        "serde_json",
+        "thiserror",
+        "tokio",
+    },
     # Single-machine assembly binary: the composition root that wires the kernel
     # (built-in tools + permission gate + model port) behind the managed adapter.
     # Like the examples crate it may name every adapter it composes; nothing
     # depends on it.
     "awaken-server-local": {
         "awaken-protocol-managed",
+        "awaken-sandbox-local",
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime",

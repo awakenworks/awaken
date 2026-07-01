@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 awaken-protocol-managed = { path = "../awaken-protocol-managed" }
+awaken-sandbox-local = { path = "../awaken-sandbox-local" }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-runtime = { path = "../awaken-runtime" }
@@ -17,7 +18,7 @@ awaken-ext-builtin-tools = { path = "../awaken-ext-builtin-tools" }
 awaken-ext-permission = { path = "../awaken-ext-permission" }
 async-trait.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 axum = "0.7"
 
 [dev-dependencies]
