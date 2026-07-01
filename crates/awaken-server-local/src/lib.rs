@@ -22,7 +22,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_ext_builtin_tools::{Toolset, builtin_tools};
+use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
 use awaken_ext_goal::{GoalSpec, Grader, KeywordGrader, classify};
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
@@ -243,9 +243,18 @@ fn server_policy() -> RulePermissionPolicy {
 }
 
 fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
+    // Advertise only the hand tools we register an executable for, so the model is
+    // never offered a tool the runtime cannot run. `web_fetch` / `web_search` have
+    // Hand descriptors but no rooted executable in this assembly (they would need a
+    // network egress policy), so they are excluded here rather than offered and
+    // then failing on call.
+    let registered: HashSet<String> = executable_hand_tools()
+        .iter()
+        .map(|t| t.id().to_string())
+        .collect();
     builtin_tools()
         .into_iter()
-        .filter(|t| t.toolset == Toolset::Hand)
+        .filter(|t| t.toolset == Toolset::Hand && registered.contains(&t.descriptor.id))
         .map(|t| t.descriptor)
         .collect()
 }

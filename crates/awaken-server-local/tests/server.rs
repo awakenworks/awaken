@@ -505,6 +505,53 @@ async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
     assert!(!read_result_text(&list).contains("forged"));
 }
 
+/// A model that reports the tool ids it was offered, so a test can assert the
+/// advertised catalog matches what the runtime can actually execute.
+struct ToolCatalogProbe;
+
+#[async_trait::async_trait]
+impl LlmExecutor for ToolCatalogProbe {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let mut ids: Vec<&str> = request.tools.iter().map(|t| t.id.as_str()).collect();
+        ids.sort_unstable();
+        Ok(ChatResponse {
+            output: AssistantOutput::text(ids.join(",")),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn advertises_only_runnable_tools() {
+    let app = build_router(Arc::new(ToolCatalogProbe), "probe");
+    let id = create_session(&app).await;
+    let list = send_message(&app, &id, "which tools do you have?").await;
+    let offered = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "agent.message")
+        .unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The tools the assembly registers an executable for are offered...
+    for tool in ["read", "write", "edit", "glob", "grep", "bash"] {
+        assert!(offered.contains(tool), "expected `{tool}` in {offered:?}");
+    }
+    // ...and the ones it does not (network tools with no egress policy) are not.
+    for tool in ["web_fetch", "web_search"] {
+        assert!(
+            !offered.contains(tool),
+            "`{tool}` must not be advertised: {offered:?}"
+        );
+    }
+}
+
 /// A model that never stops: it always calls an allowed tool, so the loop runs
 /// until the step ceiling -> `EndCause::MaxSteps` -> `retries_exhausted`.
 struct LoopModel;
