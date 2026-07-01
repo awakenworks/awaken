@@ -21,9 +21,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_ext_builtin_tools::{
-    AgentRunner, Toolset, builtin_tools, delegation_tools, executable_hand_tools,
-};
+use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
 use awaken_ext_goal::{
     DelegateError, DelegateGrader, DelegateReply, DelegateRequest, DelegateRunner, GoalPlugin,
     GoalSpec, Grader, KeywordGrader,
@@ -40,8 +38,10 @@ use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::tool::{ToolError, ToolOutput};
-use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_runtime_contract::tool::ToolOutput;
+use awaken_sandbox_local::{
+    IsolatedRoot, LocalSandboxProvider, SandboxProvider, SandboxSpec, rooted_hand_tools,
+};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use crate::hub::{ThreadEvent, ThreadEventHub};
@@ -175,12 +175,10 @@ fn server_policy() -> RulePermissionPolicy {
     RulePermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::Ask,
         mode: Mode::Default,
-        rules: vec![
-            allow("read"),
-            allow("glob"),
-            allow("grep"),
-            allow("agent_run"),
-        ],
+        // `agent_run` is intentionally absent: it falls through to `Ask`, so a
+        // delegate call parks (no executor is registered for it) and the host
+        // fulfills the park by running the sub-agent (delegation-as-park).
+        rules: vec![allow("read"), allow("glob"), allow("grep")],
     })
 }
 
@@ -236,24 +234,15 @@ fn server_config(
         .build()
 }
 
-/// Build a per-thread runtime whose hand tools come from `env` — placement-agnostic:
-/// the host registers whatever tools the environment yields (rooted in-process
-/// today, relay-into-a-sandbox for a distributed provider). When a `delegation`
-/// runner is supplied, `agent_run` is registered too.
-fn build_runtime(
-    llm: Arc<dyn LlmExecutor>,
-    env: &Environment,
-    delegation: Option<Arc<dyn AgentRunner>>,
-) -> Runtime {
+/// Build a per-thread runtime whose hand tools are rooted in `root`. When a
+/// No `agent_run` executor is registered: a delegate call is advertised by the
+/// config but parks (gate `Ask`), and the host fulfills it by running the
+/// sub-agent — so delegation pauses durably instead of blocking inline.
+fn build_runtime(llm: Arc<dyn LlmExecutor>, root: IsolatedRoot) -> Runtime {
     let gate = PermissionGate::new(Arc::new(server_policy()));
     let mut runtime = Runtime::new().with_llm(llm).with_gate(Arc::new(gate));
-    for tool in env.hand_tools() {
+    for tool in rooted_hand_tools(root) {
         runtime = runtime.with_tool(tool);
-    }
-    if let Some(runner) = delegation {
-        for tool in delegation_tools(runner) {
-            runtime = runtime.with_tool(tool);
-        }
     }
     runtime
 }
@@ -270,16 +259,16 @@ struct SessionState {
 }
 
 /// One thread's live state: an isolated runtime, its config, its commit
-/// coordinator (the source of committed truth), its sandbox environment, and its
+/// coordinator (the source of committed truth), its sandbox root, and its
 /// position.
 struct SessionCtx {
     runtime: Runtime,
     config: RunnableConfig,
     commit: Arc<HostCommit>,
     thread_id: ThreadId,
-    /// The thread's sandbox environment, reused to build a goal-enabled runtime
-    /// for `define_outcome` (same tools, same environment).
-    env: Environment,
+    /// The thread's isolated sandbox root, reused to build a goal-enabled runtime
+    /// for `define_outcome` (same tools, same root).
+    root: IsolatedRoot,
     /// The in-flight run's cancellation token, so a concurrent `interrupt` (a
     /// separate request) can cancel it. A plain `std::sync::Mutex` (brief locks),
     /// held by neither the run loop nor the state lock, so interrupt never blocks
@@ -303,49 +292,19 @@ impl SessionCtx {
     }
 }
 
-/// Backs `agent_run` with an in-process sub-run: validates the target against the
-/// roster (fail closed), drives a fresh rooted runtime over the same model to
-/// completion, and returns the delegate's last assistant line. The sub-runtime
-/// has no delegation tool, so a delegate cannot recurse.
-struct LocalAgentRunner {
-    llm: Arc<dyn LlmExecutor>,
-    model_ref: String,
-    roster: HashSet<String>,
-    provider: LocalSandboxProvider,
-    seq: AtomicU64,
-}
+/// The delegation tool id: a call to it parks and the host fulfills it.
+const AGENT_RUN: &str = "agent_run";
 
-#[async_trait::async_trait]
-impl AgentRunner for LocalAgentRunner {
-    async fn run(&self, agent_id: &str, input: &str) -> Result<String, ToolError> {
-        if !self.roster.contains(agent_id) {
-            return Err(ToolError::Execution(format!(
-                "delegate agent {agent_id:?} is not in the roster"
-            )));
-        }
-        let n = self.seq.fetch_add(1, Ordering::SeqCst);
-        let env = self
-            .provider
-            .create(&SandboxSpec::new(format!("{agent_id}-sub-{n}")))
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let runtime = build_runtime(self.llm.clone(), &env, None);
-        let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
-        let commit = Arc::new(MemoryCommitCoordinator::new());
-        let thread = format!("sub-thread-{n}");
-        let ctx = RuntimeRunContext::new()
-            .with_commit(commit.clone())
-            .with_reader(commit.clone());
-        runtime
-            .run_to_completion(&config, thread.clone(), input, ctx, |_| {
-                ResumeResult::allow()
-            })
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        Ok(latest_assistant_text(
-            &commit.committed_messages(&ThreadId(thread)),
-        ))
-    }
+/// The `(agent_id, input)` a delegate `agent_run` call carries.
+fn delegate_args(arguments: &serde_json::Value) -> (String, String) {
+    let field = |key: &str| {
+        arguments
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    (field("agent_id"), field("input"))
 }
 
 /// Read a string field from an opaque round detail, defaulting to empty.
@@ -377,7 +336,7 @@ impl DelegateRunner for KernelJudgeRunner {
             .create(&SandboxSpec::new(format!("{}-judge-{n}", request.agent_id)))
             .await
             .map_err(|e| DelegateError(e.to_string()))?;
-        let runtime = build_runtime(self.llm.clone(), &env, None);
+        let runtime = build_runtime(self.llm.clone(), env.root);
         let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let thread = format!("judge-thread-{n}");
@@ -519,25 +478,75 @@ impl SharedHost {
         &self.hub
     }
 
-    /// The delegation runner for a thread, or `None` when no roster is set.
-    fn agent_runner(&self) -> Option<Arc<dyn AgentRunner>> {
-        if self.delegates.is_empty() {
-            return None;
+    /// Run a delegate sub-agent to completion and return its last assistant line,
+    /// failing closed when the target is not in the roster. A fresh rooted runtime
+    /// over the same model with no delegation tool (a delegate cannot recurse); the
+    /// sub-run is ephemeral. This fulfills a parked `agent_run` call.
+    async fn run_delegate(&self, agent_id: &str, input: &str) -> Result<String, HostError> {
+        if !self.delegates.contains(agent_id) {
+            return Err(HostError::bad_request(format!(
+                "delegate agent {agent_id:?} is not in the roster"
+            )));
         }
-        let base: PathBuf = std::env::temp_dir()
-            .join("awaken-server-local")
-            .join(format!(
-                "{}-sub-{}",
-                std::process::id(),
-                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-            ));
-        Some(Arc::new(LocalAgentRunner {
-            llm: self.llm.clone(),
-            model_ref: self.model_ref.clone(),
-            roster: self.delegates.clone(),
-            provider: LocalSandboxProvider::new(base),
-            seq: AtomicU64::new(0),
-        }))
+        let n = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let env = self
+            .provider
+            .create(&SandboxSpec::new(format!("{agent_id}-sub-{n}")))
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        let runtime = build_runtime(self.llm.clone(), env.root);
+        let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let thread = format!("sub-thread-{n}");
+        let ctx = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit.clone());
+        runtime
+            .run_to_completion(&config, thread.clone(), input, ctx, |_| {
+                ResumeResult::allow()
+            })
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        Ok(latest_assistant_text(
+            &commit.committed_messages(&ThreadId(thread)),
+        ))
+    }
+
+    /// Fulfill delegate `agent_run` parks in place: while the run is parked on a
+    /// delegate call, run the sub-agent and resume the parent with its result, so
+    /// delegation is transparent to the caller. The parent's park is durable, so a
+    /// crash mid-delegation recovers here on the next drive. Non-delegate parks
+    /// (client tools, HITL) are returned untouched for the caller to answer.
+    async fn fulfill_delegations(
+        &self,
+        ctx: &SessionCtx,
+        run_id: &RunId,
+        mut phase: Phase,
+    ) -> Result<Phase, HostError> {
+        loop {
+            if !matches!(phase, Phase::Waiting) {
+                return Ok(phase);
+            }
+            let Some(ticket) = ctx.commit.waiting_ticket(run_id) else {
+                return Ok(phase);
+            };
+            let pending = match &ticket.pending_tool {
+                Some(tool) if tool.tool_id == AGENT_RUN => tool.clone(),
+                _ => return Ok(phase),
+            };
+            let call_id = ticket.call_id.clone().unwrap_or_default();
+            let (agent_id, input) = delegate_args(&pending.arguments);
+            let output = match self.run_delegate(&agent_id, &input).await {
+                Ok(text) => ToolOutput::ok(&call_id, text),
+                Err(err) => ToolOutput::error(&call_id, err.to_string()),
+            };
+            let command = ResumeCommand::from_ticket(&ticket, ResumeResult::ToolResult(output), 0);
+            phase = ctx
+                .runtime
+                .resume(command, &*ctx.commit, ctx.context())
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?;
+        }
     }
 
     /// Build a thread's commit boundary: a durable SQLite database under the
@@ -567,7 +576,7 @@ impl SharedHost {
             .map_err(|e| HostError::internal(e.to_string()))?;
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread)?);
-        let runtime = build_runtime(self.llm.clone(), &env, self.agent_runner());
+        let runtime = build_runtime(self.llm.clone(), env.root.clone());
         let config = server_config(&self.model_ref, &self.client_tools, &self.delegates, &[]);
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and a parked run (e.g. after a
@@ -590,7 +599,7 @@ impl SharedHost {
             config,
             commit,
             thread_id,
-            env,
+            root: env.root.clone(),
             cancel: std::sync::Mutex::new(None),
             state: tokio::sync::Mutex::new(state),
         });
@@ -654,8 +663,17 @@ impl SharedHost {
     ) -> Result<TurnResult, HostError> {
         let ctx = self.ctx_for(thread).await?;
         let mut st = ctx.state.lock().await;
-        if st.parked.is_some() {
-            return Err(HostError::bad_request("thread is awaiting a tool decision"));
+        // A thread parked on a delegate call that was never fulfilled (e.g. a
+        // restart recovered it from the store) is driven to completion first; a
+        // non-delegate park (client tool, HITL) must be answered before a new turn.
+        if let Some(run_id) = st.parked.clone() {
+            let phase = self
+                .fulfill_delegations(&ctx, &run_id, Phase::Waiting)
+                .await?;
+            if matches!(phase, Phase::Waiting) {
+                return Err(HostError::bad_request("thread is awaiting a tool decision"));
+            }
+            st.parked = None;
         }
         let mut messages: Vec<Message> = std::mem::take(&mut st.pending_system)
             .into_iter()
@@ -674,6 +692,7 @@ impl SharedHost {
             .start_turn(&ctx.config, thread, messages, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
+        let phase = self.fulfill_delegations(&ctx, &run_id, phase).await?;
         Ok(self.finish_step(&ctx, &mut st, run_id, phase, before, thread))
     }
 
@@ -722,6 +741,7 @@ impl SharedHost {
             .resume(command, &*ctx.commit, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
+        let phase = self.fulfill_delegations(&ctx, &run_id, phase).await?;
         Ok(self.finish_step(&ctx, &mut st, run_id, phase, before, thread))
     }
 
@@ -742,13 +762,15 @@ impl SharedHost {
         // The runtime owns the grade->revise loop: a goal-enabled runtime whose
         // run-end guard steers revisions until the goal is met or the budget is
         // spent. The host drives one run and projects the rounds it committed. The
-        // guard shares the thread's committed history and sandbox environment.
-        let goal_runtime = build_runtime(self.llm.clone(), &ctx.env, self.agent_runner())
+        // guard shares the thread's committed history and sandbox root.
+        let goal_runtime = build_runtime(self.llm.clone(), ctx.root.clone())
             .with_plugin(Arc::new(GoalPlugin::new(goal, self.grader.clone())));
+        // The goal run auto-approves tools to drive to a deliverable, so it does not
+        // advertise `agent_run` (which parks and is host-fulfilled, not auto-run).
         let config = server_config(
             &self.model_ref,
             &self.client_tools,
-            &self.delegates,
+            &HashSet::new(),
             &["goal".to_string()],
         );
 
@@ -970,5 +992,70 @@ mod tests {
         host.interrupt("idle-thread")
             .await
             .expect("interrupt is a no-op");
+    }
+
+    /// A delegate `agent_run` call parks durably; a crash before it is fulfilled is
+    /// recovered by a rebuilt host, which drives the sub-agent and completes the
+    /// parent — the sub-result reaches it exactly as if there had been no restart.
+    #[tokio::test]
+    async fn delegate_park_survives_a_restart_and_is_fulfilled_on_recovery() {
+        let dir = std::env::temp_dir().join(format!(
+            "awaken-deleg-{}-{}",
+            std::process::id(),
+            BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let thread = "deleg-durable";
+        let delegates = HashSet::from(["researcher".to_string()]);
+
+        // 1. First process: start a turn that parks on `agent_run`, then drop the
+        //    host WITHOUT fulfilling — a crash right after the durable park commit.
+        let run_id = {
+            let host = SharedHost::with_delegates(
+                Arc::new(crate::DelegatingModel),
+                "scripted",
+                delegates.clone(),
+            )
+            .with_store_dir(dir.clone());
+            let ctx = host.ctx_for(thread).await.unwrap();
+            let msg = Message::text(MessageId("u1".into()), Role::User, "research the answer");
+            let (run_id, phase) = ctx
+                .runtime
+                .start_turn(&ctx.config, thread, vec![msg], ctx.context())
+                .await
+                .unwrap();
+            assert!(matches!(phase, Phase::Waiting), "the delegate call parks");
+            let ticket = ctx.commit.waiting_ticket(&run_id).unwrap();
+            assert_eq!(ticket.pending_tool.as_ref().unwrap().tool_id, AGENT_RUN);
+            run_id
+        };
+
+        // 2. A new host over the same store recovers the parked delegate call and
+        //    fulfills it — the sub-agent's result reaches the parent.
+        let host =
+            SharedHost::with_delegates(Arc::new(crate::DelegatingModel), "scripted", delegates)
+                .with_store_dir(dir.clone());
+        let ctx = host.ctx_for(thread).await.unwrap();
+        assert_eq!(
+            ctx.state.lock().await.parked.as_ref(),
+            Some(&run_id),
+            "the rebuilt host recovers the parked delegate run"
+        );
+        let phase = host
+            .fulfill_delegations(&ctx, &run_id, Phase::Waiting)
+            .await
+            .unwrap();
+        assert!(
+            matches!(phase, Phase::Ended(_)),
+            "the recovered delegation drives to completion"
+        );
+        let history = ctx.commit.committed_messages(&ctx.thread_id);
+        assert!(
+            history
+                .iter()
+                .any(|m| block_text(&m.content).contains("delegate said: researched: 42")),
+            "the sub-agent result reached the parent after recovery"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
