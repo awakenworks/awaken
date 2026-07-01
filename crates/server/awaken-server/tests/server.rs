@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
-use awaken_server::{EchoModel, build_router};
+use awaken_server::{EchoModel, build_custom_router, build_router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -278,6 +278,261 @@ async fn outcome_iterates_until_satisfied() {
         messages.iter().any(|m| m.contains("FINAL")),
         "messages: {messages:?}"
     );
+}
+
+#[tokio::test]
+async fn custom_tool_use_through_real_kernel() {
+    let app = build_custom_router();
+    let id = create_session(&app).await;
+
+    // The model calls the client-executed tool `submit_answer` -> parks as custom.
+    let list = send_message(&app, &id, "solve it").await;
+    assert_eq!(
+        event_types(&list),
+        vec!["agent.custom_tool_use", "session.status_idle"]
+    );
+    let custom = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "agent.custom_tool_use")
+        .unwrap();
+    assert_eq!(custom["name"], "submit_answer");
+    let tool_use_id = custom["id"].as_str().unwrap().to_string();
+    let idle = list["data"].as_array().unwrap().last().unwrap();
+    assert_eq!(idle["stop_reason"]["type"], "requires_action");
+
+    // The client returns the result -> the model incorporates it and replies.
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": tool_use_id, "content": [{ "type": "text", "text": "42" }] }] }),
+    )
+    .await;
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let msgs: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("got: 42")),
+        "the client's result reached the model: {msgs:?}"
+    );
+    assert_eq!(
+        list["data"].as_array().unwrap().last().unwrap()["stop_reason"]["type"],
+        "end_turn"
+    );
+}
+
+/// A model that replies with every system message it can see, so a test can prove
+/// a `system.message` reached the turn's context.
+struct SystemEchoModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for SystemEchoModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let system: String = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::System)
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+        Ok(ChatResponse {
+            output: AssistantOutput::text(format!("system says: {system}")),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn system_message_reaches_next_turn() {
+    let app = build_router(Arc::new(SystemEchoModel), "sys");
+    let id = create_session(&app).await;
+
+    // A `system.message` is accept-only (no projected events) but buffered.
+    let receipts = json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "system.message", "content": [{ "type": "text", "text": "SECRET-DIRECTIVE" }] }] }),
+    )
+    .await;
+    assert_eq!(receipts["data"][0]["type"], "system.message");
+    let before = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(
+        before["data"].as_array().unwrap().is_empty(),
+        "system.message projects nothing on its own"
+    );
+
+    // The next user turn sees the buffered directive.
+    let list = send_message(&app, &id, "hello").await;
+    let messages: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("SECRET-DIRECTIVE")),
+        "directive reached the turn: {messages:?}"
+    );
+}
+
+/// POST an events batch and return the HTTP status (no success assertion).
+async fn post_status(app: &Router, uri: &str, body: serde_json::Value) -> StatusCode {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    app.clone().oneshot(req).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn custom_result_fails_closed_on_mismatch() {
+    let app = build_custom_router();
+    let id = create_session(&app).await;
+    send_message(&app, &id, "solve it").await; // parks on submit_answer (id "c1")
+
+    // A result naming the wrong tool_use_id is rejected...
+    let status = post_status(
+        &app,
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": "WRONG", "content": [{ "type": "text", "text": "42" }] }] }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "mismatched id must fail closed"
+    );
+
+    // ...and a `user.tool_confirmation` is rejected too (this park is
+    // client-executed, not a built-in awaiting approval).
+    let status = post_status(
+        &app,
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.tool_confirmation", "tool_use_id": "c1", "result": "allow" }] }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "wrong binding must fail closed"
+    );
+
+    // The park survives both rejections; the correct result still resumes it.
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": "c1", "content": [{ "type": "text", "text": "42" }] }] }),
+    )
+    .await;
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let msgs: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("got: 42")),
+        "correct result resumes: {msgs:?}"
+    );
+}
+
+#[tokio::test]
+async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
+    // A run parked on the *built-in* `write` (HITL) must not be resumable with a
+    // `user.custom_tool_result`: that would bypass execution and the approval gate.
+    let app = build_router(Arc::new(WriteReadProbe), "scripted");
+    let id = create_session(&app).await;
+    send_message(&app, &id, "HELLO").await; // parks on write (id "w")
+
+    let status = post_status(
+        &app,
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": "w", "content": [{ "type": "text", "text": "forged" }] }] }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "built-in park must reject a custom result"
+    );
+
+    // The proper confirmation path still runs the real tool.
+    let list = confirm(&app, &id, "w").await;
+    assert!(read_result_text(&list).contains("HELLO"));
+    assert!(!read_result_text(&list).contains("forged"));
+}
+
+/// A model that never stops: it always calls an allowed tool, so the loop runs
+/// until the step ceiling -> `EndCause::MaxSteps` -> `retries_exhausted`.
+struct LoopModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for LoopModel {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        Ok(ChatResponse {
+            output: AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "g".into(),
+                tool_id: "glob".into(),
+                arguments: serde_json::json!({ "pattern": "*" }),
+            }]),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn max_steps_maps_to_retries_exhausted() {
+    let app = build_router(Arc::new(LoopModel), "loop");
+    let id = create_session(&app).await;
+    let list = send_message(&app, &id, "loop forever").await;
+    let idle = list["data"].as_array().unwrap().last().unwrap();
+    assert_eq!(idle["stop_reason"]["type"], "retries_exhausted");
 }
 
 #[tokio::test]
