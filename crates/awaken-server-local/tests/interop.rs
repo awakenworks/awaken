@@ -4,17 +4,18 @@
 //! on the *same thread*, and the result is visible back through the AI SDK.
 //!
 //! Conformance matrix — every protocol adapter is held to the same six categories,
-//! each in its own wire vocabulary (Managed: HTTP status + JSON envelope; AI SDK:
-//! UI Message Stream; AG-UI: run event stream):
+//! each in its own wire vocabulary (Managed & A2A: HTTP status + JSON envelope;
+//! AI SDK: UI Message Stream; AG-UI: run event stream). A2A is request/response
+//! (`message:send` returns a `Task`), so categories 1–3 fold into that one call:
 //!
-//! | # | category                    | Managed        | AI SDK          | AG-UI           |
-//! |---|-----------------------------|----------------|-----------------|-----------------|
-//! | 1 | turn / streaming            | server.rs echo | echo_turn       | echo_turn       |
-//! | 2 | history read-back           | server.rs      | history_reflects| via cross-proto |
-//! | 3 | client-tool park + resume   | server.rs      | parks_then_*    | parks_then_*    |
-//! | 4 | driver error → wire format  | server.rs      | resume_without* | resume_without* |
-//! | 5 | malformed body → wire format| ManagedJson    | malformed_body  | malformed_body  |
-//! | 6 | interrupt                   | server.rs      | (shared host)   | (shared host)   |
+//! | # | category                    | Managed | AI SDK          | AG-UI          | A2A            |
+//! |---|-----------------------------|---------|-----------------|----------------|----------------|
+//! | 1 | turn / streaming            | server  | echo_turn       | echo_turn      | a2a_turn       |
+//! | 2 | history read-back           | server  | history_reflects| cross-proto    | a2a_history    |
+//! | 3 | client-tool park + resume   | server  | parks_then_*    | parks_then_*   | a2a_parks_*    |
+//! | 4 | driver error → wire format  | server  | driver_error    | driver_error   | router unit    |
+//! | 5 | malformed body → wire format| Managed | malformed_body  | malformed_body | a2a_malformed  |
+//! | 6 | interrupt                   | server  | (shared host)   | (shared host)  | (shared host)  |
 //!
 //! Errors never leak axum's default plain-text 400: each adapter's JSON extractor
 //! converts a decode failure into its own error frame (categories 4 and 5).
@@ -387,4 +388,163 @@ async fn ag_ui_driver_error_returns_run_error() {
         sse_events(&body).iter().any(|e| e["type"] == "RUN_ERROR"),
         "driver error → RUN_ERROR event: {body}"
     );
+}
+
+// ── A2A adapter conformance (categories 1–3, 5) ─────────────────────────────
+
+/// An A2A `message:send` body: a user message on `context` carrying `text`.
+fn a2a_send(context: &str, msg_id: &str, text: &str) -> Value {
+    json!({ "message": {
+        "messageId": msg_id,
+        "contextId": context,
+        "role": "ROLE_USER",
+        "parts": [{ "text": text }]
+    }})
+}
+
+#[tokio::test]
+async fn a2a_turn_returns_completed_task() {
+    let app = build_echo_router();
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        a2a_send("a2a-t1", "m1", "hi"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let task = serde_json::from_str::<Value>(&body).unwrap()["task"].clone();
+    assert_eq!(task["contextId"], "a2a-t1");
+    assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
+    assert_eq!(task["status"]["message"]["parts"][0]["text"], "Echo: hi");
+    // The task history carries both the user turn and the agent reply.
+    let history = task["history"].as_array().unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|m| m["role"] == "ROLE_USER" && m["parts"][0]["text"] == "hi")
+    );
+    assert!(
+        history
+            .iter()
+            .any(|m| m["role"] == "ROLE_AGENT" && m["parts"][0]["text"] == "Echo: hi")
+    );
+}
+
+#[tokio::test]
+async fn a2a_history_accumulates_across_turns() {
+    let app = build_echo_router();
+    call(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        a2a_send("a2a-h", "m1", "one"),
+    )
+    .await;
+    let (_, body) = call(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        a2a_send("a2a-h", "m2", "two"),
+    )
+    .await;
+    let task = serde_json::from_str::<Value>(&body).unwrap()["task"].clone();
+    let texts: Vec<String> = task["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["parts"][0]["text"].as_str().map(str::to_string))
+        .collect();
+    // Both turns and both replies are present, oldest first.
+    assert!(texts.contains(&"one".to_string()));
+    assert!(texts.contains(&"Echo: one".to_string()));
+    assert!(texts.contains(&"two".to_string()));
+}
+
+#[tokio::test]
+async fn a2a_parks_input_required_then_resumes_completed() {
+    let app = build_custom_router();
+    // A managed session fixes the shared context id.
+    let (_, created) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        json!({ "agent": "assistant" }),
+    )
+    .await;
+    let thread = serde_json::from_str::<Value>(&created).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A2A drives a turn; the model calls the client tool and the task parks.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        a2a_send(&thread, "m1", "answer please"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let task = serde_json::from_str::<Value>(&body).unwrap()["task"].clone();
+    assert_eq!(
+        task["status"]["state"], "TASK_STATE_INPUT_REQUIRED",
+        "a client-tool park is input-required: {body}"
+    );
+
+    // A2A delivers the awaited input on the SAME context; the run resumes to done.
+    let (_, body) = call(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        a2a_send(&thread, "m2", "42"),
+    )
+    .await;
+    let task = serde_json::from_str::<Value>(&body).unwrap()["task"].clone();
+    assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
+    assert!(
+        task["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["parts"][0]["text"]
+                .as_str()
+                .map(|t| t.contains("got: 42"))
+                .unwrap_or(false)),
+        "the resumed answer appears in the task history: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a2a_malformed_body_returns_error_envelope() {
+    // A2A is request/response, so a decode failure is an HTTP 400 + JSON error
+    // envelope (like Managed), not an in-stream event.
+    let app = build_echo_router();
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/a2a/message:send",
+        json!({ "message": 5 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let err = serde_json::from_str::<Value>(&body).unwrap();
+    assert!(
+        err["error"]["code"].is_number(),
+        "error envelope has a code: {body}"
+    );
+    assert!(
+        err["error"]["message"].is_string(),
+        "error envelope has a message: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a2a_agent_card_advertises_the_protocol() {
+    let app = build_echo_router();
+    let (status, body) = call(&app, "GET", "/v1/a2a/agent-card", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    let card = serde_json::from_str::<Value>(&body).unwrap();
+    assert_eq!(card["protocolVersion"], "1.0");
+    assert_eq!(card["capabilities"]["streaming"], false);
 }
