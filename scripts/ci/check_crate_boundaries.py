@@ -224,6 +224,21 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
         "http-body-util",
     },
+    # A2A protocol adapter: the anti-corruption boundary between the A2A HTTP+JSON
+    # `message:send` wire and the neutral runtime. Request/response (returns a
+    # `Task`), so it needs no streaming; drives an `A2aRuntime` port and constructs
+    # no runtime.
+    "awaken-protocol-a2a": {
+        "awaken-agent-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tokio",
+        "axum",
+        "tower",
+        "http-body-util",
+    },
     # Goal / outcome extension: goal vocabulary, a deterministic grader, and a
     # run-end continuation guard that drives the grade→revise loop inside the
     # runtime. Depends only on the runtime contract (like `awaken-ext-permission`).
@@ -277,6 +292,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-managed",
         "awaken-protocol-ai-sdk",
         "awaken-protocol-ag-ui",
+        "awaken-protocol-a2a",
         "awaken-sandbox-local",
         "awaken-ext-goal",
         "awaken-agent-contract",
