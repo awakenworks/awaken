@@ -81,8 +81,25 @@ pub fn rubric_text(rubric: &Value) -> String {
     }
 }
 
-/// The classification of one evaluation round. Producer-defined (ADR-0062 D4);
-/// the host projects it to a public result token.
+/// The **grader's** judgement for one deliverable — nothing about iteration
+/// budgets or lifecycle (those are the loop's concern, [`GoalOutcome`]). Keeping
+/// the grader verdict separate from the loop result is the boundary that lets a
+/// grader stay a faithful judge: it never needs to know how many revisions are
+/// left (separation of concerns; cf. `awaken-ext-outcome`'s `GradeResult`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GradeResult {
+    /// The deliverable meets every rubric criterion.
+    Satisfied,
+    /// The deliverable misses one or more criteria and should be revised.
+    NeedsRevision,
+    /// The rubric fundamentally does not match the task (not a revision matter).
+    Failed,
+}
+
+/// The **loop's** classification of one evaluation round: a grader verdict folded
+/// with the iteration budget and lifecycle. The host projects it to a public
+/// result token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GoalOutcome {
     /// The deliverable met the rubric.
@@ -91,8 +108,10 @@ pub enum GoalOutcome {
     NeedsRevision,
     /// The iteration budget is spent without meeting the rubric.
     MaxIterationsReached,
-    /// The grader could not judge (fail-open: end rather than loop forever).
+    /// The grader could not judge, or the rubric does not fit the task.
     Failed,
+    /// The run was interrupted (e.g. cancelled) before the outcome concluded.
+    Interrupted,
 }
 
 impl GoalOutcome {
@@ -103,19 +122,22 @@ impl GoalOutcome {
             GoalOutcome::NeedsRevision => "needs_revision",
             GoalOutcome::MaxIterationsReached => "max_iterations_reached",
             GoalOutcome::Failed => "failed",
+            GoalOutcome::Interrupted => "interrupted",
         }
     }
 
-    /// Whether the goal loop should stop (terminal) at this outcome.
+    /// Whether the goal loop should stop (terminal) at this outcome. Only a
+    /// revision keeps it going.
     pub fn is_terminal(&self) -> bool {
         !matches!(self, GoalOutcome::NeedsRevision)
     }
 }
 
-/// One graded verdict: whether the deliverable is met, plus the rationale.
+/// One graded verdict: the grader's [`GradeResult`] plus the rationale handed
+/// back to the agent as revision guidance.
 #[derive(Debug, Clone)]
 pub struct Verdict {
-    pub met: bool,
+    pub result: GradeResult,
     pub explanation: String,
 }
 
@@ -143,12 +165,12 @@ impl Grader for KeywordGrader {
     async fn grade(&self, goal: &GoalSpec, deliverable: &str) -> Result<Verdict, GraderError> {
         let verdict = if goal.rubric.is_empty() || deliverable.contains(&goal.rubric) {
             Verdict {
-                met: true,
+                result: GradeResult::Satisfied,
                 explanation: format!("deliverable satisfies the rubric ({:?})", goal.rubric),
             }
         } else {
             Verdict {
-                met: false,
+                result: GradeResult::NeedsRevision,
                 explanation: format!("deliverable must satisfy the rubric ({:?})", goal.rubric),
             }
         };
@@ -211,9 +233,12 @@ impl DelegateGrader {
 
 fn judge_prompt(goal: &GoalSpec, deliverable: &str) -> String {
     format!(
-        "You are grading a deliverable against a goal. Respond with ONLY a JSON \
-         object of the form {{\"met\": <bool>, \"explanation\": <string>}} and \
-         nothing else.\n\nGoal: {goal}\n\nRubric:\n{rubric}\n\nDeliverable:\n{deliverable}",
+        "You are an impartial grader. Score the artifact against the rubric. Respond with \
+         ONLY a JSON object of the form {{\"result\": \"satisfied\"|\"needs_revision\"|\"failed\", \
+         \"explanation\": <string>}} and nothing else. Use \"satisfied\" only when every criterion \
+         is met; \"needs_revision\" when one or more fail but the rubric fits the task; \"failed\" \
+         only when the rubric fundamentally does not match the task.\n\nGoal: {goal}\n\nRubric:\n\
+         {rubric}\n\nArtifact:\n{deliverable}",
         goal = goal.description,
         rubric = goal.rubric,
     )
@@ -228,16 +253,25 @@ fn parse_verdict(reply: Option<&str>) -> Result<Verdict, GraderError> {
     };
     let parsed: serde_json::Value =
         serde_json::from_str(json).map_err(|e| GraderError(format!("unparseable verdict: {e}")))?;
-    let met = parsed
-        .get("met")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| GraderError("judge verdict missing boolean `met`".into()))?;
+    let result = parsed
+        .get("result")
+        .and_then(Value::as_str)
+        .and_then(|s| match s {
+            "satisfied" => Some(GradeResult::Satisfied),
+            "needs_revision" => Some(GradeResult::NeedsRevision),
+            "failed" => Some(GradeResult::Failed),
+            _ => None,
+        })
+        .ok_or_else(|| GraderError("judge verdict missing a valid `result`".into()))?;
     let explanation = parsed
         .get("explanation")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    Ok(Verdict { met, explanation })
+    Ok(Verdict {
+        result,
+        explanation,
+    })
 }
 
 #[async_trait]
@@ -256,15 +290,19 @@ impl Grader for DelegateGrader {
     }
 }
 
-/// Classify a verdict at a given iteration into an outcome, applying the
-/// iteration budget. `iteration` is 1-based.
+/// Fold a grader [`Verdict`] and the iteration budget into a loop [`GoalOutcome`]
+/// (`iteration` is 1-based). This is the **only** place the budget meets the
+/// verdict — the grader itself never sees iteration counts.
 pub fn classify(verdict: &Verdict, iteration: u32, max_iterations: u32) -> GoalOutcome {
-    if verdict.met {
-        GoalOutcome::Satisfied
-    } else if iteration >= max_iterations {
-        GoalOutcome::MaxIterationsReached
-    } else {
-        GoalOutcome::NeedsRevision
+    match verdict.result {
+        GradeResult::Satisfied => GoalOutcome::Satisfied,
+        // A rubric that does not fit the task will never be met; end, do not burn
+        // the budget revising against it.
+        GradeResult::Failed => GoalOutcome::Failed,
+        GradeResult::NeedsRevision if iteration >= max_iterations => {
+            GoalOutcome::MaxIterationsReached
+        }
+        GradeResult::NeedsRevision => GoalOutcome::NeedsRevision,
     }
 }
 

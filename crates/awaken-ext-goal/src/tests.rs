@@ -22,14 +22,21 @@ impl Grader for FixedGrader {
 
 fn met(explanation: &str) -> Verdict {
     Verdict {
-        met: true,
+        result: GradeResult::Satisfied,
         explanation: explanation.into(),
     }
 }
 
 fn unmet(explanation: &str) -> Verdict {
     Verdict {
-        met: false,
+        result: GradeResult::NeedsRevision,
+        explanation: explanation.into(),
+    }
+}
+
+fn unfit(explanation: &str) -> Verdict {
+    Verdict {
+        result: GradeResult::Failed,
         explanation: explanation.into(),
     }
 }
@@ -207,31 +214,29 @@ fn goal_spec_new_clamps_max_iterations_to_at_least_one() {
 async fn keyword_grader_matches_rubric_substring_and_fails_open_on_empty() {
     let grader = KeywordGrader;
     let goal = GoalSpec::new("finish", "FINAL", 3);
-    assert!(
-        grader
-            .grade(&goal, "here is the FINAL text")
-            .await
-            .unwrap()
-            .met
-    );
-    assert!(!grader.grade(&goal, "a draft").await.unwrap().met);
+    let met = |v: Verdict| v.result == GradeResult::Satisfied;
+    assert!(met(grader
+        .grade(&goal, "here is the FINAL text")
+        .await
+        .unwrap()));
+    assert!(!met(grader.grade(&goal, "a draft").await.unwrap()));
     // Case-sensitive substring: a lowercase token does not satisfy the rubric.
-    assert!(!grader.grade(&goal, "the final text").await.unwrap().met);
+    assert!(!met(grader.grade(&goal, "the final text").await.unwrap()));
     // An empty rubric is met by anything (fail-open).
     let empty = GoalSpec::new("finish", "", 3);
-    assert!(grader.grade(&empty, "").await.unwrap().met);
-    assert!(grader.grade(&empty, "whatever").await.unwrap().met);
+    assert!(met(grader.grade(&empty, "").await.unwrap()));
+    assert!(met(grader.grade(&empty, "whatever").await.unwrap()));
 }
 
 #[test]
-fn classify_covers_every_reachable_outcome() {
-    // A met verdict is satisfied regardless of iteration.
+fn classify_folds_grade_result_with_the_budget() {
+    // Satisfied is satisfied regardless of iteration.
     assert_eq!(classify(&met("y"), 1, 3), GoalOutcome::Satisfied);
     assert_eq!(classify(&met("y"), 9, 3), GoalOutcome::Satisfied);
-    // Unmet below the bound asks for a revision.
+    // NeedsRevision below the bound asks for a revision.
     assert_eq!(classify(&unmet("n"), 1, 3), GoalOutcome::NeedsRevision);
     assert_eq!(classify(&unmet("n"), 2, 3), GoalOutcome::NeedsRevision);
-    // Unmet at or beyond the bound exhausts it.
+    // NeedsRevision at or beyond the bound exhausts it.
     assert_eq!(
         classify(&unmet("n"), 3, 3),
         GoalOutcome::MaxIterationsReached
@@ -240,6 +245,10 @@ fn classify_covers_every_reachable_outcome() {
         classify(&unmet("n"), 4, 3),
         GoalOutcome::MaxIterationsReached
     );
+    // A grader `Failed` (rubric does not fit) ends immediately — the budget is
+    // never burned revising against an ill-fitting rubric.
+    assert_eq!(classify(&unfit("bad rubric"), 1, 3), GoalOutcome::Failed);
+    assert_eq!(classify(&unfit("bad rubric"), 3, 3), GoalOutcome::Failed);
 }
 
 #[test]
@@ -251,11 +260,13 @@ fn goal_outcome_tokens_and_terminality() {
         "max_iterations_reached"
     );
     assert_eq!(GoalOutcome::Failed.token(), "failed");
+    assert_eq!(GoalOutcome::Interrupted.token(), "interrupted");
     // Only a revision keeps the loop going; everything else is terminal.
     assert!(!GoalOutcome::NeedsRevision.is_terminal());
     assert!(GoalOutcome::Satisfied.is_terminal());
     assert!(GoalOutcome::MaxIterationsReached.is_terminal());
     assert!(GoalOutcome::Failed.is_terminal());
+    assert!(GoalOutcome::Interrupted.is_terminal());
 }
 
 #[test]
@@ -366,10 +377,10 @@ fn agent_goal(grader: GraderRef) -> GoalSpec {
 }
 
 #[tokio::test]
-async fn delegate_grader_parses_a_met_verdict() {
+async fn delegate_grader_parses_a_satisfied_verdict() {
     let grader = DelegateGrader::new(
         Arc::new(StubRunner::replying(
-            r#"{"met": true, "explanation": "all good"}"#,
+            r#"{"result": "satisfied", "explanation": "all good"}"#,
         )),
         "judge",
     );
@@ -377,15 +388,15 @@ async fn delegate_grader_parses_a_met_verdict() {
         .grade(&agent_goal(GraderRef::Default), "done")
         .await
         .unwrap();
-    assert!(v.met);
+    assert_eq!(v.result, GradeResult::Satisfied);
     assert_eq!(v.explanation, "all good");
 }
 
 #[tokio::test]
-async fn delegate_grader_parses_an_unmet_verdict_amid_prose() {
+async fn delegate_grader_parses_a_needs_revision_verdict_amid_prose() {
     let grader = DelegateGrader::new(
         Arc::new(StubRunner::replying(
-            "Verdict: {\"met\": false, \"explanation\": \"add an edge case\"}.",
+            "Verdict: {\"result\": \"needs_revision\", \"explanation\": \"add an edge case\"}.",
         )),
         "judge",
     );
@@ -393,8 +404,23 @@ async fn delegate_grader_parses_an_unmet_verdict_amid_prose() {
         .grade(&agent_goal(GraderRef::Default), "done")
         .await
         .unwrap();
-    assert!(!v.met);
+    assert_eq!(v.result, GradeResult::NeedsRevision);
     assert_eq!(v.explanation, "add an edge case");
+}
+
+#[tokio::test]
+async fn delegate_grader_parses_a_failed_verdict() {
+    let grader = DelegateGrader::new(
+        Arc::new(StubRunner::replying(
+            r#"{"result": "failed", "explanation": "rubric does not fit"}"#,
+        )),
+        "judge",
+    );
+    let v = grader
+        .grade(&agent_goal(GraderRef::Default), "done")
+        .await
+        .unwrap();
+    assert_eq!(v.result, GradeResult::Failed);
 }
 
 #[tokio::test]
@@ -432,7 +458,7 @@ async fn delegate_grader_reports_a_run_failure_as_error() {
 async fn delegate_grader_routes_default_and_explicit_agent() {
     // Default → the configured default judge.
     let runner = Arc::new(StubRunner::replying(
-        r#"{"met": true, "explanation": "ok"}"#,
+        r#"{"result": "satisfied", "explanation": "ok"}"#,
     ));
     let grader = DelegateGrader::new(runner.clone(), "default-judge");
     grader
@@ -446,7 +472,7 @@ async fn delegate_grader_routes_default_and_explicit_agent() {
 
     // Agent → the explicitly named judge.
     let runner = Arc::new(StubRunner::replying(
-        r#"{"met": true, "explanation": "ok"}"#,
+        r#"{"result": "satisfied", "explanation": "ok"}"#,
     ));
     let grader = DelegateGrader::new(runner.clone(), "default-judge");
     let goal = agent_goal(GraderRef::Agent {
@@ -464,7 +490,7 @@ fn judge_prompt_carries_the_rubric_and_deliverable() {
     let prompt = judge_prompt(&agent_goal(GraderRef::Default), "the deliverable");
     assert!(prompt.contains("tests pass")); // rubric
     assert!(prompt.contains("the deliverable"));
-    assert!(prompt.contains("\"met\"")); // asks for the JSON shape
+    assert!(prompt.contains("\"result\"")); // asks for the JSON shape
 }
 
 // ── Guard fail-open on a grader error ───────────────────────────────────────
