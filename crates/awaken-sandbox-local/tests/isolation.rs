@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
-use awaken_sandbox_local::{LocalSandboxProvider, SandboxProvider, SandboxSpec, rooted_hand_tools};
+use awaken_sandbox_local::{LocalSandboxProvider, SandboxProvider, SandboxSpec};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -38,8 +38,8 @@ async fn environments_are_isolated_and_escapes_fail_closed() {
 
     let env_a = provider.create(&SandboxSpec::new("A")).await.unwrap();
     let env_b = provider.create(&SandboxSpec::new("B")).await.unwrap();
-    let tools_a = rooted_hand_tools(env_a.root.clone());
-    let tools_b = rooted_hand_tools(env_b.root.clone());
+    let tools_a = env_a.hand_tools();
+    let tools_b = env_b.hand_tools();
 
     // A writes a secret via the rooted write tool; it lands inside A's root.
     invoke(
