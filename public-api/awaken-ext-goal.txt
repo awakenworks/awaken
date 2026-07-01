@@ -1,0 +1,76 @@
+pub mod awaken_ext_goal
+pub enum awaken_ext_goal::GoalOutcome
+pub awaken_ext_goal::GoalOutcome::Failed
+pub awaken_ext_goal::GoalOutcome::MaxIterationsReached
+pub awaken_ext_goal::GoalOutcome::NeedsRevision
+pub awaken_ext_goal::GoalOutcome::Satisfied
+impl awaken_ext_goal::GoalOutcome
+pub fn awaken_ext_goal::GoalOutcome::is_terminal(&self) -> bool
+pub fn awaken_ext_goal::GoalOutcome::token(&self) -> &'static str
+impl core::clone::Clone for awaken_ext_goal::GoalOutcome
+pub fn awaken_ext_goal::GoalOutcome::clone(&self) -> awaken_ext_goal::GoalOutcome
+impl core::cmp::Eq for awaken_ext_goal::GoalOutcome
+impl core::cmp::PartialEq for awaken_ext_goal::GoalOutcome
+pub fn awaken_ext_goal::GoalOutcome::eq(&self, &awaken_ext_goal::GoalOutcome) -> bool
+impl core::fmt::Debug for awaken_ext_goal::GoalOutcome
+pub fn awaken_ext_goal::GoalOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_goal::GoalOutcome
+impl core::marker::StructuralPartialEq for awaken_ext_goal::GoalOutcome
+impl serde_core::ser::Serialize for awaken_ext_goal::GoalOutcome
+pub fn awaken_ext_goal::GoalOutcome::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_goal::GoalOutcome
+pub fn awaken_ext_goal::GoalOutcome::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_goal::GoalOutcome
+impl core::marker::Send for awaken_ext_goal::GoalOutcome
+impl core::marker::Sync for awaken_ext_goal::GoalOutcome
+impl core::marker::Unpin for awaken_ext_goal::GoalOutcome
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_goal::GoalOutcome
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_goal::GoalOutcome
+pub struct awaken_ext_goal::GoalSpec
+pub awaken_ext_goal::GoalSpec::description: alloc::string::String
+pub awaken_ext_goal::GoalSpec::max_iterations: u32
+pub awaken_ext_goal::GoalSpec::rubric: alloc::string::String
+impl awaken_ext_goal::GoalSpec
+pub fn awaken_ext_goal::GoalSpec::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, u32) -> Self
+impl core::clone::Clone for awaken_ext_goal::GoalSpec
+pub fn awaken_ext_goal::GoalSpec::clone(&self) -> awaken_ext_goal::GoalSpec
+impl core::fmt::Debug for awaken_ext_goal::GoalSpec
+pub fn awaken_ext_goal::GoalSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for awaken_ext_goal::GoalSpec
+pub fn awaken_ext_goal::GoalSpec::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_goal::GoalSpec
+pub fn awaken_ext_goal::GoalSpec::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_goal::GoalSpec
+impl core::marker::Send for awaken_ext_goal::GoalSpec
+impl core::marker::Sync for awaken_ext_goal::GoalSpec
+impl core::marker::Unpin for awaken_ext_goal::GoalSpec
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_goal::GoalSpec
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_goal::GoalSpec
+pub struct awaken_ext_goal::KeywordGrader
+impl awaken_ext_goal::Grader for awaken_ext_goal::KeywordGrader
+pub fn awaken_ext_goal::KeywordGrader::grade(&self, &awaken_ext_goal::GoalSpec, &str) -> awaken_ext_goal::Verdict
+impl core::marker::Freeze for awaken_ext_goal::KeywordGrader
+impl core::marker::Send for awaken_ext_goal::KeywordGrader
+impl core::marker::Sync for awaken_ext_goal::KeywordGrader
+impl core::marker::Unpin for awaken_ext_goal::KeywordGrader
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_goal::KeywordGrader
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_goal::KeywordGrader
+pub struct awaken_ext_goal::Verdict
+pub awaken_ext_goal::Verdict::explanation: alloc::string::String
+pub awaken_ext_goal::Verdict::met: bool
+impl core::clone::Clone for awaken_ext_goal::Verdict
+pub fn awaken_ext_goal::Verdict::clone(&self) -> awaken_ext_goal::Verdict
+impl core::fmt::Debug for awaken_ext_goal::Verdict
+pub fn awaken_ext_goal::Verdict::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_goal::Verdict
+impl core::marker::Send for awaken_ext_goal::Verdict
+impl core::marker::Sync for awaken_ext_goal::Verdict
+impl core::marker::Unpin for awaken_ext_goal::Verdict
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_goal::Verdict
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_goal::Verdict
+pub trait awaken_ext_goal::Grader: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_goal::Grader::grade(&self, &awaken_ext_goal::GoalSpec, &str) -> awaken_ext_goal::Verdict
+impl awaken_ext_goal::Grader for awaken_ext_goal::KeywordGrader
+pub fn awaken_ext_goal::KeywordGrader::grade(&self, &awaken_ext_goal::GoalSpec, &str) -> awaken_ext_goal::Verdict
+pub fn awaken_ext_goal::classify(&awaken_ext_goal::Verdict, u32, u32) -> awaken_ext_goal::GoalOutcome
+pub fn awaken_ext_goal::rubric_text(&serde_json::value::Value) -> alloc::string::String

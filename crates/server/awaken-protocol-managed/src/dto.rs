@@ -202,6 +202,15 @@ pub enum OutboundKind {
     SessionStatusRunning {},
     #[serde(rename = "session.status_idle")]
     SessionStatusIdle { stop_reason: StopReason },
+    #[serde(rename = "span.outcome_evaluation_start")]
+    SpanOutcomeEvaluationStart { outcome_id: String, iteration: u32 },
+    #[serde(rename = "span.outcome_evaluation_end")]
+    SpanOutcomeEvaluationEnd {
+        outcome_id: String,
+        iteration: u32,
+        result: String,
+        explanation: String,
+    },
 }
 
 /// A committed public event: `id` + `type` + kind fields + `processed_at`. This

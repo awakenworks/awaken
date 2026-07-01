@@ -14,9 +14,9 @@ use awaken_agent_contract::agent::message::Message;
 
 use crate::dto::{
     ConfirmResult, CreateSessionRequest, Event, EventReceipt, InboundEvent, ListEventsResponse,
-    SendEventsRequest, SendEventsResponse, Session, SessionAgent, StopReason,
+    OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent, StopReason,
 };
-use crate::project::project_turn;
+use crate::project::{project_messages, project_turn};
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
 /// clock port; the wire only needs a valid RFC 3339 value here.
@@ -36,6 +36,22 @@ pub struct Decision {
     pub note: Option<String>,
 }
 
+/// One evaluation round of a goal: the agent's revision messages committed this
+/// round (empty when grading the existing deliverable), and the verdict.
+pub struct OutcomeIteration {
+    pub messages: Vec<Message>,
+    pub outcome_id: String,
+    pub iteration: u32,
+    pub result: String,
+    pub explanation: String,
+}
+
+/// The result of `user.define_outcome`: the ordered evaluation rounds. The loop
+/// always ends idle (`end_turn`).
+pub struct OutcomeReport {
+    pub iterations: Vec<OutcomeIteration>,
+}
+
 /// The runtime seam the adapter drives (DDD port). Implemented by the server over
 /// the kernel; the adapter never constructs a runtime.
 #[async_trait]
@@ -50,6 +66,16 @@ pub trait SessionRuntime: Send + Sync {
 
     /// Answer the tool the run parked on and continue to the next pause or end.
     async fn resume(&self, thread: &str, decision: Decision) -> Result<TurnOutcome, RunError>;
+
+    /// Define an outcome and drive the grade->revise loop over `thread`, bounded by
+    /// `max_iterations`; `rubric` is the normalized requirement text.
+    async fn define_outcome(
+        &self,
+        thread: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<OutcomeReport, RunError>;
 
     /// The model id to echo in the session's agent object.
     fn model(&self) -> String;
@@ -150,6 +176,50 @@ impl ManagedState {
         Ok(())
     }
 
+    /// Append an outcome report: for each round, the agent's revision events then
+    /// `span.outcome_evaluation_start` / `_end`, and a terminal `session.status_idle`.
+    fn append_outcome(&self, session_id: &str, report: OutcomeReport) -> Result<(), StateError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        let mut push = |id: Option<String>, kind: OutboundKind| {
+            record.events.push(Event {
+                id: id.unwrap_or_else(|| {
+                    format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
+                }),
+                kind,
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
+        };
+        for round in report.iterations {
+            for event in project_messages(&round.messages, None) {
+                push(event.id, event.kind);
+            }
+            push(
+                None,
+                OutboundKind::SpanOutcomeEvaluationStart {
+                    outcome_id: round.outcome_id.clone(),
+                    iteration: round.iteration,
+                },
+            );
+            push(
+                None,
+                OutboundKind::SpanOutcomeEvaluationEnd {
+                    outcome_id: round.outcome_id,
+                    iteration: round.iteration,
+                    result: round.result,
+                    explanation: round.explanation,
+                },
+            );
+        }
+        push(
+            None,
+            OutboundKind::SessionStatusIdle {
+                stop_reason: StopReason::EndTurn,
+            },
+        );
+        Ok(())
+    }
+
     /// `POST /v1/sessions/{id}/events`. Mints a receipt per inbound event and acts
     /// on `user.message` (run a turn) and `user.tool_confirmation` (resume a
     /// parked run), appending the projected events.
@@ -193,6 +263,23 @@ impl ManagedState {
                     let outcome = self.runtime.resume(session_id, decision).await?;
                     self.append_turn(session_id, outcome)?;
                 }
+                InboundEvent::UserDefineOutcome {
+                    description,
+                    rubric,
+                    max_iterations,
+                } => {
+                    let rubric = rubric_text(rubric);
+                    let report = self
+                        .runtime
+                        .define_outcome(
+                            session_id,
+                            description,
+                            &rubric,
+                            max_iterations.unwrap_or(3),
+                        )
+                        .await?;
+                    self.append_outcome(session_id, report)?;
+                }
                 // Other inbound events are accepted (receipt minted) and wired in
                 // later milestones.
                 _ => {}
@@ -217,6 +304,19 @@ impl ManagedState {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
         Ok(record.events.clone())
+    }
+}
+
+/// Normalize a Managed rubric (a bare string or `{type:"text",content}`) to text.
+fn rubric_text(rubric: &serde_json::Value) -> String {
+    match rubric {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Object(map) => map
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        _ => String::new(),
     }
 }
 
