@@ -54,6 +54,19 @@ const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repo
 
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// A unique temp-dir base for a sub-agent sandbox provider. `kind` tags the use
+/// (e.g. `judge`, `deleg`); empty for the host's own provider.
+fn sub_base(kind: &str) -> PathBuf {
+    let n = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let name = if kind.is_empty() {
+        format!("{pid}-{n}")
+    } else {
+        format!("{pid}-{kind}-{n}")
+    };
+    std::env::temp_dir().join("awaken-server-local").join(name)
+}
+
 /// A filesystem-safe database filename stem for a thread id (durable store).
 pub(crate) fn sanitize_thread(thread: &str) -> String {
     thread
@@ -361,80 +374,48 @@ pub struct SharedHost {
 }
 
 impl SharedHost {
+    /// A host over `llm`. Configure it with the chainable `with_*` builders
+    /// (client tools, delegates, a judge grader, a durable store).
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
-        Self::configured(llm, model_ref, HashSet::new(), HashSet::new())
-    }
-
-    /// A host with client-executed tools: those ids are model-visible but
-    /// unregistered, so a call parks and the client supplies the result.
-    pub fn with_client_tools(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: impl Into<String>,
-        client_tools: HashSet<String>,
-    ) -> Self {
-        Self::configured(llm, model_ref, client_tools, HashSet::new())
-    }
-
-    /// A host that can delegate to the agents in `delegates` via `agent_run`.
-    pub fn with_delegates(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: impl Into<String>,
-        delegates: HashSet<String>,
-    ) -> Self {
-        Self::configured(llm, model_ref, HashSet::new(), delegates)
-    }
-
-    /// A host whose outcomes are graded by a real judge sub-agent (`judge_agent_id`)
-    /// run through the kernel, instead of the deterministic keyword grader. The
-    /// judge grades in its own fresh context.
-    pub fn with_judge(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: impl Into<String>,
-        judge_agent_id: impl Into<String>,
-    ) -> Self {
-        let mut host = Self::configured(llm, model_ref, HashSet::new(), HashSet::new());
-        let base: PathBuf = std::env::temp_dir()
-            .join("awaken-server-local")
-            .join(format!(
-                "{}-judge-{}",
-                std::process::id(),
-                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-            ));
-        let runner = Arc::new(KernelJudgeRunner {
-            llm: host.llm.clone(),
-            model_ref: host.model_ref.clone(),
-            provider: LocalSandboxProvider::new(base),
-            seq: AtomicU64::new(0),
-        });
-        host.grader = Arc::new(DelegateGrader::new(runner, judge_agent_id));
-        host
-    }
-
-    fn configured(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: impl Into<String>,
-        client_tools: HashSet<String>,
-        delegates: HashSet<String>,
-    ) -> Self {
-        let base: PathBuf = std::env::temp_dir()
-            .join("awaken-server-local")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-            ));
         Self {
             llm,
             model_ref: model_ref.into(),
-            provider: LocalSandboxProvider::new(base),
+            provider: LocalSandboxProvider::new(sub_base("")),
             grader: Arc::new(KeywordGrader),
-            client_tools,
-            delegates,
+            client_tools: HashSet::new(),
+            delegates: HashSet::new(),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
             store_dir: None,
             remote_agents: HashMap::new(),
         }
+    }
+
+    /// Add client-executed tools: those ids are model-visible but unregistered, so
+    /// a call parks and the client supplies the result.
+    pub fn with_client_tools(mut self, client_tools: HashSet<String>) -> Self {
+        self.client_tools.extend(client_tools);
+        self
+    }
+
+    /// Add local delegate agents callable via `agent_run`.
+    pub fn with_delegates(mut self, delegates: HashSet<String>) -> Self {
+        self.delegates.extend(delegates);
+        self
+    }
+
+    /// Grade outcomes with a real judge sub-agent (`judge_agent_id`) run through the
+    /// kernel, instead of the deterministic keyword grader. The judge grades in its
+    /// own fresh context.
+    pub fn with_judge(mut self, judge_agent_id: impl Into<String>) -> Self {
+        let runner = Arc::new(KernelJudgeRunner {
+            llm: self.llm.clone(),
+            model_ref: self.model_ref.clone(),
+            provider: LocalSandboxProvider::new(sub_base("judge")),
+            seq: AtomicU64::new(0),
+        });
+        self.grader = Arc::new(DelegateGrader::new(runner, judge_agent_id));
+        self
     }
 
     /// Persist every thread's committed truth to a durable SQLite database under
@@ -481,13 +462,6 @@ impl SharedHost {
         if self.delegates.is_empty() {
             return None;
         }
-        let base: PathBuf = std::env::temp_dir()
-            .join("awaken-server-local")
-            .join(format!(
-                "{}-deleg-{}",
-                std::process::id(),
-                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-            ));
         // Native delegates are the roster ids that are not remotes.
         let native: HashSet<String> = self
             .delegates
@@ -498,7 +472,7 @@ impl SharedHost {
         Some(Arc::new(DelegationResolver::new(
             self.llm.clone(),
             self.model_ref.clone(),
-            LocalSandboxProvider::new(base),
+            LocalSandboxProvider::new(sub_base("deleg")),
             native,
             self.remote_agents.clone(),
         )))
