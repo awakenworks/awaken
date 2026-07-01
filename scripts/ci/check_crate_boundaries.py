@@ -175,6 +175,41 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
     },
+    # Managed Agents protocol adapter: the anti-corruption boundary between the
+    # public Anthropic wire and the neutral runtime. It owns the public DTOs and
+    # the axum router, so it may name `axum`/`tokio-stream`; it depends only on the
+    # agent-domain contract (for `Message`) and drives a `SessionRuntime` port, so
+    # it constructs no runtime. It is a product adapter, not a neutral crate.
+    "awaken-protocol-managed": {
+        "awaken-agent-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tokio",
+        "axum",
+        "tokio-stream",
+        "tower",
+        "http-body-util",
+    },
+    # Single-machine assembly binary: the composition root that wires the kernel
+    # (built-in tools + permission gate + model port) behind the managed adapter.
+    # Like the examples crate it may name every adapter it composes; nothing
+    # depends on it.
+    "awaken-server-local": {
+        "awaken-protocol-managed",
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-runtime",
+        "awaken-ext-builtin-tools",
+        "awaken-ext-permission",
+        "async-trait",
+        "serde_json",
+        "tokio",
+        "axum",
+        "tower",
+        "http-body-util",
+    },
 }
 
 NEUTRAL_CRATES = {

@@ -46,6 +46,8 @@ wrappers = [
     "awaken-store-postgres",
     "awaken-store-sqlite",
     "awaken-run-ingress",
+    "awaken-protocol-managed",
+    "awaken-server-local",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
 
@@ -62,6 +64,7 @@ wrappers = [
     "awaken-store-postgres",
     "awaken-store-sqlite",
     "awaken-run-ingress",
+    "awaken-server-local",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
 
@@ -73,6 +76,7 @@ wrappers = [
     "awaken-config-store",
     "awaken-runtime-examples",
     "awaken-run-ingress",
+    "awaken-server-local",
 ]
 reason = "runtime core; contracts must not depend on the kernel (G2, G18)"
 
@@ -83,5 +87,6 @@ name = "awaken-ext-builtin-tools"
 wrappers = [
     "awaken-run-ingress",
     "awaken-runtime-examples",
+    "awaken-server-local",
 ]
 reason = "extensions sit on top; the runtime core must stay extension-agnostic (G2)"
