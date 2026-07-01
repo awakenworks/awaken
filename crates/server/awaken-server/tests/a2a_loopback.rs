@@ -388,3 +388,61 @@ async fn a_remote_input_required_parks_the_parent_then_resumes() {
         "the forwarded input let the remote complete: {reply:?}"
     );
 }
+
+/// A remote agent's A2A agent card is discoverable through the transport (outbound
+/// discovery), so a coordinator can inspect a remote before delegating.
+#[tokio::test]
+async fn a_remote_agent_card_is_discoverable() {
+    let remote = build_router(Arc::new(EchoModel), "remote");
+    let transport = Arc::new(RouterTransport { app: remote });
+    let host =
+        SharedHost::new(Arc::new(EchoModel), "parent").with_remote_a2a("researcher", transport);
+
+    let card = host.remote_agent_card("researcher").await.unwrap();
+    assert!(!card.name.is_empty(), "the card advertises a name");
+    assert!(
+        !card.protocol_version.is_empty(),
+        "the card advertises the A2A protocol version"
+    );
+}
+
+/// A completed task's artifacts (A2A `TextAndArtifacts`) are folded into the
+/// delegate reply, not dropped.
+#[tokio::test]
+async fn remote_artifacts_are_included_in_the_reply() {
+    struct ArtifactTransport;
+    #[async_trait::async_trait]
+    impl A2aTransport for ArtifactTransport {
+        async fn request(
+            &self,
+            _method: &str,
+            _path: &str,
+            _body: Option<Vec<u8>>,
+        ) -> Result<A2aResponse, String> {
+            let json = r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"summary"}]}},"artifacts":[{"parts":[{"text":"the report body"}]}]}}"#;
+            Ok(A2aResponse {
+                status: 200,
+                body: json.as_bytes().to_vec(),
+            })
+        }
+    }
+
+    let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
+        .with_remote_a2a("researcher", Arc::new(ArtifactTransport));
+
+    host.run_turn("t", vec![user("u1", "research the answer")])
+        .await
+        .unwrap();
+
+    let history = host.committed_messages("t").await;
+    let reply = history
+        .iter()
+        .rev()
+        .find(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:"))
+        .map(text_of)
+        .expect("the parent commits a reply from the completed task");
+    assert!(
+        reply.contains("summary") && reply.contains("the report body"),
+        "the task message and its artifact both reach the parent: {reply:?}"
+    );
+}
