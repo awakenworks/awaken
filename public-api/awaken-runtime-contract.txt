@@ -1088,32 +1088,6 @@ impl core::marker::Sync for awaken_runtime_contract::snapshot::ExecutableAgentSn
 impl core::marker::Unpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
-pub mod awaken_runtime_contract::snapshot_exec
-pub struct awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::run_id: awaken_agent_contract::agent::run::Id
-pub awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::snapshot: awaken_runtime_contract::snapshot::AgentSnapshotInput
-pub awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::thread_id: awaken_agent_contract::agent::thread::Id
-pub awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::trace: awaken_runtime_contract::activation::TraceContext
-impl core::clone::Clone for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::clone(&self) -> awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::cmp::PartialEq for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::eq(&self, &awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand) -> bool
-impl core::fmt::Debug for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl serde_core::ser::Serialize for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::marker::Send for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::marker::Sync for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::marker::Unpin for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub trait awaken_runtime_contract::snapshot_exec::RunWithSnapshotExecutor: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotExecutor::run_with_snapshot<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub mod awaken_runtime_contract::tool
 pub enum awaken_runtime_contract::tool::ToolError
 pub awaken_runtime_contract::tool::ToolError::Execution(alloc::string::String)
@@ -1591,29 +1565,6 @@ impl core::marker::Sync for awaken_runtime_contract::activation::RunActivation
 impl core::marker::Unpin for awaken_runtime_contract::activation::RunActivation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::activation::RunActivation
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::activation::RunActivation
-pub struct awaken_runtime_contract::RunWithSnapshotCommand
-pub awaken_runtime_contract::RunWithSnapshotCommand::input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_runtime_contract::RunWithSnapshotCommand::run_id: awaken_agent_contract::agent::run::Id
-pub awaken_runtime_contract::RunWithSnapshotCommand::snapshot: awaken_runtime_contract::snapshot::AgentSnapshotInput
-pub awaken_runtime_contract::RunWithSnapshotCommand::thread_id: awaken_agent_contract::agent::thread::Id
-pub awaken_runtime_contract::RunWithSnapshotCommand::trace: awaken_runtime_contract::activation::TraceContext
-impl core::clone::Clone for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::clone(&self) -> awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::cmp::PartialEq for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::eq(&self, &awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand) -> bool
-impl core::fmt::Debug for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl serde_core::ser::Serialize for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-pub fn awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Freeze for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::marker::Send for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::marker::Sync for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::marker::Unpin for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand
 pub struct awaken_runtime_contract::RunnableConfig
 impl awaken_runtime_contract::runnable::RunnableConfig
 pub fn awaken_runtime_contract::runnable::RunnableConfig::builder(impl core::convert::Into<alloc::string::String>) -> awaken_runtime_contract::runnable::RunnableConfigBuilder
@@ -1741,8 +1692,6 @@ pub trait awaken_runtime_contract::RunExecutor: core::marker::Send + core::marke
 pub fn awaken_runtime_contract::RunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::RunResolver
 pub fn awaken_runtime_contract::RunResolver::resolve(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::resolved::ResolvedRun, awaken_runtime_contract::resolver::Error>
-pub trait awaken_runtime_contract::RunWithSnapshotExecutor: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::RunWithSnapshotExecutor::run_with_snapshot<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::snapshot_exec::RunWithSnapshotCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::RuntimeCatalogInstaller
 pub fn awaken_runtime_contract::RuntimeCatalogInstaller::install_catalog(&self, awaken_runtime_contract::catalog::RuntimeCatalogInstall) -> core::result::Result<awaken_runtime_contract::catalog::InstalledCatalog, awaken_runtime_contract::catalog::Error>
 pub trait awaken_runtime_contract::Tool: core::marker::Send + core::marker::Sync
