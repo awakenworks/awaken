@@ -901,6 +901,9 @@ pub awaken_runtime_contract::resume::ResumeResult::Decision::allow: bool
 pub awaken_runtime_contract::resume::ResumeResult::Decision::note: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::resume::ResumeResult::Input(alloc::string::String)
 pub awaken_runtime_contract::resume::ResumeResult::ToolResult(awaken_runtime_contract::tool::ToolOutput)
+impl awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::allow() -> Self
+pub fn awaken_runtime_contract::resume::ResumeResult::deny(core::option::Option<alloc::string::String>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::resume::ResumeResult
 pub fn awaken_runtime_contract::resume::ResumeResult::clone(&self) -> awaken_runtime_contract::resume::ResumeResult
 impl core::cmp::PartialEq for awaken_runtime_contract::resume::ResumeResult
@@ -926,6 +929,8 @@ pub awaken_runtime_contract::resume::ResumeCommand::result: awaken_runtime_contr
 pub awaken_runtime_contract::resume::ResumeCommand::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::resume::ResumeCommand::snapshot_id: alloc::string::String
 pub awaken_runtime_contract::resume::ResumeCommand::thread_id: awaken_agent_contract::agent::thread::Id
+impl awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::from_ticket(&awaken_agent_contract::agent::waiting::WaitingTicket, awaken_runtime_contract::resume::ResumeResult, u64) -> Self
 impl core::clone::Clone for awaken_runtime_contract::resume::ResumeCommand
 pub fn awaken_runtime_contract::resume::ResumeCommand::clone(&self) -> awaken_runtime_contract::resume::ResumeCommand
 impl core::cmp::PartialEq for awaken_runtime_contract::resume::ResumeCommand
@@ -1263,6 +1268,9 @@ pub awaken_runtime_contract::ResumeResult::Decision::allow: bool
 pub awaken_runtime_contract::ResumeResult::Decision::note: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::ResumeResult::Input(alloc::string::String)
 pub awaken_runtime_contract::ResumeResult::ToolResult(awaken_runtime_contract::tool::ToolOutput)
+impl awaken_runtime_contract::resume::ResumeResult
+pub fn awaken_runtime_contract::resume::ResumeResult::allow() -> Self
+pub fn awaken_runtime_contract::resume::ResumeResult::deny(core::option::Option<alloc::string::String>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::resume::ResumeResult
 pub fn awaken_runtime_contract::resume::ResumeResult::clone(&self) -> awaken_runtime_contract::resume::ResumeResult
 impl core::cmp::PartialEq for awaken_runtime_contract::resume::ResumeResult
@@ -1525,6 +1533,8 @@ pub awaken_runtime_contract::ResumeCommand::result: awaken_runtime_contract::res
 pub awaken_runtime_contract::ResumeCommand::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::ResumeCommand::snapshot_id: alloc::string::String
 pub awaken_runtime_contract::ResumeCommand::thread_id: awaken_agent_contract::agent::thread::Id
+impl awaken_runtime_contract::resume::ResumeCommand
+pub fn awaken_runtime_contract::resume::ResumeCommand::from_ticket(&awaken_agent_contract::agent::waiting::WaitingTicket, awaken_runtime_contract::resume::ResumeResult, u64) -> Self
 impl core::clone::Clone for awaken_runtime_contract::resume::ResumeCommand
 pub fn awaken_runtime_contract::resume::ResumeCommand::clone(&self) -> awaken_runtime_contract::resume::ResumeCommand
 impl core::cmp::PartialEq for awaken_runtime_contract::resume::ResumeCommand

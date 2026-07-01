@@ -25,6 +25,21 @@ pub enum ResumeResult {
     Input(String),
 }
 
+impl ResumeResult {
+    /// Approve the pending tool call.
+    pub fn allow() -> Self {
+        Self::Decision {
+            allow: true,
+            note: None,
+        }
+    }
+
+    /// Reject the pending tool call, optionally with a reason for the model.
+    pub fn deny(note: Option<String>) -> Self {
+        Self::Decision { allow: false, note }
+    }
+}
+
 /// Neutral resume input. Pure data so it can cross an ingress boundary, be
 /// logged, and be validated before any execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +52,24 @@ pub struct ResumeCommand {
     pub result: ResumeResult,
     /// Caller-supplied clock (epoch millis) used to enforce the ticket deadline.
     pub now_ms: u64,
+}
+
+impl ResumeCommand {
+    /// Build the command from the committed ticket: every identity field comes
+    /// from the ticket, so the caller supplies only the answer (`result`) and the
+    /// clock (`now_ms`). Both the in-process driver and the durable worker use
+    /// this — the ticket is the single source of the resume's identity.
+    pub fn from_ticket(ticket: &WaitingTicket, result: ResumeResult, now_ms: u64) -> Self {
+        Self {
+            correlation_id: ticket.correlation_id.clone(),
+            run_id: ticket.run_id.clone(),
+            thread_id: ticket.thread_id.clone(),
+            snapshot_id: ticket.snapshot_id.clone(),
+            catalog_fingerprint: ticket.catalog_fingerprint.clone(),
+            result,
+            now_ms,
+        }
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -120,6 +153,22 @@ mod tests {
     #[test]
     fn matching_resume_is_accepted() {
         assert!(validate_resume(&ticket(), &command()).is_ok());
+    }
+
+    #[test]
+    fn from_ticket_copies_identity_and_validates() {
+        // Built from the ticket + an answer, it validates against that same ticket.
+        let cmd = ResumeCommand::from_ticket(&ticket(), ResumeResult::allow(), 50);
+        assert_eq!(cmd.correlation_id, "c1");
+        assert_eq!(cmd.snapshot_id, "snap-1");
+        assert_eq!(
+            cmd.result,
+            ResumeResult::Decision {
+                allow: true,
+                note: None
+            }
+        );
+        assert!(validate_resume(&ticket(), &cmd).is_ok());
     }
 
     #[test]

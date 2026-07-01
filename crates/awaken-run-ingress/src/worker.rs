@@ -12,7 +12,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, Phase};
-use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
+use awaken_agent_contract::agent::waiting::WaitingReason;
 use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
@@ -155,7 +155,7 @@ impl<S: DispatchStore> DispatchWorker<S> {
                     .cloned();
                 match matched {
                     Some(input) => {
-                        let command = resume_command(&ticket, input.result, now_ms);
+                        let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms);
                         self.runtime
                             .resume(command, self.reader.as_ref(), self.execution_context())
                             .await?
@@ -242,20 +242,5 @@ impl<S: DispatchStore> DispatchWorker<S> {
             processed.push(result);
         }
         Ok(processed)
-    }
-}
-
-/// Build a resume command from the committed ticket plus the delivered input.
-/// Every identity comes from the ticket, so the runtime's resume validation
-/// (G5/G28) checks the resume against the same correlation it parked on.
-fn resume_command(ticket: &WaitingTicket, result: ResumeResult, now_ms: u64) -> ResumeCommand {
-    ResumeCommand {
-        correlation_id: ticket.correlation_id.clone(),
-        run_id: ticket.run_id.clone(),
-        thread_id: ticket.thread_id.clone(),
-        snapshot_id: ticket.snapshot_id.clone(),
-        catalog_fingerprint: ticket.catalog_fingerprint.clone(),
-        result,
-        now_ms,
     }
 }
