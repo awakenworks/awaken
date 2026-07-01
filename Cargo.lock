@@ -179,8 +179,11 @@ dependencies = [
 name = "awaken-ext-goal"
 version = "1.0.0-dev"
 dependencies = [
+ "async-trait",
+ "awaken-runtime-contract",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

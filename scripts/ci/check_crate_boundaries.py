@@ -224,9 +224,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
         "http-body-util",
     },
-    # Goal / outcome extension: pure vocabulary + a deterministic grader over the
-    # neutral verdict contract. No runtime deps; the re-dispatch loop lives in the host.
-    "awaken-ext-goal": {"serde", "serde_json"},
+    # Goal / outcome extension: goal vocabulary, a deterministic grader, and a
+    # run-end continuation guard that drives the grade→revise loop inside the
+    # runtime. Depends only on the runtime contract (like `awaken-ext-permission`).
+    "awaken-ext-goal": {
+        "serde",
+        "serde_json",
+        "async-trait",
+        "awaken-runtime-contract",
+        "tokio",
+    },
         # Local sandbox: per-environment path isolation. It wraps the built-in tools
     # (jailing their paths to an IsolatedRoot), so it depends on the extension it
     # wraps and the neutral tool port. The remote/container provider lives in a
