@@ -21,7 +21,7 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_sandbox_local::LocalSandboxProvider;
 use serde_json::{Value, json};
 
-use crate::host::{BASE_SEQ, SharedHost};
+use crate::host::{BASE_SEQ, HostError, SharedHost};
 
 /// The delegation tool id the resolver backs. Model-visible; not named by the
 /// kernel (the kernel matches on `AgentResolver::tool_id`).
@@ -232,13 +232,12 @@ impl AgentResolver for DelegationResolver {
 impl SharedHost {
     /// Fetch a remote delegate's A2A agent card (outbound discovery). Fails if the
     /// agent is not a registered remote.
-    pub async fn remote_agent_card(&self, agent_id: &str) -> Result<AgentCard, String> {
-        let transport = self
-            .remote_agents
-            .get(agent_id)
-            .ok_or_else(|| format!("agent {agent_id:?} is not a remote agent"))?;
+    pub async fn remote_agent_card(&self, agent_id: &str) -> Result<AgentCard, HostError> {
+        let transport = self.remote_agents.get(agent_id).ok_or_else(|| {
+            HostError::bad_request(format!("agent {agent_id:?} is not a remote agent"))
+        })?;
         a2a::agent_card(transport.as_ref())
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| HostError::internal(e.to_string()))
     }
 }

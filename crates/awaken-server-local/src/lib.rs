@@ -46,10 +46,10 @@ use axum::Router;
 
 use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult, block_text};
 
-// The A2A transport a remote delegate uses is the A2A bounded context's; re-export
-// it so composition-root callers configure a remote agent from one import.
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
+// A remote delegate's transport belongs to the A2A bounded context; re-export it so
+// a composition-root caller configures a remote agent from one import.
 pub use awaken_protocol_a2a::{HttpTransport, Response, Transport};
 
 /// A deterministic, network-free model: it replies with the last user turn's
