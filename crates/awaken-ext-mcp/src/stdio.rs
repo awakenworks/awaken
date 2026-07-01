@@ -1,23 +1,26 @@
 //! Stdio MCP transport.
 //!
-//! Built on the SDK's low-level [`AsyncStdioTransport`] (process spawn, JSON-RPC
-//! framing, and the initialize handshake), but issuing `tools/list` and
-//! `tools/call` directly so the raw [`CallToolResult`] — and thus its `isError`
-//! flag — is preserved. The SDK's *high-level* `call_tool` collapses a tool
-//! error into a transport error and discards `isError`, which would destroy the
-//! three-state distinction [`McpRawTool`](crate::tool::McpRawTool) relies on.
+//! Spawns an MCP server subprocess and drives it through the [`JsonRpcPeer`]
+//! demux, so — unlike the SDK's client — server notifications
+//! (`progress`, `tools/list_changed`, `resources/updated`) and server->client
+//! requests (`sampling`) are surfaced rather than dropped. `tools/list` and
+//! `tools/call` go through the peer's request path, which preserves the raw
+//! [`CallToolResult`] (and its `isError` flag) for the three-state mapping in
+//! [`McpRawTool`](crate::tool::McpRawTool).
 
 use std::collections::HashMap;
+use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use mcp::transport::McpTransportError;
-use mcp::{
-    AsyncStdioTransport, CallToolParams, CallToolResult, InitializeParams, ListToolsResult,
-    McpToolDefinition,
-};
+use mcp::{CallToolParams, CallToolResult, InitializeParams, ListToolsResult, McpToolDefinition};
 use serde_json::Value;
+use tokio::process::{Child, Command};
+use tokio::sync::{Mutex, mpsc};
 
+use crate::jsonrpc::{JsonRpcPeer, ServerNotification, ServerRequestHandler};
 use crate::transport::McpToolTransport;
 use crate::types::{
     ListPromptsResult, ListResourcesResult, McpPromptDefinition, McpPromptResult,
@@ -29,8 +32,13 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A stdio-spawned MCP server connection presented as an [`McpToolTransport`].
 pub struct StdioTransport {
-    inner: AsyncStdioTransport,
+    peer: JsonRpcPeer,
     timeout: Duration,
+    /// The child is kept alive here (its stdio is owned by the peer's tasks);
+    /// `kill_on_drop` reaps it when this transport is dropped.
+    child: Mutex<Child>,
+    /// Server notifications, taken once by whoever drives refresh/progress.
+    notifications: Mutex<Option<mpsc::Receiver<ServerNotification>>>,
 }
 
 impl StdioTransport {
@@ -40,7 +48,7 @@ impl StdioTransport {
         args: &[String],
         timeout: Duration,
     ) -> Result<Self, McpTransportError> {
-        Self::connect_with_env(command, args, HashMap::new(), None, timeout).await
+        Self::spawn_and_init(command, args, HashMap::new(), None, timeout, None).await
     }
 
     /// Spawn with extra environment variables and an optional `initialize`
@@ -52,43 +60,93 @@ impl StdioTransport {
         config: Option<Value>,
         timeout: Duration,
     ) -> Result<Self, McpTransportError> {
-        let inner = AsyncStdioTransport::spawn_with_env(command, args, env).await?;
-        let transport = Self { inner, timeout };
+        Self::spawn_and_init(command, args, env, config, timeout, None).await
+    }
+
+    /// Spawn with a handler for server->client requests (e.g. sampling).
+    pub async fn connect_with_handler(
+        command: &str,
+        args: &[String],
+        env: HashMap<String, String>,
+        config: Option<Value>,
+        timeout: Duration,
+        request_handler: Arc<dyn ServerRequestHandler>,
+    ) -> Result<Self, McpTransportError> {
+        Self::spawn_and_init(command, args, env, config, timeout, Some(request_handler)).await
+    }
+
+    async fn spawn_and_init(
+        command: &str,
+        args: &[String],
+        env: HashMap<String, String>,
+        config: Option<Value>,
+        timeout: Duration,
+        request_handler: Option<Arc<dyn ServerRequestHandler>>,
+    ) -> Result<Self, McpTransportError> {
+        let mut cmd = Command::new(command);
+        cmd.args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true);
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        let mut child = cmd.spawn().map_err(|e| {
+            McpTransportError::TransportError(format!("failed to spawn '{command}': {e}"))
+        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| McpTransportError::TransportError("child has no stdout".to_string()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| McpTransportError::TransportError("child has no stdin".to_string()))?;
+
+        let (peer, notifications) = JsonRpcPeer::new(stdout, stdin, request_handler);
+        let transport = Self {
+            peer,
+            timeout,
+            child: Mutex::new(child),
+            notifications: Mutex::new(Some(notifications)),
+        };
         transport.initialize(config).await?;
         Ok(transport)
     }
 
-    /// MCP lifecycle handshake: `initialize` then the `notifications/initialized`
-    /// acknowledgement, matching the SDK adapter's own connect path. The
-    /// acknowledgement is best-effort (some servers do not reply to it).
+    /// MCP lifecycle handshake: the `initialize` request, then the
+    /// `notifications/initialized` acknowledgement.
     async fn initialize(&self, config: Option<Value>) -> Result<(), McpTransportError> {
         let params = InitializeParams::new(config);
-        self.inner
-            .send_request_with_timeout(
-                "initialize",
-                Some(serde_json::to_value(&params)?),
-                self.timeout,
-            )
+        self.peer
+            .request("initialize", serde_json::to_value(&params)?, self.timeout)
             .await?;
-        let _ = self
-            .inner
-            .send_request_with_timeout(
-                "notifications/initialized",
-                Some(serde_json::json!({})),
-                self.timeout,
-            )
-            .await;
+        self.peer
+            .notify("notifications/initialized", serde_json::json!({}))
+            .await?;
         Ok(())
     }
 
-    /// Whether the child process is still running.
+    /// Take the server-notification receiver. Returns `None` on a second call —
+    /// only one consumer drives notifications.
+    pub async fn take_notifications(&self) -> Option<mpsc::Receiver<ServerNotification>> {
+        self.notifications.lock().await.take()
+    }
+
+    /// Whether the connection is still open.
     pub fn is_alive(&self) -> bool {
-        self.inner.is_alive()
+        self.peer.is_alive()
     }
 
     /// Terminate the child process.
     pub async fn stop(&self) -> Result<(), McpTransportError> {
-        self.inner.stop().await
+        self.child
+            .lock()
+            .await
+            .kill()
+            .await
+            .map_err(|e| McpTransportError::TransportError(e.to_string()))
     }
 }
 
@@ -96,8 +154,8 @@ impl StdioTransport {
 impl McpToolTransport for StdioTransport {
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
         let result = self
-            .inner
-            .send_request_with_timeout("tools/list", Some(serde_json::json!({})), self.timeout)
+            .peer
+            .request("tools/list", serde_json::json!({}), self.timeout)
             .await?;
         let parsed: ListToolsResult = serde_json::from_value(result)?;
         Ok(parsed.tools)
@@ -115,12 +173,8 @@ impl McpToolTransport for StdioTransport {
             meta: None,
         };
         let result = self
-            .inner
-            .send_request_with_timeout(
-                "tools/call",
-                Some(serde_json::to_value(&params)?),
-                self.timeout,
-            )
+            .peer
+            .request("tools/call", serde_json::to_value(&params)?, self.timeout)
             .await?;
         // Preserve the raw result — including `isError` — so the three-state
         // mapping in `McpRawTool` stays intact.
@@ -130,8 +184,8 @@ impl McpToolTransport for StdioTransport {
 
     async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
         let result = self
-            .inner
-            .send_request_with_timeout("prompts/list", Some(serde_json::json!({})), self.timeout)
+            .peer
+            .request("prompts/list", serde_json::json!({}), self.timeout)
             .await?;
         let parsed: ListPromptsResult = serde_json::from_value(result)?;
         Ok(parsed.prompts)
@@ -143,10 +197,10 @@ impl McpToolTransport for StdioTransport {
         arguments: Option<HashMap<String, String>>,
     ) -> Result<McpPromptResult, McpTransportError> {
         let result = self
-            .inner
-            .send_request_with_timeout(
+            .peer
+            .request(
                 "prompts/get",
-                Some(serde_json::json!({ "name": name, "arguments": arguments })),
+                serde_json::json!({ "name": name, "arguments": arguments }),
                 self.timeout,
             )
             .await?;
@@ -155,18 +209,18 @@ impl McpToolTransport for StdioTransport {
 
     async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
         let result = self
-            .inner
-            .send_request_with_timeout("resources/list", Some(serde_json::json!({})), self.timeout)
+            .peer
+            .request("resources/list", serde_json::json!({}), self.timeout)
             .await?;
         let parsed: ListResourcesResult = serde_json::from_value(result)?;
         Ok(parsed.resources)
     }
 
     async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
-        self.inner
-            .send_request_with_timeout(
+        self.peer
+            .request(
                 "resources/read",
-                Some(serde_json::json!({ "uri": uri })),
+                serde_json::json!({ "uri": uri }),
                 self.timeout,
             )
             .await
