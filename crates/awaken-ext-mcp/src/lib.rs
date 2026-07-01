@@ -17,14 +17,18 @@
 //! `tools/list_changed` refresh, sampling, progress, resources, prompts, and
 //! credentials.
 
+pub mod client;
 pub mod config;
 pub mod error;
 pub mod id_mapping;
+pub mod stdio;
 pub mod tool;
 pub mod transport;
 
+pub use client::{McpConnection, connect_tools};
 pub use config::{McpServerConnectionConfig, TransportTypeId};
 pub use error::McpError;
 pub use id_mapping::to_tool_id;
+pub use stdio::{DEFAULT_TIMEOUT, StdioTransport};
 pub use tool::{McpRawTool, mcp_tool_descriptor};
 pub use transport::McpToolTransport;
