@@ -13,7 +13,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_server_local::{
     A2aResponse, A2aTransport, DelegatingModel, EchoModel, HttpA2aTransport, SharedHost,
-    build_custom_router, build_router,
+    build_router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -310,23 +310,71 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
     );
 }
 
-/// A remote agent that parks (its A2A task is `input-required`) is surfaced to the
-/// delegating parent as a tool error — this seam runs the delegate to completion,
-/// so a mid-run pause on the remote is not a silent hang. Mirrors goal/awaken-next
-/// mapping a remote `InputRequired` task to a caller-visible signal.
+/// A remote agent that asks for input parks the *parent* for the user (rather than
+/// erroring): delivering input via `resume` forwards a follow-up `message:send`,
+/// and the remote then completes. Mirrors goal/awaken-next `InputRequired` →
+/// user-visible wait.
 #[tokio::test]
-async fn a_remote_input_required_task_surfaces_to_the_parent() {
-    // The remote awaken A2A server parks on a client-executed tool, so its
-    // `message:send` returns a task in the `input-required` state.
-    let remote = build_custom_router();
-    let transport = Arc::new(RouterTransport { app: remote });
+async fn a_remote_input_required_parks_the_parent_then_resumes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
-        .with_remote_a2a("researcher", transport);
+    /// First `message:send` → input-required; the second (the user's delivered
+    /// input) → completed.
+    struct TwoStepTransport {
+        sends: AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl A2aTransport for TwoStepTransport {
+        async fn request(
+            &self,
+            method: &str,
+            _path: &str,
+            _body: Option<Vec<u8>>,
+        ) -> Result<A2aResponse, String> {
+            assert_eq!(method, "POST", "only message:send is used (no polling)");
+            let json = if self.sends.fetch_add(1, Ordering::SeqCst) == 0 {
+                r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_INPUT_REQUIRED"}}}"#
+            } else {
+                r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"final answer"}]}}}}"#
+            };
+            Ok(A2aResponse {
+                status: 200,
+                body: json.as_bytes().to_vec(),
+            })
+        }
+    }
 
-    host.run_turn("t", vec![user("u1", "research the answer")])
+    let host = SharedHost::new(Arc::new(DelegatingModel), "parent").with_remote_a2a(
+        "researcher",
+        Arc::new(TwoStepTransport {
+            sends: AtomicUsize::new(0),
+        }),
+    );
+
+    // The turn parks: the remote asked for input, so the parent waits for the user.
+    let turn = host
+        .run_turn("t", vec![user("u1", "research the answer")])
         .await
         .unwrap();
+    let pending = turn
+        .pending
+        .expect("the parent parks awaiting remote input");
+    assert!(
+        pending.client_executed,
+        "the park asks the user to supply input"
+    );
+
+    // The user supplies the input; it is forwarded and the remote completes.
+    host.resume(
+        "t",
+        &pending.tool_use_id,
+        awaken_server_local::HostResume::ClientResult {
+            content: "the missing detail".into(),
+            is_error: false,
+        },
+    )
+    .await
+    .unwrap();
 
     let history = host.committed_messages("t").await;
     let reply = history
@@ -334,9 +382,9 @@ async fn a_remote_input_required_task_surfaces_to_the_parent() {
         .rev()
         .find(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:"))
         .map(text_of)
-        .expect("the parent commits a reply from the (failed) delegation");
+        .expect("the parent completes after the user delivers input");
     assert!(
-        reply.contains("requires further input"),
-        "a remote input-required task surfaces as a tool error: {reply:?}"
+        reply.contains("delegate said: final answer"),
+        "the forwarded input let the remote complete: {reply:?}"
     );
 }
