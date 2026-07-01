@@ -62,6 +62,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/tool-and-capability.md` | Role owner | Required | self |
 | `design/run-ingress-message-delivery.md` | Role owner | Required | self |
 | `design/anthropic-alignment-and-sessions.md` | Product/downstream mapping | Not required | n/a |
+| `design/awaken-server-local-overview.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
 | `design/resources-memory-files-skills.md` | Product/downstream mapping | Not required | n/a |
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
@@ -100,3 +101,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0031-config-store.md` | Decision record | Not required | n/a |
 | `adr/0032-runnable-config.md` | Decision record | Not required | n/a |
 | `adr/0033-in-process-run-driver.md` | Decision record | Not required | n/a |
+| `adr/0034-runtime-axis-model-and-orthogonality.md` | Decision record | Not required | n/a |
