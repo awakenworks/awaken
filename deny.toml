@@ -47,6 +47,8 @@ wrappers = [
     "awaken-store-sqlite",
     "awaken-run-ingress",
     "awaken-protocol-managed",
+    "awaken-protocol-ai-sdk",
+    "awaken-protocol-ag-ui",
     "awaken-server-local",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"

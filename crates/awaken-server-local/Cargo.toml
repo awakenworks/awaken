@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 awaken-protocol-managed = { path = "../awaken-protocol-managed" }
+awaken-protocol-ai-sdk = { path = "../awaken-protocol-ai-sdk" }
+awaken-protocol-ag-ui = { path = "../awaken-protocol-ag-ui" }
 awaken-sandbox-local = { path = "../awaken-sandbox-local" }
 awaken-ext-goal = { path = "../awaken-ext-goal" }
 awaken-agent-contract.workspace = true
@@ -19,6 +21,7 @@ awaken-ext-builtin-tools = { path = "../awaken-ext-builtin-tools" }
 awaken-ext-permission = { path = "../awaken-ext-permission" }
 async-trait.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 axum = "0.7"
 

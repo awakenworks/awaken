@@ -14,6 +14,8 @@ members = [
     "crates/awaken-store-sqlite",
     "crates/awaken-run-ingress",
     "crates/awaken-protocol-managed",
+    "crates/awaken-protocol-ai-sdk",
+    "crates/awaken-protocol-ag-ui",
     "crates/awaken-sandbox-local",
     "crates/awaken-ext-goal",
     "crates/awaken-server-local",

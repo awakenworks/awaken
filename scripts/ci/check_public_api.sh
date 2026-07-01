@@ -38,11 +38,12 @@ crates=$(cargo metadata --no-deps --format-version 1 \
 # scoped-migration dependant is excluded for this reason; their public surface is
 # small and reviewed in code. Re-enable when the nightly toolchain reaches 1.96.
 #
-# awaken-protocol-managed and awaken-server-local are the product adapter and the
-# single-machine assembly binary; their surface is a product concern that evolves
-# with the Managed Agents wire, not a stable neutral contract, so they are gated
-# by their own tests and the e2e harness rather than an API snapshot.
-excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store awaken-protocol-managed awaken-server-local"
+# The protocol adapters (awaken-protocol-managed / -ai-sdk / -ag-ui) and
+# awaken-server-local are product adapters and the single-machine assembly binary;
+# their surface is a product concern that evolves with each public wire, not a
+# stable neutral contract, so they are gated by their own tests and the e2e
+# harness rather than an API snapshot.
+excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store awaken-protocol-managed awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-server-local"
 
 fail=0
 for c in $crates; do

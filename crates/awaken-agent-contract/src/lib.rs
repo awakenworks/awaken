@@ -4,6 +4,7 @@ pub mod agent;
 pub mod commit;
 pub mod event;
 pub mod fact;
+pub mod project;
 pub mod store;
 pub mod stream;
 

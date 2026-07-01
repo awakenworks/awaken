@@ -192,6 +192,38 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
         "http-body-util",
     },
+    # AI SDK v6 protocol adapter: the anti-corruption boundary between the Vercel
+    # AI SDK UI Message Stream wire and the neutral runtime. Like the managed
+    # adapter it owns public DTOs + the axum router, depends only on the
+    # agent-domain contract (for `Message`/`project`), and drives an `AiSdkRuntime`
+    # port, so it constructs no runtime.
+    "awaken-protocol-ai-sdk": {
+        "awaken-agent-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tokio",
+        "axum",
+        "tokio-stream",
+        "tower",
+        "http-body-util",
+    },
+    # AG-UI protocol adapter: the anti-corruption boundary between the AG-UI wire
+    # and the neutral runtime. Same shape as the other protocol adapters; drives an
+    # `AgUiRuntime` port and constructs no runtime.
+    "awaken-protocol-ag-ui": {
+        "awaken-agent-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tokio",
+        "axum",
+        "tokio-stream",
+        "tower",
+        "http-body-util",
+    },
     # Goal / outcome extension: pure vocabulary + a deterministic grader over the
     # neutral verdict contract. No runtime deps; the re-dispatch loop lives in the host.
     "awaken-ext-goal": {"serde", "serde_json"},
@@ -213,6 +245,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # depends on it.
     "awaken-server-local": {
         "awaken-protocol-managed",
+        "awaken-protocol-ai-sdk",
+        "awaken-protocol-ag-ui",
         "awaken-sandbox-local",
         "awaken-ext-goal",
         "awaken-agent-contract",
@@ -222,6 +256,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-permission",
         "async-trait",
         "serde_json",
+        "thiserror",
         "tokio",
         "axum",
         "tower",
