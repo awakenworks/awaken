@@ -95,37 +95,114 @@ fn jail_args(tool_id: &str, mut args: Value, root: &IsolatedRoot) -> Result<Valu
     Ok(args)
 }
 
-/// A `RawTool` that runs an inner tool jailed to an environment root. The kernel
-/// invokes it like any other tool; isolation is entirely inside this wrapper.
-pub struct RootedTool {
+/// A hand tool bound to a sandbox environment. Unlike a [`RawTool`], its result is
+/// content-or-error **only** — [`HandOutput`] has no state field, so an environment
+/// tool executes side effects (filesystem, process) but can never author runtime
+/// state (G13): the runtime stays the sole author of its own state. Whether the
+/// tool runs in-process (rooted) or relays into a container/remote root, this makes
+/// the boundary invariant *unrepresentable*, not merely conventional.
+#[async_trait]
+pub trait HandTool: Send + Sync {
+    /// The tool id, matching the model-visible descriptor.
+    fn id(&self) -> &str;
+    /// Execute the call, returning content or a tool-level error — never state.
+    async fn run(&self, call: ToolCall) -> Result<HandOutput, ToolError>;
+}
+
+/// The result of a [`HandTool`]: content or a tool-level error, with no runtime
+/// state (G13). This is the shape that structurally forbids an environment tool
+/// from mutating runtime state.
+#[derive(Debug, Clone)]
+pub struct HandOutput {
+    /// The tool's textual result.
+    pub content: String,
+    /// Whether this is a tool-level error (model-visible; the run continues).
+    pub is_error: bool,
+}
+
+impl HandOutput {
+    /// A successful result carrying `content`.
+    pub fn ok(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+        }
+    }
+
+    /// A tool-level error carrying `content` (model-visible; the run continues).
+    pub fn error(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+        }
+    }
+}
+
+/// A [`HandTool`] that runs an inner `RawTool` jailed to an environment root. The
+/// jail rewrites path arguments; the inner result is narrowed to [`HandOutput`], so
+/// any runtime state the inner tool might carry is dropped at the boundary (G13).
+pub(crate) struct RootedTool {
     inner: Arc<dyn RawTool>,
     root: IsolatedRoot,
 }
 
 impl RootedTool {
-    pub fn new(inner: Arc<dyn RawTool>, root: IsolatedRoot) -> Self {
+    pub(crate) fn new(inner: Arc<dyn RawTool>, root: IsolatedRoot) -> Self {
         Self { inner, root }
     }
 }
 
 #[async_trait]
-impl RawTool for RootedTool {
+impl HandTool for RootedTool {
     fn id(&self) -> &str {
         self.inner.id()
     }
 
-    async fn invoke(&self, mut call: ToolCall) -> Result<ToolOutput, ToolError> {
+    async fn run(&self, mut call: ToolCall) -> Result<HandOutput, ToolError> {
         call.arguments = jail_args(self.inner.id(), call.arguments, &self.root)?;
-        self.inner.invoke(call).await
+        let out = self.inner.invoke(call).await?;
+        // Narrow to content/error: an environment tool never authors runtime state.
+        Ok(HandOutput {
+            content: out.content,
+            is_error: out.is_error,
+        })
     }
 }
 
-/// The built-in hand tools, each jailed to `root` — the executable tool set the
-/// host composes into a run for one environment.
-pub fn rooted_hand_tools(root: IsolatedRoot) -> Vec<Arc<dyn RawTool>> {
+/// Adapts a state-less [`HandTool`] into the runtime's `RawTool`. This is the single
+/// place the two shapes meet, and the produced [`ToolOutput`] always carries empty
+/// state (G13): state cannot cross the environment boundary.
+struct HandToolAsRaw(Arc<dyn HandTool>);
+
+#[async_trait]
+impl RawTool for HandToolAsRaw {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        let call_id = call.call_id.clone();
+        let out = self.0.run(call).await?;
+        Ok(if out.is_error {
+            ToolOutput::error(call_id, out.content)
+        } else {
+            ToolOutput::ok(call_id, out.content)
+        })
+    }
+}
+
+/// Adapt a state-less [`HandTool`] into a runtime `RawTool` (empty state, G13).
+fn hand_tool_as_raw(tool: Arc<dyn HandTool>) -> Arc<dyn RawTool> {
+    Arc::new(HandToolAsRaw(tool))
+}
+
+/// The built-in hand tools, each jailed to `root`. Internal: the local provider's
+/// way to bind [`HandTool`]s to an environment; a distributed provider builds its
+/// own relay `HandTool`s instead.
+pub(crate) fn rooted_hand_tools(root: IsolatedRoot) -> Vec<Arc<dyn HandTool>> {
     executable_hand_tools()
         .into_iter()
-        .map(|inner| Arc::new(RootedTool::new(inner, root.clone())) as Arc<dyn RawTool>)
+        .map(|inner| Arc::new(RootedTool::new(inner, root.clone())) as Arc<dyn HandTool>)
         .collect()
 }
 
@@ -148,11 +225,55 @@ impl SandboxSpec {
     }
 }
 
-/// A provisioned environment: an id and its isolated root.
-#[derive(Debug, Clone)]
+/// A provisioned environment: an id and the hand tools bound to it. The host
+/// composes [`hand_tools`](Environment::hand_tools) into a run without knowing
+/// *where* they execute — a local provider yields rooted in-process tools, a
+/// distributed provider (another repo) yields relay tools bound to a container or
+/// remote root. The environment's realized path never crosses this boundary (G3):
+/// the host receives tools, not a host path.
 pub struct Environment {
-    pub id: String,
-    pub root: IsolatedRoot,
+    id: String,
+    hand_tools: Vec<Arc<dyn HandTool>>,
+}
+
+impl Environment {
+    /// Build an environment from its id and the [`HandTool`]s a provider bound to
+    /// it at provision time. Because a `HandTool` returns [`HandOutput`] (no state
+    /// field), tools bound to an environment **cannot** author runtime state (G13)
+    /// — the invariant is structural, whether the tools run in-process or relay
+    /// into a container/remote root.
+    pub fn new(id: impl Into<String>, hand_tools: Vec<Arc<dyn HandTool>>) -> Self {
+        Self {
+            id: id.into(),
+            hand_tools,
+        }
+    }
+
+    /// This environment's id.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The hand tools bound to this environment, adapted for `Runtime::with_tool`.
+    /// Each produced `RawTool` carries empty state (G13). Cheap to call repeatedly
+    /// (clones `Arc` handles), so one environment can back several runtimes — e.g.
+    /// a goal-loop rebuild over the same thread.
+    pub fn hand_tools(&self) -> Vec<Arc<dyn RawTool>> {
+        self.hand_tools
+            .iter()
+            .cloned()
+            .map(hand_tool_as_raw)
+            .collect()
+    }
+}
+
+impl std::fmt::Debug for Environment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Environment")
+            .field("id", &self.id)
+            .field("hand_tools", &self.hand_tools.len())
+            .finish()
+    }
 }
 
 /// Why provisioning failed.
@@ -184,10 +305,10 @@ impl SandboxProvider for LocalSandboxProvider {
     async fn create(&self, spec: &SandboxSpec) -> Result<Environment, SandboxError> {
         let dir = self.base.join(&spec.id);
         std::fs::create_dir_all(&dir).map_err(|e| SandboxError(e.to_string()))?;
-        Ok(Environment {
-            id: spec.id.clone(),
-            root: IsolatedRoot::new(dir),
-        })
+        Ok(Environment::new(
+            spec.id.clone(),
+            rooted_hand_tools(IsolatedRoot::new(dir)),
+        ))
     }
 
     async fn teardown(&self, id: &str) -> Result<(), SandboxError> {
@@ -225,5 +346,161 @@ mod tests {
         assert!(root.resolve("../secret").is_err());
         assert!(root.resolve("a/../../secret").is_err());
         assert!(root.resolve("..").is_err());
+    }
+
+    #[test]
+    fn resolve_handles_curdir_and_empty() {
+        let root = IsolatedRoot::new("/env");
+        assert_eq!(root.resolve("./a").unwrap(), PathBuf::from("/env/a"));
+        assert_eq!(root.resolve("").unwrap(), PathBuf::from("/env"));
+    }
+
+    // ---- helpers ----
+
+    fn call(tool_id: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            call_id: "c1".into(),
+            tool_id: tool_id.into(),
+            arguments: args,
+        }
+    }
+
+    /// A custom `HandTool` — the shape an external / relay provider builds.
+    struct CustomHand {
+        id: String,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl HandTool for CustomHand {
+        fn id(&self) -> &str {
+            &self.id
+        }
+        async fn run(&self, _c: ToolCall) -> Result<HandOutput, ToolError> {
+            Ok(if self.fail {
+                HandOutput::error("boom")
+            } else {
+                HandOutput::ok("done")
+            })
+        }
+    }
+
+    // ---- jail_args branches ----
+
+    #[test]
+    fn jail_rebases_glob_pattern_and_cds_bash() {
+        let root = IsolatedRoot::new("/env");
+        let g = jail_args("glob", serde_json::json!({ "pattern": "src/*.rs" }), &root).unwrap();
+        assert_eq!(g["pattern"], "/env/src/*.rs");
+
+        let b = jail_args("bash", serde_json::json!({ "command": "ls" }), &root).unwrap();
+        assert_eq!(b["command"], "cd '/env' && ls");
+    }
+
+    #[test]
+    fn jail_passes_unknown_tools_through_and_rejects_escapes() {
+        let root = IsolatedRoot::new("/env");
+        let u = jail_args("weird", serde_json::json!({ "path": "../x" }), &root).unwrap();
+        assert_eq!(u["path"], "../x"); // unknown tool: untouched
+
+        assert!(jail_args("read", serde_json::json!({ "path": "../escape" }), &root).is_err());
+    }
+
+    // ---- HandOutput ----
+
+    #[test]
+    fn hand_output_constructors() {
+        let ok = HandOutput::ok("a");
+        assert_eq!(ok.content, "a");
+        assert!(!ok.is_error);
+        assert!(HandOutput::error("b").is_error);
+    }
+
+    // ---- the environment boundary carries no runtime state (G13) ----
+
+    // A `HandTool` cannot author state (`HandOutput` has no state field); this
+    // confirms the `RawTool` the runtime sees always carries empty state, on both
+    // the success and error paths.
+    #[tokio::test]
+    async fn adapter_maps_ok_and_error_with_empty_state() {
+        let raw = Environment::new(
+            "e",
+            vec![
+                Arc::new(CustomHand {
+                    id: "good".into(),
+                    fail: false,
+                }),
+                Arc::new(CustomHand {
+                    id: "bad".into(),
+                    fail: true,
+                }),
+            ],
+        )
+        .hand_tools();
+        let good = raw.iter().find(|t| t.id() == "good").unwrap();
+        let bad = raw.iter().find(|t| t.id() == "bad").unwrap();
+
+        let o = good
+            .invoke(call("good", serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(o.content, "done");
+        assert!(!o.is_error && o.state.is_empty());
+
+        let e = bad
+            .invoke(call("bad", serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(e.is_error && e.state.is_empty());
+    }
+
+    // ---- Environment ----
+
+    #[test]
+    fn environment_id_count_and_debug() {
+        let env = Environment::new(
+            "env-7",
+            vec![Arc::new(CustomHand {
+                id: "x".into(),
+                fail: false,
+            })],
+        );
+        assert_eq!(env.id(), "env-7");
+        assert_eq!(env.hand_tools().len(), 1);
+        let dbg = format!("{env:?}");
+        assert!(dbg.contains("env-7") && dbg.contains("hand_tools"));
+    }
+
+    // ---- rooted_hand_tools ----
+
+    #[test]
+    fn rooted_hand_tools_wraps_every_builtin_hand_tool() {
+        let tools = rooted_hand_tools(IsolatedRoot::new("/env"));
+        let ids: Vec<_> = tools.iter().map(|t| t.id().to_string()).collect();
+        for expected in ["read", "write", "edit", "glob", "grep", "bash"] {
+            assert!(ids.contains(&expected.to_string()), "missing {expected}");
+        }
+    }
+
+    // ---- spec / error / provider surfaces ----
+
+    #[test]
+    fn sandbox_spec_and_error_surfaces() {
+        let spec = SandboxSpec::new("id-1");
+        assert_eq!(spec.id, "id-1");
+        assert!(spec.mounts.is_empty() && spec.constraints.is_none());
+        assert!(SandboxError("nope".into()).to_string().contains("nope"));
+    }
+
+    #[tokio::test]
+    async fn local_provider_create_yields_tools_and_teardown_is_idempotent() {
+        let base = std::env::temp_dir().join(format!("awaken-sbx-unit-{}", std::process::id()));
+        let provider = LocalSandboxProvider::new(&base);
+        let env = provider.create(&SandboxSpec::new("u")).await.unwrap();
+        assert_eq!(env.id(), "u");
+        assert_eq!(env.hand_tools().len(), 6);
+        provider.teardown("u").await.unwrap();
+        // second teardown is a no-op (dir already gone), still Ok.
+        provider.teardown("u").await.unwrap();
     }
 }

@@ -4,7 +4,7 @@
 //! but a distributed one consumes. This fixes the single-machine <-> distributed
 //! boundary: this repo ships only the local side, but the seam is stable.
 
-use awaken_sandbox_local::{Environment, IsolatedRoot, SandboxError, SandboxProvider, SandboxSpec};
+use awaken_sandbox_local::{Environment, SandboxError, SandboxProvider, SandboxSpec};
 
 /// A stand-in for a provider implemented in a distributed repository: it would use
 /// `spec.mounts` / `spec.constraints` to provision a container or remote root. Here
@@ -21,10 +21,10 @@ impl SandboxProvider for DistributedStyleProvider {
             mount_count > 0 && has_constraints,
             "reserved seam data must be carried"
         );
-        Ok(Environment {
-            id: spec.id.clone(),
-            root: IsolatedRoot::new(format!("/remote/{}", spec.id)),
-        })
+        // A real distributed provider would bind relay tools here (from a
+        // container/remote root); the seam only needs to prove the port is
+        // implementable elsewhere and the reserved data arrives.
+        Ok(Environment::new(spec.id.clone(), Vec::new()))
     }
 
     async fn teardown(&self, _id: &str) -> Result<(), SandboxError> {
@@ -41,7 +41,7 @@ async fn provider_seam_accepts_a_distributed_impl_with_reserved_data() {
     let provider = DistributedStyleProvider;
     let env = provider.create(&spec).await.unwrap();
 
-    assert_eq!(env.id, "env-x");
-    assert_eq!(env.root.root(), std::path::Path::new("/remote/env-x"));
+    assert_eq!(env.id(), "env-x");
+    assert!(env.hand_tools().is_empty());
     provider.teardown("env-x").await.unwrap();
 }
