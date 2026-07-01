@@ -20,4 +20,4 @@ pub mod types;
 
 pub use port::{A2aRuntime, DriverError, Pending, Resume, StepOutcome};
 pub use router::{agent_card, router};
-pub use types::{AgentCard, SendMessageRequest, SendMessageResponse, Task, TaskState};
+pub use types::{AgentCard, Artifact, SendMessageRequest, SendMessageResponse, Task, TaskState};
