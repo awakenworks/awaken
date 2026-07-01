@@ -15,6 +15,7 @@ mod delegate;
 mod host;
 mod hub;
 mod store;
+mod subagent;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -45,10 +46,10 @@ use axum::Router;
 
 use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult, block_text};
 
-// The A2A transport a remote delegate uses is the A2A bounded context's; re-export
-// it so composition-root callers configure a remote agent from one import.
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
+// A remote delegate's transport belongs to the A2A bounded context; re-export it so
+// a composition-root caller configures a remote agent from one import.
 pub use awaken_protocol_a2a::{HttpTransport, Response, Transport};
 
 /// A deterministic, network-free model: it replies with the last user turn's
@@ -716,11 +717,9 @@ pub fn build_graded_router(
     model_ref: impl Into<String>,
     judge_agent_id: impl Into<String>,
 ) -> Router {
-    mount(Arc::new(SharedHost::with_judge(
-        llm,
-        model_ref,
-        judge_agent_id,
-    )))
+    mount(Arc::new(
+        SharedHost::new(llm, model_ref).with_judge(judge_agent_id),
+    ))
 }
 
 /// The default deterministic router (echo model) — the CI / e2e server.
@@ -731,7 +730,7 @@ pub fn build_echo_router() -> Router {
 /// A router with a client-executed tool `submit_answer` (the custom-tool e2e).
 pub fn build_custom_router() -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
-    let host = SharedHost::with_client_tools(Arc::new(CustomToolModel), "custom", client_tools);
+    let host = SharedHost::new(Arc::new(CustomToolModel), "custom").with_client_tools(client_tools);
     mount(Arc::new(host))
 }
 
@@ -740,6 +739,6 @@ pub fn build_custom_router() -> Router {
 /// fail-closed path can be exercised.
 pub fn build_delegation_router() -> Router {
     let roster = HashSet::from(["researcher".to_string()]);
-    let host = SharedHost::with_delegates(Arc::new(DelegatingModel), "delegate", roster);
+    let host = SharedHost::new(Arc::new(DelegatingModel), "delegate").with_delegates(roster);
     mount(Arc::new(host))
 }

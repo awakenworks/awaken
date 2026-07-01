@@ -30,7 +30,8 @@ fn text_of(message: &Message) -> String {
 
 fn host_over(dir: &std::path::Path) -> SharedHost {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
-    SharedHost::with_client_tools(Arc::new(CustomToolModel), "custom", client_tools)
+    SharedHost::new(Arc::new(CustomToolModel), "custom")
+        .with_client_tools(client_tools)
         .with_store_dir(dir.to_path_buf())
 }
 
@@ -108,16 +109,13 @@ async fn in_memory_host_does_not_recover_a_parked_run_across_a_rebuild() {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
 
     {
-        let host = SharedHost::with_client_tools(
-            Arc::new(CustomToolModel),
-            "custom",
-            client_tools.clone(),
-        );
+        let host = SharedHost::new(Arc::new(CustomToolModel), "custom")
+            .with_client_tools(client_tools.clone());
         host.run_turn(thread, vec![user("u1", "hi")]).await.unwrap();
         assert!(host.is_parked(thread).await);
     }
 
-    let host = SharedHost::with_client_tools(Arc::new(CustomToolModel), "custom", client_tools);
+    let host = SharedHost::new(Arc::new(CustomToolModel), "custom").with_client_tools(client_tools);
     assert!(
         !host.is_parked(thread).await,
         "an in-memory host starts clean; the parked run does not survive"
