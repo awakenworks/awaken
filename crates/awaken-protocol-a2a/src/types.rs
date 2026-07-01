@@ -75,6 +75,8 @@ pub enum TaskState {
     Working,
     #[serde(rename = "TASK_STATE_INPUT_REQUIRED")]
     InputRequired,
+    #[serde(rename = "TASK_STATE_AUTH_REQUIRED")]
+    AuthRequired,
     #[serde(rename = "TASK_STATE_COMPLETED")]
     Completed,
     #[serde(rename = "TASK_STATE_FAILED")]

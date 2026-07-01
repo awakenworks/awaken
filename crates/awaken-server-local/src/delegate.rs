@@ -260,9 +260,9 @@ async fn poll_to_terminal(
 
     match task.status.state {
         TaskState::Completed => Ok(DelegateOutcome::Done(completed_reply(&task))),
-        // The remote agent asked for more input: park the parent so the user can
-        // supply it (delivered as a follow-up `message:send` on the same context).
-        TaskState::InputRequired => Ok(DelegateOutcome::NeedsInput),
+        // The remote agent asked for more input (or authentication): park the
+        // parent so the user can supply it (a follow-up `message:send`).
+        TaskState::InputRequired | TaskState::AuthRequired => Ok(DelegateOutcome::NeedsInput),
         TaskState::Failed => Err(HostError::internal("remote A2A agent failed")),
         TaskState::Working => unreachable!("loop exits only on a terminal state"),
     }
