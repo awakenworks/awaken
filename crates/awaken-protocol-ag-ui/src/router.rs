@@ -6,7 +6,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Json, Path, State};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{FromRequest, Json, Path, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -18,6 +19,29 @@ use crate::types::{AgUiEvent, RunAgentInput};
 
 type Runtime = Arc<dyn AgUiRuntime>;
 
+/// A JSON body extractor for the AG-UI routes. On a decode failure (malformed
+/// JSON, wrong field type, bad content-type) it returns a bare `RUN_ERROR` event
+/// stream rather than axum's plain-text 400, so an AG-UI client sees the failure
+/// as a run error. The body never parsed, so there is no run to bracket with
+/// `RUN_STARTED`.
+struct AgUiJson<T>(T);
+
+#[async_trait::async_trait]
+impl<S, T> FromRequest<S> for AgUiJson<T>
+where
+    Json<T>: FromRequest<S, Rejection = JsonRejection>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(Self(value)),
+            Err(rejection) => Err(sse_response(vec![AgUiEvent::error(rejection.body_text())])),
+        }
+    }
+}
+
 /// Build the AG-UI router. Mount it alongside other protocol routers; the paths
 /// are the `/v1/ag-ui...` surface an AG-UI `HttpAgent` posts to.
 pub fn router(runtime: Runtime) -> Router {
@@ -27,14 +51,17 @@ pub fn router(runtime: Runtime) -> Router {
         .with_state(runtime)
 }
 
-async fn run_agent(State(rt): State<Runtime>, Json(input): Json<RunAgentInput>) -> Response {
+async fn run_agent(
+    State(rt): State<Runtime>,
+    AgUiJson(input): AgUiJson<RunAgentInput>,
+) -> Response {
     run(rt, input, None).await
 }
 
 async fn run_agent_scoped(
     State(rt): State<Runtime>,
     Path(agent_id): Path<String>,
-    Json(input): Json<RunAgentInput>,
+    AgUiJson(input): AgUiJson<RunAgentInput>,
 ) -> Response {
     run(rt, input, Some(agent_id)).await
 }
