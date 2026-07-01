@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,8 @@ pub struct CapabilityBound {
     /// Scheduled-action kinds this plugin may contribute (ADR-0027) — the
     /// id-bearing axis G30 names alongside tools and state keys.
     pub action_kinds: Vec<String>,
+    /// Run-end continuation guard ids this plugin may contribute.
+    pub run_end_guards: Vec<String>,
 }
 
 /// Declared plugin identity and bound. One `validate`-able home for config.
@@ -65,6 +68,47 @@ pub trait PhaseHook: Send + Sync {
     async fn on_phase(&self, ctx: &PhaseContext) -> Vec<StateCommand>;
 }
 
+/// What a run-end guard sees when the model/tool loop reaches a natural end (a
+/// text-only turn). Immutable: a guard reads the conversation and the run-scoped
+/// forced-continuation count, then returns a decision.
+pub struct RunEndContext<'a> {
+    pub run_id: RunId,
+    /// The full conversation transcript at the natural-end boundary.
+    pub conversation: &'a [Message],
+    /// How many times a guard has already steered this run — the runtime's
+    /// run-scoped continuation counter. A guard reads it to enforce its own
+    /// iteration budget; the runtime also caps total steps as a runaway backstop.
+    pub forced_continuations: usize,
+}
+
+/// A run-end guard's decision at a natural-end boundary. The runtime owns *when*
+/// the loop stops; the guard supplies the *predicate* and any feedback. `detail`
+/// is opaque to the runtime (anti-corruption): the guard's own classification,
+/// forwarded to the host without the kernel interpreting it.
+pub enum RunEndDecision {
+    /// End the run. `detail` is surfaced to the host as an opaque round result.
+    Complete { detail: serde_json::Value },
+    /// Continue for another turn: append `feedback` as a user message and loop.
+    /// `detail` describes this non-terminal round, opaque to the runtime.
+    Steer {
+        feedback: String,
+        detail: serde_json::Value,
+    },
+}
+
+/// A run-end continuation guard: consulted at the natural-end boundary to decide
+/// whether the run ends or takes another steered turn (e.g. goal/outcome
+/// evaluation). The runtime consults registered guards in dependency order and
+/// takes the first that steers; if none steer, the run ends carrying the last
+/// guard's completion detail. Async so a guard can grade through an external
+/// judge before deciding.
+#[async_trait]
+pub trait RunEndGuard: Send + Sync {
+    /// Stable id, checked against the plugin's `CapabilityBound` (G30).
+    fn id(&self) -> &str;
+    async fn evaluate(&self, ctx: &RunEndContext<'_>) -> RunEndDecision;
+}
+
 /// One plugin's resolved contributions. Built once by `Plugin::resolve`; holds
 /// live hook behavior, so it is runtime-side wiring, not serialized truth.
 #[derive(Clone)]
@@ -75,6 +119,8 @@ pub struct Contributions {
     pub phase_hooks: Vec<Arc<dyn PhaseHook>>,
     /// Scheduled-action kinds this plugin contributes (ADR-0027).
     pub action_kinds: Vec<String>,
+    /// Run-end continuation guards this plugin contributes.
+    pub run_end_guards: Vec<Arc<dyn RunEndGuard>>,
 }
 
 impl Contributions {
@@ -85,6 +131,7 @@ impl Contributions {
             state_keys: Vec::new(),
             phase_hooks: Vec::new(),
             action_kinds: Vec::new(),
+            run_end_guards: Vec::new(),
         }
     }
 }
@@ -109,6 +156,8 @@ pub enum BoundViolation {
     },
     #[error("plugin {plugin} contributes action kind {id:?} outside its declared bound")]
     ActionKind { plugin: String, id: String },
+    #[error("plugin {plugin} contributes run-end guard {id:?} outside its declared bound")]
+    RunEndGuard { plugin: String, id: String },
 }
 
 /// Enforce that a plugin's actual contributions are a subset of its bound (G30).
@@ -148,6 +197,19 @@ pub fn enforce_bound(
             });
         }
     }
+    for guard in &contributions.run_end_guards {
+        if !manifest
+            .bound
+            .run_end_guards
+            .iter()
+            .any(|id| id == guard.id())
+        {
+            return Err(BoundViolation::RunEndGuard {
+                plugin: manifest.id.clone(),
+                id: guard.id().to_string(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -184,6 +246,9 @@ pub struct ResolvedExecutionEnv {
     /// Scheduled-action kinds the selected plugins contribute. A kind absent here
     /// (its plugin is not selected for the run) cannot be staged (ADR-0027).
     pub action_kinds: Vec<String>,
+    /// Run-end continuation guards the selected plugins contribute, in dependency
+    /// order. Consulted at the natural-end boundary.
+    pub run_end_guards: Vec<Arc<dyn RunEndGuard>>,
 }
 
 impl ResolvedExecutionEnv {
@@ -214,6 +279,7 @@ impl ResolvedExecutionEnv {
             std::collections::BTreeMap::new();
         let mut state_keys: Vec<String> = Vec::new();
         let mut phase_hooks: Vec<Arc<dyn PhaseHook>> = Vec::new();
+        let mut run_end_guards: Vec<Arc<dyn RunEndGuard>> = Vec::new();
         let mut action_kinds: Vec<String> = Vec::new();
         let mut action_owner: std::collections::BTreeMap<String, String> =
             std::collections::BTreeMap::new();
@@ -240,6 +306,7 @@ impl ResolvedExecutionEnv {
                 }
             }
             phase_hooks.extend(contributions.phase_hooks.iter().cloned());
+            run_end_guards.extend(contributions.run_end_guards.iter().cloned());
             for kind in &contributions.action_kinds {
                 if let Some(first) = action_owner.get(kind) {
                     return Err(MergeError::DuplicateActionKind {
@@ -259,6 +326,7 @@ impl ResolvedExecutionEnv {
             state_keys,
             phase_hooks,
             action_kinds,
+            run_end_guards,
         })
     }
 
@@ -275,6 +343,11 @@ impl ResolvedExecutionEnv {
             .filter(|h| h.point() == point)
             .cloned()
             .collect()
+    }
+
+    /// Run-end continuation guards, in dependency order.
+    pub fn run_end_guards(&self) -> &[Arc<dyn RunEndGuard>] {
+        &self.run_end_guards
     }
 }
 
@@ -339,6 +412,7 @@ mod tests {
                 state_keys: vec!["k".into()],
                 phase_hooks: vec![PhaseHookPoint::StepStart],
                 action_kinds: vec!["a".into()],
+                ..Default::default()
             },
         );
         let mut c = Contributions::new("p");

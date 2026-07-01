@@ -60,6 +60,7 @@ wrappers = [
     "awaken-runtime",
     "awaken-ext-builtin-tools",
     "awaken-ext-permission",
+    "awaken-ext-goal",
     "awaken-config-store",
     "awaken-runtime-examples",
     "awaken-provider-genai",
