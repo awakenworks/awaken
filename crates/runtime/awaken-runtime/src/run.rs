@@ -74,6 +74,24 @@ impl Runtime {
         Ok(phase)
     }
 
+    /// Start one turn of `config` on `thread` and run it to its first pause or end,
+    /// returning the run id and phase. Unlike [`Runtime::run_to_completion`], it
+    /// does not answer a park: it returns `Phase::Waiting` so a durable caller
+    /// (HITL, an out-of-band client) can read the [`WaitingTicket`] and later
+    /// [`Runtime::resume`] the run by id. This is the public durable-park twin of
+    /// `run_to_completion` (ADR-0033); the caller owns the park→resume loop.
+    pub async fn start_turn(
+        &self,
+        config: &RunnableConfig,
+        thread: impl Into<String>,
+        input: impl Into<RunInput>,
+        context: RuntimeRunContext,
+    ) -> Result<(RunId, Phase), Error> {
+        let (run_id, activation) = self.prepare(config, thread.into(), input)?;
+        let phase = self.execute(activation, context).await?;
+        Ok((run_id, phase))
+    }
+
     /// Install the config's catalog and register its snapshot (both idempotent),
     /// then build a fresh activation on `thread` — the shared prefix of `run` and
     /// `run_to_completion`. Registering the snapshot lets a resume resolve it by id.
