@@ -594,7 +594,8 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "research the answer").await;
 
-    // `agent_run` is allowed inline: a sub-run executes and its result flows back.
+    // `agent_run` parks and the host fulfills it: a sub-run executes and its
+    // result flows back transparently within the turn.
     let msgs: Vec<&str> = list["data"]
         .as_array()
         .unwrap()
