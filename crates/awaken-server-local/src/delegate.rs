@@ -13,20 +13,15 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_protocol_a2a::client::{self as a2a, Transport};
 use awaken_protocol_a2a::{AgentCard, Task, TaskState};
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::resume::ResumeResult;
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_sandbox_local::{LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_sandbox_local::LocalSandboxProvider;
 use serde_json::{Value, json};
 
-use crate::host::{BASE_SEQ, SharedHost, build_runtime, latest_assistant_text, server_config};
+use crate::host::{BASE_SEQ, SharedHost};
 
 /// The delegation tool id the resolver backs. Model-visible; not named by the
 /// kernel (the kernel matches on `AgentResolver::tool_id`).
@@ -166,29 +161,25 @@ impl DelegationResolver {
 
     /// Run a native (in-process) delegate: a fresh rooted sub-run over the same
     /// model with no delegation tool (a delegate cannot recurse).
-    async fn native_run(&self, agent_id: &str, input: &str) -> Result<AgentStep, AgentError> {
+    async fn native_run(
+        &self,
+        agent_id: &str,
+        input: &str,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<AgentStep, AgentError> {
         let n = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
-        let env = self
-            .provider
-            .create(&SandboxSpec::new(format!("{agent_id}-sub-{n}")))
-            .await
-            .map_err(|e| AgentError::new(e.to_string()))?;
-        let runtime = build_runtime(self.llm.clone(), env.root);
-        let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
-        let commit = Arc::new(MemoryCommitCoordinator::new());
-        let thread = format!("sub-thread-{n}");
-        let ctx = RuntimeRunContext::new()
-            .with_commit(commit.clone())
-            .with_reader(commit.clone());
-        runtime
-            .run_to_completion(&config, thread.clone(), input, ctx, |_| {
-                ResumeResult::allow()
-            })
-            .await
-            .map_err(|e| AgentError::new(e.to_string()))?;
-        Ok(AgentStep::Done {
-            text: latest_assistant_text(&commit.committed_messages(&ThreadId(thread))),
-        })
+        let name = format!("{agent_id}-sub-{n}");
+        let text = crate::subagent::run_subagent(
+            self.llm.clone(),
+            &self.model_ref,
+            &self.provider,
+            &name,
+            input,
+            cancellation.cloned(),
+        )
+        .await
+        .map_err(AgentError::new)?;
+        Ok(AgentStep::Done { text })
     }
 }
 
@@ -214,7 +205,8 @@ impl AgentResolver for DelegationResolver {
                 "delegate agent {agent_id:?} is not in the roster"
             )));
         }
-        self.native_run(&agent_id, &input).await
+        self.native_run(&agent_id, &input, request.cancellation.as_ref())
+            .await
     }
 
     async fn resume(

@@ -15,6 +15,7 @@ mod delegate;
 mod host;
 mod hub;
 mod store;
+mod subagent;
 
 use std::collections::HashSet;
 use std::sync::Arc;
