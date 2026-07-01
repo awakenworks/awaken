@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
+use awaken_runtime_contract::agent_resolver::AgentResolver;
 use awaken_runtime_contract::capability::RuntimeCapabilitySource;
 use awaken_runtime_contract::catalog::{
     InstalledCatalog, RuntimeCatalogInstall, RuntimeCatalogInstaller,
@@ -34,6 +35,10 @@ pub struct Runtime {
     tools: HashMap<String, Arc<dyn RawTool>>,
     /// The authorization gate; absent means tools run ungated (test-only).
     gate: Option<Arc<dyn ToolGateHook>>,
+    /// The delegation resolver, if any. The engine routes the tool whose id is
+    /// `resolver.tool_id()` to this port instead of the tool registry, so a
+    /// delegate call runs (or parks) as a first-class kernel concern.
+    resolver: Option<Arc<dyn AgentResolver>>,
     /// Installed plugin factories; the active subset for a run is chosen by the
     /// resolved spec's `plugin_ids` and merged under capability bounds (G30).
     plugins: Vec<Arc<dyn Plugin>>,
@@ -80,6 +85,14 @@ impl Runtime {
     #[must_use]
     pub fn with_gate(mut self, gate: Arc<dyn ToolGateHook>) -> Self {
         self.gate = Some(gate);
+        self
+    }
+
+    /// Inject the delegation resolver. The tool it backs (`resolver.tool_id()`) is
+    /// executed by running a sub-agent (native or remote), not the tool registry.
+    #[must_use]
+    pub fn with_resolver(mut self, resolver: Arc<dyn AgentResolver>) -> Self {
+        self.resolver = Some(resolver);
         self
     }
 
@@ -134,6 +147,10 @@ impl Runtime {
 
     pub(crate) fn gate(&self) -> Option<&Arc<dyn ToolGateHook>> {
         self.gate.as_ref()
+    }
+
+    pub(crate) fn resolver(&self) -> Option<&Arc<dyn AgentResolver>> {
+        self.resolver.as_ref()
     }
 
     /// Track an in-flight run's cancellation token so `LiveRunControl` can reach
