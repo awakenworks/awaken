@@ -22,6 +22,10 @@ pub enum WaitingReason {
     /// by a human) and recovered from the committed request for consistency
     /// (ADR-0020).
     ScheduledAction,
+    /// A delegated sub-agent parked needing more input; the pending tool's
+    /// `resume_handle` carries the opaque state to resume it. Neutral — the kernel
+    /// does not name the delegate's transport.
+    Delegation,
 }
 
 /// The committed correlation for one same-run pause. A resume is accepted only
@@ -49,9 +53,14 @@ pub struct WaitingTicket {
     pub deadline_ms: Option<u64>,
 }
 
-/// The tool call a `ToolPermission` wait is holding, in pure data form.
+/// The tool call a wait is holding, in pure data form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingTool {
     pub tool_id: String,
     pub arguments: serde_json::Value,
+    /// Opaque durable state for a parked delegation (`WaitingReason::Delegation`),
+    /// e.g. a remote task id. The kernel stores it but never interprets it; the
+    /// resolver reads it on resume. Absent for ordinary tool waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_handle: Option<serde_json::Value>,
 }

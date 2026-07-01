@@ -294,19 +294,16 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
     polled.notified().await;
     host.interrupt("t").await.unwrap();
 
-    task.await
-        .unwrap()
-        .expect("the turn completes after cancel");
+    task.await.unwrap().expect("the turn returns after cancel");
     assert!(
         cancelled.load(Ordering::SeqCst),
         "the remote task received tasks:cancel"
     );
-    let history = host.committed_messages("t").await;
+    // The interrupt cancels the delegation and ends the run (kernel-observed), so
+    // the thread is not left parked or looping.
     assert!(
-        history
-            .iter()
-            .any(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:")),
-        "the parent resumed with the cancellation as a tool result"
+        !host.is_parked("t").await,
+        "the run is not left parked after the interrupt"
     );
 }
 

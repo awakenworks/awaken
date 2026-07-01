@@ -20,6 +20,7 @@ use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamKind};
 use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
     ChatMessage, ChatRequest, ChatRole, DeltaSink, ToolCall, ToolSchema,
@@ -204,6 +205,24 @@ pub(crate) async fn resume_run(
 
     emit(&context, &run_id, StreamKind::RunStarted).await;
 
+    // A parked delegation resumes through the resolver, not the tool registry: the
+    // resolver runs one more step with the user's input and the run continues or
+    // re-parks.
+    if ticket.reason == WaitingReason::Delegation {
+        return resume_delegation(
+            runtime,
+            &ticket,
+            command.result,
+            &resolved,
+            &env,
+            &run_id,
+            &thread_id,
+            reader,
+            &context,
+        )
+        .await;
+    }
+
     // Rebuild the transcript from committed truth and apply the resumed result.
     let mut transcript = reader.committed_messages(&thread_id);
     let (resumed, seed_state) = resume_into_messages(runtime, &ticket, command.result).await;
@@ -264,8 +283,9 @@ struct Checkpoint {
 /// an ended run carries its cause. The two are mutually exclusive by
 /// construction, so the committed [`Phase`] can never disagree with the ticket.
 enum End {
-    /// The run paused; the ticket is committed alongside the checkpoint.
-    Parked(WaitingTicket),
+    /// The run paused; the ticket is committed alongside the checkpoint. Boxed
+    /// because the ticket is much larger than an `EndCause`.
+    Parked(Box<WaitingTicket>),
     /// The run reached a terminus through one cause.
     Ended(EndCause),
 }
@@ -289,6 +309,17 @@ impl Checkpoint {
             staged_state: Vec::new(),
             audit: Vec::new(),
             end: End::Ended(cause),
+        }
+    }
+
+    /// A checkpoint that re-parks the run on `ticket` (no new messages) — used when
+    /// a resumed delegation parks again for more input.
+    fn parked(ticket: WaitingTicket) -> Self {
+        Self {
+            new_messages: Vec::new(),
+            staged_state: Vec::new(),
+            audit: Vec::new(),
+            end: End::Parked(Box::new(ticket)),
         }
     }
 }
@@ -497,7 +528,34 @@ async fn drive(
                 audit.push(permission_audit(&call, &outcome));
             }
             let output = match outcome {
-                GateOutcome::Allow => execute_tool(runtime, Some(env), &call).await,
+                GateOutcome::Allow => match run_delegation(runtime, context, &call).await {
+                    Some(Ok(AgentStep::Done { text })) => ToolOutput::ok(&call.call_id, text),
+                    // The delegate parked needing input: park the parent on a
+                    // Delegation ticket carrying the opaque handle (durable), resumed
+                    // through the resolver.
+                    Some(Ok(AgentStep::Parked { handle })) => {
+                        let ticket = waiting_ticket(
+                            resolved,
+                            run_id,
+                            &call.call_id,
+                            &call,
+                            WaitingReason::Delegation,
+                            Some(handle),
+                        );
+                        end = Some(End::Parked(Box::new(ticket)));
+                        emit(
+                            context,
+                            run_id,
+                            StreamKind::Waiting {
+                                reason: "delegation".to_string(),
+                            },
+                        )
+                        .await;
+                        break;
+                    }
+                    Some(Err(err)) => ToolOutput::error(&call.call_id, err.to_string()),
+                    None => execute_tool(runtime, Some(env), &call).await,
+                },
                 GateOutcome::Block { reason } => {
                     ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
                 }
@@ -511,8 +569,9 @@ async fn drive(
                         &ticket_id,
                         &call,
                         WaitingReason::ToolPermission,
+                        None,
                     );
-                    end = Some(End::Parked(ticket));
+                    end = Some(End::Parked(Box::new(ticket)));
                     emit(
                         context,
                         run_id,
@@ -544,8 +603,9 @@ async fn drive(
                         &correlation_id,
                         &call,
                         WaitingReason::ScheduledAction,
+                        None,
                     );
-                    end = Some(End::Parked(ticket));
+                    end = Some(End::Parked(Box::new(ticket)));
                     emit(
                         context,
                         run_id,
@@ -742,13 +802,15 @@ fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
     }
 }
 
-/// Build the committed ticket for a parked tool call.
+/// Build the committed ticket for a parked tool call. `handle` carries opaque
+/// durable state for a parked delegation and is absent for ordinary tool waits.
 fn waiting_ticket(
     resolved: &ResolvedRun,
     run_id: &RunId,
     ticket_id: &str,
     call: &ToolCall,
     reason: WaitingReason,
+    handle: Option<serde_json::Value>,
 ) -> WaitingTicket {
     WaitingTicket {
         correlation_id: ticket_id.to_string(),
@@ -761,9 +823,96 @@ fn waiting_ticket(
         pending_tool: Some(PendingTool {
             tool_id: call.tool_id.clone(),
             arguments: call.arguments.clone(),
+            resume_handle: handle,
         }),
         deadline_ms: None,
     }
+}
+
+/// The user input carried by a delegation resume (a client result, plain input,
+/// or a decision note).
+fn delegation_resume_input(result: &ResumeResult) -> String {
+    match result {
+        ResumeResult::ToolResult(output) => output.content.clone(),
+        ResumeResult::Input(text) => text.clone(),
+        ResumeResult::Decision { note, .. } => note.clone().unwrap_or_default(),
+    }
+}
+
+/// Resume a parked delegation: run the resolver one more step with the user's
+/// input. On `Done`/error the result is injected as the delegate tool's output and
+/// the run drives on; on `Parked` the run re-parks on a fresh Delegation ticket
+/// carrying the new handle.
+#[allow(clippy::too_many_arguments)]
+async fn resume_delegation(
+    runtime: &Runtime,
+    ticket: &WaitingTicket,
+    result: ResumeResult,
+    resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    reader: &dyn ThreadReader,
+    context: &RuntimeRunContext,
+) -> Result<Phase> {
+    let call_id = ticket.call_id.clone().unwrap_or_default();
+    let handle = ticket
+        .pending_tool
+        .as_ref()
+        .and_then(|tool| tool.resume_handle.clone())
+        .unwrap_or(serde_json::Value::Null);
+    let input = delegation_resume_input(&result);
+
+    let Some(resolver) = runtime.resolver() else {
+        return finish(
+            context,
+            thread_id,
+            run_id.clone(),
+            Checkpoint::capability_bound(),
+        )
+        .await;
+    };
+    let step = resolver
+        .resume(&handle, &input, context.cancellation.as_ref())
+        .await;
+
+    let synthetic = match step {
+        Ok(AgentStep::Done { text }) => ResumeResult::ToolResult(ToolOutput::ok(&call_id, text)),
+        Ok(AgentStep::Parked { handle }) => {
+            // Re-park on a fresh Delegation ticket carrying the new handle.
+            let mut reparked = ticket.clone();
+            if let Some(pending) = reparked.pending_tool.as_mut() {
+                pending.resume_handle = Some(handle);
+            }
+            return finish(
+                context,
+                thread_id,
+                run_id.clone(),
+                Checkpoint::parked(reparked),
+            )
+            .await;
+        }
+        Err(err) => ResumeResult::ToolResult(ToolOutput::error(&call_id, err.to_string())),
+    };
+
+    let mut transcript = reader.committed_messages(thread_id);
+    let (resumed, seed_state) = resume_into_messages(runtime, ticket, synthetic).await;
+    transcript.extend(resumed.iter().cloned());
+    let mut checkpoint = drive(
+        runtime,
+        resolved,
+        env,
+        run_id,
+        context,
+        transcript,
+        resumed,
+        RESUME_STEP_BASE,
+    )
+    .await?;
+    let mut combined = seed_state;
+    combined.append(&mut checkpoint.staged_state);
+    checkpoint.staged_state = combined;
+    finalize(context, thread_id, run_id.clone(), checkpoint).await
 }
 
 /// Turn a resumed result into the tool/user message(s) and any staged state.
@@ -831,6 +980,25 @@ async fn gate_decision(runtime: &Runtime, call: &ToolCall) -> GateOutcome {
         }
         None => GateOutcome::Allow,
     }
+}
+
+/// Run `call` as a delegation when it is the tool the resolver backs, returning
+/// the resolver's step; `None` means it is an ordinary tool for the registry. The
+/// kernel matches by `resolver.tool_id()`, so it never hard-codes the tool id.
+async fn run_delegation(
+    runtime: &Runtime,
+    context: &RuntimeRunContext,
+    call: &ToolCall,
+) -> Option<std::result::Result<AgentStep, awaken_runtime_contract::agent_resolver::AgentError>> {
+    let resolver = runtime.resolver()?;
+    if resolver.tool_id() != call.tool_id {
+        return None;
+    }
+    let request = AgentRequest {
+        arguments: call.arguments.clone(),
+        cancellation: context.cancellation.clone(),
+    };
+    Some(resolver.run(request).await)
 }
 
 /// Invoke an authorized tool, turning a missing tool or a tool error into a
@@ -977,7 +1145,7 @@ async fn finish(
         End::Parked(mut ticket) => {
             // The ticket carries the real thread id only at commit time.
             ticket.thread_id = thread_id.clone();
-            (Phase::Waiting, Some(ticket))
+            (Phase::Waiting, Some(*ticket))
         }
         End::Ended(cause) => (Phase::Ended(cause), None),
     };
