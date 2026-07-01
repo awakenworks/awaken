@@ -1,6 +1,7 @@
 //! Runtime-facing contract: activation data, snapshot execution, and narrow ports.
 
 pub mod activation;
+pub mod agent_resolver;
 pub mod capability;
 pub mod catalog;
 pub mod control;
@@ -18,6 +19,7 @@ pub mod snapshot;
 pub mod tool;
 
 pub use activation::RunActivation;
+pub use agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 pub use control::LiveRunControl;
 pub use execution::RunExecutor;
