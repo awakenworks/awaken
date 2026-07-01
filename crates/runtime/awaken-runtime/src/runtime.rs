@@ -109,6 +109,21 @@ impl Runtime {
         ResolvedExecutionEnv::merge(active)
     }
 
+    /// The combined live version of the active plugins, or `None` if every
+    /// active plugin is static. A change signals the drive loop to re-resolve the
+    /// execution environment at the next step boundary (dynamic tool refresh).
+    pub(crate) fn active_live_version(&self, plugin_ids: &[String]) -> Option<u64> {
+        let mut acc: Option<u64> = None;
+        for plugin in &self.plugins {
+            if plugin_ids.contains(&plugin.manifest().id)
+                && let Some(version) = plugin.live_version()
+            {
+                acc = Some(acc.unwrap_or(0).wrapping_add(version));
+            }
+        }
+        acc
+    }
+
     pub(crate) fn llm(&self) -> Option<&Arc<dyn LlmExecutor>> {
         self.llm.as_ref()
     }
