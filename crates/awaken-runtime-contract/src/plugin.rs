@@ -87,6 +87,10 @@ pub struct RunEndContext<'a> {
     /// run-scoped continuation counter. A guard reads it to enforce its own
     /// iteration budget; the runtime also caps total steps as a runaway backstop.
     pub forced_continuations: usize,
+    /// The run's cancellation token, if any. A guard that grades through a judge
+    /// sub-run forwards it, so cancelling the parent cancels the judge too rather
+    /// than orphaning it.
+    pub cancellation: Option<&'a tokio_util::sync::CancellationToken>,
 }
 
 /// A run-end guard's decision at a natural-end boundary. The runtime owns *when*
