@@ -17,7 +17,7 @@ use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_sandbox_local::{LocalSandboxProvider, SandboxProvider, SandboxSpec};
 
-use crate::host::{build_runtime, latest_assistant_text, server_config};
+use crate::config::{build_runtime, latest_assistant_text, server_config};
 
 /// Run a sub-agent named `name` with `input` to completion and return its last
 /// assistant line. `cancellation`, when set, is forwarded so cancelling the parent
@@ -34,7 +34,7 @@ pub(crate) async fn run_subagent(
         .create(&SandboxSpec::new(name))
         .await
         .map_err(|e| e.to_string())?;
-    let runtime = build_runtime(llm, env.root);
+    let runtime = build_runtime(llm, &env);
     let config = server_config(model_ref, &HashSet::new(), &HashSet::new(), &[]);
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let mut ctx = RuntimeRunContext::new()
