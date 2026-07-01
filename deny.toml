@@ -64,6 +64,7 @@ wrappers = [
     "awaken-store-postgres",
     "awaken-store-sqlite",
     "awaken-dispatch",
+    "awaken-sandbox-local",
     "awaken-server",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
@@ -87,6 +88,7 @@ name = "awaken-ext-builtin-tools"
 wrappers = [
     "awaken-dispatch",
     "awaken-runtime-examples",
+    "awaken-sandbox-local",
     "awaken-server",
 ]
 reason = "extensions sit on top; the runtime core must stay extension-agnostic (G2)"
