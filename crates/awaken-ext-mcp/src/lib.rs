@@ -29,6 +29,7 @@ pub mod plugin;
 pub mod progress;
 mod router;
 pub mod sampling;
+pub mod sse;
 pub mod stdio;
 pub mod tool;
 pub mod transport;
