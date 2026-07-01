@@ -226,6 +226,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tower",
+ "ureq",
 ]
 
 [[package]]
@@ -407,7 +408,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tower",
- "ureq",
 ]
 
 [[package]]

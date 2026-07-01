@@ -30,6 +30,7 @@ use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
 };
+use awaken_protocol_a2a::Transport;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::CancellationToken;
@@ -45,7 +46,7 @@ use awaken_sandbox_local::{
 };
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
-use crate::delegate::{A2aTransport, DelegationResolver};
+use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::store::HostCommit;
 
@@ -370,7 +371,7 @@ pub struct SharedHost {
     pub(crate) store_dir: Option<PathBuf>,
     /// Delegate agents fulfilled over A2A (agent id → transport) instead of a local
     /// sub-run. `run_delegate` routes to these first.
-    pub(crate) remote_agents: HashMap<String, Arc<dyn A2aTransport>>,
+    pub(crate) remote_agents: HashMap<String, Arc<dyn Transport>>,
 }
 
 impl SharedHost {
@@ -480,7 +481,7 @@ impl SharedHost {
     pub fn with_remote_a2a(
         mut self,
         agent_id: impl Into<String>,
-        transport: Arc<dyn A2aTransport>,
+        transport: Arc<dyn Transport>,
     ) -> Self {
         let agent_id = agent_id.into();
         self.delegates.insert(agent_id.clone());
