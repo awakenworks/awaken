@@ -11,6 +11,7 @@
 //! distribution stays out — remote relays and multi-node ingress plug in through
 //! seams, not here.
 
+mod delegate;
 mod host;
 mod hub;
 mod store;
@@ -44,6 +45,7 @@ use axum::Router;
 
 use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult, block_text};
 
+pub use crate::delegate::A2aTransport;
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 
