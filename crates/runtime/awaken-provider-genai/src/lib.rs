@@ -53,6 +53,36 @@ impl GenaiExecutor {
         self.timeout = timeout;
         self
     }
+
+    /// An executor pointed at a custom **Anthropic-compatible** endpoint — a
+    /// gateway that speaks the Anthropic Messages API (`{base_url}messages`), such
+    /// as `https://api.kimi.com/coding/v1/`. Every request routes through the
+    /// Anthropic adapter to `base_url`, authenticated by `api_key`; the model name
+    /// still comes from the request's `ModelBinding` (G22). This keeps the model
+    /// SDK named only here — a consumer passes a base URL, key, and model id.
+    pub fn anthropic_compatible(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        use genai::adapter::AdapterKind;
+        use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
+        use genai::{ModelIden, ServiceTarget};
+
+        let base_url = base_url.into();
+        let api_key = api_key.into();
+        let resolver = ServiceTargetResolver::from_resolver_fn(
+            move |mut target: ServiceTarget| -> std::result::Result<ServiceTarget, genai::resolver::Error> {
+                // Force the Anthropic adapter + custom endpoint + key, keeping the
+                // caller-selected model name.
+                target.endpoint = Endpoint::from_owned(base_url.clone());
+                target.auth = AuthData::from_single(api_key.clone());
+                target.model =
+                    ModelIden::new(AdapterKind::Anthropic, target.model.model_name.clone());
+                Ok(target)
+            },
+        );
+        let client = Client::builder()
+            .with_service_target_resolver(resolver)
+            .build();
+        Self::with_client(client)
+    }
 }
 
 #[async_trait]

@@ -396,6 +396,7 @@ dependencies = [
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",
  "awaken-protocol-managed",
+ "awaken-provider-genai",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-local",
