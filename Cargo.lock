@@ -192,6 +192,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "awaken-runtime-contract",
+ "futures",
  "model-context-protocol",
  "reqwest 0.11.27",
  "serde",

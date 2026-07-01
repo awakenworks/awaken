@@ -89,6 +89,18 @@ impl McpServer {
         Self::start(server_name, Arc::new(transport), list_changed).await
     }
 
+    /// Connect over streaming HTTP and wire its `list_changed` stream. The
+    /// `transport` must have been built with
+    /// [`HttpTransport::connect_streaming`](crate::http::HttpTransport::connect_streaming)
+    /// so the background SSE listener is running.
+    pub async fn connect_http(
+        server_name: impl Into<String>,
+        transport: crate::http::HttpTransport,
+    ) -> Result<Self, McpError> {
+        let list_changed = transport.subscribe_list_changed();
+        Self::start(server_name, Arc::new(transport), list_changed).await
+    }
+
     /// The runtime plugin projecting this server's tools.
     pub fn plugin(&self) -> McpPlugin {
         McpPlugin {
