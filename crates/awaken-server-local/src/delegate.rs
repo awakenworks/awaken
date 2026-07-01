@@ -63,6 +63,77 @@ pub trait A2aTransport: Send + Sync {
     ) -> Result<A2aResponse, String>;
 }
 
+/// A real HTTP `A2aTransport` to a remote A2A agent, with an optional bearer
+/// token. `ureq` is synchronous, so each request runs on a blocking thread; a
+/// non-2xx status is returned (not raised) so A2A's HTTP-status error envelope
+/// reaches the caller.
+pub struct HttpA2aTransport {
+    base_url: String,
+    bearer: Option<String>,
+}
+
+impl HttpA2aTransport {
+    /// A transport to the remote agent at `base_url` (e.g. `https://host`); A2A
+    /// paths are appended to it.
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            bearer: None,
+        }
+    }
+
+    /// Authenticate every request with `Authorization: Bearer <token>`.
+    pub fn with_bearer(mut self, token: impl Into<String>) -> Self {
+        self.bearer = Some(token.into());
+        self
+    }
+}
+
+#[async_trait]
+impl A2aTransport for HttpA2aTransport {
+    async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<A2aResponse, String> {
+        let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
+        let method = method.to_string();
+        let bearer = self.bearer.clone();
+        tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let mut req = ureq::request(&method, &url);
+            if let Some(token) = &bearer {
+                req = req.set("authorization", &format!("Bearer {token}"));
+            }
+            let result = match body {
+                Some(bytes) => req
+                    .set("content-type", "application/json")
+                    .send_bytes(&bytes),
+                None => req.call(),
+            };
+            // A non-2xx status is a normal A2A error envelope, not a transport
+            // failure — capture its status and body.
+            let (status, response) = match result {
+                Ok(response) => (response.status(), response),
+                Err(ureq::Error::Status(code, response)) => (code, response),
+                Err(err) => return Err(err.to_string()),
+            };
+            let mut buffer = Vec::new();
+            response
+                .into_reader()
+                .read_to_end(&mut buffer)
+                .map_err(|e| e.to_string())?;
+            Ok(A2aResponse {
+                status,
+                body: buffer,
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+}
+
 /// A2A route the outbound client posts a turn to.
 const MESSAGE_SEND_PATH: &str = "/v1/a2a/message:send";
 /// Bound on task polling before giving up, so a stuck remote cannot hang a

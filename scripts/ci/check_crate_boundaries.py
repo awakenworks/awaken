@@ -309,6 +309,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "axum",
         "tower",
         "http-body-util",
+        "ureq",
     },
 }
 

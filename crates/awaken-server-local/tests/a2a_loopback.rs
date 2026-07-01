@@ -12,8 +12,8 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_server_local::{
-    A2aResponse, A2aTransport, DelegatingModel, EchoModel, SharedHost, build_custom_router,
-    build_router,
+    A2aResponse, A2aTransport, DelegatingModel, EchoModel, HttpA2aTransport, SharedHost,
+    build_custom_router, build_router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -138,6 +138,39 @@ async fn a_remote_transport_failure_surfaces_as_a_tool_error() {
             .iter()
             .any(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:")),
         "the parent completes even when the remote agent is unreachable"
+    );
+}
+
+/// The built-in HTTP transport against a real remote A2A server bound to a
+/// localhost socket: a delegation crosses a genuine TCP + HTTP boundary.
+#[tokio::test]
+async fn a_delegate_call_reaches_a_remote_over_real_http() {
+    // Bind a real awaken A2A server on an ephemeral port.
+    let remote = build_router(Arc::new(EchoModel), "remote");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, remote).await.unwrap();
+    });
+
+    let transport = Arc::new(HttpA2aTransport::new(format!("http://{addr}")));
+    let host = SharedHost::new(Arc::new(DelegatingModel), "parent")
+        .with_remote_a2a("researcher", transport);
+
+    host.run_turn("t", vec![user("u1", "research the answer")])
+        .await
+        .unwrap();
+
+    let history = host.committed_messages("t").await;
+    let reply = history
+        .iter()
+        .rev()
+        .find(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:"))
+        .map(text_of)
+        .expect("the parent commits a reply from the remote HTTP agent");
+    assert!(
+        reply.contains("delegate said: Echo: do the research"),
+        "the remote reply crossed a real HTTP boundary: {reply:?}"
     );
 }
 
