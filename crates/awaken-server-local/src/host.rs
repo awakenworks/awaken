@@ -24,7 +24,10 @@ use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_ext_builtin_tools::{
     AgentRunner, Toolset, builtin_tools, delegation_tools, executable_hand_tools,
 };
-use awaken_ext_goal::{GoalSpec, Grader, KeywordGrader, classify};
+use awaken_ext_goal::{
+    DelegateError, DelegateGrader, DelegateReply, DelegateRequest, DelegateRunner, GoalPlugin,
+    GoalSpec, Grader, KeywordGrader,
+};
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
@@ -208,6 +211,7 @@ fn server_config(
     model_ref: &str,
     client_tools: &HashSet<String>,
     delegates: &HashSet<String>,
+    plugin_ids: &[String],
 ) -> RunnableConfig {
     let mut tools = hand_tool_descriptors();
     tools.extend(client_tools.iter().map(|id| client_tool_descriptor(id)));
@@ -219,6 +223,7 @@ fn server_config(
         .model(ModelBinding::new("default", model_ref, "default"))
         .tools(tools)
         .max_steps(20)
+        .plugins(plugin_ids.iter().cloned())
         .build()
 }
 
@@ -248,15 +253,22 @@ fn build_runtime(
 struct SessionState {
     parked: Option<RunId>,
     pending_system: Vec<String>,
+    /// How many committed `Continuation` (outcome) rounds have already been
+    /// projected, so a second `define_outcome` on the thread reports only its own.
+    consumed_rounds: usize,
 }
 
 /// One thread's live state: an isolated runtime, its config, its commit
-/// coordinator (the source of committed truth), and its position.
+/// coordinator (the source of committed truth), its sandbox root, and its
+/// position.
 struct SessionCtx {
     runtime: Runtime,
     config: RunnableConfig,
     commit: Arc<MemoryCommitCoordinator>,
     thread_id: ThreadId,
+    /// The thread's isolated sandbox root, reused to build a goal-enabled runtime
+    /// for `define_outcome` (same tools, same root).
+    root: IsolatedRoot,
     state: tokio::sync::Mutex<SessionState>,
 }
 
@@ -295,7 +307,7 @@ impl AgentRunner for LocalAgentRunner {
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         let runtime = build_runtime(self.llm.clone(), env.root, None);
-        let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new());
+        let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let thread = format!("sub-thread-{n}");
         let ctx = RuntimeRunContext::new()
@@ -310,6 +322,56 @@ impl AgentRunner for LocalAgentRunner {
         Ok(latest_assistant_text(
             &commit.committed_messages(&ThreadId(thread)),
         ))
+    }
+}
+
+/// Read a string field from an opaque round detail, defaulting to empty.
+fn detail_str(detail: &serde_json::Value, key: &str) -> String {
+    detail
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Runs a judge sub-agent through the kernel for a [`DelegateGrader`]: a fresh
+/// rooted runtime over the same model, driven to completion; its last assistant
+/// line is the judge's reply. The judge sees only its prompt (a fresh window), so
+/// its verdict is not biased by the doer's working state.
+struct KernelJudgeRunner {
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: String,
+    provider: LocalSandboxProvider,
+    seq: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl DelegateRunner for KernelJudgeRunner {
+    async fn run(&self, request: DelegateRequest) -> Result<DelegateReply, DelegateError> {
+        let n = self.seq.fetch_add(1, Ordering::SeqCst);
+        let env = self
+            .provider
+            .create(&SandboxSpec::new(format!("{}-judge-{n}", request.agent_id)))
+            .await
+            .map_err(|e| DelegateError(e.to_string()))?;
+        let runtime = build_runtime(self.llm.clone(), env.root, None);
+        let config = server_config(&self.model_ref, &HashSet::new(), &HashSet::new(), &[]);
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let thread = format!("judge-thread-{n}");
+        let ctx = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit.clone());
+        runtime
+            .run_to_completion(&config, thread.clone(), request.prompt, ctx, |_| {
+                ResumeResult::allow()
+            })
+            .await
+            .map_err(|e| DelegateError(e.to_string()))?;
+        Ok(DelegateReply {
+            text: Some(latest_assistant_text(
+                &commit.committed_messages(&ThreadId(thread)),
+            )),
+        })
     }
 }
 
@@ -347,6 +409,32 @@ impl SharedHost {
         delegates: HashSet<String>,
     ) -> Self {
         Self::configured(llm, model_ref, HashSet::new(), delegates)
+    }
+
+    /// A host whose outcomes are graded by a real judge sub-agent (`judge_agent_id`)
+    /// run through the kernel, instead of the deterministic keyword grader. The
+    /// judge grades in its own fresh context.
+    pub fn with_judge(
+        llm: Arc<dyn LlmExecutor>,
+        model_ref: impl Into<String>,
+        judge_agent_id: impl Into<String>,
+    ) -> Self {
+        let mut host = Self::configured(llm, model_ref, HashSet::new(), HashSet::new());
+        let base: PathBuf = std::env::temp_dir()
+            .join("awaken-server-local")
+            .join(format!(
+                "{}-judge-{}",
+                std::process::id(),
+                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+            ));
+        let runner = Arc::new(KernelJudgeRunner {
+            llm: host.llm.clone(),
+            model_ref: host.model_ref.clone(),
+            provider: LocalSandboxProvider::new(base),
+            seq: AtomicU64::new(0),
+        });
+        host.grader = Arc::new(DelegateGrader::new(runner, judge_agent_id));
+        host
     }
 
     fn configured(
@@ -422,9 +510,10 @@ impl SharedHost {
             .map_err(|e| HostError::internal(e.to_string()))?;
         let ctx = Arc::new(SessionCtx {
             runtime: build_runtime(self.llm.clone(), env.root.clone(), self.agent_runner()),
-            config: server_config(&self.model_ref, &self.client_tools, &self.delegates),
+            config: server_config(&self.model_ref, &self.client_tools, &self.delegates, &[]),
             commit: Arc::new(MemoryCommitCoordinator::new()),
             thread_id: ThreadId(thread.to_string()),
+            root: env.root.clone(),
             state: tokio::sync::Mutex::new(SessionState::default()),
         });
         sessions.insert(thread.to_string(), ctx.clone());
@@ -556,41 +645,62 @@ impl SharedHost {
         max_iterations: u32,
     ) -> Result<HostOutcomeReport, HostError> {
         let ctx = self.ctx_for(thread).await?;
-        let _st = ctx.state.lock().await;
+        let mut st = ctx.state.lock().await;
         let goal = GoalSpec::new(description, rubric, max_iterations);
+
+        // The runtime owns the grade->revise loop: a goal-enabled runtime whose
+        // run-end guard steers revisions until the goal is met or the budget is
+        // spent. The host drives one run and projects the rounds it committed. The
+        // guard shares the thread's committed history and sandbox root.
+        let goal_runtime = build_runtime(self.llm.clone(), ctx.root.clone(), self.agent_runner())
+            .with_plugin(Arc::new(GoalPlugin::new(goal, self.grader.clone())));
+        let config = server_config(
+            &self.model_ref,
+            &self.client_tools,
+            &self.delegates,
+            &["goal".to_string()],
+        );
+
+        // One run: the guard re-derives and grades the deliverable, then steers
+        // revisions. Outcome rounds auto-approve tools. Empty input re-infers over
+        // the committed history.
+        goal_runtime
+            .run_to_completion(
+                &config,
+                thread,
+                Vec::<Message>::new(),
+                ctx.context(),
+                |_| ResumeResult::allow(),
+            )
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+
+        // Project from DURABLE truth: the committed `Continuation` events the run
+        // recorded, each carrying the round's opaque detail (result + explanation).
+        // A `consumed_rounds` cursor scopes this to the rounds this call produced.
+        let committed = ctx.commit.committed();
+        let rounds: Vec<serde_json::Value> = committed
+            .events
+            .iter()
+            .filter(|event| event.kind == awaken_agent_contract::event::kind::Kind::Continuation)
+            .map(|event| event.payload.clone())
+            .collect();
+        let fresh = &rounds[st.consumed_rounds.min(rounds.len())..];
+        st.consumed_rounds = rounds.len();
+
         let outcome_id = format!("outc_{thread}");
-        let mut iterations = Vec::new();
-        let mut iteration = 1;
-        let mut consumed = ctx.commit.committed_messages(&ctx.thread_id).len();
-        loop {
-            let all = ctx.commit.committed_messages(&ctx.thread_id);
-            let messages = all[consumed..].to_vec();
-            consumed = all.len();
-            let deliverable = latest_assistant_text(&all);
-            let verdict = self.grader.grade(&goal, &deliverable);
-            let outcome = classify(&verdict, iteration, goal.max_iterations);
-            iterations.push(HostOutcomeIteration {
-                messages,
+        let all = ctx.commit.committed_messages(&ctx.thread_id);
+        let iterations = fresh
+            .iter()
+            .enumerate()
+            .map(|(i, detail)| HostOutcomeIteration {
+                messages: if i == 0 { all.clone() } else { Vec::new() },
                 outcome_id: outcome_id.clone(),
-                iteration,
-                result: outcome.token().to_string(),
-                explanation: verdict.explanation.clone(),
-            });
-            if outcome.is_terminal() {
-                break;
-            }
-            let feedback = format!(
-                "Your previous answer did not meet the goal ({description}). {} Revise it.",
-                verdict.explanation
-            );
-            ctx.runtime
-                .run_to_completion(&ctx.config, thread, feedback, ctx.context(), |_| {
-                    ResumeResult::allow()
-                })
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?;
-            iteration += 1;
-        }
+                iteration: i as u32 + 1,
+                result: detail_str(detail, "result"),
+                explanation: detail_str(detail, "explanation"),
+            })
+            .collect();
         Ok(HostOutcomeReport { iterations })
     }
 
