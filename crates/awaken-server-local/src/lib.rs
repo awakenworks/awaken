@@ -12,13 +12,13 @@
 //! distribution stays out — remote relays and multi-node ingress plug in through
 //! seams, not here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::message::Role;
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
@@ -30,8 +30,8 @@ use awaken_ext_permission::{
 };
 use awaken_protocol_managed::dto::StopReason;
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeIteration, OutcomeReport, RunError, SessionRuntime, TurnOutcome,
-    router,
+    Decision, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
+    TurnOutcome, router,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{PermissionGate, Runtime};
@@ -42,6 +42,7 @@ use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::tool::ToolOutput;
 use awaken_sandbox_local::{
     IsolatedRoot, LocalSandboxProvider, SandboxProvider, SandboxSpec, rooted_hand_tools,
 };
@@ -147,6 +148,73 @@ impl LlmExecutor for ReviseModel {
     }
 }
 
+/// A deterministic model for the custom-tool e2e: it calls the client-executed
+/// tool `submit_answer`, then replies with the result the client returned.
+pub struct CustomToolModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for CustomToolModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let tool_results = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .count();
+        let output = if tool_results == 0 {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "c1".into(),
+                tool_id: "submit_answer".into(),
+                arguments: serde_json::json!({ "question": "what is 6 x 7?" }),
+            }])
+        } else {
+            let result = request
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == ChatRole::Tool)
+                .map(|m| {
+                    m.content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolResult { content, .. } => Some(block_text(content)),
+                            _ => None,
+                        })
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            AssistantOutput::text(format!("got: {result}"))
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+        })
+    }
+}
+
+/// Build a turn's input: buffered system messages first, then the user message.
+/// A plain user turn (no system messages) stays a single message.
+fn turn_input(system: Vec<String>, user_text: &str) -> Vec<Message> {
+    let mut messages: Vec<Message> = system
+        .into_iter()
+        .map(|text| {
+            Message::text(
+                MessageId(format!("sys-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst))),
+                Role::System,
+                text,
+            )
+        })
+        .collect();
+    messages.push(Message::text(
+        MessageId(format!("usr-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst))),
+        Role::User,
+        user_text,
+    ));
+    messages
+}
+
 fn block_text(content: &[ContentBlock]) -> String {
     content
         .iter()
@@ -182,11 +250,25 @@ fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-fn server_config(model_ref: &str) -> RunnableConfig {
+/// A client-executed tool descriptor: model-visible, but no `RawTool` is
+/// registered, so a call parks (gate `ask`) and the *client* supplies the result
+/// via `user.custom_tool_result` (ADR-0034 `ToolBinding::ClientExecuted`, D17).
+fn client_tool_descriptor(id: &str) -> ToolDescriptor {
+    ToolDescriptor::pinned(
+        "client",
+        id,
+        format!("Client-executed tool `{id}`; the caller runs it and returns the result."),
+        serde_json::json!({ "type": "object" }),
+    )
+}
+
+fn server_config(model_ref: &str, client_tools: &HashSet<String>) -> RunnableConfig {
+    let mut tools = hand_tool_descriptors();
+    tools.extend(client_tools.iter().map(|id| client_tool_descriptor(id)));
     RunnableConfig::builder("assistant")
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
-        .tools(hand_tool_descriptors())
+        .tools(tools)
         .max_steps(20)
         .build()
 }
@@ -207,6 +289,8 @@ fn build_runtime(llm: Arc<dyn LlmExecutor>, root: IsolatedRoot) -> Runtime {
 struct SessionState {
     parked: Option<RunId>,
     consumed: usize,
+    /// System messages delivered by `system.message`, drained into the next turn.
+    pending_system: Vec<String>,
 }
 
 /// One session's live state: an isolated runtime, its config, its history, and
@@ -226,13 +310,24 @@ fn build_outcome(
     st: &mut SessionState,
     run_id: RunId,
     phase: Phase,
+    client_tools: &HashSet<String>,
 ) -> TurnOutcome {
     let all = ctx.commit.committed_messages(&ctx.thread_id);
     let messages = all[st.consumed..].to_vec();
     st.consumed = all.len();
     match phase {
         Phase::Waiting => {
-            let pending = ctx.commit.waiting_ticket(&run_id).and_then(|t| t.call_id);
+            let pending = ctx.commit.waiting_ticket(&run_id).and_then(|t| {
+                let tool_use_id = t.call_id?;
+                let tool = t.pending_tool?;
+                let client_executed = client_tools.contains(&tool.tool_id);
+                Some(Pending {
+                    tool_use_id,
+                    name: tool.tool_id,
+                    input: tool.arguments,
+                    client_executed,
+                })
+            });
             st.parked = Some(run_id);
             TurnOutcome {
                 messages,
@@ -268,11 +363,22 @@ pub struct RuntimeSession {
     model_ref: String,
     provider: LocalSandboxProvider,
     grader: Arc<dyn Grader>,
+    client_tools: HashSet<String>,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
 }
 
 impl RuntimeSession {
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
+        Self::with_client_tools(llm, model_ref, HashSet::new())
+    }
+
+    /// A session runtime with client-executed tools: those ids are model-visible
+    /// but unregistered, so a call parks and the client supplies the result.
+    pub fn with_client_tools(
+        llm: Arc<dyn LlmExecutor>,
+        model_ref: impl Into<String>,
+        client_tools: HashSet<String>,
+    ) -> Self {
         let base: PathBuf = std::env::temp_dir()
             .join("awaken-server-local")
             .join(format!(
@@ -285,6 +391,7 @@ impl RuntimeSession {
             model_ref: model_ref.into(),
             provider: LocalSandboxProvider::new(base),
             grader: Arc::new(KeywordGrader),
+            client_tools,
             sessions: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -301,7 +408,7 @@ impl RuntimeSession {
             .map_err(|e| RunError(e.to_string()))?;
         let ctx = Arc::new(SessionCtx {
             runtime: build_runtime(self.llm.clone(), env.root.clone()),
-            config: server_config(&self.model_ref),
+            config: server_config(&self.model_ref, &self.client_tools),
             commit: Arc::new(MemoryCommitCoordinator::new()),
             thread_id: ThreadId(session.to_string()),
             state: tokio::sync::Mutex::new(SessionState::default()),
@@ -332,12 +439,20 @@ impl SessionRuntime for RuntimeSession {
                 "session is awaiting a tool confirmation".to_string(),
             ));
         }
+        // Prepend any buffered `system.message`s ahead of the user turn.
+        let input = turn_input(std::mem::take(&mut st.pending_system), user_text);
         let (run_id, phase) = ctx
             .runtime
-            .start_turn(&ctx.config, thread, user_text, Self::context(&ctx))
+            .start_turn(&ctx.config, thread, input, Self::context(&ctx))
             .await
             .map_err(|e| RunError(e.to_string()))?;
-        Ok(build_outcome(&ctx, &mut st, run_id, phase))
+        Ok(build_outcome(
+            &ctx,
+            &mut st,
+            run_id,
+            phase,
+            &self.client_tools,
+        ))
     }
 
     async fn resume(&self, thread: &str, decision: Decision) -> Result<TurnOutcome, RunError> {
@@ -362,7 +477,58 @@ impl SessionRuntime for RuntimeSession {
             .resume(command, &*ctx.commit, Self::context(&ctx))
             .await
             .map_err(|e| RunError(e.to_string()))?;
-        Ok(build_outcome(&ctx, &mut st, run_id, phase))
+        Ok(build_outcome(
+            &ctx,
+            &mut st,
+            run_id,
+            phase,
+            &self.client_tools,
+        ))
+    }
+
+    async fn resume_custom(
+        &self,
+        thread: &str,
+        content: &str,
+        is_error: bool,
+    ) -> Result<TurnOutcome, RunError> {
+        let ctx = self.ctx_for(thread).await?;
+        let mut st = ctx.state.lock().await;
+        let run_id = st
+            .parked
+            .clone()
+            .ok_or_else(|| RunError("no parked run to resume".to_string()))?;
+        let ticket = ctx
+            .commit
+            .waiting_ticket(&run_id)
+            .ok_or_else(|| RunError("parked run has no waiting ticket".to_string()))?;
+        let call_id = ticket.call_id.clone().unwrap_or_default();
+        // The client executed the tool; inject its result directly (the kernel
+        // does not run anything for a `ToolResult` resume).
+        let output = if is_error {
+            ToolOutput::error(call_id, content)
+        } else {
+            ToolOutput::ok(call_id, content)
+        };
+        let command = ResumeCommand::from_ticket(&ticket, ResumeResult::ToolResult(output), 0);
+        let phase = ctx
+            .runtime
+            .resume(command, &*ctx.commit, Self::context(&ctx))
+            .await
+            .map_err(|e| RunError(e.to_string()))?;
+        Ok(build_outcome(
+            &ctx,
+            &mut st,
+            run_id,
+            phase,
+            &self.client_tools,
+        ))
+    }
+
+    async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError> {
+        let ctx = self.ctx_for(thread).await?;
+        ctx.state.lock().await.pending_system.push(text.to_string());
+        Ok(())
     }
 
     async fn define_outcome(
@@ -436,4 +602,12 @@ pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> 
 /// The default deterministic router (echo model) — the CI / e2e server.
 pub fn build_echo_router() -> Router {
     build_router(Arc::new(EchoModel), "echo-model")
+}
+
+/// A router with a client-executed tool `submit_answer` (the custom-tool e2e).
+pub fn build_custom_router() -> Router {
+    let client_tools = HashSet::from(["submit_answer".to_string()]);
+    let session =
+        RuntimeSession::with_client_tools(Arc::new(CustomToolModel), "custom", client_tools);
+    router(Arc::new(ManagedState::new(session)))
 }

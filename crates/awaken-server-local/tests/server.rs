@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
-use awaken_server_local::{EchoModel, build_router};
+use awaken_server_local::{EchoModel, build_custom_router, build_router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -277,6 +277,133 @@ async fn outcome_iterates_until_satisfied() {
     assert!(
         messages.iter().any(|m| m.contains("FINAL")),
         "messages: {messages:?}"
+    );
+}
+
+#[tokio::test]
+async fn custom_tool_use_through_real_kernel() {
+    let app = build_custom_router();
+    let id = create_session(&app).await;
+
+    // The model calls the client-executed tool `submit_answer` -> parks as custom.
+    let list = send_message(&app, &id, "solve it").await;
+    assert_eq!(
+        event_types(&list),
+        vec!["agent.custom_tool_use", "session.status_idle"]
+    );
+    let custom = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "agent.custom_tool_use")
+        .unwrap();
+    assert_eq!(custom["name"], "submit_answer");
+    let tool_use_id = custom["id"].as_str().unwrap().to_string();
+    let idle = list["data"].as_array().unwrap().last().unwrap();
+    assert_eq!(idle["stop_reason"]["type"], "requires_action");
+
+    // The client returns the result -> the model incorporates it and replies.
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": tool_use_id, "content": [{ "type": "text", "text": "42" }] }] }),
+    )
+    .await;
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let msgs: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("got: 42")),
+        "the client's result reached the model: {msgs:?}"
+    );
+    assert_eq!(
+        list["data"].as_array().unwrap().last().unwrap()["stop_reason"]["type"],
+        "end_turn"
+    );
+}
+
+/// A model that replies with every system message it can see, so a test can prove
+/// a `system.message` reached the turn's context.
+struct SystemEchoModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for SystemEchoModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let system: String = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::System)
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+        Ok(ChatResponse {
+            output: AssistantOutput::text(format!("system says: {system}")),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn system_message_reaches_next_turn() {
+    let app = build_router(Arc::new(SystemEchoModel), "sys");
+    let id = create_session(&app).await;
+
+    // A `system.message` is accept-only (no projected events) but buffered.
+    let receipts = json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "system.message", "content": [{ "type": "text", "text": "SECRET-DIRECTIVE" }] }] }),
+    )
+    .await;
+    assert_eq!(receipts["data"][0]["type"], "system.message");
+    let before = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(
+        before["data"].as_array().unwrap().is_empty(),
+        "system.message projects nothing on its own"
+    );
+
+    // The next user turn sees the buffered directive.
+    let list = send_message(&app, &id, "hello").await;
+    let messages: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("SECRET-DIRECTIVE")),
+        "directive reached the turn: {messages:?}"
     );
 }
 

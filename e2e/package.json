@@ -5,7 +5,7 @@
   "type": "module",
   "description": "End-to-end test that drives awaken-server-local with the official Anthropic TypeScript SDK.",
   "scripts": {
-    "test": "node managed_e2e.mjs && node managed_hitl_e2e.mjs && node managed_outcome_e2e.mjs"
+    "test": "node managed_e2e.mjs && node managed_hitl_e2e.mjs && node managed_outcome_e2e.mjs && node managed_custom_e2e.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.105.0"

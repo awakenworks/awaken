@@ -7,8 +7,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_protocol_managed::dto::StopReason;
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeIteration, OutcomeReport, RunError, SessionRuntime, TurnOutcome,
-    router,
+    Decision, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
+    TurnOutcome, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -82,6 +82,9 @@ impl SessionRuntime for EchoFake {
     async fn resume(&self, _thread: &str, _decision: Decision) -> Result<TurnOutcome, RunError> {
         Err(RunError("no parked run".into()))
     }
+    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        Ok(())
+    }
     async fn define_outcome(
         &self,
         _t: &str,
@@ -90,6 +93,14 @@ impl SessionRuntime for EchoFake {
         _m: u32,
     ) -> Result<OutcomeReport, RunError> {
         Err(RunError("no outcome".into()))
+    }
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _content: &str,
+        _is_error: bool,
+    ) -> Result<TurnOutcome, RunError> {
+        Err(RunError("no custom".into()))
     }
     fn model(&self) -> String {
         "test-model".into()
@@ -142,7 +153,12 @@ impl SessionRuntime for ParkingFake {
             stop: StopReason::RequiresAction {
                 event_ids: Vec::new(),
             },
-            pending: Some("call-1".into()),
+            pending: Some(Pending {
+                tool_use_id: "call-1".into(),
+                name: "write".into(),
+                input: serde_json::json!({ "path": "x.txt" }),
+                client_executed: false,
+            }),
         })
     }
     async fn resume(&self, _thread: &str, decision: Decision) -> Result<TurnOutcome, RunError> {
@@ -163,6 +179,9 @@ impl SessionRuntime for ParkingFake {
             pending: None,
         })
     }
+    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        Ok(())
+    }
     async fn define_outcome(
         &self,
         _t: &str,
@@ -171,6 +190,14 @@ impl SessionRuntime for ParkingFake {
         _m: u32,
     ) -> Result<OutcomeReport, RunError> {
         Err(RunError("no outcome".into()))
+    }
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _content: &str,
+        _is_error: bool,
+    ) -> Result<TurnOutcome, RunError> {
+        Err(RunError("no custom".into()))
     }
     fn model(&self) -> String {
         "test-model".into()
@@ -187,6 +214,9 @@ impl SessionRuntime for OutcomeFake {
     }
     async fn resume(&self, _t: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
         Err(RunError("no resume".into()))
+    }
+    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        Ok(())
     }
     async fn define_outcome(
         &self,
@@ -217,6 +247,14 @@ impl SessionRuntime for OutcomeFake {
                 },
             ],
         })
+    }
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _content: &str,
+        _is_error: bool,
+    ) -> Result<TurnOutcome, RunError> {
+        Err(RunError("no custom".into()))
     }
     fn model(&self) -> String {
         "test-model".into()
@@ -328,6 +366,196 @@ async fn hitl_park_confirm_resume() {
     );
     let last_idle = list["data"].as_array().unwrap().last().unwrap();
     assert_eq!(last_idle["stop_reason"]["type"], "end_turn");
+}
+
+/// A runtime that parks on a *client-executed* tool, then completes on the
+/// client's result.
+struct CustomToolFake;
+
+#[async_trait::async_trait]
+impl SessionRuntime for CustomToolFake {
+    async fn run_turn(&self, _a: &str, _t: &str, _u: &str) -> Result<TurnOutcome, RunError> {
+        Ok(TurnOutcome {
+            messages: vec![Message {
+                id: Id("a1".into()),
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "cc1".into(),
+                    name: "submit_answer".into(),
+                    input: serde_json::json!({ "question": "6x7" }),
+                }],
+            }],
+            stop: StopReason::RequiresAction {
+                event_ids: Vec::new(),
+            },
+            pending: Some(Pending {
+                tool_use_id: "cc1".into(),
+                name: "submit_answer".into(),
+                input: serde_json::json!({ "question": "6x7" }),
+                client_executed: true,
+            }),
+        })
+    }
+    async fn resume(&self, _t: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+        Err(RunError("expected custom result".into()))
+    }
+    async fn resume_custom(
+        &self,
+        _t: &str,
+        content: &str,
+        _e: bool,
+    ) -> Result<TurnOutcome, RunError> {
+        Ok(TurnOutcome {
+            messages: vec![
+                Message {
+                    id: Id("tr".into()),
+                    role: Role::Tool,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "cc1".into(),
+                        content: vec![ContentBlock::text(content)],
+                    }],
+                },
+                Message::text(Id("a2".into()), Role::Assistant, format!("got: {content}")),
+            ],
+            stop: StopReason::EndTurn,
+            pending: None,
+        })
+    }
+    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+    async fn define_outcome(
+        &self,
+        _t: &str,
+        _d: &str,
+        _r: &str,
+        _m: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Err(RunError("no outcome".into()))
+    }
+    fn model(&self) -> String {
+        "test-model".into()
+    }
+}
+
+#[tokio::test]
+async fn custom_tool_use_park_and_result() {
+    let app = router(Arc::new(ManagedState::new(CustomToolFake)));
+    let id = create(&app).await;
+
+    // A message -> the client tool parks as agent.custom_tool_use.
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "answer" }] }] }),
+    )
+    .await;
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        types(&list),
+        vec!["agent.custom_tool_use", "session.status_idle"]
+    );
+    let custom = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "agent.custom_tool_use")
+        .unwrap();
+    assert_eq!(custom["id"], "cc1");
+    assert_eq!(custom["name"], "submit_answer");
+    let idle = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "session.status_idle")
+        .unwrap();
+    assert_eq!(idle["stop_reason"]["type"], "requires_action");
+    assert_eq!(idle["stop_reason"]["event_ids"][0], "cc1");
+
+    // The client returns the result -> the run resumes and completes.
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": "cc1", "content": [{ "type": "text", "text": "42" }] }] }),
+    )
+    .await;
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let msgs: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .map(|e| e["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("got: 42")),
+        "messages: {msgs:?}"
+    );
+    let last = list["data"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["stop_reason"]["type"], "end_turn");
+}
+
+#[tokio::test]
+async fn accept_only_events_are_acknowledged() {
+    // `system.message` is buffered; `user.interrupt` / `user.pause` /
+    // `user.resume` are acknowledged with a receipt but drive no projected event
+    // in the single-machine model (there is no in-flight turn between requests).
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let id = create(&app).await;
+
+    let receipts = json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [
+            { "type": "system.message", "content": [{ "type": "text", "text": "be terse" }] },
+            { "type": "user.interrupt" },
+            { "type": "user.pause" },
+            { "type": "user.resume" }
+        ] }),
+    )
+    .await;
+    let receipt_types: Vec<&str> = receipts["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        receipt_types,
+        vec![
+            "system.message",
+            "user.interrupt",
+            "user.pause",
+            "user.resume"
+        ]
+    );
+
+    let list = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(
+        list["data"].as_array().unwrap().is_empty(),
+        "accept-only events project nothing"
+    );
 }
 
 #[tokio::test]

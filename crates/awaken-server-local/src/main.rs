@@ -17,6 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("revise") => {
             awaken_server_local::build_router(Arc::new(awaken_server_local::ReviseModel), "revise")
         }
+        Ok("custom") => awaken_server_local::build_custom_router(),
         _ => awaken_server_local::build_echo_router(),
     };
     let listener = tokio::net::TcpListener::bind(&addr).await?;

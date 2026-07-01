@@ -22,12 +22,22 @@ use crate::project::{project_messages, project_turn};
 /// clock port; the wire only needs a valid RFC 3339 value here.
 const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
 
-/// The result of running one step (a new turn, or a resume). `pending` is the
-/// tool-use id the run parked on, set when `stop` is `RequiresAction`.
+/// The tool a run parked on: its id, model-visible name/input, and whether it is
+/// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
+/// confirmation (`agent.tool_use{ask}`).
+pub struct Pending {
+    pub tool_use_id: String,
+    pub name: String,
+    pub input: serde_json::Value,
+    pub client_executed: bool,
+}
+
+/// The result of running one step (a new turn, or a resume). `pending` is set when
+/// `stop` is `RequiresAction`.
 pub struct TurnOutcome {
     pub messages: Vec<Message>,
     pub stop: StopReason,
-    pub pending: Option<String>,
+    pub pending: Option<Pending>,
 }
 
 /// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
@@ -64,8 +74,19 @@ pub trait SessionRuntime: Send + Sync {
         user_text: &str,
     ) -> Result<TurnOutcome, RunError>;
 
-    /// Answer the tool the run parked on and continue to the next pause or end.
+    /// Answer a built-in tool the run parked on (allow/deny) and continue.
     async fn resume(&self, thread: &str, decision: Decision) -> Result<TurnOutcome, RunError>;
+
+    /// Deliver a client-executed tool's result to the parked run and continue.
+    async fn resume_custom(
+        &self,
+        thread: &str,
+        content: &str,
+        is_error: bool,
+    ) -> Result<TurnOutcome, RunError>;
+
+    /// Buffer a system message; it is prepended to the next turn's input.
+    async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError>;
 
     /// Define an outcome and drive the grade->revise loop over `thread`, bounded by
     /// `max_iterations`; `rubric` is the normalized requirement text.
@@ -173,7 +194,11 @@ impl ManagedState {
     /// Append one step's projected events to the session, minting ids where the
     /// projection did not supply one.
     fn append_turn(&self, session_id: &str, outcome: TurnOutcome) -> Result<(), StateError> {
-        let projected = project_turn(&outcome.messages, outcome.stop, outcome.pending.as_deref());
+        let pending = outcome
+            .pending
+            .as_ref()
+            .map(|p| (p.tool_use_id.as_str(), p.client_executed));
+        let projected = project_turn(&outcome.messages, outcome.stop, pending);
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         for event in projected {
@@ -274,6 +299,16 @@ impl ManagedState {
                     let outcome = self.runtime.resume(session_id, decision).await?;
                     self.append_turn(session_id, outcome)?;
                 }
+                InboundEvent::UserCustomToolResult {
+                    content, is_error, ..
+                } => {
+                    let text = content.as_deref().map(content_text).unwrap_or_default();
+                    let outcome = self
+                        .runtime
+                        .resume_custom(session_id, &text, *is_error)
+                        .await?;
+                    self.append_turn(session_id, outcome)?;
+                }
                 InboundEvent::UserDefineOutcome {
                     description,
                     rubric,
@@ -291,8 +326,14 @@ impl ManagedState {
                         .await?;
                     self.append_outcome(session_id, report)?;
                 }
-                // Other inbound events are accepted (receipt minted) and wired in
-                // later milestones.
+                InboundEvent::SystemMessage { content } => {
+                    let text = content_text(content);
+                    self.runtime.add_system(session_id, &text).await?;
+                }
+                // `user.interrupt`, `user.pause`, `user.resume`: accept-only in the
+                // single-machine model. A turn runs synchronously to its pause or
+                // end within one request, so between requests there is no in-flight
+                // turn to interrupt or pause; the receipt is the acknowledgement.
                 _ => {}
             }
         }
