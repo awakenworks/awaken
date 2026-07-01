@@ -309,12 +309,13 @@ impl LlmExecutor for GradedModel {
                     .collect::<String>()
             })
             .unwrap_or_default();
-        let reply = if last_user.contains("You are grading a deliverable") {
+        let reply = if last_user.contains("impartial grader") {
             // Judge: the deliverable is met iff it carries the FINAL marker.
             if last_user.contains("FINAL") {
-                r#"{"met": true, "explanation": "carries the marker"}"#.to_string()
+                r#"{"result": "satisfied", "explanation": "carries the marker"}"#.to_string()
             } else {
-                r#"{"met": false, "explanation": "add the completion marker"}"#.to_string()
+                r#"{"result": "needs_revision", "explanation": "add the completion marker"}"#
+                    .to_string()
             }
         } else if last_user.contains("did not meet the goal") {
             "FINAL answer".to_string()
