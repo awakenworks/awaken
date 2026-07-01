@@ -15,42 +15,32 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
 use awaken_ext_goal::{
     DelegateError, DelegateGrader, DelegateReply, DelegateRequest, DelegateRunner, GoalPlugin,
     GoalSpec, Grader, KeywordGrader,
 };
-use awaken_ext_permission::{
-    Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
-    ToolPermissionBehavior,
-};
 use awaken_protocol_a2a::Transport;
+use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::agent_resolver::AgentResolver;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::ToolOutput;
-use awaken_sandbox_local::{
-    IsolatedRoot, LocalSandboxProvider, SandboxProvider, SandboxSpec, rooted_hand_tools,
-};
+use awaken_sandbox_local::{IsolatedRoot, LocalSandboxProvider, SandboxProvider, SandboxSpec};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
+use crate::config::{build_runtime, server_config};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::store::HostCommit;
-
-const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
 
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -73,28 +63,6 @@ pub(crate) fn sanitize_thread(thread: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
-}
-
-/// Concatenate the text of a content-block list.
-pub(crate) fn block_text(content: &[ContentBlock]) -> String {
-    content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
-
-/// The text of the last assistant message in a transcript.
-pub(crate) fn latest_assistant_text(messages: &[Message]) -> String {
-    messages
-        .iter()
-        .rev()
-        .find(|m| m.role == Role::Assistant)
-        .map(|m| block_text(&m.content))
-        .unwrap_or_default()
 }
 
 /// A tool a run parked on: its id, model-visible name/input, and whether it is
@@ -177,95 +145,6 @@ pub struct HostOutcomeIteration {
 /// The neutral outcome report: the ordered evaluation rounds.
 pub struct HostOutcomeReport {
     pub iterations: Vec<HostOutcomeIteration>,
-}
-
-/// read/glob/grep allowed, mutations asked (ADR-0030). With `approval_mode:
-/// human_approval` an asked tool parks for a confirmation.
-fn server_policy() -> RulePermissionPolicy {
-    let allow = |name: &str| {
-        PermissionRule::new(
-            ToolCallPattern::parse(name).expect("static pattern"),
-            ToolPermissionBehavior::Allow,
-        )
-    };
-    RulePermissionPolicy::new(PermissionRuleset {
-        default_behavior: ToolPermissionBehavior::Ask,
-        mode: Mode::Default,
-        // `agent_run` is allowed: the kernel executes it via the injected
-        // delegation resolver (a sub-agent, native or remote), not the tool
-        // registry — delegation is a runtime concern.
-        rules: vec![
-            allow("read"),
-            allow("glob"),
-            allow("grep"),
-            allow("agent_run"),
-        ],
-    })
-}
-
-fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
-    let registered: HashSet<String> = executable_hand_tools()
-        .iter()
-        .map(|t| t.id().to_string())
-        .collect();
-    builtin_tools()
-        .into_iter()
-        .filter(|t| t.toolset == Toolset::Hand && registered.contains(&t.descriptor.id))
-        .map(|t| t.descriptor)
-        .collect()
-}
-
-/// A client-executed tool descriptor: model-visible, but no `RawTool` is
-/// registered, so a call parks (gate `ask`) and the *client* supplies the result.
-fn client_tool_descriptor(id: &str) -> ToolDescriptor {
-    ToolDescriptor::pinned(
-        "client",
-        id,
-        format!("Client-executed tool `{id}`; the caller runs it and returns the result."),
-        serde_json::json!({ "type": "object" }),
-    )
-}
-
-/// The `agent_run` delegation descriptor (advertised only when a roster is set).
-fn delegation_descriptor() -> ToolDescriptor {
-    builtin_tools()
-        .into_iter()
-        .find(|t| t.toolset == Toolset::Delegation)
-        .map(|t| t.descriptor)
-        .expect("agent_run descriptor exists")
-}
-
-pub(crate) fn server_config(
-    model_ref: &str,
-    client_tools: &HashSet<String>,
-    delegates: &HashSet<String>,
-    plugin_ids: &[String],
-) -> RunnableConfig {
-    let mut tools = hand_tool_descriptors();
-    tools.extend(client_tools.iter().map(|id| client_tool_descriptor(id)));
-    if !delegates.is_empty() {
-        tools.push(delegation_descriptor());
-    }
-    RunnableConfig::builder("assistant")
-        .instructions(SYSTEM_PROMPT)
-        .model(ModelBinding::new("default", model_ref, "default"))
-        .tools(tools)
-        .max_steps(20)
-        .plugins(plugin_ids.iter().cloned())
-        .build()
-}
-
-/// Build a per-thread runtime whose hand tools are rooted in `root`. When a
-/// No `agent_run` executor is registered: a delegate call is advertised by the
-/// config but parks (gate `Ask`), and the host fulfills it by running the
-/// sub-agent — so delegation pauses durably instead of blocking inline.
-pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, root: IsolatedRoot) -> Runtime {
-    let gate = PermissionGate::new(Arc::new(server_policy()));
-    let mut runtime = Runtime::new().with_llm(llm).with_gate(Arc::new(gate));
-    for tool in rooted_hand_tools(root) {
-        runtime = runtime.with_tool(tool);
-    }
-    runtime
 }
 
 /// A thread's mutable position: the run awaiting a decision (if any) and the
