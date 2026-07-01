@@ -21,6 +21,7 @@ pub mod client;
 pub mod config;
 pub mod error;
 pub mod id_mapping;
+pub mod jsonrpc;
 pub mod stdio;
 pub mod tool;
 pub mod transport;
