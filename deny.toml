@@ -64,6 +64,7 @@ wrappers = [
     "awaken-ext-permission",
     "awaken-ext-goal",
     "awaken-ext-mcp",
+    "awaken-ext-skills",
     "awaken-config-store",
     "awaken-runtime-examples",
     "awaken-provider-genai",

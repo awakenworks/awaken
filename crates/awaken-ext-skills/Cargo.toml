@@ -1,0 +1,13 @@
+[package]
+name = "awaken-ext-skills"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+awaken-runtime-contract.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

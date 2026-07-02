@@ -214,6 +214,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-ext-skills"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "awaken-runtime-contract",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-protocol-a2a"
 version = "0.0.0"
 dependencies = [
@@ -393,6 +404,7 @@ dependencies = [
  "awaken-ext-builtin-tools",
  "awaken-ext-goal",
  "awaken-ext-permission",
+ "awaken-ext-skills",
  "awaken-protocol-a2a",
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",
