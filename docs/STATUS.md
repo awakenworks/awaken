@@ -69,6 +69,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/error-taxonomy.md` | Decision record | Not required | n/a |
 | `design/packaging-enforcement-matrix.md` | Meta / introspection | Not required | n/a |
 | `design/tool-state-machine.md` | Role owner | Required | self |
+| `design/plugin-configuration.md` | Role owner | Required | self |
 | `adr/0001-documentation-model-and-vocabulary-alignment.md` | Decision record | Not required | n/a |
 | `adr/0002-resolver-role-demarcation.md` | Decision record | Not required | n/a |
 | `adr/0003-deferred-work-mechanism-selection.md` | Decision record | Not required | n/a |
