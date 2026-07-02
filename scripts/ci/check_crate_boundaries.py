@@ -54,14 +54,27 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "ureq",
     },
     # Permission policy extension: declarative allow/ask/deny rules over the
-    # neutral PermissionPolicy port. No runtime-core or store deps.
+    # neutral PermissionPolicy port. Matching is delegated to the shared
+    # tool-pattern engine. No runtime-core or store deps.
     "awaken-ext-permission": {
         "awaken-runtime-contract",
+        "awaken-tool-pattern",
         "async-trait",
-        "glob",
         "serde",
         "serde_json",
         "tokio",
+    },
+    # Shared tool-call pattern engine: parses and matches the pattern DSL
+    # (glob/regex/exact tool names, primary-arg globs, nested-field conditions).
+    # A neutral leaf utility over serde JSON with glob/regex matchers; it names
+    # no domain, provider, runtime, or store type, so both the permission policy
+    # and the state-machine FSM can share one DSL.
+    "awaken-tool-pattern": {
+        "serde",
+        "serde_json",
+        "glob-match",
+        "regex",
+        "thiserror",
     },
     # Provider adapter: the only crate allowed to name the model SDK. It also
     # consumes the SDK's async response stream, so `futures` (StreamExt) is
