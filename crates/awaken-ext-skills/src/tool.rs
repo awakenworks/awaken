@@ -95,12 +95,47 @@ fn matches_query(skill: &SkillSpec, query: &str) -> bool {
     hay.contains(query)
 }
 
-/// The activation result: a header naming the skill, the instruction body, and
-/// any caller arguments echoed for the model to act on.
+/// Substitute `$ARGUMENTS` (the whole arg string) and `$1`..`$9` (whitespace-split
+/// positionals) in a skill body. Returns the rewritten text and whether any token
+/// was substituted, so the caller can decide whether to echo the raw args. An
+/// out-of-range positional expands to empty; `$0`/`$<non-digit>` is left as-is.
+fn substitute_arguments(body: &str, args: &str) -> (String, bool) {
+    let positional: Vec<&str> = args.split_whitespace().collect();
+    let bytes = body.as_bytes();
+    let mut out = String::with_capacity(body.len());
+    let mut used = false;
+    let mut i = 0;
+    while i < body.len() {
+        if body[i..].starts_with("$ARGUMENTS") {
+            out.push_str(args.trim());
+            used = true;
+            i += "$ARGUMENTS".len();
+        } else if bytes[i] == b'$'
+            && i + 1 < body.len()
+            && bytes[i + 1].is_ascii_digit()
+            && bytes[i + 1] != b'0'
+        {
+            let idx = (bytes[i + 1] - b'0') as usize;
+            out.push_str(positional.get(idx - 1).copied().unwrap_or(""));
+            used = true;
+            i += 2;
+        } else {
+            let ch = body[i..].chars().next().expect("char boundary");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    (out, used)
+}
+
+/// The activation result: a header naming the skill, its instructions (with
+/// argument tokens substituted), and — only when the body used no token — the
+/// raw args echoed for the model to act on.
 fn render_activation(skill: &SkillSpec, args: &str) -> String {
-    let mut out = format!("Skill: {}\n\n{}", skill.name, skill.body);
+    let (body, used) = substitute_arguments(&skill.body, args);
+    let mut out = format!("Skill: {}\n\n{}", skill.name, body);
     let args = args.trim();
-    if !args.is_empty() {
+    if !args.is_empty() && !used {
         out.push_str("\n\nArguments: ");
         out.push_str(args);
     }
@@ -363,6 +398,44 @@ mod tests {
             .unwrap()
             .is_error
         );
+    }
+
+    #[tokio::test]
+    async fn substitutes_positional_and_all_arguments() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "run",
+            "Run",
+            "d",
+            "first=$1 rest=$ARGUMENTS missing=$2",
+        )]));
+        let out = SkillTool::new(registry)
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "run", "args": "a" }),
+            ))
+            .await
+            .unwrap();
+        assert!(out.content.contains("first=a"));
+        assert!(out.content.contains("rest=a"));
+        assert!(
+            out.content.contains("missing="),
+            "out-of-range positional is empty"
+        );
+        // the body used tokens, so no raw-args footer is appended.
+        assert!(!out.content.contains("Arguments:"));
+    }
+
+    #[tokio::test]
+    async fn echoes_raw_args_only_when_body_uses_no_token() {
+        let out = SkillTool::new(registry())
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "commit", "args": "-m x" }),
+            ))
+            .await
+            .unwrap();
+        // `commit` body has no $-token, so the raw args are echoed.
+        assert!(out.content.contains("Arguments: -m x"));
     }
 
     #[tokio::test]
