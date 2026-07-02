@@ -15,7 +15,9 @@ use std::collections::BTreeMap;
 
 use crate::capability::{PluginCapability, RuntimeCapabilityCatalog};
 use crate::catalog::RuntimeCatalogInstall;
-use crate::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor};
+use crate::resolved::{
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
+};
 use crate::snapshot::{AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 
 /// A loop-step ceiling used when the builder is not told otherwise.
@@ -70,6 +72,7 @@ pub struct RunnableConfigBuilder {
     plugin_ids: Vec<String>,
     plugin_config: BTreeMap<String, serde_json::Value>,
     plugin_capabilities: Vec<PluginCapability>,
+    context_policy: ContextPolicy,
     fingerprint: Option<String>,
 }
 
@@ -84,6 +87,7 @@ impl RunnableConfigBuilder {
             plugin_ids: Vec::new(),
             plugin_config: BTreeMap::new(),
             plugin_capabilities: Vec::new(),
+            context_policy: ContextPolicy::default(),
             fingerprint: None,
         }
     }
@@ -154,6 +158,13 @@ impl RunnableConfigBuilder {
         self
     }
 
+    /// Bound the model-visible context window (default [`ContextPolicy::KeepAll`]).
+    #[must_use]
+    pub fn context_policy(mut self, policy: ContextPolicy) -> Self {
+        self.context_policy = policy;
+        self
+    }
+
     /// Set the fingerprint explicitly — a content hash from a compiler. When unset,
     /// the agent id is used as the consistency token, which is enough for direct,
     /// in-process use where content-addressing is not needed.
@@ -179,6 +190,7 @@ impl RunnableConfigBuilder {
                 tool_descriptors: self.tools,
                 plugin_ids: self.plugin_ids,
                 plugin_config: self.plugin_config,
+                context_policy: self.context_policy,
             },
             fingerprint: fp.clone(),
         };

@@ -4,7 +4,9 @@
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
-use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+use awaken_runtime_contract::resolved::{
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
+};
 use awaken_runtime_contract::resolver::{
     AgentSnapshotCatalog, AgentSnapshotResolver, Error, RunResolver,
 };
@@ -46,6 +48,7 @@ fn snapshot(fingerprint: &str) -> ExecutableAgentSnapshot {
             tool_descriptors: Vec::new(),
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
+            context_policy: ContextPolicy::KeepAll,
         },
         fingerprint,
     }

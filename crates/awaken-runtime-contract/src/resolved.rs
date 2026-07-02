@@ -33,6 +33,30 @@ pub struct ResolvedSpec {
     /// defaults; a plugin reads only its own section at resolve.
     #[serde(default)]
     pub plugin_config: BTreeMap<String, serde_json::Value>,
+    /// How the model-visible context window is bounded before each inference.
+    /// Part of the resolved decision surface (data-only, G3). Defaults to
+    /// [`ContextPolicy::KeepAll`] so an unset config sends the whole transcript
+    /// (unchanged behavior); `#[serde(default)]` keeps older snapshots loadable.
+    #[serde(default)]
+    pub context_policy: ContextPolicy,
+}
+
+/// How the model-visible context window is bounded before each inference.
+///
+/// The policy trims a *view* of the transcript that goes to the model; the
+/// committed history stays whole (G13). A separate summarizing compactor may
+/// later replace old turns with a summary — this is the cheap, lossy alternative
+/// that just drops them from the request.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ContextPolicy {
+    /// Send the whole transcript every turn (no bound).
+    #[default]
+    KeepAll,
+    /// Rolling window: keep every leading system message, then only the last
+    /// `keep_last` non-system messages; older non-system messages are dropped
+    /// from the request view. `keep_last == 0` keeps only the system prefix.
+    KeepLast { keep_last: usize },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -20,7 +20,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -112,6 +112,7 @@ fn snapshot() -> ExecutableAgentSnapshot {
             )],
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
+            context_policy: ContextPolicy::KeepAll,
         },
         fingerprint,
     }
