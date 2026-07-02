@@ -144,3 +144,29 @@ async fn empty_spec_provisions_only_hand_tools() {
     assert!(env.receipt().entries.is_empty());
     provider.teardown("plain").await.unwrap();
 }
+
+#[tokio::test]
+async fn scan_skill_dir_finds_skill_md_live_and_hides_the_root() {
+    let base = unique_base("scan");
+    let provider = LocalSandboxProvider::new(&base);
+    let env = provider.create(&SandboxSpec::new("s")).await.unwrap();
+
+    // Fresh env: nothing yet.
+    assert!(env.scan_skill_dir("skills").is_empty());
+
+    // Simulate the agent authoring a skill this run (a write under the root).
+    let root = base.join("s");
+    std::fs::create_dir_all(root.join("skills/deploy")).unwrap();
+    std::fs::write(root.join("skills/deploy/SKILL.md"), "# Deploy\nsteps").unwrap();
+    // A dir without SKILL.md is skipped.
+    std::fs::create_dir_all(root.join("skills/empty")).unwrap();
+
+    let found = env.scan_skill_dir("skills");
+    assert_eq!(found.len(), 1, "only the SKILL.md-bearing dir: {found:?}");
+    assert_eq!(found[0].id, "deploy");
+    assert_eq!(found[0].dir, "skills/deploy"); // logical path, not a host path
+    assert!(!found[0].dir.starts_with('/'));
+    assert!(found[0].content.contains("steps"));
+
+    provider.teardown("s").await.unwrap();
+}
