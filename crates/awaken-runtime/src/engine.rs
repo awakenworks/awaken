@@ -1177,26 +1177,35 @@ pub(crate) fn build_chat_request(
 
 /// Bound the model-visible message list per `policy`. Operates on the request
 /// view only — the committed transcript is untouched (G13). For `KeepLast`, every
-/// leading system message is kept (the agent instructions must survive), then
-/// only the last `keep_last` non-system messages.
+/// system message is kept regardless of position — the agent instructions and any
+/// injected compaction summary must survive — and only the last `keep_last`
+/// non-system (conversational) messages are kept; older ones are dropped.
 fn apply_context_policy(policy: &ContextPolicy, messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let keep_last = match policy {
         ContextPolicy::KeepAll => return messages,
         ContextPolicy::KeepLast { keep_last } => *keep_last,
     };
-    let system_prefix = messages
+    let conversational = messages
         .iter()
-        .take_while(|m| m.role == ChatRole::System)
+        .filter(|m| m.role != ChatRole::System)
         .count();
-    let rest = messages.len() - system_prefix;
-    if rest <= keep_last {
+    if conversational <= keep_last {
         return messages;
     }
-    let drop = rest - keep_last;
-    let mut kept: Vec<ChatMessage> = Vec::with_capacity(system_prefix + keep_last);
-    kept.extend(messages.iter().take(system_prefix).cloned());
-    kept.extend(messages.into_iter().skip(system_prefix + drop));
-    kept
+    let mut to_drop = conversational - keep_last;
+    messages
+        .into_iter()
+        .filter(|m| {
+            if m.role == ChatRole::System {
+                return true;
+            }
+            if to_drop > 0 {
+                to_drop -= 1;
+                return false;
+            }
+            true
+        })
+        .collect()
 }
 
 fn to_chat_message(message: &Message) -> ChatMessage {

@@ -41,6 +41,7 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
+use crate::compact::{Compaction, DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
 use crate::config::{build_runtime, server_config, server_gate};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
@@ -264,6 +265,10 @@ pub struct SharedHost {
     /// Out-of-band memory extraction, when enabled with [`with_memory`]. After a
     /// turn reaches a natural end it fires a background `memory-extractor` sub-run.
     memory: Option<Arc<MemoryExtraction>>,
+    /// Out-of-band context compaction, when enabled with [`with_compaction`]. After
+    /// a long turn it summarizes older history in the background; the main agent
+    /// runs a matching `KeepLast` window so the summary replaces the raw turns.
+    compaction: Option<Arc<Compaction>>,
 }
 
 impl SharedHost {
@@ -283,6 +288,39 @@ impl SharedHost {
             store_dir: None,
             remote_agents: HashMap::new(),
             memory: None,
+            compaction: None,
+        }
+    }
+
+    /// Enable background context compaction. Once a thread's committed history
+    /// exceeds `threshold` messages, a `compactor` sub-agent summarizes everything
+    /// but the last `keep_last` messages; the summary is prepended (as a system
+    /// message) to the next turn, and the main agent runs a matching `KeepLast`
+    /// window so those older raw turns drop from the model view. Non-destructive:
+    /// committed truth is never rewritten. Drain with [`drain_memory`] is separate;
+    /// compaction is drained by [`drain_compaction`](Self::drain_compaction).
+    pub fn with_compaction(mut self, threshold: usize, keep_last: usize) -> Self {
+        let catalog = Arc::new(AgentCatalog::new().with_agent(default_compact_agent(
+            &self.model_ref,
+            DEFAULT_COMPACT_INSTRUCTIONS,
+        )));
+        self.compaction = Some(Arc::new(Compaction::new(
+            self.llm.clone(),
+            Arc::new(LocalSandboxProvider::new(sub_base("compact"))),
+            catalog,
+            Arc::new(BackgroundRuns::new()),
+            threshold,
+            keep_last,
+        )));
+        self
+    }
+
+    /// Await in-flight background compactions up to `timeout`. `true` if all
+    /// finished (or compaction is disabled).
+    pub async fn drain_compaction(&self, timeout: std::time::Duration) -> bool {
+        match &self.compaction {
+            Some(c) => c.drain(timeout).await,
+            None => true,
         }
     }
 
@@ -503,12 +541,21 @@ impl SharedHost {
             skill_descriptors = wiring.descriptors;
             skill_registry = Some(wiring.registry);
         }
+        // When compaction is on, the main agent runs a rolling window matching the
+        // compactor's `keep_last`, so summarized older turns leave the model view.
+        let context_policy = match &self.compaction {
+            Some(c) => awaken_runtime_contract::resolved::ContextPolicy::KeepLast {
+                keep_last: c.keep_last(),
+            },
+            None => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        };
         let config = server_config(
             &self.model_ref,
             &self.client_tools,
             &self.delegates,
             &[],
             &skill_descriptors,
+            context_policy,
         );
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and a parked run (e.g. after a
@@ -626,6 +673,7 @@ impl SharedHost {
         let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
         drop(st);
         self.maybe_extract_memory(&ctx, thread, &result.phase).await;
+        self.maybe_compact(&ctx, thread, &result.phase).await;
         Ok(result)
     }
 
@@ -639,6 +687,30 @@ impl SharedHost {
         if let Some(mem) = &self.memory {
             let committed = ctx.commit.committed_messages(&ctx.thread_id);
             mem.trigger(thread, committed).await;
+        }
+    }
+
+    /// Fire background compaction when a terminal turn's history is long. On
+    /// completion the summary is prepended to the thread's next turn as a system
+    /// message; the raw older turns drop from the model view via the agent's
+    /// `KeepLast` window. Fire-and-forget (drained at shutdown).
+    async fn maybe_compact(&self, ctx: &Arc<SessionCtx>, thread: &str, phase: &Phase) {
+        if matches!(phase, Phase::Waiting) {
+            return;
+        }
+        if let Some(compaction) = &self.compaction {
+            let committed = ctx.commit.committed_messages(&ctx.thread_id);
+            let ctx_for_delivery = ctx.clone();
+            compaction
+                .trigger(thread, committed, move |summary| async move {
+                    ctx_for_delivery
+                        .state
+                        .lock()
+                        .await
+                        .pending_system
+                        .push(format!("Summary of earlier conversation: {summary}"));
+                })
+                .await;
         }
     }
 
@@ -744,6 +816,7 @@ impl SharedHost {
             &HashSet::new(),
             &["goal".to_string()],
             &[],
+            awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         );
 
         // One run: the guard re-derives and grades the deliverable, then steers
@@ -892,8 +965,9 @@ fn pending_from_ticket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::block_text;
     use awaken_agent_contract::agent::content::ContentBlock;
-    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, ChatRole};
     use std::sync::atomic::AtomicUsize;
 
     /// A model that blocks on its second inference (the first revision round) until
@@ -1009,6 +1083,67 @@ mod tests {
                 usage: None,
             })
         }
+    }
+
+    /// The compactor (identified by its instructions) replies with a fixed summary;
+    /// the main assistant reports whether it saw a delivered summary in its system
+    /// messages, proving the summary reached the next turn's model input.
+    struct CompactHostModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for CompactHostModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            let system_text: String = request
+                .messages
+                .iter()
+                .filter(|m| m.role == ChatRole::System)
+                .flat_map(|m| m.content.iter())
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let reply = if system_text.contains("conversation-compaction sub-agent") {
+                "COMPACTED".to_string()
+            } else if system_text.contains("Summary of earlier conversation") {
+                "seen-summary".to_string()
+            } else {
+                "no-summary".to_string()
+            };
+            Ok(ChatResponse {
+                output: AssistantOutput::text(reply),
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_summary_reaches_the_next_turn() {
+        let host = SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction(1, 1);
+        let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
+
+        // Turn 1: 2 messages committed (> threshold 1) → fires compaction.
+        let r1 = host.run_turn("t-c", user("u1")).await.expect("turn 1");
+        assert!(matches!(r1.phase, Phase::Ended(_)));
+        assert!(
+            host.drain_compaction(std::time::Duration::from_secs(10))
+                .await
+        );
+
+        // Turn 2: the delivered summary is now a pending system message the model sees.
+        let r2 = host.run_turn("t-c", user("u2")).await.expect("turn 2");
+        let reply = r2
+            .new_messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        assert_eq!(reply, "seen-summary");
     }
 
     #[tokio::test]
