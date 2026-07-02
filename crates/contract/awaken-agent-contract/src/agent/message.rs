@@ -33,6 +33,12 @@ impl Message {
         }
     }
 
+    /// A message from a ready-made block list — the multimodal case, where a turn
+    /// interleaves text with an image (or other media) block.
+    pub fn new(id: Id, role: Role, content: Vec<ContentBlock>) -> Self {
+        Self { id, role, content }
+    }
+
     /// The concatenated text of this message's `Text` blocks, ignoring media.
     pub fn text_content(&self) -> String {
         extract_text(&self.content)
