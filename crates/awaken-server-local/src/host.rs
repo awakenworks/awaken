@@ -24,6 +24,7 @@ use awaken_ext_goal::{
     DelegateError, DelegateGrader, DelegateReply, DelegateRequest, DelegateRunner, GoalPlugin,
     GoalSpec, Grader, KeywordGrader,
 };
+use awaken_ext_skills::{InMemorySkillRegistry, SkillSpec, SkillTool};
 use awaken_protocol_a2a::Transport;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -34,9 +35,7 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::ToolOutput;
-use awaken_sandbox_local::{
-    Environment, LocalSandboxProvider, Mount, SandboxProvider, SandboxSpec, SkillMount,
-};
+use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use crate::config::{build_runtime, server_config};
@@ -242,9 +241,9 @@ pub struct SharedHost {
     pub(crate) provider: LocalSandboxProvider,
     grader: Arc<dyn Grader>,
     client_tools: HashSet<String>,
-    /// Skills provisioned into every thread's environment (ADR-0035). Each becomes
-    /// a `skill__<id>` tool the model can call to load its body.
-    skills: Vec<SkillMount>,
+    /// Skills offered on every thread (ADR-0036). The whole set is fronted by the
+    /// single `Skill` tool; the model activates one by id to load its instructions.
+    skills: Vec<SkillSpec>,
     pub(crate) delegates: HashSet<String>,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
     hub: Arc<ThreadEventHub>,
@@ -289,23 +288,19 @@ impl SharedHost {
         self
     }
 
-    /// Provision skills into every thread's environment (ADR-0035): each is
-    /// delivered as a `skill__<id>` tool the model can call to load its body. The
-    /// host stays out of skill authoring/collection — it only carries the delivery
-    /// set the sandbox provider realizes.
-    pub fn with_skills(mut self, skills: Vec<SkillMount>) -> Self {
+    /// Offer skills on every thread (ADR-0036): they are fronted by the single
+    /// `Skill` tool, whose catalog lists them and whose invocation returns the
+    /// activated skill's instructions. The host stays out of skill
+    /// authoring/collection — it only carries the offered set.
+    pub fn with_skills(mut self, skills: Vec<SkillSpec>) -> Self {
         self.skills.extend(skills);
         self
     }
 
-    /// The provisioning request for a thread: its id plus every configured skill as
-    /// a skill mount the sandbox provider realizes.
+    /// The provisioning request for a thread. Skills are not a sandbox mount
+    /// (ADR-0036); the environment provisions isolation tools and resources only.
     fn sandbox_spec(&self, thread: &str) -> SandboxSpec {
-        let mut spec = SandboxSpec::new(thread);
-        for skill in &self.skills {
-            spec = spec.with_mount(Mount::Skill(skill.clone()));
-        }
-        spec
+        SandboxSpec::new(thread)
     }
 
     /// Grade outcomes with a real judge sub-agent (`judge_agent_id`) run through the
@@ -415,12 +410,23 @@ impl SharedHost {
         if let Some(resolver) = self.agent_resolver() {
             runtime = runtime.with_resolver(resolver);
         }
+        // The whole skill set is fronted by one `Skill` tool (ADR-0036): register it
+        // and advertise its single catalog-bearing descriptor. No per-skill tools.
+        let mut skill_descriptors = Vec::new();
+        if !self.skills.is_empty() {
+            let registry = Arc::new(InMemorySkillRegistry::from_specs(
+                self.skills.iter().cloned(),
+            ));
+            let tool = Arc::new(SkillTool::new(registry));
+            skill_descriptors.push(tool.descriptor());
+            runtime = runtime.with_tool(tool);
+        }
         let config = server_config(
             &self.model_ref,
             &self.client_tools,
             &self.delegates,
             &[],
-            env.skill_descriptors(),
+            &skill_descriptors,
         );
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and a parked run (e.g. after a
@@ -624,12 +630,14 @@ impl SharedHost {
             .with_plugin(Arc::new(GoalPlugin::new(goal, self.grader.clone())));
         // The goal run auto-approves tools to drive to a deliverable, so it does not
         // advertise `agent_run` (which parks and is host-fulfilled, not auto-run).
+        // The outcome/goal run does not offer skills (ADR-0036): it auto-approves
+        // tools to drive a deliverable and does not register the `Skill` tool.
         let config = server_config(
             &self.model_ref,
             &self.client_tools,
             &HashSet::new(),
             &["goal".to_string()],
-            ctx.env.skill_descriptors(),
+            &[],
         );
 
         // One run: the guard re-derives and grades the deliverable, then steers

@@ -1,54 +1,35 @@
-//! End-to-end provisioning tests (ADR-0035, step 1).
+//! End-to-end provisioning tests (ADR-0035, resource surface).
 //!
-//! Exercise the public seam only: build a [`SandboxSpec`] with typed mounts, let
-//! `LocalSandboxProvider::create` provision an [`Environment`], and assert the
-//! whole capability surface — skill tool invocation, realized resources, the
-//! host-side receipt, forward-compat, fail-closed integrity, and the G13 empty
-//! state — behaves as designed.
+//! Exercise the public seam only: build a [`SandboxSpec`] with typed resource
+//! mounts, let `LocalSandboxProvider::create` provision an [`Environment`], and
+//! assert the capability surface — realized resources, the host-side receipt,
+//! forward-compat, and fail-closed integrity — behaves as designed. Skills are no
+//! longer a sandbox mount (ADR-0036): they are fronted by the single `Skill` tool
+//! in `awaken-ext-skills`, not surfaced as per-skill environment tools.
 
 use std::path::PathBuf;
 
-use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_local::{
     LocalSandboxProvider, Mount, ProvisionKind, ResourceMount, SandboxProvider, SandboxSpec,
-    SkillMount, content_fingerprint,
+    content_fingerprint,
 };
 
 fn unique_base(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("awaken-sbx-e2e-{}-{tag}", std::process::id()))
 }
 
-fn call(tool_id: &str) -> ToolCall {
-    ToolCall {
-        call_id: "c1".into(),
-        tool_id: tool_id.into(),
-        arguments: serde_json::json!({}),
-    }
-}
-
 #[tokio::test]
-async fn provision_skill_and_resource_end_to_end() {
+async fn provision_resource_end_to_end() {
     let base = unique_base("ok");
     let provider = LocalSandboxProvider::new(&base);
 
-    let body = "# Deploy\nRun the deploy checklist before shipping.";
     let res_content = "alpha=1\nbeta=2\n";
-
-    let mut spec = SandboxSpec::new("e2e")
-        .with_mount(Mount::Skill(SkillMount {
-            id: "deploy".into(),
-            version: 1,
-            content_hash: content_fingerprint(body.as_bytes()),
-            name: "deploy".into(),
-            description: "Run a deploy".into(),
-            body: body.into(),
-        }))
-        .with_mount(Mount::Resource(ResourceMount {
-            id: "cfg".into(),
-            content_hash: content_fingerprint(res_content.as_bytes()),
-            logical_path: "config/app.env".into(),
-            content: res_content.into(),
-        }));
+    let mut spec = SandboxSpec::new("e2e").with_mount(Mount::Resource(ResourceMount {
+        id: "cfg".into(),
+        content_hash: content_fingerprint(res_content.as_bytes()),
+        logical_path: "config/app.env".into(),
+        content: res_content.into(),
+    }));
     // Forward-compat: a mount shape this provider does not understand is ignored,
     // never an error (mounts is an opaque `Value` carrier).
     spec.mounts
@@ -56,32 +37,16 @@ async fn provision_skill_and_resource_end_to_end() {
 
     let env = provider.create(&spec).await.expect("provision succeeds");
 
-    // Capability surface: the six hand tools plus the provisioned skill tool.
-    let tools = env.tools();
-    let ids: Vec<String> = tools.iter().map(|t| t.id().to_string()).collect();
+    // Capability surface: the six isolation hand tools, nothing skill-shaped.
+    let ids: Vec<String> = env.tools().iter().map(|t| t.id().to_string()).collect();
     for hand in ["read", "write", "edit", "glob", "grep", "bash"] {
         assert!(ids.contains(&hand.to_string()), "missing hand tool {hand}");
     }
     assert!(
-        ids.contains(&"skill__deploy".to_string()),
-        "skill tool not on the capability surface: {ids:?}"
+        !ids.iter().any(|id| id.starts_with("skill")),
+        "no skill-shaped tool may be on the capability surface: {ids:?}"
     );
-    // `hand_tools()` is unchanged — only the six isolation tools.
     assert_eq!(env.hand_tools().len(), 6);
-
-    // Activating the skill returns its body (progressive disclosure) and, per G13,
-    // carries empty runtime state.
-    let skill = tools
-        .iter()
-        .find(|t| t.id() == "skill__deploy")
-        .expect("skill tool present");
-    let out = skill.invoke(call("skill__deploy")).await.unwrap();
-    assert_eq!(out.content, body);
-    assert!(!out.is_error);
-    assert!(
-        out.state.is_empty(),
-        "environment tool must not author state (G13)"
-    );
 
     // The resource is realized under the read-only `.mnt/` root and exposed by
     // logical path only — no host absolute path crosses the boundary (G3).
@@ -89,27 +54,17 @@ async fn provision_skill_and_resource_end_to_end() {
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0].id, "cfg");
     assert_eq!(refs[0].logical_path, ".mnt/config/app.env");
-    assert!(
-        !refs[0].logical_path.starts_with('/'),
-        "resource ref must be logical, not a host path"
-    );
-    // The bytes really landed under the environment root.
+    assert!(!refs[0].logical_path.starts_with('/'));
     let realized = base.join("e2e").join(".mnt/config/app.env");
     assert_eq!(std::fs::read_to_string(&realized).unwrap(), res_content);
 
-    // The receipt is the host-side pin: both provisioned entries, content-addressed.
+    // The receipt is the host-side pin: the provisioned entry, content-addressed.
     let receipt = env.receipt();
-    assert_eq!(receipt.entries.len(), 2);
+    assert_eq!(receipt.entries.len(), 1);
     assert!(
-        receipt.entries.iter().any(|e| e.id == "deploy"
-            && e.kind == ProvisionKind::Skill
+        receipt.entries.iter().any(|e| e.id == "cfg"
+            && e.kind == ProvisionKind::Resource
             && !e.content_hash.is_empty())
-    );
-    assert!(
-        receipt
-            .entries
-            .iter()
-            .any(|e| e.id == "cfg" && e.kind == ProvisionKind::Resource)
     );
 
     provider.teardown("e2e").await.unwrap();
@@ -121,14 +76,12 @@ async fn reprovision_from_same_spec_yields_identical_receipt() {
     // environment, so the receipt — the pin — is stable across provisions.
     let base = unique_base("replay");
     let provider = LocalSandboxProvider::new(&base);
-    let body = "# Skill\nbody text";
-    let spec = SandboxSpec::new("r").with_mount(Mount::Skill(SkillMount {
-        id: "s".into(),
-        version: 3,
-        content_hash: content_fingerprint(body.as_bytes()),
-        name: "s".into(),
-        description: "d".into(),
-        body: body.into(),
+    let content = "beta=2\n";
+    let spec = SandboxSpec::new("r").with_mount(Mount::Resource(ResourceMount {
+        id: "cfg".into(),
+        content_hash: content_fingerprint(content.as_bytes()),
+        logical_path: "config/app.env".into(),
+        content: content.into(),
     }));
 
     let a = provider.create(&spec).await.unwrap();
@@ -143,13 +96,11 @@ async fn reprovision_from_same_spec_yields_identical_receipt() {
 async fn provision_fails_closed_on_content_hash_mismatch() {
     let base = unique_base("bad-hash");
     let provider = LocalSandboxProvider::new(&base);
-    let spec = SandboxSpec::new("bad").with_mount(Mount::Skill(SkillMount {
+    let spec = SandboxSpec::new("bad").with_mount(Mount::Resource(ResourceMount {
         id: "x".into(),
-        version: 1,
-        content_hash: "deadbeef".into(), // does not match the body
-        name: "x".into(),
-        description: String::new(),
-        body: "the real body".into(),
+        content_hash: "deadbeef".into(), // does not match the content
+        logical_path: "x.env".into(),
+        content: "the real content".into(),
     }));
 
     let err = provider.create(&spec).await.expect_err("must fail closed");

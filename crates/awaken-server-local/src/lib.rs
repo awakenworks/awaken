@@ -50,9 +50,11 @@ use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
 
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
-// Skill provisioning inputs (ADR-0035): a composition root supplies these to
-// `build_router_with_skills` / `SharedHost::with_skills`.
-pub use awaken_sandbox_local::{SkillMount, content_fingerprint};
+// Skill authoring inputs (ADR-0036): a composition root supplies these to
+// `build_router_with_skills` / `SharedHost::with_skills`. The whole set is fronted
+// by the single `Skill` tool.
+pub use awaken_ext_skills::{SkillSpec, parse_skill_md};
+pub use awaken_sandbox_local::content_fingerprint;
 // A remote delegate's transport belongs to the A2A bounded context; re-export it so
 // a composition-root caller configures a remote agent from one import.
 pub use awaken_protocol_a2a::{HttpTransport, Response, Transport};
@@ -715,13 +717,13 @@ pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> 
     mount(Arc::new(SharedHost::new(llm, model_ref)))
 }
 
-/// Build the server router with `skills` provisioned into every thread's
-/// environment (ADR-0035): each is delivered as a `skill__<id>` tool the model
-/// can call, and its descriptor is advertised in the resolved spec.
+/// Build the server router offering `skills` on every thread (ADR-0036): the whole
+/// set is fronted by the single `Skill` tool, whose catalog lists them and whose
+/// invocation returns the activated skill's instructions.
 pub fn build_router_with_skills(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    skills: Vec<SkillMount>,
+    skills: Vec<SkillSpec>,
 ) -> Router {
     mount(Arc::new(
         SharedHost::new(llm, model_ref).with_skills(skills),
