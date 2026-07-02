@@ -43,6 +43,38 @@ async function main() {
     pass('a2a multi-turn conversation');
   });
 
+  // --- HITL: a tool needing approval parks the task (input-required); a follow-up
+  // message on the same context approves it and the task completes ---
+  await withServer('probe', 38153, async (base) => {
+    const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
+    const parked = await client.sendMessage({
+      message: {
+        messageId: 'm1',
+        contextId: 'a2a-hitl',
+        role: 'user',
+        kind: 'message',
+        parts: [{ kind: 'text', text: 'remember this note' }],
+      },
+    });
+    assert.equal(
+      parked.result?.status?.state,
+      'input-required',
+      `expected the write tool to park: ${JSON.stringify(parked.result?.status)}`,
+    );
+    const done = await client.sendMessage({
+      message: {
+        messageId: 'm2',
+        contextId: 'a2a-hitl',
+        role: 'user',
+        kind: 'message',
+        parts: [{ kind: 'text', text: 'approved' }],
+      },
+    });
+    assert.equal(done.result?.status?.state, 'completed', `expected completion after approval`);
+    assert.ok(replyText(done).includes('done'), `expected the run to finish: ${replyText(done)}`);
+    pass('a2a HITL approval (park -> approve -> complete)');
+  });
+
   // --- multimodal: a `file` image part travels to the model ---
   await withServer('vision', 38152, async (base) => {
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
@@ -62,7 +94,7 @@ async function main() {
     pass('a2a multimodal (image reached the model)');
   });
 
-  console.log('E2E PASS: A2A multi-turn + multimodal via @a2a-js/sdk.');
+  console.log('E2E PASS: A2A multi-turn + multimodal + HITL via @a2a-js/sdk.');
 }
 
 main().catch((err) => {
