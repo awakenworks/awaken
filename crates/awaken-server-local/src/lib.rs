@@ -11,6 +11,7 @@
 //! distribution stays out — remote relays and multi-node ingress plug in through
 //! seams, not here.
 
+mod agent_catalog;
 mod config;
 mod delegate;
 mod host;
