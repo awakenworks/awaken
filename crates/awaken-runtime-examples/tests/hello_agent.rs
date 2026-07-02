@@ -15,6 +15,8 @@ async fn hello_agent_example_runs_to_completion() {
         max_steps: 4,
         model_binding: ModelBinding::new("demo", "stub", "stub"),
         tool_ids: Vec::new(),
+        plugin_ids: Vec::new(),
+        plugin_config: Default::default(),
     };
     let runnable = compile(&config, &[]).expect("compile");
 

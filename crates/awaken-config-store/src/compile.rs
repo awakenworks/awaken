@@ -47,6 +47,8 @@ pub fn compile(
         .model(config.model_binding.clone())
         .max_steps(config.max_steps)
         .tools(descriptors)
+        .plugins(config.plugin_ids.clone())
+        .plugin_config(config.plugin_config.clone())
         .fingerprint(fingerprint_of(config)?)
         .build())
 }
@@ -71,6 +73,8 @@ mod tests {
             max_steps: 8,
             model_binding: ModelBinding::new("p", "m", "b"),
             tool_ids: tools.iter().map(|s| s.to_string()).collect(),
+            plugin_ids: Vec::new(),
+            plugin_config: Default::default(),
         }
     }
 

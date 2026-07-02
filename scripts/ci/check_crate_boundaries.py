@@ -313,6 +313,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         "url",
         "tokio",
+        # optional (feature "schema"): derive a JSON Schema for the config type.
+        "schemars",
         # dev-only: the end-to-end agent-loop test composes a runtime.
         "awaken-runtime",
     },

@@ -205,7 +205,23 @@ impl Contributions {
 /// from config; it must not perform mutable registration side effects.
 pub trait Plugin: Send + Sync {
     fn manifest(&self) -> PluginManifest;
+
+    /// Config-agnostic contributions — the plugin's default behavior.
     fn resolve(&self) -> Contributions;
+
+    /// Config-aware resolve. The runtime hands the plugin its own configuration
+    /// section (the raw JSON at `ResolvedSpec.plugin_config[manifest.id]`), or
+    /// `None` when the agent set none. The default ignores config and returns the
+    /// config-agnostic `resolve`; a configurable plugin overrides this, decodes
+    /// its section, and fails closed (`Err`) on a malformed one. Publish-time
+    /// validation is a dry run of this same method — the validator is the applier.
+    fn resolve_configured(
+        &self,
+        config: Option<&serde_json::Value>,
+    ) -> Result<Contributions, PluginConfigError> {
+        let _ = config;
+        Ok(self.resolve())
+    }
 
     /// A monotonically advancing version for a plugin whose contributions can
     /// change during a run (e.g. an MCP server firing `tools/list_changed`).
@@ -213,6 +229,24 @@ pub trait Plugin: Send + Sync {
     /// advances. `None` (the default) means the plugin is static.
     fn live_version(&self) -> Option<u64> {
         None
+    }
+}
+
+/// A plugin's configuration section could not be applied. Carried as a fail-closed
+/// error: a run whose plugin config is malformed does not start (G30).
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("malformed config for plugin {plugin}: {message}")]
+pub struct PluginConfigError {
+    pub plugin: String,
+    pub message: String,
+}
+
+impl PluginConfigError {
+    pub fn new(plugin: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            plugin: plugin.into(),
+            message: message.into(),
+        }
     }
 }
 
@@ -345,6 +379,8 @@ pub enum MergeError {
     MissingDependency { plugin: String, missing: String },
     #[error("dependency cycle among active plugins")]
     DependencyCycle,
+    #[error(transparent)]
+    Config(#[from] PluginConfigError),
 }
 
 /// The merged contributions of every active plugin for one run. Built by

@@ -54,6 +54,8 @@ fn agent_config() -> AgentConfig {
             backend_ref: "b".to_string(),
         },
         tool_ids: vec!["echo".to_string()],
+        plugin_ids: Vec::new(),
+        plugin_config: Default::default(),
     }
 }
 

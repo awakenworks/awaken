@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// The content address of a resolved catalog: `sha256` of the canonical config.
@@ -25,6 +27,12 @@ pub struct ResolvedSpec {
     pub model_binding: ModelBinding,
     pub tool_descriptors: Vec<ToolDescriptor>,
     pub plugin_ids: Vec<String>,
+    /// Per-plugin configuration, keyed by plugin id. Raw JSON so the runtime
+    /// carries it across the config→runtime edge without naming any plugin's
+    /// config type (data-only, G3). A plugin whose id is absent runs with its
+    /// defaults; a plugin reads only its own section at resolve.
+    #[serde(default)]
+    pub plugin_config: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

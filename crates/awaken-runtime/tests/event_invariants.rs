@@ -128,6 +128,7 @@ fn activation() -> RunActivation {
                     serde_json::json!({"type": "object"}),
                 )],
                 plugin_ids: Vec::new(),
+                plugin_config: Default::default(),
             },
             fingerprint,
         },
