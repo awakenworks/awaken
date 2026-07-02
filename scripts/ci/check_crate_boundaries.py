@@ -313,6 +313,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         "url",
         "tokio",
+        # dev-only: the end-to-end agent-loop test composes a runtime.
+        "awaken-runtime",
     },
         # Local sandbox: per-environment path isolation. It wraps the built-in tools
     # (jailing their paths to an IsolatedRoot), so it depends on the extension it

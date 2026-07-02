@@ -404,4 +404,65 @@ machines:
             StateMachineConfigError::Status(_)
         ));
     }
+
+    #[test]
+    fn compiles_every_enum_variant() {
+        let cfg = r#"{"machines":[
+            {"name":"a","scope":"run","key":"{p}","key_normalizer":"trim","initial":"s",
+             "on_unmatched":"x","strict":true,
+             "transitions":[
+                {"on":"T","from":"s","to":"t","when":"any",
+                 "emit":{"target":"system","content":"c1"}},
+                {"on":"U","from":"s","to":"u","when":{"status":"error"},
+                 "emit":{"target":"session","content":"c2","role":"user"},
+                 "on_violation":{"action":"ask"}},
+                {"on":"V","from":"s","to":"v","when":{"content":"*ok*"},
+                 "emit":{"target":"conversation","content":"c3","role":"assistant"},
+                 "on_violation":"warn"},
+                {"on":"W","from":"s","to":"w",
+                 "when":{"status":"success","content":"*done*"}}
+             ]},
+            {"name":"b","key_normalizer":"lowercase","initial":"s","transitions":[]},
+            {"name":"c","key_normalizer":"path","initial":"s","transitions":[]},
+            {"name":"d","key_normalizer":"url","initial":"s","transitions":[]}
+        ]}"#;
+        let machines = StateMachineConfig::from_json_str(cfg)
+            .unwrap()
+            .into_machines()
+            .unwrap();
+        assert_eq!(machines.len(), 4);
+        let a = &machines[0];
+        assert_eq!(a.scope, MachineScope::Run);
+        assert!(a.strict);
+        assert_eq!(a.on_unmatched.as_deref(), Some("x"));
+        assert_eq!(a.transitions[1].on_violation.action, ViolationAction::Ask);
+        assert_eq!(a.transitions[2].on_violation.action, ViolationAction::Warn);
+        assert!(matches!(a.transitions[0].when, Some(ResultMatcher::Any)));
+        assert!(matches!(
+            a.transitions[3].when,
+            Some(ResultMatcher::Both { .. })
+        ));
+    }
+
+    #[test]
+    fn from_value_and_yaml_error_paths() {
+        // from_value round-trips a JSON object.
+        let value = serde_json::json!({"machines":[{"name":"m","initial":"a","transitions":[]}]});
+        assert_eq!(
+            StateMachineConfig::from_value(value)
+                .unwrap()
+                .machines
+                .len(),
+            1
+        );
+        // malformed JSON / YAML are parse errors.
+        assert!(matches!(
+            StateMachineConfig::from_json_str("{not json").unwrap_err(),
+            StateMachineConfigError::Parse(_)
+        ));
+        assert!(matches!(
+            StateMachineConfig::from_yaml_str("machines: [ : : ]").unwrap_err(),
+            StateMachineConfigError::Parse(_)
+        ));
+    }
 }

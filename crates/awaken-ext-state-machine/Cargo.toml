@@ -16,6 +16,7 @@ thiserror.workspace = true
 url = "2.5"
 
 [dev-dependencies]
+awaken-runtime = { path = "../awaken-runtime" }
 tokio.workspace = true
 
 [lints]
