@@ -83,8 +83,10 @@ pub struct AiSdkChatRequest {
     pub agent_id: Option<String>,
 }
 
-/// An AI SDK v6 `UIMessage`. Parts are kept as raw JSON so tool/data parts (which
-/// are UI state, not LLM input) can be inspected without a closed schema.
+/// An AI SDK v6 `UIMessage`. The `parts` list stays raw JSON at the container
+/// level because a tool part's `type` is the dynamic `tool-<name>` — not a closed
+/// set — but each part is decoded into a typed view ([`UIPart`] for content,
+/// [`ToolDecisionPart`] for tool decisions) at the parsing boundary.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UIMessage {
     #[serde(default)]
@@ -92,6 +94,49 @@ pub struct UIMessage {
     pub role: String,
     #[serde(default)]
     pub parts: Vec<Value>,
+}
+
+/// A typed view of a user/system message content part. Non-content kinds
+/// (`reasoning`, `step-start`, dynamic `tool-*`) decode to [`UIPart::Other`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum UIPart {
+    Text {
+        text: String,
+    },
+    /// AI SDK v5 file part: `{ type: "file", mediaType, url }`, where `url` is a
+    /// `data:` URI or a remote link.
+    File {
+        #[serde(rename = "mediaType")]
+        media_type: String,
+        url: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+/// A typed view of an assistant tool part carrying a client's decision. The
+/// `type` is the dynamic `tool-<name>`, so it is read as a string, not enumerated.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolDecisionPart {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(rename = "toolCallId")]
+    pub tool_call_id: Option<String>,
+    pub state: Option<String>,
+    #[serde(default, rename = "providerExecuted")]
+    pub provider_executed: bool,
+    pub output: Option<Value>,
+    #[serde(rename = "errorText")]
+    pub error_text: Option<String>,
+    pub approval: Option<ApprovalResponse>,
+}
+
+/// A client's answer to a tool-approval request.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApprovalResponse {
+    #[serde(default)]
+    pub approved: bool,
 }
 
 /// The `messages` list echoed by the history endpoint, as UI messages.
