@@ -82,6 +82,12 @@ impl MemoryCommitCoordinator {
 #[async_trait]
 impl CommitCoordinator for MemoryCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        // Validate the plan before taking the lock — a malformed plan must never
+        // reach the durable boundary (G1).
+        commit
+            .validate()
+            .map_err(|e| Error::Rejected(e.to_string()))?;
+
         let mut state = self
             .state
             .lock()

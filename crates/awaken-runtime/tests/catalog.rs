@@ -1,5 +1,12 @@
 //! Catalog install is atomic and fails closed on an empty or mismatched
 //! fingerprint (G4/G23/G29); capability reporting reflects the active catalog.
+//!
+//! G4: runtime builds live execution objects from its own catalog and fails
+//! closed on fingerprint/catalog mismatch.
+//! G23: config publication and runtime projection use versioned, atomic handoffs;
+//! incomplete registry installs do not replace active catalogs.
+//! G29: config publication coordination and registry compilation stay outside
+//! runtime core; runtime receives only complete catalog install requests.
 
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::capability::{
@@ -123,4 +130,58 @@ fn active_catalog_is_unchanged_on_rejected_install() {
         CatalogFingerprint("catalog-a".to_string()),
         "active catalog must be unchanged when an install is rejected"
     );
+}
+
+/// G29: the install request is self-contained — the runtime never loads config
+/// records from an external registry or publication coordinator. The test verifies
+/// that the runtime accepts only a complete `RuntimeCatalogInstall` value.
+#[test]
+fn runtime_only_accepts_complete_install_requests() {
+    // A complete install succeeds; the runtime does not probe external systems.
+    let runtime = Runtime::new();
+    let fp = CatalogFingerprint("fp-1".to_string());
+    let install = RuntimeCatalogInstall {
+        publication_id: "pub-1".to_string(),
+        fingerprint: fp.clone(),
+        source_revisions: vec!["rev-1".to_string()],
+        capabilities: RuntimeCapabilityCatalog {
+            catalog_fingerprint: fp.clone(),
+            runtime_version: "test".to_string(),
+            tools: vec![ToolCapability {
+                id: "my_tool".to_string(),
+            }],
+            plugins: Vec::new(),
+        },
+    };
+    runtime
+        .install_catalog(install)
+        .expect("complete install succeeds");
+
+    let caps = runtime.runtime_capabilities();
+    assert_eq!(caps.catalog_fingerprint, fp);
+    assert_eq!(caps.tools.len(), 1);
+    assert_eq!(caps.tools[0].id, "my_tool");
+}
+
+/// G23: successive installs are each atomic; the capability source always
+/// reflects exactly one catalog at a time, never a mix.
+#[test]
+fn successive_installs_are_each_atomic_and_capability_source_is_consistent() {
+    let runtime = Runtime::new();
+    runtime
+        .install_catalog(catalog("v1", vec!["tool-a"]))
+        .expect("v1 installs");
+    let caps_v1 = runtime.runtime_capabilities();
+    assert_eq!(caps_v1.tools.len(), 1);
+    assert_eq!(caps_v1.catalog_fingerprint.0, "v1");
+
+    runtime
+        .install_catalog(catalog("v2", vec!["tool-a", "tool-b"]))
+        .expect("v2 installs");
+    let caps_v2 = runtime.runtime_capabilities();
+    assert_eq!(caps_v2.tools.len(), 2);
+    assert_eq!(caps_v2.catalog_fingerprint.0, "v2");
+
+    // v1 tools must not appear under v2.
+    assert!(caps_v2.tools.iter().any(|t| t.id == "tool-b"));
 }

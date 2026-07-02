@@ -178,3 +178,114 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+// G1 guardrail: SqliteCommitCoordinator must reject malformed commits before
+// writing. The fence must not advance when validate() fires.
+
+#[tokio::test]
+async fn sqlite_rejects_empty_thread_id_before_write() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let bad = ThreadCommit {
+        thread_id: ThreadId("".to_string()),
+        run_fact: ended("run-1"),
+        messages: vec![],
+        state: vec![],
+        events: vec![],
+        waiting: None,
+    };
+    let err = store.commit(bad).await.expect_err("must reject");
+    assert!(
+        err.to_string().contains("thread_id"),
+        "error names the offending field"
+    );
+    assert_eq!(
+        store.commit_count(),
+        0,
+        "fence must not advance on rejection"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_rejects_empty_run_id_before_write() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let bad = ThreadCommit {
+        thread_id: ThreadId("thread-1".to_string()),
+        run_fact: RunFact {
+            run_id: RunId("".to_string()),
+            phase: Phase::Ended(EndCause::NaturalEnd),
+        },
+        messages: vec![],
+        state: vec![],
+        events: vec![],
+        waiting: None,
+    };
+    let err = store.commit(bad).await.expect_err("must reject");
+    assert!(
+        err.to_string().contains("run_id"),
+        "error names the offending field"
+    );
+    assert_eq!(
+        store.commit_count(),
+        0,
+        "fence must not advance on rejection"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_rejects_mismatched_waiting_ticket_before_write() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    let mismatched_ticket = WaitingTicket {
+        correlation_id: "corr-x".to_string(),
+        run_id: RunId("other-run".to_string()), // wrong run_id
+        thread_id: ThreadId("thread-1".to_string()),
+        snapshot_id: "snap-1".to_string(),
+        catalog_fingerprint: "fp-1".to_string(),
+        reason: WaitingReason::ToolPermission,
+        call_id: None,
+        pending_tool: None,
+        deadline_ms: None,
+    };
+    let bad = ThreadCommit {
+        thread_id: ThreadId("thread-1".to_string()),
+        run_fact: waiting_fact("run-1"),
+        messages: vec![],
+        state: vec![],
+        events: vec![],
+        waiting: Some(mismatched_ticket),
+    };
+    let err = store.commit(bad).await.expect_err("must reject");
+    assert!(
+        err.to_string().contains("run_id"),
+        "error describes the mismatch"
+    );
+    assert_eq!(
+        store.commit_count(),
+        0,
+        "fence must not advance on rejection"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_valid_commit_succeeds_after_prior_rejection() {
+    // A rejected commit must leave the store fully intact so a subsequent valid
+    // commit can proceed normally (no poisoned state).
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+
+    let bad = ThreadCommit {
+        thread_id: ThreadId("".to_string()),
+        run_fact: ended("run-1"),
+        messages: vec![],
+        state: vec![],
+        events: vec![],
+        waiting: None,
+    };
+    store.commit(bad).await.expect_err("bad commit rejected");
+    assert_eq!(store.commit_count(), 0);
+
+    let good = empty_commit("thread-1", ended("run-1"), None);
+    let record = store.commit(good).await.expect("valid commit succeeds");
+    assert_eq!(
+        record.sequence, 1,
+        "fence advanced exactly once for the valid commit"
+    );
+}

@@ -126,6 +126,10 @@ impl PostgresCommitCoordinator {
 #[async_trait]
 impl CommitCoordinator for PostgresCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        // Validate before any store write (G1).
+        commit
+            .validate()
+            .map_err(|e| Error::Rejected(e.to_string()))?;
         let next = {
             let projection = lock(&self.projection)?;
             projection.sequence + 1

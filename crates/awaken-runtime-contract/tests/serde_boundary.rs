@@ -35,4 +35,9 @@ fn boundary_values_are_plain_serializable_data() {
 
     // G29: the complete catalog install request handed to the runtime.
     assert_boundary::<rc::catalog::RuntimeCatalogInstall>();
+
+    // G1/G13: the staged commit plan and the committed record are data, never
+    // handles — proven by requiring Serialize + DeserializeOwned.
+    assert_boundary::<awaken_agent_contract::commit::staged::ThreadCommit>();
+    assert_boundary::<awaken_agent_contract::commit::staged::CommitRecord>();
 }

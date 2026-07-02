@@ -1,5 +1,12 @@
 //! Resolution converges inline and by-id snapshot inputs and fails closed on a
 //! fingerprint mismatch or a missing catalog (G4/G22/G28).
+//!
+//! G4: runtime builds live execution objects from its own catalog and fails
+//! closed on fingerprint/catalog mismatch.
+//! G22: model, provider, and backend bindings are selected before execution; the
+//! runtime validates the selected binding and fails closed on mismatch.
+//! G28: runtime may accept an inline snapshot or resolve by id, but must not
+//! treat `AgentId` alone as complete configuration.
 
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
@@ -114,4 +121,68 @@ fn by_id_lookup_and_catalog_listing_work() {
         ))),
         Err(Error::SnapshotNotFound)
     );
+}
+
+/// G4: after a catalog upgrade, a snapshot pinned to the old fingerprint fails
+/// closed — resolution never silently falls back to the new catalog.
+#[test]
+fn resolve_fails_closed_after_catalog_upgrade_with_stale_fingerprint() {
+    let runtime = Runtime::new();
+    install(&runtime, "catalog-a");
+    install(&runtime, "catalog-b"); // upgrades the active catalog
+
+    // A snapshot still pinned to "catalog-a" must fail closed.
+    assert_eq!(
+        runtime.resolve(&snapshot("catalog-a")),
+        Err(Error::FingerprintMismatch),
+        "stale fingerprint must fail closed after catalog upgrade"
+    );
+
+    // Only the new fingerprint succeeds.
+    assert!(
+        runtime.resolve(&snapshot("catalog-b")).is_ok(),
+        "resolution succeeds with the current fingerprint"
+    );
+}
+
+/// G28: resolving by id is equivalent to inline resolution; the snapshot id
+/// must not be confused with an agent id (agent id alone is incomplete config).
+#[test]
+fn by_id_resolution_is_equivalent_to_inline() {
+    let runtime = Runtime::new();
+    install(&runtime, "catalog-a");
+
+    // Register the same snapshot and resolve both ways.
+    let snap = snapshot("catalog-a");
+    let id = runtime.register_snapshot(snap.clone());
+
+    let via_inline = runtime.resolve(&snap).expect("inline resolves");
+    let via_id = runtime
+        .load_snapshot(&AgentSnapshotInput::ById(id))
+        .and_then(|s| runtime.resolve(&s))
+        .expect("by-id resolves");
+
+    assert_eq!(
+        via_inline.snapshot_id, via_id.snapshot_id,
+        "snapshot id must be identical"
+    );
+    assert_eq!(
+        via_inline.spec.model_binding, via_id.spec.model_binding,
+        "model binding must be identical"
+    );
+}
+
+/// G22: the model binding in the resolved spec is carried through unchanged;
+/// the runtime does not substitute a different binding.
+#[test]
+fn resolved_plan_carries_the_original_model_binding() {
+    let runtime = Runtime::new();
+    install(&runtime, "catalog-a");
+    let resolved = runtime.resolve(&snapshot("catalog-a")).expect("resolves");
+    assert_eq!(
+        resolved.spec.model_binding.provider_instance_ref,
+        "provider-1"
+    );
+    assert_eq!(resolved.spec.model_binding.model_ref, "model-1");
+    assert_eq!(resolved.spec.model_binding.backend_ref, "backend-1");
 }
