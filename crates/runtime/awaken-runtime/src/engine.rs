@@ -29,7 +29,7 @@ use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, ResolvedExecutionEnv, RunEndContext, RunEndDecision,
 };
-use awaken_runtime_contract::resolved::{ResolvedRun, ResolvedSpec, ToolDescriptor};
+use awaken_runtime_contract::resolved::{ContextPolicy, ResolvedRun, ResolvedSpec, ToolDescriptor};
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -1161,6 +1161,7 @@ pub(crate) fn build_chat_request(
         });
     }
     messages.extend(transcript.iter().map(to_chat_message));
+    let messages = apply_context_policy(&spec.context_policy, messages);
     let tools = spec
         .tool_descriptors
         .iter()
@@ -1172,6 +1173,30 @@ pub(crate) fn build_chat_request(
         messages,
         tools,
     }
+}
+
+/// Bound the model-visible message list per `policy`. Operates on the request
+/// view only — the committed transcript is untouched (G13). For `KeepLast`, every
+/// leading system message is kept (the agent instructions must survive), then
+/// only the last `keep_last` non-system messages.
+fn apply_context_policy(policy: &ContextPolicy, messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let keep_last = match policy {
+        ContextPolicy::KeepAll => return messages,
+        ContextPolicy::KeepLast { keep_last } => *keep_last,
+    };
+    let system_prefix = messages
+        .iter()
+        .take_while(|m| m.role == ChatRole::System)
+        .count();
+    let rest = messages.len() - system_prefix;
+    if rest <= keep_last {
+        return messages;
+    }
+    let drop = rest - keep_last;
+    let mut kept: Vec<ChatMessage> = Vec::with_capacity(system_prefix + keep_last);
+    kept.extend(messages.iter().take(system_prefix).cloned());
+    kept.extend(messages.into_iter().skip(system_prefix + drop));
+    kept
 }
 
 fn to_chat_message(message: &Message) -> ChatMessage {
@@ -1331,6 +1356,7 @@ mod tests {
             tool_descriptors: Vec::new(),
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
+            context_policy: ContextPolicy::KeepAll,
         }
     }
 
@@ -1355,5 +1381,77 @@ mod tests {
         let request = build_chat_request(&spec(""), &[user_message()], &[]);
         assert_eq!(request.messages.len(), 1);
         assert!(matches!(request.messages[0].role, ChatRole::User));
+    }
+
+    fn numbered(n: usize) -> Message {
+        Message::text(MessageId(format!("m{n}")), Role::User, n.to_string())
+    }
+
+    fn spec_with(policy: ContextPolicy) -> ResolvedSpec {
+        ResolvedSpec {
+            context_policy: policy,
+            ..spec("sys")
+        }
+    }
+
+    fn user_texts(request: &ChatRequest) -> Vec<String> {
+        request
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, ChatRole::User))
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn keep_all_sends_the_whole_transcript() {
+        let transcript: Vec<Message> = (0..5).map(numbered).collect();
+        let request = build_chat_request(&spec_with(ContextPolicy::KeepAll), &transcript, &[]);
+        // 1 system + 5 users
+        assert_eq!(request.messages.len(), 6);
+    }
+
+    #[test]
+    fn keep_last_keeps_system_prefix_plus_the_last_n() {
+        let transcript: Vec<Message> = (0..5).map(numbered).collect();
+        let request = build_chat_request(
+            &spec_with(ContextPolicy::KeepLast { keep_last: 2 }),
+            &transcript,
+            &[],
+        );
+        // system stays; only the last 2 user messages survive.
+        assert!(matches!(request.messages[0].role, ChatRole::System));
+        assert_eq!(user_texts(&request), vec!["3".to_string(), "4".to_string()]);
+    }
+
+    #[test]
+    fn keep_last_larger_than_history_keeps_everything() {
+        let transcript: Vec<Message> = (0..3).map(numbered).collect();
+        let request = build_chat_request(
+            &spec_with(ContextPolicy::KeepLast { keep_last: 10 }),
+            &transcript,
+            &[],
+        );
+        assert_eq!(user_texts(&request).len(), 3);
+    }
+
+    #[test]
+    fn keep_last_zero_keeps_only_the_system_prefix() {
+        let transcript: Vec<Message> = (0..3).map(numbered).collect();
+        let request = build_chat_request(
+            &spec_with(ContextPolicy::KeepLast { keep_last: 0 }),
+            &transcript,
+            &[],
+        );
+        assert_eq!(request.messages.len(), 1);
+        assert!(matches!(request.messages[0].role, ChatRole::System));
     }
 }

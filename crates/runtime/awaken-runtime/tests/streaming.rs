@@ -18,7 +18,9 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, DeltaSink, LlmExecutor, Result,
 };
-use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+use awaken_runtime_contract::resolved::{
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
+};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -95,6 +97,7 @@ async fn run(chunks: Vec<&'static str>) -> (MemoryCommitCoordinator, MemoryStrea
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),
                 plugin_config: Default::default(),
+                context_policy: ContextPolicy::KeepAll,
             },
             fingerprint,
         },
