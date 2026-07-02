@@ -50,6 +50,9 @@ use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
 
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
+// Skill provisioning inputs (ADR-0035): a composition root supplies these to
+// `build_router_with_skills` / `SharedHost::with_skills`.
+pub use awaken_sandbox_local::{SkillMount, content_fingerprint};
 // A remote delegate's transport belongs to the A2A bounded context; re-export it so
 // a composition-root caller configures a remote agent from one import.
 pub use awaken_protocol_a2a::{HttpTransport, Response, Transport};
@@ -710,6 +713,19 @@ fn mount(host: Arc<SharedHost>) -> Router {
 /// Build the server router backed by the kernel with the given model.
 pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Router {
     mount(Arc::new(SharedHost::new(llm, model_ref)))
+}
+
+/// Build the server router with `skills` provisioned into every thread's
+/// environment (ADR-0035): each is delivered as a `skill__<id>` tool the model
+/// can call, and its descriptor is advertised in the resolved spec.
+pub fn build_router_with_skills(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    skills: Vec<SkillMount>,
+) -> Router {
+    mount(Arc::new(
+        SharedHost::new(llm, model_ref).with_skills(skills),
+    ))
 }
 
 /// A router whose outcomes are graded by a judge sub-agent (`judge_agent_id`) run

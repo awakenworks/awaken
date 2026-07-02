@@ -25,6 +25,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::executable_hand_tools;
 use awaken_runtime_contract::llm::ToolCall;
+use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use serde_json::Value;
 
@@ -411,6 +412,7 @@ pub struct Environment {
     id: String,
     hand_tools: Vec<Arc<dyn HandTool>>,
     skill_tools: Vec<Arc<dyn HandTool>>,
+    skill_descriptors: Vec<ToolDescriptor>,
     resources: Vec<ResourceRef>,
     receipt: ProvisionReceipt,
 }
@@ -427,6 +429,7 @@ impl Environment {
             id: id.into(),
             hand_tools,
             skill_tools: Vec::new(),
+            skill_descriptors: Vec::new(),
             resources: Vec::new(),
             receipt: ProvisionReceipt::default(),
         }
@@ -436,6 +439,14 @@ impl Environment {
     /// `HandTool` whose invocation returns a skill body.
     pub fn with_skill_tools(mut self, skill_tools: Vec<Arc<dyn HandTool>>) -> Self {
         self.skill_tools = skill_tools;
+        self
+    }
+
+    /// Attach the model-visible descriptors for the provisioned skill tools, so a
+    /// host can advertise them in the resolved spec (progressive disclosure). One
+    /// per `skill_tools` entry, id `skill__<id>`.
+    pub fn with_skill_descriptors(mut self, descriptors: Vec<ToolDescriptor>) -> Self {
+        self.skill_descriptors = descriptors;
         self
     }
 
@@ -479,6 +490,13 @@ impl Environment {
             .cloned()
             .map(hand_tool_as_raw)
             .collect()
+    }
+
+    /// The model-visible descriptors for provisioned skill tools. A host adds
+    /// these to the resolved spec so the model sees each skill in its tool list;
+    /// invoking `skill__<id>` returns the skill body.
+    pub fn skill_descriptors(&self) -> &[ToolDescriptor] {
+        &self.skill_descriptors
     }
 
     /// The realized resource references. Each names a logical path under the
@@ -537,6 +555,7 @@ impl SandboxProvider for LocalSandboxProvider {
         let root = IsolatedRoot::new(dir);
 
         let mut skill_tools: Vec<Arc<dyn HandTool>> = Vec::new();
+        let mut skill_descriptors: Vec<ToolDescriptor> = Vec::new();
         let mut resources: Vec<ResourceRef> = Vec::new();
         let mut entries: Vec<ProvisionEntry> = Vec::new();
 
@@ -549,8 +568,25 @@ impl SandboxProvider for LocalSandboxProvider {
             match mount {
                 Mount::Skill(skill) => {
                     verify_hash(&skill.body, &skill.content_hash)?;
+                    let tool_id = format!("skill__{}", skill.id);
+                    // The model-visible description: prefer the declared description,
+                    // else the name, else the id — progressive disclosure shows this,
+                    // the body loads on invocation.
+                    let description = if !skill.description.is_empty() {
+                        skill.description.clone()
+                    } else if !skill.name.is_empty() {
+                        skill.name.clone()
+                    } else {
+                        skill.id.clone()
+                    };
+                    skill_descriptors.push(ToolDescriptor::pinned(
+                        "skill",
+                        tool_id.clone(),
+                        description,
+                        serde_json::json!({ "type": "object" }),
+                    ));
                     skill_tools.push(Arc::new(SkillTool {
-                        tool_id: format!("skill__{}", skill.id),
+                        tool_id,
                         body: skill.body,
                     }));
                     entries.push(ProvisionEntry {
@@ -588,6 +624,7 @@ impl SandboxProvider for LocalSandboxProvider {
 
         Ok(Environment::new(spec.id.clone(), rooted_hand_tools(root))
             .with_skill_tools(skill_tools)
+            .with_skill_descriptors(skill_descriptors)
             .with_resources(resources)
             .with_receipt(ProvisionReceipt { entries }))
     }

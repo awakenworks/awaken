@@ -34,7 +34,9 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::ToolOutput;
-use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_sandbox_local::{
+    Environment, LocalSandboxProvider, Mount, SandboxProvider, SandboxSpec, SkillMount,
+};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use crate::config::{build_runtime, server_config};
@@ -240,6 +242,9 @@ pub struct SharedHost {
     pub(crate) provider: LocalSandboxProvider,
     grader: Arc<dyn Grader>,
     client_tools: HashSet<String>,
+    /// Skills provisioned into every thread's environment (ADR-0035). Each becomes
+    /// a `skill__<id>` tool the model can call to load its body.
+    skills: Vec<SkillMount>,
     pub(crate) delegates: HashSet<String>,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
     hub: Arc<ThreadEventHub>,
@@ -262,6 +267,7 @@ impl SharedHost {
             provider: LocalSandboxProvider::new(sub_base("")),
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
+            skills: Vec::new(),
             delegates: HashSet::new(),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
@@ -281,6 +287,25 @@ impl SharedHost {
     pub fn with_delegates(mut self, delegates: HashSet<String>) -> Self {
         self.delegates.extend(delegates);
         self
+    }
+
+    /// Provision skills into every thread's environment (ADR-0035): each is
+    /// delivered as a `skill__<id>` tool the model can call to load its body. The
+    /// host stays out of skill authoring/collection — it only carries the delivery
+    /// set the sandbox provider realizes.
+    pub fn with_skills(mut self, skills: Vec<SkillMount>) -> Self {
+        self.skills.extend(skills);
+        self
+    }
+
+    /// The provisioning request for a thread: its id plus every configured skill as
+    /// a skill mount the sandbox provider realizes.
+    fn sandbox_spec(&self, thread: &str) -> SandboxSpec {
+        let mut spec = SandboxSpec::new(thread);
+        for skill in &self.skills {
+            spec = spec.with_mount(Mount::Skill(skill.clone()));
+        }
+        spec
     }
 
     /// Grade outcomes with a real judge sub-agent (`judge_agent_id`) run through the
@@ -379,7 +404,7 @@ impl SharedHost {
         }
         let env = self
             .provider
-            .create(&SandboxSpec::new(thread))
+            .create(&self.sandbox_spec(thread))
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         let thread_id = ThreadId(thread.to_string());
@@ -390,7 +415,13 @@ impl SharedHost {
         if let Some(resolver) = self.agent_resolver() {
             runtime = runtime.with_resolver(resolver);
         }
-        let config = server_config(&self.model_ref, &self.client_tools, &self.delegates, &[]);
+        let config = server_config(
+            &self.model_ref,
+            &self.client_tools,
+            &self.delegates,
+            &[],
+            env.skill_descriptors(),
+        );
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and a parked run (e.g. after a
         // restart). `consumed_rounds` starts past any prior outcome rounds so a new
@@ -598,6 +629,7 @@ impl SharedHost {
             &self.client_tools,
             &HashSet::new(),
             &["goal".to_string()],
+            ctx.env.skill_descriptors(),
         );
 
         // One run: the guard re-derives and grades the deliverable, then steers
