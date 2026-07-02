@@ -460,7 +460,7 @@ impl SharedHost {
             let registry: Arc<dyn SkillRegistry> =
                 Arc::new(CompositeSkillRegistry::new(vec![delivered, authored]));
             let list = Arc::new(ListSkillsTool::new(registry.clone()));
-            let activate = Arc::new(SkillTool::new(registry));
+            let activate = Arc::new(SkillTool::new(registry).with_session_id(thread));
             skill_descriptors.push(list.descriptor());
             skill_descriptors.push(activate.descriptor());
             runtime = runtime.with_tool(list).with_tool(activate);

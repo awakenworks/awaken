@@ -137,11 +137,26 @@ fn substitute_arguments(body: &str, args: &str) -> (String, bool) {
     (out, used)
 }
 
+/// Replace `${SKILL_DIR}` and `${SESSION_ID}` with their concrete values. An
+/// unavailable value leaves its token in place (so the author can spot it), which
+/// matches Hermes' behavior.
+fn substitute_template(body: &str, skill_dir: Option<&str>, session_id: Option<&str>) -> String {
+    let mut out = body.to_string();
+    if let Some(dir) = skill_dir {
+        out = out.replace("${SKILL_DIR}", dir);
+    }
+    if let Some(session) = session_id {
+        out = out.replace("${SESSION_ID}", session);
+    }
+    out
+}
+
 /// The activation result: a header naming the skill, its instructions (with
-/// argument tokens substituted), and — only when the body used no token — the
-/// raw args echoed for the model to act on.
-fn render_activation(skill: &SkillSpec, args: &str) -> String {
-    let (body, used) = substitute_arguments(&skill.body, args);
+/// `${SKILL_DIR}`/`${SESSION_ID}` and argument tokens substituted), and — only
+/// when the body used no argument token — the raw args echoed for the model.
+fn render_activation(skill: &SkillSpec, args: &str, session_id: Option<&str>) -> String {
+    let templated = substitute_template(&skill.body, skill.dir.as_deref(), session_id);
+    let (body, used) = substitute_arguments(&templated, args);
     let mut out = format!("Skill: {}\n\n{}", skill.name, body);
     let args = args.trim();
     if !args.is_empty() && !used {
@@ -202,14 +217,27 @@ impl RawTool for ListSkillsTool {
     }
 }
 
-/// Activation tool (tier 2), resolving against a [`SkillRegistry`].
+/// Activation tool (tier 2), resolving against a [`SkillRegistry`]. Constructed
+/// per session so it can resolve `${SESSION_ID}` without the kernel threading a
+/// session id through the tool-call boundary.
 pub struct SkillTool {
     registry: Arc<dyn SkillRegistry>,
+    session_id: Option<String>,
 }
 
 impl SkillTool {
     pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            session_id: None,
+        }
+    }
+
+    /// Bind the session id used to resolve `${SESSION_ID}` in activated bodies.
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 
     /// The stable, catalog-free descriptor. Convenience for the composition root.
@@ -264,7 +292,7 @@ impl RawTool for SkillTool {
             .unwrap_or("");
         Ok(ToolOutput::ok(
             call.call_id,
-            render_activation(&skill, args),
+            render_activation(&skill, args, self.session_id.as_deref()),
         ))
     }
 }
@@ -453,6 +481,50 @@ mod tests {
         );
         // the body used tokens, so no raw-args footer is appended.
         assert!(!out.content.contains("Arguments:"));
+    }
+
+    #[tokio::test]
+    async fn substitutes_skill_dir_and_session_id() {
+        let spec = SkillSpec {
+            dir: Some("skills/deploy".into()),
+            ..SkillSpec::new(
+                "deploy",
+                "Deploy",
+                "d",
+                "run ${SKILL_DIR}/x.sh in ${SESSION_ID}",
+            )
+        };
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([spec]));
+        let out = SkillTool::new(registry)
+            .with_session_id("sess-1")
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "deploy" }),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("run skills/deploy/x.sh in sess-1"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn unresolved_template_token_is_left_in_place() {
+        // No dir and no session id: tokens survive so the author can spot them.
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "d",
+            "D",
+            "x",
+            "dir=${SKILL_DIR} sess=${SESSION_ID}",
+        )]));
+        let out = SkillTool::new(registry)
+            .invoke(call(SKILL_TOOL_ID, serde_json::json!({ "skill": "d" })))
+            .await
+            .unwrap();
+        assert!(out.content.contains("dir=${SKILL_DIR}"));
+        assert!(out.content.contains("sess=${SESSION_ID}"));
     }
 
     #[tokio::test]
