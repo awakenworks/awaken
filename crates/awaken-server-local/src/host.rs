@@ -69,6 +69,43 @@ impl SkillSource for EnvSkillSource {
     }
 }
 
+/// Expand a leading `/skill-name [args]` in a user message into the skill's
+/// resolved instructions (ADR-0036: user invocation), honoring `user_invocable`.
+/// Non-slash messages, unknown skills, and non-user-invocable skills pass through.
+fn expand_slash_commands(
+    registry: Option<&Arc<dyn SkillRegistry>>,
+    session_id: &str,
+    input: Vec<Message>,
+) -> Vec<Message> {
+    let Some(registry) = registry else {
+        return input;
+    };
+    input
+        .into_iter()
+        .map(|message| {
+            if message.role != Role::User {
+                return message;
+            }
+            let text = crate::config::block_text(&message.content);
+            let Some(rest) = text.trim_start().strip_prefix('/') else {
+                return message;
+            };
+            let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            match registry.get(name.trim()) {
+                Some(skill) if skill.user_invocable => {
+                    let body = awaken_ext_skills::render_user_invocation(
+                        &skill,
+                        args.trim(),
+                        Some(session_id),
+                    );
+                    Message::text(message.id, Role::User, body)
+                }
+                _ => message,
+            }
+        })
+        .collect()
+}
+
 /// Runs a `context: fork` skill as a fresh, isolated sub-agent (its own sandbox),
 /// returning the sub-run's reply. Bridges the skills [`SubAgentRunner`] port to
 /// the shared `run_subagent` primitive.
@@ -251,6 +288,9 @@ pub(crate) struct SessionCtx {
     /// The thread's sandbox environment, reused to build a goal-enabled runtime
     /// for `define_outcome` (same tools, same environment).
     env: Arc<Environment>,
+    /// The thread's skill registry (delivered + workspace), used to expand user
+    /// `/skill-name` invocations. `None` when skills are not offered.
+    skill_registry: Option<Arc<dyn SkillRegistry>>,
     /// The in-flight run's cancellation token, so a concurrent `interrupt` (a
     /// separate request) can cancel it. A plain `std::sync::Mutex` (brief locks),
     /// held by neither the run loop nor the state lock, so interrupt never blocks
@@ -496,6 +536,7 @@ impl SharedHost {
         // (discover) and `Skill` (activate). Both descriptors are catalog-free, so
         // the skill set never perturbs the pinned surface. No per-skill tools.
         let mut skill_descriptors = Vec::new();
+        let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
         if !self.skills.is_empty() {
             // Delivered (configured, trusted) skills plus a live scan of the
             // workspace for skills the agent authored this run (AgentCreated).
@@ -511,6 +552,7 @@ impl SharedHost {
             ));
             let registry: Arc<dyn SkillRegistry> =
                 Arc::new(CompositeSkillRegistry::new(vec![delivered, authored]));
+            skill_registry = Some(registry.clone());
             // Observe touched paths so conditional (`paths`) skills surface once a
             // matching file is accessed; the gate only records, never decides.
             let activations = PathActivations::new();
@@ -563,6 +605,7 @@ impl SharedHost {
             commit,
             thread_id,
             env,
+            skill_registry,
             cancel: std::sync::Mutex::new(None),
             state: tokio::sync::Mutex::new(state),
         });
@@ -639,6 +682,8 @@ impl SharedHost {
                 )
             })
             .collect();
+        // Expand a user `/skill-name` into the skill's instructions before the turn.
+        let input = expand_slash_commands(ctx.skill_registry.as_ref(), thread, input);
         messages.extend(input);
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
         let (run_id, phase) = ctx
@@ -1010,5 +1055,31 @@ mod tests {
         assert!(found.body.contains("hydrate"));
 
         provider.teardown("t").await.unwrap();
+    }
+
+    #[test]
+    fn slash_command_expands_a_user_invocable_skill() {
+        let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_specs([
+            SkillSpec::new("deploy", "Deploy", "d", "checklist for $ARGUMENTS"),
+            SkillSpec {
+                user_invocable: false,
+                ..SkillSpec::new("secret", "Secret", "d", "hidden body")
+            },
+        ]));
+        let msg = |t: &str| Message::text(MessageId("m".into()), Role::User, t);
+
+        // A user-invocable slash command expands to the resolved body.
+        let out = expand_slash_commands(Some(&registry), "sess", vec![msg("/deploy prod")]);
+        let text = crate::config::block_text(&out[0].content);
+        assert_eq!(text, "checklist for prod");
+
+        // A non-user-invocable skill is left as typed.
+        let out = expand_slash_commands(Some(&registry), "sess", vec![msg("/secret")]);
+        assert_eq!(crate::config::block_text(&out[0].content), "/secret");
+
+        // An unknown command and a plain message pass through unchanged.
+        let out = expand_slash_commands(Some(&registry), "sess", vec![msg("/nope"), msg("hi")]);
+        assert_eq!(crate::config::block_text(&out[0].content), "/nope");
+        assert_eq!(crate::config::block_text(&out[1].content), "hi");
     }
 }
