@@ -65,6 +65,10 @@ fn server_policy() -> RulePermissionPolicy {
             allow("glob"),
             allow("grep"),
             allow("agent_run"),
+            // Provisioned skills grant perception (they return instructions), not
+            // authorization; allow activating them without a confirmation prompt.
+            // Any tool a skill then invokes is still gated on its own id.
+            allow("skill__*"),
         ],
     })
 }
@@ -106,9 +110,14 @@ pub(crate) fn server_config(
     client_tools: &HashSet<String>,
     delegates: &HashSet<String>,
     plugin_ids: &[String],
+    skill_descriptors: &[ToolDescriptor],
 ) -> RunnableConfig {
     let mut tools = hand_tool_descriptors();
     tools.extend(client_tools.iter().map(|id| client_tool_descriptor(id)));
+    // Provisioned skills are model-visible tools (ADR-0035): the environment built
+    // the descriptor at provision time; the runtime executes the matching
+    // `skill__<id>` RawTool from `env.tools()`.
+    tools.extend(skill_descriptors.iter().cloned());
     if !delegates.is_empty() {
         tools.push(delegation_descriptor());
     }
@@ -127,7 +136,9 @@ pub(crate) fn server_config(
 pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, env: &Environment) -> Runtime {
     let gate = PermissionGate::new(Arc::new(server_policy()));
     let mut runtime = Runtime::new().with_llm(llm).with_gate(Arc::new(gate));
-    for tool in env.hand_tools() {
+    // The full capability surface (ADR-0035 D8): hand tools plus provisioned skill
+    // tools. Placement-agnostic — the kernel sees `RawTool`s, not "skills".
+    for tool in env.tools() {
         runtime = runtime.with_tool(tool);
     }
     runtime
