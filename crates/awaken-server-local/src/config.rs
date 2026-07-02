@@ -65,9 +65,10 @@ fn server_policy() -> RulePermissionPolicy {
             allow("glob"),
             allow("grep"),
             allow("agent_run"),
-            // The `Skill` tool grants perception (it returns instructions), not
-            // authorization; allow activating a skill without a confirmation prompt.
-            // Any tool the skill then invokes is still gated on its own id.
+            // Skill discovery/activation grant perception (they list metadata and
+            // return instructions), not authorization; allow them without a
+            // confirmation prompt. Any tool a skill then invokes is still gated.
+            allow("list_skills"),
             allow("Skill"),
         ],
     })
