@@ -279,9 +279,20 @@ impl RuntimeCatalogInstaller for Runtime {
         &self,
         install: RuntimeCatalogInstall,
     ) -> Result<InstalledCatalog, awaken_runtime_contract::catalog::Error> {
+        // Fail-closed before any state change: validate the install is internally
+        // consistent. An empty top-level fingerprint or a mismatch between the
+        // install fingerprint and the capabilities catalog fingerprint means the
+        // install was assembled incorrectly; reject before the atomic swap (G4/G23).
         if install.fingerprint.0.trim().is_empty() {
             return Err(awaken_runtime_contract::catalog::Error::Rejected(
                 "catalog fingerprint is empty".to_string(),
+            ));
+        }
+        if install.fingerprint != install.capabilities.catalog_fingerprint {
+            return Err(awaken_runtime_contract::catalog::Error::Rejected(
+                "fingerprint mismatch: install fingerprint does not match \
+                 capabilities catalog fingerprint"
+                    .to_string(),
             ));
         }
 
