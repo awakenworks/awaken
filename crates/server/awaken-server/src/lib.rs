@@ -11,10 +11,13 @@
 //! distribution stays out — remote relays and multi-node ingress plug in through
 //! seams, not here.
 
+mod agent_catalog;
+mod background;
 mod config;
 mod delegate;
 mod host;
 mod hub;
+mod memory;
 mod skills;
 mod store;
 mod subagent;
