@@ -132,7 +132,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "awaken-agent-contract"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "serde",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-config-store"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-builtin-tools"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-runtime-contract",
@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-goal"
-version = "0.0.0"
+version = "1.0.0-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-permission"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-runtime-contract",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-protocol-ag-ui"
-version = "0.0.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-protocol-ai-sdk"
-version = "0.0.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-protocol-managed"
-version = "0.0.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-provider-genai"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-run-ingress"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-runtime"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-runtime-contract"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-runtime-examples"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-sandbox-local"
-version = "0.0.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-ext-builtin-tools",
@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-server-local"
-version = "0.0.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-store-postgres"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -390,14 +390,14 @@ dependencies = [
 
 [[package]]
 name = "awaken-store-schema"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "awaken-scoped-migration",
 ]
 
 [[package]]
 name = "awaken-store-sqlite"
-version = "0.1.0"
+version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
