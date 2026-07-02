@@ -13,10 +13,12 @@
 
 mod agent_catalog;
 mod background;
+mod compact;
 mod config;
 mod delegate;
 mod host;
 mod hub;
+mod judge;
 mod memory;
 mod skills;
 mod store;

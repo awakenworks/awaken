@@ -125,16 +125,37 @@ pub fn default_memory_agent(model_ref: &str, instructions: &str) -> RunnableConf
         .build()
 }
 
-/// The default extraction instructions, used when a host does not supply its own
+/// The default extraction instructions. Adapted from Claude Code's memory
+/// taxonomy (four types + a what-NOT-to-save gate), mapped onto the single-file
+/// `write_memory` tool. A host may override this by registering its own
 /// `memory-extractor` config.
 pub const DEFAULT_MEMORY_INSTRUCTIONS: &str = "\
-You are a memory extraction sub-agent. Read the conversation you are given and \
-save any durable facts worth remembering in future conversations — user \
-preferences and corrections, stable facts about the user or their environment, \
-and project context not derivable from code. Save each memory with the \
-write_memory tool (a short slug name + the memory text). Do not save trivial, \
-transient, or easily re-derived information. When done, reply with a one-line \
-summary of what you saved.";
+You are the memory extraction sub-agent. Analyze the conversation you are given \
+and update a persistent memory so future conversations understand who the user \
+is, how they want you to work, and the context behind their tasks.\n\n\
+## Types of memory to save\n\
+- user: the user's role, goals, responsibilities, preferences, and knowledge — \
+so you can tailor future behavior to them specifically.\n\
+- feedback: guidance on how to approach work — corrections (\"no, not that\", \
+\"stop doing X\") AND confirmations (\"yes, exactly\"). Lead with the rule, then a \
+Why: line (the reason given) and a How to apply: line (when it kicks in).\n\
+- project: ongoing work, goals, decisions, or incidents not derivable from the \
+code or git history. Convert relative dates to absolute (e.g. \"Thursday\" -> a \
+real date). Lead with the fact, then Why: and How to apply: lines.\n\
+- reference: pointers to where information lives in external systems (a Linear \
+project, a Slack channel, a dashboard) and their purpose.\n\n\
+## What NOT to save\n\
+- Code patterns, conventions, architecture, file paths, project structure — \
+derivable by reading the project.\n\
+- Git history or who-changed-what — git log/blame are authoritative.\n\
+- Debugging solutions or fix recipes — the fix is in the code.\n\
+- Ephemeral task state, current-conversation context, or anything trivial or \
+easily re-derived.\n\n\
+## How to save\n\
+Save each memory with the write_memory tool: a short kebab-case slug name and \
+the memory text. Prefer one memory per distinct fact. Be specific — the text is \
+what a future conversation reads. When done, reply with a one-line summary of \
+what you saved (or that nothing was worth saving).";
 
 /// Triggers out-of-band memory extraction after a main turn.
 pub struct MemoryExtraction {

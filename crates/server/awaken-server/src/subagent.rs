@@ -92,7 +92,14 @@ pub(crate) async fn run_subagent(
     cancellation: Option<CancellationToken>,
 ) -> Result<String, String> {
     // A judge/native sub-agent does not offer skills (ADR-0036).
-    let config = server_config(model_ref, &HashSet::new(), &HashSet::new(), &[], &[]);
+    let config = server_config(
+        model_ref,
+        &HashSet::new(),
+        &HashSet::new(),
+        &[],
+        &[],
+        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+    );
     let catalog = AgentCatalog::new().with_agent(config);
     run_configured_subrun(
         &catalog,
