@@ -21,6 +21,7 @@ awaken-runtime-contract.workspace = true
 awaken-runtime = { path = "../../runtime/awaken-runtime" }
 awaken-ext-builtin-tools = { path = "../../runtime/awaken-ext-builtin-tools" }
 awaken-ext-permission = { path = "../../runtime/awaken-ext-permission" }
+awaken-ext-skills = { path = "../../runtime/awaken-ext-skills" }
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

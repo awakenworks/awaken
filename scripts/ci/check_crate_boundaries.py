@@ -273,6 +273,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "reqwest",
         "nix",
     },
+    # Skills extension: fronts the whole skill set with a single `Skill` tool
+    # (catalog in the descriptor, instructions in the tool result) — ADR-0036.
+    # Like the other extensions it depends only on the runtime contract; the
+    # kernel never learns the concept "skill".
+    "awaken-ext-skills": {
+        "awaken-runtime-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "tokio",
+    },
         # Local sandbox: per-environment path isolation. It wraps the built-in tools
     # (jailing their paths to an IsolatedRoot), so it depends on the extension it
     # wraps and the neutral tool port. The remote/container provider lives in a
@@ -303,6 +314,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime",
         "awaken-ext-builtin-tools",
         "awaken-ext-permission",
+        "awaken-ext-skills",
         "async-trait",
         "serde_json",
         "thiserror",
