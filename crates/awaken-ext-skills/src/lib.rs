@@ -26,7 +26,7 @@ mod spec;
 mod tool;
 
 pub use registry::{InMemorySkillRegistry, SkillRegistry};
-pub use spec::{SkillProvenance, SkillSpec, parse_skill_md};
+pub use spec::{SkillContext, SkillProvenance, SkillSpec, parse_skill_md};
 pub use tool::{
     ListSkillsTool, SKILL_LIST_TOOL_ID, SKILL_TOOL_ID, SkillTool, list_skills_tool_descriptor,
     skill_tool_descriptor,

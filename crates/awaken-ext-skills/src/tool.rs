@@ -86,6 +86,8 @@ fn catalog_entry(skill: &SkillSpec) -> serde_json::Value {
             .when_to_use
             .as_deref()
             .map(|w| truncate_chars(w, CATALOG_FIELD_CAP)),
+        "argument_hint": skill.argument_hint,
+        "category": skill.category,
         "provenance": skill.provenance,
     })
 }
