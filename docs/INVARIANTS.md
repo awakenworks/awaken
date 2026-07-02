@@ -14,11 +14,13 @@ holds the rule), and the **Validation** (the test kind that proves it).
 - A guardrail whose mechanism is not yet designed is marked **Target**. The
   current split, by whether the named enforcer exists in the workspace today:
   - **Active** (enforcer type and a test or CI hook exist now): G1, G3, G5, G6,
-    G8, G9, G13, G14, G15, G16, G21, G27, G28, G30, G31, G32.
+    G8, G9, G13, G14, G15, G16, G18 (live-control seam only; config-publication
+    coordinator and registry compiler remain target), G21, G27, G28, G30, G31, G32.
   - **Target** (the rule is accepted, but its enforcer is not yet built here, so
     it holds vacuously until the subsystem lands): G4 (catalog fingerprint-fail
     path), G10/G19/G26 (public protocol adapters), G11 (`ContinuationGuard`),
-    G18/G23/G29 (config publication coordinator and registry compiler), G22
+    G18/G23/G29 (config publication coordinator and registry compiler — the
+    live-control seam of G18 is now active via `LiveRunControlService`), G22
     (backend-binding negotiation), G25 (observability/eval). A Target guardrail
     must gain a real enforcer and test in the same change that first builds its
     subsystem.
@@ -52,7 +54,7 @@ holds the rule), and the **Validation** (the test kind that proves it).
 | G14 | Every development-ready design names bounded context, model element, port/repository, owner, guardrail, enforcer, and first vertical slice. | ADR template (ADR-0001 D1/D2) plus this index | docs review checklist; `check_adr` and `check_invariants` hooks |
 | G15 | Runtime protocol/specification material, SDK-facing schemas, examples, and conformance tests remain Apache-2.0 unless a design explicitly moves them out of the runtime boundary; code packages may carry their own package or file license metadata. | `lefthook.yml` SPDX/license hooks; `LICENSE-APACHE` / `LICENSE-MIT` plus per-package `license` metadata | license file checks; SPDX header checks |
 | G16 | Neutral runtime, protocol, config, and ordinary extension code does not use product-hosting vocabulary such as `managed`; those names are restricted to product adapters or explicit boundary mapping docs. | `lefthook.yml` vocabulary deny-list over neutral crates | grep/deny-list checks; adapter boundary review |
-| G18 | Configuration publication, live control, and execution stay on separate runtime-facing ports. No API may own config authoring/publication, active-run steering, loop execution, durable commit, and public projection as one controller. | separate seams: `RunResolver` / `LiveRunControl` / `RunExecutor` / `CommitCoordinatorSource` | `cargo deny check bans` (deny.toml dependency-direction); public API surface tests |
+| G18 | Configuration publication, live control, and execution stay on separate runtime-facing ports. No API may own config authoring/publication, active-run steering, loop execution, durable commit, and public projection as one controller. | separate seams: `RunResolver` / `LiveRunControl` / `RunExecutor` / `CommitCoordinatorSource`; live-control seam now enforced by `LiveRunControlService` (cancel/wake fail-closed by correlation-id, separate from `RunIngress` submission) | `cargo deny check bans` (deny.toml dependency-direction); `LiveRunControlService` fail-closed tests (`awaken-run-ingress`: cancel NotFound, wake NoSubscriber on unknown id) |
 | G19 | Public protocol adapters own public DTOs, event names, headers, replay cursors, and public errors; runtime core receives only neutral activation, control, resume, and projection-source values. | protocol adapters own public DTOs; runtime gets neutral activation/control/resume values | adapter conformance tests; DTO leak snapshot tests |
 | G21 | Permission policy is the only authorization path for protected runtime operations; visibility, selection, health, compatibility, and successful resource realization carry no grant. | permission policy is the sole grant path; visibility/selection/health carry no grant | no-hidden-grant tests; permission decision API checks; audit commit tests |
 | G22 | Model, provider, and backend bindings are selected before execution by config or adapter policy; runtime validates the selected binding and fails closed on mismatch instead of searching for replacements. | binding selected in `ResolvedSpec`; runtime validates, fails closed, never searches | binding snapshot tests; backend negotiation tests; provider-search dependency checks |
