@@ -1,5 +1,7 @@
 //! The config domain's authoring aggregate.
 
+use std::collections::BTreeMap;
+
 use awaken_runtime_contract::resolved::ModelBinding;
 use serde::{Deserialize, Serialize};
 
@@ -14,4 +16,13 @@ pub struct AgentConfig {
     pub max_steps: usize,
     pub model_binding: ModelBinding,
     pub tool_ids: Vec<String>,
+    /// Plugins active for this agent, by id. A plugin installed on the runtime
+    /// contributes only when listed here (G30).
+    #[serde(default)]
+    pub plugin_ids: Vec<String>,
+    /// Per-plugin configuration sections, keyed by plugin id. `BTreeMap` keeps the
+    /// serialization deterministic for the publication fingerprint. Each active
+    /// plugin reads its own section at resolve; an absent section means defaults.
+    #[serde(default)]
+    pub plugin_config: BTreeMap<String, serde_json::Value>,
 }

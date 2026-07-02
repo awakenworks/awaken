@@ -24,6 +24,16 @@ pub use machine::{
     Transition, Violation, ViolationAction,
 };
 pub use plugin::{STATE_MACHINE_PLUGIN_ID, StateMachinePlugin};
+
+/// The JSON Schema for this plugin's config section, derived from
+/// [`StateMachineConfig`]. A config frontend renders and validates the section
+/// against it; the authoritative check remains a dry-run `resolve_configured`.
+#[cfg(feature = "schema")]
+#[must_use]
+pub fn config_schema() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(config::StateMachineConfig))
+        .unwrap_or(serde_json::Value::Null)
+}
 pub use result::{ContentMatcher, ResultMatcher, StatusMatcher, ToolResultView, result_matches};
 pub use state::{
     FsmMetricCounts, FsmMetricEvent, FsmMetricUpdate, FsmMetrics, FsmStore, FsmTransition,

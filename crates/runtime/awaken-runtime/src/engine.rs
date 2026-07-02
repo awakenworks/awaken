@@ -81,7 +81,7 @@ pub(crate) async fn run_agent_loop(
 
     // Merge the active plugins under their capability bounds; a violation fails
     // the run closed before any model call (G30).
-    let env = match runtime.resolve_plugin_env(&resolved.spec.plugin_ids) {
+    let env = match runtime.resolve_plugin_env(&resolved.spec) {
         Ok(env) => env,
         Err(_) => {
             return finish(&context, &thread_id, run_id, Checkpoint::capability_bound()).await;
@@ -204,7 +204,7 @@ pub(crate) async fn resume_run(
     let run_id = command.run_id.clone();
     let thread_id = command.thread_id.clone();
 
-    let env = match runtime.resolve_plugin_env(&resolved.spec.plugin_ids) {
+    let env = match runtime.resolve_plugin_env(&resolved.spec) {
         Ok(env) => env,
         Err(_) => {
             return finish(&context, &thread_id, run_id, Checkpoint::capability_bound()).await;
@@ -419,7 +419,7 @@ async fn drive(
         if current_live_version != last_live_version {
             // Best-effort: a failed re-resolution keeps the prior environment
             // rather than aborting the run.
-            if let Ok(refreshed) = runtime.resolve_plugin_env(&resolved.spec.plugin_ids) {
+            if let Ok(refreshed) = runtime.resolve_plugin_env(&resolved.spec) {
                 live_env = Some(refreshed);
             }
             last_live_version = current_live_version;
@@ -1330,6 +1330,7 @@ mod tests {
             },
             tool_descriptors: Vec::new(),
             plugin_ids: Vec::new(),
+            plugin_config: Default::default(),
         }
     }
 

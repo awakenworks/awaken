@@ -130,6 +130,7 @@ fn activation() -> RunActivation {
                 },
                 tool_descriptors: Vec::new(),
                 plugin_ids: vec!["state_machine".to_string()],
+                plugin_config: Default::default(),
             },
             fingerprint,
         },

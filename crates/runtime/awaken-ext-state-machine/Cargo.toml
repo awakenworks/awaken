@@ -14,6 +14,12 @@ serde_yaml = "0.9"
 async-trait.workspace = true
 thiserror.workspace = true
 url = "2.5"
+schemars = { version = "1", optional = true }
+
+[features]
+# Derive a JSON Schema for the config (for a config frontend). Off by the runtime
+# hot path; the composition/admin side turns it on to advertise the schema.
+schema = ["dep:schemars"]
 
 [dev-dependencies]
 awaken-runtime = { path = "../awaken-runtime" }

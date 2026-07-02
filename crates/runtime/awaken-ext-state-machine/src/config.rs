@@ -13,6 +13,7 @@ use crate::result::{ContentMatcher, ResultMatcher, StatusMatcher};
 
 /// The whole state-machine plugin configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StateMachineConfig {
     #[serde(default)]
     pub machines: Vec<MachineEntry>,
@@ -22,6 +23,7 @@ pub struct StateMachineConfig {
 
 /// Loop-continuation settings shared by all machines.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct ContinuationSettings {
     /// Max forced continuations while a machine instance is non-terminal. `0`
@@ -32,6 +34,7 @@ pub struct ContinuationSettings {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MachineEntry {
     pub name: String,
     #[serde(default)]
@@ -52,6 +55,7 @@ pub struct MachineEntry {
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ScopeEntry {
     #[default]
@@ -60,6 +64,7 @@ pub enum ScopeEntry {
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum KeyNormalizerEntry {
     #[default]
@@ -71,6 +76,7 @@ pub enum KeyNormalizerEntry {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TransitionEntry {
     pub on: String,
     pub from: FromEntry,
@@ -84,6 +90,7 @@ pub struct TransitionEntry {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum FromEntry {
     One(String),
@@ -91,6 +98,7 @@ pub enum FromEntry {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum WhenEntry {
     /// `"any"` / `"success"` / `"error"`.
@@ -105,6 +113,7 @@ pub enum WhenEntry {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EmitEntry {
     #[serde(default)]
     pub target: EmitTargetEntry,
@@ -116,6 +125,7 @@ pub struct EmitEntry {
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EmitTargetEntry {
     System,
@@ -126,6 +136,7 @@ pub enum EmitTargetEntry {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum RoleEntry {
     User,
@@ -133,6 +144,7 @@ pub enum RoleEntry {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum ViolationEntry {
     Action(String),

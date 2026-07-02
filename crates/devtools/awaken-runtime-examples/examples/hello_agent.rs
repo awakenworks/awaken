@@ -29,6 +29,8 @@ async fn main() {
         max_steps: 4,
         model_binding: ModelBinding::new("demo", "stub", "stub"),
         tool_ids: Vec::new(),
+        plugin_ids: Vec::new(),
+        plugin_config: Default::default(),
     };
 
     // 2. Compile to a runnable config — the fingerprint is sha256(config), stamped
