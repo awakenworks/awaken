@@ -145,14 +145,20 @@ pub(crate) fn platform_plugin_capabilities() -> Vec<PluginCapability> {
     }]
 }
 
+/// The server's base authorization gate (the declarative permission policy). A
+/// composition-root helper so a caller can wrap it (e.g. to observe file paths for
+/// conditional skills) and re-inject it.
+pub(crate) fn server_gate() -> Arc<dyn awaken_runtime_contract::permission::ToolGateHook> {
+    Arc::new(PermissionGate::new(Arc::new(server_policy())))
+}
+
 /// A per-thread runtime whose hand tools come from `env` (placement-agnostic). No
 /// `agent_run` executor is registered: a delegate call is advertised by the config
 /// but the kernel runs it via the injected resolver, not the tool registry.
 pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, env: &Environment) -> Runtime {
-    let gate = PermissionGate::new(Arc::new(server_policy()));
     let mut runtime = Runtime::new()
         .with_llm(llm)
-        .with_gate(Arc::new(gate))
+        .with_gate(server_gate())
         // The tool state machine is available on every runtime; an agent activates
         // it via `plugin_ids` and configures its machines via `plugin_config`.
         .with_plugin(Arc::new(StateMachinePlugin::empty()));

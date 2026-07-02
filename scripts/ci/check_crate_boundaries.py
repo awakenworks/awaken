@@ -295,6 +295,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "serde",
         "serde_json",
+        "glob",
         "tokio",
     },
     # State-machine extension: a loadable FSM DSL that constrains tool-call order.

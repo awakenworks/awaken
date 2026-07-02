@@ -10,7 +10,8 @@
 //! the tool descriptors so a changing skill set never perturbs a pinned surface
 //! (ADR-0036 D2/D7).
 
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -18,6 +19,53 @@ use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
 use crate::registry::SkillRegistry;
 use crate::spec::{SkillSpec, truncate_chars};
+
+/// A shared, live record of file paths the run has touched, so conditional
+/// (`paths`) skills surface once a matching file is accessed (ADR-0036: `paths`).
+/// The host records paths (e.g. from a gate observing `read`/`write`/`edit`); the
+/// `list_skills` tool reads them. Cheap to clone (shared handle).
+#[derive(Clone, Default)]
+pub struct PathActivations {
+    touched: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl PathActivations {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a touched path.
+    pub fn record(&self, path: impl Into<String>) {
+        if let Ok(mut set) = self.touched.lock() {
+            set.insert(path.into());
+        }
+    }
+
+    /// The paths touched so far.
+    pub fn touched(&self) -> Vec<String> {
+        self.touched
+            .lock()
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+/// Whether a conditional skill is surfaced: unconditional skills always are; a
+/// skill with `paths` surfaces once one of its globs matches a touched path.
+fn is_surfaced(skill: &SkillSpec, activations: Option<&PathActivations>) -> bool {
+    if skill.paths.is_empty() {
+        return true;
+    }
+    let Some(activations) = activations else {
+        return false;
+    };
+    let touched = activations.touched();
+    skill.paths.iter().any(|pattern| {
+        glob::Pattern::new(pattern)
+            .map(|p| touched.iter().any(|path| p.matches(path)))
+            .unwrap_or(false)
+    })
+}
 
 /// Per-entry cap on the catalog description/when-to-use, so a large skill set
 /// keeps `list_skills` output bounded (ADR-0036: size limits).
@@ -170,11 +218,23 @@ fn render_activation(skill: &SkillSpec, args: &str, session_id: Option<&str>) ->
 /// Only model-invocable skills are listed; an optional `query` filters them.
 pub struct ListSkillsTool {
     registry: Arc<dyn SkillRegistry>,
+    activations: Option<PathActivations>,
 }
 
 impl ListSkillsTool {
     pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            activations: None,
+        }
+    }
+
+    /// Wire the touched-path record so conditional (`paths`) skills surface once a
+    /// matching file is accessed. Without it, conditional skills stay hidden.
+    #[must_use]
+    pub fn with_path_activations(mut self, activations: PathActivations) -> Self {
+        self.activations = Some(activations);
+        self
     }
 
     pub fn descriptor(&self) -> ToolDescriptor {
@@ -206,6 +266,7 @@ impl RawTool for ListSkillsTool {
             .list()
             .iter()
             .filter(|s| s.model_invocable)
+            .filter(|s| is_surfaced(s, self.activations.as_ref()))
             .filter(|s| query.as_deref().is_none_or(|q| matches_query(s, q)))
             .map(catalog_entry)
             .collect();
@@ -376,6 +437,56 @@ mod tests {
             "catalog entry bounded"
         );
         assert!(desc.ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn conditional_skill_surfaces_only_after_a_matching_path_is_touched() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([
+            SkillSpec::new("always", "Always", "unconditional", "b"),
+            SkillSpec::new("rusty", "Rusty", "for rust files", "b")
+                .with_paths(vec!["src/**/*.rs".into()]),
+        ]));
+        let activations = PathActivations::new();
+        let tool = ListSkillsTool::new(registry).with_path_activations(activations.clone());
+
+        // Before touching a matching file: only the unconditional skill.
+        let before = tool
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(before.content.contains("always"));
+        assert!(
+            !before.content.contains("rusty"),
+            "conditional hidden: {}",
+            before.content
+        );
+
+        // Touch a non-matching then a matching path.
+        activations.record("docs/readme.md");
+        activations.record("src/app/main.rs");
+
+        let after = tool
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(
+            after.content.contains("rusty"),
+            "surfaced after match: {}",
+            after.content
+        );
+    }
+
+    #[tokio::test]
+    async fn conditional_skill_stays_hidden_without_activations_wired() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "rusty", "Rusty", "d", "b",
+        )
+        .with_paths(vec!["*.rs".into()])]));
+        let out = ListSkillsTool::new(registry)
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(!out.content.contains("rusty"));
     }
 
     #[tokio::test]

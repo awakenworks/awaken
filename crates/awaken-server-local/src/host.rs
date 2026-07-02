@@ -25,8 +25,8 @@ use awaken_ext_goal::{
     GoalSpec, Grader, KeywordGrader,
 };
 use awaken_ext_skills::{
-    CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool, SkillFile, SkillProvenance,
-    SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
+    CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool, PathActivations, SkillFile,
+    SkillProvenance, SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
 };
 use awaken_protocol_a2a::Transport;
 use awaken_runtime::Runtime;
@@ -34,6 +34,7 @@ use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::agent_resolver::AgentResolver;
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -67,7 +68,32 @@ impl SkillSource for EnvSkillSource {
     }
 }
 
-use crate::config::{build_runtime, server_config};
+/// A gate that observes the paths file tools touch (recording them into
+/// [`PathActivations`] so conditional `paths` skills surface), then delegates the
+/// decision to the base gate. Observation only — it never changes the decision.
+struct RecordingGate {
+    inner: Arc<dyn ToolGateHook>,
+    activations: PathActivations,
+}
+
+#[async_trait::async_trait]
+impl ToolGateHook for RecordingGate {
+    async fn gate(&self, ctx: &PermissionContext) -> GateOutcome {
+        let key = match ctx.tool_id.as_str() {
+            "read" | "write" | "edit" | "grep" => Some("path"),
+            "glob" => Some("pattern"),
+            _ => None,
+        };
+        if let Some(key) = key
+            && let Some(path) = ctx.arguments.get(key).and_then(|v| v.as_str())
+        {
+            self.activations.record(path);
+        }
+        self.inner.gate(ctx).await
+    }
+}
+
+use crate::config::{build_runtime, server_config, server_gate};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::store::HostCommit;
@@ -459,7 +485,15 @@ impl SharedHost {
             ));
             let registry: Arc<dyn SkillRegistry> =
                 Arc::new(CompositeSkillRegistry::new(vec![delivered, authored]));
-            let list = Arc::new(ListSkillsTool::new(registry.clone()));
+            // Observe touched paths so conditional (`paths`) skills surface once a
+            // matching file is accessed; the gate only records, never decides.
+            let activations = PathActivations::new();
+            runtime = runtime.with_gate(Arc::new(RecordingGate {
+                inner: server_gate(),
+                activations: activations.clone(),
+            }));
+            let list =
+                Arc::new(ListSkillsTool::new(registry.clone()).with_path_activations(activations));
             let activate = Arc::new(SkillTool::new(registry).with_session_id(thread));
             skill_descriptors.push(list.descriptor());
             skill_descriptors.push(activate.descriptor());

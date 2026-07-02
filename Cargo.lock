@@ -219,6 +219,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "awaken-runtime-contract",
+ "glob",
  "serde",
  "serde_json",
  "tokio",

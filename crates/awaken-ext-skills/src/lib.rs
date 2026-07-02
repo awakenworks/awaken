@@ -31,6 +31,6 @@ pub use registry::{
 };
 pub use spec::{SkillContext, SkillProvenance, SkillSpec, parse_skill_md};
 pub use tool::{
-    ListSkillsTool, SKILL_LIST_TOOL_ID, SKILL_TOOL_ID, SkillTool, list_skills_tool_descriptor,
-    skill_tool_descriptor,
+    ListSkillsTool, PathActivations, SKILL_LIST_TOOL_ID, SKILL_TOOL_ID, SkillTool,
+    list_skills_tool_descriptor, skill_tool_descriptor,
 };
