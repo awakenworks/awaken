@@ -123,6 +123,7 @@ mod tests {
                 role: MessageRole::User,
                 parts: vec![
                     Part {
+                        kind: Some("file".into()),
                         text: None,
                         file: Some(FilePart {
                             bytes: Some("AAAA".into()),
