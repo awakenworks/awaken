@@ -23,7 +23,7 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, DynamicTool, Plugin, PluginManifest,
 };
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
@@ -161,6 +161,7 @@ fn activation() -> RunActivation {
                 tool_descriptors: Vec::new(),
                 plugin_ids: vec!["mcp:srv".to_string()],
                 plugin_config: Default::default(),
+                context_policy: ContextPolicy::KeepAll,
             },
             fingerprint,
         },

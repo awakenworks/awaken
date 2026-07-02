@@ -15,7 +15,9 @@ use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInst
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
-use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+use awaken_runtime_contract::resolved::{
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
+};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -96,6 +98,7 @@ fn activation() -> RunActivation {
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),
                 plugin_config: Default::default(),
+                context_policy: ContextPolicy::KeepAll,
             },
             fingerprint,
         },
