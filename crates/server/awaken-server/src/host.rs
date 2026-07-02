@@ -24,7 +24,7 @@ use awaken_ext_goal::{
     DelegateError, DelegateGrader, DelegateReply, DelegateRequest, DelegateRunner, GoalPlugin,
     GoalSpec, Grader, KeywordGrader,
 };
-use awaken_ext_skills::{InMemorySkillRegistry, SkillSpec, SkillTool};
+use awaken_ext_skills::{InMemorySkillRegistry, ListSkillsTool, SkillSpec, SkillTool};
 use awaken_protocol_a2a::Transport;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -410,16 +410,19 @@ impl SharedHost {
         if let Some(resolver) = self.agent_resolver() {
             runtime = runtime.with_resolver(resolver);
         }
-        // The whole skill set is fronted by one `Skill` tool (ADR-0036): register it
-        // and advertise its single catalog-bearing descriptor. No per-skill tools.
+        // Skills are fronted by two stable tools (ADR-0036): `list_skills`
+        // (discover) and `Skill` (activate). Both descriptors are catalog-free, so
+        // the skill set never perturbs the pinned surface. No per-skill tools.
         let mut skill_descriptors = Vec::new();
         if !self.skills.is_empty() {
             let registry = Arc::new(InMemorySkillRegistry::from_specs(
                 self.skills.iter().cloned(),
             ));
-            let tool = Arc::new(SkillTool::new(registry));
-            skill_descriptors.push(tool.descriptor());
-            runtime = runtime.with_tool(tool);
+            let list = Arc::new(ListSkillsTool::new(registry.clone()));
+            let activate = Arc::new(SkillTool::new(registry));
+            skill_descriptors.push(list.descriptor());
+            skill_descriptors.push(activate.descriptor());
+            runtime = runtime.with_tool(list).with_tool(activate);
         }
         let config = server_config(
             &self.model_ref,
