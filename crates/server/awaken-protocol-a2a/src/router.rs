@@ -10,16 +10,18 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Json, Path, Request, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use serde::Deserialize;
+use serde_json::{Value, json};
 
 use crate::encoder::encode_task;
-use crate::port::{A2aRuntime, DriverError, Pending, Resume, StepOutcome};
+use crate::port::{A2aRuntime, DriverError, Pending, Resume};
 use crate::request::process;
 use crate::types::{
     AgentCapabilities, AgentCard, AgentSkill, ErrorResponse, SendMessageRequest,
-    SendMessageResponse,
+    SendMessageResponse, Task,
 };
 
 type Runtime = Arc<dyn A2aRuntime>;
@@ -52,6 +54,10 @@ where
 /// the `/v1/a2a...` surface an A2A `HTTP+JSON` client posts to.
 pub fn router(runtime: Runtime) -> Router {
     Router::new()
+        // The JSON-RPC binding (the canonical A2A transport the official SDKs
+        // default to): a single endpoint dispatching by `method`.
+        .route(JSONRPC_PATH, post(jsonrpc))
+        // The HTTP+JSON binding (a message posted straight to a method path).
         .route(crate::client::MESSAGE_SEND_PATH, post(message_send))
         .route(
             "/v1/a2a/agents/:agent_id/message:send",
@@ -60,6 +66,9 @@ pub fn router(runtime: Runtime) -> Router {
         .route(crate::client::AGENT_CARD_PATH, get(card))
         .with_state(runtime)
 }
+
+/// The JSON-RPC service endpoint (advertised as the card's `url`).
+pub const JSONRPC_PATH: &str = "/v1/a2a";
 
 async fn message_send(
     State(rt): State<Runtime>,
@@ -76,29 +85,90 @@ async fn message_send_scoped(
     send(rt, req, Some(agent_id)).await
 }
 
-/// The core `message:send` handler. A message on a thread with a parked run
-/// resumes it (delivering the text as the tool answer); otherwise it is a new
-/// turn. Either way the committed step is projected into a `Task`.
-async fn send(rt: Runtime, req: SendMessageRequest, path_agent: Option<String>) -> Response {
+/// The core send logic (shared by the HTTP+JSON and JSON-RPC bindings). A message
+/// on a thread with a parked run resumes it (delivering the text as the tool
+/// answer); otherwise it is a fresh turn. Either way the committed step is
+/// projected into a `Task`.
+async fn run_send(
+    rt: &Runtime,
+    req: SendMessageRequest,
+    path_agent: Option<String>,
+) -> Result<Task, DriverError> {
     let processed = process(req, path_agent);
     let thread = processed.thread_id.clone();
 
-    let outcome = match rt.pending(&thread).await {
+    let step = match rt.pending(&thread).await {
         // A parked run on this context → the message is the awaited input.
         Some(pending) => {
             let resume = to_resume(&processed.text, &pending);
-            rt.resume(&thread, &pending.tool_use_id, resume).await
+            rt.resume(&thread, &pending.tool_use_id, resume).await?
         }
         // No parked run → a fresh turn.
         None => {
             rt.run_turn(&thread, processed.agent_id.clone(), vec![processed.message])
-                .await
+                .await?
         }
     };
 
-    match outcome {
-        Ok(step) => task_response(&rt, &thread, step).await,
+    let history = rt.history(&thread).await;
+    Ok(encode_task(&thread, &history, &step))
+}
+
+/// The HTTP+JSON `message:send` handler.
+async fn send(rt: Runtime, req: SendMessageRequest, path_agent: Option<String>) -> Response {
+    match run_send(&rt, req, path_agent).await {
+        Ok(task) => (StatusCode::OK, Json(SendMessageResponse { task })).into_response(),
         Err(err) => error_response(err),
+    }
+}
+
+/// A minimal JSON-RPC 2.0 request envelope (the fields the A2A binding uses).
+#[derive(Deserialize)]
+struct JsonRpcRequest {
+    #[serde(default)]
+    id: Value,
+    method: String,
+    #[serde(default)]
+    params: Value,
+}
+
+/// The JSON-RPC endpoint: dispatch by `method`. Only `message/send` is
+/// implemented; other methods return a JSON-RPC "method not found".
+async fn jsonrpc(State(rt): State<Runtime>, A2aJson(req): A2aJson<JsonRpcRequest>) -> Response {
+    let id = req.id;
+    match req.method.as_str() {
+        "message/send" => match serde_json::from_value::<SendMessageRequest>(req.params) {
+            Ok(send_req) => match run_send(&rt, send_req, None).await {
+                // A2A `message/send` returns the Task (or Message) directly as
+                // the JSON-RPC `result`.
+                Ok(task) => rpc_ok(id, task),
+                Err(err) => {
+                    let (code, message) = rpc_fault(err);
+                    rpc_error(id, code, message)
+                }
+            },
+            Err(err) => rpc_error(id, -32602, format!("invalid params: {err}")),
+        },
+        other => rpc_error(id, -32601, format!("method not found: {other}")),
+    }
+}
+
+/// A JSON-RPC success: `{ jsonrpc, id, result }` on a 200.
+fn rpc_ok(id: Value, task: Task) -> Response {
+    Json(json!({ "jsonrpc": "2.0", "id": id, "result": task })).into_response()
+}
+
+/// A JSON-RPC error member on a 200 (the transport succeeded; the call did not).
+fn rpc_error(id: Value, code: i32, message: String) -> Response {
+    Json(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }))
+        .into_response()
+}
+
+/// Map a driver error to a JSON-RPC (code, message).
+fn rpc_fault(err: DriverError) -> (i32, String) {
+    match err {
+        DriverError::BadRequest(m) => (-32600, m),
+        DriverError::Internal(m) => (-32603, m),
     }
 }
 
@@ -119,13 +189,6 @@ fn to_resume(text: &str, pending: &Pending) -> Resume {
     }
 }
 
-/// Project the step into a `Task` over the thread's committed history.
-async fn task_response(rt: &Runtime, thread: &str, step: StepOutcome) -> Response {
-    let history = rt.history(thread).await;
-    let task = encode_task(thread, &history, &step);
-    (StatusCode::OK, Json(SendMessageResponse { task })).into_response()
-}
-
 /// Map a driver error to `(status, A2A error envelope)`.
 fn error_response(err: DriverError) -> Response {
     let (status, code, message) = match err {
@@ -135,18 +198,29 @@ fn error_response(err: DriverError) -> Response {
     (status, Json(ErrorResponse::new(code, message))).into_response()
 }
 
-async fn card(State(rt): State<Runtime>) -> Json<AgentCard> {
-    Json(agent_card(&rt.model()))
+async fn card(State(rt): State<Runtime>, headers: HeaderMap) -> Json<AgentCard> {
+    // The card must advertise an absolute service endpoint. Derive it from the
+    // request's Host so an SDK client fetching the card learns where to post.
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("localhost");
+    let mut card = agent_card(&rt.model());
+    card.url = Some(format!("http://{host}{JSONRPC_PATH}"));
+    Json(card)
 }
 
 /// The public agent discovery card. Streaming and push are not implemented in this
-/// slice, so they are advertised false.
+/// slice, so they are advertised false. `url` is filled in by the handler from the
+/// request Host; the JSON-RPC transport is advertised as the canonical binding.
 pub fn agent_card(model: &str) -> AgentCard {
     AgentCard {
         name: "assistant".to_string(),
         description: format!("Awaken agent over model `{model}`"),
         version: env!("CARGO_PKG_VERSION").to_string(),
         protocol_version: "1.0".to_string(),
+        url: None,
+        preferred_transport: Some("JSONRPC".to_string()),
         capabilities: AgentCapabilities {
             streaming: false,
             push_notifications: false,

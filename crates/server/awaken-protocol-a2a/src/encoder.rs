@@ -43,6 +43,7 @@ pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome
     };
 
     Task {
+        kind: Some("task".to_string()),
         id: format!("task-{thread}"),
         context_id: thread.to_string(),
         status: TaskStatus {
@@ -67,6 +68,7 @@ fn to_a2a_message(thread: &str, message: &AgentMessage) -> Option<Message> {
         return None;
     }
     Some(Message {
+        kind: Some("message".to_string()),
         task_id: Some(format!("task-{thread}")),
         context_id: Some(thread.to_string()),
         message_id: message.id.0.clone(),
