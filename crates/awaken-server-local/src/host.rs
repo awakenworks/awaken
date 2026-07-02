@@ -27,6 +27,7 @@ use awaken_ext_goal::{
 use awaken_ext_skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool, PathActivations, SkillFile,
     SkillProvenance, SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
+    SubAgentRunner,
 };
 use awaken_protocol_a2a::Transport;
 use awaken_runtime::Runtime;
@@ -65,6 +66,31 @@ impl SkillSource for EnvSkillSource {
                 dir: Some(f.dir),
             })
             .collect()
+    }
+}
+
+/// Runs a `context: fork` skill as a fresh, isolated sub-agent (its own sandbox),
+/// returning the sub-run's reply. Bridges the skills [`SubAgentRunner`] port to
+/// the shared `run_subagent` primitive.
+struct ForkRunner {
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: String,
+    provider: LocalSandboxProvider,
+}
+
+#[async_trait::async_trait]
+impl SubAgentRunner for ForkRunner {
+    async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String> {
+        let name = format!("skill-{skill_id}");
+        crate::subagent::run_subagent(
+            self.llm.clone(),
+            &self.model_ref,
+            &self.provider,
+            &name,
+            prompt,
+            None,
+        )
+        .await
     }
 }
 
@@ -494,7 +520,16 @@ impl SharedHost {
             }));
             let list =
                 Arc::new(ListSkillsTool::new(registry.clone()).with_path_activations(activations));
-            let activate = Arc::new(SkillTool::new(registry).with_session_id(thread));
+            let fork_runner: Arc<dyn SubAgentRunner> = Arc::new(ForkRunner {
+                llm: self.llm.clone(),
+                model_ref: self.model_ref.clone(),
+                provider: LocalSandboxProvider::new(sub_base("skill-fork")),
+            });
+            let activate = Arc::new(
+                SkillTool::new(registry)
+                    .with_session_id(thread)
+                    .with_fork_runner(fork_runner),
+            );
             skill_descriptors.push(list.descriptor());
             skill_descriptors.push(activate.descriptor());
             runtime = runtime.with_tool(list).with_tool(activate);

@@ -18,7 +18,15 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
 use crate::registry::SkillRegistry;
-use crate::spec::{SkillSpec, truncate_chars};
+use crate::spec::{SkillContext, SkillSpec, truncate_chars};
+
+/// Runs a skill as a forked sub-agent (`context: fork`). The host implements this
+/// (e.g. via a fresh sub-run) so `awaken-ext-skills` stays unaware of how a
+/// sub-agent is spawned. Returns the sub-run's final reply.
+#[async_trait]
+pub trait SubAgentRunner: Send + Sync {
+    async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String>;
+}
 
 /// A shared, live record of file paths the run has touched, so conditional
 /// (`paths`) skills surface once a matching file is accessed (ADR-0036: `paths`).
@@ -199,12 +207,18 @@ fn substitute_template(body: &str, skill_dir: Option<&str>, session_id: Option<&
     out
 }
 
-/// The activation result: a header naming the skill, its instructions (with
-/// `${SKILL_DIR}`/`${SESSION_ID}` and argument tokens substituted), and — only
-/// when the body used no argument token — the raw args echoed for the model.
-fn render_activation(skill: &SkillSpec, args: &str, session_id: Option<&str>) -> String {
+/// The skill's instructions with `${SKILL_DIR}`/`${SESSION_ID}` and argument
+/// tokens substituted; the `bool` is whether an argument token was used.
+fn resolved_body(skill: &SkillSpec, args: &str, session_id: Option<&str>) -> (String, bool) {
     let templated = substitute_template(&skill.body, skill.dir.as_deref(), session_id);
-    let (body, used) = substitute_arguments(&templated, args);
+    substitute_arguments(&templated, args)
+}
+
+/// The inline activation result: a header naming the skill, its resolved
+/// instructions, and — only when the body used no argument token — the raw args
+/// echoed for the model.
+fn render_activation(skill: &SkillSpec, args: &str, session_id: Option<&str>) -> String {
+    let (body, used) = resolved_body(skill, args, session_id);
     let mut out = format!("Skill: {}\n\n{}", skill.name, body);
     let args = args.trim();
     if !args.is_empty() && !used {
@@ -284,6 +298,7 @@ impl RawTool for ListSkillsTool {
 pub struct SkillTool {
     registry: Arc<dyn SkillRegistry>,
     session_id: Option<String>,
+    fork_runner: Option<Arc<dyn SubAgentRunner>>,
 }
 
 impl SkillTool {
@@ -291,6 +306,7 @@ impl SkillTool {
         Self {
             registry,
             session_id: None,
+            fork_runner: None,
         }
     }
 
@@ -298,6 +314,14 @@ impl SkillTool {
     #[must_use]
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Wire the runner used for `context: fork` skills. Without it, a fork skill
+    /// falls back to inline activation.
+    #[must_use]
+    pub fn with_fork_runner(mut self, runner: Arc<dyn SubAgentRunner>) -> Self {
+        self.fork_runner = Some(runner);
         self
     }
 
@@ -351,9 +375,22 @@ impl RawTool for SkillTool {
             .get("args")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let session = self.session_id.as_deref();
+
+        // A `context: fork` skill runs as a sub-agent (when a runner is wired),
+        // returning its reply as the tool result; otherwise it falls back to inline.
+        if skill.context == SkillContext::Fork
+            && let Some(runner) = &self.fork_runner
+        {
+            let (prompt, _) = resolved_body(&skill, args, session);
+            return Ok(match runner.run(&skill.id, &prompt).await {
+                Ok(text) => ToolOutput::ok(call.call_id, text),
+                Err(err) => ToolOutput::error(call.call_id, format!("skill fork failed: {err}")),
+            });
+        }
         Ok(ToolOutput::ok(
             call.call_id,
-            render_activation(&skill, args, self.session_id.as_deref()),
+            render_activation(&skill, args, session),
         ))
     }
 }
@@ -649,6 +686,56 @@ mod tests {
             .unwrap();
         // `commit` body has no $-token, so the raw args are echoed.
         assert!(out.content.contains("Arguments: -m x"));
+    }
+
+    struct EchoRunner;
+    #[async_trait]
+    impl SubAgentRunner for EchoRunner {
+        async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String> {
+            Ok(format!("forked[{skill_id}]: {prompt}"))
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_skill_runs_through_the_runner() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "review",
+            "Review",
+            "d",
+            "do the review of $ARGUMENTS",
+        )
+        .with_context(SkillContext::Fork)]));
+        let out = SkillTool::new(registry)
+            .with_fork_runner(Arc::new(EchoRunner))
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "review", "args": "PR-7" }),
+            ))
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        // The runner's reply is returned verbatim — not the inline "Skill:" header.
+        assert_eq!(out.content, "forked[review]: do the review of PR-7");
+    }
+
+    #[tokio::test]
+    async fn fork_skill_without_a_runner_falls_back_to_inline() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "review",
+            "Review",
+            "d",
+            "inline body",
+        )
+        .with_context(SkillContext::Fork)]));
+        let out = SkillTool::new(registry)
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "review" }),
+            ))
+            .await
+            .unwrap();
+        assert!(out.content.contains("Skill: Review"));
+        assert!(out.content.contains("inline body"));
     }
 
     #[tokio::test]
