@@ -13,6 +13,7 @@
 
 mod agent_catalog;
 mod background;
+mod compact;
 mod config;
 mod delegate;
 mod host;
