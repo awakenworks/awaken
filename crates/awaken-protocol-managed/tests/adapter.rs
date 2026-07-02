@@ -67,8 +67,9 @@ impl SessionRuntime for EchoFake {
         &self,
         _agent: &str,
         _thread: &str,
-        user_text: &str,
+        content: Vec<ContentBlock>,
     ) -> Result<TurnOutcome, RunError> {
+        let user_text = Message::new(Id("u".into()), Role::User, content).text_content();
         Ok(TurnOutcome {
             messages: vec![Message::text(
                 Id("a".into()),
@@ -118,7 +119,12 @@ struct FailingFake(RunErrorKind);
 
 #[async_trait::async_trait]
 impl SessionRuntime for FailingFake {
-    async fn run_turn(&self, _a: &str, _t: &str, _u: &str) -> Result<TurnOutcome, RunError> {
+    async fn run_turn(
+        &self,
+        _a: &str,
+        _t: &str,
+        _c: Vec<ContentBlock>,
+    ) -> Result<TurnOutcome, RunError> {
         Err(match self.0 {
             RunErrorKind::BadRequest => RunError::bad_request("nope"),
             RunErrorKind::Internal => RunError::internal("boom"),
@@ -205,7 +211,7 @@ impl SessionRuntime for ParkingFake {
         &self,
         _agent: &str,
         _thread: &str,
-        _user_text: &str,
+        _content: Vec<ContentBlock>,
     ) -> Result<TurnOutcome, RunError> {
         // The assistant asked to run a tool; the run parked before executing it.
         Ok(TurnOutcome {
@@ -283,7 +289,12 @@ struct OutcomeFake;
 
 #[async_trait::async_trait]
 impl SessionRuntime for OutcomeFake {
-    async fn run_turn(&self, _a: &str, _t: &str, _u: &str) -> Result<TurnOutcome, RunError> {
+    async fn run_turn(
+        &self,
+        _a: &str,
+        _t: &str,
+        _c: Vec<ContentBlock>,
+    ) -> Result<TurnOutcome, RunError> {
         Err(RunError::internal("no turn"))
     }
     async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
@@ -449,7 +460,12 @@ struct CustomToolFake;
 
 #[async_trait::async_trait]
 impl SessionRuntime for CustomToolFake {
-    async fn run_turn(&self, _a: &str, _t: &str, _u: &str) -> Result<TurnOutcome, RunError> {
+    async fn run_turn(
+        &self,
+        _a: &str,
+        _t: &str,
+        _c: Vec<ContentBlock>,
+    ) -> Result<TurnOutcome, RunError> {
         Ok(TurnOutcome {
             messages: vec![Message {
                 id: Id("a1".into()),

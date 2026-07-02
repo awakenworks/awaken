@@ -2,7 +2,8 @@
 //! machine. Binds `AWAKEN_HTTP_ADDR` (default `127.0.0.1:38080`). The model is
 //! deterministic so it runs without an API key: `AWAKEN_MODEL_MODE=echo` (default)
 //! replies with the user's text; `=probe` writes/reads a file so the HITL
-//! (`user.tool_confirmation`) path can be exercised. A provider executor is
+//! (`user.tool_confirmation`) path can be exercised; `=vision` reports the media it
+//! received so the multimodal path can be verified. A provider executor is
 //! swapped in through [`awaken_server_local::build_router`].
 
 use std::sync::Arc;
@@ -19,6 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok("custom") => awaken_server_local::build_custom_router(),
         Ok("delegate") => awaken_server_local::build_delegation_router(),
+        Ok("vision") => awaken_server_local::build_vision_router(),
         _ => awaken_server_local::build_echo_router(),
     };
     let listener = tokio::net::TcpListener::bind(&addr).await?;
