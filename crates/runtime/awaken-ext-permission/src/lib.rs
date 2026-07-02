@@ -22,8 +22,70 @@ use async_trait::async_trait;
 use awaken_runtime_contract::permission::{
     PermissionContext, PermissionDecision, PermissionPolicy,
 };
+use awaken_tool_pattern::{
+    ArgMatcher, MatchOp, MatchResult, Specificity, ToolMatcher, parse_pattern, pattern_matches,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// A glob-only tool-call pattern for permission rules.
+///
+/// Wraps the shared [`awaken_tool_pattern`] engine but restricts it to the
+/// glob/exact operators (`~`, `=`, `!~`, `!=`). This crate is deliberately
+/// *glob-only*: it rejects the regex operators (`=~`, `!=~`) at parse time so a
+/// `Deny` rule can never be silently reinterpreted into one that matches
+/// nothing and fails open (see [`ToolCallPattern::parse`]).
+#[derive(Debug, Clone)]
+pub struct ToolCallPattern(awaken_tool_pattern::ToolCallPattern);
+
+impl ToolCallPattern {
+    /// Parse a Claude-Code-style specifier, rejecting regex operators.
+    ///
+    /// Glob tool names (`mcp__github__*`), primary globs (`Bash(npm *)`), and
+    /// named-field glob/exact conditions (`Edit(file_path ~ "src/**")`) are
+    /// accepted. A regex operator (`=~` / `!=~`) or a `/regex/` tool name is an
+    /// error whose message names the unsupported operator.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let pattern = parse_pattern(spec).map_err(|err| err.to_string())?;
+        ensure_glob_only(&pattern)?;
+        Ok(Self(pattern))
+    }
+
+    /// Match a tool call, returning the pattern's specificity if it matches.
+    pub fn matches(&self, tool_id: &str, args: &Value) -> Option<Specificity> {
+        match pattern_matches(&self.0, tool_id, args) {
+            MatchResult::Match { specificity } => Some(specificity),
+            MatchResult::NoMatch => None,
+        }
+    }
+}
+
+/// Reject the regex operators the permission DSL does not support. The error
+/// names the offending operator (`=~` / `!=~`) so a config author sees exactly
+/// what to change.
+fn ensure_glob_only(pattern: &awaken_tool_pattern::ToolCallPattern) -> Result<(), String> {
+    fn reject_op(op: MatchOp) -> Result<(), String> {
+        if matches!(op, MatchOp::Regex | MatchOp::NotRegex) {
+            return Err(format!(
+                "regex operator '{op}' is not supported in permission patterns; use a glob with '~'"
+            ));
+        }
+        Ok(())
+    }
+    if matches!(pattern.tool, ToolMatcher::Regex(_)) {
+        return Err("regex tool names ('/.../') are not supported in permission patterns".into());
+    }
+    match &pattern.args {
+        ArgMatcher::Any => {}
+        ArgMatcher::Primary { op, .. } => reject_op(*op)?,
+        ArgMatcher::Fields(conditions) => {
+            for cond in conditions {
+                reject_op(cond.op)?;
+            }
+        }
+    }
+    Ok(())
+}
 
 /// What a matched rule does — the Claude Code behaviors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,152 +111,6 @@ pub enum Mode {
     Plan,
     /// Bypass: every call is allowed (the gate is effectively off).
     BypassPermissions,
-}
-
-/// How precisely a pattern matched — higher wins when resolving allow vs ask.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Specificity(u32);
-
-/// Matches a tool id: exact, or a glob (`mcp__github__*`).
-#[derive(Debug, Clone)]
-enum ToolMatcher {
-    Exact(String),
-    Glob(glob::Pattern),
-}
-
-impl ToolMatcher {
-    fn matches(&self, tool_id: &str) -> bool {
-        match self {
-            ToolMatcher::Exact(id) => id == tool_id,
-            ToolMatcher::Glob(p) => p.matches(tool_id),
-        }
-    }
-    fn specificity(&self) -> u32 {
-        match self {
-            ToolMatcher::Exact(_) => 100,
-            ToolMatcher::Glob(_) => 10,
-        }
-    }
-}
-
-/// Matches the call's arguments.
-#[derive(Debug, Clone)]
-enum ArgMatcher {
-    /// A named string field matches a glob (`Edit(file_path ~ "src/**")`).
-    Field { field: String, glob: glob::Pattern },
-    /// Any top-level string value matches a glob (`Bash(npm *)`).
-    Primary { glob: glob::Pattern },
-}
-
-impl ArgMatcher {
-    fn matches(&self, args: &Value) -> bool {
-        match self {
-            ArgMatcher::Field { field, glob } => args
-                .get(field)
-                .and_then(Value::as_str)
-                .is_some_and(|v| glob.matches(v)),
-            ArgMatcher::Primary { glob } => match args {
-                Value::String(s) => glob.matches(s),
-                Value::Object(map) => map
-                    .values()
-                    .filter_map(Value::as_str)
-                    .any(|v| glob.matches(v)),
-                _ => false,
-            },
-        }
-    }
-    fn specificity(&self) -> u32 {
-        match self {
-            ArgMatcher::Field { .. } => 50,
-            ArgMatcher::Primary { .. } => 30,
-        }
-    }
-}
-
-/// A tool-call pattern: a tool matcher and an optional argument matcher.
-#[derive(Debug, Clone)]
-pub struct ToolCallPattern {
-    tool: ToolMatcher,
-    arg: Option<ArgMatcher>,
-}
-
-impl ToolCallPattern {
-    /// Parse a Claude-Code-style specifier (see the crate docs). Glob syntax is
-    /// `*`/`**`/`?`/`[..]`; an invalid glob is an error.
-    pub fn parse(spec: &str) -> Result<Self, String> {
-        let spec = spec.trim();
-        let (tool_spec, arg_spec) = match spec.split_once('(') {
-            Some((tool, rest)) => {
-                let inner = rest
-                    .strip_suffix(')')
-                    .ok_or_else(|| format!("unterminated '(' in pattern {spec:?}"))?;
-                (tool.trim(), Some(inner.trim()))
-            }
-            None => (spec, None),
-        };
-
-        let tool = if tool_spec.contains(['*', '?', '[']) {
-            ToolMatcher::Glob(glob_of(tool_spec)?)
-        } else {
-            ToolMatcher::Exact(tool_spec.to_string())
-        };
-
-        let arg = match arg_spec {
-            None | Some("") => None,
-            Some(inner) => Some(parse_arg(inner)?),
-        };
-        Ok(Self { tool, arg })
-    }
-
-    /// Match a tool call, returning the pattern's specificity if it matches.
-    pub fn matches(&self, tool_id: &str, args: &Value) -> Option<Specificity> {
-        if !self.tool.matches(tool_id) {
-            return None;
-        }
-        if let Some(arg) = &self.arg
-            && !arg.matches(args)
-        {
-            return None;
-        }
-        let score = self.tool.specificity() + self.arg.as_ref().map_or(0, ArgMatcher::specificity);
-        Some(Specificity(score))
-    }
-}
-
-fn glob_of(pattern: &str) -> Result<glob::Pattern, String> {
-    glob::Pattern::new(pattern).map_err(|err| format!("bad glob {pattern:?}: {err}"))
-}
-
-fn parse_arg(inner: &str) -> Result<ArgMatcher, String> {
-    // Reject the regex operator `=~` explicitly. This crate matches with globs
-    // only; without this guard `split_once('~')` would silently accept `=~` and
-    // build a `field ~ "glob"` matcher whose field name carries a trailing `=`,
-    // so it matches nothing. A deny rule written that way would then *fail open*
-    // (the call is allowed). Fail loudly at parse time instead of at runtime.
-    if inner.contains("=~") {
-        return Err(format!(
-            "regex operator '=~' is not supported in pattern {inner:?}; use a glob with '~'"
-        ));
-    }
-    // `field ~ "glob"` is a named-field glob; anything else is a primary glob.
-    if let Some((field, rest)) = inner.split_once('~') {
-        let field = field.trim().to_string();
-        let glob = unquote(rest.trim());
-        Ok(ArgMatcher::Field {
-            field,
-            glob: glob_of(glob)?,
-        })
-    } else {
-        Ok(ArgMatcher::Primary {
-            glob: glob_of(unquote(inner))?,
-        })
-    }
-}
-
-fn unquote(s: &str) -> &str {
-    s.strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .unwrap_or(s)
 }
 
 /// Where a rule came from in the settings hierarchy (Claude Code scopes). Carried
@@ -348,7 +264,7 @@ mod tests {
             mode: Mode::Default,
             rules: vec![
                 rule("Bash", ToolPermissionBehavior::Allow),
-                rule("Bash(* rm *)", ToolPermissionBehavior::Deny),
+                rule("Bash(*rm*)", ToolPermissionBehavior::Deny),
             ],
         };
         assert_eq!(
@@ -391,7 +307,7 @@ mod tests {
             mode: Mode::Default,
             rules: vec![
                 rule("Read", ToolPermissionBehavior::Allow),
-                rule("Bash(* rm *)", ToolPermissionBehavior::Deny),
+                rule("Bash(*rm*)", ToolPermissionBehavior::Deny),
             ],
         });
         let ctx = |tool: &str, args| PermissionContext {
