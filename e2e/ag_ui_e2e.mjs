@@ -75,7 +75,27 @@ async function main() {
     pass('ag-ui HITL approval (park -> approve -> complete)');
   });
 
-  console.log('E2E PASS: AG-UI multi-turn + multimodal + HITL via @ag-ui/client.');
+  // --- streaming tool calls: a tool call is delivered mid-run as the AG-UI
+  // streaming sequence TOOL_CALL_START -> TOOL_CALL_ARGS -> TOOL_CALL_END (not
+  // buffered to the end), captured live through the client's event subscriber ---
+  await withServer('probe', 38125, async (base) => {
+    const agent = newAgent(base);
+    agent.messages = [{ id: 'u1', role: 'user', content: 'remember' }];
+    const seen = [];
+    await agent.runAgent({}, { onEvent: ({ event }) => seen.push(event.type) });
+    for (const t of ['TOOL_CALL_START', 'TOOL_CALL_ARGS', 'TOOL_CALL_END']) {
+      assert.ok(seen.includes(t), `missing streamed ${t}: ${seen.join(' ')}`);
+    }
+    assert.ok(
+      seen.indexOf('TOOL_CALL_START') < seen.indexOf('TOOL_CALL_END'),
+      `tool-call events out of order: ${seen.join(' ')}`,
+    );
+    pass('ag-ui streaming tool call (START -> ARGS -> END)');
+  });
+
+  console.log(
+    'E2E PASS: AG-UI multi-turn + multimodal + HITL + streaming tool calls via @ag-ui/client.',
+  );
 }
 
 main().catch((err) => {
