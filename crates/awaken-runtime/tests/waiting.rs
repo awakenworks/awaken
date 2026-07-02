@@ -76,7 +76,11 @@ struct SuspendGate;
 
 #[async_trait::async_trait]
 impl ToolGateHook for SuspendGate {
-    async fn gate(&self, _ctx: &PermissionContext) -> GateOutcome {
+    async fn gate(
+        &self,
+        _ctx: &PermissionContext,
+        _state: &awaken_agent_contract::agent::state::Store,
+    ) -> GateOutcome {
         GateOutcome::Suspend {
             ticket_id: "ticket-1".to_string(),
         }

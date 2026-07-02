@@ -78,7 +78,11 @@ struct AllowGate;
 
 #[async_trait::async_trait]
 impl ToolGateHook for AllowGate {
-    async fn gate(&self, _ctx: &PermissionContext) -> GateOutcome {
+    async fn gate(
+        &self,
+        _ctx: &PermissionContext,
+        _state: &awaken_agent_contract::agent::state::Store,
+    ) -> GateOutcome {
         GateOutcome::Allow
     }
 }
