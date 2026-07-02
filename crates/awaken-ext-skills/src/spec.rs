@@ -12,6 +12,22 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Cap on a skill name, mirroring the reference implementations (Hermes uses 64).
+pub const MAX_NAME_LENGTH: usize = 64;
+/// Cap on a skill description shown in the catalog (Hermes uses 1024).
+pub const MAX_DESCRIPTION_LENGTH: usize = 1024;
+
+/// Truncate on a char boundary, appending an ellipsis when cut. Shared by the
+/// parser (source caps) and the catalog renderer (budget caps).
+pub(crate) fn truncate_chars(text: &str, cap: usize) -> String {
+    if text.chars().count() <= cap {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(cap.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 /// Where a skill came from — the trust root it was materialized on (ADR-0036 D6).
 /// Provenance is derived from location (which root), not authored, so an
 /// agent-written skill cannot claim to be delivered.
@@ -112,6 +128,10 @@ pub fn parse_skill_md(id: impl Into<String>, content: &str) -> SkillSpec {
             _ => {}
         }
     }
+    // Bound the model-facing metadata so a large or malformed skill cannot blow
+    // out the catalog (ADR-0036: size limits).
+    spec.name = truncate_chars(&spec.name, MAX_NAME_LENGTH);
+    spec.description = truncate_chars(&spec.description, MAX_DESCRIPTION_LENGTH);
     spec
 }
 
@@ -237,6 +257,18 @@ mod tests {
         assert_eq!(spec.description, "");
         assert_eq!(spec.body, "just instructions");
         assert!(spec.allowed_tools.is_empty());
+    }
+
+    #[test]
+    fn over_long_name_and_description_are_capped() {
+        let long_name = "n".repeat(200);
+        let long_desc = "d".repeat(4000);
+        let md = format!("---\nname: {long_name}\ndescription: {long_desc}\n---\nbody");
+        let spec = parse_skill_md("x", &md);
+        assert!(spec.name.chars().count() <= MAX_NAME_LENGTH);
+        assert!(spec.description.chars().count() <= MAX_DESCRIPTION_LENGTH);
+        assert!(spec.name.ends_with('…'));
+        assert!(spec.description.ends_with('…'));
     }
 
     #[test]

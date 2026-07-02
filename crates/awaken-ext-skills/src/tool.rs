@@ -17,7 +17,11 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
 use crate::registry::SkillRegistry;
-use crate::spec::SkillSpec;
+use crate::spec::{SkillSpec, truncate_chars};
+
+/// Per-entry cap on the catalog description/when-to-use, so a large skill set
+/// keeps `list_skills` output bounded (ADR-0036: size limits).
+const CATALOG_FIELD_CAP: usize = 200;
 
 /// The single, stable id of the skill-activation tool.
 pub const SKILL_TOOL_ID: &str = "Skill";
@@ -77,8 +81,11 @@ fn catalog_entry(skill: &SkillSpec) -> serde_json::Value {
     serde_json::json!({
         "id": skill.id,
         "name": skill.name,
-        "description": skill.description,
-        "when_to_use": skill.when_to_use,
+        "description": truncate_chars(&skill.description, CATALOG_FIELD_CAP),
+        "when_to_use": skill
+            .when_to_use
+            .as_deref()
+            .map(|w| truncate_chars(w, CATALOG_FIELD_CAP)),
         "provenance": skill.provenance,
     })
 }
@@ -318,6 +325,27 @@ mod tests {
         assert_eq!(skills[0]["provenance"], "delivered");
         // tier-1 is metadata only — the body must not appear in discovery.
         assert!(!out.content.contains("SECRET-STEP"));
+    }
+
+    #[tokio::test]
+    async fn list_catalog_entries_are_length_bounded() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "big",
+            "Big",
+            "z".repeat(1000),
+            "body",
+        )]));
+        let out = ListSkillsTool::new(registry)
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+        let desc = v["skills"][0]["description"].as_str().unwrap();
+        assert!(
+            desc.chars().count() <= CATALOG_FIELD_CAP,
+            "catalog entry bounded"
+        );
+        assert!(desc.ends_with('…'));
     }
 
     #[tokio::test]
