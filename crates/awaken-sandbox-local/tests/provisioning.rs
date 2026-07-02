@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_local::{
     LocalSandboxProvider, Mount, ProvisionKind, ResourceMount, SandboxProvider, SandboxSpec,
     content_fingerprint,
@@ -143,6 +144,39 @@ async fn empty_spec_provisions_only_hand_tools() {
     assert!(env.resources().is_empty());
     assert!(env.receipt().entries.is_empty());
     provider.teardown("plain").await.unwrap();
+}
+
+#[tokio::test]
+async fn tier3_reference_is_readable_via_builtin_read() {
+    // A skill's reference file (tier 3) is reached by the built-in `read` tool over
+    // its materialized `${SKILL_DIR}` path — no dedicated skill tool (ADR-0036 D1).
+    let base = unique_base("tier3");
+    let provider = LocalSandboxProvider::new(&base);
+    let env = provider.create(&SandboxSpec::new("t")).await.unwrap();
+
+    let reference = base.join("t").join("skills/deploy/references/x.md");
+    std::fs::create_dir_all(reference.parent().unwrap()).unwrap();
+    std::fs::write(&reference, "REF-CONTENT").unwrap();
+
+    let read = env
+        .tools()
+        .into_iter()
+        .find(|t| t.id() == "read")
+        .expect("built-in read tool");
+    let out = read
+        .invoke(ToolCall {
+            call_id: "c1".into(),
+            tool_id: "read".into(),
+            // logical path (what `${SKILL_DIR}/references/x.md` resolves to); the
+            // jail rebases it under the hidden root.
+            arguments: serde_json::json!({ "path": "skills/deploy/references/x.md" }),
+        })
+        .await
+        .unwrap();
+    assert!(!out.is_error, "read failed: {}", out.content);
+    assert!(out.content.contains("REF-CONTENT"), "got: {}", out.content);
+
+    provider.teardown("t").await.unwrap();
 }
 
 #[tokio::test]
