@@ -73,6 +73,7 @@ fn snapshot() -> ExecutableAgentSnapshot {
                 serde_json::json!({}),
             )],
             plugin_ids: Vec::new(),
+            plugin_config: Default::default(),
         },
         fingerprint: fp,
     }

@@ -109,16 +109,19 @@ impl Runtime {
     /// listed in `plugin_ids` are inert.
     pub(crate) fn resolve_plugin_env(
         &self,
-        plugin_ids: &[String],
+        spec: &awaken_runtime_contract::resolved::ResolvedSpec,
     ) -> std::result::Result<ResolvedExecutionEnv, MergeError> {
-        let active: Vec<_> = self
-            .plugins
-            .iter()
-            .map(|plugin| plugin.manifest())
-            .zip(self.plugins.iter())
-            .filter(|(manifest, _)| plugin_ids.contains(&manifest.id))
-            .map(|(manifest, plugin)| (manifest, plugin.resolve()))
-            .collect();
+        // Each active plugin resolves against its own config section (by manifest
+        // id); a malformed section fails the run closed (G30).
+        let mut active = Vec::new();
+        for plugin in &self.plugins {
+            let manifest = plugin.manifest();
+            if !spec.plugin_ids.contains(&manifest.id) {
+                continue;
+            }
+            let contributions = plugin.resolve_configured(spec.plugin_config.get(&manifest.id))?;
+            active.push((manifest, contributions));
+        }
         ResolvedExecutionEnv::merge(active)
     }
 

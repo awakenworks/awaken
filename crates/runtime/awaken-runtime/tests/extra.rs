@@ -92,6 +92,7 @@ async fn a_system_role_message_is_carried_into_inference() {
                 },
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),
+                plugin_config: Default::default(),
             },
             fingerprint,
         },
