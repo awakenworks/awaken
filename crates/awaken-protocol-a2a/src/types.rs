@@ -17,20 +17,36 @@ pub enum MessageRole {
     Agent,
 }
 
-/// One message part. A2A uses wrapper fields (no `kind` discriminator); this slice
-/// carries text only.
+/// One message part. A2A uses wrapper fields (no `kind` discriminator): a part
+/// carries text, or a `file` (inline base64 or a remote URI) for multimodal input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Part {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<FilePart>,
 }
 
 impl Part {
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             text: Some(text.into()),
+            file: None,
         }
     }
+}
+
+/// A file/image payload inside a `Part` (A2A `FilePart`): inline base64 `bytes` or
+/// a remote `uri`, tagged with a `mimeType`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePart {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
 }
 
 /// A conversation message.

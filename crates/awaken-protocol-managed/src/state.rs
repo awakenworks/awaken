@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 
 use crate::dto::{
@@ -66,12 +67,14 @@ pub struct OutcomeReport {
 /// the kernel; the adapter never constructs a runtime.
 #[async_trait]
 pub trait SessionRuntime: Send + Sync {
-    /// Run one user turn on `thread` to its first pause or end.
+    /// Run one user turn on `thread` to its first pause or end. `content` is the
+    /// user message's full block list (multimodal): text interleaved with any
+    /// image blocks, never flattened to a bare string.
     async fn run_turn(
         &self,
         agent: &str,
         thread: &str,
-        user_text: &str,
+        content: Vec<ContentBlock>,
     ) -> Result<TurnOutcome, RunError>;
 
     /// Answer a built-in tool the run parked on (allow/deny) and continue.
@@ -329,8 +332,10 @@ impl ManagedState {
 
             match inbound {
                 InboundEvent::UserMessage { content, .. } => {
-                    let text = content_text(content);
-                    let outcome = self.runtime.run_turn(&agent_id, session_id, &text).await?;
+                    let outcome = self
+                        .runtime
+                        .run_turn(&agent_id, session_id, content.clone())
+                        .await?;
                     self.append_turn(session_id, outcome)?;
                 }
                 InboundEvent::UserToolConfirmation {

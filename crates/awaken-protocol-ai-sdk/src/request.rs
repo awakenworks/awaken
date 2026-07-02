@@ -84,32 +84,56 @@ fn convert_new_messages(messages: &[UIMessage], known_ids: &HashSet<String>) -> 
             "system" => Role::System,
             _ => continue,
         };
-        let text = text_of(&message.parts);
-        if text.is_empty() {
+        let blocks = blocks_of(&message.parts);
+        if blocks.is_empty() {
             continue;
         }
         let id = message
             .id
             .clone()
             .unwrap_or_else(|| format!("msg-{}", THREAD_SEQ.fetch_add(1, Ordering::SeqCst)));
-        out.push(Message::text(MessageId(id), role, text));
+        out.push(Message::new(MessageId(id), role, blocks));
     }
     out
 }
 
-/// Concatenate the text of a UI message's `text` parts.
-fn text_of(parts: &[Value]) -> String {
-    parts
-        .iter()
-        .filter_map(|p| {
-            if p.get("type").and_then(Value::as_str) == Some("text") {
-                p.get("text").and_then(Value::as_str)
-            } else {
-                None
+/// Convert a UI message's parts into neutral content blocks: `text` parts become
+/// text; `file` parts with an image media type become an image block (inline
+/// `data:` base64 preferred, else a remote URL). Non-content parts (`tool-*`,
+/// `step-start`, reasoning) are dropped — they are not user-visible input.
+fn blocks_of(parts: &[Value]) -> Vec<ContentBlock> {
+    parts.iter().filter_map(part_to_block).collect()
+}
+
+fn part_to_block(part: &Value) -> Option<ContentBlock> {
+    match part.get("type").and_then(Value::as_str)? {
+        "text" => {
+            let text = part.get("text").and_then(Value::as_str)?;
+            (!text.is_empty()).then(|| ContentBlock::text(text))
+        }
+        // AI SDK v5 file part: `{ type: "file", mediaType, url }` where `url` is
+        // either a `data:` URI or a remote link.
+        "file" => {
+            let media_type = part.get("mediaType").and_then(Value::as_str)?;
+            if !media_type.starts_with("image/") {
+                return None;
             }
-        })
-        .collect::<Vec<_>>()
-        .join("")
+            let url = part.get("url").and_then(Value::as_str)?;
+            Some(match parse_data_uri(url) {
+                Some((mime, data)) => ContentBlock::image_base64(mime, data),
+                None => ContentBlock::image_url(url),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Split a `data:<mime>;base64,<data>` URI into its mime type and base64 payload.
+fn parse_data_uri(url: &str) -> Option<(String, String)> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(',')?;
+    let mime = meta.strip_suffix(";base64")?;
+    Some((mime.to_string(), data.to_string()))
 }
 
 /// Extract tool-call decisions from assistant `tool-*` parts. A part run by the
@@ -223,6 +247,32 @@ mod tests {
         assert_eq!(p.thread_id, "t");
         assert_eq!(p.messages.len(), 1);
         assert_eq!(p.messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn decodes_image_file_part_into_an_image_block() {
+        let req = AiSdkChatRequest {
+            messages: vec![ui(
+                "user",
+                "u1",
+                vec![
+                    json!({"type":"file","mediaType":"image/png","url":"data:image/png;base64,AAAA"}),
+                    json!({"type":"text","text":"what is this"}),
+                ],
+            )],
+            thread_id: Some("t".into()),
+            agent_id: None,
+        };
+        let p = process_request(req, &HashSet::new());
+        assert_eq!(p.messages.len(), 1);
+        assert_eq!(p.messages[0].content.len(), 2);
+        assert!(matches!(
+            p.messages[0].content[0],
+            ContentBlock::Image {
+                source: awaken_agent_contract::agent::content::ImageSource::Base64 { .. }
+            }
+        ));
+        assert_eq!(blocks_text(&p.messages[0].content), "what is this");
     }
 
     #[test]

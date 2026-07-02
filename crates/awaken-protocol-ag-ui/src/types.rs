@@ -94,7 +94,8 @@ pub struct RunAgentInput {
     pub messages: Vec<AgUiMessage>,
 }
 
-/// An AG-UI message. Content is a plain string; a `tool` message carries the
+/// An AG-UI message. Content is a plain string in the common case, or a list of
+/// typed content parts when the turn is multimodal; a `tool` message carries the
 /// `toolCallId` it answers.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgUiMessage {
@@ -102,10 +103,40 @@ pub struct AgUiMessage {
     pub id: Option<String>,
     pub role: String,
     #[serde(default)]
-    pub content: Option<String>,
+    pub content: Option<AgUiContent>,
     #[serde(rename = "toolCallId", default)]
     pub tool_call_id: Option<String>,
     #[allow(dead_code)]
     #[serde(rename = "toolCalls", default)]
     pub tool_calls: Vec<Value>,
+}
+
+/// Message content: the plain-string form, or a multimodal list of typed parts.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum AgUiContent {
+    Text(String),
+    Parts(Vec<InputContentPart>),
+}
+
+/// One inbound multimodal content part.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum InputContentPart {
+    Text { text: String },
+    Image { source: InputContentSource },
+}
+
+/// Where an image part's bytes come from: inline base64 or a remote URL.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum InputContentSource {
+    Data {
+        value: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    Url {
+        value: String,
+    },
 }
