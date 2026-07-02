@@ -97,6 +97,22 @@ fn from_config_rejects_invalid_machine() {
     );
 }
 
+#[test]
+fn resolve_configured_applies_section_defaults_and_fails_closed() {
+    let plugin = StateMachinePlugin::empty();
+    // No section: the default is the config-agnostic (empty) contributions.
+    let none = plugin.resolve_configured(None).unwrap();
+    assert!(enforce_bound(&plugin.manifest(), &none).is_ok());
+    // A valid section resolves within the declared bound.
+    let section: serde_json::Value = serde_json::from_str(READ_BEFORE_WRITE).unwrap();
+    let some = plugin.resolve_configured(Some(&section)).unwrap();
+    assert!(enforce_bound(&plugin.manifest(), &some).is_ok());
+    // A malformed section fails closed.
+    let bad = json!({"machines":[{"name":"m","initial":"a",
+        "transitions":[{"on":"Read(","from":"a","to":"b"}]}]});
+    assert!(plugin.resolve_configured(Some(&bad)).is_err());
+}
+
 // ---------------------------------------------------------------------------
 // Gate
 // ---------------------------------------------------------------------------
