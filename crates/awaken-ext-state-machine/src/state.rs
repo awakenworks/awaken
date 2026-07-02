@@ -291,8 +291,10 @@ mod tests {
 
     #[test]
     fn throttle_gates_by_cooldown() {
-        let mut t = EmitThrottle::default();
-        t.tick = 1;
+        let mut t = EmitThrottle {
+            tick: 1,
+            ..Default::default()
+        };
         assert!(!t.on_cooldown("k", 3)); // never fired
         t.mark("k".into());
         t.tick = 2;
