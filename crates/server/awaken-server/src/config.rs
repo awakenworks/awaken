@@ -65,10 +65,10 @@ fn server_policy() -> RulePermissionPolicy {
             allow("glob"),
             allow("grep"),
             allow("agent_run"),
-            // Provisioned skills grant perception (they return instructions), not
-            // authorization; allow activating them without a confirmation prompt.
-            // Any tool a skill then invokes is still gated on its own id.
-            allow("skill__*"),
+            // The `Skill` tool grants perception (it returns instructions), not
+            // authorization; allow activating a skill without a confirmation prompt.
+            // Any tool the skill then invokes is still gated on its own id.
+            allow("Skill"),
         ],
     })
 }
@@ -114,9 +114,9 @@ pub(crate) fn server_config(
 ) -> RunnableConfig {
     let mut tools = hand_tool_descriptors();
     tools.extend(client_tools.iter().map(|id| client_tool_descriptor(id)));
-    // Provisioned skills are model-visible tools (ADR-0035): the environment built
-    // the descriptor at provision time; the runtime executes the matching
-    // `skill__<id>` RawTool from `env.tools()`.
+    // The single `Skill` tool descriptor (ADR-0036), when skills are offered: its
+    // description carries the activatable-skill catalog, and the runtime registers
+    // the matching `Skill` RawTool. Never a per-skill tool.
     tools.extend(skill_descriptors.iter().cloned());
     if !delegates.is_empty() {
         tools.push(delegation_descriptor());

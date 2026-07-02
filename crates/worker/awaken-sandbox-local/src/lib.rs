@@ -25,7 +25,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::executable_hand_tools;
 use awaken_runtime_contract::llm::ToolCall;
-use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use serde_json::Value;
 
@@ -232,9 +231,6 @@ pub fn content_fingerprint(bytes: &[u8]) -> String {
 /// `serde_json`, honoring its crate-boundary allow-list.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mount {
-    /// A skill: surfaced as a `skill__<id>` tool whose invocation returns `body`
-    /// (progressive disclosure). The kernel sees a tool, never a "skill".
-    Skill(SkillMount),
     /// A read-only resource file, realized under the environment's `.mnt/` root
     /// and referenced by logical path (no host path crosses the boundary, G3).
     Resource(ResourceMount),
@@ -244,15 +240,6 @@ impl Mount {
     /// Serialize to the opaque `Value` carried in [`SandboxSpec::mounts`].
     pub fn to_value(&self) -> Value {
         match self {
-            Mount::Skill(s) => serde_json::json!({
-                "kind": "skill",
-                "id": s.id,
-                "version": s.version,
-                "content_hash": s.content_hash,
-                "name": s.name,
-                "description": s.description,
-                "body": s.body,
-            }),
             Mount::Resource(r) => serde_json::json!({
                 "kind": "resource",
                 "id": r.id,
@@ -268,14 +255,6 @@ impl Mount {
     pub fn from_value(v: &Value) -> Option<Mount> {
         let field = |key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
         match v.get("kind").and_then(Value::as_str)? {
-            "skill" => Some(Mount::Skill(SkillMount {
-                id: field("id")?,
-                version: v.get("version").and_then(Value::as_u64).unwrap_or(0),
-                content_hash: field("content_hash").unwrap_or_default(),
-                name: field("name").unwrap_or_default(),
-                description: field("description").unwrap_or_default(),
-                body: field("body")?,
-            })),
             "resource" => Some(Mount::Resource(ResourceMount {
                 id: field("id")?,
                 content_hash: field("content_hash").unwrap_or_default(),
@@ -285,18 +264,6 @@ impl Mount {
             _ => None,
         }
     }
-}
-
-/// A skill provisioned into the environment. `body` is the `SKILL.md` content
-/// itself (not a path); `content_hash`, when non-empty, is verified fail-closed.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SkillMount {
-    pub id: String,
-    pub version: u64,
-    pub content_hash: String,
-    pub name: String,
-    pub description: String,
-    pub body: String,
 }
 
 /// A resource file provisioned into the environment. `content` is realized under
@@ -322,7 +289,6 @@ pub struct ResourceRef {
 /// Which kind of capability a [`ProvisionEntry`] pinned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProvisionKind {
-    Skill,
     Resource,
 }
 
@@ -341,25 +307,6 @@ pub struct ProvisionEntry {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProvisionReceipt {
     pub entries: Vec<ProvisionEntry>,
-}
-
-/// A skill provisioned as a state-less [`HandTool`]: invoking it returns the
-/// `SKILL.md` body (progressive disclosure). Like every environment tool it is
-/// G13-safe by shape — it can never author runtime state.
-pub(crate) struct SkillTool {
-    tool_id: String,
-    body: String,
-}
-
-#[async_trait]
-impl HandTool for SkillTool {
-    fn id(&self) -> &str {
-        &self.tool_id
-    }
-
-    async fn run(&self, _call: ToolCall) -> Result<HandOutput, ToolError> {
-        Ok(HandOutput::ok(self.body.clone()))
-    }
 }
 
 /// Fail closed when a declared content hash does not match realized bytes. An
@@ -411,43 +358,24 @@ impl SandboxSpec {
 pub struct Environment {
     id: String,
     hand_tools: Vec<Arc<dyn HandTool>>,
-    skill_tools: Vec<Arc<dyn HandTool>>,
-    skill_descriptors: Vec<ToolDescriptor>,
     resources: Vec<ResourceRef>,
     receipt: ProvisionReceipt,
 }
 
 impl Environment {
     /// Build an environment from its id and the isolation [`HandTool`]s a provider
-    /// bound to it. Skill tools, resources, and the receipt are added by the
-    /// `with_*` builders during provisioning. Because a `HandTool` returns
-    /// [`HandOutput`] (no state field), every tool bound to an environment
-    /// **cannot** author runtime state (G13) — structural, whether it runs
-    /// in-process or relays into a container/remote root.
+    /// bound to it. Resources and the receipt are added by the `with_*` builders
+    /// during provisioning. Because a `HandTool` returns [`HandOutput`] (no state
+    /// field), every tool bound to an environment **cannot** author runtime state
+    /// (G13) — structural, whether it runs in-process or relays into a
+    /// container/remote root.
     pub fn new(id: impl Into<String>, hand_tools: Vec<Arc<dyn HandTool>>) -> Self {
         Self {
             id: id.into(),
             hand_tools,
-            skill_tools: Vec::new(),
-            skill_descriptors: Vec::new(),
             resources: Vec::new(),
             receipt: ProvisionReceipt::default(),
         }
-    }
-
-    /// Attach provisioned skill tools (ADR-0035 D4): each is a state-less
-    /// `HandTool` whose invocation returns a skill body.
-    pub fn with_skill_tools(mut self, skill_tools: Vec<Arc<dyn HandTool>>) -> Self {
-        self.skill_tools = skill_tools;
-        self
-    }
-
-    /// Attach the model-visible descriptors for the provisioned skill tools, so a
-    /// host can advertise them in the resolved spec (progressive disclosure). One
-    /// per `skill_tools` entry, id `skill__<id>`.
-    pub fn with_skill_descriptors(mut self, descriptors: Vec<ToolDescriptor>) -> Self {
-        self.skill_descriptors = descriptors;
-        self
     }
 
     /// Attach realized resource references.
@@ -478,25 +406,16 @@ impl Environment {
             .collect()
     }
 
-    /// The full provisioned **capability surface** (ADR-0035 D8): hand tools plus
-    /// skill (and future dynamic) tools, each adapted to a `RawTool` carrying empty
-    /// state (G13). This is what the host composes into a run; the kernel sees a
-    /// uniform tool set with no skill/mount/provision concept. Cheap to call
-    /// repeatedly (clones `Arc` handles).
+    /// The full provisioned **capability surface** (ADR-0035 D8): the environment's
+    /// tools, each adapted to a `RawTool` carrying empty state (G13). This is what
+    /// the host composes into a run; the kernel sees a uniform tool set with no
+    /// mount/provision concept. Cheap to call repeatedly (clones `Arc` handles).
     pub fn tools(&self) -> Vec<Arc<dyn RawTool>> {
         self.hand_tools
             .iter()
-            .chain(self.skill_tools.iter())
             .cloned()
             .map(hand_tool_as_raw)
             .collect()
-    }
-
-    /// The model-visible descriptors for provisioned skill tools. A host adds
-    /// these to the resolved spec so the model sees each skill in its tool list;
-    /// invoking `skill__<id>` returns the skill body.
-    pub fn skill_descriptors(&self) -> &[ToolDescriptor] {
-        &self.skill_descriptors
     }
 
     /// The realized resource references. Each names a logical path under the
@@ -517,7 +436,6 @@ impl std::fmt::Debug for Environment {
         f.debug_struct("Environment")
             .field("id", &self.id)
             .field("hand_tools", &self.hand_tools.len())
-            .field("skill_tools", &self.skill_tools.len())
             .field("resources", &self.resources.len())
             .finish()
     }
@@ -554,8 +472,6 @@ impl SandboxProvider for LocalSandboxProvider {
         std::fs::create_dir_all(&dir).map_err(|e| SandboxError(e.to_string()))?;
         let root = IsolatedRoot::new(dir);
 
-        let mut skill_tools: Vec<Arc<dyn HandTool>> = Vec::new();
-        let mut skill_descriptors: Vec<ToolDescriptor> = Vec::new();
         let mut resources: Vec<ResourceRef> = Vec::new();
         let mut entries: Vec<ProvisionEntry> = Vec::new();
 
@@ -566,35 +482,6 @@ impl SandboxProvider for LocalSandboxProvider {
                 continue;
             };
             match mount {
-                Mount::Skill(skill) => {
-                    verify_hash(&skill.body, &skill.content_hash)?;
-                    let tool_id = format!("skill__{}", skill.id);
-                    // The model-visible description: prefer the declared description,
-                    // else the name, else the id — progressive disclosure shows this,
-                    // the body loads on invocation.
-                    let description = if !skill.description.is_empty() {
-                        skill.description.clone()
-                    } else if !skill.name.is_empty() {
-                        skill.name.clone()
-                    } else {
-                        skill.id.clone()
-                    };
-                    skill_descriptors.push(ToolDescriptor::pinned(
-                        "skill",
-                        tool_id.clone(),
-                        description,
-                        serde_json::json!({ "type": "object" }),
-                    ));
-                    skill_tools.push(Arc::new(SkillTool {
-                        tool_id,
-                        body: skill.body,
-                    }));
-                    entries.push(ProvisionEntry {
-                        id: skill.id,
-                        kind: ProvisionKind::Skill,
-                        content_hash: skill.content_hash,
-                    });
-                }
                 Mount::Resource(resource) => {
                     verify_hash(&resource.content, &resource.content_hash)?;
                     // Realize under a read-only `.mnt/` root, jailed: a logical path
@@ -623,8 +510,6 @@ impl SandboxProvider for LocalSandboxProvider {
         }
 
         Ok(Environment::new(spec.id.clone(), rooted_hand_tools(root))
-            .with_skill_tools(skill_tools)
-            .with_skill_descriptors(skill_descriptors)
             .with_resources(resources)
             .with_receipt(ProvisionReceipt { entries }))
     }
