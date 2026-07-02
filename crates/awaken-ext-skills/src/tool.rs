@@ -214,6 +214,13 @@ fn resolved_body(skill: &SkillSpec, args: &str, session_id: Option<&str>) -> (St
     substitute_arguments(&templated, args)
 }
 
+/// The text a user `/name args` invocation injects into the conversation: the
+/// skill's resolved instructions (no tool-result header). The caller checks
+/// `user_invocable` before calling this.
+pub fn render_user_invocation(skill: &SkillSpec, args: &str, session_id: Option<&str>) -> String {
+    resolved_body(skill, args, session_id).0
+}
+
 /// The inline activation result: a header naming the skill, its resolved
 /// instructions, and — only when the body used no argument token — the raw args
 /// echoed for the model.
