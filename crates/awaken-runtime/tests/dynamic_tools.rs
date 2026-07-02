@@ -160,6 +160,7 @@ fn activation() -> RunActivation {
                 // No static descriptors: every visible tool is dynamic.
                 tool_descriptors: Vec::new(),
                 plugin_ids: vec!["mcp:srv".to_string()],
+                plugin_config: Default::default(),
             },
             fingerprint,
         },

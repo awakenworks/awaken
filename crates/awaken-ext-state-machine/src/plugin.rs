@@ -8,11 +8,11 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, Plugin, PluginManifest, RunEndContext, RunEndDecision,
-    RunEndGuard, ToolOutcomeHook, ToolReaction,
+    CapabilityBound, Contributions, Plugin, PluginConfigError, PluginManifest, RunEndContext,
+    RunEndDecision, RunEndGuard, ToolOutcomeHook, ToolReaction,
 };
 use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::config::{ContinuationSettings, StateMachineConfig, StateMachineConfigError};
 use crate::engine::{AdvanceOp, EmitReason, advance_evaluate, gate_decision, gate_evaluate};
@@ -34,8 +34,20 @@ pub struct StateMachinePlugin {
 }
 
 impl StateMachinePlugin {
+    /// A plugin with no base machines — driven entirely by the agent's config
+    /// section. Register this once; each agent supplies its machines via
+    /// `plugin_config["state_machine"]`.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            machines: Vec::new().into(),
+            continuation: ContinuationSettings::default(),
+        }
+    }
+
     /// Compile a plugin from configuration, validating patterns and templates up
-    /// front (fail-fast at construction).
+    /// front (fail-fast at construction). The machines become the base set that
+    /// every run carries, merged with any per-agent config section.
     pub fn from_config(config: StateMachineConfig) -> Result<Self, StateMachineConfigError> {
         let continuation = config.continuation.clone();
         let machines = config.into_machines()?;
@@ -53,6 +65,31 @@ impl StateMachinePlugin {
             continuation,
         }
     }
+
+    /// Build the contributions for a resolved machine set.
+    fn contribute(
+        &self,
+        machines: Arc<[Machine]>,
+        continuation: ContinuationSettings,
+    ) -> Contributions {
+        let mut contributions = Contributions::new(STATE_MACHINE_PLUGIN_ID);
+        contributions.state_keys = STATE_KEYS.iter().map(|k| (*k).to_string()).collect();
+        contributions.tool_gates.push(Arc::new(StateMachineGate {
+            machines: Arc::clone(&machines),
+        }));
+        contributions
+            .tool_observers
+            .push(Arc::new(StateMachineObserver {
+                machines: Arc::clone(&machines),
+            }));
+        contributions
+            .run_end_guards
+            .push(Arc::new(StateMachineGuard {
+                machines,
+                continuation,
+            }));
+        contributions
+    }
 }
 
 impl Plugin for StateMachinePlugin {
@@ -60,7 +97,7 @@ impl Plugin for StateMachinePlugin {
         PluginManifest {
             id: STATE_MACHINE_PLUGIN_ID.into(),
             requires: Vec::new(),
-            config_sections: Vec::new(),
+            config_sections: vec![STATE_MACHINE_PLUGIN_ID.into()],
             bound: CapabilityBound {
                 state_keys: STATE_KEYS.iter().map(|k| (*k).to_string()).collect(),
                 tool_gates: vec![STATE_MACHINE_PLUGIN_ID.into()],
@@ -72,24 +109,44 @@ impl Plugin for StateMachinePlugin {
     }
 
     fn resolve(&self) -> Contributions {
-        let mut contributions = Contributions::new(STATE_MACHINE_PLUGIN_ID);
-        contributions.state_keys = STATE_KEYS.iter().map(|k| (*k).to_string()).collect();
-        contributions.tool_gates.push(Arc::new(StateMachineGate {
-            machines: Arc::clone(&self.machines),
-        }));
-        contributions
-            .tool_observers
-            .push(Arc::new(StateMachineObserver {
-                machines: Arc::clone(&self.machines),
-            }));
-        contributions
-            .run_end_guards
-            .push(Arc::new(StateMachineGuard {
-                machines: Arc::clone(&self.machines),
-                continuation: self.continuation.clone(),
-            }));
-        contributions
+        self.contribute(Arc::clone(&self.machines), self.continuation.clone())
     }
+
+    fn resolve_configured(
+        &self,
+        config: Option<&Value>,
+    ) -> Result<Contributions, PluginConfigError> {
+        let Some(value) = config else {
+            return Ok(self.resolve());
+        };
+        let config = StateMachineConfig::from_value(value.clone())
+            .map_err(|e| PluginConfigError::new(STATE_MACHINE_PLUGIN_ID, e.to_string()))?;
+        let continuation = config.continuation.clone();
+        let configured = config
+            .into_machines()
+            .map_err(|e| PluginConfigError::new(STATE_MACHINE_PLUGIN_ID, e.to_string()))?;
+        let machines = merge_machines(&self.machines, configured)?;
+        Ok(self.contribute(machines.into(), continuation))
+    }
+}
+
+/// Merge base machines with the agent's configured machines, rejecting a name
+/// declared in both (a config error, fail closed).
+fn merge_machines(
+    base: &[Machine],
+    configured: Vec<Machine>,
+) -> Result<Vec<Machine>, PluginConfigError> {
+    let mut out: Vec<Machine> = base.to_vec();
+    for machine in configured {
+        if out.iter().any(|b| b.name == machine.name) {
+            return Err(PluginConfigError::new(
+                STATE_MACHINE_PLUGIN_ID,
+                format!("duplicate machine name `{}`", machine.name),
+            ));
+        }
+        out.push(machine);
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,8 @@
 //! the agent id as the consistency token (enough for in-process use). A compiler
 //! overrides it with a content hash via [`RunnableConfigBuilder::fingerprint`].
 
+use std::collections::BTreeMap;
+
 use crate::capability::RuntimeCapabilityCatalog;
 use crate::catalog::RuntimeCatalogInstall;
 use crate::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor};
@@ -66,6 +68,7 @@ pub struct RunnableConfigBuilder {
     model_binding: ModelBinding,
     tools: Vec<ToolDescriptor>,
     plugin_ids: Vec<String>,
+    plugin_config: BTreeMap<String, serde_json::Value>,
     fingerprint: Option<String>,
 }
 
@@ -78,6 +81,7 @@ impl RunnableConfigBuilder {
             model_binding: ModelBinding::default(),
             tools: Vec::new(),
             plugin_ids: Vec::new(),
+            plugin_config: BTreeMap::new(),
             fingerprint: None,
         }
     }
@@ -125,6 +129,18 @@ impl RunnableConfigBuilder {
         self
     }
 
+    /// Per-plugin configuration sections, keyed by plugin id. Each active plugin
+    /// reads its own section at resolve; a plugin whose id is absent uses its
+    /// defaults.
+    #[must_use]
+    pub fn plugin_config(
+        mut self,
+        sections: impl IntoIterator<Item = (String, serde_json::Value)>,
+    ) -> Self {
+        self.plugin_config.extend(sections);
+        self
+    }
+
     /// Set the fingerprint explicitly — a content hash from a compiler. When unset,
     /// the agent id is used as the consistency token, which is enough for direct,
     /// in-process use where content-addressing is not needed.
@@ -149,6 +165,7 @@ impl RunnableConfigBuilder {
                 model_binding: self.model_binding,
                 tool_descriptors: self.tools,
                 plugin_ids: self.plugin_ids,
+                plugin_config: self.plugin_config,
             },
             fingerprint: fp.clone(),
         };

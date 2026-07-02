@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, Contributions, Plugin, PluginManifest, RunEndContext, RunEndDecision,
-    RunEndGuard,
+    CapabilityBound, Contributions, Plugin, PluginConfigError, PluginManifest, RunEndContext,
+    RunEndDecision, RunEndGuard,
 };
 use awaken_runtime_contract::{CancellationToken, Message, Role};
 use serde::{Deserialize, Serialize};
@@ -456,7 +456,7 @@ impl Plugin for GoalPlugin {
         PluginManifest {
             id: GOAL_PLUGIN_ID.into(),
             requires: Vec::new(),
-            config_sections: Vec::new(),
+            config_sections: vec![GOAL_PLUGIN_ID.into()],
             bound: CapabilityBound {
                 run_end_guards: vec![GOAL_PLUGIN_ID.into()],
                 ..Default::default()
@@ -465,11 +465,30 @@ impl Plugin for GoalPlugin {
     }
 
     fn resolve(&self) -> Contributions {
+        self.contribute(self.spec.clone())
+    }
+
+    fn resolve_configured(
+        &self,
+        config: Option<&serde_json::Value>,
+    ) -> Result<Contributions, PluginConfigError> {
+        // The grader is a live dependency held on the plugin; only the goal spec
+        // (pure data) comes from the agent's config section.
+        let Some(value) = config else {
+            return Ok(self.resolve());
+        };
+        let spec: GoalSpec = serde_json::from_value(value.clone())
+            .map_err(|e| PluginConfigError::new(GOAL_PLUGIN_ID, e.to_string()))?;
+        Ok(self.contribute(spec))
+    }
+}
+
+impl GoalPlugin {
+    fn contribute(&self, spec: GoalSpec) -> Contributions {
         let mut contributions = Contributions::new(GOAL_PLUGIN_ID);
-        contributions.run_end_guards.push(Arc::new(GoalGuard::new(
-            self.spec.clone(),
-            Arc::clone(&self.grader),
-        )));
+        contributions
+            .run_end_guards
+            .push(Arc::new(GoalGuard::new(spec, Arc::clone(&self.grader))));
         contributions
     }
 }

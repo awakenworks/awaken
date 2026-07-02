@@ -144,6 +144,7 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
                 },
                 tool_descriptors: Vec::new(),
                 plugin_ids,
+                plugin_config: Default::default(),
             },
             fingerprint,
         },
