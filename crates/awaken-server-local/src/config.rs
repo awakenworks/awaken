@@ -15,7 +15,9 @@ use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
 };
+use awaken_ext_state_machine::{STATE_MACHINE_PLUGIN_ID, StateMachinePlugin};
 use awaken_runtime::{PermissionGate, Runtime};
+use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::runnable::RunnableConfig;
@@ -128,7 +130,19 @@ pub(crate) fn server_config(
         .tools(tools)
         .max_steps(20)
         .plugins(plugin_ids.iter().cloned())
+        .plugin_capabilities(platform_plugin_capabilities())
         .build()
+}
+
+/// The plugins this server composes, advertised with their config schema so a
+/// config frontend can discover and author each section. One place declares a
+/// plugin's id and its schema, so registration and discovery cannot drift.
+pub(crate) fn platform_plugin_capabilities() -> Vec<PluginCapability> {
+    vec![PluginCapability {
+        id: STATE_MACHINE_PLUGIN_ID.to_string(),
+        schema_keys: vec![STATE_MACHINE_PLUGIN_ID.to_string()],
+        config_schema: Some(awaken_ext_state_machine::config_schema()),
+    }]
 }
 
 /// A per-thread runtime whose hand tools come from `env` (placement-agnostic). No
@@ -136,11 +150,96 @@ pub(crate) fn server_config(
 /// but the kernel runs it via the injected resolver, not the tool registry.
 pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, env: &Environment) -> Runtime {
     let gate = PermissionGate::new(Arc::new(server_policy()));
-    let mut runtime = Runtime::new().with_llm(llm).with_gate(Arc::new(gate));
+    let mut runtime = Runtime::new()
+        .with_llm(llm)
+        .with_gate(Arc::new(gate))
+        // The tool state machine is available on every runtime; an agent activates
+        // it via `plugin_ids` and configures its machines via `plugin_config`.
+        .with_plugin(Arc::new(StateMachinePlugin::empty()));
     // The full capability surface (ADR-0035 D8): hand tools plus provisioned skill
     // tools. Placement-agnostic — the kernel sees `RawTool`s, not "skills".
     for tool in env.tools() {
         runtime = runtime.with_tool(tool);
     }
     runtime
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
+    use awaken_runtime_contract::resolved::ResolvedSpec;
+
+    struct NoLlm;
+    #[async_trait::async_trait]
+    impl LlmExecutor for NoLlm {
+        async fn infer(
+            &self,
+            _request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            unreachable!("plugin validation never calls the model")
+        }
+    }
+
+    fn config_with(section: serde_json::Value) -> ResolvedSpec {
+        let config = server_config(
+            "m",
+            &HashSet::new(),
+            &HashSet::new(),
+            &["state_machine".to_string()],
+            &[],
+        );
+        let mut spec = config.snapshot().resolved_spec.clone();
+        spec.plugin_config
+            .insert(STATE_MACHINE_PLUGIN_ID.to_string(), section);
+        spec
+    }
+
+    #[test]
+    fn server_config_advertises_the_state_machine_schema() {
+        // A2/A4: the schema is discoverable in the installed catalog.
+        let config = server_config(
+            "m",
+            &HashSet::new(),
+            &HashSet::new(),
+            &["state_machine".to_string()],
+            &[],
+        );
+        let sm = config
+            .install()
+            .capabilities
+            .plugins
+            .iter()
+            .find(|p| p.id == STATE_MACHINE_PLUGIN_ID)
+            .expect("state machine is advertised");
+        assert!(sm.config_schema.is_some(), "config schema is discoverable");
+    }
+
+    #[test]
+    fn platform_capabilities_expose_the_schema() {
+        let caps = platform_plugin_capabilities();
+        assert!(
+            caps.iter()
+                .any(|c| c.id == STATE_MACHINE_PLUGIN_ID && c.config_schema.is_some())
+        );
+    }
+
+    #[test]
+    fn build_runtime_registers_the_plugin_and_validates_config() {
+        // A1: the composed runtime has the plugin (a valid section resolves).
+        // A3: a malformed section fails closed at publish-time validation.
+        let runtime = build_runtime(Arc::new(NoLlm), &Environment::new("t", Vec::new()));
+        assert!(
+            runtime
+                .validate_plugins(&config_with(serde_json::json!({"machines": []})))
+                .is_ok(),
+            "the state machine plugin is registered and resolves a valid section"
+        );
+        let malformed = serde_json::json!({"machines":[{"name":"m","initial":"a",
+            "transitions":[{"on":"Read(","from":"a","to":"b"}]}]});
+        assert!(
+            runtime.validate_plugins(&config_with(malformed)).is_err(),
+            "a malformed section is rejected before publish"
+        );
+    }
 }

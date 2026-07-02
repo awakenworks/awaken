@@ -343,6 +343,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-sandbox-local",
         "awaken-store-sqlite",
         "awaken-ext-goal",
+        "awaken-ext-state-machine",
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime",

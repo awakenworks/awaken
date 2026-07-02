@@ -423,6 +423,7 @@ dependencies = [
  "awaken-ext-goal",
  "awaken-ext-permission",
  "awaken-ext-skills",
+ "awaken-ext-state-machine",
  "awaken-protocol-a2a",
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",

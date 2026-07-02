@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::capability::RuntimeCapabilityCatalog;
+use crate::capability::{PluginCapability, RuntimeCapabilityCatalog};
 use crate::catalog::RuntimeCatalogInstall;
 use crate::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor};
 use crate::snapshot::{AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
@@ -69,6 +69,7 @@ pub struct RunnableConfigBuilder {
     tools: Vec<ToolDescriptor>,
     plugin_ids: Vec<String>,
     plugin_config: BTreeMap<String, serde_json::Value>,
+    plugin_capabilities: Vec<PluginCapability>,
     fingerprint: Option<String>,
 }
 
@@ -82,6 +83,7 @@ impl RunnableConfigBuilder {
             tools: Vec::new(),
             plugin_ids: Vec::new(),
             plugin_config: BTreeMap::new(),
+            plugin_capabilities: Vec::new(),
             fingerprint: None,
         }
     }
@@ -141,6 +143,17 @@ impl RunnableConfigBuilder {
         self
     }
 
+    /// The plugin capabilities advertised in the catalog (id + config schema), so
+    /// a config frontend can discover and author each plugin's section.
+    #[must_use]
+    pub fn plugin_capabilities(
+        mut self,
+        capabilities: impl IntoIterator<Item = PluginCapability>,
+    ) -> Self {
+        self.plugin_capabilities.extend(capabilities);
+        self
+    }
+
     /// Set the fingerprint explicitly — a content hash from a compiler. When unset,
     /// the agent id is used as the consistency token, which is enough for direct,
     /// in-process use where content-addressing is not needed.
@@ -177,7 +190,7 @@ impl RunnableConfigBuilder {
                 catalog_fingerprint: fp,
                 runtime_version: env!("CARGO_PKG_VERSION").to_string(),
                 tools: Vec::new(),
-                plugins: Vec::new(),
+                plugins: self.plugin_capabilities,
             },
         };
         RunnableConfig { snapshot, install }
