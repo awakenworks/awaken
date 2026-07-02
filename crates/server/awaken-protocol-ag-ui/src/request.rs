@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 
-use crate::types::{AgUiMessage, RunAgentInput};
+use crate::types::{AgUiContent, AgUiMessage, InputContentPart, InputContentSource, RunAgentInput};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -83,14 +83,57 @@ fn convert_new_messages(messages: &[AgUiMessage], known_ids: &HashSet<String>) -
             "system" | "developer" => Role::System,
             _ => continue,
         };
-        let text = message.content.clone().unwrap_or_default();
-        if text.is_empty() {
+        let blocks = message
+            .content
+            .as_ref()
+            .map(content_blocks)
+            .unwrap_or_default();
+        if blocks.is_empty() {
             continue;
         }
         let id = message.id.clone().unwrap_or_else(|| next("msg"));
-        out.push(Message::text(MessageId(id), role, text));
+        out.push(Message::new(MessageId(id), role, blocks));
     }
     out
+}
+
+/// Convert AG-UI message content into neutral content blocks: a plain string
+/// becomes one text block; a typed part list maps `text` and image parts (inline
+/// base64 or remote URL) to their neutral blocks.
+fn content_blocks(content: &AgUiContent) -> Vec<ContentBlock> {
+    match content {
+        AgUiContent::Text(text) if !text.is_empty() => vec![ContentBlock::text(text)],
+        AgUiContent::Text(_) => Vec::new(),
+        AgUiContent::Parts(parts) => parts.iter().filter_map(part_to_block).collect(),
+    }
+}
+
+fn part_to_block(part: &InputContentPart) -> Option<ContentBlock> {
+    match part {
+        InputContentPart::Text { text } => (!text.is_empty()).then(|| ContentBlock::text(text)),
+        InputContentPart::Image { source } => Some(match source {
+            InputContentSource::Data { value, mime_type } => {
+                ContentBlock::image_base64(mime_type, value)
+            }
+            InputContentSource::Url { value } => ContentBlock::image_url(value),
+        }),
+    }
+}
+
+/// The text of AG-UI message content, ignoring media (bounds tool results to text).
+fn content_text(content: &Option<AgUiContent>) -> String {
+    match content {
+        Some(AgUiContent::Text(text)) => text.clone(),
+        Some(AgUiContent::Parts(parts)) => parts
+            .iter()
+            .filter_map(|p| match p {
+                InputContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        None => String::new(),
+    }
 }
 
 /// Extract tool results from `role: "tool"` messages.
@@ -102,7 +145,7 @@ fn extract_tool_results(messages: &[AgUiMessage]) -> Vec<ToolResultInput> {
             let tool_call_id = m.tool_call_id.clone()?;
             Some(ToolResultInput {
                 tool_call_id,
-                content: m.content.clone().unwrap_or_default(),
+                content: content_text(&m.content),
             })
         })
         .collect()
@@ -150,6 +193,33 @@ mod tests {
         assert_eq!(p.run_id, "r");
         assert_eq!(p.messages.len(), 1);
         assert_eq!(p.messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn decodes_image_content_parts_into_blocks() {
+        let input = RunAgentInput {
+            thread_id: Some("t".into()),
+            run_id: Some("r".into()),
+            messages: vec![
+                serde_json::from_value(json!({
+                    "id": "u1",
+                    "role": "user",
+                    "content": [
+                        { "type": "image", "source": { "type": "data", "value": "AAAA", "mimeType": "image/png" } },
+                        { "type": "text", "text": "what is this" },
+                    ],
+                }))
+                .unwrap(),
+            ],
+        };
+        let p = process(input, None, &HashSet::new());
+        assert_eq!(p.messages.len(), 1);
+        assert_eq!(p.messages[0].content.len(), 2);
+        assert!(matches!(
+            p.messages[0].content[0],
+            ContentBlock::Image { .. }
+        ));
+        assert_eq!(blocks_text(&p.messages[0].content), "what is this");
     }
 
     #[test]

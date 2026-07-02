@@ -21,7 +21,7 @@ mod subagent;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Phase};
 use awaken_protocol_a2a::port::{
@@ -79,6 +79,49 @@ impl LlmExecutor for EchoModel {
             .unwrap_or_default();
         Ok(ChatResponse {
             output: AssistantOutput::text(format!("Echo: {last_user}")),
+            usage: None,
+        })
+    }
+}
+
+/// A deterministic vision-probe model: it reports the media it received on the
+/// last user turn, so an e2e can assert an image survived the whole
+/// adapter -> runtime -> model path (the echo model only sees text). Replies e.g.
+/// `saw image/png; text: what color`.
+pub struct VisionProbeModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for VisionProbeModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::User);
+        let mut medias = Vec::new();
+        let mut text = String::new();
+        if let Some(message) = last_user {
+            for block in &message.content {
+                match block {
+                    ContentBlock::Text { text: t } => text.push_str(t),
+                    ContentBlock::Image { source } => medias.push(match source {
+                        ImageSource::Base64 { media_type, .. } => media_type.clone(),
+                        ImageSource::Url { .. } => "image/url".to_string(),
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        let reply = if medias.is_empty() {
+            format!("saw no media; text: {text}")
+        } else {
+            format!("saw {}; text: {text}", medias.join(","))
+        };
+        Ok(ChatResponse {
+            output: AssistantOutput::text(reply),
             usage: None,
         })
     }
@@ -271,14 +314,14 @@ impl LlmExecutor for DelegatingModel {
 
 /// Mint a fresh user message from plain text (Managed `user.message` content is
 /// concatenated to text before it enters the host).
-fn user_message(text: &str) -> Message {
-    Message::text(
+fn user_message(content: Vec<ContentBlock>) -> Message {
+    Message::new(
         MessageId(format!(
             "usr-{}",
             crate::host::BASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         )),
         Role::User,
-        text,
+        content,
     )
 }
 
@@ -337,11 +380,11 @@ impl SessionRuntime for ManagedHost {
         &self,
         _agent: &str,
         thread: &str,
-        user_text: &str,
+        content: Vec<ContentBlock>,
     ) -> Result<TurnOutcome, RunError> {
         let result = self
             .host
-            .run_turn(thread, vec![user_message(user_text)])
+            .run_turn(thread, vec![user_message(content)])
             .await
             .map_err(to_run_error)?;
         Ok(to_turn_outcome(result))
@@ -745,6 +788,13 @@ pub fn build_graded_router(
 /// The default deterministic router (echo model) — the CI / e2e server.
 pub fn build_echo_router() -> Router {
     build_router(Arc::new(EchoModel), "echo-model")
+}
+
+/// A router whose model reports the media it received (the multimodal e2e): every
+/// protocol adapter must carry an image block through to the model for the probe
+/// reply to name its media type.
+pub fn build_vision_router() -> Router {
+    build_router(Arc::new(VisionProbeModel), "vision-probe")
 }
 
 /// A router with a client-executed tool `submit_answer` (the custom-tool e2e).
