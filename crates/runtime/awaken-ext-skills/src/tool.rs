@@ -10,14 +10,144 @@
 //! the tool descriptors so a changing skill set never perturbs a pinned surface
 //! (ADR-0036 D2/D7).
 
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::{Message, Role};
+use awaken_agent_contract::agent::state::Store;
+use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
 use crate::registry::SkillRegistry;
-use crate::spec::SkillSpec;
+use crate::spec::{SkillContext, SkillSpec, truncate_chars};
+
+/// Runs a skill as a forked sub-agent (`context: fork`). The host implements this
+/// (e.g. via a fresh sub-run) so `awaken-ext-skills` stays unaware of how a
+/// sub-agent is spawned. Returns the sub-run's final reply.
+#[async_trait]
+pub trait SubAgentRunner: Send + Sync {
+    async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String>;
+}
+
+/// A shared, live record of file paths the run has touched, so conditional
+/// (`paths`) skills surface once a matching file is accessed (ADR-0036: `paths`).
+/// The host records paths (e.g. from a gate observing `read`/`write`/`edit`); the
+/// `list_skills` tool reads them. Cheap to clone (shared handle).
+#[derive(Clone, Default)]
+pub struct PathActivations {
+    touched: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl PathActivations {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a touched path.
+    pub fn record(&self, path: impl Into<String>) {
+        if let Ok(mut set) = self.touched.lock() {
+            set.insert(path.into());
+        }
+    }
+
+    /// The paths touched so far.
+    pub fn touched(&self) -> Vec<String> {
+        self.touched
+            .lock()
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+/// Whether a conditional skill is surfaced: unconditional skills always are; a
+/// skill with `paths` surfaces once one of its globs matches a touched path.
+fn is_surfaced(skill: &SkillSpec, activations: Option<&PathActivations>) -> bool {
+    if skill.paths.is_empty() {
+        return true;
+    }
+    let Some(activations) = activations else {
+        return false;
+    };
+    let touched = activations.touched();
+    skill.paths.iter().any(|pattern| {
+        glob::Pattern::new(pattern)
+            .map(|p| touched.iter().any(|path| p.matches(path)))
+            .unwrap_or(false)
+    })
+}
+
+/// A gate that observes the `path`/`pattern` arguments of tool calls, recording
+/// them into [`PathActivations`] so conditional (`paths`) skills surface, then
+/// delegates the decision to `inner`. Observation only — it never changes the
+/// decision. The composition root wraps its base gate with this.
+pub struct RecordingGate {
+    inner: Arc<dyn ToolGateHook>,
+    activations: PathActivations,
+}
+
+impl RecordingGate {
+    pub fn new(inner: Arc<dyn ToolGateHook>, activations: PathActivations) -> Self {
+        Self { inner, activations }
+    }
+}
+
+#[async_trait]
+impl ToolGateHook for RecordingGate {
+    async fn gate(&self, ctx: &PermissionContext, state: &Store) -> GateOutcome {
+        for key in ["path", "pattern"] {
+            if let Some(path) = ctx.arguments.get(key).and_then(|v| v.as_str()) {
+                self.activations.record(path);
+            }
+        }
+        self.inner.gate(ctx, state).await
+    }
+}
+
+/// Expand a leading `/skill-name [args]` in a user message into the skill's
+/// resolved instructions (ADR-0036 user invocation), honoring `user_invocable`.
+/// Non-user messages, non-slash text, unknown skills, and non-user-invocable
+/// skills pass through unchanged.
+pub fn expand_slash_commands(
+    registry: &dyn SkillRegistry,
+    session_id: &str,
+    input: Vec<Message>,
+) -> Vec<Message> {
+    input
+        .into_iter()
+        .map(|message| {
+            if message.role != Role::User {
+                return message;
+            }
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let Some(rest) = text.trim_start().strip_prefix('/') else {
+                return message;
+            };
+            let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            match registry.get(name.trim()) {
+                Some(skill) if skill.user_invocable => Message::text(
+                    message.id,
+                    Role::User,
+                    render_user_invocation(&skill, args.trim(), Some(session_id)),
+                ),
+                _ => message,
+            }
+        })
+        .collect()
+}
+
+/// Per-entry cap on the catalog description/when-to-use, so a large skill set
+/// keeps `list_skills` output bounded (ADR-0036: size limits).
+const CATALOG_FIELD_CAP: usize = 200;
 
 /// The single, stable id of the skill-activation tool.
 pub const SKILL_TOOL_ID: &str = "Skill";
@@ -77,8 +207,13 @@ fn catalog_entry(skill: &SkillSpec) -> serde_json::Value {
     serde_json::json!({
         "id": skill.id,
         "name": skill.name,
-        "description": skill.description,
-        "when_to_use": skill.when_to_use,
+        "description": truncate_chars(&skill.description, CATALOG_FIELD_CAP),
+        "when_to_use": skill
+            .when_to_use
+            .as_deref()
+            .map(|w| truncate_chars(w, CATALOG_FIELD_CAP)),
+        "argument_hint": skill.argument_hint,
+        "category": skill.category,
         "provenance": skill.provenance,
     })
 }
@@ -95,12 +230,75 @@ fn matches_query(skill: &SkillSpec, query: &str) -> bool {
     hay.contains(query)
 }
 
-/// The activation result: a header naming the skill, the instruction body, and
-/// any caller arguments echoed for the model to act on.
-fn render_activation(skill: &SkillSpec, args: &str) -> String {
-    let mut out = format!("Skill: {}\n\n{}", skill.name, skill.body);
+/// Substitute `$ARGUMENTS` (the whole arg string) and `$1`..`$9` (whitespace-split
+/// positionals) in a skill body. Returns the rewritten text and whether any token
+/// was substituted, so the caller can decide whether to echo the raw args. An
+/// out-of-range positional expands to empty; `$0`/`$<non-digit>` is left as-is.
+fn substitute_arguments(body: &str, args: &str) -> (String, bool) {
+    let positional: Vec<&str> = args.split_whitespace().collect();
+    let bytes = body.as_bytes();
+    let mut out = String::with_capacity(body.len());
+    let mut used = false;
+    let mut i = 0;
+    while i < body.len() {
+        if body[i..].starts_with("$ARGUMENTS") {
+            out.push_str(args.trim());
+            used = true;
+            i += "$ARGUMENTS".len();
+        } else if bytes[i] == b'$'
+            && i + 1 < body.len()
+            && bytes[i + 1].is_ascii_digit()
+            && bytes[i + 1] != b'0'
+        {
+            let idx = (bytes[i + 1] - b'0') as usize;
+            out.push_str(positional.get(idx - 1).copied().unwrap_or(""));
+            used = true;
+            i += 2;
+        } else {
+            let ch = body[i..].chars().next().expect("char boundary");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    (out, used)
+}
+
+/// Replace `${SKILL_DIR}` and `${SESSION_ID}` with their concrete values. An
+/// unavailable value leaves its token in place (so the author can spot it), which
+/// matches Hermes' behavior.
+fn substitute_template(body: &str, skill_dir: Option<&str>, session_id: Option<&str>) -> String {
+    let mut out = body.to_string();
+    if let Some(dir) = skill_dir {
+        out = out.replace("${SKILL_DIR}", dir);
+    }
+    if let Some(session) = session_id {
+        out = out.replace("${SESSION_ID}", session);
+    }
+    out
+}
+
+/// The skill's instructions with `${SKILL_DIR}`/`${SESSION_ID}` and argument
+/// tokens substituted; the `bool` is whether an argument token was used.
+fn resolved_body(skill: &SkillSpec, args: &str, session_id: Option<&str>) -> (String, bool) {
+    let templated = substitute_template(&skill.body, skill.dir.as_deref(), session_id);
+    substitute_arguments(&templated, args)
+}
+
+/// The text a user `/name args` invocation injects into the conversation: the
+/// skill's resolved instructions (no tool-result header). The caller checks
+/// `user_invocable` before calling this.
+pub fn render_user_invocation(skill: &SkillSpec, args: &str, session_id: Option<&str>) -> String {
+    resolved_body(skill, args, session_id).0
+}
+
+/// The inline activation result: a header naming the skill, its resolved
+/// instructions, and — only when the body used no argument token — the raw args
+/// echoed for the model.
+fn render_activation(skill: &SkillSpec, args: &str, session_id: Option<&str>) -> String {
+    let (body, used) = resolved_body(skill, args, session_id);
+    let mut out = format!("Skill: {}\n\n{}", skill.name, body);
     let args = args.trim();
-    if !args.is_empty() {
+    if !args.is_empty() && !used {
         out.push_str("\n\nArguments: ");
         out.push_str(args);
     }
@@ -111,11 +309,23 @@ fn render_activation(skill: &SkillSpec, args: &str) -> String {
 /// Only model-invocable skills are listed; an optional `query` filters them.
 pub struct ListSkillsTool {
     registry: Arc<dyn SkillRegistry>,
+    activations: Option<PathActivations>,
 }
 
 impl ListSkillsTool {
     pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            activations: None,
+        }
+    }
+
+    /// Wire the touched-path record so conditional (`paths`) skills surface once a
+    /// matching file is accessed. Without it, conditional skills stay hidden.
+    #[must_use]
+    pub fn with_path_activations(mut self, activations: PathActivations) -> Self {
+        self.activations = Some(activations);
+        self
     }
 
     pub fn descriptor(&self) -> ToolDescriptor {
@@ -147,6 +357,7 @@ impl RawTool for ListSkillsTool {
             .list()
             .iter()
             .filter(|s| s.model_invocable)
+            .filter(|s| is_surfaced(s, self.activations.as_ref()))
             .filter(|s| query.as_deref().is_none_or(|q| matches_query(s, q)))
             .map(catalog_entry)
             .collect();
@@ -158,14 +369,37 @@ impl RawTool for ListSkillsTool {
     }
 }
 
-/// Activation tool (tier 2), resolving against a [`SkillRegistry`].
+/// Activation tool (tier 2), resolving against a [`SkillRegistry`]. Constructed
+/// per session so it can resolve `${SESSION_ID}` without the kernel threading a
+/// session id through the tool-call boundary.
 pub struct SkillTool {
     registry: Arc<dyn SkillRegistry>,
+    session_id: Option<String>,
+    fork_runner: Option<Arc<dyn SubAgentRunner>>,
 }
 
 impl SkillTool {
     pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            session_id: None,
+            fork_runner: None,
+        }
+    }
+
+    /// Bind the session id used to resolve `${SESSION_ID}` in activated bodies.
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Wire the runner used for `context: fork` skills. Without it, a fork skill
+    /// falls back to inline activation.
+    #[must_use]
+    pub fn with_fork_runner(mut self, runner: Arc<dyn SubAgentRunner>) -> Self {
+        self.fork_runner = Some(runner);
+        self
     }
 
     /// The stable, catalog-free descriptor. Convenience for the composition root.
@@ -218,9 +452,22 @@ impl RawTool for SkillTool {
             .get("args")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let session = self.session_id.as_deref();
+
+        // A `context: fork` skill runs as a sub-agent (when a runner is wired),
+        // returning its reply as the tool result; otherwise it falls back to inline.
+        if skill.context == SkillContext::Fork
+            && let Some(runner) = &self.fork_runner
+        {
+            let (prompt, _) = resolved_body(&skill, args, session);
+            return Ok(match runner.run(&skill.id, &prompt).await {
+                Ok(text) => ToolOutput::ok(call.call_id, text),
+                Err(err) => ToolOutput::error(call.call_id, format!("skill fork failed: {err}")),
+            });
+        }
         Ok(ToolOutput::ok(
             call.call_id,
-            render_activation(&skill, args),
+            render_activation(&skill, args, session),
         ))
     }
 }
@@ -283,6 +530,77 @@ mod tests {
         assert_eq!(skills[0]["provenance"], "delivered");
         // tier-1 is metadata only — the body must not appear in discovery.
         assert!(!out.content.contains("SECRET-STEP"));
+    }
+
+    #[tokio::test]
+    async fn list_catalog_entries_are_length_bounded() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "big",
+            "Big",
+            "z".repeat(1000),
+            "body",
+        )]));
+        let out = ListSkillsTool::new(registry)
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+        let desc = v["skills"][0]["description"].as_str().unwrap();
+        assert!(
+            desc.chars().count() <= CATALOG_FIELD_CAP,
+            "catalog entry bounded"
+        );
+        assert!(desc.ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn conditional_skill_surfaces_only_after_a_matching_path_is_touched() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([
+            SkillSpec::new("always", "Always", "unconditional", "b"),
+            SkillSpec::new("rusty", "Rusty", "for rust files", "b")
+                .with_paths(vec!["src/**/*.rs".into()]),
+        ]));
+        let activations = PathActivations::new();
+        let tool = ListSkillsTool::new(registry).with_path_activations(activations.clone());
+
+        // Before touching a matching file: only the unconditional skill.
+        let before = tool
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(before.content.contains("always"));
+        assert!(
+            !before.content.contains("rusty"),
+            "conditional hidden: {}",
+            before.content
+        );
+
+        // Touch a non-matching then a matching path.
+        activations.record("docs/readme.md");
+        activations.record("src/app/main.rs");
+
+        let after = tool
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(
+            after.content.contains("rusty"),
+            "surfaced after match: {}",
+            after.content
+        );
+    }
+
+    #[tokio::test]
+    async fn conditional_skill_stays_hidden_without_activations_wired() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "rusty", "Rusty", "d", "b",
+        )
+        .with_paths(vec!["*.rs".into()])]));
+        let out = ListSkillsTool::new(registry)
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(!out.content.contains("rusty"));
     }
 
     #[tokio::test]
@@ -363,6 +681,226 @@ mod tests {
             .unwrap()
             .is_error
         );
+    }
+
+    #[tokio::test]
+    async fn substitutes_positional_and_all_arguments() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "run",
+            "Run",
+            "d",
+            "first=$1 rest=$ARGUMENTS missing=$2",
+        )]));
+        let out = SkillTool::new(registry)
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "run", "args": "a" }),
+            ))
+            .await
+            .unwrap();
+        assert!(out.content.contains("first=a"));
+        assert!(out.content.contains("rest=a"));
+        assert!(
+            out.content.contains("missing="),
+            "out-of-range positional is empty"
+        );
+        // the body used tokens, so no raw-args footer is appended.
+        assert!(!out.content.contains("Arguments:"));
+    }
+
+    #[tokio::test]
+    async fn substitutes_skill_dir_and_session_id() {
+        let spec = SkillSpec {
+            dir: Some("skills/deploy".into()),
+            ..SkillSpec::new(
+                "deploy",
+                "Deploy",
+                "d",
+                "run ${SKILL_DIR}/x.sh in ${SESSION_ID}",
+            )
+        };
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([spec]));
+        let out = SkillTool::new(registry)
+            .with_session_id("sess-1")
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "deploy" }),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("run skills/deploy/x.sh in sess-1"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn unresolved_template_token_is_left_in_place() {
+        // No dir and no session id: tokens survive so the author can spot them.
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "d",
+            "D",
+            "x",
+            "dir=${SKILL_DIR} sess=${SESSION_ID}",
+        )]));
+        let out = SkillTool::new(registry)
+            .invoke(call(SKILL_TOOL_ID, serde_json::json!({ "skill": "d" })))
+            .await
+            .unwrap();
+        assert!(out.content.contains("dir=${SKILL_DIR}"));
+        assert!(out.content.contains("sess=${SESSION_ID}"));
+    }
+
+    #[tokio::test]
+    async fn echoes_raw_args_only_when_body_uses_no_token() {
+        let out = SkillTool::new(registry())
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "commit", "args": "-m x" }),
+            ))
+            .await
+            .unwrap();
+        // `commit` body has no $-token, so the raw args are echoed.
+        assert!(out.content.contains("Arguments: -m x"));
+    }
+
+    struct EchoRunner;
+    #[async_trait]
+    impl SubAgentRunner for EchoRunner {
+        async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String> {
+            Ok(format!("forked[{skill_id}]: {prompt}"))
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_skill_runs_through_the_runner() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "review",
+            "Review",
+            "d",
+            "do the review of $ARGUMENTS",
+        )
+        .with_context(SkillContext::Fork)]));
+        let out = SkillTool::new(registry)
+            .with_fork_runner(Arc::new(EchoRunner))
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "review", "args": "PR-7" }),
+            ))
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        // The runner's reply is returned verbatim — not the inline "Skill:" header.
+        assert_eq!(out.content, "forked[review]: do the review of PR-7");
+    }
+
+    #[tokio::test]
+    async fn fork_skill_without_a_runner_falls_back_to_inline() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "review",
+            "Review",
+            "d",
+            "inline body",
+        )
+        .with_context(SkillContext::Fork)]));
+        let out = SkillTool::new(registry)
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "review" }),
+            ))
+            .await
+            .unwrap();
+        assert!(out.content.contains("Skill: Review"));
+        assert!(out.content.contains("inline body"));
+    }
+
+    struct AllowGate;
+    #[async_trait]
+    impl ToolGateHook for AllowGate {
+        async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+            GateOutcome::Allow
+        }
+    }
+
+    fn ctx(tool_id: &str, args: serde_json::Value) -> PermissionContext {
+        PermissionContext {
+            tool_id: tool_id.into(),
+            call_id: "c1".into(),
+            arguments: args,
+        }
+    }
+
+    #[tokio::test]
+    async fn recording_gate_records_paths_and_delegates() {
+        let activations = PathActivations::new();
+        let gate = RecordingGate::new(Arc::new(AllowGate), activations.clone());
+        let state = Store::new();
+        assert_eq!(
+            gate.gate(
+                &ctx("read", serde_json::json!({ "path": "src/main.rs" })),
+                &state
+            )
+            .await,
+            GateOutcome::Allow
+        );
+        gate.gate(
+            &ctx("glob", serde_json::json!({ "pattern": "*.rs" })),
+            &state,
+        )
+        .await;
+        gate.gate(&ctx("bash", serde_json::json!({ "command": "ls" })), &state)
+            .await;
+        let touched = activations.touched();
+        assert!(touched.contains(&"src/main.rs".to_string()));
+        assert!(touched.contains(&"*.rs".to_string()));
+        assert_eq!(
+            touched.len(),
+            2,
+            "only path/pattern args recorded: {touched:?}"
+        );
+    }
+
+    fn user_msg(text: &str) -> Message {
+        Message::text(
+            awaken_agent_contract::agent::message::Id("m".into()),
+            Role::User,
+            text,
+        )
+    }
+
+    fn msg_text(message: &Message) -> String {
+        message
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn slash_command_expands_only_user_invocable_skills() {
+        let registry = InMemorySkillRegistry::from_specs([
+            SkillSpec::new("deploy", "Deploy", "d", "checklist for $ARGUMENTS"),
+            SkillSpec {
+                user_invocable: false,
+                ..SkillSpec::new("secret", "Secret", "d", "hidden")
+            },
+        ]);
+        // user-invocable → expands to the resolved body
+        let out = expand_slash_commands(&registry, "sess", vec![user_msg("/deploy prod")]);
+        assert_eq!(msg_text(&out[0]), "checklist for prod");
+        // non-user-invocable / unknown / plain → unchanged
+        let out = expand_slash_commands(
+            &registry,
+            "sess",
+            vec![user_msg("/secret"), user_msg("/nope"), user_msg("hi")],
+        );
+        assert_eq!(msg_text(&out[0]), "/secret");
+        assert_eq!(msg_text(&out[1]), "/nope");
+        assert_eq!(msg_text(&out[2]), "hi");
     }
 
     #[tokio::test]

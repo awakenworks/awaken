@@ -25,9 +25,13 @@ mod registry;
 mod spec;
 mod tool;
 
-pub use registry::{InMemorySkillRegistry, SkillRegistry};
-pub use spec::{SkillProvenance, SkillSpec, parse_skill_md};
+pub use registry::{
+    CompositeSkillRegistry, InMemorySkillRegistry, SkillFile, SkillRegistry, SkillSource,
+    SourceSkillRegistry,
+};
+pub use spec::{SkillContext, SkillProvenance, SkillSpec, parse_skill_md};
 pub use tool::{
-    ListSkillsTool, SKILL_LIST_TOOL_ID, SKILL_TOOL_ID, SkillTool, list_skills_tool_descriptor,
+    ListSkillsTool, PathActivations, RecordingGate, SKILL_LIST_TOOL_ID, SKILL_TOOL_ID, SkillTool,
+    SubAgentRunner, expand_slash_commands, list_skills_tool_descriptor, render_user_invocation,
     skill_tool_descriptor,
 };

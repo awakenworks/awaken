@@ -12,6 +12,22 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Cap on a skill name, mirroring the reference implementations (Hermes uses 64).
+pub const MAX_NAME_LENGTH: usize = 64;
+/// Cap on a skill description shown in the catalog (Hermes uses 1024).
+pub const MAX_DESCRIPTION_LENGTH: usize = 1024;
+
+/// Truncate on a char boundary, appending an ellipsis when cut. Shared by the
+/// parser (source caps) and the catalog renderer (budget caps).
+pub(crate) fn truncate_chars(text: &str, cap: usize) -> String {
+    if text.chars().count() <= cap {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(cap.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 /// Where a skill came from — the trust root it was materialized on (ADR-0036 D6).
 /// Provenance is derived from location (which root), not authored, so an
 /// agent-written skill cannot claim to be delivered.
@@ -24,6 +40,16 @@ pub enum SkillProvenance {
     /// Authored by the agent this run in the writable workspace: usable this run
     /// (run-scoped), never pinned, never auto-promoted to the shared store.
     AgentCreated,
+}
+
+/// How an activated skill executes: inline in the conversation, or forked into a
+/// sub-agent with its own budget (ADR-0036; wired by the host for `Fork`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillContext {
+    #[default]
+    Inline,
+    Fork,
 }
 
 /// One skill's model-facing identity and instruction body. Data-only: the
@@ -45,8 +71,32 @@ pub struct SkillSpec {
     /// Whether the model may activate this skill via the `Skill` tool. A `false`
     /// skill is hidden from the catalog and refused at the tool (users only).
     pub model_invocable: bool,
+    /// Whether a user may invoke this skill via `/name` (default true).
+    pub user_invocable: bool,
+    /// Free-text hint about the skill's arguments, shown in the catalog.
+    pub argument_hint: Option<String>,
+    /// Named argument declarations (informational; substitution is positional).
+    pub arguments: Vec<String>,
+    /// Optional model override applied when the skill is activated.
+    pub model_override: Option<String>,
+    /// Execution mode: inline expansion or a forked sub-agent.
+    pub context: SkillContext,
+    /// Agent type for forked execution (host-resolved).
+    pub agent: Option<String>,
+    /// Glob patterns for conditional activation; empty means unconditional.
+    pub paths: Vec<String>,
+    /// Optional grouping category, shown in the catalog and filterable.
+    pub category: Option<String>,
+    /// Free-form tags.
+    pub tags: Vec<String>,
+    /// Optional version identifier.
+    pub version: Option<String>,
     /// Which trust root this skill came from (ADR-0036 D6). Derived by location.
     pub provenance: SkillProvenance,
+    /// Logical directory of the skill under the sandbox root, when discovered from
+    /// files. Resolves `${SKILL_DIR}` so the body can point at its references. `None`
+    /// for in-memory (config-only) skills.
+    pub dir: Option<String>,
     /// The `SKILL.md` instruction body returned to the model on activation.
     pub body: String,
 }
@@ -66,7 +116,18 @@ impl SkillSpec {
             when_to_use: None,
             allowed_tools: Vec::new(),
             model_invocable: true,
+            user_invocable: true,
+            argument_hint: None,
+            arguments: Vec::new(),
+            model_override: None,
+            context: SkillContext::Inline,
+            agent: None,
+            paths: Vec::new(),
+            category: None,
+            tags: Vec::new(),
+            version: None,
             provenance: SkillProvenance::Delivered,
+            dir: None,
             body: body.into(),
         }
     }
@@ -75,6 +136,20 @@ impl SkillSpec {
     #[must_use]
     pub fn with_provenance(mut self, provenance: SkillProvenance) -> Self {
         self.provenance = provenance;
+        self
+    }
+
+    /// Set the execution mode (inline or forked sub-agent).
+    #[must_use]
+    pub fn with_context(mut self, context: SkillContext) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// Set the conditional-activation path globs.
+    #[must_use]
+    pub fn with_paths(mut self, paths: Vec<String>) -> Self {
+        self.paths = paths;
         self
     }
 
@@ -93,7 +168,9 @@ impl SkillSpec {
 
 /// Read a `SKILL.md` document into a [`SkillSpec`]. Recognizes an optional
 /// frontmatter block (`---` … `---`) with these keys (hyphen or underscore):
-/// `name`, `description`, `when-to-use`, `allowed-tools`, `disable-model-invocation`.
+/// `name`, `description`, `when-to-use`, `allowed-tools`, `disable-model-invocation`,
+/// `user-invocable`, `argument-hint`, `arguments`, `model`/`model-override`,
+/// `context` (`inline`|`fork`), `agent`, `paths`, `category`, `tags`, `version`.
 /// Everything after the frontmatter is the instruction body; an absent
 /// frontmatter treats the whole input as body. Unknown keys are ignored
 /// (forward-compatible).
@@ -109,9 +186,29 @@ pub fn parse_skill_md(id: impl Into<String>, content: &str) -> SkillSpec {
             "when-to-use" => spec.when_to_use = Some(value),
             "allowed-tools" => spec.allowed_tools = parse_list(&value),
             "disable-model-invocation" => spec.model_invocable = !parse_bool(&value),
+            "user-invocable" => spec.user_invocable = parse_bool(&value),
+            "argument-hint" => spec.argument_hint = Some(value),
+            "arguments" => spec.arguments = parse_list(&value),
+            "model" | "model-override" => spec.model_override = Some(value),
+            "context" => {
+                spec.context = if value.eq_ignore_ascii_case("fork") {
+                    SkillContext::Fork
+                } else {
+                    SkillContext::Inline
+                }
+            }
+            "agent" => spec.agent = Some(value),
+            "paths" => spec.paths = parse_list(&value),
+            "category" => spec.category = Some(value),
+            "tags" => spec.tags = parse_list(&value),
+            "version" => spec.version = Some(value),
             _ => {}
         }
     }
+    // Bound the model-facing metadata so a large or malformed skill cannot blow
+    // out the catalog (ADR-0036: size limits).
+    spec.name = truncate_chars(&spec.name, MAX_NAME_LENGTH);
+    spec.description = truncate_chars(&spec.description, MAX_DESCRIPTION_LENGTH);
     spec
 }
 
@@ -237,6 +334,43 @@ mod tests {
         assert_eq!(spec.description, "");
         assert_eq!(spec.body, "just instructions");
         assert!(spec.allowed_tools.is_empty());
+    }
+
+    #[test]
+    fn parses_extended_frontmatter_keys() {
+        let md = "---\nname: PR\ndescription: review a PR\ncontext: fork\nagent: general-purpose\nuser-invocable: false\nargument-hint: <pr-number>\narguments: number, base\nmodel: opus\npaths: [\"src/**\", \"*.rs\"]\ncategory: dev\ntags: git, review\nversion: 1.2\n---\nsteps";
+        let spec = parse_skill_md("review-pr", md);
+        assert_eq!(spec.context, SkillContext::Fork);
+        assert_eq!(spec.agent.as_deref(), Some("general-purpose"));
+        assert!(!spec.user_invocable);
+        assert_eq!(spec.argument_hint.as_deref(), Some("<pr-number>"));
+        assert_eq!(spec.arguments, vec!["number", "base"]);
+        assert_eq!(spec.model_override.as_deref(), Some("opus"));
+        assert_eq!(spec.paths, vec!["src/**", "*.rs"]);
+        assert_eq!(spec.category.as_deref(), Some("dev"));
+        assert_eq!(spec.tags, vec!["git", "review"]);
+        assert_eq!(spec.version.as_deref(), Some("1.2"));
+    }
+
+    #[test]
+    fn extended_keys_default_when_absent() {
+        let spec = parse_skill_md("x", "no frontmatter");
+        assert_eq!(spec.context, SkillContext::Inline);
+        assert!(spec.user_invocable);
+        assert!(spec.paths.is_empty());
+        assert!(spec.model_override.is_none());
+    }
+
+    #[test]
+    fn over_long_name_and_description_are_capped() {
+        let long_name = "n".repeat(200);
+        let long_desc = "d".repeat(4000);
+        let md = format!("---\nname: {long_name}\ndescription: {long_desc}\n---\nbody");
+        let spec = parse_skill_md("x", &md);
+        assert!(spec.name.chars().count() <= MAX_NAME_LENGTH);
+        assert!(spec.description.chars().count() <= MAX_DESCRIPTION_LENGTH);
+        assert!(spec.name.ends_with('…'));
+        assert!(spec.description.ends_with('…'));
     }
 
     #[test]
