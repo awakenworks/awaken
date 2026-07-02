@@ -15,6 +15,7 @@ mod config;
 mod delegate;
 mod host;
 mod hub;
+mod skills;
 mod store;
 mod subagent;
 
