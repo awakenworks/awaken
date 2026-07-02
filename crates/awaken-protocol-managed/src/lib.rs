@@ -6,9 +6,10 @@
 //! [`SessionRuntime`] port and constructs no runtime itself. It is the only crate
 //! permitted to name Anthropic protocol vocabulary (G16).
 //!
-//! Scope (M1): `POST /v1/sessions`, `POST /v1/sessions/{id}/events` (`user.message`),
-//! `GET /v1/sessions/{id}/events`, and the SSE stream. HITL / custom tools /
-//! outcomes are wired in later milestones.
+//! Scope: `POST /v1/sessions` (advertising the runtime's provisioned tool/resource
+//! surface), `POST /v1/sessions/{id}/events` (`user.message`, HITL
+//! `user.tool_confirmation`, `user.custom_tool_result`, `user.define_outcome`,
+//! `user.interrupt`), `GET /v1/sessions/{id}/events`, and the SSE stream.
 
 pub mod dto;
 pub mod project;
@@ -17,6 +18,6 @@ mod state;
 
 pub use router::router;
 pub use state::{
-    Decision, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
-    SessionRuntime, StateError, TurnOutcome,
+    AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
+    OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StateError, TurnOutcome,
 };
