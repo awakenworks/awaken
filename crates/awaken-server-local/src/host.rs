@@ -39,9 +39,12 @@ use awaken_runtime_contract::tool::ToolOutput;
 use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
+use crate::agent_catalog::AgentCatalog;
+use crate::background::BackgroundRuns;
 use crate::config::{build_runtime, server_config, server_gate};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
+use crate::memory::{DEFAULT_MEMORY_INSTRUCTIONS, MemoryExtraction, default_memory_agent};
 use crate::store::HostCommit;
 
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -258,6 +261,9 @@ pub struct SharedHost {
     /// Delegate agents fulfilled over A2A (agent id → transport) instead of a local
     /// sub-run. `run_delegate` routes to these first.
     pub(crate) remote_agents: HashMap<String, Arc<dyn Transport>>,
+    /// Out-of-band memory extraction, when enabled with [`with_memory`]. After a
+    /// turn reaches a natural end it fires a background `memory-extractor` sub-run.
+    memory: Option<Arc<MemoryExtraction>>,
 }
 
 impl SharedHost {
@@ -276,6 +282,39 @@ impl SharedHost {
             hub: Arc::new(ThreadEventHub::new()),
             store_dir: None,
             remote_agents: HashMap::new(),
+            memory: None,
+        }
+    }
+
+    /// Enable out-of-band memory extraction, writing memories under `mem_dir`. After
+    /// each turn that reaches a natural end, a background `memory-extractor` sub-agent
+    /// reads the conversation and saves durable memories via `write_memory` (scoped
+    /// to `mem_dir`), without blocking the turn. The extractor runs the default
+    /// memory agent over this host's model; drain it before shutdown with
+    /// [`drain_memory`](Self::drain_memory).
+    pub fn with_memory(mut self, mem_dir: impl Into<PathBuf>) -> Self {
+        let catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
+            &self.model_ref,
+            DEFAULT_MEMORY_INSTRUCTIONS,
+        )));
+        let extraction = MemoryExtraction::new(
+            self.llm.clone(),
+            Arc::new(LocalSandboxProvider::new(sub_base("mem"))),
+            catalog,
+            Arc::new(BackgroundRuns::new()),
+            mem_dir.into(),
+        );
+        self.memory = Some(Arc::new(extraction));
+        self
+    }
+
+    /// Await in-flight background memory extractions up to `timeout` (shutdown
+    /// flush). Returns `true` if all finished. A no-op returning `true` when memory
+    /// is disabled.
+    pub async fn drain_memory(&self, timeout: std::time::Duration) -> bool {
+        match &self.memory {
+            Some(mem) => mem.drain(timeout).await,
+            None => true,
         }
     }
 
@@ -584,7 +623,23 @@ impl SharedHost {
             .start_turn(&ctx.config, thread, messages, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(self.finish_step(&ctx, &mut st, run_id, phase, before, thread))
+        let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
+        drop(st);
+        self.maybe_extract_memory(&ctx, thread, &result.phase).await;
+        Ok(result)
+    }
+
+    /// Fire out-of-band memory extraction when a turn reaches a terminal phase
+    /// (not parked) and memory is enabled. Seeds the extractor with the thread's
+    /// committed history; the run is fire-and-forget (drained at shutdown).
+    async fn maybe_extract_memory(&self, ctx: &SessionCtx, thread: &str, phase: &Phase) {
+        if matches!(phase, Phase::Waiting) {
+            return;
+        }
+        if let Some(mem) = &self.memory {
+            let committed = ctx.commit.committed_messages(&ctx.thread_id);
+            mem.trigger(thread, committed).await;
+        }
     }
 
     /// Resume the run parked on `thread`, answering `tool_use_id` with `resume`.
@@ -837,6 +892,7 @@ fn pending_from_ticket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
     use std::sync::atomic::AtomicUsize;
 
@@ -912,5 +968,68 @@ mod tests {
         host.interrupt("idle-thread")
             .await
             .expect("interrupt is a no-op");
+    }
+
+    /// The main assistant answers plainly; the memory extractor (identified by its
+    /// system instructions) saves one memory then reports done.
+    struct MemoryHostModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for MemoryHostModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            use awaken_runtime_contract::llm::{ChatRole, ToolCall};
+            let is_extractor = request.messages.iter().any(|m| {
+                m.role == ChatRole::System
+                    && m.content.iter().any(|b| match b {
+                        ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
+                        _ => false,
+                    })
+            });
+            let output = if is_extractor {
+                if request.messages.iter().any(|m| m.role == ChatRole::Tool) {
+                    AssistantOutput::text("saved 1 memory")
+                } else {
+                    AssistantOutput::from_tool_calls(vec![ToolCall {
+                        call_id: "w".into(),
+                        tool_id: "write_memory".into(),
+                        arguments: serde_json::json!({
+                            "name": "user prefs",
+                            "content": "user likes rust",
+                        }),
+                    }])
+                }
+            } else {
+                AssistantOutput::text("ok")
+            };
+            Ok(ChatResponse {
+                output,
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_end_fires_background_memory_extraction() {
+        let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let mem_dir = std::env::temp_dir().join(format!("awaken-host-mem-{stamp}"));
+        let host = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_memory(&mem_dir);
+
+        let input = vec![Message::text(
+            MessageId("u1".into()),
+            Role::User,
+            "I really like rust",
+        )];
+        let result = host.run_turn("t-mem", input).await.expect("run turn");
+        assert!(matches!(result.phase, Phase::Ended(_)), "turn should end");
+
+        let drained = host.drain_memory(std::time::Duration::from_secs(10)).await;
+        assert!(drained, "memory extraction should drain");
+
+        let saved =
+            std::fs::read_to_string(mem_dir.join("user-prefs.md")).expect("memory file written");
+        assert_eq!(saved, "user likes rust");
     }
 }
