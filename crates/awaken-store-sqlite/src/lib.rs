@@ -128,6 +128,9 @@ impl SqliteCommitCoordinator {
 #[async_trait]
 impl CommitCoordinator for SqliteCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        commit
+            .validate()
+            .map_err(|e| Error::Rejected(e.to_string()))?;
         // Serialize commits: assign the fence and advance the projection without
         // a race, matching SQLite's single-writer model.
         let _writing = self.write_lock.lock().await;

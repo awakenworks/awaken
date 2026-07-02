@@ -82,6 +82,9 @@ impl MemoryCommitCoordinator {
 #[async_trait]
 impl CommitCoordinator for MemoryCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        commit
+            .validate()
+            .map_err(|e| Error::Rejected(e.to_string()))?;
         let mut state = self
             .state
             .lock()
