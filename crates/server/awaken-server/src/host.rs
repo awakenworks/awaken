@@ -24,7 +24,7 @@ use awaken_ext_goal::{
     DelegateError, DelegateGrader, DelegateReply, DelegateRequest, DelegateRunner, GoalPlugin,
     GoalSpec, Grader, KeywordGrader,
 };
-use awaken_ext_skills::{InMemorySkillRegistry, ListSkillsTool, SkillSpec, SkillTool};
+use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -38,7 +38,7 @@ use awaken_runtime_contract::tool::ToolOutput;
 use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
-use crate::config::{build_runtime, server_config};
+use crate::config::{build_runtime, server_config, server_gate};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::store::HostCommit;
@@ -169,7 +169,10 @@ pub(crate) struct SessionCtx {
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build a goal-enabled runtime
     /// for `define_outcome` (same tools, same environment).
-    env: Environment,
+    env: Arc<Environment>,
+    /// The thread's skill registry (delivered + workspace), used to expand user
+    /// `/skill-name` invocations. `None` when skills are not offered.
+    skill_registry: Option<Arc<dyn SkillRegistry>>,
     /// The in-flight run's cancellation token, so a concurrent `interrupt` (a
     /// separate request) can cancel it. A plain `std::sync::Mutex` (brief locks),
     /// held by neither the run loop nor the state lock, so interrupt never blocks
@@ -397,11 +400,12 @@ impl SharedHost {
         if let Some(ctx) = sessions.get(thread) {
             return Ok(ctx.clone());
         }
-        let env = self
-            .provider
-            .create(&self.sandbox_spec(thread))
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        let env = Arc::new(
+            self.provider
+                .create(&self.sandbox_spec(thread))
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?,
+        );
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread)?);
         let mut runtime = build_runtime(self.llm.clone(), &env);
@@ -410,19 +414,27 @@ impl SharedHost {
         if let Some(resolver) = self.agent_resolver() {
             runtime = runtime.with_resolver(resolver);
         }
-        // Skills are fronted by two stable tools (ADR-0036): `list_skills`
-        // (discover) and `Skill` (activate). Both descriptors are catalog-free, so
-        // the skill set never perturbs the pinned surface. No per-skill tools.
+        // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
+        // in `awaken-ext-skills`. The host only wires the pieces it alone owns —
+        // the sandbox env, the sub-run capability, and the base gate — via
+        // `skills::wire_skills`.
         let mut skill_descriptors = Vec::new();
-        if !self.skills.is_empty() {
-            let registry = Arc::new(InMemorySkillRegistry::from_specs(
-                self.skills.iter().cloned(),
-            ));
-            let list = Arc::new(ListSkillsTool::new(registry.clone()));
-            let activate = Arc::new(SkillTool::new(registry));
-            skill_descriptors.push(list.descriptor());
-            skill_descriptors.push(activate.descriptor());
-            runtime = runtime.with_tool(list).with_tool(activate);
+        let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
+        if let Some(wiring) = crate::skills::wire_skills(
+            &self.skills,
+            env.clone(),
+            self.llm.clone(),
+            &self.model_ref,
+            thread,
+            server_gate(),
+            sub_base("skill-fork"),
+        ) {
+            runtime = runtime
+                .with_gate(wiring.gate)
+                .with_tool(wiring.list_tool)
+                .with_tool(wiring.activate_tool);
+            skill_descriptors = wiring.descriptors;
+            skill_registry = Some(wiring.registry);
         }
         let config = server_config(
             &self.model_ref,
@@ -453,6 +465,7 @@ impl SharedHost {
             commit,
             thread_id,
             env,
+            skill_registry,
             cancel: std::sync::Mutex::new(None),
             state: tokio::sync::Mutex::new(state),
         });
@@ -529,6 +542,13 @@ impl SharedHost {
                 )
             })
             .collect();
+        // Expand a user `/skill-name` into the skill's instructions before the turn.
+        let input = match &ctx.skill_registry {
+            Some(registry) => {
+                awaken_ext_skills::expand_slash_commands(registry.as_ref(), thread, input)
+            }
+            None => input,
+        };
         messages.extend(input);
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
         let (run_id, phase) = ctx

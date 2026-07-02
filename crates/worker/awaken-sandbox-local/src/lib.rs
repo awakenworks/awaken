@@ -360,6 +360,20 @@ pub struct Environment {
     hand_tools: Vec<Arc<dyn HandTool>>,
     resources: Vec<ResourceRef>,
     receipt: ProvisionReceipt,
+    /// The environment's realized root. **Never exposed** as a path (G3): it is
+    /// used internally to scan for skill files, which are returned as neutral data.
+    root: Option<PathBuf>,
+}
+
+/// A `SKILL.md`-bearing directory discovered under the environment. Neutral file
+/// data — no skill semantics — so the sandbox stays unaware of the skill model
+/// (the host parses it). `dir` is a **logical** path under the root (usable by
+/// jailed tools and for `${SKILL_DIR}`), never a host absolute path (G3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredSkillFile {
+    pub id: String,
+    pub content: String,
+    pub dir: String,
 }
 
 impl Environment {
@@ -375,7 +389,46 @@ impl Environment {
             hand_tools,
             resources: Vec::new(),
             receipt: ProvisionReceipt::default(),
+            root: None,
         }
+    }
+
+    /// Attach the realized root (kept private; used only to scan skill files).
+    pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.root = Some(root.into());
+        self
+    }
+
+    /// Scan `<root>/<subdir>/*/SKILL.md` **live** and return neutral file data.
+    /// Live (re-scanned each call) so a skill the agent authored this run is seen.
+    /// A missing dir, an unreadable file, or a dir without `SKILL.md` is skipped.
+    /// The returned `dir` is the logical path `"<subdir>/<id>"`, never a host path.
+    pub fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
+        let Some(root) = &self.root else {
+            return Vec::new();
+        };
+        let base = root.join(subdir);
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let id = entry.file_name().to_string_lossy().into_owned();
+            let md = entry.path().join("SKILL.md");
+            let Ok(content) = std::fs::read_to_string(&md) else {
+                continue;
+            };
+            out.push(DiscoveredSkillFile {
+                id: id.clone(),
+                content,
+                dir: format!("{subdir}/{id}"),
+            });
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
     }
 
     /// Attach realized resource references.
@@ -470,7 +523,7 @@ impl SandboxProvider for LocalSandboxProvider {
     async fn create(&self, spec: &SandboxSpec) -> Result<Environment, SandboxError> {
         let dir = self.base.join(&spec.id);
         std::fs::create_dir_all(&dir).map_err(|e| SandboxError(e.to_string()))?;
-        let root = IsolatedRoot::new(dir);
+        let root = IsolatedRoot::new(dir.clone());
 
         let mut resources: Vec<ResourceRef> = Vec::new();
         let mut entries: Vec<ProvisionEntry> = Vec::new();
@@ -510,6 +563,7 @@ impl SandboxProvider for LocalSandboxProvider {
         }
 
         Ok(Environment::new(spec.id.clone(), rooted_hand_tools(root))
+            .with_root(dir)
             .with_resources(resources)
             .with_receipt(ProvisionReceipt { entries }))
     }

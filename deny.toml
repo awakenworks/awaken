@@ -40,6 +40,7 @@ wrappers = [
     "awaken-runtime-contract",
     "awaken-runtime",
     "awaken-ext-builtin-tools",
+    "awaken-ext-skills",
     "awaken-config-store",
     "awaken-runtime-examples",
     "awaken-provider-genai",

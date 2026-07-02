@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use awaken_runtime_contract::llm::ToolCall;
 use awaken_sandbox_local::{
     LocalSandboxProvider, Mount, ProvisionKind, ResourceMount, SandboxProvider, SandboxSpec,
     content_fingerprint,
@@ -143,4 +144,63 @@ async fn empty_spec_provisions_only_hand_tools() {
     assert!(env.resources().is_empty());
     assert!(env.receipt().entries.is_empty());
     provider.teardown("plain").await.unwrap();
+}
+
+#[tokio::test]
+async fn tier3_reference_is_readable_via_builtin_read() {
+    // A skill's reference file (tier 3) is reached by the built-in `read` tool over
+    // its materialized `${SKILL_DIR}` path — no dedicated skill tool (ADR-0036 D1).
+    let base = unique_base("tier3");
+    let provider = LocalSandboxProvider::new(&base);
+    let env = provider.create(&SandboxSpec::new("t")).await.unwrap();
+
+    let reference = base.join("t").join("skills/deploy/references/x.md");
+    std::fs::create_dir_all(reference.parent().unwrap()).unwrap();
+    std::fs::write(&reference, "REF-CONTENT").unwrap();
+
+    let read = env
+        .tools()
+        .into_iter()
+        .find(|t| t.id() == "read")
+        .expect("built-in read tool");
+    let out = read
+        .invoke(ToolCall {
+            call_id: "c1".into(),
+            tool_id: "read".into(),
+            // logical path (what `${SKILL_DIR}/references/x.md` resolves to); the
+            // jail rebases it under the hidden root.
+            arguments: serde_json::json!({ "path": "skills/deploy/references/x.md" }),
+        })
+        .await
+        .unwrap();
+    assert!(!out.is_error, "read failed: {}", out.content);
+    assert!(out.content.contains("REF-CONTENT"), "got: {}", out.content);
+
+    provider.teardown("t").await.unwrap();
+}
+
+#[tokio::test]
+async fn scan_skill_dir_finds_skill_md_live_and_hides_the_root() {
+    let base = unique_base("scan");
+    let provider = LocalSandboxProvider::new(&base);
+    let env = provider.create(&SandboxSpec::new("s")).await.unwrap();
+
+    // Fresh env: nothing yet.
+    assert!(env.scan_skill_dir("skills").is_empty());
+
+    // Simulate the agent authoring a skill this run (a write under the root).
+    let root = base.join("s");
+    std::fs::create_dir_all(root.join("skills/deploy")).unwrap();
+    std::fs::write(root.join("skills/deploy/SKILL.md"), "# Deploy\nsteps").unwrap();
+    // A dir without SKILL.md is skipped.
+    std::fs::create_dir_all(root.join("skills/empty")).unwrap();
+
+    let found = env.scan_skill_dir("skills");
+    assert_eq!(found.len(), 1, "only the SKILL.md-bearing dir: {found:?}");
+    assert_eq!(found[0].id, "deploy");
+    assert_eq!(found[0].dir, "skills/deploy"); // logical path, not a host path
+    assert!(!found[0].dir.starts_with('/'));
+    assert!(found[0].content.contains("steps"));
+
+    provider.teardown("s").await.unwrap();
 }
