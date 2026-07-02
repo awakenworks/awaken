@@ -68,11 +68,13 @@ fn tool_msg(text: &str) -> Message {
 
 /// Evaluate a guard against a conversation at a given forced-continuation count.
 async fn evaluate(guard: &GoalGuard, conversation: &[Message], fc: usize) -> RunEndDecision {
+    let state = awaken_runtime_contract::Store::new();
     let ctx = RunEndContext {
         run_id: RunId("run-1".into()),
         conversation,
         forced_continuations: fc,
         cancellation: None,
+        state: &state,
     };
     guard.evaluate(&ctx).await
 }

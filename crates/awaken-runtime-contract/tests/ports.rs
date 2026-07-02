@@ -36,7 +36,11 @@ struct PolicyGate(Arc<dyn PermissionPolicy>);
 
 #[async_trait::async_trait]
 impl ToolGateHook for PolicyGate {
-    async fn gate(&self, ctx: &PermissionContext) -> GateOutcome {
+    async fn gate(
+        &self,
+        ctx: &PermissionContext,
+        _state: &awaken_agent_contract::agent::state::Store,
+    ) -> GateOutcome {
         match self.0.decide(ctx).await {
             PermissionDecision::Allow => GateOutcome::Allow,
             PermissionDecision::Deny { reason } => GateOutcome::Block { reason },
@@ -69,7 +73,8 @@ async fn policy_backed_gate_allows() {
         call_id: "c1".to_string(),
         arguments: serde_json::json!({}),
     };
-    assert_eq!(gate.gate(&ctx).await, GateOutcome::Allow);
+    let state = awaken_agent_contract::agent::state::Store::new();
+    assert_eq!(gate.gate(&ctx, &state).await, GateOutcome::Allow);
 }
 
 #[test]

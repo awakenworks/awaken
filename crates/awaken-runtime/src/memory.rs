@@ -151,6 +151,17 @@ impl ThreadReader for MemoryCommitCoordinator {
     fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
         self.waiting_for(run_id)
     }
+
+    fn committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Vec<awaken_agent_contract::agent::state::Command> {
+        let committed = self.committed();
+        match committed.thread_id {
+            Some(id) if &id == thread_id => committed.state,
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// In-memory live stream sink. Records emitted events in order so tests can
