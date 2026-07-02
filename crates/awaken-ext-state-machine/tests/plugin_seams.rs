@@ -113,6 +113,23 @@ fn resolve_configured_applies_section_defaults_and_fails_closed() {
     assert!(plugin.resolve_configured(Some(&bad)).is_err());
 }
 
+#[test]
+fn resolve_configured_merges_base_with_section() {
+    // A plugin with a base machine "rbw" plus a section that adds a different
+    // machine merges both; a section that re-declares "rbw" fails closed.
+    let plugin = StateMachinePlugin::from_config(
+        StateMachineConfig::from_json_str(READ_BEFORE_WRITE).unwrap(),
+    )
+    .unwrap();
+
+    let other = json!({"machines":[{"name":"other","initial":"a",
+        "transitions":[{"on":"X","from":"a","to":"b"}]}]});
+    assert!(plugin.resolve_configured(Some(&other)).is_ok());
+
+    let clash: serde_json::Value = serde_json::from_str(READ_BEFORE_WRITE).unwrap();
+    assert!(plugin.resolve_configured(Some(&clash)).is_err());
+}
+
 // ---------------------------------------------------------------------------
 // Gate
 // ---------------------------------------------------------------------------
