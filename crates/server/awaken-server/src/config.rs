@@ -19,7 +19,7 @@ use awaken_ext_state_machine::{STATE_MACHINE_PLUGIN_ID, StateMachinePlugin};
 use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
+use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_sandbox_local::Environment;
 
@@ -145,12 +145,14 @@ pub(crate) fn advertised_tools(
     tools
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn server_config(
     model_ref: &str,
     client_tools: &HashSet<String>,
     delegates: &HashSet<String>,
     plugin_ids: &[String],
     skill_descriptors: &[ToolDescriptor],
+    context_policy: ContextPolicy,
 ) -> RunnableConfig {
     let tools = advertised_tools(client_tools, delegates, skill_descriptors);
     RunnableConfig::builder("assistant")
@@ -160,6 +162,7 @@ pub(crate) fn server_config(
         .max_steps(20)
         .plugins(plugin_ids.iter().cloned())
         .plugin_capabilities(platform_plugin_capabilities())
+        .context_policy(context_policy)
         .build()
 }
 
@@ -223,6 +226,7 @@ mod tests {
             &HashSet::new(),
             &["state_machine".to_string()],
             &[],
+            ContextPolicy::KeepAll,
         );
         let mut spec = config.snapshot().resolved_spec.clone();
         spec.plugin_config
@@ -239,6 +243,7 @@ mod tests {
             &HashSet::new(),
             &["state_machine".to_string()],
             &[],
+            ContextPolicy::KeepAll,
         );
         let sm = config
             .install()

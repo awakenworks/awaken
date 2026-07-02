@@ -41,9 +41,11 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
+use crate::compact::{Compaction, DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
 use crate::config::{build_runtime, server_config, server_gate};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
+use crate::judge::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 use crate::memory::{DEFAULT_MEMORY_INSTRUCTIONS, MemoryExtraction, default_memory_agent};
 use crate::store::HostCommit;
 
@@ -161,6 +163,10 @@ struct SessionState {
     /// How many committed `Continuation` (outcome) rounds have already been
     /// projected, so a second `define_outcome` on the thread reports only its own.
     consumed_rounds: usize,
+    /// Cursor for out-of-band memory extraction: the committed-message count that
+    /// has already been handed to the extractor, so each turn extracts only the
+    /// new messages instead of re-processing (and re-billing) the whole history.
+    last_extracted_len: usize,
 }
 
 /// One thread's live state: an isolated runtime, its config, its commit
@@ -215,8 +221,10 @@ fn detail_str(detail: &serde_json::Value, key: &str) -> String {
 /// its verdict is not biased by the doer's working state.
 struct KernelJudgeRunner {
     llm: Arc<dyn LlmExecutor>,
-    model_ref: String,
     provider: LocalSandboxProvider,
+    /// The judge is resolved by id from here, so its model/instructions/window are
+    /// configured per-agent rather than hard-coded (like memory and compact).
+    catalog: Arc<AgentCatalog>,
     seq: AtomicU64,
 }
 
@@ -227,12 +235,14 @@ impl DelegateRunner for KernelJudgeRunner {
         // The judge sees only its prompt (a fresh window); its cancellation is the
         // parent run's, so cancelling the outcome cancels the judge too.
         let name = format!("{}-judge-{n}", request.agent_id);
-        let text = crate::subagent::run_subagent(
-            self.llm.clone(),
-            &self.model_ref,
+        let text = crate::subagent::run_configured_subrun(
+            &self.catalog,
             &self.provider,
+            self.llm.clone(),
+            &request.agent_id,
             &name,
-            &request.prompt,
+            request.prompt,
+            Vec::new(),
             request.cancellation,
         )
         .await
@@ -264,6 +274,10 @@ pub struct SharedHost {
     /// Out-of-band memory extraction, when enabled with [`with_memory`]. After a
     /// turn reaches a natural end it fires a background `memory-extractor` sub-run.
     memory: Option<Arc<MemoryExtraction>>,
+    /// Out-of-band context compaction, when enabled with [`with_compaction`]. After
+    /// a long turn it summarizes older history in the background; the main agent
+    /// runs a matching `KeepLast` window so the summary replaces the raw turns.
+    compaction: Option<Arc<Compaction>>,
 }
 
 impl SharedHost {
@@ -283,6 +297,39 @@ impl SharedHost {
             store_dir: None,
             remote_agents: HashMap::new(),
             memory: None,
+            compaction: None,
+        }
+    }
+
+    /// Enable background context compaction. Once a thread's committed history
+    /// exceeds `threshold` messages, a `compactor` sub-agent summarizes everything
+    /// but the last `keep_last` messages; the summary is prepended (as a system
+    /// message) to the next turn, and the main agent runs a matching `KeepLast`
+    /// window so those older raw turns drop from the model view. Non-destructive:
+    /// committed truth is never rewritten. Drain with [`drain_memory`] is separate;
+    /// compaction is drained by [`drain_compaction`](Self::drain_compaction).
+    pub fn with_compaction(mut self, threshold: usize, keep_last: usize) -> Self {
+        let catalog = Arc::new(AgentCatalog::new().with_agent(default_compact_agent(
+            &self.model_ref,
+            DEFAULT_COMPACT_INSTRUCTIONS,
+        )));
+        self.compaction = Some(Arc::new(Compaction::new(
+            self.llm.clone(),
+            Arc::new(LocalSandboxProvider::new(sub_base("compact"))),
+            catalog,
+            Arc::new(BackgroundRuns::new()),
+            threshold,
+            keep_last,
+        )));
+        self
+    }
+
+    /// Await in-flight background compactions up to `timeout`. `true` if all
+    /// finished (or compaction is disabled).
+    pub async fn drain_compaction(&self, timeout: std::time::Duration) -> bool {
+        match &self.compaction {
+            Some(c) => c.drain(timeout).await,
+            None => true,
         }
     }
 
@@ -377,13 +424,19 @@ impl SharedHost {
     /// kernel, instead of the deterministic keyword grader. The judge grades in its
     /// own fresh context.
     pub fn with_judge(mut self, judge_agent_id: impl Into<String>) -> Self {
+        let id = judge_agent_id.into();
+        let catalog = Arc::new(AgentCatalog::new().with_agent(default_judge_agent(
+            &self.model_ref,
+            &id,
+            DEFAULT_JUDGE_INSTRUCTIONS,
+        )));
         let runner = Arc::new(KernelJudgeRunner {
             llm: self.llm.clone(),
-            model_ref: self.model_ref.clone(),
             provider: LocalSandboxProvider::new(sub_base("judge")),
+            catalog,
             seq: AtomicU64::new(0),
         });
-        self.grader = Arc::new(DelegateGrader::new(runner, judge_agent_id));
+        self.grader = Arc::new(DelegateGrader::new(runner, id));
         self
     }
 
@@ -503,12 +556,21 @@ impl SharedHost {
             skill_descriptors = wiring.descriptors;
             skill_registry = Some(wiring.registry);
         }
+        // When compaction is on, the main agent runs a rolling window matching the
+        // compactor's `keep_last`, so summarized older turns leave the model view.
+        let context_policy = match &self.compaction {
+            Some(c) => awaken_runtime_contract::resolved::ContextPolicy::KeepLast {
+                keep_last: c.keep_last(),
+            },
+            None => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        };
         let config = server_config(
             &self.model_ref,
             &self.client_tools,
             &self.delegates,
             &[],
             &skill_descriptors,
+            context_policy,
         );
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and a parked run (e.g. after a
@@ -625,20 +687,64 @@ impl SharedHost {
             .map_err(|e| HostError::internal(e.to_string()))?;
         let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
         drop(st);
-        self.maybe_extract_memory(&ctx, thread, &result.phase).await;
+        self.run_aux_after_step(&ctx, thread, &result.phase).await;
         Ok(result)
     }
 
+    /// Fire the out-of-band auxiliary agents (memory extraction, compaction) after a
+    /// step reaches a terminal phase. Shared by `run_turn` and `resume`, so a turn
+    /// that ended via a tool/delegation resume gets the same treatment as one that
+    /// ended directly. No-op while the run is still parked.
+    async fn run_aux_after_step(&self, ctx: &Arc<SessionCtx>, thread: &str, phase: &Phase) {
+        self.maybe_extract_memory(ctx, thread, phase).await;
+        self.maybe_compact(ctx, thread, phase).await;
+    }
+
     /// Fire out-of-band memory extraction when a turn reaches a terminal phase
-    /// (not parked) and memory is enabled. Seeds the extractor with the thread's
-    /// committed history; the run is fire-and-forget (drained at shutdown).
+    /// (not parked) and memory is enabled. Seeds the extractor with only the
+    /// messages committed since the last extraction (a per-thread cursor), so a
+    /// long conversation is not re-processed every turn. Fire-and-forget (drained
+    /// at shutdown). The cursor advances optimistically on trigger.
     async fn maybe_extract_memory(&self, ctx: &SessionCtx, thread: &str, phase: &Phase) {
         if matches!(phase, Phase::Waiting) {
             return;
         }
-        if let Some(mem) = &self.memory {
+        let Some(mem) = &self.memory else {
+            return;
+        };
+        let committed = ctx.commit.committed_messages(&ctx.thread_id);
+        let mut st = ctx.state.lock().await;
+        let cursor = st.last_extracted_len.min(committed.len());
+        if committed.len() <= cursor {
+            return; // no new messages since the last extraction
+        }
+        let delta = committed[cursor..].to_vec();
+        st.last_extracted_len = committed.len();
+        drop(st);
+        mem.trigger(thread, delta).await;
+    }
+
+    /// Fire background compaction when a terminal turn's history is long. On
+    /// completion the summary is prepended to the thread's next turn as a system
+    /// message; the raw older turns drop from the model view via the agent's
+    /// `KeepLast` window. Fire-and-forget (drained at shutdown).
+    async fn maybe_compact(&self, ctx: &Arc<SessionCtx>, thread: &str, phase: &Phase) {
+        if matches!(phase, Phase::Waiting) {
+            return;
+        }
+        if let Some(compaction) = &self.compaction {
             let committed = ctx.commit.committed_messages(&ctx.thread_id);
-            mem.trigger(thread, committed).await;
+            let ctx_for_delivery = ctx.clone();
+            compaction
+                .trigger(thread, committed, move |summary| async move {
+                    ctx_for_delivery
+                        .state
+                        .lock()
+                        .await
+                        .pending_system
+                        .push(format!("Summary of earlier conversation: {summary}"));
+                })
+                .await;
         }
     }
 
@@ -682,7 +788,10 @@ impl SharedHost {
                 .resume(command, &*ctx.commit, ctx.context())
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
-            return Ok(self.finish_step(&ctx, &mut st, run_id, phase, before, thread));
+            let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
+            drop(st);
+            self.run_aux_after_step(&ctx, thread, &result.phase).await;
+            return Ok(result);
         }
 
         self.check_pending(&ticket, tool_use_id, resume.wants_client())?;
@@ -711,7 +820,10 @@ impl SharedHost {
             .resume(command, &*ctx.commit, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(self.finish_step(&ctx, &mut st, run_id, phase, before, thread))
+        let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
+        drop(st);
+        self.run_aux_after_step(&ctx, thread, &result.phase).await;
+        Ok(result)
     }
 
     /// Define an outcome and drive the grade->revise loop over `thread`, bounded
@@ -744,6 +856,7 @@ impl SharedHost {
             &HashSet::new(),
             &["goal".to_string()],
             &[],
+            awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         );
 
         // One run: the guard re-derives and grades the deliverable, then steers
@@ -892,8 +1005,9 @@ fn pending_from_ticket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::block_text;
     use awaken_agent_contract::agent::content::ContentBlock;
-    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, ChatRole};
     use std::sync::atomic::AtomicUsize;
 
     /// A model that blocks on its second inference (the first revision round) until
@@ -1009,6 +1123,234 @@ mod tests {
                 usage: None,
             })
         }
+    }
+
+    /// The compactor (identified by its instructions) replies with a fixed summary;
+    /// the main assistant reports whether it saw a delivered summary in its system
+    /// messages, proving the summary reached the next turn's model input.
+    struct CompactHostModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for CompactHostModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            let system_text: String = request
+                .messages
+                .iter()
+                .filter(|m| m.role == ChatRole::System)
+                .flat_map(|m| m.content.iter())
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let reply = if system_text.contains("conversation-compaction sub-agent") {
+                "COMPACTED".to_string()
+            } else if system_text.contains("Summary of earlier conversation") {
+                "seen-summary".to_string()
+            } else {
+                "no-summary".to_string()
+            };
+            Ok(ChatResponse {
+                output: AssistantOutput::text(reply),
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_summary_reaches_the_next_turn() {
+        let host = SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction(1, 1);
+        let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
+
+        // Turn 1: 2 messages committed (> threshold 1) → fires compaction.
+        let r1 = host.run_turn("t-c", user("u1")).await.expect("turn 1");
+        assert!(matches!(r1.phase, Phase::Ended(_)));
+        assert!(
+            host.drain_compaction(std::time::Duration::from_secs(10))
+                .await
+        );
+
+        // Turn 2: the delivered summary is now a pending system message the model sees.
+        let r2 = host.run_turn("t-c", user("u2")).await.expect("turn 2");
+        let reply = r2
+            .new_messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        assert_eq!(reply, "seen-summary");
+    }
+
+    /// The main agent parks on a `write` (Ask-gated) then finishes on resume; the
+    /// extractor saves a memory. Proves resume-ended turns trigger the aux agents.
+    struct ResumeMemModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for ResumeMemModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            use awaken_runtime_contract::llm::{ChatRole, ToolCall};
+            let saw_tool = request.messages.iter().any(|m| m.role == ChatRole::Tool);
+            // The extractor's own write_memory succeeded (its result text), distinct
+            // from the main turn's `write` result that is also in its seeded context.
+            let saved_memory = request.messages.iter().any(|m| {
+                m.role == ChatRole::Tool
+                    && m.content.iter().any(|b| match b {
+                        ContentBlock::ToolResult { content, .. } => {
+                            block_text(content).contains("saved memory")
+                        }
+                        _ => false,
+                    })
+            });
+            let is_extractor = request.messages.iter().any(|m| {
+                m.role == ChatRole::System
+                    && m.content.iter().any(|b| match b {
+                        ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
+                        _ => false,
+                    })
+            });
+            let output = if is_extractor {
+                if saved_memory {
+                    AssistantOutput::text("extracted")
+                } else {
+                    AssistantOutput::from_tool_calls(vec![ToolCall {
+                        call_id: "mw".into(),
+                        tool_id: "write_memory".into(),
+                        arguments: serde_json::json!({ "name": "resumed", "content": "after-resume" }),
+                    }])
+                }
+            } else if saw_tool {
+                AssistantOutput::text("done")
+            } else {
+                AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: "w1".into(),
+                    tool_id: "write".into(),
+                    arguments: serde_json::json!({ "path": "note.txt", "content": "x" }),
+                }])
+            };
+            Ok(ChatResponse {
+                output,
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_ended_turn_triggers_memory_extraction() {
+        let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let mem_dir = std::env::temp_dir().join(format!("awaken-resume-mem-{stamp}"));
+        let host = SharedHost::new(Arc::new(ResumeMemModel), "stub").with_memory(&mem_dir);
+
+        // Turn 1 parks on the Ask-gated `write`.
+        let r1 = host
+            .run_turn(
+                "t-res",
+                vec![Message::text(MessageId("u1".into()), Role::User, "hi")],
+            )
+            .await
+            .expect("turn 1");
+        assert!(
+            matches!(r1.phase, Phase::Waiting),
+            "turn should park on write"
+        );
+        let pending = r1.pending.expect("a pending tool");
+
+        // Resume approves the write; the turn now ends and extraction fires.
+        let r2 = host
+            .resume(
+                "t-res",
+                &pending.tool_use_id,
+                HostResume::Confirm {
+                    allow: true,
+                    note: None,
+                },
+            )
+            .await
+            .expect("resume");
+        assert!(
+            matches!(r2.phase, Phase::Ended(_)),
+            "resume should end the turn"
+        );
+
+        assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+        let saved = std::fs::read_to_string(mem_dir.join("resumed.md")).expect("memory file");
+        assert_eq!(saved, "after-resume");
+    }
+
+    /// The extractor writes a `seen.md` whose content is the non-prompt user texts
+    /// it was seeded with, so a test can check which messages each extraction saw.
+    struct CursorModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for CursorModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            use awaken_runtime_contract::llm::{ChatRole, ToolCall};
+            let is_extractor = request.messages.iter().any(|m| {
+                m.role == ChatRole::System
+                    && m.content.iter().any(|b| match b {
+                        ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
+                        _ => false,
+                    })
+            });
+            if !is_extractor {
+                return Ok(ChatResponse {
+                    output: AssistantOutput::text("ok"),
+                    usage: None,
+                });
+            }
+            if request.messages.iter().any(|m| m.role == ChatRole::Tool) {
+                return Ok(ChatResponse {
+                    output: AssistantOutput::text("extracted"),
+                    usage: None,
+                });
+            }
+            // Join the user texts it was seeded with, excluding the extraction prompt.
+            let seen: Vec<String> = request
+                .messages
+                .iter()
+                .filter(|m| m.role == ChatRole::User)
+                .map(|m| block_text(&m.content))
+                .filter(|t| !t.contains("Extract durable memories"))
+                .collect();
+            Ok(ChatResponse {
+                output: AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: "w".into(),
+                    tool_id: "write_memory".into(),
+                    arguments: serde_json::json!({ "name": "seen", "content": seen.join(",") }),
+                }]),
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn extraction_cursor_only_processes_new_messages() {
+        let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let mem_dir = std::env::temp_dir().join(format!("awaken-cursor-mem-{stamp}"));
+        let host = SharedHost::new(Arc::new(CursorModel), "stub").with_memory(&mem_dir);
+        let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
+
+        host.run_turn("t-cur", user("alpha")).await.expect("turn 1");
+        assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+        host.run_turn("t-cur", user("beta")).await.expect("turn 2");
+        assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+
+        // The second extraction saw only "beta" — turn 1's "alpha" was past the cursor.
+        let seen = std::fs::read_to_string(mem_dir.join("seen.md")).expect("seen file");
+        assert_eq!(
+            seen, "beta",
+            "cursor should exclude already-extracted messages"
+        );
     }
 
     #[tokio::test]
