@@ -297,6 +297,23 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "tokio",
     },
+    # State-machine extension: a loadable FSM DSL that constrains tool-call order.
+    # It contributes a gate, tool-outcome hook, and run-end guard through the
+    # runtime contract, reads/writes state via the agent contract, and matches
+    # tool calls with the shared `awaken-tool-pattern` crate. The kernel never
+    # learns the concept "state machine".
+    "awaken-ext-state-machine": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-tool-pattern",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "serde_yaml",
+        "thiserror",
+        "url",
+        "tokio",
+    },
         # Local sandbox: per-environment path isolation. It wraps the built-in tools
     # (jailing their paths to an IsolatedRoot), so it depends on the extension it
     # wraps and the neutral tool port. The remote/container provider lives in a
