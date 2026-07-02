@@ -14,12 +14,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::state::Command as StateCommand;
+use awaken_agent_contract::agent::state::{Command as StateCommand, Store};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::permission::ToolGateHook;
 use crate::resolved::ToolDescriptor;
-use crate::tool::RawTool;
+use crate::tool::{RawTool, ToolCall, ToolOutput};
 
 /// The phases a hook can observe in one model/tool step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -42,6 +43,12 @@ pub struct CapabilityBound {
     pub action_kinds: Vec<String>,
     /// Run-end continuation guard ids this plugin may contribute.
     pub run_end_guards: Vec<String>,
+    /// Tool-gate ids this plugin may contribute (a pre-execution decision that
+    /// can only restrict, never grant — permission stays the sole grant, G21).
+    pub tool_gates: Vec<String>,
+    /// Tool-outcome hook ids this plugin may contribute (a post-execution
+    /// reaction staging state and reminder messages).
+    pub tool_observers: Vec<String>,
     /// Id *prefixes* a plugin may contribute dynamic tools under. A dynamic
     /// tool's id must start with one of these — the namespace bound that keeps a
     /// plugin whose tool ids are not known at composition time (e.g. an MCP
@@ -91,6 +98,9 @@ pub struct RunEndContext<'a> {
     /// sub-run forwards it, so cancelling the parent cancels the judge too rather
     /// than orphaning it.
     pub cancellation: Option<&'a tokio_util::sync::CancellationToken>,
+    /// The run's read-only materialized state, so a continuation predicate can
+    /// inspect accumulated state (e.g. whether a machine instance is terminal).
+    pub state: &'a Store,
 }
 
 /// A run-end guard's decision at a natural-end boundary. The runtime owns *when*
@@ -121,6 +131,30 @@ pub trait RunEndGuard: Send + Sync {
     async fn evaluate(&self, ctx: &RunEndContext<'_>) -> RunEndDecision;
 }
 
+/// What a tool-outcome hook produces after a tool runs: state commands (staged
+/// through the commit path like any state write, G1) and reminder messages
+/// (appended to the transcript like a steered turn, so they reach the next
+/// inference and replay deterministically). Both are existing aggregates — a
+/// reaction introduces no new effect type.
+#[derive(Default)]
+pub struct ToolReaction {
+    pub state: Vec<StateCommand>,
+    pub messages: Vec<Message>,
+}
+
+/// A post-execution reaction port — the symmetric partner of the pre-execution
+/// gate. The loop calls it at the one point a tool result is produced (and again
+/// when an approved pending call is replayed on resume), passing the executed
+/// call, its output, and the run's read-only state. It never authorizes; it only
+/// stages state and reminders.
+#[async_trait]
+pub trait ToolOutcomeHook: Send + Sync {
+    /// Stable id, checked against the plugin's `CapabilityBound` (G30).
+    fn id(&self) -> &str;
+    async fn after_tool(&self, call: &ToolCall, output: &ToolOutput, state: &Store)
+    -> ToolReaction;
+}
+
 /// A tool contributed with its executable behavior and descriptor. Used by
 /// plugins whose tool set is dynamic (e.g. an MCP server's live tools), where
 /// the id is not known at composition time and so cannot be pre-registered on
@@ -143,6 +177,10 @@ pub struct Contributions {
     pub action_kinds: Vec<String>,
     /// Run-end continuation guards this plugin contributes.
     pub run_end_guards: Vec<Arc<dyn RunEndGuard>>,
+    /// Pre-execution tool gates this plugin contributes.
+    pub tool_gates: Vec<Arc<dyn ToolGateHook>>,
+    /// Post-execution tool-outcome hooks this plugin contributes.
+    pub tool_observers: Vec<Arc<dyn ToolOutcomeHook>>,
     /// Tools contributed with their executable behavior, for dynamic tool sets.
     pub dynamic_tools: Vec<DynamicTool>,
 }
@@ -156,6 +194,8 @@ impl Contributions {
             phase_hooks: Vec::new(),
             action_kinds: Vec::new(),
             run_end_guards: Vec::new(),
+            tool_gates: Vec::new(),
+            tool_observers: Vec::new(),
             dynamic_tools: Vec::new(),
         }
     }
@@ -191,6 +231,10 @@ pub enum BoundViolation {
     ActionKind { plugin: String, id: String },
     #[error("plugin {plugin} contributes run-end guard {id:?} outside its declared bound")]
     RunEndGuard { plugin: String, id: String },
+    #[error("plugin {plugin} contributes tool gate {id:?} outside its declared bound")]
+    ToolGate { plugin: String, id: String },
+    #[error("plugin {plugin} contributes tool observer {id:?} outside its declared bound")]
+    ToolObserver { plugin: String, id: String },
 }
 
 /// Enforce that a plugin's actual contributions are a subset of its bound (G30).
@@ -240,6 +284,27 @@ pub fn enforce_bound(
             return Err(BoundViolation::RunEndGuard {
                 plugin: manifest.id.clone(),
                 id: guard.id().to_string(),
+            });
+        }
+    }
+    for gate in &contributions.tool_gates {
+        if !manifest.bound.tool_gates.iter().any(|id| id == gate.id()) {
+            return Err(BoundViolation::ToolGate {
+                plugin: manifest.id.clone(),
+                id: gate.id().to_string(),
+            });
+        }
+    }
+    for observer in &contributions.tool_observers {
+        if !manifest
+            .bound
+            .tool_observers
+            .iter()
+            .any(|id| id == observer.id())
+        {
+            return Err(BoundViolation::ToolObserver {
+                plugin: manifest.id.clone(),
+                id: observer.id().to_string(),
             });
         }
     }
@@ -296,6 +361,12 @@ pub struct ResolvedExecutionEnv {
     /// Run-end continuation guards the selected plugins contribute, in dependency
     /// order. Consulted at the natural-end boundary.
     pub run_end_guards: Vec<Arc<dyn RunEndGuard>>,
+    /// Pre-execution tool gates the selected plugins contribute, in dependency
+    /// order. Consulted after the host gate; each can only restrict.
+    pub tool_gates: Vec<Arc<dyn ToolGateHook>>,
+    /// Post-execution tool-outcome hooks the selected plugins contribute, in
+    /// dependency order. Consulted at each tool result.
+    pub tool_observers: Vec<Arc<dyn ToolOutcomeHook>>,
     /// Dynamic tools (descriptor + executable) contributed by the selected
     /// plugins, in dependency order. Merged into the model-visible tool face and
     /// consulted for execution alongside the runtime's static tool registry.
@@ -331,6 +402,8 @@ impl ResolvedExecutionEnv {
         let mut state_keys: Vec<String> = Vec::new();
         let mut phase_hooks: Vec<Arc<dyn PhaseHook>> = Vec::new();
         let mut run_end_guards: Vec<Arc<dyn RunEndGuard>> = Vec::new();
+        let mut tool_gates: Vec<Arc<dyn ToolGateHook>> = Vec::new();
+        let mut tool_observers: Vec<Arc<dyn ToolOutcomeHook>> = Vec::new();
         let mut dynamic_tools: Vec<DynamicTool> = Vec::new();
         let mut action_kinds: Vec<String> = Vec::new();
         let mut action_owner: std::collections::BTreeMap<String, String> =
@@ -371,6 +444,8 @@ impl ResolvedExecutionEnv {
             }
             phase_hooks.extend(contributions.phase_hooks.iter().cloned());
             run_end_guards.extend(contributions.run_end_guards.iter().cloned());
+            tool_gates.extend(contributions.tool_gates.iter().cloned());
+            tool_observers.extend(contributions.tool_observers.iter().cloned());
             for kind in &contributions.action_kinds {
                 if let Some(first) = action_owner.get(kind) {
                     return Err(MergeError::DuplicateActionKind {
@@ -391,6 +466,8 @@ impl ResolvedExecutionEnv {
             phase_hooks,
             action_kinds,
             run_end_guards,
+            tool_gates,
+            tool_observers,
             dynamic_tools,
         })
     }
@@ -430,6 +507,16 @@ impl ResolvedExecutionEnv {
     /// Run-end continuation guards, in dependency order.
     pub fn run_end_guards(&self) -> &[Arc<dyn RunEndGuard>] {
         &self.run_end_guards
+    }
+
+    /// Plugin-contributed pre-execution tool gates, in dependency order.
+    pub fn tool_gates(&self) -> &[Arc<dyn ToolGateHook>] {
+        &self.tool_gates
+    }
+
+    /// Plugin-contributed post-execution tool-outcome hooks, in dependency order.
+    pub fn tool_observers(&self) -> &[Arc<dyn ToolOutcomeHook>] {
+        &self.tool_observers
     }
 }
 

@@ -34,6 +34,7 @@ pub use plugin::{
 // consumes those ports names them here, without a direct `agent-contract` edge.
 pub use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 pub use awaken_agent_contract::agent::run::Id as RunId;
+pub use awaken_agent_contract::agent::state::Store;
 // The cancellation token surfaced through `RunEndContext`/`RuntimeRunContext`;
 // re-exported so an extension forwards it without a direct `tokio-util` edge.
 pub use resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
