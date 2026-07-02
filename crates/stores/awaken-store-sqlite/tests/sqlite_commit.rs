@@ -178,3 +178,45 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+// G13: before any commit the projection has no truth — no partial state is
+// pre-visible from a staged but uncommitted plan.
+#[tokio::test]
+async fn g13_projection_absent_before_commit() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    assert!(
+        RunStore::get(&store, &RunId("run-1".to_string())).is_none(),
+        "projection must be empty before any commit"
+    );
+    assert_eq!(store.commit_count(), 0);
+}
+
+// G13: a rejected commit (invalid plan) writes nothing to the durable store —
+// no partial state is observable after a failed `commit()` call.
+#[tokio::test]
+async fn g13_failed_commit_leaves_no_partial_state() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+
+    // Empty thread_id fails validate() before the SQLite transaction opens.
+    let err = store
+        .commit(ThreadCommit {
+            thread_id: ThreadId(String::new()),
+            run_fact: ended("run-1"),
+            messages: vec![],
+            state: vec![],
+            events: vec![],
+            waiting: None,
+        })
+        .await;
+    assert!(err.is_err(), "invalid plan must be rejected");
+
+    assert!(
+        RunStore::get(&store, &RunId("run-1".to_string())).is_none(),
+        "no partial state after failed commit"
+    );
+    assert_eq!(
+        store.commit_count(),
+        0,
+        "fence unchanged after rejected commit"
+    );
+}
