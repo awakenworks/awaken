@@ -47,6 +47,12 @@ pub(crate) fn latest_assistant_text(messages: &[Message]) -> String {
         .unwrap_or_default()
 }
 
+/// The built-in hand tools auto-allowed without a confirmation prompt (ADR-0030):
+/// read/glob/grep are perception; mutations (bash/write/edit) are asked. Single source
+/// for both the permission policy and a managed session's advertised confirmation
+/// policy, so the gate and the advertisement cannot drift.
+const AUTO_ALLOWED_HAND_TOOLS: [&str; 3] = ["read", "glob", "grep"];
+
 /// read/glob/grep allowed, mutations asked (ADR-0030). With `approval_mode:
 /// human_approval` an asked tool parks for a confirmation.
 fn server_policy() -> RulePermissionPolicy {
@@ -56,23 +62,19 @@ fn server_policy() -> RulePermissionPolicy {
             ToolPermissionBehavior::Allow,
         )
     };
+    let mut rules: Vec<PermissionRule> = AUTO_ALLOWED_HAND_TOOLS.iter().map(|n| allow(n)).collect();
+    // `agent_run` is allowed: the kernel executes it via the injected delegation
+    // resolver (a sub-agent, native or remote), not the tool registry — delegation is
+    // a runtime concern. Skill discovery/activation grant perception (they list
+    // metadata and return instructions), not authorization; allow them without a
+    // confirmation prompt. Any tool a skill then invokes is still gated.
+    rules.push(allow("agent_run"));
+    rules.push(allow("list_skills"));
+    rules.push(allow("Skill"));
     RulePermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::Ask,
         mode: Mode::Default,
-        // `agent_run` is allowed: the kernel executes it via the injected
-        // delegation resolver (a sub-agent, native or remote), not the tool
-        // registry — delegation is a runtime concern.
-        rules: vec![
-            allow("read"),
-            allow("glob"),
-            allow("grep"),
-            allow("agent_run"),
-            // Skill discovery/activation grant perception (they list metadata and
-            // return instructions), not authorization; allow them without a
-            // confirmation prompt. Any tool a skill then invokes is still gated.
-            allow("list_skills"),
-            allow("Skill"),
-        ],
+        rules,
     })
 }
 
@@ -88,9 +90,23 @@ fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
+/// The registered built-in hand tools advertised on a managed session: each id and
+/// whether its calls require confirmation (`true` = not in the auto-allow set). Shares
+/// [`AUTO_ALLOWED_HAND_TOOLS`] with [`server_policy`], so the gate and the
+/// advertisement stay in lockstep.
+pub(crate) fn builtin_hand_tools() -> Vec<(String, bool)> {
+    hand_tool_descriptors()
+        .into_iter()
+        .map(|d| {
+            let ask = !AUTO_ALLOWED_HAND_TOOLS.contains(&d.id.as_str());
+            (d.id, ask)
+        })
+        .collect()
+}
+
 /// A client-executed tool descriptor: model-visible, but no `RawTool` is
 /// registered, so a call parks (gate `ask`) and the *client* supplies the result.
-fn client_tool_descriptor(id: &str) -> ToolDescriptor {
+pub(crate) fn client_tool_descriptor(id: &str) -> ToolDescriptor {
     ToolDescriptor::pinned(
         "client",
         id,
@@ -108,6 +124,27 @@ fn delegation_descriptor() -> ToolDescriptor {
         .expect("agent_run descriptor exists")
 }
 
+/// The advertised tool descriptors for a thread: hand tools, client-executed tools,
+/// the offered skill tools (`list_skills`/`Skill`, ADR-0036), and `agent_run` when a
+/// delegate roster is set. The single source for both the run config and a managed
+/// session's advertised capability surface, so the two never drift.
+pub(crate) fn advertised_tools(
+    client_tools: &HashSet<String>,
+    delegates: &HashSet<String>,
+    skill_descriptors: &[ToolDescriptor],
+) -> Vec<ToolDescriptor> {
+    let mut tools = hand_tool_descriptors();
+    tools.extend(client_tools.iter().map(|id| client_tool_descriptor(id)));
+    // The `Skill` / `list_skills` descriptors (ADR-0036), when skills are offered:
+    // catalog-free, and the runtime registers the matching RawTools. Never a
+    // per-skill tool.
+    tools.extend(skill_descriptors.iter().cloned());
+    if !delegates.is_empty() {
+        tools.push(delegation_descriptor());
+    }
+    tools
+}
+
 pub(crate) fn server_config(
     model_ref: &str,
     client_tools: &HashSet<String>,
@@ -115,15 +152,7 @@ pub(crate) fn server_config(
     plugin_ids: &[String],
     skill_descriptors: &[ToolDescriptor],
 ) -> RunnableConfig {
-    let mut tools = hand_tool_descriptors();
-    tools.extend(client_tools.iter().map(|id| client_tool_descriptor(id)));
-    // The single `Skill` tool descriptor (ADR-0036), when skills are offered: its
-    // description carries the activatable-skill catalog, and the runtime registers
-    // the matching `Skill` RawTool. Never a per-skill tool.
-    tools.extend(skill_descriptors.iter().cloned());
-    if !delegates.is_empty() {
-        tools.push(delegation_descriptor());
-    }
+    let tools = advertised_tools(client_tools, delegates, skill_descriptors);
     RunnableConfig::builder("assistant")
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
