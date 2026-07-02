@@ -166,6 +166,16 @@ fn glob_of(pattern: &str) -> Result<glob::Pattern, String> {
 }
 
 fn parse_arg(inner: &str) -> Result<ArgMatcher, String> {
+    // Reject the regex operator `=~` explicitly. This crate matches with globs
+    // only; without this guard `split_once('~')` would silently accept `=~` and
+    // build a `field ~ "glob"` matcher whose field name carries a trailing `=`,
+    // so it matches nothing. A deny rule written that way would then *fail open*
+    // (the call is allowed). Fail loudly at parse time instead of at runtime.
+    if inner.contains("=~") {
+        return Err(format!(
+            "regex operator '=~' is not supported in pattern {inner:?}; use a glob with '~'"
+        ));
+    }
     // `field ~ "glob"` is a named-field glob; anything else is a primary glob.
     if let Some((field, rest)) = inner.split_once('~') {
         let field = field.trim().to_string();
