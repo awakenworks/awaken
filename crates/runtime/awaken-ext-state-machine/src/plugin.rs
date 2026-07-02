@@ -19,8 +19,9 @@ use crate::engine::{AdvanceOp, EmitReason, advance_evaluate, gate_decision, gate
 use crate::machine::{EmitTarget, Machine, ViolationAction};
 use crate::result::ToolResultView;
 use crate::state::{
-    FsmMetricEvent, FsmMetricUpdate, FsmStore, FsmTransition, FsmViolationRecord, Metrics,
-    RunInstances, STATE_KEYS, StateCell, ThreadInstances, ViolationAuditAction, ViolationLog,
+    EmitThrottle, EmitThrottleCell, FsmMetricEvent, FsmMetricUpdate, FsmStore, FsmTransition,
+    FsmViolationRecord, Metrics, RunInstances, STATE_KEYS, StateCell, ThreadInstances,
+    ViolationAuditAction, ViolationLog,
 };
 
 /// The plugin id and the id of every seam it contributes.
@@ -209,20 +210,24 @@ impl ToolOutcomeHook for StateMachineObserver {
         let mut vlog = ViolationLog::load(state);
         let (mut thread_dirty, mut run_dirty) = (false, false);
         let (mut metrics_dirty, mut vlog_dirty) = (false, false);
+        // Loaded lazily on the first emit; a tick is spent per tool result that
+        // reaches an emit, and a reminder is skipped while its key is cooling down.
+        let mut throttle: Option<EmitThrottle> = None;
         let mut reaction = ToolReaction::default();
 
-        // A blocked result that this machine set would deny: record the deny.
-        if output.is_error {
-            let evals = gate_evaluate(
-                &self.machines,
-                &thread_base,
-                &run_base,
-                &call.tool_id,
-                &call.arguments,
-            );
-            if let Some(v) = gate_decision(&evals)
-                && v.action == ViolationAction::Deny
-            {
+        // Attribute the gate verdict for this call: a blocked result this machine
+        // set denies records a deny; an *executed* call it would ask about — a
+        // resumed, approved ask, since a fresh ask suspends before this hook —
+        // records an ask. Warn is surfaced below at advance.
+        let gate = gate_decision(&gate_evaluate(
+            &self.machines,
+            &thread_base,
+            &run_base,
+            &call.tool_id,
+            &call.arguments,
+        ));
+        match gate {
+            Some(v) if v.action == ViolationAction::Deny && output.is_error => {
                 Metrics::apply(
                     &mut metrics,
                     FsmMetricUpdate {
@@ -243,6 +248,28 @@ impl ToolOutcomeHook for StateMachineObserver {
                 metrics_dirty = true;
                 vlog_dirty = true;
             }
+            Some(v) if v.action == ViolationAction::Ask => {
+                Metrics::apply(
+                    &mut metrics,
+                    FsmMetricUpdate {
+                        machine: v.machine.clone(),
+                        event: FsmMetricEvent::Asked,
+                    },
+                );
+                ViolationLog::apply(
+                    &mut vlog,
+                    FsmViolationRecord {
+                        machine: v.machine,
+                        key: v.key,
+                        tool_name: call.tool_id.clone(),
+                        action: ViolationAuditAction::Ask,
+                        reason: v.reason,
+                    },
+                );
+                metrics_dirty = true;
+                vlog_dirty = true;
+            }
+            _ => {}
         }
 
         let result = ToolResultView::new(output.is_error, &output.content);
@@ -291,9 +318,20 @@ impl ToolOutcomeHook for StateMachineObserver {
                     reason,
                     target,
                     content,
+                    cooldown_turns,
                     role,
-                    ..
                 } => {
+                    // Spend a tick and skip a reminder that is still cooling down.
+                    let msg_key = format!("{machine}.{key}");
+                    let tick = throttle.get_or_insert_with(|| {
+                        let mut loaded = EmitThrottleCell::load(state);
+                        loaded.tick += 1;
+                        loaded
+                    });
+                    if tick.on_cooldown(&msg_key, cooldown_turns) {
+                        continue;
+                    }
+                    tick.mark(msg_key);
                     let idx = reaction.messages.len();
                     reaction.messages.push(build_message(
                         &call.call_id,
@@ -342,6 +380,9 @@ impl ToolOutcomeHook for StateMachineObserver {
         }
         if vlog_dirty {
             reaction.state.push(ViolationLog::write(&vlog));
+        }
+        if let Some(throttle) = throttle {
+            reaction.state.push(EmitThrottleCell::write(&throttle));
         }
         reaction
     }

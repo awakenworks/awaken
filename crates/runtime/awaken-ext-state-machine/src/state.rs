@@ -61,6 +61,7 @@ pub const STATE_KEYS: &[&str] = &[
     RunInstances::KEY,
     Metrics::KEY,
     ViolationLog::KEY,
+    EmitThrottleCell::KEY,
 ];
 
 // ---------------------------------------------------------------------------
@@ -243,9 +244,63 @@ impl StateCell for ViolationLog {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Emit throttle (cooldown)
+// ---------------------------------------------------------------------------
+
+/// Per-emit-key cooldown state: a monotonic tick (bumped once per tool result
+/// that fires an emit) and the tick each emit key last fired at. A reminder is
+/// re-injected only when `tick - last >= cooldown_turns`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct EmitThrottle {
+    pub tick: u64,
+    pub last: HashMap<String, u64>,
+}
+
+impl EmitThrottle {
+    /// Whether `key` is still cooling down at the current `tick`.
+    #[must_use]
+    pub fn on_cooldown(&self, key: &str, cooldown_turns: u32) -> bool {
+        cooldown_turns > 0
+            && self
+                .last
+                .get(key)
+                .is_some_and(|last| self.tick.saturating_sub(*last) < u64::from(cooldown_turns))
+    }
+
+    /// Record that `key` fired at the current tick.
+    pub fn mark(&mut self, key: String) {
+        self.last.insert(key, self.tick);
+    }
+}
+
+/// Thread-scoped emit cooldown state.
+pub struct EmitThrottleCell;
+impl StateCell for EmitThrottleCell {
+    const KEY: &'static str = "tool_fsm_emit_throttle";
+    const SCOPE: Scope = Scope::Thread;
+    type Value = EmitThrottle;
+    type Update = ();
+    fn apply(_value: &mut Self::Value, _update: Self::Update) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn throttle_gates_by_cooldown() {
+        let mut t = EmitThrottle::default();
+        t.tick = 1;
+        assert!(!t.on_cooldown("k", 3)); // never fired
+        t.mark("k".into());
+        t.tick = 2;
+        assert!(t.on_cooldown("k", 3)); // 2-1 < 3
+        t.tick = 4;
+        assert!(!t.on_cooldown("k", 3)); // 4-1 >= 3
+        assert!(!t.on_cooldown("k", 0)); // disabled
+    }
 
     #[test]
     fn instance_cell_round_trips_through_store() {
@@ -289,7 +344,7 @@ mod tests {
         assert_eq!(ThreadInstances::SCOPE, Scope::Thread);
         assert_eq!(RunInstances::SCOPE, Scope::Run);
         assert_eq!(Metrics::MERGE, MergePolicy::Disjoint);
-        assert_eq!(STATE_KEYS.len(), 4);
+        assert_eq!(STATE_KEYS.len(), 5);
     }
 
     #[test]
