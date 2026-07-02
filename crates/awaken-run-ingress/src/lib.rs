@@ -19,6 +19,7 @@ mod clock;
 mod dispatch;
 mod dispatch_schema;
 mod durable;
+mod live_control;
 pub mod memory;
 mod postgres;
 mod request;
@@ -37,6 +38,7 @@ pub use dispatch::{
 };
 pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;
+pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 pub use memory::MemoryDispatchStore;
 pub use postgres::{PostgresDispatchStore, StoreError as PostgresStoreError};
 pub use request::{RunExecutionContext, RunExecutionRequest};
