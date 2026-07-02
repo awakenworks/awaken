@@ -265,3 +265,70 @@ async fn discover_author_fork_and_slash_name_end_to_end() {
         messages(&named)
     );
 }
+
+/// Lists, reads a matching `.rs` file, lists again: the `paths`-conditional skill
+/// is hidden until the read touches a matching path, then surfaces (ADR-0036 ③).
+struct PathProbeModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for PathProbeModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last = request.messages.last().expect("a message");
+        let last_text = text_of(last);
+        let output = match last.role {
+            ChatRole::User => tool("l1", "list_skills", serde_json::json!({})),
+            ChatRole::Tool => {
+                if last_text.contains("\"skills\"") {
+                    // A catalog: `rusty` appears only after the read touched a match.
+                    if last_text.contains("rusty") {
+                        AssistantOutput::text("DONE")
+                    } else {
+                        // `read` is allowed (no park); the gate records its path.
+                        tool(
+                            "rd",
+                            "read",
+                            serde_json::json!({ "path": "src/app/main.rs" }),
+                        )
+                    }
+                } else {
+                    // the read result — list again to observe the surfaced skill.
+                    tool("l2", "list_skills", serde_json::json!({}))
+                }
+            }
+            _ => AssistantOutput::text("hmm"),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn conditional_paths_skill_surfaces_after_touching_a_matching_file() {
+    let greet = SkillSpec::new("greet", "Greet", "say hello", "hi");
+    let rusty = SkillSpec::new("rusty", "Rusty", "rust review", "RUST-BODY")
+        .with_paths(vec!["src/**/*.rs".into()]);
+    let app = build_router_with_skills(Arc::new(PathProbeModel), "scripted", vec![greet, rusty]);
+    let id = create_session(&app).await;
+
+    let list = send_message(&app, &id, "go").await;
+    let results = tool_results(&list);
+
+    // Before the read: a catalog with `greet` but not the conditional `rusty`.
+    assert!(
+        results
+            .iter()
+            .any(|r| r.contains("greet") && !r.contains("rusty")),
+        "conditional skill hidden before a matching file is touched: {results:?}"
+    );
+    // After reading src/app/main.rs (path recorded at the gate): `rusty` surfaces.
+    assert!(
+        results.iter().any(|r| r.contains("rusty")),
+        "conditional skill surfaces after a matching path is touched: {results:?}"
+    );
+    assert!(messages(&list).contains(&"DONE".to_string()));
+}
