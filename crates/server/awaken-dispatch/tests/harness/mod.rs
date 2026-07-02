@@ -90,7 +90,11 @@ impl RawTool for EchoTool {
 struct SuspendGate;
 #[async_trait::async_trait]
 impl ToolGateHook for SuspendGate {
-    async fn gate(&self, _c: &PermissionContext) -> GateOutcome {
+    async fn gate(
+        &self,
+        _c: &PermissionContext,
+        _state: &awaken_agent_contract::agent::state::Store,
+    ) -> GateOutcome {
         GateOutcome::Suspend {
             ticket_id: TICKET.to_string(),
         }
@@ -101,7 +105,11 @@ impl ToolGateHook for SuspendGate {
 struct ScheduleGate;
 #[async_trait::async_trait]
 impl ToolGateHook for ScheduleGate {
-    async fn gate(&self, _c: &PermissionContext) -> GateOutcome {
+    async fn gate(
+        &self,
+        _c: &PermissionContext,
+        _state: &awaken_agent_contract::agent::state::Store,
+    ) -> GateOutcome {
         GateOutcome::Schedule {
             correlation_id: TICKET.to_string(),
             action_kind: None,

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
-use awaken_agent_contract::agent::state::{Command as StateCommand, validate_batch};
+use awaken_agent_contract::agent::state::{Command as StateCommand, Scope, Store, validate_batch};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{PendingTool, WaitingReason, WaitingTicket};
 use awaken_agent_contract::commit::staged::ThreadCommit;
@@ -99,6 +99,13 @@ pub(crate) async fn run_agent_loop(
         .map(|reader| reader.committed_messages(&thread_id))
         .unwrap_or_default();
     transcript.extend(activation.input.iter().cloned());
+    let store = store_from_commands(
+        context
+            .reader
+            .as_ref()
+            .map(|reader| reader.committed_state(&thread_id))
+            .unwrap_or_default(),
+    );
     let checkpoint = drive(
         runtime,
         &resolved,
@@ -108,6 +115,7 @@ pub(crate) async fn run_agent_loop(
         transcript,
         activation.input,
         0,
+        store,
     )
     .await?;
     finalize(&context, &thread_id, run_id, checkpoint).await
@@ -223,9 +231,16 @@ pub(crate) async fn resume_run(
         .await;
     }
 
-    // Rebuild the transcript from committed truth and apply the resumed result.
+    // Rebuild the transcript and state from committed truth and apply the
+    // resumed result. The resumed tool's own state is folded into the store so a
+    // later step in this resume observes the advanced state.
     let mut transcript = reader.committed_messages(&thread_id);
-    let (resumed, seed_state) = resume_into_messages(runtime, &ticket, command.result).await;
+    let mut store = store_from_commands(reader.committed_state(&thread_id));
+    let (resumed, seed_state) =
+        resume_into_messages(runtime, &env, &ticket, command.result, &store).await;
+    for command in &seed_state {
+        store.apply(command);
+    }
     transcript.extend(resumed.iter().cloned());
 
     let mut checkpoint = drive(
@@ -237,6 +252,7 @@ pub(crate) async fn resume_run(
         transcript,
         resumed,
         RESUME_STEP_BASE,
+        store,
     )
     .await?;
     // State staged by the resumed tool itself is committed too (kept first).
@@ -356,6 +372,7 @@ async fn drive(
     mut transcript: Vec<Message>,
     mut new_messages: Vec<Message>,
     step_base: usize,
+    mut store: Store,
 ) -> Result<Checkpoint> {
     let llm = runtime.llm().ok_or_else(|| {
         Error::Execution("no model provider configured for this runtime".to_string())
@@ -476,6 +493,7 @@ async fn drive(
                 &transcript,
                 forced_continuations,
                 context.cancellation.as_ref(),
+                &store,
             )
             .await
             {
@@ -522,7 +540,7 @@ async fn drive(
 
         // Otherwise run each requested tool and feed the results back.
         for call in calls {
-            let outcome = gate_decision(runtime, &call).await;
+            let outcome = gate_decision(runtime, &call, env, &store).await;
             // Audit the decision of a real (policy-backed) gate (ADR-0030).
             if runtime.gate().is_some() {
                 audit.push(permission_audit(&call, &outcome));
@@ -621,6 +639,21 @@ async fn drive(
             let message = tool_result_message(&call, &output);
             transcript.push(message.clone());
             new_messages.push(message);
+
+            // Post-execution reaction: fold the tool's own state into the live
+            // store, then let tool-outcome hooks stage transitions and reminders.
+            for command in &output.state {
+                store.apply(command);
+            }
+            let (reactions, reminders) = collect_tool_reactions(env, &call, &output, &store).await;
+            for command in &reactions {
+                store.apply(command);
+            }
+            staged_state.extend(reactions);
+            for reminder in reminders {
+                transcript.push(reminder.clone());
+                new_messages.push(reminder);
+            }
         }
 
         if end.is_some() {
@@ -751,6 +784,7 @@ async fn consult_run_end(
     conversation: &[Message],
     forced_continuations: usize,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
+    state: &Store,
 ) -> RunEndOutcome {
     let guards = env.run_end_guards();
     if guards.is_empty() {
@@ -763,6 +797,7 @@ async fn consult_run_end(
             conversation,
             forced_continuations,
             cancellation,
+            state,
         };
         match guard.evaluate(&ctx).await {
             RunEndDecision::Steer { feedback, detail } => {
@@ -896,7 +931,11 @@ async fn resume_delegation(
     };
 
     let mut transcript = reader.committed_messages(thread_id);
-    let (resumed, seed_state) = resume_into_messages(runtime, ticket, synthetic).await;
+    let mut store = store_from_commands(reader.committed_state(thread_id));
+    let (resumed, seed_state) = resume_into_messages(runtime, env, ticket, synthetic, &store).await;
+    for command in &seed_state {
+        store.apply(command);
+    }
     transcript.extend(resumed.iter().cloned());
     let mut checkpoint = drive(
         runtime,
@@ -907,6 +946,7 @@ async fn resume_delegation(
         transcript,
         resumed,
         RESUME_STEP_BASE,
+        store,
     )
     .await?;
     let mut combined = seed_state;
@@ -920,17 +960,36 @@ async fn resume_delegation(
 /// result; a `ToolResult`/`Input` is used directly.
 async fn resume_into_messages(
     runtime: &Runtime,
+    env: &ResolvedExecutionEnv,
     ticket: &WaitingTicket,
     result: ResumeResult,
+    store: &Store,
 ) -> (Vec<Message>, Vec<StateCommand>) {
     let call_id = ticket.call_id.clone().unwrap_or_default();
+    // The pending call, when the ticket carries one, so a tool-outcome hook can
+    // advance a machine on the replayed result exactly like a first-time call.
+    let pending_call = |output: &ToolOutput| {
+        ticket.pending_tool.as_ref().map(|pending| ToolCall {
+            call_id: output.call_id.clone(),
+            tool_id: pending.tool_id.clone(),
+            arguments: pending.arguments.clone(),
+        })
+    };
     match result {
         ResumeResult::ToolResult(output) => {
-            let state = output.state.clone();
-            (
-                vec![tool_result_message_from(&call_id, &output.content)],
-                state,
-            )
+            let mut state = output.state.clone();
+            let mut messages = vec![tool_result_message_from(&call_id, &output.content)];
+            if let Some(call) = pending_call(&output) {
+                let mut work = store.clone();
+                for command in &output.state {
+                    work.apply(command);
+                }
+                let (reactions, reminders) =
+                    collect_tool_reactions(env, &call, &output, &work).await;
+                state.extend(reactions);
+                messages.extend(reminders);
+            }
+            (messages, state)
         }
         ResumeResult::Decision { allow, note } => {
             if allow && let Some(pending) = &ticket.pending_tool {
@@ -940,11 +999,17 @@ async fn resume_into_messages(
                     arguments: pending.arguments.clone(),
                 };
                 let output = execute_tool(runtime, None, &call).await;
-                let state = output.state.clone();
-                (
-                    vec![tool_result_message_from(&call_id, &output.content)],
-                    state,
-                )
+                let mut state = output.state.clone();
+                let mut messages = vec![tool_result_message_from(&call_id, &output.content)];
+                let mut work = store.clone();
+                for command in &output.state {
+                    work.apply(command);
+                }
+                let (reactions, reminders) =
+                    collect_tool_reactions(env, &call, &output, &work).await;
+                state.extend(reactions);
+                messages.extend(reminders);
+                (messages, state)
             } else {
                 let reason = note.unwrap_or_else(|| "denied".to_string());
                 (
@@ -967,19 +1032,73 @@ async fn resume_into_messages(
     }
 }
 
-/// Consult the permission gate; an absent gate allows (used only in tests).
-async fn gate_decision(runtime: &Runtime, call: &ToolCall) -> GateOutcome {
-    match runtime.gate() {
-        Some(gate) => {
-            let ctx = PermissionContext {
-                tool_id: call.tool_id.clone(),
-                call_id: call.call_id.clone(),
-                arguments: call.arguments.clone(),
-            };
-            gate.gate(&ctx).await
-        }
+/// Consult the gate chain: the host permission gate first, then any
+/// plugin-contributed gates in dependency order. A call runs only if every gate
+/// allows it; the first non-`Allow` outcome wins, and the host permission gate is
+/// absolute (a plugin gate can further restrict but never widen it, G21). An
+/// absent host gate allows (used only in tests). Gates read the run's state.
+async fn gate_decision(
+    runtime: &Runtime,
+    call: &ToolCall,
+    env: &ResolvedExecutionEnv,
+    state: &Store,
+) -> GateOutcome {
+    let ctx = PermissionContext {
+        tool_id: call.tool_id.clone(),
+        call_id: call.call_id.clone(),
+        arguments: call.arguments.clone(),
+    };
+    let host = match runtime.gate() {
+        Some(gate) => gate.gate(&ctx, state).await,
         None => GateOutcome::Allow,
+    };
+    if !matches!(host, GateOutcome::Allow) {
+        return host;
     }
+    for gate in env.tool_gates() {
+        let outcome = gate.gate(&ctx, state).await;
+        if !matches!(outcome, GateOutcome::Allow) {
+            return outcome;
+        }
+    }
+    GateOutcome::Allow
+}
+
+/// Seed the run's read-only state from committed thread truth. Thread/Shared/
+/// Profile-scoped commands re-hydrate; run-scoped commands are dropped so a
+/// run-scoped machine starts empty each run (G1/G13). Within the run, later
+/// commands are folded into this store so a gate/hook reads accumulated state.
+fn store_from_commands(commands: Vec<StateCommand>) -> Store {
+    let kept: Vec<StateCommand> = commands
+        .into_iter()
+        .filter(|command| command.scope != Scope::Run)
+        .collect();
+    Store::rebuild(&kept)
+}
+
+/// Consult the tool-outcome hooks for one executed call. `state` must already
+/// reflect the tool's own output state; each hook reads the folded state and may
+/// stage further state and reminder messages. Returns the hooks' additional
+/// state commands and messages (the tool's own output state is staged by the
+/// caller).
+async fn collect_tool_reactions(
+    env: &ResolvedExecutionEnv,
+    call: &ToolCall,
+    output: &ToolOutput,
+    state: &Store,
+) -> (Vec<StateCommand>, Vec<Message>) {
+    let mut work = state.clone();
+    let mut commands: Vec<StateCommand> = Vec::new();
+    let mut messages: Vec<Message> = Vec::new();
+    for observer in env.tool_observers() {
+        let reaction = observer.after_tool(call, output, &work).await;
+        for command in &reaction.state {
+            work.apply(command);
+            commands.push(command.clone());
+        }
+        messages.extend(reaction.messages);
+    }
+    (commands, messages)
 }
 
 /// Run `call` as a delegation when it is the tool the resolver backs, returning

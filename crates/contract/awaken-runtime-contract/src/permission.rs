@@ -7,6 +7,7 @@
 //! `PermissionDecision` onto a `GateOutcome`.
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::state::Store;
 use serde::{Deserialize, Serialize};
 
 use crate::tool::ToolOutput;
@@ -60,8 +61,20 @@ pub enum GateOutcome {
 }
 
 /// The final invocation gate. The loop calls this for every tool call; only an
-/// `Allow` reaches the executor.
+/// `Allow` reaches the executor. The loop consults the host gate first, then any
+/// plugin-contributed gates in dependency order; a call runs only if every gate
+/// allows it, and a permission `Deny` is absolute — a plugin gate can further
+/// restrict but never widen what permission allows (G21).
 #[async_trait]
 pub trait ToolGateHook: Send + Sync {
-    async fn gate(&self, ctx: &PermissionContext) -> GateOutcome;
+    /// Stable id, used to bound a plugin-contributed gate under its
+    /// `CapabilityBound` (G30). A host-wired gate that is not a plugin
+    /// contribution keeps the default.
+    fn id(&self) -> &str {
+        "gate"
+    }
+
+    /// Decide one tool call against the run's read-only state. Most gates ignore
+    /// `state`; a state machine gate reads it to enforce a precondition.
+    async fn gate(&self, ctx: &PermissionContext, state: &Store) -> GateOutcome;
 }
