@@ -35,13 +35,8 @@ pub(crate) async fn run_subagent(
         .await
         .map_err(|e| e.to_string())?;
     let runtime = build_runtime(llm, &env);
-    let config = server_config(
-        model_ref,
-        &HashSet::new(),
-        &HashSet::new(),
-        &[],
-        env.skill_descriptors(),
-    );
+    // A judge/native sub-agent does not offer skills (ADR-0036).
+    let config = server_config(model_ref, &HashSet::new(), &HashSet::new(), &[], &[]);
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let mut ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())

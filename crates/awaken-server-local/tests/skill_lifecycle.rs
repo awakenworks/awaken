@@ -1,25 +1,24 @@
-//! End-to-end skill lifecycle through the *Managed Agents* protocol (ADR-0035).
+//! End-to-end skill lifecycle through the *Managed Agents* protocol (ADR-0036).
 //!
 //! Drives the real kernel over the public `/v1/sessions...` wire and proves the
-//! whole path from **provision** to **use**:
+//! whole path from **offer** to **use** through the single `Skill` tool:
 //!
-//!   provision (SkillMount → SandboxProvider → Environment: skill tool + descriptor)
-//!     → advertise (descriptor reaches the model's tool list)
-//!     → call    (model invokes `skill__<id>`; allowed, not parked)
-//!     → deliver (runtime executes the skill RawTool, returns the body)
+//!   offer   (SkillSpec → registry → the one `Skill` tool + catalog descriptor)
+//!     → advertise (the `Skill` tool is in the model's list; its description lists
+//!                  the skill by id — never a per-skill tool)
+//!     → call    (model invokes `Skill { skill: "deploy" }`; allowed, not parked)
+//!     → deliver (runtime executes the `Skill` RawTool, returns the instructions)
 //!     → use     (the loop continues; the model replies)
 //!
-//! A control case with no provisioning proves the skill is *not* ambient: it
-//! appears only because it was provisioned.
+//! A control case with no skills proves the `Skill` tool is *not* ambient: it
+//! appears only because a skill was offered.
 
 use std::sync::Arc;
 
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
-use awaken_server_local::{
-    SkillMount, build_router, build_router_with_skills, content_fingerprint,
-};
+use awaken_server_local::{SkillSpec, build_router, build_router_with_skills};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -27,7 +26,7 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 const SKILL_ID: &str = "deploy";
-const SKILL_TOOL: &str = "skill__deploy";
+const SKILL_TOOL: &str = "Skill";
 const SKILL_BODY: &str = "# Deploy checklist\nSTEP-ALPHA: run migrations before shipping.";
 
 // ── managed-protocol harness (the same wire the SDK speaks) ──────────────────
@@ -99,22 +98,16 @@ fn event<'a>(list: &'a serde_json::Value, ty: &str) -> Option<&'a serde_json::Va
         .find(|e| e["type"] == ty)
 }
 
-fn skill_mount() -> SkillMount {
-    SkillMount {
-        id: SKILL_ID.into(),
-        version: 1,
-        content_hash: content_fingerprint(SKILL_BODY.as_bytes()),
-        name: "deploy".into(),
-        description: "Run the deploy checklist".into(),
-        body: SKILL_BODY.into(),
-    }
+fn skill_spec() -> SkillSpec {
+    SkillSpec::new(SKILL_ID, "deploy", "Run the deploy checklist", SKILL_BODY)
+        .with_when_to_use("shipping a release")
 }
 
 // ── the model under test ─────────────────────────────────────────────────────
 
-/// Turn 0: assert the provisioned skill is advertised, then call it (or report
-/// its absence). Turn 1: having received the skill body, reply — proving the loop
-/// continued after the skill executed.
+/// Turn 0: assert the single `Skill` tool is advertised and its catalog lists the
+/// offered skill, then activate it (or report its absence). Turn 1: having
+/// received the skill instructions, reply — proving the loop continued.
 struct SkillUserModel;
 
 #[async_trait::async_trait]
@@ -129,8 +122,18 @@ impl LlmExecutor for SkillUserModel {
             .filter(|m| m.role == ChatRole::Tool)
             .count();
         if tool_results == 0 {
-            // The provisioned skill must be visible in the model's tool list.
-            if !request.tools.iter().any(|t| t.id == SKILL_TOOL) {
+            // The one `Skill` tool must be advertised, and its description (the
+            // catalog) must name the offered skill by id. There must be no
+            // per-skill tool: no tool id other than `Skill` is skill-derived.
+            let skill_tool = request.tools.iter().find(|t| t.id == SKILL_TOOL);
+            let advertised = skill_tool
+                .map(|t| t.description.contains(SKILL_ID))
+                .unwrap_or(false);
+            let leaked_per_skill = request
+                .tools
+                .iter()
+                .any(|t| t.id != SKILL_TOOL && t.id.to_ascii_lowercase().starts_with("skill"));
+            if !advertised || leaked_per_skill {
                 return Ok(ChatResponse {
                     output: AssistantOutput::text("NO_SKILL_ADVERTISED"),
                     usage: None,
@@ -140,7 +143,7 @@ impl LlmExecutor for SkillUserModel {
                 output: AssistantOutput::from_tool_calls(vec![ToolCall {
                     call_id: "s1".into(),
                     tool_id: SKILL_TOOL.into(),
-                    arguments: serde_json::json!({}),
+                    arguments: serde_json::json!({ "skill": SKILL_ID }),
                 }]),
                 usage: None,
             });
@@ -155,34 +158,35 @@ impl LlmExecutor for SkillUserModel {
 // ── tests ────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn provisioned_skill_is_advertised_called_and_used() {
-    let app = build_router_with_skills(Arc::new(SkillUserModel), "scripted", vec![skill_mount()]);
+async fn offered_skill_is_advertised_activated_and_used() {
+    let app = build_router_with_skills(Arc::new(SkillUserModel), "scripted", vec![skill_spec()]);
     let id = create_session(&app).await;
 
-    // One managed turn drives the whole loop: the skill is allowed (not parked),
-    // so tool_use → tool_result → message → idle all land in one response.
+    // One managed turn drives the whole loop: the skill activation is allowed (not
+    // parked), so tool_use → tool_result → message → idle all land in one response.
     let list = send_message(&app, &id, "please deploy").await;
     let types = event_types(&list);
 
-    // called: the model saw and invoked the provisioned skill
-    let tool_use = event(&list, "agent.tool_use").expect("skill was called");
+    // called: the model saw the single `Skill` tool and activated the skill.
+    let tool_use = event(&list, "agent.tool_use").expect("skill was activated");
     assert_eq!(
         tool_use["name"], SKILL_TOOL,
-        "the provisioned skill was invoked"
+        "the single Skill tool was invoked"
     );
 
-    // delivered: the runtime executed the skill RawTool and returned the body
+    // delivered: the runtime executed the `Skill` RawTool and returned the body.
     let tool_result = event(&list, "agent.tool_result").expect("skill produced a result");
-    assert_eq!(
-        tool_result["content"][0]["text"], SKILL_BODY,
-        "the provisioned skill body was delivered to the conversation"
+    let delivered = tool_result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        delivered.contains(SKILL_BODY),
+        "the activated skill's instructions were delivered: {delivered:?}"
     );
 
-    // used: the loop continued and the model replied
+    // used: the loop continued and the model replied.
     let message = event(&list, "agent.message").expect("model replied after the skill");
     assert_eq!(message["content"][0]["text"], "USED_SKILL");
 
-    // allowed, not parked: the turn ended cleanly in one shot
+    // allowed, not parked: the turn ended cleanly in one shot.
     let idle = list["data"].as_array().unwrap().last().unwrap();
     assert_eq!(idle["type"], "session.status_idle");
     assert_eq!(idle["stop_reason"]["type"], "end_turn");
@@ -193,8 +197,8 @@ async fn provisioned_skill_is_advertised_called_and_used() {
 }
 
 #[tokio::test]
-async fn skill_is_not_ambient_without_provisioning() {
-    // Same model, but no skill provisioned: the model must not see `skill__deploy`.
+async fn skill_tool_is_not_ambient_without_offering_a_skill() {
+    // Same model, but no skill offered: the `Skill` tool must not be advertised.
     let app = build_router(Arc::new(SkillUserModel), "scripted");
     let id = create_session(&app).await;
 
@@ -203,11 +207,11 @@ async fn skill_is_not_ambient_without_provisioning() {
     // No tool call happened; the model reported the skill absent.
     assert!(
         event(&list, "agent.tool_use").is_none(),
-        "no skill without provisioning"
+        "no Skill tool without an offered skill"
     );
     let message = event(&list, "agent.message").expect("model replied");
     assert_eq!(
         message["content"][0]["text"], "NO_SKILL_ADVERTISED",
-        "the skill appears only because it was provisioned (not ambient)"
+        "the Skill tool appears only because a skill was offered (not ambient)"
     );
 }
