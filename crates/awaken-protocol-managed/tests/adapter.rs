@@ -7,8 +7,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_protocol_managed::dto::StopReason;
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
-    SessionRuntime, TurnOutcome, router,
+    AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
+    OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, TurnOutcome, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -202,6 +202,161 @@ async fn happy_path_projects_message_and_idle() {
     assert_eq!(types(&list), vec!["agent.message", "session.status_idle"]);
 }
 
+/// A runtime that reports a provisioned surface, exercised by session creation.
+struct CapableFake;
+
+#[async_trait::async_trait]
+impl SessionRuntime for CapableFake {
+    async fn run_turn(
+        &self,
+        _a: &str,
+        _t: &str,
+        _content: Vec<ContentBlock>,
+    ) -> Result<TurnOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn resume_custom(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _c: &str,
+        _e: bool,
+    ) -> Result<TurnOutcome, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+    async fn define_outcome(
+        &self,
+        _t: &str,
+        _d: &str,
+        _r: &str,
+        _m: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        Err(RunError::internal("unused"))
+    }
+    fn model(&self) -> String {
+        "test-model".into()
+    }
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            builtin_tools: vec![
+                BuiltinTool {
+                    name: "read".into(),
+                    ask: false,
+                },
+                BuiltinTool {
+                    name: "write".into(),
+                    ask: true,
+                },
+            ],
+            custom_tools: vec![CustomTool {
+                name: "submit".into(),
+                description: "Submit the answer".into(),
+                input_schema: serde_json::json!({ "type": "object" }),
+            }],
+            skills: vec!["deploy".into()],
+            delegates: vec!["researcher".into()],
+        }
+    }
+}
+
+/// A created session advertises the runtime's surface on its agent object: the
+/// built-in toolset, a custom tool, skills, and a multiagent roster — not an empty set.
+#[tokio::test]
+async fn create_session_advertises_capabilities() {
+    let app = router(Arc::new(ManagedState::new(CapableFake)));
+    let s = json_call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        serde_json::json!({ "agent": "coder" }),
+    )
+    .await;
+
+    let tools = s["agent"]["tools"].as_array().unwrap();
+    assert_eq!(tools[0]["type"], "agent_toolset_20260401");
+    assert_eq!(tools[1]["type"], "custom");
+    assert_eq!(tools[1]["name"], "submit");
+    assert!(s["agent"]["mcp_servers"].as_array().unwrap().is_empty());
+    assert_eq!(s["agent"]["skills"][0]["skill_id"], "deploy");
+    assert_eq!(s["agent"]["multiagent"]["type"], "coordinator");
+    assert!(s["resources"].as_array().unwrap().is_empty());
+}
+
+/// The default capability surface is empty: a runtime that does not override
+/// `capabilities` advertises no tools, skills, or resources, and omits `multiagent`.
+#[tokio::test]
+async fn create_session_defaults_to_empty_surface() {
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let s = json_call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        serde_json::json!({ "agent": "coder" }),
+    )
+    .await;
+    assert!(s["agent"]["tools"].as_array().unwrap().is_empty());
+    assert!(s["agent"]["skills"].as_array().unwrap().is_empty());
+    assert!(s["agent"]["multiagent"].is_null());
+    assert!(s["resources"].as_array().unwrap().is_empty());
+}
+
+/// Golden wire contract for the created session's agent object: the exact Managed
+/// Agents shapes the SDK parses — one `agent_toolset_20260401` reference (with the
+/// unregistered tools disabled and the confirmation-gated ones `always_ask`), a
+/// `custom` tool, a `custom` skill reference, a `coordinator` multiagent roster, and
+/// empty `mcp_servers` / `resources`. A field rename or extra key breaks this.
+#[tokio::test]
+async fn session_capability_objects_match_wire_contract() {
+    let app = router(Arc::new(ManagedState::new(CapableFake)));
+    let s = json_call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        serde_json::json!({ "agent": "coder" }),
+    )
+    .await;
+
+    assert_eq!(
+        s["agent"]["tools"],
+        serde_json::json!([
+            {
+                "type": "agent_toolset_20260401",
+                "configs": [
+                    { "name": "bash", "enabled": false },
+                    { "name": "write", "permission_policy": { "type": "always_ask" } },
+                    { "name": "edit", "enabled": false },
+                    { "name": "glob", "enabled": false },
+                    { "name": "grep", "enabled": false },
+                    { "name": "web_fetch", "enabled": false },
+                    { "name": "web_search", "enabled": false }
+                ]
+            },
+            {
+                "type": "custom",
+                "name": "submit",
+                "description": "Submit the answer",
+                "input_schema": { "type": "object" }
+            }
+        ])
+    );
+    assert_eq!(s["agent"]["mcp_servers"], serde_json::json!([]));
+    assert_eq!(
+        s["agent"]["skills"],
+        serde_json::json!([{ "type": "custom", "skill_id": "deploy", "version": "latest" }])
+    );
+    assert_eq!(
+        s["agent"]["multiagent"],
+        serde_json::json!({ "type": "coordinator", "agents": ["researcher"] })
+    );
+    assert_eq!(s["resources"], serde_json::json!([]));
+}
+
 /// A runtime that parks on a tool needing approval, then completes on resume.
 struct ParkingFake;
 
@@ -384,6 +539,36 @@ async fn outcome_loop_projects_evaluations() {
         .collect();
     assert_eq!(ends[0]["result"], "needs_revision");
     assert_eq!(ends[1]["result"], "satisfied");
+}
+
+/// After the outcome loop runs, the session object's `outcome_evaluations` records
+/// each graded round in its wire shape — durable state, distinct from the transient
+/// `span.outcome_evaluation_*` events — so a `GET /v1/sessions/{id}` is no longer [].
+#[tokio::test]
+async fn session_records_outcome_evaluations() {
+    let app = router(Arc::new(ManagedState::new(OutcomeFake)));
+    let id = create(&app).await;
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish", "rubric": "FINAL", "max_iterations": 3 }] }),
+    )
+    .await;
+    let session = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        session["outcome_evaluations"],
+        serde_json::json!([
+            { "outcome_id": "outc_1", "result": "needs_revision" },
+            { "outcome_id": "outc_1", "result": "satisfied" },
+        ])
+    );
 }
 
 #[tokio::test]

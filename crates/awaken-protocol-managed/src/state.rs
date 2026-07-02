@@ -17,7 +17,7 @@ use crate::dto::{
     ConfirmResult, CreateSessionRequest, Event, EventReceipt, InboundEvent, ListEventsResponse,
     OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent, StopReason,
 };
-use crate::project::{project_messages, project_turn};
+use crate::project::{self, project_messages, project_turn};
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
 /// clock port; the wire only needs a valid RFC 3339 value here.
@@ -45,6 +45,41 @@ pub struct TurnOutcome {
 pub struct Decision {
     pub allow: bool,
     pub note: Option<String>,
+}
+
+/// The advertised capability surface echoed in a session's agent object. The adapter
+/// reads this once at session creation so the public agent object reports what the run
+/// can actually do. This is neutral data; the public Managed Agents wire shaping (the
+/// built-in `agent_toolset` fold, `custom` tools, `skills`, `multiagent`) lives in
+/// [`crate::project`]. Deliberately absent: MCP servers (the host wires none) and
+/// session resources (the host has no Files-API-backed resource to reference yet), so
+/// those wire fields stay empty until a real producer exists.
+#[derive(Default)]
+pub struct AgentCapabilities {
+    /// The registered built-in tools (the hand toolset). Each names a tool of the
+    /// versioned agent toolset and whether its calls require human confirmation.
+    pub builtin_tools: Vec<BuiltinTool>,
+    /// Client-executed tools: the caller runs them and returns the result.
+    pub custom_tools: Vec<CustomTool>,
+    /// Skills the agent offers (activated on demand, not model-visible as tools).
+    pub skills: Vec<String>,
+    /// Delegate agents the agent may coordinate (the multiagent roster).
+    pub delegates: Vec<String>,
+}
+
+/// One registered built-in tool: its name and whether calls require confirmation
+/// (`ask` = the permission gate parks the call for an approval).
+pub struct BuiltinTool {
+    pub name: String,
+    pub ask: bool,
+}
+
+/// One client-executed custom tool: the model-visible name, description, and input
+/// schema the runtime pins for it.
+pub struct CustomTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
 }
 
 /// One evaluation round of a goal: the agent's revision messages committed this
@@ -119,6 +154,13 @@ pub trait SessionRuntime: Send + Sync {
 
     /// The model id to echo in the session's agent object.
     fn model(&self) -> String;
+
+    /// The advertised capability surface echoed in the session's agent object. The
+    /// default reports nothing; a real host overrides it with its built-in tools,
+    /// custom tools, skills, and delegate roster so the session enumerates what it does.
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities::default()
+    }
 }
 
 /// A runtime failure. `kind` classifies who is at fault so the router can map it
@@ -196,6 +238,11 @@ impl ManagedState {
     pub fn create_session(&self, req: CreateSessionRequest) -> Session {
         let id = format!("sesn_{}", self.session_seq.fetch_add(1, Ordering::SeqCst));
         let agent_id = req.agent.id().to_string();
+        // Enumerate the runtime's provisioned surface so the agent object reports what
+        // the run can actually do (built-in toolset, custom tools, skills, delegates),
+        // not an empty set. The wire shaping lives in `project`; the host supplies
+        // neutral data.
+        let caps = self.runtime.capabilities();
         let session = Session {
             id: id.clone(),
             kind: "session",
@@ -205,8 +252,11 @@ impl ManagedState {
                 version: 1,
                 model: self.runtime.model(),
                 name: agent_id.clone(),
-                tools: Vec::new(),
+                tools: project::agent_tools(&caps),
+                // MCP is not wired into the host yet, so nothing is advertised here.
                 mcp_servers: Vec::new(),
+                skills: project::agent_skills(&caps),
+                multiagent: project::agent_multiagent(&caps),
             },
             environment_id: req
                 .environment_id
@@ -216,6 +266,7 @@ impl ManagedState {
             archived_at: None,
             title: req.title,
             metadata: req.metadata,
+            // The host has no Files-API-backed resource to reference on the wire yet.
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status: "idle",
@@ -266,42 +317,51 @@ impl ManagedState {
     fn append_outcome(&self, session_id: &str, report: OutcomeReport) -> Result<(), StateError> {
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        let mut push = |id: Option<String>, kind: OutboundKind| {
-            record.events.push(Event {
-                id: id.unwrap_or_else(|| {
-                    format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
-                }),
-                kind,
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
-        };
-        for round in report.iterations {
-            for event in project_messages(&round.messages, None) {
-                push(event.id, event.kind);
+        // Each round's durable evaluation record, collected as we project its events
+        // and folded into the session object after the event-pushing borrow releases.
+        let mut evaluations: Vec<serde_json::Value> = Vec::new();
+        {
+            let mut push = |id: Option<String>, kind: OutboundKind| {
+                record.events.push(Event {
+                    id: id.unwrap_or_else(|| {
+                        format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
+                    }),
+                    kind,
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                });
+            };
+            for round in report.iterations {
+                for event in project_messages(&round.messages, None) {
+                    push(event.id, event.kind);
+                }
+                evaluations.push(project::outcome_evaluation(&round));
+                push(
+                    None,
+                    OutboundKind::SpanOutcomeEvaluationStart {
+                        outcome_id: round.outcome_id.clone(),
+                        iteration: round.iteration,
+                    },
+                );
+                push(
+                    None,
+                    OutboundKind::SpanOutcomeEvaluationEnd {
+                        outcome_id: round.outcome_id,
+                        iteration: round.iteration,
+                        result: round.result,
+                        explanation: round.explanation,
+                    },
+                );
             }
             push(
                 None,
-                OutboundKind::SpanOutcomeEvaluationStart {
-                    outcome_id: round.outcome_id.clone(),
-                    iteration: round.iteration,
-                },
-            );
-            push(
-                None,
-                OutboundKind::SpanOutcomeEvaluationEnd {
-                    outcome_id: round.outcome_id,
-                    iteration: round.iteration,
-                    result: round.result,
-                    explanation: round.explanation,
+                OutboundKind::SessionStatusIdle {
+                    stop_reason: StopReason::EndTurn,
                 },
             );
         }
-        push(
-            None,
-            OutboundKind::SessionStatusIdle {
-                stop_reason: StopReason::EndTurn,
-            },
-        );
+        // The session object carries the running list of evaluations that have graded
+        // it, so a `GET /v1/sessions/{id}` reflects the outcomes that ran, not [].
+        record.session.outcome_evaluations.extend(evaluations);
         Ok(())
     }
 
