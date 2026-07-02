@@ -292,6 +292,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # kernel never learns the concept "skill".
     "awaken-ext-skills": {
         "awaken-runtime-contract",
+        "awaken-agent-contract",
         "async-trait",
         "serde",
         "serde_json",

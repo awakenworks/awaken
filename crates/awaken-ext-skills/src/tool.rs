@@ -14,6 +14,10 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::{Message, Role};
+use awaken_agent_contract::agent::state::Store;
+use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 
@@ -73,6 +77,72 @@ fn is_surfaced(skill: &SkillSpec, activations: Option<&PathActivations>) -> bool
             .map(|p| touched.iter().any(|path| p.matches(path)))
             .unwrap_or(false)
     })
+}
+
+/// A gate that observes the `path`/`pattern` arguments of tool calls, recording
+/// them into [`PathActivations`] so conditional (`paths`) skills surface, then
+/// delegates the decision to `inner`. Observation only — it never changes the
+/// decision. The composition root wraps its base gate with this.
+pub struct RecordingGate {
+    inner: Arc<dyn ToolGateHook>,
+    activations: PathActivations,
+}
+
+impl RecordingGate {
+    pub fn new(inner: Arc<dyn ToolGateHook>, activations: PathActivations) -> Self {
+        Self { inner, activations }
+    }
+}
+
+#[async_trait]
+impl ToolGateHook for RecordingGate {
+    async fn gate(&self, ctx: &PermissionContext, state: &Store) -> GateOutcome {
+        for key in ["path", "pattern"] {
+            if let Some(path) = ctx.arguments.get(key).and_then(|v| v.as_str()) {
+                self.activations.record(path);
+            }
+        }
+        self.inner.gate(ctx, state).await
+    }
+}
+
+/// Expand a leading `/skill-name [args]` in a user message into the skill's
+/// resolved instructions (ADR-0036 user invocation), honoring `user_invocable`.
+/// Non-user messages, non-slash text, unknown skills, and non-user-invocable
+/// skills pass through unchanged.
+pub fn expand_slash_commands(
+    registry: &dyn SkillRegistry,
+    session_id: &str,
+    input: Vec<Message>,
+) -> Vec<Message> {
+    input
+        .into_iter()
+        .map(|message| {
+            if message.role != Role::User {
+                return message;
+            }
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let Some(rest) = text.trim_start().strip_prefix('/') else {
+                return message;
+            };
+            let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            match registry.get(name.trim()) {
+                Some(skill) if skill.user_invocable => Message::text(
+                    message.id,
+                    Role::User,
+                    render_user_invocation(&skill, args.trim(), Some(session_id)),
+                ),
+                _ => message,
+            }
+        })
+        .collect()
 }
 
 /// Per-entry cap on the catalog description/when-to-use, so a large skill set
@@ -743,6 +813,94 @@ mod tests {
             .unwrap();
         assert!(out.content.contains("Skill: Review"));
         assert!(out.content.contains("inline body"));
+    }
+
+    struct AllowGate;
+    #[async_trait]
+    impl ToolGateHook for AllowGate {
+        async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+            GateOutcome::Allow
+        }
+    }
+
+    fn ctx(tool_id: &str, args: serde_json::Value) -> PermissionContext {
+        PermissionContext {
+            tool_id: tool_id.into(),
+            call_id: "c1".into(),
+            arguments: args,
+        }
+    }
+
+    #[tokio::test]
+    async fn recording_gate_records_paths_and_delegates() {
+        let activations = PathActivations::new();
+        let gate = RecordingGate::new(Arc::new(AllowGate), activations.clone());
+        let state = Store::new();
+        assert_eq!(
+            gate.gate(
+                &ctx("read", serde_json::json!({ "path": "src/main.rs" })),
+                &state
+            )
+            .await,
+            GateOutcome::Allow
+        );
+        gate.gate(
+            &ctx("glob", serde_json::json!({ "pattern": "*.rs" })),
+            &state,
+        )
+        .await;
+        gate.gate(&ctx("bash", serde_json::json!({ "command": "ls" })), &state)
+            .await;
+        let touched = activations.touched();
+        assert!(touched.contains(&"src/main.rs".to_string()));
+        assert!(touched.contains(&"*.rs".to_string()));
+        assert_eq!(
+            touched.len(),
+            2,
+            "only path/pattern args recorded: {touched:?}"
+        );
+    }
+
+    fn user_msg(text: &str) -> Message {
+        Message::text(
+            awaken_agent_contract::agent::message::Id("m".into()),
+            Role::User,
+            text,
+        )
+    }
+
+    fn msg_text(message: &Message) -> String {
+        message
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn slash_command_expands_only_user_invocable_skills() {
+        let registry = InMemorySkillRegistry::from_specs([
+            SkillSpec::new("deploy", "Deploy", "d", "checklist for $ARGUMENTS"),
+            SkillSpec {
+                user_invocable: false,
+                ..SkillSpec::new("secret", "Secret", "d", "hidden")
+            },
+        ]);
+        // user-invocable → expands to the resolved body
+        let out = expand_slash_commands(&registry, "sess", vec![user_msg("/deploy prod")]);
+        assert_eq!(msg_text(&out[0]), "checklist for prod");
+        // non-user-invocable / unknown / plain → unchanged
+        let out = expand_slash_commands(
+            &registry,
+            "sess",
+            vec![user_msg("/secret"), user_msg("/nope"), user_msg("hi")],
+        );
+        assert_eq!(msg_text(&out[0]), "/secret");
+        assert_eq!(msg_text(&out[1]), "/nope");
+        assert_eq!(msg_text(&out[2]), "hi");
     }
 
     #[tokio::test]

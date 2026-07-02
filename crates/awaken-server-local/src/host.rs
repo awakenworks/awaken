@@ -24,137 +24,19 @@ use awaken_ext_goal::{
     DelegateError, DelegateGrader, DelegateReply, DelegateRequest, DelegateRunner, GoalPlugin,
     GoalSpec, Grader, KeywordGrader,
 };
-use awaken_ext_skills::{
-    CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool, PathActivations, SkillFile,
-    SkillProvenance, SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
-    SubAgentRunner,
-};
+use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::agent_resolver::AgentResolver;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::ToolOutput;
 use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
 use awaken_store_sqlite::SqliteCommitCoordinator;
-
-/// The conventional workspace subdir the agent authors skills under; scanned live
-/// so a skill written this run is discovered (ADR-0036 D8).
-const WORKSPACE_SKILLS_SUBDIR: &str = "skills";
-
-/// Bridges the sandbox [`Environment`] to the skills [`SkillSource`] port: scans
-/// the workspace skill dir live, returning neutral file data. The host owns this
-/// bridge so `awaken-ext-skills` stays sandbox-unaware and the root stays hidden.
-struct EnvSkillSource {
-    env: Arc<Environment>,
-    subdir: String,
-}
-
-impl SkillSource for EnvSkillSource {
-    fn scan(&self) -> Vec<SkillFile> {
-        self.env
-            .scan_skill_dir(&self.subdir)
-            .into_iter()
-            .map(|f| SkillFile {
-                id: f.id,
-                content: f.content,
-                dir: Some(f.dir),
-            })
-            .collect()
-    }
-}
-
-/// Expand a leading `/skill-name [args]` in a user message into the skill's
-/// resolved instructions (ADR-0036: user invocation), honoring `user_invocable`.
-/// Non-slash messages, unknown skills, and non-user-invocable skills pass through.
-fn expand_slash_commands(
-    registry: Option<&Arc<dyn SkillRegistry>>,
-    session_id: &str,
-    input: Vec<Message>,
-) -> Vec<Message> {
-    let Some(registry) = registry else {
-        return input;
-    };
-    input
-        .into_iter()
-        .map(|message| {
-            if message.role != Role::User {
-                return message;
-            }
-            let text = crate::config::block_text(&message.content);
-            let Some(rest) = text.trim_start().strip_prefix('/') else {
-                return message;
-            };
-            let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-            match registry.get(name.trim()) {
-                Some(skill) if skill.user_invocable => {
-                    let body = awaken_ext_skills::render_user_invocation(
-                        &skill,
-                        args.trim(),
-                        Some(session_id),
-                    );
-                    Message::text(message.id, Role::User, body)
-                }
-                _ => message,
-            }
-        })
-        .collect()
-}
-
-/// Runs a `context: fork` skill as a fresh, isolated sub-agent (its own sandbox),
-/// returning the sub-run's reply. Bridges the skills [`SubAgentRunner`] port to
-/// the shared `run_subagent` primitive.
-struct ForkRunner {
-    llm: Arc<dyn LlmExecutor>,
-    model_ref: String,
-    provider: LocalSandboxProvider,
-}
-
-#[async_trait::async_trait]
-impl SubAgentRunner for ForkRunner {
-    async fn run(&self, skill_id: &str, prompt: &str) -> Result<String, String> {
-        let name = format!("skill-{skill_id}");
-        crate::subagent::run_subagent(
-            self.llm.clone(),
-            &self.model_ref,
-            &self.provider,
-            &name,
-            prompt,
-            None,
-        )
-        .await
-    }
-}
-
-/// A gate that observes the paths file tools touch (recording them into
-/// [`PathActivations`] so conditional `paths` skills surface), then delegates the
-/// decision to the base gate. Observation only — it never changes the decision.
-struct RecordingGate {
-    inner: Arc<dyn ToolGateHook>,
-    activations: PathActivations,
-}
-
-#[async_trait::async_trait]
-impl ToolGateHook for RecordingGate {
-    async fn gate(&self, ctx: &PermissionContext) -> GateOutcome {
-        let key = match ctx.tool_id.as_str() {
-            "read" | "write" | "edit" | "grep" => Some("path"),
-            "glob" => Some("pattern"),
-            _ => None,
-        };
-        if let Some(key) = key
-            && let Some(path) = ctx.arguments.get(key).and_then(|v| v.as_str())
-        {
-            self.activations.record(path);
-        }
-        self.inner.gate(ctx).await
-    }
-}
 
 use crate::config::{build_runtime, server_config, server_gate};
 use crate::delegate::DelegationResolver;
@@ -532,49 +414,27 @@ impl SharedHost {
         if let Some(resolver) = self.agent_resolver() {
             runtime = runtime.with_resolver(resolver);
         }
-        // Skills are fronted by two stable tools (ADR-0036): `list_skills`
-        // (discover) and `Skill` (activate). Both descriptors are catalog-free, so
-        // the skill set never perturbs the pinned surface. No per-skill tools.
+        // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
+        // in `awaken-ext-skills`. The host only wires the pieces it alone owns —
+        // the sandbox env, the sub-run capability, and the base gate — via
+        // `skills::wire_skills`.
         let mut skill_descriptors = Vec::new();
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
-        if !self.skills.is_empty() {
-            // Delivered (configured, trusted) skills plus a live scan of the
-            // workspace for skills the agent authored this run (AgentCreated).
-            let delivered: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_specs(
-                self.skills.iter().cloned(),
-            ));
-            let authored: Arc<dyn SkillRegistry> = Arc::new(SourceSkillRegistry::new(
-                Arc::new(EnvSkillSource {
-                    env: env.clone(),
-                    subdir: WORKSPACE_SKILLS_SUBDIR.to_string(),
-                }),
-                SkillProvenance::AgentCreated,
-            ));
-            let registry: Arc<dyn SkillRegistry> =
-                Arc::new(CompositeSkillRegistry::new(vec![delivered, authored]));
-            skill_registry = Some(registry.clone());
-            // Observe touched paths so conditional (`paths`) skills surface once a
-            // matching file is accessed; the gate only records, never decides.
-            let activations = PathActivations::new();
-            runtime = runtime.with_gate(Arc::new(RecordingGate {
-                inner: server_gate(),
-                activations: activations.clone(),
-            }));
-            let list =
-                Arc::new(ListSkillsTool::new(registry.clone()).with_path_activations(activations));
-            let fork_runner: Arc<dyn SubAgentRunner> = Arc::new(ForkRunner {
-                llm: self.llm.clone(),
-                model_ref: self.model_ref.clone(),
-                provider: LocalSandboxProvider::new(sub_base("skill-fork")),
-            });
-            let activate = Arc::new(
-                SkillTool::new(registry)
-                    .with_session_id(thread)
-                    .with_fork_runner(fork_runner),
-            );
-            skill_descriptors.push(list.descriptor());
-            skill_descriptors.push(activate.descriptor());
-            runtime = runtime.with_tool(list).with_tool(activate);
+        if let Some(wiring) = crate::skills::wire_skills(
+            &self.skills,
+            env.clone(),
+            self.llm.clone(),
+            &self.model_ref,
+            thread,
+            server_gate(),
+            sub_base("skill-fork"),
+        ) {
+            runtime = runtime
+                .with_gate(wiring.gate)
+                .with_tool(wiring.list_tool)
+                .with_tool(wiring.activate_tool);
+            skill_descriptors = wiring.descriptors;
+            skill_registry = Some(wiring.registry);
         }
         let config = server_config(
             &self.model_ref,
@@ -683,7 +543,12 @@ impl SharedHost {
             })
             .collect();
         // Expand a user `/skill-name` into the skill's instructions before the turn.
-        let input = expand_slash_commands(ctx.skill_registry.as_ref(), thread, input);
+        let input = match &ctx.skill_registry {
+            Some(registry) => {
+                awaken_ext_skills::expand_slash_commands(registry.as_ref(), thread, input)
+            }
+            None => input,
+        };
         messages.extend(input);
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
         let (run_id, phase) = ctx
@@ -1019,67 +884,5 @@ mod tests {
         host.interrupt("idle-thread")
             .await
             .expect("interrupt is a no-op");
-    }
-
-    #[tokio::test]
-    async fn agent_authored_skill_is_discovered_live_from_the_workspace() {
-        // A skill the agent writes under the workspace this run is discovered live
-        // by the workspace source, tagged AgentCreated (ADR-0036 D6/D8) — without
-        // rebuilding the registry and without exposing the root path.
-        let base = std::env::temp_dir().join(format!("awaken-authored-{}", std::process::id()));
-        let provider = LocalSandboxProvider::new(&base);
-        let env = Arc::new(provider.create(&SandboxSpec::new("t")).await.unwrap());
-
-        let source = Arc::new(EnvSkillSource {
-            env: env.clone(),
-            subdir: WORKSPACE_SKILLS_SUBDIR.to_string(),
-        });
-        let registry = SourceSkillRegistry::new(source, SkillProvenance::AgentCreated);
-        assert!(registry.list().is_empty(), "nothing authored yet");
-
-        // Simulate the agent authoring a skill (a jailed `write` lands here).
-        let skill_dir = base.join("t").join(WORKSPACE_SKILLS_SUBDIR).join("notes");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\ndescription: my notes\n---\nremember to hydrate",
-        )
-        .unwrap();
-
-        let found = registry
-            .get("notes")
-            .expect("authored skill discovered live");
-        assert_eq!(found.description, "my notes");
-        assert_eq!(found.provenance, SkillProvenance::AgentCreated);
-        assert_eq!(found.dir.as_deref(), Some("skills/notes"));
-        assert!(found.body.contains("hydrate"));
-
-        provider.teardown("t").await.unwrap();
-    }
-
-    #[test]
-    fn slash_command_expands_a_user_invocable_skill() {
-        let registry: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_specs([
-            SkillSpec::new("deploy", "Deploy", "d", "checklist for $ARGUMENTS"),
-            SkillSpec {
-                user_invocable: false,
-                ..SkillSpec::new("secret", "Secret", "d", "hidden body")
-            },
-        ]));
-        let msg = |t: &str| Message::text(MessageId("m".into()), Role::User, t);
-
-        // A user-invocable slash command expands to the resolved body.
-        let out = expand_slash_commands(Some(&registry), "sess", vec![msg("/deploy prod")]);
-        let text = crate::config::block_text(&out[0].content);
-        assert_eq!(text, "checklist for prod");
-
-        // A non-user-invocable skill is left as typed.
-        let out = expand_slash_commands(Some(&registry), "sess", vec![msg("/secret")]);
-        assert_eq!(crate::config::block_text(&out[0].content), "/secret");
-
-        // An unknown command and a plain message pass through unchanged.
-        let out = expand_slash_commands(Some(&registry), "sess", vec![msg("/nope"), msg("hi")]);
-        assert_eq!(crate::config::block_text(&out[0].content), "/nope");
-        assert_eq!(crate::config::block_text(&out[1].content), "hi");
     }
 }
