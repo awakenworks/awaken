@@ -3,13 +3,14 @@
 //! model corrects to read-then-write, and the run ends naturally once the
 //! instance reaches its terminal state.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_state_machine::{
     Metrics, RunInstances, StateCell, StateMachineConfig, StateMachinePlugin, ThreadInstances,
@@ -283,4 +284,115 @@ async fn continuation_nudge_keeps_running_until_terminal() {
     // It ended only after reaching the terminal state.
     let store = replay_state(&committed);
     assert_eq!(RunInstances::load(&store).current("work", ""), Some("done"));
+}
+
+// ---------------------------------------------------------------------------
+// Config-driven: the machines come from the agent's `plugin_config` section,
+// not baked into the plugin. The plugin is registered once as `empty()`.
+// ---------------------------------------------------------------------------
+
+fn activation_configured(plugin_config: BTreeMap<String, serde_json::Value>) -> RunActivation {
+    let mut activation = activation();
+    activation.snapshot.resolved_spec.plugin_config = plugin_config;
+    activation
+}
+
+fn section(id: &str, config_json: &str) -> BTreeMap<String, serde_json::Value> {
+    let mut map = BTreeMap::new();
+    map.insert(id.to_string(), serde_json::from_str(config_json).unwrap());
+    map
+}
+
+#[tokio::test]
+async fn config_section_drives_the_machine_set() {
+    // One empty plugin; the read-before-write machine arrives via the agent's
+    // config section. Same deny→correct→terminal behavior as the baked plugin.
+    let llm = ScriptedLlm::new(vec![
+        AssistantOutput::from_tool_calls(vec![tool_call("c1", "Write", "a.rs")]),
+        AssistantOutput::from_tool_calls(vec![tool_call("c2", "Read", "a.rs")]),
+        AssistantOutput::from_tool_calls(vec![tool_call("c3", "Write", "a.rs")]),
+    ]);
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(llm))
+        .with_tool(Arc::new(OkTool("Read")))
+        .with_tool(Arc::new(OkTool("Write")))
+        .with_plugin(Arc::new(StateMachinePlugin::empty()));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let phase = runtime
+        .execute(
+            activation_configured(section("state_machine", READ_BEFORE_WRITE)),
+            context,
+        )
+        .await
+        .expect("runs");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+
+    let committed = commit.committed();
+    assert!(
+        committed
+            .messages
+            .iter()
+            .any(|m| m.text_content().contains("Read a.rs before writing.")),
+    );
+    let store = replay_state(&committed);
+    assert_eq!(
+        ThreadInstances::load(&store).current("rbw", "a.rs"),
+        Some("written")
+    );
+}
+
+#[tokio::test]
+async fn no_section_leaves_calls_unconstrained() {
+    // The same empty plugin with no config section imposes no constraint: the
+    // write executes on the first turn and the run ends naturally.
+    let llm = ScriptedLlm::new(vec![AssistantOutput::from_tool_calls(vec![tool_call(
+        "c1", "Write", "a.rs",
+    )])]);
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(llm))
+        .with_tool(Arc::new(OkTool("Write")))
+        .with_plugin(Arc::new(StateMachinePlugin::empty()));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let phase = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    assert!(
+        !commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.text_content().contains("before writing")),
+        "no section ⇒ no gate ⇒ no denial"
+    );
+}
+
+#[tokio::test]
+async fn malformed_section_fails_the_run_closed() {
+    // A section that cannot resolve fails the run closed before any model call.
+    let llm = ScriptedLlm::new(vec![AssistantOutput::text("hi")]);
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(llm))
+        .with_plugin(Arc::new(StateMachinePlugin::empty()));
+    install(&runtime);
+
+    let bad = section(
+        "state_machine",
+        r#"{"machines":[{"name":"m","initial":"a","transitions":[{"on":"Read(","from":"a","to":"b"}]}]}"#,
+    );
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let phase = runtime
+        .execute(activation_configured(bad), context)
+        .await
+        .expect("runs");
+    assert_eq!(
+        phase,
+        Phase::Ended(EndCause::Error(Failure::CapabilityBound)),
+        "a malformed plugin config fails the run closed"
+    );
 }
