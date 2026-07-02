@@ -67,7 +67,7 @@ async fn a2a_message_send_over_a_live_kimi_model() {
     assert_eq!(status, StatusCode::OK, "live message:send failed: {body}");
     let task = serde_json::from_str::<Value>(&body).expect("task json")["task"].clone();
     assert_eq!(
-        task["status"]["state"], "TASK_STATE_COMPLETED",
+        task["status"]["state"], "completed",
         "the live turn should complete: {body}"
     );
 

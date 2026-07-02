@@ -415,19 +415,19 @@ async fn a2a_turn_returns_completed_task() {
     assert_eq!(status, StatusCode::OK);
     let task = serde_json::from_str::<Value>(&body).unwrap()["task"].clone();
     assert_eq!(task["contextId"], "a2a-t1");
-    assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
+    assert_eq!(task["status"]["state"], "completed");
     assert_eq!(task["status"]["message"]["parts"][0]["text"], "Echo: hi");
     // The task history carries both the user turn and the agent reply.
     let history = task["history"].as_array().unwrap();
     assert!(
         history
             .iter()
-            .any(|m| m["role"] == "ROLE_USER" && m["parts"][0]["text"] == "hi")
+            .any(|m| m["role"] == "user" && m["parts"][0]["text"] == "hi")
     );
     assert!(
         history
             .iter()
-            .any(|m| m["role"] == "ROLE_AGENT" && m["parts"][0]["text"] == "Echo: hi")
+            .any(|m| m["role"] == "agent" && m["parts"][0]["text"] == "Echo: hi")
     );
 }
 
@@ -488,7 +488,7 @@ async fn a2a_parks_input_required_then_resumes_completed() {
     assert_eq!(status, StatusCode::OK);
     let task = serde_json::from_str::<Value>(&body).unwrap()["task"].clone();
     assert_eq!(
-        task["status"]["state"], "TASK_STATE_INPUT_REQUIRED",
+        task["status"]["state"], "input-required",
         "a client-tool park is input-required: {body}"
     );
 
@@ -501,7 +501,7 @@ async fn a2a_parks_input_required_then_resumes_completed() {
     )
     .await;
     let task = serde_json::from_str::<Value>(&body).unwrap()["task"].clone();
-    assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
+    assert_eq!(task["status"]["state"], "completed");
     assert!(
         task["history"]
             .as_array()
