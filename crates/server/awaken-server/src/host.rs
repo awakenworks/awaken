@@ -31,6 +31,7 @@ use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::agent_resolver::AgentResolver;
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -301,9 +302,36 @@ impl SharedHost {
     }
 
     /// The provisioning request for a thread. Skills are not a sandbox mount
-    /// (ADR-0036); the environment provisions isolation tools and resources only.
+    /// (ADR-0036); the environment provisions isolation tools only. (Wire-driven file
+    /// resources are a later milestone — a Files API plus a `resources` input channel.)
     fn sandbox_spec(&self, thread: &str) -> SandboxSpec {
         SandboxSpec::new(thread)
+    }
+
+    /// The registered built-in tools advertised on a managed session's agent object:
+    /// each hand-tool id and whether its calls require confirmation. Folded into the
+    /// public `agent_toolset` by the adapter. Deterministic from host config.
+    pub fn builtin_tools(&self) -> Vec<(String, bool)> {
+        crate::config::builtin_hand_tools()
+    }
+
+    /// The client-executed (custom) tools advertised on a managed session: their
+    /// descriptors, so the adapter can shape each as a `custom` tool definition.
+    pub fn custom_tools(&self) -> Vec<ToolDescriptor> {
+        self.client_tools
+            .iter()
+            .map(|id| crate::config::client_tool_descriptor(id))
+            .collect()
+    }
+
+    /// The skill ids offered on every thread (advertised as the agent's `skills`).
+    pub fn skill_ids(&self) -> Vec<String> {
+        self.skills.iter().map(|s| s.id.clone()).collect()
+    }
+
+    /// The delegate agent ids (advertised as the agent's `multiagent` roster).
+    pub fn delegate_ids(&self) -> Vec<String> {
+        self.delegates.iter().cloned().collect()
     }
 
     /// Grade outcomes with a real judge sub-agent (`judge_agent_id`) run through the

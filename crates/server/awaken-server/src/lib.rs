@@ -38,8 +38,8 @@ use awaken_protocol_ai_sdk::port::{
 };
 use awaken_protocol_managed::dto::StopReason;
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
-    TurnOutcome, router,
+    AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
+    OutcomeReport, Pending, RunError, SessionRuntime, TurnOutcome, router,
 };
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
@@ -474,6 +474,33 @@ impl SessionRuntime for ManagedHost {
 
     fn model(&self) -> String {
         self.host.model()
+    }
+
+    /// Advertise the host's provisioned surface on the created session: its built-in
+    /// tools (folded into the agent toolset by the adapter), client tools, offered
+    /// skills, and delegate roster. (MCP servers and file resources are not advertised
+    /// — the local host wires no MCP capability and has no Files-API resource yet.)
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            builtin_tools: self
+                .host
+                .builtin_tools()
+                .into_iter()
+                .map(|(name, ask)| BuiltinTool { name, ask })
+                .collect(),
+            custom_tools: self
+                .host
+                .custom_tools()
+                .into_iter()
+                .map(|d| CustomTool {
+                    name: d.id,
+                    description: d.description,
+                    input_schema: d.parameters,
+                })
+                .collect(),
+            skills: self.host.skill_ids(),
+            delegates: self.host.delegate_ids(),
+        }
     }
 }
 
