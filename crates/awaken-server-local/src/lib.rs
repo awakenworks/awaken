@@ -54,7 +54,7 @@ pub use crate::hub::{ThreadEvent, ThreadEventHub};
 // Skill authoring inputs (ADR-0036): a composition root supplies these to
 // `build_router_with_skills` / `SharedHost::with_skills`. The whole set is fronted
 // by the single `Skill` tool.
-pub use awaken_ext_skills::{SkillSpec, parse_skill_md};
+pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_sandbox_local::content_fingerprint;
 // A remote delegate's transport belongs to the A2A bounded context; re-export it so
 // a composition-root caller configures a remote agent from one import.
