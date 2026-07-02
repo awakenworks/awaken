@@ -118,4 +118,35 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn compile_carries_plugin_ids_and_config_sections() {
+        let mut cfg = config(&["echo"]);
+        cfg.plugin_ids = vec!["state_machine".to_string()];
+        cfg.plugin_config.insert(
+            "state_machine".to_string(),
+            serde_json::json!({"machines": []}),
+        );
+        let runnable = compile(&cfg, &[tool("echo")]).unwrap();
+        let spec = &runnable.snapshot().resolved_spec;
+        assert_eq!(spec.plugin_ids, vec!["state_machine".to_string()]);
+        assert_eq!(
+            spec.plugin_config.get("state_machine"),
+            Some(&serde_json::json!({"machines": []}))
+        );
+        // The sections are part of the fingerprinted config surface.
+        let mut other = config(&["echo"]);
+        other.plugin_config.insert(
+            "state_machine".to_string(),
+            serde_json::json!({"machines": [{"name": "m"}]}),
+        );
+        assert_ne!(
+            runnable.snapshot().fingerprint.0,
+            compile(&other, &[tool("echo")])
+                .unwrap()
+                .snapshot()
+                .fingerprint
+                .0
+        );
+    }
 }
