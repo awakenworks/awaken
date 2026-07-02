@@ -8,6 +8,7 @@ awaken-runtime-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+glob = "0.3"
 
 [dev-dependencies]
 tokio.workspace = true
