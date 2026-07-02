@@ -1,11 +1,14 @@
-//! The single `Skill` tool and its catalog-bearing descriptor.
+//! The two skill-specific tools: `list_skills` (discover) and `Skill` (activate).
 //!
-//! There is exactly one model-facing skill tool, id [`SKILL_TOOL_ID`]. The model
-//! never sees per-skill tools: the *catalog* of activatable skills lives in the
-//! tool's description (progressive disclosure — name + description + when-to-use),
-//! and *activation* is a call `Skill { skill, args? }` whose result is the skill's
-//! instruction body, injected into the transcript as an ordinary tool result. The
-//! kernel sees one tool and a tool result; it never learns the concept "skill".
+//! These are the whole skill-specific tool surface (ADR-0036 D1). The model never
+//! sees per-skill tools. Discovery is a `list_skills` call returning the catalog
+//! as *data* (tier 1); activation is a `Skill { skill }` call whose result is the
+//! instruction body, injected into the transcript as an ordinary tool result
+//! (tier 2). References and scripts (tier 3) and authoring are done with the
+//! built-in `read` / `bash` / `write` tools over the skill's materialized files —
+//! there is no dedicated tool for them. The catalog is deliberately kept out of
+//! the tool descriptors so a changing skill set never perturbs a pinned surface
+//! (ADR-0036 D2/D7).
 
 use std::sync::Arc;
 
@@ -18,30 +21,27 @@ use crate::spec::SkillSpec;
 
 /// The single, stable id of the skill-activation tool.
 pub const SKILL_TOOL_ID: &str = "Skill";
+/// The id of the skill-discovery tool.
+pub const SKILL_LIST_TOOL_ID: &str = "list_skills";
 
-/// Cap on one catalog entry's rendered length, so a large skill set cannot blow
-/// out the tool description.
-const CATALOG_ENTRY_CAP: usize = 250;
+const SKILL_TOOL_SUMMARY: &str = "Activate a skill: inject its instructions into the conversation.\n\nCall `list_skills` first to see what is available, then activate one by id BEFORE doing the work; the skill's instructions are returned as the result. Skills provide specialized, repository-specific procedures and domain knowledge.";
 
-const SKILL_TOOL_SUMMARY: &str = "Activate a skill: inject its instructions into the conversation.\n\nWhen a user's request matches an available skill, call this tool with the skill id BEFORE doing the work; the skill's instructions are returned as the result. Skills provide specialized, repository-specific procedures and domain knowledge.";
+const LIST_TOOL_SUMMARY: &str = "List the skills available to activate (id, description, when-to-use). Returns metadata only — call `Skill { skill }` to load a skill's full instructions. Use the optional `query` to filter by substring.";
 
-/// The model-visible descriptor for the `Skill` tool, with the activatable-skill
-/// catalog rendered into its description. Only model-invocable skills are listed.
-pub fn skill_tool_descriptor(registry: &dyn SkillRegistry) -> ToolDescriptor {
-    let description = format!(
-        "{SKILL_TOOL_SUMMARY}\n\n{}",
-        render_catalog(&registry.list())
-    );
+/// The stable descriptor for the `Skill` activation tool. It carries no catalog
+/// (that is served by `list_skills`), so its hash does not move when the skill set
+/// changes (ADR-0036 D2/D7).
+pub fn skill_tool_descriptor() -> ToolDescriptor {
     ToolDescriptor::pinned(
         "skills",
         SKILL_TOOL_ID,
-        description,
+        SKILL_TOOL_SUMMARY,
         serde_json::json!({
             "type": "object",
             "properties": {
                 "skill": {
                     "type": "string",
-                    "description": "The id of the skill to activate (see the list above)."
+                    "description": "The id of the skill to activate (from `list_skills`)."
                 },
                 "args": {
                     "type": "string",
@@ -53,38 +53,46 @@ pub fn skill_tool_descriptor(registry: &dyn SkillRegistry) -> ToolDescriptor {
     )
 }
 
-/// Render the catalog block shown in the tool description: one line per
-/// model-invocable skill, `- <id>: <description>[ — When to use: <when>]`,
-/// truncated per entry. An empty set states so explicitly.
-fn render_catalog(skills: &[SkillSpec]) -> String {
-    let entries: Vec<String> = skills
-        .iter()
-        .filter(|s| s.model_invocable)
-        .map(render_catalog_entry)
-        .collect();
-    if entries.is_empty() {
-        return "Available skills: (none)".to_string();
-    }
-    format!("Available skills:\n{}", entries.join("\n"))
+/// The stable descriptor for the `list_skills` discovery tool.
+pub fn list_skills_tool_descriptor() -> ToolDescriptor {
+    ToolDescriptor::pinned(
+        "skills",
+        SKILL_LIST_TOOL_ID,
+        LIST_TOOL_SUMMARY,
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Optional case-insensitive substring filter over id/name/description."
+                }
+            }
+        }),
+    )
 }
 
-fn render_catalog_entry(skill: &SkillSpec) -> String {
-    let mut line = format!("- {}: {}", skill.id, skill.description);
-    if let Some(when) = &skill.when_to_use {
-        line.push_str(" — When to use: ");
-        line.push_str(when);
-    }
-    truncate(&line, CATALOG_ENTRY_CAP)
+/// One catalog entry as data: model-facing identity plus provenance. Never the
+/// body — that is tier-2, loaded on activation.
+fn catalog_entry(skill: &SkillSpec) -> serde_json::Value {
+    serde_json::json!({
+        "id": skill.id,
+        "name": skill.name,
+        "description": skill.description,
+        "when_to_use": skill.when_to_use,
+        "provenance": skill.provenance,
+    })
 }
 
-/// Truncate on a char boundary, appending an ellipsis when cut.
-fn truncate(text: &str, cap: usize) -> String {
-    if text.chars().count() <= cap {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(cap.saturating_sub(1)).collect();
-    out.push('…');
-    out
+fn matches_query(skill: &SkillSpec, query: &str) -> bool {
+    let hay = format!(
+        "{} {} {} {}",
+        skill.id,
+        skill.name,
+        skill.description,
+        skill.when_to_use.as_deref().unwrap_or("")
+    )
+    .to_lowercase();
+    hay.contains(query)
 }
 
 /// The activation result: a header naming the skill, the instruction body, and
@@ -99,7 +107,58 @@ fn render_activation(skill: &SkillSpec, args: &str) -> String {
     out
 }
 
-/// The single skill-activation tool, resolving against a [`SkillRegistry`].
+/// Discovery tool (tier 1): returns the activatable-skill catalog as JSON data.
+/// Only model-invocable skills are listed; an optional `query` filters them.
+pub struct ListSkillsTool {
+    registry: Arc<dyn SkillRegistry>,
+}
+
+impl ListSkillsTool {
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
+        Self { registry }
+    }
+
+    pub fn descriptor(&self) -> ToolDescriptor {
+        list_skills_tool_descriptor()
+    }
+}
+
+impl std::fmt::Debug for ListSkillsTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListSkillsTool").finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl RawTool for ListSkillsTool {
+    fn id(&self) -> &str {
+        SKILL_LIST_TOOL_ID
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        let query = call
+            .arguments
+            .get("query")
+            .and_then(|v| v.as_str())
+            .map(|q| q.trim().to_lowercase())
+            .filter(|q| !q.is_empty());
+        let entries: Vec<serde_json::Value> = self
+            .registry
+            .list()
+            .iter()
+            .filter(|s| s.model_invocable)
+            .filter(|s| query.as_deref().is_none_or(|q| matches_query(s, q)))
+            .map(catalog_entry)
+            .collect();
+        let payload = serde_json::json!({
+            "skills": entries,
+            "hint": "Activate one with Skill { skill: \"<id>\" }.",
+        });
+        Ok(ToolOutput::ok(call.call_id, payload.to_string()))
+    }
+}
+
+/// Activation tool (tier 2), resolving against a [`SkillRegistry`].
 pub struct SkillTool {
     registry: Arc<dyn SkillRegistry>,
 }
@@ -109,10 +168,9 @@ impl SkillTool {
         Self { registry }
     }
 
-    /// The tool plus its catalog-bearing descriptor, ready to register and
-    /// advertise. Convenience for the composition root.
+    /// The stable, catalog-free descriptor. Convenience for the composition root.
     pub fn descriptor(&self) -> ToolDescriptor {
-        skill_tool_descriptor(self.registry.as_ref())
+        skill_tool_descriptor()
     }
 }
 
@@ -171,11 +229,17 @@ impl RawTool for SkillTool {
 mod tests {
     use super::*;
     use crate::registry::InMemorySkillRegistry;
+    use crate::spec::SkillProvenance;
 
     fn registry() -> Arc<InMemorySkillRegistry> {
         Arc::new(InMemorySkillRegistry::from_specs([
-            SkillSpec::new("commit", "Commit", "Make a git commit", "Steps: ...")
-                .with_when_to_use("recording changes"),
+            SkillSpec::new(
+                "commit",
+                "Commit",
+                "Make a git commit",
+                "SECRET-STEP: sign it",
+            )
+            .with_when_to_use("recording changes"),
             SkillSpec {
                 model_invocable: false,
                 ..SkillSpec::new("secret", "Secret", "hidden", "body")
@@ -183,21 +247,80 @@ mod tests {
         ]))
     }
 
-    fn call(args: serde_json::Value) -> ToolCall {
+    fn call(id: &str, args: serde_json::Value) -> ToolCall {
         ToolCall {
             call_id: "c1".into(),
-            tool_id: SKILL_TOOL_ID.into(),
+            tool_id: id.into(),
             arguments: args,
         }
     }
 
     #[test]
-    fn descriptor_lists_only_model_invocable_skills() {
-        let desc = skill_tool_descriptor(registry().as_ref());
-        assert_eq!(desc.id, SKILL_TOOL_ID);
-        assert!(desc.description.contains("- commit: Make a git commit"));
-        assert!(desc.description.contains("When to use: recording changes"));
-        assert!(!desc.description.contains("secret"));
+    fn skill_descriptor_is_stable_and_catalog_free() {
+        // The activation descriptor never carries the catalog, so a changing skill
+        // set cannot perturb its hashed surface (ADR-0036 D2/D7).
+        let a = skill_tool_descriptor();
+        assert_eq!(a.id, SKILL_TOOL_ID);
+        assert!(!a.description.contains("commit"));
+        assert!(a.description.contains("list_skills"));
+        // Identical regardless of any registry state.
+        assert_eq!(a.content_hash, skill_tool_descriptor().content_hash);
+    }
+
+    #[tokio::test]
+    async fn list_skills_returns_metadata_excluding_hidden_and_body() {
+        let tool = ListSkillsTool::new(registry());
+        let out = tool
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        let v: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+        let skills = v["skills"].as_array().unwrap();
+        assert_eq!(skills.len(), 1, "hidden skill excluded");
+        assert_eq!(skills[0]["id"], "commit");
+        assert_eq!(skills[0]["when_to_use"], "recording changes");
+        assert_eq!(skills[0]["provenance"], "delivered");
+        // tier-1 is metadata only — the body must not appear in discovery.
+        assert!(!out.content.contains("SECRET-STEP"));
+    }
+
+    #[tokio::test]
+    async fn list_skills_query_filters() {
+        let tool = ListSkillsTool::new(registry());
+        let hit = tool
+            .invoke(call(
+                SKILL_LIST_TOOL_ID,
+                serde_json::json!({ "query": "COMMIT" }),
+            ))
+            .await
+            .unwrap();
+        assert!(hit.content.contains("commit"));
+        let miss = tool
+            .invoke(call(
+                SKILL_LIST_TOOL_ID,
+                serde_json::json!({ "query": "zzz" }),
+            ))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&miss.content).unwrap();
+        assert!(v["skills"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_skills_reports_agent_created_provenance() {
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "draft",
+            "Draft",
+            "authored this run",
+            "body",
+        )
+        .with_provenance(SkillProvenance::AgentCreated)]));
+        let out = ListSkillsTool::new(registry)
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(out.content.contains("agent_created"));
     }
 
     #[tokio::test]
@@ -205,97 +328,52 @@ mod tests {
         let tool = SkillTool::new(registry());
         let out = tool
             .invoke(call(
+                SKILL_TOOL_ID,
                 serde_json::json!({ "skill": "commit", "args": "-m fix" }),
             ))
             .await
             .unwrap();
         assert!(!out.is_error);
         assert!(out.content.contains("Skill: Commit"));
-        assert!(out.content.contains("Steps: ..."));
+        assert!(out.content.contains("SECRET-STEP: sign it"));
         assert!(out.content.contains("Arguments: -m fix"));
     }
 
     #[tokio::test]
     async fn unknown_and_missing_and_hidden_are_model_visible_errors() {
         let tool = SkillTool::new(registry());
-        let unknown = tool
-            .invoke(call(serde_json::json!({ "skill": "nope" })))
+        assert!(
+            tool.invoke(call(SKILL_TOOL_ID, serde_json::json!({ "skill": "nope" })))
+                .await
+                .unwrap()
+                .is_error
+        );
+        assert!(
+            tool.invoke(call(SKILL_TOOL_ID, serde_json::json!({})))
+                .await
+                .unwrap()
+                .is_error
+        );
+        assert!(
+            tool.invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "secret" })
+            ))
             .await
-            .unwrap();
-        assert!(unknown.is_error);
-
-        let missing = tool.invoke(call(serde_json::json!({}))).await.unwrap();
-        assert!(missing.is_error);
-
-        let hidden = tool
-            .invoke(call(serde_json::json!({ "skill": "secret" })))
-            .await
-            .unwrap();
-        assert!(hidden.is_error);
+            .unwrap()
+            .is_error
+        );
     }
 
     #[tokio::test]
     async fn leading_slash_is_accepted() {
-        let tool = SkillTool::new(registry());
-        let out = tool
-            .invoke(call(serde_json::json!({ "skill": "/commit" })))
+        let out = SkillTool::new(registry())
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({ "skill": "/commit" }),
+            ))
             .await
             .unwrap();
         assert!(!out.is_error);
-    }
-
-    #[tokio::test]
-    async fn disclosure_is_progressive_body_only_on_activation() {
-        // The descriptor (level-1 disclosure) advertises identity but never the
-        // instruction body; the body (level-2) appears only in the activation
-        // result. This is the whole point of progressive disclosure.
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
-            "deploy",
-            "Deploy",
-            "Ship a release",
-            "SECRET-STEP: rotate the signing key first",
-        )]));
-        let desc = skill_tool_descriptor(registry.as_ref());
-        assert!(desc.description.contains("- deploy: Ship a release"));
-        assert!(
-            !desc.description.contains("SECRET-STEP"),
-            "the body must not leak into the catalog: {}",
-            desc.description
-        );
-
-        let out = SkillTool::new(registry)
-            .invoke(call(serde_json::json!({ "skill": "deploy" })))
-            .await
-            .unwrap();
-        assert!(
-            out.content.contains("SECRET-STEP"),
-            "body loads on activation"
-        );
-    }
-
-    #[test]
-    fn long_catalog_entry_is_truncated() {
-        let long = "x".repeat(400);
-        let registry =
-            InMemorySkillRegistry::from_specs([SkillSpec::new("big", "Big", long.clone(), "body")]);
-        let desc = skill_tool_descriptor(&registry);
-        assert!(
-            desc.description.contains('…'),
-            "an over-long entry is ellipsized"
-        );
-        assert!(
-            !desc.description.contains(&long),
-            "the full over-long description is not carried verbatim"
-        );
-    }
-
-    #[test]
-    fn empty_catalog_states_none() {
-        let registry = InMemorySkillRegistry::from_specs([SkillSpec {
-            model_invocable: false,
-            ..SkillSpec::new("hidden", "Hidden", "nope", "body")
-        }]);
-        let desc = skill_tool_descriptor(&registry);
-        assert!(desc.description.contains("Available skills: (none)"));
     }
 }

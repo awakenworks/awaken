@@ -12,8 +12,23 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Where a skill came from — the trust root it was materialized on (ADR-0036 D6).
+/// Provenance is derived from location (which root), not authored, so an
+/// agent-written skill cannot claim to be delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillProvenance {
+    /// Control-owned, read-only, trusted (the delivered root).
+    #[default]
+    Delivered,
+    /// Authored by the agent this run in the writable workspace: usable this run
+    /// (run-scoped), never pinned, never auto-promoted to the shared store.
+    AgentCreated,
+}
+
 /// One skill's model-facing identity and instruction body. Data-only: the
-/// runtime never sees a "skill", only the single `Skill` tool that reads this.
+/// runtime never sees a "skill", only the `Skill` / `list_skills` tools that read
+/// this.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillSpec {
     /// Stable id the model passes to the `Skill` tool to activate it.
@@ -30,6 +45,8 @@ pub struct SkillSpec {
     /// Whether the model may activate this skill via the `Skill` tool. A `false`
     /// skill is hidden from the catalog and refused at the tool (users only).
     pub model_invocable: bool,
+    /// Which trust root this skill came from (ADR-0036 D6). Derived by location.
+    pub provenance: SkillProvenance,
     /// The `SKILL.md` instruction body returned to the model on activation.
     pub body: String,
 }
@@ -49,8 +66,16 @@ impl SkillSpec {
             when_to_use: None,
             allowed_tools: Vec::new(),
             model_invocable: true,
+            provenance: SkillProvenance::Delivered,
             body: body.into(),
         }
+    }
+
+    /// Mark this skill's provenance (the trust root it was materialized on).
+    #[must_use]
+    pub fn with_provenance(mut self, provenance: SkillProvenance) -> Self {
+        self.provenance = provenance;
+        self
     }
 
     #[must_use]
