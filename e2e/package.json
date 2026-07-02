@@ -3,11 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "End-to-end test that drives awaken-server-local with the official Anthropic TypeScript SDK.",
+  "description": "End-to-end tests that drive awaken-server-local's protocol adapters with their official TypeScript/JS SDKs: managed (@anthropic-ai/sdk), ai-sdk (ai), ag-ui (@ag-ui/client), a2a (@a2a-js/sdk). Covers multi-turn, multimodal, and HITL.",
   "scripts": {
-    "test": "node managed_e2e.mjs && node managed_hitl_e2e.mjs && node managed_outcome_e2e.mjs && node managed_custom_e2e.mjs && node managed_delegation_e2e.mjs"
+    "test": "node managed_e2e.mjs && node managed_hitl_e2e.mjs && node managed_outcome_e2e.mjs && node managed_custom_e2e.mjs && node managed_delegation_e2e.mjs && node managed_multimodal_e2e.mjs && node ai_sdk_e2e.mjs && node ag_ui_e2e.mjs && node a2a_e2e.mjs",
+    "test:protocols": "node managed_multimodal_e2e.mjs && node ai_sdk_e2e.mjs && node ag_ui_e2e.mjs && node a2a_e2e.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "0.105.0"
+    "@a2a-js/sdk": "^0.3.13",
+    "@ag-ui/client": "^0.0.57",
+    "@anthropic-ai/sdk": "0.105.0",
+    "ai": "^7.0.11"
   }
 }
