@@ -87,6 +87,7 @@ wrappers = [
     "awaken-runtime-examples",
     "awaken-run-ingress",
     "awaken-ext-mcp",
+    "awaken-ext-state-machine",
     "awaken-server-local",
 ]
 reason = "runtime core; contracts must not depend on the kernel (G2, G18)"

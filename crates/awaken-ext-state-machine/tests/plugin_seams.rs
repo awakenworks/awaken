@@ -7,8 +7,8 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{Command, Store};
 use awaken_ext_state_machine::{
-    FsmTransition, Metrics, RunInstances, StateCell, StateMachineConfig, StateMachinePlugin,
-    ThreadInstances, ViolationLog,
+    ContinuationSettings, FsmTransition, Metrics, RunInstances, StateCell, StateMachineConfig,
+    StateMachinePlugin, ThreadInstances, ViolationLog,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{Plugin, RunEndContext, RunEndDecision, enforce_bound};
@@ -76,6 +76,16 @@ fn manifest_admits_resolved_contributions() {
     assert_eq!(contributions.tool_observers.len(), 1);
     assert_eq!(contributions.run_end_guards.len(), 1);
     assert_eq!(contributions.state_keys.len(), 4);
+}
+
+#[test]
+fn plugin_new_from_compiled_machines_resolves_within_bound() {
+    let machines = StateMachineConfig::from_json_str(READ_BEFORE_WRITE)
+        .unwrap()
+        .into_machines()
+        .unwrap();
+    let p = StateMachinePlugin::new(machines, ContinuationSettings::default());
+    assert!(enforce_bound(&p.manifest(), &p.resolve()).is_ok());
 }
 
 #[test]
