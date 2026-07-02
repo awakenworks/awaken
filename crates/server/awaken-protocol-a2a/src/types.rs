@@ -8,19 +8,24 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A2A message role. The wire tokens are the A2A enum names.
+/// A2A message role. The wire tokens are the A2A JSON spellings (`user`/`agent`);
+/// the gRPC/proto tokens (`ROLE_USER`/`ROLE_AGENT`) are accepted on input for
+/// back-compat with earlier clients.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MessageRole {
-    #[serde(rename = "ROLE_USER")]
+    #[serde(rename = "user", alias = "ROLE_USER")]
     User,
-    #[serde(rename = "ROLE_AGENT")]
+    #[serde(rename = "agent", alias = "ROLE_AGENT")]
     Agent,
 }
 
-/// One message part. A2A uses wrapper fields (no `kind` discriminator): a part
-/// carries text, or a `file` (inline base64 or a remote URI) for multimodal input.
+/// One message part. A2A parts carry a `kind` discriminator (`text`/`file`/`data`)
+/// alongside the payload field. A part holds text, or a `file` (inline base64 or a
+/// remote URI) for multimodal input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Part {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -30,6 +35,7 @@ pub struct Part {
 impl Part {
     pub fn text(text: impl Into<String>) -> Self {
         Self {
+            kind: Some("text".to_string()),
             text: Some(text.into()),
             file: None,
         }
@@ -53,6 +59,9 @@ pub struct FilePart {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
+    /// The A2A object discriminator (`"message"`), required by the JSON clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,6 +75,7 @@ impl Message {
     /// Construct a text-only agent message.
     pub fn agent_text(message_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
+            kind: Some("message".to_string()),
             task_id: None,
             context_id: None,
             message_id: message_id.into(),
@@ -84,18 +94,19 @@ impl Message {
     }
 }
 
-/// Task lifecycle state (the A2A enum tokens).
+/// Task lifecycle state. The wire tokens are the A2A JSON spellings; the gRPC/proto
+/// tokens (`TASK_STATE_*`) are accepted on input for back-compat.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TaskState {
-    #[serde(rename = "TASK_STATE_WORKING")]
+    #[serde(rename = "working", alias = "TASK_STATE_WORKING")]
     Working,
-    #[serde(rename = "TASK_STATE_INPUT_REQUIRED")]
+    #[serde(rename = "input-required", alias = "TASK_STATE_INPUT_REQUIRED")]
     InputRequired,
-    #[serde(rename = "TASK_STATE_AUTH_REQUIRED")]
+    #[serde(rename = "auth-required", alias = "TASK_STATE_AUTH_REQUIRED")]
     AuthRequired,
-    #[serde(rename = "TASK_STATE_COMPLETED")]
+    #[serde(rename = "completed", alias = "TASK_STATE_COMPLETED")]
     Completed,
-    #[serde(rename = "TASK_STATE_FAILED")]
+    #[serde(rename = "failed", alias = "TASK_STATE_FAILED")]
     Failed,
 }
 
@@ -112,6 +123,9 @@ pub struct TaskStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
+    /// The A2A object discriminator (`"task"`), required by the JSON clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub id: String,
     pub context_id: String,
     pub status: TaskStatus,
@@ -222,6 +236,18 @@ pub struct AgentCard {
     pub description: String,
     pub version: String,
     pub protocol_version: String,
+    /// The absolute service endpoint an A2A client posts to. Required by the
+    /// official SDKs to resolve where to send; omitted only in unit fixtures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The transport the `url` speaks. `JSONRPC` is the canonical A2A binding the
+    /// SDK clients default to.
+    #[serde(
+        rename = "preferredTransport",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub preferred_transport: Option<String>,
     pub capabilities: AgentCapabilities,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_input_modes: Vec<String>,
@@ -257,11 +283,18 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn part_serializes_as_wrapper_field() {
+    fn part_serializes_with_kind_and_text() {
+        // A2A JSON parts carry a `kind` discriminator alongside the payload.
         assert_eq!(
             serde_json::to_value(Part::text("hi")).unwrap(),
-            json!({ "text": "hi" })
+            json!({ "kind": "text", "text": "hi" })
         );
+    }
+
+    #[test]
+    fn part_accepts_legacy_kindless_wrapper() {
+        let p: Part = serde_json::from_value(json!({ "text": "hi" })).unwrap();
+        assert_eq!(p.text.as_deref(), Some("hi"));
     }
 
     #[test]
@@ -284,19 +317,25 @@ mod tests {
 
     #[test]
     fn task_state_tokens_match_protocol() {
+        // The A2A JSON spellings on the wire; the proto tokens are input aliases.
         assert_eq!(
             serde_json::to_value(TaskState::InputRequired).unwrap(),
-            json!("TASK_STATE_INPUT_REQUIRED")
+            json!("input-required")
         );
         assert_eq!(
             serde_json::to_value(TaskState::Completed).unwrap(),
-            json!("TASK_STATE_COMPLETED")
+            json!("completed")
+        );
+        assert_eq!(
+            serde_json::from_value::<TaskState>(json!("TASK_STATE_COMPLETED")).unwrap(),
+            TaskState::Completed
         );
     }
 
     #[test]
     fn message_text_concatenates_parts() {
         let m = Message {
+            kind: Some("message".into()),
             task_id: Some("task-t".into()),
             context_id: Some("t".into()),
             message_id: "m1".into(),
@@ -309,6 +348,7 @@ mod tests {
     #[test]
     fn task_roundtrips_with_camel_case_fields() {
         let task = Task {
+            kind: Some("task".into()),
             id: "task-t".into(),
             context_id: "t".into(),
             status: TaskStatus {
@@ -322,10 +362,11 @@ mod tests {
             }],
         };
         let value = serde_json::to_value(&task).unwrap();
-        // A2A uses camelCase on the wire; the state carries its enum token.
+        // A2A uses camelCase on the wire; the state carries its JSON token.
         assert!(value.get("contextId").is_some());
+        assert_eq!(value["kind"], "task");
         assert_eq!(value["artifacts"][0]["parts"][0]["text"], "artifact body");
-        assert_eq!(value["status"]["state"], "TASK_STATE_COMPLETED");
+        assert_eq!(value["status"]["state"], "completed");
         let parsed: Task = serde_json::from_value(value).unwrap();
         assert_eq!(parsed, task);
     }
@@ -337,6 +378,8 @@ mod tests {
             description: "Awaken agent".into(),
             version: "0.0.0".into(),
             protocol_version: "1.0".into(),
+            url: Some("http://localhost/v1/a2a".into()),
+            preferred_transport: Some("JSONRPC".into()),
             capabilities: AgentCapabilities {
                 streaming: false,
                 push_notifications: false,
