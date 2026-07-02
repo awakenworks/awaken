@@ -4,7 +4,8 @@
 // npm install && node ai_sdk_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { DefaultChatTransport, readUIMessageStream } from 'ai';
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls, readUIMessageStream } from 'ai';
+import { Chat } from '@ai-sdk/react';
 import { withServer, pass, RED_PNG_DATA_URI } from './harness.mjs';
 
 /// Send one turn's message list to the thread and return the final assistant
@@ -62,48 +63,54 @@ async function main() {
     pass('ai-sdk multimodal (image reached the model)');
   });
 
-  // --- HITL: a tool needing approval parks (a tool part in `input-available`);
-  // approving it resumes the run to completion. The parked turn is consumed with
-  // the SDK; the approval is posted at the AI SDK data-stream protocol level,
-  // because the `ai` package's headless transport reserializes messages and drops
-  // the custom `approval-responded` decision (its first-class HITL path is the
-  // React `useChat` + `addToolApprovalResponse`, not a Node client). ---
-  await withServer('probe', 38143, async (base) => {
-    const api = `${base}/v1/ai-sdk/threads/sdk-hitl/runs`;
-    const parked = await turnMessage(base, 'sdk-hitl', [
-      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'remember this note' }] },
+  // --- streaming tool calls: the model's tool call is delivered through the
+  // stream as a `tool-*` part (state `input-available`), not buffered to the end ---
+  await withServer('probe', 38144, async (base) => {
+    const parked = await turnMessage(base, 'sdk-stream', [
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'remember' }] },
     ]);
     const toolPart = (parked.parts ?? []).find((p) => p.toolCallId);
-    assert.ok(toolPart, `expected a parked tool part: ${JSON.stringify(parked.parts)}`);
-    assert.equal(toolPart.state, 'input-available', 'the tool should await a decision');
-
-    const resp = await fetch(api, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        threadId: 'sdk-hitl',
-        messages: [
-          {
-            id: 'a-approve',
-            role: 'assistant',
-            parts: [
-              {
-                type: toolPart.type,
-                toolCallId: toolPart.toolCallId,
-                state: 'approval-responded',
-                approval: { approved: true },
-              },
-            ],
-          },
-        ],
-      }),
-    });
-    const body = await resp.text();
-    assert.ok(body.includes('done'), `expected the run to finish after approval: ${body}`);
-    pass('ai-sdk HITL approval (park via SDK -> approve -> complete)');
+    assert.ok(toolPart, `expected a streamed tool part: ${JSON.stringify(parked.parts)}`);
+    assert.ok(toolPart.type.startsWith('tool-'), `unexpected tool part type: ${toolPart.type}`);
+    assert.equal(toolPart.state, 'input-available', 'the tool call should stream its input');
+    assert.ok(toolPart.input && 'path' in toolPart.input, 'the streamed tool call carries its input');
+    pass('ai-sdk streaming tool call (tool-input-available)');
   });
 
-  console.log('E2E PASS: AI SDK multi-turn + multimodal + HITL via the `ai` package.');
+  // --- HITL: a tool needing approval parks (a tool part in `input-available`);
+  // the SDK's `Chat` submits the decision via `addToolResult`, which auto-resends
+  // (sendAutomaticallyWhen) and the run completes. Fully SDK-driven. ---
+  await withServer('probe', 38143, async (base) => {
+    const chat = new Chat({
+      id: 'sdk-hitl',
+      transport: new DefaultChatTransport({ api: `${base}/v1/ai-sdk/threads/sdk-hitl/runs` }),
+      sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    });
+    await chat.sendMessage({ text: 'remember this note' });
+    const toolPart = (chat.lastMessage.parts ?? []).find((p) => p.toolCallId);
+    assert.ok(toolPart, `expected a parked tool part: ${JSON.stringify(chat.lastMessage.parts)}`);
+    assert.equal(toolPart.state, 'input-available', 'the tool should await a decision');
+
+    // Approve: hand the tool its result; the Chat auto-resends the transcript.
+    await chat.addToolResult({
+      tool: toolPart.type.replace(/^tool-/, ''),
+      toolCallId: toolPart.toolCallId,
+      output: 'approved',
+    });
+    for (let i = 0; i < 50 && chat.status !== 'ready'; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const text = (chat.lastMessage.parts ?? [])
+      .filter((p) => p.type === 'text')
+      .map((p) => p.text)
+      .join('');
+    assert.ok(text.includes('done'), `expected the run to finish after approval: ${text}`);
+    pass('ai-sdk HITL approval (park -> addToolResult -> complete)');
+  });
+
+  console.log(
+    'E2E PASS: AI SDK multi-turn + multimodal + streaming tool calls + HITL via the `ai` package.',
+  );
 }
 
 main().catch((err) => {
