@@ -22,6 +22,7 @@ use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::{LocalSandboxProvider, SandboxProvider, SandboxSpec};
 
 use crate::agent_catalog::AgentCatalog;
@@ -36,6 +37,7 @@ use crate::config::{build_runtime, latest_assistant_text, server_config};
 ///
 /// Errors (unknown agent, sandbox/runtime failure) are returned as strings for
 /// the caller to wrap.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_configured_subrun(
     catalog: &AgentCatalog,
     provider: &LocalSandboxProvider,
@@ -43,6 +45,7 @@ pub(crate) async fn run_configured_subrun(
     agent_id: &str,
     thread: &str,
     seed: impl Into<RunInput>,
+    extra_tools: Vec<Arc<dyn RawTool>>,
     cancellation: Option<CancellationToken>,
 ) -> Result<String, String> {
     let config = catalog
@@ -53,7 +56,12 @@ pub(crate) async fn run_configured_subrun(
         .create(&SandboxSpec::new(thread))
         .await
         .map_err(|e| e.to_string())?;
-    let runtime = build_runtime(llm, &env);
+    let mut runtime = build_runtime(llm, &env);
+    // Tools the caller provisions on top of the sandbox's own (e.g. a
+    // persistent write_memory scoped outside the ephemeral sandbox).
+    for tool in extra_tools {
+        runtime = runtime.with_tool(tool);
+    }
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let mut ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -93,6 +101,7 @@ pub(crate) async fn run_subagent(
         "assistant",
         name,
         input,
+        Vec::new(),
         cancellation,
     )
     .await
@@ -175,6 +184,7 @@ mod tests {
             "memory-extractor",
             "t-mem",
             vec![user("go")],
+            Vec::new(),
             None,
         )
         .await
@@ -188,6 +198,7 @@ mod tests {
             "judge",
             "t-judge",
             vec![user("go")],
+            Vec::new(),
             None,
         )
         .await
@@ -207,6 +218,7 @@ mod tests {
             "nope",
             "t",
             vec![user("go")],
+            Vec::new(),
             None,
         )
         .await
