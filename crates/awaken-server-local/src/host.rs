@@ -24,7 +24,10 @@ use awaken_ext_goal::{
     DelegateError, DelegateGrader, DelegateReply, DelegateRequest, DelegateRunner, GoalPlugin,
     GoalSpec, Grader, KeywordGrader,
 };
-use awaken_ext_skills::{InMemorySkillRegistry, ListSkillsTool, SkillSpec, SkillTool};
+use awaken_ext_skills::{
+    CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool, SkillFile, SkillProvenance,
+    SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
+};
 use awaken_protocol_a2a::Transport;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -37,6 +40,32 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::ToolOutput;
 use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
 use awaken_store_sqlite::SqliteCommitCoordinator;
+
+/// The conventional workspace subdir the agent authors skills under; scanned live
+/// so a skill written this run is discovered (ADR-0036 D8).
+const WORKSPACE_SKILLS_SUBDIR: &str = "skills";
+
+/// Bridges the sandbox [`Environment`] to the skills [`SkillSource`] port: scans
+/// the workspace skill dir live, returning neutral file data. The host owns this
+/// bridge so `awaken-ext-skills` stays sandbox-unaware and the root stays hidden.
+struct EnvSkillSource {
+    env: Arc<Environment>,
+    subdir: String,
+}
+
+impl SkillSource for EnvSkillSource {
+    fn scan(&self) -> Vec<SkillFile> {
+        self.env
+            .scan_skill_dir(&self.subdir)
+            .into_iter()
+            .map(|f| SkillFile {
+                id: f.id,
+                content: f.content,
+                dir: Some(f.dir),
+            })
+            .collect()
+    }
+}
 
 use crate::config::{build_runtime, server_config};
 use crate::delegate::DelegationResolver;
@@ -169,7 +198,7 @@ pub(crate) struct SessionCtx {
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build a goal-enabled runtime
     /// for `define_outcome` (same tools, same environment).
-    env: Environment,
+    env: Arc<Environment>,
     /// The in-flight run's cancellation token, so a concurrent `interrupt` (a
     /// separate request) can cancel it. A plain `std::sync::Mutex` (brief locks),
     /// held by neither the run loop nor the state lock, so interrupt never blocks
@@ -397,11 +426,12 @@ impl SharedHost {
         if let Some(ctx) = sessions.get(thread) {
             return Ok(ctx.clone());
         }
-        let env = self
-            .provider
-            .create(&self.sandbox_spec(thread))
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        let env = Arc::new(
+            self.provider
+                .create(&self.sandbox_spec(thread))
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?,
+        );
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread)?);
         let mut runtime = build_runtime(self.llm.clone(), &env);
@@ -415,9 +445,20 @@ impl SharedHost {
         // the skill set never perturbs the pinned surface. No per-skill tools.
         let mut skill_descriptors = Vec::new();
         if !self.skills.is_empty() {
-            let registry = Arc::new(InMemorySkillRegistry::from_specs(
+            // Delivered (configured, trusted) skills plus a live scan of the
+            // workspace for skills the agent authored this run (AgentCreated).
+            let delivered: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_specs(
                 self.skills.iter().cloned(),
             ));
+            let authored: Arc<dyn SkillRegistry> = Arc::new(SourceSkillRegistry::new(
+                Arc::new(EnvSkillSource {
+                    env: env.clone(),
+                    subdir: WORKSPACE_SKILLS_SUBDIR.to_string(),
+                }),
+                SkillProvenance::AgentCreated,
+            ));
+            let registry: Arc<dyn SkillRegistry> =
+                Arc::new(CompositeSkillRegistry::new(vec![delivered, authored]));
             let list = Arc::new(ListSkillsTool::new(registry.clone()));
             let activate = Arc::new(SkillTool::new(registry));
             skill_descriptors.push(list.descriptor());
@@ -864,5 +905,41 @@ mod tests {
         host.interrupt("idle-thread")
             .await
             .expect("interrupt is a no-op");
+    }
+
+    #[tokio::test]
+    async fn agent_authored_skill_is_discovered_live_from_the_workspace() {
+        // A skill the agent writes under the workspace this run is discovered live
+        // by the workspace source, tagged AgentCreated (ADR-0036 D6/D8) — without
+        // rebuilding the registry and without exposing the root path.
+        let base = std::env::temp_dir().join(format!("awaken-authored-{}", std::process::id()));
+        let provider = LocalSandboxProvider::new(&base);
+        let env = Arc::new(provider.create(&SandboxSpec::new("t")).await.unwrap());
+
+        let source = Arc::new(EnvSkillSource {
+            env: env.clone(),
+            subdir: WORKSPACE_SKILLS_SUBDIR.to_string(),
+        });
+        let registry = SourceSkillRegistry::new(source, SkillProvenance::AgentCreated);
+        assert!(registry.list().is_empty(), "nothing authored yet");
+
+        // Simulate the agent authoring a skill (a jailed `write` lands here).
+        let skill_dir = base.join("t").join(WORKSPACE_SKILLS_SUBDIR).join("notes");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\ndescription: my notes\n---\nremember to hydrate",
+        )
+        .unwrap();
+
+        let found = registry
+            .get("notes")
+            .expect("authored skill discovered live");
+        assert_eq!(found.description, "my notes");
+        assert_eq!(found.provenance, SkillProvenance::AgentCreated);
+        assert_eq!(found.dir.as_deref(), Some("skills/notes"));
+        assert!(found.body.contains("hydrate"));
+
+        provider.teardown("t").await.unwrap();
     }
 }

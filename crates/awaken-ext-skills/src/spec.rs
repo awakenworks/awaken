@@ -93,6 +93,10 @@ pub struct SkillSpec {
     pub version: Option<String>,
     /// Which trust root this skill came from (ADR-0036 D6). Derived by location.
     pub provenance: SkillProvenance,
+    /// Logical directory of the skill under the sandbox root, when discovered from
+    /// files. Resolves `${SKILL_DIR}` so the body can point at its references. `None`
+    /// for in-memory (config-only) skills.
+    pub dir: Option<String>,
     /// The `SKILL.md` instruction body returned to the model on activation.
     pub body: String,
 }
@@ -123,6 +127,7 @@ impl SkillSpec {
             tags: Vec::new(),
             version: None,
             provenance: SkillProvenance::Delivered,
+            dir: None,
             body: body.into(),
         }
     }

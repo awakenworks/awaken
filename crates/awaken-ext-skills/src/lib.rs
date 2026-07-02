@@ -25,7 +25,10 @@ mod registry;
 mod spec;
 mod tool;
 
-pub use registry::{InMemorySkillRegistry, SkillRegistry};
+pub use registry::{
+    CompositeSkillRegistry, InMemorySkillRegistry, SkillFile, SkillRegistry, SkillSource,
+    SourceSkillRegistry,
+};
 pub use spec::{SkillContext, SkillProvenance, SkillSpec, parse_skill_md};
 pub use tool::{
     ListSkillsTool, SKILL_LIST_TOOL_ID, SKILL_TOOL_ID, SkillTool, list_skills_tool_descriptor,
