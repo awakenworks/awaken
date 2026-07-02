@@ -86,6 +86,10 @@ pub struct SessionAgent {
     pub name: String,
     pub tools: Vec<Value>,
     pub mcp_servers: Vec<Value>,
+    pub skills: Vec<Value>,
+    /// The multiagent coordinator roster, omitted when the agent delegates to no one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub multiagent: Option<Value>,
 }
 
 /// `BetaManagedAgentsSession` response (minimal but SDK-parseable).

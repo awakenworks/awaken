@@ -14,6 +14,91 @@ use awaken_agent_contract::project::{
 };
 
 use crate::dto::{OutboundKind, StopReason};
+use crate::state::{AgentCapabilities, OutcomeIteration};
+
+/// The versioned built-in toolset id (Managed Agents wire vocabulary, G16).
+const AGENT_TOOLSET_TYPE: &str = "agent_toolset_20260401";
+
+/// The canonical tools the versioned agent toolset bundles. A built-in tool the host
+/// does *not* register is disabled in `configs`; a registered tool that requires
+/// confirmation carries an `always_ask` permission policy.
+const AGENT_TOOLSET_TOOLS: [&str; 8] = [
+    "bash",
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "web_fetch",
+    "web_search",
+];
+
+/// Project the agent's tool surface onto the public `agent.tools` array. The built-in
+/// tools fold into a single `agent_toolset_20260401` reference (never per-tool
+/// definitions) with `configs` that disable the toolset tools the host does not
+/// register and mark the confirmation-gated ones `always_ask`; each client tool
+/// becomes a `custom` tool definition.
+pub fn agent_tools(caps: &AgentCapabilities) -> Vec<serde_json::Value> {
+    let mut tools = Vec::new();
+    if !caps.builtin_tools.is_empty() {
+        let mut configs = Vec::new();
+        for name in AGENT_TOOLSET_TOOLS {
+            match caps.builtin_tools.iter().find(|t| t.name == name) {
+                None => configs.push(serde_json::json!({ "name": name, "enabled": false })),
+                Some(tool) if tool.ask => configs.push(serde_json::json!({
+                    "name": name,
+                    "permission_policy": { "type": "always_ask" },
+                })),
+                Some(_) => {} // registered and auto-allowed → toolset default
+            }
+        }
+        let mut toolset = serde_json::json!({ "type": AGENT_TOOLSET_TYPE });
+        if !configs.is_empty() {
+            toolset["configs"] = serde_json::Value::Array(configs);
+        }
+        tools.push(toolset);
+    }
+    for tool in &caps.custom_tools {
+        tools.push(serde_json::json!({
+            "type": "custom",
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool.input_schema,
+        }));
+    }
+    tools
+}
+
+/// Project the agent's offered skills onto the public `agent.skills` array. Each is a
+/// `custom` skill reference (the host offers them locally, not from the Skills API).
+pub fn agent_skills(caps: &AgentCapabilities) -> Vec<serde_json::Value> {
+    caps.skills
+        .iter()
+        .map(|id| serde_json::json!({ "type": "custom", "skill_id": id, "version": "latest" }))
+        .collect()
+}
+
+/// Project the agent's delegate roster onto the public `agent.multiagent` coordinator
+/// object, or `None` when the agent delegates to no one.
+pub fn agent_multiagent(caps: &AgentCapabilities) -> Option<serde_json::Value> {
+    if caps.delegates.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "type": "coordinator",
+        "agents": caps.delegates,
+    }))
+}
+
+/// The public wire object for one recorded outcome evaluation on the session: the
+/// outcome id and the verdict. This is the durable `outcome_evaluations` entry on the
+/// session object, distinct from the transient `span.outcome_evaluation_*` events.
+pub fn outcome_evaluation(round: &OutcomeIteration) -> serde_json::Value {
+    serde_json::json!({
+        "outcome_id": round.outcome_id,
+        "result": round.result,
+    })
+}
 
 /// One projected event, with an optional stable id. A tool-use event carries the
 /// tool call's own id (so a `user.tool_confirmation` can reference it); other
