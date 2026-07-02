@@ -1,5 +1,5 @@
-//! Catalog install is atomic and fails closed on an empty fingerprint (G4/G23);
-//! capability reporting reflects the active catalog.
+//! Catalog install is atomic and fails closed on an empty or mismatched
+//! fingerprint (G4/G23/G29); capability reporting reflects the active catalog.
 
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::capability::{
@@ -62,5 +62,65 @@ fn capabilities_reflect_the_active_catalog_and_install_is_atomic() {
     assert_eq!(
         caps.catalog_fingerprint,
         CatalogFingerprint("catalog-b".to_string())
+    );
+}
+
+/// A mismatched fingerprint (top-level vs capabilities) must be rejected
+/// before any state change, leaving the active catalog untouched (G4/G23).
+#[test]
+fn fingerprint_catalog_capabilities_mismatch_is_rejected() {
+    let runtime = Runtime::new();
+    runtime
+        .install_catalog(catalog("catalog-a", vec!["alpha"]))
+        .expect("valid catalog installs");
+
+    // Build an install where the top-level fingerprint disagrees with the
+    // capabilities catalog fingerprint — an internally inconsistent install.
+    let fp = CatalogFingerprint("catalog-b".to_string());
+    let caps_fp = CatalogFingerprint("catalog-c".to_string());
+    let inconsistent = RuntimeCatalogInstall {
+        publication_id: "pub-2".to_string(),
+        fingerprint: fp,
+        source_revisions: vec!["rev-2".to_string()],
+        capabilities: RuntimeCapabilityCatalog {
+            catalog_fingerprint: caps_fp,
+            runtime_version: "test".to_string(),
+            tools: Vec::new(),
+            plugins: Vec::new(),
+        },
+    };
+    assert!(
+        matches!(
+            runtime.install_catalog(inconsistent),
+            Err(Error::Rejected(_))
+        ),
+        "mismatched fingerprints must be rejected"
+    );
+
+    // Active catalog must be unchanged — still catalog-a (G23 rollback).
+    assert_eq!(
+        runtime.runtime_capabilities().catalog_fingerprint,
+        CatalogFingerprint("catalog-a".to_string()),
+        "active catalog must remain unchanged after a rejected install"
+    );
+}
+
+/// A rejected install (any reason) must leave the previously active catalog
+/// untouched — incomplete installs do not replace the active catalog (G23).
+#[test]
+fn active_catalog_is_unchanged_on_rejected_install() {
+    let runtime = Runtime::new();
+    runtime
+        .install_catalog(catalog("catalog-a", vec!["alpha"]))
+        .expect("first install");
+
+    // Attempt to install a catalog with an empty fingerprint (always rejected).
+    let _ = runtime.install_catalog(catalog("   ", Vec::new()));
+
+    // The active catalog must still be catalog-a.
+    assert_eq!(
+        runtime.runtime_capabilities().catalog_fingerprint,
+        CatalogFingerprint("catalog-a".to_string()),
+        "active catalog must be unchanged when an install is rejected"
     );
 }
