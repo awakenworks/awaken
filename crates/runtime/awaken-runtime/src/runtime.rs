@@ -125,6 +125,16 @@ impl Runtime {
         ResolvedExecutionEnv::merge(active)
     }
 
+    /// Dry-run plugin resolution for a candidate spec — the same resolve the loop
+    /// runs, exposed so a config publisher can validate an agent's plugin config
+    /// before publish and fail closed on a malformed section (validator = applier).
+    pub fn validate_plugins(
+        &self,
+        spec: &awaken_runtime_contract::resolved::ResolvedSpec,
+    ) -> std::result::Result<(), MergeError> {
+        self.resolve_plugin_env(spec).map(|_| ())
+    }
+
     /// The combined live version of the active plugins, or `None` if every
     /// active plugin is static. A change signals the drive loop to re-resolve the
     /// execution environment at the next step boundary (dynamic tool refresh).
