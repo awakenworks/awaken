@@ -49,6 +49,11 @@ from the resolved logical ref, and is not carried as runtime authority.
 
 ## Skills And MCP
 
+> Provisioning of skills/MCP/resources through the single `SandboxProvider`
+> seam, the external skill store/collector, and the local/managed adapter split
+> are decided in [ADR-0035](../adr/0035-environment-provisioning-tools-skills-resources.md).
+> This section owns the boundary rules; ADR-0035 owns the provisioning seam.
+
 Skills and MCP servers are capability material, not runtime policy shortcuts:
 
 1. Product or config-domain code owns public skill/version APIs, bundles, visibility,

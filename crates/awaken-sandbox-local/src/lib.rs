@@ -7,10 +7,17 @@
 //! (ADR-0034 D6): a rooted tool is *just a `RawTool`* the host composes into a
 //! run, so the kernel stays sandbox-agnostic.
 //!
-//! Distribution stays out of this repo: `SandboxSpec` reserves `mounts` /
-//! `constraints` as forward-compatible data, and a remote relay is another
-//! `RawTool` from another repository. This crate ships only the local, in-process
-//! side (`LocalSandboxProvider`).
+//! Provisioning (ADR-0035): `SandboxProvider::create` materializes the whole
+//! per-run capability substrate. [`SandboxSpec::mounts`] carries typed
+//! provisioning inputs ([`Mount::Skill`] / [`Mount::Resource`]); the provider
+//! realizes them and the [`Environment`] exposes a single capability surface —
+//! [`Environment::tools`] (hand + skill tools as `RawTool`) plus
+//! [`Environment::resources`] (realized refs) — while [`Environment::receipt`]
+//! records the host-side pin. A skill surfaces as a tool whose invocation returns
+//! its body (progressive disclosure); the kernel never learns "skill". Unknown
+//! mount shapes are ignored (forward-compat), so a distributed provider (another
+//! repo) can extend the set. This crate ships only the local, in-process side
+//! (`LocalSandboxProvider`); a remote relay is another `RawTool` from another repo.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -206,9 +213,171 @@ pub(crate) fn rooted_hand_tools(root: IsolatedRoot) -> Vec<Arc<dyn HandTool>> {
         .collect()
 }
 
-/// The request to create an environment. `mounts` / `constraints` are reserved,
-/// forward-compatible data a distributed provider (another repo) fills in; the
-/// local provider ignores them.
+/// A stable content fingerprint over provisioning bytes. Cheap and dependency-free
+/// (mirrors the `ResolvedSpec` descriptor-hash style); it is the pin identity a
+/// mount declares and the provider verifies, not a cryptographic guarantee.
+pub fn content_fingerprint(bytes: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// A typed provisioning input carried in [`SandboxSpec::mounts`] as an opaque
+/// `Value`. The local provider realizes the variants it understands
+/// ([`Mount::from_value`]) and ignores the rest (forward-compat), so another
+/// repo's provider can add mount kinds without a breaking change (ADR-0035 D1).
+/// Conversion is explicit (not derived) so this crate depends only on
+/// `serde_json`, honoring its crate-boundary allow-list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Mount {
+    /// A skill: surfaced as a `skill__<id>` tool whose invocation returns `body`
+    /// (progressive disclosure). The kernel sees a tool, never a "skill".
+    Skill(SkillMount),
+    /// A read-only resource file, realized under the environment's `.mnt/` root
+    /// and referenced by logical path (no host path crosses the boundary, G3).
+    Resource(ResourceMount),
+}
+
+impl Mount {
+    /// Serialize to the opaque `Value` carried in [`SandboxSpec::mounts`].
+    pub fn to_value(&self) -> Value {
+        match self {
+            Mount::Skill(s) => serde_json::json!({
+                "kind": "skill",
+                "id": s.id,
+                "version": s.version,
+                "content_hash": s.content_hash,
+                "name": s.name,
+                "description": s.description,
+                "body": s.body,
+            }),
+            Mount::Resource(r) => serde_json::json!({
+                "kind": "resource",
+                "id": r.id,
+                "content_hash": r.content_hash,
+                "logical_path": r.logical_path,
+                "content": r.content,
+            }),
+        }
+    }
+
+    /// Parse a carried mount, or `None` when the `kind` is unknown or a required
+    /// field is missing — both are ignored (forward-compat, ADR-0035 D1).
+    pub fn from_value(v: &Value) -> Option<Mount> {
+        let field = |key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
+        match v.get("kind").and_then(Value::as_str)? {
+            "skill" => Some(Mount::Skill(SkillMount {
+                id: field("id")?,
+                version: v.get("version").and_then(Value::as_u64).unwrap_or(0),
+                content_hash: field("content_hash").unwrap_or_default(),
+                name: field("name").unwrap_or_default(),
+                description: field("description").unwrap_or_default(),
+                body: field("body")?,
+            })),
+            "resource" => Some(Mount::Resource(ResourceMount {
+                id: field("id")?,
+                content_hash: field("content_hash").unwrap_or_default(),
+                logical_path: field("logical_path")?,
+                content: field("content")?,
+            })),
+            _ => None,
+        }
+    }
+}
+
+/// A skill provisioned into the environment. `body` is the `SKILL.md` content
+/// itself (not a path); `content_hash`, when non-empty, is verified fail-closed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillMount {
+    pub id: String,
+    pub version: u64,
+    pub content_hash: String,
+    pub name: String,
+    pub description: String,
+    pub body: String,
+}
+
+/// A resource file provisioned into the environment. `content` is realized under
+/// `.mnt/<logical_path>`; `content_hash`, when non-empty, is verified fail-closed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourceMount {
+    pub id: String,
+    pub content_hash: String,
+    pub logical_path: String,
+    pub content: String,
+}
+
+/// A realized resource reference the environment exposes. Carries the logical path
+/// under the environment root and the content hash — never a host absolute path
+/// (G3): the host receives a reference, not a filesystem location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceRef {
+    pub id: String,
+    pub content_hash: String,
+    pub logical_path: String,
+}
+
+/// Which kind of capability a [`ProvisionEntry`] pinned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvisionKind {
+    Skill,
+    Resource,
+}
+
+/// One pinned provisioning entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisionEntry {
+    pub id: String,
+    pub kind: ProvisionKind,
+    pub content_hash: String,
+}
+
+/// The host-side pin for an environment: the content-addressed set that was
+/// provisioned (ADR-0035 D3). It is recorded with the run and replayed to
+/// re-provision an identical environment; it is not the kernel's presentation
+/// fingerprint (ADR-0034 D5).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProvisionReceipt {
+    pub entries: Vec<ProvisionEntry>,
+}
+
+/// A skill provisioned as a state-less [`HandTool`]: invoking it returns the
+/// `SKILL.md` body (progressive disclosure). Like every environment tool it is
+/// G13-safe by shape — it can never author runtime state.
+pub(crate) struct SkillTool {
+    tool_id: String,
+    body: String,
+}
+
+#[async_trait]
+impl HandTool for SkillTool {
+    fn id(&self) -> &str {
+        &self.tool_id
+    }
+
+    async fn run(&self, _call: ToolCall) -> Result<HandOutput, ToolError> {
+        Ok(HandOutput::ok(self.body.clone()))
+    }
+}
+
+/// Fail closed when a declared content hash does not match realized bytes. An
+/// empty declaration means the caller did not pin, so the check is skipped.
+fn verify_hash(content: &str, declared: &str) -> Result<(), SandboxError> {
+    if !declared.is_empty() {
+        let got = content_fingerprint(content.as_bytes());
+        if got != declared {
+            return Err(SandboxError(format!(
+                "content hash mismatch: declared {declared}, realized {got}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The request to create an environment. `mounts` carries typed provisioning
+/// inputs ([`Mount`]) as opaque `Value`s so a distributed provider (another repo)
+/// can extend the set; `constraints` stays reserved, forward-compatible data.
 #[derive(Debug, Clone, Default)]
 pub struct SandboxSpec {
     pub id: String,
@@ -223,6 +392,13 @@ impl SandboxSpec {
             ..Default::default()
         }
     }
+
+    /// Declare a typed provisioning input. Serialized into the opaque `mounts`
+    /// carrier so the wire stays forward-compatible.
+    pub fn with_mount(mut self, mount: Mount) -> Self {
+        self.mounts.push(mount.to_value());
+        self
+    }
 }
 
 /// A provisioned environment: an id and the hand tools bound to it. The host
@@ -234,19 +410,45 @@ impl SandboxSpec {
 pub struct Environment {
     id: String,
     hand_tools: Vec<Arc<dyn HandTool>>,
+    skill_tools: Vec<Arc<dyn HandTool>>,
+    resources: Vec<ResourceRef>,
+    receipt: ProvisionReceipt,
 }
 
 impl Environment {
-    /// Build an environment from its id and the [`HandTool`]s a provider bound to
-    /// it at provision time. Because a `HandTool` returns [`HandOutput`] (no state
-    /// field), tools bound to an environment **cannot** author runtime state (G13)
-    /// — the invariant is structural, whether the tools run in-process or relay
-    /// into a container/remote root.
+    /// Build an environment from its id and the isolation [`HandTool`]s a provider
+    /// bound to it. Skill tools, resources, and the receipt are added by the
+    /// `with_*` builders during provisioning. Because a `HandTool` returns
+    /// [`HandOutput`] (no state field), every tool bound to an environment
+    /// **cannot** author runtime state (G13) — structural, whether it runs
+    /// in-process or relays into a container/remote root.
     pub fn new(id: impl Into<String>, hand_tools: Vec<Arc<dyn HandTool>>) -> Self {
         Self {
             id: id.into(),
             hand_tools,
+            skill_tools: Vec::new(),
+            resources: Vec::new(),
+            receipt: ProvisionReceipt::default(),
         }
+    }
+
+    /// Attach provisioned skill tools (ADR-0035 D4): each is a state-less
+    /// `HandTool` whose invocation returns a skill body.
+    pub fn with_skill_tools(mut self, skill_tools: Vec<Arc<dyn HandTool>>) -> Self {
+        self.skill_tools = skill_tools;
+        self
+    }
+
+    /// Attach realized resource references.
+    pub fn with_resources(mut self, resources: Vec<ResourceRef>) -> Self {
+        self.resources = resources;
+        self
+    }
+
+    /// Attach the host-side provisioning receipt (the pin).
+    pub fn with_receipt(mut self, receipt: ProvisionReceipt) -> Self {
+        self.receipt = receipt;
+        self
     }
 
     /// This environment's id.
@@ -254,16 +456,41 @@ impl Environment {
         &self.id
     }
 
-    /// The hand tools bound to this environment, adapted for `Runtime::with_tool`.
-    /// Each produced `RawTool` carries empty state (G13). Cheap to call repeatedly
-    /// (clones `Arc` handles), so one environment can back several runtimes — e.g.
-    /// a goal-loop rebuild over the same thread.
+    /// The isolation hand tools only, adapted for `Runtime::with_tool`. Retained
+    /// for callers that compose just the built-in tool set; new callers should
+    /// prefer [`tools`](Environment::tools), the full capability surface.
     pub fn hand_tools(&self) -> Vec<Arc<dyn RawTool>> {
         self.hand_tools
             .iter()
             .cloned()
             .map(hand_tool_as_raw)
             .collect()
+    }
+
+    /// The full provisioned **capability surface** (ADR-0035 D8): hand tools plus
+    /// skill (and future dynamic) tools, each adapted to a `RawTool` carrying empty
+    /// state (G13). This is what the host composes into a run; the kernel sees a
+    /// uniform tool set with no skill/mount/provision concept. Cheap to call
+    /// repeatedly (clones `Arc` handles).
+    pub fn tools(&self) -> Vec<Arc<dyn RawTool>> {
+        self.hand_tools
+            .iter()
+            .chain(self.skill_tools.iter())
+            .cloned()
+            .map(hand_tool_as_raw)
+            .collect()
+    }
+
+    /// The realized resource references. Each names a logical path under the
+    /// environment root and a content hash — never a host absolute path (G3).
+    pub fn resources(&self) -> &[ResourceRef] {
+        &self.resources
+    }
+
+    /// The host-side provisioning receipt — the content-addressed pin used to
+    /// replay an identical environment (ADR-0035 D3).
+    pub fn receipt(&self) -> &ProvisionReceipt {
+        &self.receipt
     }
 }
 
@@ -272,6 +499,8 @@ impl std::fmt::Debug for Environment {
         f.debug_struct("Environment")
             .field("id", &self.id)
             .field("hand_tools", &self.hand_tools.len())
+            .field("skill_tools", &self.skill_tools.len())
+            .field("resources", &self.resources.len())
             .finish()
     }
 }
@@ -305,10 +534,62 @@ impl SandboxProvider for LocalSandboxProvider {
     async fn create(&self, spec: &SandboxSpec) -> Result<Environment, SandboxError> {
         let dir = self.base.join(&spec.id);
         std::fs::create_dir_all(&dir).map_err(|e| SandboxError(e.to_string()))?;
-        Ok(Environment::new(
-            spec.id.clone(),
-            rooted_hand_tools(IsolatedRoot::new(dir)),
-        ))
+        let root = IsolatedRoot::new(dir);
+
+        let mut skill_tools: Vec<Arc<dyn HandTool>> = Vec::new();
+        let mut resources: Vec<ResourceRef> = Vec::new();
+        let mut entries: Vec<ProvisionEntry> = Vec::new();
+
+        for raw in &spec.mounts {
+            // Forward-compat: a mount shape this provider does not understand is
+            // ignored, not an error (ADR-0035 D1).
+            let Some(mount) = Mount::from_value(raw) else {
+                continue;
+            };
+            match mount {
+                Mount::Skill(skill) => {
+                    verify_hash(&skill.body, &skill.content_hash)?;
+                    skill_tools.push(Arc::new(SkillTool {
+                        tool_id: format!("skill__{}", skill.id),
+                        body: skill.body,
+                    }));
+                    entries.push(ProvisionEntry {
+                        id: skill.id,
+                        kind: ProvisionKind::Skill,
+                        content_hash: skill.content_hash,
+                    });
+                }
+                Mount::Resource(resource) => {
+                    verify_hash(&resource.content, &resource.content_hash)?;
+                    // Realize under a read-only `.mnt/` root, jailed: a logical path
+                    // that tries to escape fails closed.
+                    let logical_path = format!(".mnt/{}", resource.logical_path);
+                    let path = root
+                        .resolve(&logical_path)
+                        .map_err(|e| SandboxError(e.to_string()))?;
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| SandboxError(e.to_string()))?;
+                    }
+                    std::fs::write(&path, &resource.content)
+                        .map_err(|e| SandboxError(e.to_string()))?;
+                    resources.push(ResourceRef {
+                        id: resource.id.clone(),
+                        content_hash: resource.content_hash.clone(),
+                        logical_path,
+                    });
+                    entries.push(ProvisionEntry {
+                        id: resource.id,
+                        kind: ProvisionKind::Resource,
+                        content_hash: resource.content_hash,
+                    });
+                }
+            }
+        }
+
+        Ok(Environment::new(spec.id.clone(), rooted_hand_tools(root))
+            .with_skill_tools(skill_tools)
+            .with_resources(resources)
+            .with_receipt(ProvisionReceipt { entries }))
     }
 
     async fn teardown(&self, id: &str) -> Result<(), SandboxError> {
