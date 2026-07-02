@@ -62,6 +62,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/awaken-server-local-overview.md` | Product-owned | Single-machine assembly overview; navigation map linking component owners; sandbox/relay, managed adapter, and goal are to-build |
 | `design/credentials-and-vaults.md` | Product-owned | Credential/product concern; runtime sees opaque refs only |
 | `design/resources-memory-files-skills.md` | Product-owned | Resource data plane and out-of-process execution stay outside runtime core |
+| `design/tool-state-machine.md` | Runtime-owned | Defines the tool call state machine: typed state cells over the untyped command store, the four runtime seams (state materialization, tool gate chain, tool-outcome reaction hook, run-end guard state), reminder emission via the conversation aggregate, capability bounds, and persistence/atomicity/transactionality/restart guarantees |
 | `design/observability-eval-dataset-boundary.md` | Boundary-only | Separates traces, datasets, eval, and analytics from runtime truth |
 | `design/error-taxonomy.md` | Ready | Classifies neutral errors and public adapter error mapping |
 | `design/packaging-enforcement-matrix.md` | Ready | Defines package/import/license/vocabulary enforcement expectations |
@@ -106,6 +107,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
 | `design/error-taxonomy.md` | Decision record | Not required | n/a |
 | `design/packaging-enforcement-matrix.md` | Meta / introspection | Not required | n/a |
+| `design/tool-state-machine.md` | Role owner | Required | self |
 | `adr/0001-documentation-model-and-vocabulary-alignment.md` | Decision record | Not required | n/a |
 | `adr/0002-resolver-role-demarcation.md` | Decision record | Not required | n/a |
 | `adr/0003-deferred-work-mechanism-selection.md` | Decision record | Not required | n/a |
@@ -141,6 +143,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0033-in-process-run-driver.md` | Decision record | Not required | n/a |
 | `adr/0034-runtime-axis-model-and-orthogonality.md` | Decision record | Not required | n/a |
 | `adr/0035-environment-provisioning-tools-skills-resources.md` | Decision record | Not required | n/a |
+| `adr/0036-skills-as-runtime-extension-single-tool.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
