@@ -151,6 +151,31 @@ fingerprint.
   what can be authored (G30), `PromotionGate` bounds what can be published, and
   the permission policy bounds what can be used (G9/G21).
 
+## Non-Goals
+
+- **Capability-based execution routing is not a provisioning concern.** A
+  routing/trust taxonomy (e.g. `Capability{Action, Perception, Trusted}`, as
+  awaken-next tags executor requests) has two separable facets that belong to
+  two different layers, and neither is the `provision` seam:
+  - the **classification** (is a call action / perception / trusted?) is
+    descriptive tool metadata — a descriptor / capability-segment overlay applied
+    at resolve ([ADR-0034](0034-runtime-axis-model-and-orthogonality.md) D1
+    overlay dimensions, [tool-and-capability.md](../design/tool-and-capability.md));
+    the provider is merely one producer of that descriptor for dynamic tools;
+  - the **routing decision** that consumes it (which locus/executor runs the
+    call, how it is isolated, dedupe/exactly-once) is a dispatch / placement
+    concern that lives **above** both the kernel and this seam — realized by host
+    composition (ADR-0034 D6) or a future `ToolExecutor` cross-cutting policy,
+    never as a field on `SandboxSpec`, `Environment`, or the kernel.
+
+  Adding such a tag to the provisioning seam would relayer a dispatch decision
+  into provisioning. It is deferred (YAGNI) until a concrete multi-locus routing
+  requirement exists (local in-process vs remote sandbox vs read replica); when
+  it does, it is recorded in a dispatch/executor ADR, consistent with ADR-0034
+  D6 keeping `ToolExecutor` unused until a cross-cutting execution policy needs
+  it. The current trust boundary (read-only mount, G13, permission gate) does not
+  depend on it.
+
 ## Alternatives considered
 
 - **An `awaken-ext-skills` runtime extension that discovers/renders/gates skills
