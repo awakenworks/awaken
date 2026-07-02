@@ -1,0 +1,239 @@
+pub mod awaken_ext_skills
+pub enum awaken_ext_skills::SkillContext
+pub awaken_ext_skills::SkillContext::Fork
+pub awaken_ext_skills::SkillContext::Inline
+impl core::clone::Clone for awaken_ext_skills::SkillContext
+pub fn awaken_ext_skills::SkillContext::clone(&self) -> awaken_ext_skills::SkillContext
+impl core::cmp::Eq for awaken_ext_skills::SkillContext
+impl core::cmp::PartialEq for awaken_ext_skills::SkillContext
+pub fn awaken_ext_skills::SkillContext::eq(&self, &awaken_ext_skills::SkillContext) -> bool
+impl core::default::Default for awaken_ext_skills::SkillContext
+pub fn awaken_ext_skills::SkillContext::default() -> awaken_ext_skills::SkillContext
+impl core::fmt::Debug for awaken_ext_skills::SkillContext
+pub fn awaken_ext_skills::SkillContext::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_skills::SkillContext
+impl core::marker::StructuralPartialEq for awaken_ext_skills::SkillContext
+impl serde_core::ser::Serialize for awaken_ext_skills::SkillContext
+pub fn awaken_ext_skills::SkillContext::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_skills::SkillContext
+pub fn awaken_ext_skills::SkillContext::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_skills::SkillContext
+impl core::marker::Send for awaken_ext_skills::SkillContext
+impl core::marker::Sync for awaken_ext_skills::SkillContext
+impl core::marker::Unpin for awaken_ext_skills::SkillContext
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SkillContext
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SkillContext
+pub enum awaken_ext_skills::SkillProvenance
+pub awaken_ext_skills::SkillProvenance::AgentCreated
+pub awaken_ext_skills::SkillProvenance::Delivered
+impl core::clone::Clone for awaken_ext_skills::SkillProvenance
+pub fn awaken_ext_skills::SkillProvenance::clone(&self) -> awaken_ext_skills::SkillProvenance
+impl core::cmp::Eq for awaken_ext_skills::SkillProvenance
+impl core::cmp::PartialEq for awaken_ext_skills::SkillProvenance
+pub fn awaken_ext_skills::SkillProvenance::eq(&self, &awaken_ext_skills::SkillProvenance) -> bool
+impl core::default::Default for awaken_ext_skills::SkillProvenance
+pub fn awaken_ext_skills::SkillProvenance::default() -> awaken_ext_skills::SkillProvenance
+impl core::fmt::Debug for awaken_ext_skills::SkillProvenance
+pub fn awaken_ext_skills::SkillProvenance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_skills::SkillProvenance
+impl core::marker::StructuralPartialEq for awaken_ext_skills::SkillProvenance
+impl serde_core::ser::Serialize for awaken_ext_skills::SkillProvenance
+pub fn awaken_ext_skills::SkillProvenance::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_skills::SkillProvenance
+pub fn awaken_ext_skills::SkillProvenance::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_skills::SkillProvenance
+impl core::marker::Send for awaken_ext_skills::SkillProvenance
+impl core::marker::Sync for awaken_ext_skills::SkillProvenance
+impl core::marker::Unpin for awaken_ext_skills::SkillProvenance
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SkillProvenance
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SkillProvenance
+pub struct awaken_ext_skills::CompositeSkillRegistry
+impl awaken_ext_skills::CompositeSkillRegistry
+pub fn awaken_ext_skills::CompositeSkillRegistry::new(alloc::vec::Vec<alloc::sync::Arc<dyn awaken_ext_skills::SkillRegistry>>) -> Self
+impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::CompositeSkillRegistry
+pub fn awaken_ext_skills::CompositeSkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::CompositeSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+impl core::marker::Freeze for awaken_ext_skills::CompositeSkillRegistry
+impl core::marker::Send for awaken_ext_skills::CompositeSkillRegistry
+impl core::marker::Sync for awaken_ext_skills::CompositeSkillRegistry
+impl core::marker::Unpin for awaken_ext_skills::CompositeSkillRegistry
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::CompositeSkillRegistry
+impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::CompositeSkillRegistry
+pub struct awaken_ext_skills::InMemorySkillRegistry
+impl awaken_ext_skills::InMemorySkillRegistry
+pub fn awaken_ext_skills::InMemorySkillRegistry::from_specs(impl core::iter::traits::collect::IntoIterator<Item = awaken_ext_skills::SkillSpec>) -> Self
+pub fn awaken_ext_skills::InMemorySkillRegistry::insert(&mut self, awaken_ext_skills::SkillSpec)
+pub fn awaken_ext_skills::InMemorySkillRegistry::is_empty(&self) -> bool
+pub fn awaken_ext_skills::InMemorySkillRegistry::new() -> Self
+impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::InMemorySkillRegistry
+pub fn awaken_ext_skills::InMemorySkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::InMemorySkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+impl core::clone::Clone for awaken_ext_skills::InMemorySkillRegistry
+pub fn awaken_ext_skills::InMemorySkillRegistry::clone(&self) -> awaken_ext_skills::InMemorySkillRegistry
+impl core::default::Default for awaken_ext_skills::InMemorySkillRegistry
+pub fn awaken_ext_skills::InMemorySkillRegistry::default() -> awaken_ext_skills::InMemorySkillRegistry
+impl core::fmt::Debug for awaken_ext_skills::InMemorySkillRegistry
+pub fn awaken_ext_skills::InMemorySkillRegistry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_skills::InMemorySkillRegistry
+impl core::marker::Send for awaken_ext_skills::InMemorySkillRegistry
+impl core::marker::Sync for awaken_ext_skills::InMemorySkillRegistry
+impl core::marker::Unpin for awaken_ext_skills::InMemorySkillRegistry
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::InMemorySkillRegistry
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::InMemorySkillRegistry
+pub struct awaken_ext_skills::ListSkillsTool
+impl awaken_ext_skills::ListSkillsTool
+pub fn awaken_ext_skills::ListSkillsTool::descriptor(&self) -> awaken_runtime_contract::resolved::ToolDescriptor
+pub fn awaken_ext_skills::ListSkillsTool::new(alloc::sync::Arc<dyn awaken_ext_skills::SkillRegistry>) -> Self
+pub fn awaken_ext_skills::ListSkillsTool::with_path_activations(self, awaken_ext_skills::PathActivations) -> Self
+impl awaken_runtime_contract::tool::RawTool for awaken_ext_skills::ListSkillsTool
+pub fn awaken_ext_skills::ListSkillsTool::id(&self) -> &str
+pub fn awaken_ext_skills::ListSkillsTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::fmt::Debug for awaken_ext_skills::ListSkillsTool
+pub fn awaken_ext_skills::ListSkillsTool::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_skills::ListSkillsTool
+impl core::marker::Send for awaken_ext_skills::ListSkillsTool
+impl core::marker::Sync for awaken_ext_skills::ListSkillsTool
+impl core::marker::Unpin for awaken_ext_skills::ListSkillsTool
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::ListSkillsTool
+impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::ListSkillsTool
+pub struct awaken_ext_skills::PathActivations
+impl awaken_ext_skills::PathActivations
+pub fn awaken_ext_skills::PathActivations::new() -> Self
+pub fn awaken_ext_skills::PathActivations::record(&self, impl core::convert::Into<alloc::string::String>)
+pub fn awaken_ext_skills::PathActivations::touched(&self) -> alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for awaken_ext_skills::PathActivations
+pub fn awaken_ext_skills::PathActivations::clone(&self) -> awaken_ext_skills::PathActivations
+impl core::default::Default for awaken_ext_skills::PathActivations
+pub fn awaken_ext_skills::PathActivations::default() -> awaken_ext_skills::PathActivations
+impl core::marker::Freeze for awaken_ext_skills::PathActivations
+impl core::marker::Send for awaken_ext_skills::PathActivations
+impl core::marker::Sync for awaken_ext_skills::PathActivations
+impl core::marker::Unpin for awaken_ext_skills::PathActivations
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::PathActivations
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::PathActivations
+pub struct awaken_ext_skills::RecordingGate
+impl awaken_ext_skills::RecordingGate
+pub fn awaken_ext_skills::RecordingGate::new(alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>, awaken_ext_skills::PathActivations) -> Self
+impl awaken_runtime_contract::permission::ToolGateHook for awaken_ext_skills::RecordingGate
+pub fn awaken_ext_skills::RecordingGate::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl core::marker::Freeze for awaken_ext_skills::RecordingGate
+impl core::marker::Send for awaken_ext_skills::RecordingGate
+impl core::marker::Sync for awaken_ext_skills::RecordingGate
+impl core::marker::Unpin for awaken_ext_skills::RecordingGate
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::RecordingGate
+impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::RecordingGate
+pub struct awaken_ext_skills::SkillFile
+pub awaken_ext_skills::SkillFile::content: alloc::string::String
+pub awaken_ext_skills::SkillFile::dir: core::option::Option<alloc::string::String>
+pub awaken_ext_skills::SkillFile::id: alloc::string::String
+impl core::clone::Clone for awaken_ext_skills::SkillFile
+pub fn awaken_ext_skills::SkillFile::clone(&self) -> awaken_ext_skills::SkillFile
+impl core::cmp::Eq for awaken_ext_skills::SkillFile
+impl core::cmp::PartialEq for awaken_ext_skills::SkillFile
+pub fn awaken_ext_skills::SkillFile::eq(&self, &awaken_ext_skills::SkillFile) -> bool
+impl core::fmt::Debug for awaken_ext_skills::SkillFile
+pub fn awaken_ext_skills::SkillFile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_skills::SkillFile
+impl core::marker::Freeze for awaken_ext_skills::SkillFile
+impl core::marker::Send for awaken_ext_skills::SkillFile
+impl core::marker::Sync for awaken_ext_skills::SkillFile
+impl core::marker::Unpin for awaken_ext_skills::SkillFile
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SkillFile
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SkillFile
+pub struct awaken_ext_skills::SkillSpec
+pub awaken_ext_skills::SkillSpec::agent: core::option::Option<alloc::string::String>
+pub awaken_ext_skills::SkillSpec::allowed_tools: alloc::vec::Vec<alloc::string::String>
+pub awaken_ext_skills::SkillSpec::argument_hint: core::option::Option<alloc::string::String>
+pub awaken_ext_skills::SkillSpec::arguments: alloc::vec::Vec<alloc::string::String>
+pub awaken_ext_skills::SkillSpec::body: alloc::string::String
+pub awaken_ext_skills::SkillSpec::category: core::option::Option<alloc::string::String>
+pub awaken_ext_skills::SkillSpec::context: awaken_ext_skills::SkillContext
+pub awaken_ext_skills::SkillSpec::description: alloc::string::String
+pub awaken_ext_skills::SkillSpec::dir: core::option::Option<alloc::string::String>
+pub awaken_ext_skills::SkillSpec::id: alloc::string::String
+pub awaken_ext_skills::SkillSpec::model_invocable: bool
+pub awaken_ext_skills::SkillSpec::model_override: core::option::Option<alloc::string::String>
+pub awaken_ext_skills::SkillSpec::name: alloc::string::String
+pub awaken_ext_skills::SkillSpec::paths: alloc::vec::Vec<alloc::string::String>
+pub awaken_ext_skills::SkillSpec::provenance: awaken_ext_skills::SkillProvenance
+pub awaken_ext_skills::SkillSpec::tags: alloc::vec::Vec<alloc::string::String>
+pub awaken_ext_skills::SkillSpec::user_invocable: bool
+pub awaken_ext_skills::SkillSpec::version: core::option::Option<alloc::string::String>
+pub awaken_ext_skills::SkillSpec::when_to_use: core::option::Option<alloc::string::String>
+impl awaken_ext_skills::SkillSpec
+pub fn awaken_ext_skills::SkillSpec::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_skills::SkillSpec::with_allowed_tools(self, alloc::vec::Vec<alloc::string::String>) -> Self
+pub fn awaken_ext_skills::SkillSpec::with_context(self, awaken_ext_skills::SkillContext) -> Self
+pub fn awaken_ext_skills::SkillSpec::with_paths(self, alloc::vec::Vec<alloc::string::String>) -> Self
+pub fn awaken_ext_skills::SkillSpec::with_provenance(self, awaken_ext_skills::SkillProvenance) -> Self
+pub fn awaken_ext_skills::SkillSpec::with_when_to_use(self, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for awaken_ext_skills::SkillSpec
+pub fn awaken_ext_skills::SkillSpec::clone(&self) -> awaken_ext_skills::SkillSpec
+impl core::cmp::Eq for awaken_ext_skills::SkillSpec
+impl core::cmp::PartialEq for awaken_ext_skills::SkillSpec
+pub fn awaken_ext_skills::SkillSpec::eq(&self, &awaken_ext_skills::SkillSpec) -> bool
+impl core::fmt::Debug for awaken_ext_skills::SkillSpec
+pub fn awaken_ext_skills::SkillSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_skills::SkillSpec
+impl serde_core::ser::Serialize for awaken_ext_skills::SkillSpec
+pub fn awaken_ext_skills::SkillSpec::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_skills::SkillSpec
+pub fn awaken_ext_skills::SkillSpec::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_skills::SkillSpec
+impl core::marker::Send for awaken_ext_skills::SkillSpec
+impl core::marker::Sync for awaken_ext_skills::SkillSpec
+impl core::marker::Unpin for awaken_ext_skills::SkillSpec
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SkillSpec
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SkillSpec
+pub struct awaken_ext_skills::SkillTool
+impl awaken_ext_skills::SkillTool
+pub fn awaken_ext_skills::SkillTool::descriptor(&self) -> awaken_runtime_contract::resolved::ToolDescriptor
+pub fn awaken_ext_skills::SkillTool::new(alloc::sync::Arc<dyn awaken_ext_skills::SkillRegistry>) -> Self
+pub fn awaken_ext_skills::SkillTool::with_fork_runner(self, alloc::sync::Arc<dyn awaken_ext_skills::SubAgentRunner>) -> Self
+pub fn awaken_ext_skills::SkillTool::with_session_id(self, impl core::convert::Into<alloc::string::String>) -> Self
+impl awaken_runtime_contract::tool::RawTool for awaken_ext_skills::SkillTool
+pub fn awaken_ext_skills::SkillTool::id(&self) -> &str
+pub fn awaken_ext_skills::SkillTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::fmt::Debug for awaken_ext_skills::SkillTool
+pub fn awaken_ext_skills::SkillTool::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_skills::SkillTool
+impl core::marker::Send for awaken_ext_skills::SkillTool
+impl core::marker::Sync for awaken_ext_skills::SkillTool
+impl core::marker::Unpin for awaken_ext_skills::SkillTool
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SkillTool
+impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SkillTool
+pub struct awaken_ext_skills::SourceSkillRegistry
+impl awaken_ext_skills::SourceSkillRegistry
+pub fn awaken_ext_skills::SourceSkillRegistry::new(alloc::sync::Arc<dyn awaken_ext_skills::SkillSource>, awaken_ext_skills::SkillProvenance) -> Self
+impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::SourceSkillRegistry
+pub fn awaken_ext_skills::SourceSkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::SourceSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+impl core::marker::Freeze for awaken_ext_skills::SourceSkillRegistry
+impl core::marker::Send for awaken_ext_skills::SourceSkillRegistry
+impl core::marker::Sync for awaken_ext_skills::SourceSkillRegistry
+impl core::marker::Unpin for awaken_ext_skills::SourceSkillRegistry
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_skills::SourceSkillRegistry
+impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_skills::SourceSkillRegistry
+pub const awaken_ext_skills::SKILL_LIST_TOOL_ID: &str
+pub const awaken_ext_skills::SKILL_TOOL_ID: &str
+pub trait awaken_ext_skills::SkillRegistry: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_skills::SkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::SkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::CompositeSkillRegistry
+pub fn awaken_ext_skills::CompositeSkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::CompositeSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::InMemorySkillRegistry
+pub fn awaken_ext_skills::InMemorySkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::InMemorySkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::SourceSkillRegistry
+pub fn awaken_ext_skills::SourceSkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::SourceSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+pub trait awaken_ext_skills::SkillSource: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_skills::SkillSource::scan(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillFile>
+pub trait awaken_ext_skills::SubAgentRunner: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_skills::SubAgentRunner::run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_skills::expand_slash_commands(&dyn awaken_ext_skills::SkillRegistry, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub fn awaken_ext_skills::list_skills_tool_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
+pub fn awaken_ext_skills::parse_skill_md(impl core::convert::Into<alloc::string::String>, &str) -> awaken_ext_skills::SkillSpec
+pub fn awaken_ext_skills::render_user_invocation(&awaken_ext_skills::SkillSpec, &str, core::option::Option<&str>) -> alloc::string::String
+pub fn awaken_ext_skills::skill_tool_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor

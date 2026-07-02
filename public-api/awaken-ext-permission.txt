@@ -119,29 +119,9 @@ impl core::marker::Sync for awaken_ext_permission::RulePermissionPolicy
 impl core::marker::Unpin for awaken_ext_permission::RulePermissionPolicy
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::RulePermissionPolicy
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::RulePermissionPolicy
-pub struct awaken_ext_permission::Specificity(_)
-impl core::clone::Clone for awaken_ext_permission::Specificity
-pub fn awaken_ext_permission::Specificity::clone(&self) -> awaken_ext_permission::Specificity
-impl core::cmp::Eq for awaken_ext_permission::Specificity
-impl core::cmp::Ord for awaken_ext_permission::Specificity
-pub fn awaken_ext_permission::Specificity::cmp(&self, &awaken_ext_permission::Specificity) -> core::cmp::Ordering
-impl core::cmp::PartialEq for awaken_ext_permission::Specificity
-pub fn awaken_ext_permission::Specificity::eq(&self, &awaken_ext_permission::Specificity) -> bool
-impl core::cmp::PartialOrd for awaken_ext_permission::Specificity
-pub fn awaken_ext_permission::Specificity::partial_cmp(&self, &awaken_ext_permission::Specificity) -> core::option::Option<core::cmp::Ordering>
-impl core::fmt::Debug for awaken_ext_permission::Specificity
-pub fn awaken_ext_permission::Specificity::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for awaken_ext_permission::Specificity
-impl core::marker::StructuralPartialEq for awaken_ext_permission::Specificity
-impl core::marker::Freeze for awaken_ext_permission::Specificity
-impl core::marker::Send for awaken_ext_permission::Specificity
-impl core::marker::Sync for awaken_ext_permission::Specificity
-impl core::marker::Unpin for awaken_ext_permission::Specificity
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_permission::Specificity
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_permission::Specificity
-pub struct awaken_ext_permission::ToolCallPattern
+pub struct awaken_ext_permission::ToolCallPattern(_)
 impl awaken_ext_permission::ToolCallPattern
-pub fn awaken_ext_permission::ToolCallPattern::matches(&self, &str, &serde_json::value::Value) -> core::option::Option<awaken_ext_permission::Specificity>
+pub fn awaken_ext_permission::ToolCallPattern::matches(&self, &str, &serde_json::value::Value) -> core::option::Option<awaken_tool_pattern::types::Specificity>
 pub fn awaken_ext_permission::ToolCallPattern::parse(&str) -> core::result::Result<Self, alloc::string::String>
 impl core::clone::Clone for awaken_ext_permission::ToolCallPattern
 pub fn awaken_ext_permission::ToolCallPattern::clone(&self) -> awaken_ext_permission::ToolCallPattern
