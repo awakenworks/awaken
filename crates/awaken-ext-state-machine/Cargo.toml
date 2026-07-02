@@ -1,0 +1,22 @@
+[package]
+name = "awaken-ext-state-machine"
+version = "0.1.0"
+edition = "2024"
+description = "Stateful tool-call ordering constraints (loadable FSM DSL) for Awaken"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-tool-pattern.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+async-trait.workspace = true
+thiserror.workspace = true
+url = "2.5"
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true
