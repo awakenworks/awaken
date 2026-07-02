@@ -53,7 +53,29 @@ async function main() {
     pass('ag-ui multimodal (image reached the model)');
   });
 
-  console.log('E2E PASS: AG-UI multi-turn + multimodal via @ag-ui/client.');
+  // --- HITL: a tool needing approval parks; delivering its result (approval) as a
+  // `role: "tool"` message resumes the run to completion ---
+  await withServer('probe', 38123, async (base) => {
+    const agent = newAgent(base);
+    agent.messages = [{ id: 'u1', role: 'user', content: 'remember this note' }];
+    const r1 = await agent.runAgent();
+    const call = (r1.newMessages ?? []).flatMap((m) => m.toolCalls ?? [])[0];
+    assert.ok(call, `expected a parked tool call: ${JSON.stringify(r1.newMessages)}`);
+
+    agent.messages = [
+      ...agent.messages,
+      ...r1.newMessages,
+      { id: 't1', role: 'tool', toolCallId: call.id, content: 'approved' },
+    ];
+    const r2 = await agent.runAgent();
+    const text = (r2.newMessages ?? [])
+      .map((m) => (typeof m.content === 'string' ? m.content : ''))
+      .join('');
+    assert.ok(text.includes('done'), `expected the run to finish after approval: ${text}`);
+    pass('ag-ui HITL approval (park -> approve -> complete)');
+  });
+
+  console.log('E2E PASS: AG-UI multi-turn + multimodal + HITL via @ag-ui/client.');
 }
 
 main().catch((err) => {
