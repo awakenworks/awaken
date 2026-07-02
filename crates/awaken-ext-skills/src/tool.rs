@@ -243,4 +243,59 @@ mod tests {
             .unwrap();
         assert!(!out.is_error);
     }
+
+    #[tokio::test]
+    async fn disclosure_is_progressive_body_only_on_activation() {
+        // The descriptor (level-1 disclosure) advertises identity but never the
+        // instruction body; the body (level-2) appears only in the activation
+        // result. This is the whole point of progressive disclosure.
+        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+            "deploy",
+            "Deploy",
+            "Ship a release",
+            "SECRET-STEP: rotate the signing key first",
+        )]));
+        let desc = skill_tool_descriptor(registry.as_ref());
+        assert!(desc.description.contains("- deploy: Ship a release"));
+        assert!(
+            !desc.description.contains("SECRET-STEP"),
+            "the body must not leak into the catalog: {}",
+            desc.description
+        );
+
+        let out = SkillTool::new(registry)
+            .invoke(call(serde_json::json!({ "skill": "deploy" })))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("SECRET-STEP"),
+            "body loads on activation"
+        );
+    }
+
+    #[test]
+    fn long_catalog_entry_is_truncated() {
+        let long = "x".repeat(400);
+        let registry =
+            InMemorySkillRegistry::from_specs([SkillSpec::new("big", "Big", long.clone(), "body")]);
+        let desc = skill_tool_descriptor(&registry);
+        assert!(
+            desc.description.contains('…'),
+            "an over-long entry is ellipsized"
+        );
+        assert!(
+            !desc.description.contains(&long),
+            "the full over-long description is not carried verbatim"
+        );
+    }
+
+    #[test]
+    fn empty_catalog_states_none() {
+        let registry = InMemorySkillRegistry::from_specs([SkillSpec {
+            model_invocable: false,
+            ..SkillSpec::new("hidden", "Hidden", "nope", "body")
+        }]);
+        let desc = skill_tool_descriptor(&registry);
+        assert!(desc.description.contains("Available skills: (none)"));
+    }
 }

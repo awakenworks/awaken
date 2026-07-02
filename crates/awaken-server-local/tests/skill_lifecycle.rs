@@ -139,6 +139,18 @@ impl LlmExecutor for SkillUserModel {
                     usage: None,
                 });
             }
+            // Progressive disclosure: the catalog advertises identity only; the
+            // instruction body must NOT be visible before activation.
+            if request
+                .tools
+                .iter()
+                .any(|t| t.description.contains(SKILL_BODY))
+            {
+                return Ok(ChatResponse {
+                    output: AssistantOutput::text("BODY_LEAKED_IN_CATALOG"),
+                    usage: None,
+                });
+            }
             return Ok(ChatResponse {
                 output: AssistantOutput::from_tool_calls(vec![ToolCall {
                     call_id: "s1".into(),
@@ -193,6 +205,17 @@ async fn offered_skill_is_advertised_activated_and_used() {
     assert!(
         !types.contains(&"NO_SKILL_ADVERTISED".to_string()),
         "sanity: the skill must have been advertised"
+    );
+    // progressive disclosure: the body never appeared in the catalog before use.
+    let message_texts: Vec<&str> = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["content"][0]["text"].as_str())
+        .collect();
+    assert!(
+        !message_texts.contains(&"BODY_LEAKED_IN_CATALOG"),
+        "the skill body must not be advertised before activation"
     );
 }
 
