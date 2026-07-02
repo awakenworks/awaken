@@ -68,6 +68,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
 | `design/error-taxonomy.md` | Decision record | Not required | n/a |
 | `design/packaging-enforcement-matrix.md` | Meta / introspection | Not required | n/a |
+| `design/tool-state-machine.md` | Role owner | Required | self |
 | `adr/0001-documentation-model-and-vocabulary-alignment.md` | Decision record | Not required | n/a |
 | `adr/0002-resolver-role-demarcation.md` | Decision record | Not required | n/a |
 | `adr/0003-deferred-work-mechanism-selection.md` | Decision record | Not required | n/a |
@@ -103,3 +104,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0033-in-process-run-driver.md` | Decision record | Not required | n/a |
 | `adr/0034-runtime-axis-model-and-orthogonality.md` | Decision record | Not required | n/a |
 | `adr/0035-environment-provisioning-tools-skills-resources.md` | Decision record | Not required | n/a |
+| `adr/0036-skills-as-runtime-extension-single-tool.md` | Decision record | Not required | n/a |
