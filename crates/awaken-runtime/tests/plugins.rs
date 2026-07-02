@@ -145,6 +145,7 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
                 tool_descriptors: Vec::new(),
                 plugin_ids,
                 plugin_config: Default::default(),
+                context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
             },
             fingerprint,
         },
