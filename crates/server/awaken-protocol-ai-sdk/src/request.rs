@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use serde_json::Value;
 
-use crate::types::{AiSdkChatRequest, UIMessage};
+use crate::types::{AiSdkChatRequest, ToolDecisionPart, UIMessage, UIPart};
 
 static THREAD_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -106,25 +106,18 @@ fn blocks_of(parts: &[Value]) -> Vec<ContentBlock> {
 }
 
 fn part_to_block(part: &Value) -> Option<ContentBlock> {
-    match part.get("type").and_then(Value::as_str)? {
-        "text" => {
-            let text = part.get("text").and_then(Value::as_str)?;
-            (!text.is_empty()).then(|| ContentBlock::text(text))
-        }
-        // AI SDK v5 file part: `{ type: "file", mediaType, url }` where `url` is
-        // either a `data:` URI or a remote link.
-        "file" => {
-            let media_type = part.get("mediaType").and_then(Value::as_str)?;
+    match serde_json::from_value::<UIPart>(part.clone()).ok()? {
+        UIPart::Text { text } => (!text.is_empty()).then(|| ContentBlock::text(text)),
+        UIPart::File { media_type, url } => {
             if !media_type.starts_with("image/") {
                 return None;
             }
-            let url = part.get("url").and_then(Value::as_str)?;
-            Some(match parse_data_uri(url) {
+            Some(match parse_data_uri(&url) {
                 Some((mime, data)) => ContentBlock::image_base64(mime, data),
                 None => ContentBlock::image_url(url),
             })
         }
-        _ => None,
+        UIPart::Other => None,
     }
 }
 
@@ -142,43 +135,27 @@ fn extract_decisions(messages: &[UIMessage]) -> Vec<Decision> {
     let mut decisions = Vec::new();
     for message in messages.iter().filter(|m| m.role == "assistant") {
         for part in &message.parts {
-            let Some(part_type) = part.get("type").and_then(Value::as_str) else {
+            let Ok(tool) = serde_json::from_value::<ToolDecisionPart>(part.clone()) else {
                 continue;
             };
-            if !part_type.starts_with("tool-") {
+            // Only assistant `tool-*` parts carry decisions; a provider-executed
+            // part is history, not a fresh decision.
+            if !tool.kind.starts_with("tool-") || tool.provider_executed {
                 continue;
             }
-            if part
-                .get("providerExecuted")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            let Some(state) = part.get("state").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(tool_call_id) = part.get("toolCallId").and_then(Value::as_str) else {
+            let (Some(state), Some(tool_call_id)) = (tool.state.as_deref(), tool.tool_call_id)
+            else {
                 continue;
             };
             let kind = match state {
-                "output-available" => {
-                    DecisionKind::Output(part.get("output").cloned().unwrap_or(Value::Null))
-                }
+                "output-available" => DecisionKind::Output(tool.output.unwrap_or(Value::Null)),
                 "output-error" => DecisionKind::Error(
-                    part.get("errorText")
-                        .and_then(Value::as_str)
-                        .unwrap_or("tool execution error")
-                        .to_string(),
+                    tool.error_text
+                        .unwrap_or_else(|| "tool execution error".to_string()),
                 ),
                 "output-denied" => DecisionKind::Denied,
                 "approval-responded" => {
-                    let approved = part
-                        .get("approval")
-                        .and_then(|a| a.get("approved"))
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
-                    if approved {
+                    if tool.approval.map(|a| a.approved).unwrap_or(false) {
                         DecisionKind::Approved
                     } else {
                         DecisionKind::Denied
@@ -186,10 +163,7 @@ fn extract_decisions(messages: &[UIMessage]) -> Vec<Decision> {
                 }
                 _ => continue,
             };
-            decisions.push(Decision {
-                tool_call_id: tool_call_id.to_string(),
-                kind,
-            });
+            decisions.push(Decision { tool_call_id, kind });
         }
     }
     decisions
