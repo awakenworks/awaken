@@ -130,14 +130,39 @@ path), not a skill-specific tool.
 
 ## Implementation slices
 
-- **Stage 2 (this ADR's baseline):** `Skill` + `list_skills`, catalog out of the
-  descriptor, `SkillSpec.provenance`, in-process registry. No kernel change.
-- **Stage 3:** sandbox materialization on the two roots, `${SKILL_DIR}`
-  substitution, `list_skills` scanning the sandbox (agent-created skills),
-  resources/scripts via built-in `read`/`bash`, authoring via `write`/`edit`.
-- **Later:** `read-before-write` via `awaken-ext-state-machine` (needs a
-  composable tool-gate seam), `allowed_tools` enforcement, `$1`/`$ARGUMENTS`
-  substitution, user `/skill-name` invocation, fork execution.
+**Landed** (all in `awaken-ext-skills`, wired by `awaken-server-local`; kernel
+unchanged; every commit tested):
+
+- **Two-tool surface** — `Skill` + `list_skills`, catalog out of the descriptor,
+  `SkillSpec.provenance`, in-process registry.
+- **`$ARGUMENTS`/`$1`..`$9`** argument substitution and **`${SKILL_DIR}`/
+  `${SESSION_ID}`** template substitution on activation.
+- **Metadata size limits** (name/description caps + bounded catalog entries).
+- **Richer `SKILL.md` frontmatter** (`user-invocable`, `argument-hint`,
+  `arguments`, `model`, `context`, `agent`, `paths`, `category`, `tags`,
+  `version`).
+- **Live sandbox discovery** — `Environment::scan_skill_dir` (root stays hidden),
+  a `SkillSource` port + `SourceSkillRegistry`/`CompositeSkillRegistry`, delivered
+  plus **agent-authored (run-scoped, provenance by root)** skills.
+- **tier-3 references/scripts** via built-in `read`/`bash` over materialized files
+  (no dedicated tool).
+- **Conditional (`paths`) surfacing** — a `RecordingGate` observes touched paths;
+  `list_skills` hides a paths-scoped skill until a glob matches.
+- **Fork execution** (`context: fork`) via a `SubAgentRunner` port backed by the
+  host's `run_subagent`.
+- **User `/skill-name`** invocation — the host expands a leading `/name` into the
+  skill body (`user_invocable` only).
+
+**Remaining:**
+
+- **`allowed_tools` enforcement** — the field is authored and carried; enforcing
+  it needs the composable tool-gate to consult active-skill state (the same seam
+  `read-before-write` needs).
+- **`read-before-write` guard** via `awaken-ext-state-machine`.
+- **True read-only delivered root** — provenance is by workspace subdir today;
+  the single sandbox root does not yet enforce read-only on the delivered set.
+- **Durable resume of run-scoped skill state** — the touched-path / active-skill
+  record is in-memory; a durable resume must rebuild it from committed facts.
 
 ## References
 
