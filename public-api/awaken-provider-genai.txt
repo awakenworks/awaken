@@ -1,6 +1,7 @@
 pub mod awaken_provider_genai
 pub struct awaken_provider_genai::GenaiExecutor
 impl awaken_provider_genai::GenaiExecutor
+pub fn awaken_provider_genai::GenaiExecutor::anthropic_compatible(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_provider_genai::GenaiExecutor::new() -> Self
 pub fn awaken_provider_genai::GenaiExecutor::with_client(genai::client::client_types::Client) -> Self
 pub fn awaken_provider_genai::GenaiExecutor::with_timeout(self, core::time::Duration) -> Self

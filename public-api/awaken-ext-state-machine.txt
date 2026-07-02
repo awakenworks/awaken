@@ -1,0 +1,763 @@
+pub mod awaken_ext_state_machine
+pub enum awaken_ext_state_machine::AdvanceOp
+pub awaken_ext_state_machine::AdvanceOp::Emit
+pub awaken_ext_state_machine::AdvanceOp::Emit::content: alloc::string::String
+pub awaken_ext_state_machine::AdvanceOp::Emit::cooldown_turns: u32
+pub awaken_ext_state_machine::AdvanceOp::Emit::key: alloc::string::String
+pub awaken_ext_state_machine::AdvanceOp::Emit::machine: alloc::string::String
+pub awaken_ext_state_machine::AdvanceOp::Emit::reason: awaken_ext_state_machine::EmitReason
+pub awaken_ext_state_machine::AdvanceOp::Emit::role: core::option::Option<awaken_agent_contract::agent::message::Role>
+pub awaken_ext_state_machine::AdvanceOp::Emit::target: awaken_ext_state_machine::EmitTarget
+pub awaken_ext_state_machine::AdvanceOp::Transition
+pub awaken_ext_state_machine::AdvanceOp::Transition::key: alloc::string::String
+pub awaken_ext_state_machine::AdvanceOp::Transition::machine: alloc::string::String
+pub awaken_ext_state_machine::AdvanceOp::Transition::scope: awaken_ext_state_machine::MachineScope
+pub awaken_ext_state_machine::AdvanceOp::Transition::to: alloc::string::String
+impl core::clone::Clone for awaken_ext_state_machine::AdvanceOp
+pub fn awaken_ext_state_machine::AdvanceOp::clone(&self) -> awaken_ext_state_machine::AdvanceOp
+impl core::cmp::Eq for awaken_ext_state_machine::AdvanceOp
+impl core::cmp::PartialEq for awaken_ext_state_machine::AdvanceOp
+pub fn awaken_ext_state_machine::AdvanceOp::eq(&self, &awaken_ext_state_machine::AdvanceOp) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::AdvanceOp
+pub fn awaken_ext_state_machine::AdvanceOp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::AdvanceOp
+impl core::marker::Freeze for awaken_ext_state_machine::AdvanceOp
+impl core::marker::Send for awaken_ext_state_machine::AdvanceOp
+impl core::marker::Sync for awaken_ext_state_machine::AdvanceOp
+impl core::marker::Unpin for awaken_ext_state_machine::AdvanceOp
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::AdvanceOp
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::AdvanceOp
+pub enum awaken_ext_state_machine::ContentMatcher
+pub awaken_ext_state_machine::ContentMatcher::JsonFields(alloc::vec::Vec<awaken_tool_pattern::types::FieldCondition>)
+pub awaken_ext_state_machine::ContentMatcher::Text
+pub awaken_ext_state_machine::ContentMatcher::Text::op: awaken_tool_pattern::types::MatchOp
+pub awaken_ext_state_machine::ContentMatcher::Text::value: alloc::string::String
+impl core::clone::Clone for awaken_ext_state_machine::ContentMatcher
+pub fn awaken_ext_state_machine::ContentMatcher::clone(&self) -> awaken_ext_state_machine::ContentMatcher
+impl core::fmt::Debug for awaken_ext_state_machine::ContentMatcher
+pub fn awaken_ext_state_machine::ContentMatcher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_state_machine::ContentMatcher
+impl core::marker::Send for awaken_ext_state_machine::ContentMatcher
+impl core::marker::Sync for awaken_ext_state_machine::ContentMatcher
+impl core::marker::Unpin for awaken_ext_state_machine::ContentMatcher
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ContentMatcher
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ContentMatcher
+pub enum awaken_ext_state_machine::EmitReason
+pub awaken_ext_state_machine::EmitReason::Transition
+pub awaken_ext_state_machine::EmitReason::Warning
+impl core::clone::Clone for awaken_ext_state_machine::EmitReason
+pub fn awaken_ext_state_machine::EmitReason::clone(&self) -> awaken_ext_state_machine::EmitReason
+impl core::cmp::Eq for awaken_ext_state_machine::EmitReason
+impl core::cmp::PartialEq for awaken_ext_state_machine::EmitReason
+pub fn awaken_ext_state_machine::EmitReason::eq(&self, &awaken_ext_state_machine::EmitReason) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::EmitReason
+pub fn awaken_ext_state_machine::EmitReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_state_machine::EmitReason
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::EmitReason
+impl core::marker::Freeze for awaken_ext_state_machine::EmitReason
+impl core::marker::Send for awaken_ext_state_machine::EmitReason
+impl core::marker::Sync for awaken_ext_state_machine::EmitReason
+impl core::marker::Unpin for awaken_ext_state_machine::EmitReason
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::EmitReason
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::EmitReason
+pub enum awaken_ext_state_machine::EmitTarget
+pub awaken_ext_state_machine::EmitTarget::Conversation
+pub awaken_ext_state_machine::EmitTarget::Session
+pub awaken_ext_state_machine::EmitTarget::SuffixSystem
+pub awaken_ext_state_machine::EmitTarget::System
+impl core::clone::Clone for awaken_ext_state_machine::EmitTarget
+pub fn awaken_ext_state_machine::EmitTarget::clone(&self) -> awaken_ext_state_machine::EmitTarget
+impl core::cmp::Eq for awaken_ext_state_machine::EmitTarget
+impl core::cmp::PartialEq for awaken_ext_state_machine::EmitTarget
+pub fn awaken_ext_state_machine::EmitTarget::eq(&self, &awaken_ext_state_machine::EmitTarget) -> bool
+impl core::default::Default for awaken_ext_state_machine::EmitTarget
+pub fn awaken_ext_state_machine::EmitTarget::default() -> awaken_ext_state_machine::EmitTarget
+impl core::fmt::Debug for awaken_ext_state_machine::EmitTarget
+pub fn awaken_ext_state_machine::EmitTarget::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_state_machine::EmitTarget
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::EmitTarget
+impl core::marker::Freeze for awaken_ext_state_machine::EmitTarget
+impl core::marker::Send for awaken_ext_state_machine::EmitTarget
+impl core::marker::Sync for awaken_ext_state_machine::EmitTarget
+impl core::marker::Unpin for awaken_ext_state_machine::EmitTarget
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::EmitTarget
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::EmitTarget
+pub enum awaken_ext_state_machine::FsmMetricEvent
+pub awaken_ext_state_machine::FsmMetricEvent::Asked
+pub awaken_ext_state_machine::FsmMetricEvent::Denied
+pub awaken_ext_state_machine::FsmMetricEvent::Emitted
+pub awaken_ext_state_machine::FsmMetricEvent::Transitioned
+pub awaken_ext_state_machine::FsmMetricEvent::Warned
+impl core::clone::Clone for awaken_ext_state_machine::FsmMetricEvent
+pub fn awaken_ext_state_machine::FsmMetricEvent::clone(&self) -> awaken_ext_state_machine::FsmMetricEvent
+impl core::cmp::Eq for awaken_ext_state_machine::FsmMetricEvent
+impl core::cmp::PartialEq for awaken_ext_state_machine::FsmMetricEvent
+pub fn awaken_ext_state_machine::FsmMetricEvent::eq(&self, &awaken_ext_state_machine::FsmMetricEvent) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::FsmMetricEvent
+pub fn awaken_ext_state_machine::FsmMetricEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_state_machine::FsmMetricEvent
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::FsmMetricEvent
+impl core::marker::Freeze for awaken_ext_state_machine::FsmMetricEvent
+impl core::marker::Send for awaken_ext_state_machine::FsmMetricEvent
+impl core::marker::Sync for awaken_ext_state_machine::FsmMetricEvent
+impl core::marker::Unpin for awaken_ext_state_machine::FsmMetricEvent
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmMetricEvent
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmMetricEvent
+pub enum awaken_ext_state_machine::KeyNormalizer
+pub awaken_ext_state_machine::KeyNormalizer::Lowercase
+pub awaken_ext_state_machine::KeyNormalizer::None
+pub awaken_ext_state_machine::KeyNormalizer::Path
+pub awaken_ext_state_machine::KeyNormalizer::Trim
+pub awaken_ext_state_machine::KeyNormalizer::Url
+impl awaken_ext_state_machine::KeyNormalizer
+pub fn awaken_ext_state_machine::KeyNormalizer::normalize(self, alloc::string::String) -> alloc::string::String
+impl core::clone::Clone for awaken_ext_state_machine::KeyNormalizer
+pub fn awaken_ext_state_machine::KeyNormalizer::clone(&self) -> awaken_ext_state_machine::KeyNormalizer
+impl core::cmp::Eq for awaken_ext_state_machine::KeyNormalizer
+impl core::cmp::PartialEq for awaken_ext_state_machine::KeyNormalizer
+pub fn awaken_ext_state_machine::KeyNormalizer::eq(&self, &awaken_ext_state_machine::KeyNormalizer) -> bool
+impl core::default::Default for awaken_ext_state_machine::KeyNormalizer
+pub fn awaken_ext_state_machine::KeyNormalizer::default() -> awaken_ext_state_machine::KeyNormalizer
+impl core::fmt::Debug for awaken_ext_state_machine::KeyNormalizer
+pub fn awaken_ext_state_machine::KeyNormalizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_state_machine::KeyNormalizer
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::KeyNormalizer
+impl core::marker::Freeze for awaken_ext_state_machine::KeyNormalizer
+impl core::marker::Send for awaken_ext_state_machine::KeyNormalizer
+impl core::marker::Sync for awaken_ext_state_machine::KeyNormalizer
+impl core::marker::Unpin for awaken_ext_state_machine::KeyNormalizer
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::KeyNormalizer
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::KeyNormalizer
+pub enum awaken_ext_state_machine::KeyTemplateError
+pub awaken_ext_state_machine::KeyTemplateError::EmptyPlaceholder(alloc::string::String)
+pub awaken_ext_state_machine::KeyTemplateError::UnbalancedOpen(alloc::string::String)
+pub awaken_ext_state_machine::KeyTemplateError::UnexpectedClose(alloc::string::String)
+impl core::cmp::Eq for awaken_ext_state_machine::KeyTemplateError
+impl core::cmp::PartialEq for awaken_ext_state_machine::KeyTemplateError
+pub fn awaken_ext_state_machine::KeyTemplateError::eq(&self, &awaken_ext_state_machine::KeyTemplateError) -> bool
+impl core::convert::From<awaken_ext_state_machine::KeyTemplateError> for awaken_ext_state_machine::StateMachineConfigError
+pub fn awaken_ext_state_machine::StateMachineConfigError::from(awaken_ext_state_machine::KeyTemplateError) -> Self
+impl core::error::Error for awaken_ext_state_machine::KeyTemplateError
+impl core::fmt::Debug for awaken_ext_state_machine::KeyTemplateError
+pub fn awaken_ext_state_machine::KeyTemplateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_ext_state_machine::KeyTemplateError
+pub fn awaken_ext_state_machine::KeyTemplateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::KeyTemplateError
+impl core::marker::Freeze for awaken_ext_state_machine::KeyTemplateError
+impl core::marker::Send for awaken_ext_state_machine::KeyTemplateError
+impl core::marker::Sync for awaken_ext_state_machine::KeyTemplateError
+impl core::marker::Unpin for awaken_ext_state_machine::KeyTemplateError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::KeyTemplateError
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::KeyTemplateError
+pub enum awaken_ext_state_machine::MachineEval
+pub awaken_ext_state_machine::MachineEval::Allow
+pub awaken_ext_state_machine::MachineEval::Allow::key: alloc::string::String
+pub awaken_ext_state_machine::MachineEval::Allow::machine: alloc::string::String
+pub awaken_ext_state_machine::MachineEval::Allow::scope: awaken_ext_state_machine::MachineScope
+pub awaken_ext_state_machine::MachineEval::Allow::to: alloc::string::String
+pub awaken_ext_state_machine::MachineEval::Violation
+pub awaken_ext_state_machine::MachineEval::Violation::action: awaken_ext_state_machine::ViolationAction
+pub awaken_ext_state_machine::MachineEval::Violation::key: alloc::string::String
+pub awaken_ext_state_machine::MachineEval::Violation::machine: alloc::string::String
+pub awaken_ext_state_machine::MachineEval::Violation::reason: alloc::string::String
+impl core::clone::Clone for awaken_ext_state_machine::MachineEval
+pub fn awaken_ext_state_machine::MachineEval::clone(&self) -> awaken_ext_state_machine::MachineEval
+impl core::cmp::Eq for awaken_ext_state_machine::MachineEval
+impl core::cmp::PartialEq for awaken_ext_state_machine::MachineEval
+pub fn awaken_ext_state_machine::MachineEval::eq(&self, &awaken_ext_state_machine::MachineEval) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::MachineEval
+pub fn awaken_ext_state_machine::MachineEval::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::MachineEval
+impl core::marker::Freeze for awaken_ext_state_machine::MachineEval
+impl core::marker::Send for awaken_ext_state_machine::MachineEval
+impl core::marker::Sync for awaken_ext_state_machine::MachineEval
+impl core::marker::Unpin for awaken_ext_state_machine::MachineEval
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::MachineEval
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::MachineEval
+pub enum awaken_ext_state_machine::MachineScope
+pub awaken_ext_state_machine::MachineScope::Run
+pub awaken_ext_state_machine::MachineScope::Thread
+impl core::clone::Clone for awaken_ext_state_machine::MachineScope
+pub fn awaken_ext_state_machine::MachineScope::clone(&self) -> awaken_ext_state_machine::MachineScope
+impl core::cmp::Eq for awaken_ext_state_machine::MachineScope
+impl core::cmp::PartialEq for awaken_ext_state_machine::MachineScope
+pub fn awaken_ext_state_machine::MachineScope::eq(&self, &awaken_ext_state_machine::MachineScope) -> bool
+impl core::default::Default for awaken_ext_state_machine::MachineScope
+pub fn awaken_ext_state_machine::MachineScope::default() -> awaken_ext_state_machine::MachineScope
+impl core::fmt::Debug for awaken_ext_state_machine::MachineScope
+pub fn awaken_ext_state_machine::MachineScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_state_machine::MachineScope
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::MachineScope
+impl core::marker::Freeze for awaken_ext_state_machine::MachineScope
+impl core::marker::Send for awaken_ext_state_machine::MachineScope
+impl core::marker::Sync for awaken_ext_state_machine::MachineScope
+impl core::marker::Unpin for awaken_ext_state_machine::MachineScope
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::MachineScope
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::MachineScope
+pub enum awaken_ext_state_machine::ResultMatcher
+pub awaken_ext_state_machine::ResultMatcher::Any
+pub awaken_ext_state_machine::ResultMatcher::Both
+pub awaken_ext_state_machine::ResultMatcher::Both::content: awaken_ext_state_machine::ContentMatcher
+pub awaken_ext_state_machine::ResultMatcher::Both::status: awaken_ext_state_machine::StatusMatcher
+pub awaken_ext_state_machine::ResultMatcher::Content(awaken_ext_state_machine::ContentMatcher)
+pub awaken_ext_state_machine::ResultMatcher::Status(awaken_ext_state_machine::StatusMatcher)
+impl core::clone::Clone for awaken_ext_state_machine::ResultMatcher
+pub fn awaken_ext_state_machine::ResultMatcher::clone(&self) -> awaken_ext_state_machine::ResultMatcher
+impl core::fmt::Debug for awaken_ext_state_machine::ResultMatcher
+pub fn awaken_ext_state_machine::ResultMatcher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_state_machine::ResultMatcher
+impl core::marker::Send for awaken_ext_state_machine::ResultMatcher
+impl core::marker::Sync for awaken_ext_state_machine::ResultMatcher
+impl core::marker::Unpin for awaken_ext_state_machine::ResultMatcher
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ResultMatcher
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ResultMatcher
+pub enum awaken_ext_state_machine::StateMachineConfigError
+pub awaken_ext_state_machine::StateMachineConfigError::Action(alloc::string::String)
+pub awaken_ext_state_machine::StateMachineConfigError::DuplicateMachine(alloc::string::String)
+pub awaken_ext_state_machine::StateMachineConfigError::Parse(alloc::string::String)
+pub awaken_ext_state_machine::StateMachineConfigError::Pattern
+pub awaken_ext_state_machine::StateMachineConfigError::Pattern::message: alloc::string::String
+pub awaken_ext_state_machine::StateMachineConfigError::Pattern::pattern: alloc::string::String
+pub awaken_ext_state_machine::StateMachineConfigError::Status(alloc::string::String)
+pub awaken_ext_state_machine::StateMachineConfigError::Template(awaken_ext_state_machine::KeyTemplateError)
+impl core::convert::From<awaken_ext_state_machine::KeyTemplateError> for awaken_ext_state_machine::StateMachineConfigError
+pub fn awaken_ext_state_machine::StateMachineConfigError::from(awaken_ext_state_machine::KeyTemplateError) -> Self
+impl core::error::Error for awaken_ext_state_machine::StateMachineConfigError
+pub fn awaken_ext_state_machine::StateMachineConfigError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for awaken_ext_state_machine::StateMachineConfigError
+pub fn awaken_ext_state_machine::StateMachineConfigError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_ext_state_machine::StateMachineConfigError
+pub fn awaken_ext_state_machine::StateMachineConfigError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_state_machine::StateMachineConfigError
+impl core::marker::Send for awaken_ext_state_machine::StateMachineConfigError
+impl core::marker::Sync for awaken_ext_state_machine::StateMachineConfigError
+impl core::marker::Unpin for awaken_ext_state_machine::StateMachineConfigError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::StateMachineConfigError
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::StateMachineConfigError
+pub enum awaken_ext_state_machine::StatusMatcher
+pub awaken_ext_state_machine::StatusMatcher::Any
+pub awaken_ext_state_machine::StatusMatcher::Error
+pub awaken_ext_state_machine::StatusMatcher::Success
+impl core::clone::Clone for awaken_ext_state_machine::StatusMatcher
+pub fn awaken_ext_state_machine::StatusMatcher::clone(&self) -> awaken_ext_state_machine::StatusMatcher
+impl core::cmp::Eq for awaken_ext_state_machine::StatusMatcher
+impl core::cmp::PartialEq for awaken_ext_state_machine::StatusMatcher
+pub fn awaken_ext_state_machine::StatusMatcher::eq(&self, &awaken_ext_state_machine::StatusMatcher) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::StatusMatcher
+pub fn awaken_ext_state_machine::StatusMatcher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_state_machine::StatusMatcher
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::StatusMatcher
+impl core::marker::Freeze for awaken_ext_state_machine::StatusMatcher
+impl core::marker::Send for awaken_ext_state_machine::StatusMatcher
+impl core::marker::Sync for awaken_ext_state_machine::StatusMatcher
+impl core::marker::Unpin for awaken_ext_state_machine::StatusMatcher
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::StatusMatcher
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::StatusMatcher
+pub enum awaken_ext_state_machine::ViolationAction
+pub awaken_ext_state_machine::ViolationAction::Ask
+pub awaken_ext_state_machine::ViolationAction::Deny
+pub awaken_ext_state_machine::ViolationAction::Warn
+impl core::clone::Clone for awaken_ext_state_machine::ViolationAction
+pub fn awaken_ext_state_machine::ViolationAction::clone(&self) -> awaken_ext_state_machine::ViolationAction
+impl core::cmp::Eq for awaken_ext_state_machine::ViolationAction
+impl core::cmp::PartialEq for awaken_ext_state_machine::ViolationAction
+pub fn awaken_ext_state_machine::ViolationAction::eq(&self, &awaken_ext_state_machine::ViolationAction) -> bool
+impl core::default::Default for awaken_ext_state_machine::ViolationAction
+pub fn awaken_ext_state_machine::ViolationAction::default() -> awaken_ext_state_machine::ViolationAction
+impl core::fmt::Debug for awaken_ext_state_machine::ViolationAction
+pub fn awaken_ext_state_machine::ViolationAction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_state_machine::ViolationAction
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::ViolationAction
+impl core::marker::Freeze for awaken_ext_state_machine::ViolationAction
+impl core::marker::Send for awaken_ext_state_machine::ViolationAction
+impl core::marker::Sync for awaken_ext_state_machine::ViolationAction
+impl core::marker::Unpin for awaken_ext_state_machine::ViolationAction
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ViolationAction
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ViolationAction
+pub enum awaken_ext_state_machine::ViolationAuditAction
+pub awaken_ext_state_machine::ViolationAuditAction::Ask
+pub awaken_ext_state_machine::ViolationAuditAction::Deny
+pub awaken_ext_state_machine::ViolationAuditAction::Warn
+impl core::clone::Clone for awaken_ext_state_machine::ViolationAuditAction
+pub fn awaken_ext_state_machine::ViolationAuditAction::clone(&self) -> awaken_ext_state_machine::ViolationAuditAction
+impl core::cmp::Eq for awaken_ext_state_machine::ViolationAuditAction
+impl core::cmp::PartialEq for awaken_ext_state_machine::ViolationAuditAction
+pub fn awaken_ext_state_machine::ViolationAuditAction::eq(&self, &awaken_ext_state_machine::ViolationAuditAction) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::ViolationAuditAction
+pub fn awaken_ext_state_machine::ViolationAuditAction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_state_machine::ViolationAuditAction
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::ViolationAuditAction
+impl serde_core::ser::Serialize for awaken_ext_state_machine::ViolationAuditAction
+pub fn awaken_ext_state_machine::ViolationAuditAction::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_state_machine::ViolationAuditAction
+pub fn awaken_ext_state_machine::ViolationAuditAction::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_state_machine::ViolationAuditAction
+impl core::marker::Send for awaken_ext_state_machine::ViolationAuditAction
+impl core::marker::Sync for awaken_ext_state_machine::ViolationAuditAction
+impl core::marker::Unpin for awaken_ext_state_machine::ViolationAuditAction
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ViolationAuditAction
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ViolationAuditAction
+pub struct awaken_ext_state_machine::ContinuationSettings
+pub awaken_ext_state_machine::ContinuationSettings::max_continuations: u32
+pub awaken_ext_state_machine::ContinuationSettings::message: core::option::Option<alloc::string::String>
+impl core::clone::Clone for awaken_ext_state_machine::ContinuationSettings
+pub fn awaken_ext_state_machine::ContinuationSettings::clone(&self) -> awaken_ext_state_machine::ContinuationSettings
+impl core::default::Default for awaken_ext_state_machine::ContinuationSettings
+pub fn awaken_ext_state_machine::ContinuationSettings::default() -> awaken_ext_state_machine::ContinuationSettings
+impl core::fmt::Debug for awaken_ext_state_machine::ContinuationSettings
+pub fn awaken_ext_state_machine::ContinuationSettings::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_state_machine::ContinuationSettings where awaken_ext_state_machine::ContinuationSettings: core::default::Default
+pub fn awaken_ext_state_machine::ContinuationSettings::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_state_machine::ContinuationSettings
+impl core::marker::Send for awaken_ext_state_machine::ContinuationSettings
+impl core::marker::Sync for awaken_ext_state_machine::ContinuationSettings
+impl core::marker::Unpin for awaken_ext_state_machine::ContinuationSettings
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ContinuationSettings
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ContinuationSettings
+pub struct awaken_ext_state_machine::Emit
+pub awaken_ext_state_machine::Emit::content: awaken_ext_state_machine::KeyTemplate
+pub awaken_ext_state_machine::Emit::cooldown_turns: u32
+pub awaken_ext_state_machine::Emit::role: core::option::Option<awaken_agent_contract::agent::message::Role>
+pub awaken_ext_state_machine::Emit::target: awaken_ext_state_machine::EmitTarget
+impl core::clone::Clone for awaken_ext_state_machine::Emit
+pub fn awaken_ext_state_machine::Emit::clone(&self) -> awaken_ext_state_machine::Emit
+impl core::fmt::Debug for awaken_ext_state_machine::Emit
+pub fn awaken_ext_state_machine::Emit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_state_machine::Emit
+impl core::marker::Send for awaken_ext_state_machine::Emit
+impl core::marker::Sync for awaken_ext_state_machine::Emit
+impl core::marker::Unpin for awaken_ext_state_machine::Emit
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::Emit
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::Emit
+pub struct awaken_ext_state_machine::FsmMetricCounts
+pub awaken_ext_state_machine::FsmMetricCounts::asked: u64
+pub awaken_ext_state_machine::FsmMetricCounts::denied: u64
+pub awaken_ext_state_machine::FsmMetricCounts::emitted: u64
+pub awaken_ext_state_machine::FsmMetricCounts::transitioned: u64
+pub awaken_ext_state_machine::FsmMetricCounts::warned: u64
+impl core::clone::Clone for awaken_ext_state_machine::FsmMetricCounts
+pub fn awaken_ext_state_machine::FsmMetricCounts::clone(&self) -> awaken_ext_state_machine::FsmMetricCounts
+impl core::cmp::Eq for awaken_ext_state_machine::FsmMetricCounts
+impl core::cmp::PartialEq for awaken_ext_state_machine::FsmMetricCounts
+pub fn awaken_ext_state_machine::FsmMetricCounts::eq(&self, &awaken_ext_state_machine::FsmMetricCounts) -> bool
+impl core::default::Default for awaken_ext_state_machine::FsmMetricCounts
+pub fn awaken_ext_state_machine::FsmMetricCounts::default() -> awaken_ext_state_machine::FsmMetricCounts
+impl core::fmt::Debug for awaken_ext_state_machine::FsmMetricCounts
+pub fn awaken_ext_state_machine::FsmMetricCounts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_ext_state_machine::FsmMetricCounts
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::FsmMetricCounts
+impl serde_core::ser::Serialize for awaken_ext_state_machine::FsmMetricCounts
+pub fn awaken_ext_state_machine::FsmMetricCounts::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_state_machine::FsmMetricCounts where awaken_ext_state_machine::FsmMetricCounts: core::default::Default
+pub fn awaken_ext_state_machine::FsmMetricCounts::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_state_machine::FsmMetricCounts
+impl core::marker::Send for awaken_ext_state_machine::FsmMetricCounts
+impl core::marker::Sync for awaken_ext_state_machine::FsmMetricCounts
+impl core::marker::Unpin for awaken_ext_state_machine::FsmMetricCounts
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmMetricCounts
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmMetricCounts
+pub struct awaken_ext_state_machine::FsmMetricUpdate
+pub awaken_ext_state_machine::FsmMetricUpdate::event: awaken_ext_state_machine::FsmMetricEvent
+pub awaken_ext_state_machine::FsmMetricUpdate::machine: alloc::string::String
+impl core::clone::Clone for awaken_ext_state_machine::FsmMetricUpdate
+pub fn awaken_ext_state_machine::FsmMetricUpdate::clone(&self) -> awaken_ext_state_machine::FsmMetricUpdate
+impl core::cmp::Eq for awaken_ext_state_machine::FsmMetricUpdate
+impl core::cmp::PartialEq for awaken_ext_state_machine::FsmMetricUpdate
+pub fn awaken_ext_state_machine::FsmMetricUpdate::eq(&self, &awaken_ext_state_machine::FsmMetricUpdate) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::FsmMetricUpdate
+pub fn awaken_ext_state_machine::FsmMetricUpdate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::FsmMetricUpdate
+impl core::marker::Freeze for awaken_ext_state_machine::FsmMetricUpdate
+impl core::marker::Send for awaken_ext_state_machine::FsmMetricUpdate
+impl core::marker::Sync for awaken_ext_state_machine::FsmMetricUpdate
+impl core::marker::Unpin for awaken_ext_state_machine::FsmMetricUpdate
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmMetricUpdate
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmMetricUpdate
+pub struct awaken_ext_state_machine::FsmMetrics
+pub awaken_ext_state_machine::FsmMetrics::by_machine: std::collections::hash::map::HashMap<alloc::string::String, awaken_ext_state_machine::FsmMetricCounts>
+pub awaken_ext_state_machine::FsmMetrics::total: awaken_ext_state_machine::FsmMetricCounts
+impl core::clone::Clone for awaken_ext_state_machine::FsmMetrics
+pub fn awaken_ext_state_machine::FsmMetrics::clone(&self) -> awaken_ext_state_machine::FsmMetrics
+impl core::cmp::Eq for awaken_ext_state_machine::FsmMetrics
+impl core::cmp::PartialEq for awaken_ext_state_machine::FsmMetrics
+pub fn awaken_ext_state_machine::FsmMetrics::eq(&self, &awaken_ext_state_machine::FsmMetrics) -> bool
+impl core::default::Default for awaken_ext_state_machine::FsmMetrics
+pub fn awaken_ext_state_machine::FsmMetrics::default() -> awaken_ext_state_machine::FsmMetrics
+impl core::fmt::Debug for awaken_ext_state_machine::FsmMetrics
+pub fn awaken_ext_state_machine::FsmMetrics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::FsmMetrics
+impl serde_core::ser::Serialize for awaken_ext_state_machine::FsmMetrics
+pub fn awaken_ext_state_machine::FsmMetrics::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_state_machine::FsmMetrics where awaken_ext_state_machine::FsmMetrics: core::default::Default
+pub fn awaken_ext_state_machine::FsmMetrics::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_state_machine::FsmMetrics
+impl core::marker::Send for awaken_ext_state_machine::FsmMetrics
+impl core::marker::Sync for awaken_ext_state_machine::FsmMetrics
+impl core::marker::Unpin for awaken_ext_state_machine::FsmMetrics
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmMetrics
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmMetrics
+pub struct awaken_ext_state_machine::FsmStore
+pub awaken_ext_state_machine::FsmStore::machines: std::collections::hash::map::HashMap<alloc::string::String, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>
+impl awaken_ext_state_machine::FsmStore
+pub fn awaken_ext_state_machine::FsmStore::current(&self, &str, &str) -> core::option::Option<&str>
+impl core::clone::Clone for awaken_ext_state_machine::FsmStore
+pub fn awaken_ext_state_machine::FsmStore::clone(&self) -> awaken_ext_state_machine::FsmStore
+impl core::cmp::Eq for awaken_ext_state_machine::FsmStore
+impl core::cmp::PartialEq for awaken_ext_state_machine::FsmStore
+pub fn awaken_ext_state_machine::FsmStore::eq(&self, &awaken_ext_state_machine::FsmStore) -> bool
+impl core::default::Default for awaken_ext_state_machine::FsmStore
+pub fn awaken_ext_state_machine::FsmStore::default() -> awaken_ext_state_machine::FsmStore
+impl core::fmt::Debug for awaken_ext_state_machine::FsmStore
+pub fn awaken_ext_state_machine::FsmStore::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::FsmStore
+impl serde_core::ser::Serialize for awaken_ext_state_machine::FsmStore
+pub fn awaken_ext_state_machine::FsmStore::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_state_machine::FsmStore where awaken_ext_state_machine::FsmStore: core::default::Default
+pub fn awaken_ext_state_machine::FsmStore::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_state_machine::FsmStore
+impl core::marker::Send for awaken_ext_state_machine::FsmStore
+impl core::marker::Sync for awaken_ext_state_machine::FsmStore
+impl core::marker::Unpin for awaken_ext_state_machine::FsmStore
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmStore
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmStore
+pub struct awaken_ext_state_machine::FsmTransition
+pub awaken_ext_state_machine::FsmTransition::key: alloc::string::String
+pub awaken_ext_state_machine::FsmTransition::machine: alloc::string::String
+pub awaken_ext_state_machine::FsmTransition::to: alloc::string::String
+impl core::clone::Clone for awaken_ext_state_machine::FsmTransition
+pub fn awaken_ext_state_machine::FsmTransition::clone(&self) -> awaken_ext_state_machine::FsmTransition
+impl core::cmp::Eq for awaken_ext_state_machine::FsmTransition
+impl core::cmp::PartialEq for awaken_ext_state_machine::FsmTransition
+pub fn awaken_ext_state_machine::FsmTransition::eq(&self, &awaken_ext_state_machine::FsmTransition) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::FsmTransition
+pub fn awaken_ext_state_machine::FsmTransition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::FsmTransition
+impl core::marker::Freeze for awaken_ext_state_machine::FsmTransition
+impl core::marker::Send for awaken_ext_state_machine::FsmTransition
+impl core::marker::Sync for awaken_ext_state_machine::FsmTransition
+impl core::marker::Unpin for awaken_ext_state_machine::FsmTransition
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmTransition
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmTransition
+pub struct awaken_ext_state_machine::FsmViolationLog
+pub awaken_ext_state_machine::FsmViolationLog::records: alloc::vec::Vec<awaken_ext_state_machine::FsmViolationRecord>
+impl core::clone::Clone for awaken_ext_state_machine::FsmViolationLog
+pub fn awaken_ext_state_machine::FsmViolationLog::clone(&self) -> awaken_ext_state_machine::FsmViolationLog
+impl core::cmp::Eq for awaken_ext_state_machine::FsmViolationLog
+impl core::cmp::PartialEq for awaken_ext_state_machine::FsmViolationLog
+pub fn awaken_ext_state_machine::FsmViolationLog::eq(&self, &awaken_ext_state_machine::FsmViolationLog) -> bool
+impl core::default::Default for awaken_ext_state_machine::FsmViolationLog
+pub fn awaken_ext_state_machine::FsmViolationLog::default() -> awaken_ext_state_machine::FsmViolationLog
+impl core::fmt::Debug for awaken_ext_state_machine::FsmViolationLog
+pub fn awaken_ext_state_machine::FsmViolationLog::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::FsmViolationLog
+impl serde_core::ser::Serialize for awaken_ext_state_machine::FsmViolationLog
+pub fn awaken_ext_state_machine::FsmViolationLog::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_state_machine::FsmViolationLog where awaken_ext_state_machine::FsmViolationLog: core::default::Default
+pub fn awaken_ext_state_machine::FsmViolationLog::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_state_machine::FsmViolationLog
+impl core::marker::Send for awaken_ext_state_machine::FsmViolationLog
+impl core::marker::Sync for awaken_ext_state_machine::FsmViolationLog
+impl core::marker::Unpin for awaken_ext_state_machine::FsmViolationLog
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmViolationLog
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmViolationLog
+pub struct awaken_ext_state_machine::FsmViolationRecord
+pub awaken_ext_state_machine::FsmViolationRecord::action: awaken_ext_state_machine::ViolationAuditAction
+pub awaken_ext_state_machine::FsmViolationRecord::key: alloc::string::String
+pub awaken_ext_state_machine::FsmViolationRecord::machine: alloc::string::String
+pub awaken_ext_state_machine::FsmViolationRecord::reason: alloc::string::String
+pub awaken_ext_state_machine::FsmViolationRecord::tool_name: alloc::string::String
+impl core::clone::Clone for awaken_ext_state_machine::FsmViolationRecord
+pub fn awaken_ext_state_machine::FsmViolationRecord::clone(&self) -> awaken_ext_state_machine::FsmViolationRecord
+impl core::cmp::Eq for awaken_ext_state_machine::FsmViolationRecord
+impl core::cmp::PartialEq for awaken_ext_state_machine::FsmViolationRecord
+pub fn awaken_ext_state_machine::FsmViolationRecord::eq(&self, &awaken_ext_state_machine::FsmViolationRecord) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::FsmViolationRecord
+pub fn awaken_ext_state_machine::FsmViolationRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::FsmViolationRecord
+impl serde_core::ser::Serialize for awaken_ext_state_machine::FsmViolationRecord
+pub fn awaken_ext_state_machine::FsmViolationRecord::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_state_machine::FsmViolationRecord
+pub fn awaken_ext_state_machine::FsmViolationRecord::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_state_machine::FsmViolationRecord
+impl core::marker::Send for awaken_ext_state_machine::FsmViolationRecord
+impl core::marker::Sync for awaken_ext_state_machine::FsmViolationRecord
+impl core::marker::Unpin for awaken_ext_state_machine::FsmViolationRecord
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::FsmViolationRecord
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::FsmViolationRecord
+pub struct awaken_ext_state_machine::GateViolation
+pub awaken_ext_state_machine::GateViolation::action: awaken_ext_state_machine::ViolationAction
+pub awaken_ext_state_machine::GateViolation::key: alloc::string::String
+pub awaken_ext_state_machine::GateViolation::machine: alloc::string::String
+pub awaken_ext_state_machine::GateViolation::reason: alloc::string::String
+impl core::clone::Clone for awaken_ext_state_machine::GateViolation
+pub fn awaken_ext_state_machine::GateViolation::clone(&self) -> awaken_ext_state_machine::GateViolation
+impl core::cmp::Eq for awaken_ext_state_machine::GateViolation
+impl core::cmp::PartialEq for awaken_ext_state_machine::GateViolation
+pub fn awaken_ext_state_machine::GateViolation::eq(&self, &awaken_ext_state_machine::GateViolation) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::GateViolation
+pub fn awaken_ext_state_machine::GateViolation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::GateViolation
+impl core::marker::Freeze for awaken_ext_state_machine::GateViolation
+impl core::marker::Send for awaken_ext_state_machine::GateViolation
+impl core::marker::Sync for awaken_ext_state_machine::GateViolation
+impl core::marker::Unpin for awaken_ext_state_machine::GateViolation
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::GateViolation
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::GateViolation
+pub struct awaken_ext_state_machine::KeyTemplate
+impl awaken_ext_state_machine::KeyTemplate
+pub fn awaken_ext_state_machine::KeyTemplate::is_empty(&self) -> bool
+pub fn awaken_ext_state_machine::KeyTemplate::parse(&str) -> core::result::Result<Self, awaken_ext_state_machine::KeyTemplateError>
+pub fn awaken_ext_state_machine::KeyTemplate::render(&self, &serde_json::value::Value) -> core::option::Option<alloc::string::String>
+pub fn awaken_ext_state_machine::KeyTemplate::render_lossy(&self, &serde_json::value::Value) -> alloc::string::String
+impl core::clone::Clone for awaken_ext_state_machine::KeyTemplate
+pub fn awaken_ext_state_machine::KeyTemplate::clone(&self) -> awaken_ext_state_machine::KeyTemplate
+impl core::cmp::Eq for awaken_ext_state_machine::KeyTemplate
+impl core::cmp::PartialEq for awaken_ext_state_machine::KeyTemplate
+pub fn awaken_ext_state_machine::KeyTemplate::eq(&self, &awaken_ext_state_machine::KeyTemplate) -> bool
+impl core::fmt::Debug for awaken_ext_state_machine::KeyTemplate
+pub fn awaken_ext_state_machine::KeyTemplate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_state_machine::KeyTemplate
+impl core::marker::Freeze for awaken_ext_state_machine::KeyTemplate
+impl core::marker::Send for awaken_ext_state_machine::KeyTemplate
+impl core::marker::Sync for awaken_ext_state_machine::KeyTemplate
+impl core::marker::Unpin for awaken_ext_state_machine::KeyTemplate
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::KeyTemplate
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::KeyTemplate
+pub struct awaken_ext_state_machine::Machine
+pub awaken_ext_state_machine::Machine::initial: alloc::string::String
+pub awaken_ext_state_machine::Machine::key: awaken_ext_state_machine::KeyTemplate
+pub awaken_ext_state_machine::Machine::key_normalizer: awaken_ext_state_machine::KeyNormalizer
+pub awaken_ext_state_machine::Machine::name: alloc::string::String
+pub awaken_ext_state_machine::Machine::on_unmatched: core::option::Option<alloc::string::String>
+pub awaken_ext_state_machine::Machine::scope: awaken_ext_state_machine::MachineScope
+pub awaken_ext_state_machine::Machine::strict: bool
+pub awaken_ext_state_machine::Machine::terminal_states: alloc::vec::Vec<alloc::string::String>
+pub awaken_ext_state_machine::Machine::transitions: alloc::vec::Vec<awaken_ext_state_machine::Transition>
+impl awaken_ext_state_machine::Machine
+pub fn awaken_ext_state_machine::Machine::is_terminal(&self, &str) -> bool
+pub fn awaken_ext_state_machine::Machine::matching_transitions<'a>(&'a self, &'a str, &'a serde_json::value::Value) -> impl core::iter::traits::iterator::Iterator<Item = &'a awaken_ext_state_machine::Transition> + 'a
+pub fn awaken_ext_state_machine::Machine::render_key(&self, &serde_json::value::Value) -> core::option::Option<alloc::string::String>
+impl core::clone::Clone for awaken_ext_state_machine::Machine
+pub fn awaken_ext_state_machine::Machine::clone(&self) -> awaken_ext_state_machine::Machine
+impl core::fmt::Debug for awaken_ext_state_machine::Machine
+pub fn awaken_ext_state_machine::Machine::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_state_machine::Machine
+impl core::marker::Send for awaken_ext_state_machine::Machine
+impl core::marker::Sync for awaken_ext_state_machine::Machine
+impl core::marker::Unpin for awaken_ext_state_machine::Machine
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::Machine
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::Machine
+pub struct awaken_ext_state_machine::Metrics
+impl awaken_ext_state_machine::StateCell for awaken_ext_state_machine::Metrics
+pub type awaken_ext_state_machine::Metrics::Update = awaken_ext_state_machine::FsmMetricUpdate
+pub type awaken_ext_state_machine::Metrics::Value = awaken_ext_state_machine::FsmMetrics
+pub const awaken_ext_state_machine::Metrics::KEY: &'static str
+pub const awaken_ext_state_machine::Metrics::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_ext_state_machine::Metrics::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_ext_state_machine::Metrics::apply(&mut Self::Value, Self::Update)
+pub fn awaken_ext_state_machine::Metrics::commit(&awaken_agent_contract::agent::state::Store, Self::Update) -> awaken_agent_contract::agent::state::Command
+pub fn awaken_ext_state_machine::Metrics::load(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_ext_state_machine::Metrics::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+impl core::marker::Freeze for awaken_ext_state_machine::Metrics
+impl core::marker::Send for awaken_ext_state_machine::Metrics
+impl core::marker::Sync for awaken_ext_state_machine::Metrics
+impl core::marker::Unpin for awaken_ext_state_machine::Metrics
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::Metrics
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::Metrics
+pub struct awaken_ext_state_machine::RunInstances
+impl awaken_ext_state_machine::StateCell for awaken_ext_state_machine::RunInstances
+pub type awaken_ext_state_machine::RunInstances::Update = awaken_ext_state_machine::FsmTransition
+pub type awaken_ext_state_machine::RunInstances::Value = awaken_ext_state_machine::FsmStore
+pub const awaken_ext_state_machine::RunInstances::KEY: &'static str
+pub const awaken_ext_state_machine::RunInstances::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_ext_state_machine::RunInstances::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_ext_state_machine::RunInstances::apply(&mut Self::Value, Self::Update)
+pub fn awaken_ext_state_machine::RunInstances::commit(&awaken_agent_contract::agent::state::Store, Self::Update) -> awaken_agent_contract::agent::state::Command
+pub fn awaken_ext_state_machine::RunInstances::load(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_ext_state_machine::RunInstances::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+impl core::marker::Freeze for awaken_ext_state_machine::RunInstances
+impl core::marker::Send for awaken_ext_state_machine::RunInstances
+impl core::marker::Sync for awaken_ext_state_machine::RunInstances
+impl core::marker::Unpin for awaken_ext_state_machine::RunInstances
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::RunInstances
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::RunInstances
+pub struct awaken_ext_state_machine::StateMachineConfig
+pub awaken_ext_state_machine::StateMachineConfig::continuation: awaken_ext_state_machine::ContinuationSettings
+pub awaken_ext_state_machine::StateMachineConfig::machines: alloc::vec::Vec<awaken_ext_state_machine::config::MachineEntry>
+impl awaken_ext_state_machine::StateMachineConfig
+pub fn awaken_ext_state_machine::StateMachineConfig::from_json_str(&str) -> core::result::Result<Self, awaken_ext_state_machine::StateMachineConfigError>
+pub fn awaken_ext_state_machine::StateMachineConfig::from_value(serde_json::value::Value) -> core::result::Result<Self, awaken_ext_state_machine::StateMachineConfigError>
+pub fn awaken_ext_state_machine::StateMachineConfig::from_yaml_str(&str) -> core::result::Result<Self, awaken_ext_state_machine::StateMachineConfigError>
+pub fn awaken_ext_state_machine::StateMachineConfig::into_machines(self) -> core::result::Result<alloc::vec::Vec<awaken_ext_state_machine::Machine>, awaken_ext_state_machine::StateMachineConfigError>
+impl core::clone::Clone for awaken_ext_state_machine::StateMachineConfig
+pub fn awaken_ext_state_machine::StateMachineConfig::clone(&self) -> awaken_ext_state_machine::StateMachineConfig
+impl core::fmt::Debug for awaken_ext_state_machine::StateMachineConfig
+pub fn awaken_ext_state_machine::StateMachineConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_state_machine::StateMachineConfig
+pub fn awaken_ext_state_machine::StateMachineConfig::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_state_machine::StateMachineConfig
+impl core::marker::Send for awaken_ext_state_machine::StateMachineConfig
+impl core::marker::Sync for awaken_ext_state_machine::StateMachineConfig
+impl core::marker::Unpin for awaken_ext_state_machine::StateMachineConfig
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::StateMachineConfig
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::StateMachineConfig
+pub struct awaken_ext_state_machine::StateMachinePlugin
+impl awaken_ext_state_machine::StateMachinePlugin
+pub fn awaken_ext_state_machine::StateMachinePlugin::empty() -> Self
+pub fn awaken_ext_state_machine::StateMachinePlugin::from_config(awaken_ext_state_machine::StateMachineConfig) -> core::result::Result<Self, awaken_ext_state_machine::StateMachineConfigError>
+pub fn awaken_ext_state_machine::StateMachinePlugin::new(alloc::vec::Vec<awaken_ext_state_machine::Machine>, awaken_ext_state_machine::ContinuationSettings) -> Self
+impl awaken_runtime_contract::plugin::Plugin for awaken_ext_state_machine::StateMachinePlugin
+pub fn awaken_ext_state_machine::StateMachinePlugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
+pub fn awaken_ext_state_machine::StateMachinePlugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
+pub fn awaken_ext_state_machine::StateMachinePlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::Contributions, awaken_runtime_contract::plugin::PluginConfigError>
+impl core::marker::Freeze for awaken_ext_state_machine::StateMachinePlugin
+impl core::marker::Send for awaken_ext_state_machine::StateMachinePlugin
+impl core::marker::Sync for awaken_ext_state_machine::StateMachinePlugin
+impl core::marker::Unpin for awaken_ext_state_machine::StateMachinePlugin
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::StateMachinePlugin
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::StateMachinePlugin
+pub struct awaken_ext_state_machine::ThreadInstances
+impl awaken_ext_state_machine::StateCell for awaken_ext_state_machine::ThreadInstances
+pub type awaken_ext_state_machine::ThreadInstances::Update = awaken_ext_state_machine::FsmTransition
+pub type awaken_ext_state_machine::ThreadInstances::Value = awaken_ext_state_machine::FsmStore
+pub const awaken_ext_state_machine::ThreadInstances::KEY: &'static str
+pub const awaken_ext_state_machine::ThreadInstances::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_ext_state_machine::ThreadInstances::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_ext_state_machine::ThreadInstances::apply(&mut Self::Value, Self::Update)
+pub fn awaken_ext_state_machine::ThreadInstances::commit(&awaken_agent_contract::agent::state::Store, Self::Update) -> awaken_agent_contract::agent::state::Command
+pub fn awaken_ext_state_machine::ThreadInstances::load(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_ext_state_machine::ThreadInstances::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+impl core::marker::Freeze for awaken_ext_state_machine::ThreadInstances
+impl core::marker::Send for awaken_ext_state_machine::ThreadInstances
+impl core::marker::Sync for awaken_ext_state_machine::ThreadInstances
+impl core::marker::Unpin for awaken_ext_state_machine::ThreadInstances
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ThreadInstances
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ThreadInstances
+pub struct awaken_ext_state_machine::ToolResultView<'a>
+pub awaken_ext_state_machine::ToolResultView::content: &'a str
+pub awaken_ext_state_machine::ToolResultView::is_error: bool
+impl<'a> awaken_ext_state_machine::ToolResultView<'a>
+pub fn awaken_ext_state_machine::ToolResultView<'a>::new(bool, &'a str) -> Self
+impl<'a> core::clone::Clone for awaken_ext_state_machine::ToolResultView<'a>
+pub fn awaken_ext_state_machine::ToolResultView<'a>::clone(&self) -> awaken_ext_state_machine::ToolResultView<'a>
+impl<'a> core::cmp::Eq for awaken_ext_state_machine::ToolResultView<'a>
+impl<'a> core::cmp::PartialEq for awaken_ext_state_machine::ToolResultView<'a>
+pub fn awaken_ext_state_machine::ToolResultView<'a>::eq(&self, &awaken_ext_state_machine::ToolResultView<'a>) -> bool
+impl<'a> core::fmt::Debug for awaken_ext_state_machine::ToolResultView<'a>
+pub fn awaken_ext_state_machine::ToolResultView<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for awaken_ext_state_machine::ToolResultView<'a>
+impl<'a> core::marker::StructuralPartialEq for awaken_ext_state_machine::ToolResultView<'a>
+impl<'a> core::marker::Freeze for awaken_ext_state_machine::ToolResultView<'a>
+impl<'a> core::marker::Send for awaken_ext_state_machine::ToolResultView<'a>
+impl<'a> core::marker::Sync for awaken_ext_state_machine::ToolResultView<'a>
+impl<'a> core::marker::Unpin for awaken_ext_state_machine::ToolResultView<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ToolResultView<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ToolResultView<'a>
+pub struct awaken_ext_state_machine::Transition
+pub awaken_ext_state_machine::Transition::emit: core::option::Option<awaken_ext_state_machine::Emit>
+pub awaken_ext_state_machine::Transition::from: alloc::vec::Vec<alloc::string::String>
+pub awaken_ext_state_machine::Transition::on_violation: awaken_ext_state_machine::Violation
+pub awaken_ext_state_machine::Transition::pattern: awaken_tool_pattern::types::ToolCallPattern
+pub awaken_ext_state_machine::Transition::to: alloc::string::String
+pub awaken_ext_state_machine::Transition::when: core::option::Option<awaken_ext_state_machine::ResultMatcher>
+impl awaken_ext_state_machine::Transition
+pub fn awaken_ext_state_machine::Transition::allows_from(&self, &str) -> bool
+pub fn awaken_ext_state_machine::Transition::result_matches(&self, &awaken_ext_state_machine::ToolResultView<'_>) -> bool
+impl core::clone::Clone for awaken_ext_state_machine::Transition
+pub fn awaken_ext_state_machine::Transition::clone(&self) -> awaken_ext_state_machine::Transition
+impl core::fmt::Debug for awaken_ext_state_machine::Transition
+pub fn awaken_ext_state_machine::Transition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_state_machine::Transition
+impl core::marker::Send for awaken_ext_state_machine::Transition
+impl core::marker::Sync for awaken_ext_state_machine::Transition
+impl core::marker::Unpin for awaken_ext_state_machine::Transition
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::Transition
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::Transition
+pub struct awaken_ext_state_machine::Violation
+pub awaken_ext_state_machine::Violation::action: awaken_ext_state_machine::ViolationAction
+pub awaken_ext_state_machine::Violation::reason: core::option::Option<awaken_ext_state_machine::KeyTemplate>
+impl core::clone::Clone for awaken_ext_state_machine::Violation
+pub fn awaken_ext_state_machine::Violation::clone(&self) -> awaken_ext_state_machine::Violation
+impl core::default::Default for awaken_ext_state_machine::Violation
+pub fn awaken_ext_state_machine::Violation::default() -> Self
+impl core::fmt::Debug for awaken_ext_state_machine::Violation
+pub fn awaken_ext_state_machine::Violation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_ext_state_machine::Violation
+impl core::marker::Send for awaken_ext_state_machine::Violation
+impl core::marker::Sync for awaken_ext_state_machine::Violation
+impl core::marker::Unpin for awaken_ext_state_machine::Violation
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::Violation
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::Violation
+pub struct awaken_ext_state_machine::ViolationLog
+impl awaken_ext_state_machine::StateCell for awaken_ext_state_machine::ViolationLog
+pub type awaken_ext_state_machine::ViolationLog::Update = awaken_ext_state_machine::FsmViolationRecord
+pub type awaken_ext_state_machine::ViolationLog::Value = awaken_ext_state_machine::FsmViolationLog
+pub const awaken_ext_state_machine::ViolationLog::KEY: &'static str
+pub const awaken_ext_state_machine::ViolationLog::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_ext_state_machine::ViolationLog::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_ext_state_machine::ViolationLog::apply(&mut Self::Value, Self::Update)
+pub fn awaken_ext_state_machine::ViolationLog::commit(&awaken_agent_contract::agent::state::Store, Self::Update) -> awaken_agent_contract::agent::state::Command
+pub fn awaken_ext_state_machine::ViolationLog::load(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_ext_state_machine::ViolationLog::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+impl core::marker::Freeze for awaken_ext_state_machine::ViolationLog
+impl core::marker::Send for awaken_ext_state_machine::ViolationLog
+impl core::marker::Sync for awaken_ext_state_machine::ViolationLog
+impl core::marker::Unpin for awaken_ext_state_machine::ViolationLog
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_state_machine::ViolationLog
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_state_machine::ViolationLog
+pub const awaken_ext_state_machine::STATE_KEYS: &[&str]
+pub const awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID: &str
+pub trait awaken_ext_state_machine::StateCell
+pub type awaken_ext_state_machine::StateCell::Update
+pub type awaken_ext_state_machine::StateCell::Value: serde_core::ser::Serialize + serde_core::de::DeserializeOwned + core::default::Default
+pub const awaken_ext_state_machine::StateCell::KEY: &'static str
+pub const awaken_ext_state_machine::StateCell::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_ext_state_machine::StateCell::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_ext_state_machine::StateCell::apply(&mut Self::Value, Self::Update)
+pub fn awaken_ext_state_machine::StateCell::commit(&awaken_agent_contract::agent::state::Store, Self::Update) -> awaken_agent_contract::agent::state::Command
+pub fn awaken_ext_state_machine::StateCell::load(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_ext_state_machine::StateCell::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+impl awaken_ext_state_machine::StateCell for awaken_ext_state_machine::Metrics
+pub type awaken_ext_state_machine::Metrics::Update = awaken_ext_state_machine::FsmMetricUpdate
+pub type awaken_ext_state_machine::Metrics::Value = awaken_ext_state_machine::FsmMetrics
+pub const awaken_ext_state_machine::Metrics::KEY: &'static str
+pub const awaken_ext_state_machine::Metrics::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_ext_state_machine::Metrics::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_ext_state_machine::Metrics::apply(&mut Self::Value, Self::Update)
+pub fn awaken_ext_state_machine::Metrics::commit(&awaken_agent_contract::agent::state::Store, Self::Update) -> awaken_agent_contract::agent::state::Command
+pub fn awaken_ext_state_machine::Metrics::load(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_ext_state_machine::Metrics::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+impl awaken_ext_state_machine::StateCell for awaken_ext_state_machine::RunInstances
+pub type awaken_ext_state_machine::RunInstances::Update = awaken_ext_state_machine::FsmTransition
+pub type awaken_ext_state_machine::RunInstances::Value = awaken_ext_state_machine::FsmStore
+pub const awaken_ext_state_machine::RunInstances::KEY: &'static str
+pub const awaken_ext_state_machine::RunInstances::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_ext_state_machine::RunInstances::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_ext_state_machine::RunInstances::apply(&mut Self::Value, Self::Update)
+pub fn awaken_ext_state_machine::RunInstances::commit(&awaken_agent_contract::agent::state::Store, Self::Update) -> awaken_agent_contract::agent::state::Command
+pub fn awaken_ext_state_machine::RunInstances::load(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_ext_state_machine::RunInstances::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+impl awaken_ext_state_machine::StateCell for awaken_ext_state_machine::ThreadInstances
+pub type awaken_ext_state_machine::ThreadInstances::Update = awaken_ext_state_machine::FsmTransition
+pub type awaken_ext_state_machine::ThreadInstances::Value = awaken_ext_state_machine::FsmStore
+pub const awaken_ext_state_machine::ThreadInstances::KEY: &'static str
+pub const awaken_ext_state_machine::ThreadInstances::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_ext_state_machine::ThreadInstances::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_ext_state_machine::ThreadInstances::apply(&mut Self::Value, Self::Update)
+pub fn awaken_ext_state_machine::ThreadInstances::commit(&awaken_agent_contract::agent::state::Store, Self::Update) -> awaken_agent_contract::agent::state::Command
+pub fn awaken_ext_state_machine::ThreadInstances::load(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_ext_state_machine::ThreadInstances::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+impl awaken_ext_state_machine::StateCell for awaken_ext_state_machine::ViolationLog
+pub type awaken_ext_state_machine::ViolationLog::Update = awaken_ext_state_machine::FsmViolationRecord
+pub type awaken_ext_state_machine::ViolationLog::Value = awaken_ext_state_machine::FsmViolationLog
+pub const awaken_ext_state_machine::ViolationLog::KEY: &'static str
+pub const awaken_ext_state_machine::ViolationLog::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_ext_state_machine::ViolationLog::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_ext_state_machine::ViolationLog::apply(&mut Self::Value, Self::Update)
+pub fn awaken_ext_state_machine::ViolationLog::commit(&awaken_agent_contract::agent::state::Store, Self::Update) -> awaken_agent_contract::agent::state::Command
+pub fn awaken_ext_state_machine::ViolationLog::load(&awaken_agent_contract::agent::state::Store) -> Self::Value
+pub fn awaken_ext_state_machine::ViolationLog::write(&Self::Value) -> awaken_agent_contract::agent::state::Command
+pub fn awaken_ext_state_machine::advance_evaluate(&[awaken_ext_state_machine::Machine], &awaken_ext_state_machine::FsmStore, &awaken_ext_state_machine::FsmStore, &str, &serde_json::value::Value, &awaken_ext_state_machine::ToolResultView<'_>) -> alloc::vec::Vec<awaken_ext_state_machine::AdvanceOp>
+pub fn awaken_ext_state_machine::gate_decision(&[awaken_ext_state_machine::MachineEval]) -> core::option::Option<awaken_ext_state_machine::GateViolation>
+pub fn awaken_ext_state_machine::gate_evaluate(&[awaken_ext_state_machine::Machine], &awaken_ext_state_machine::FsmStore, &awaken_ext_state_machine::FsmStore, &str, &serde_json::value::Value) -> alloc::vec::Vec<awaken_ext_state_machine::MachineEval>
+pub fn awaken_ext_state_machine::result_matches(&awaken_ext_state_machine::ResultMatcher, &awaken_ext_state_machine::ToolResultView<'_>) -> bool

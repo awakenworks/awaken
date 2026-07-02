@@ -1,0 +1,231 @@
+pub mod awaken_tool_pattern
+pub enum awaken_tool_pattern::ArgMatcher
+pub awaken_tool_pattern::ArgMatcher::Any
+pub awaken_tool_pattern::ArgMatcher::Fields(alloc::vec::Vec<awaken_tool_pattern::FieldCondition>)
+pub awaken_tool_pattern::ArgMatcher::Primary
+pub awaken_tool_pattern::ArgMatcher::Primary::op: awaken_tool_pattern::MatchOp
+pub awaken_tool_pattern::ArgMatcher::Primary::value: alloc::string::String
+impl core::clone::Clone for awaken_tool_pattern::ArgMatcher
+pub fn awaken_tool_pattern::ArgMatcher::clone(&self) -> awaken_tool_pattern::ArgMatcher
+impl core::cmp::Eq for awaken_tool_pattern::ArgMatcher
+impl core::cmp::PartialEq for awaken_tool_pattern::ArgMatcher
+pub fn awaken_tool_pattern::ArgMatcher::eq(&self, &awaken_tool_pattern::ArgMatcher) -> bool
+impl core::fmt::Debug for awaken_tool_pattern::ArgMatcher
+pub fn awaken_tool_pattern::ArgMatcher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_tool_pattern::ArgMatcher
+pub fn awaken_tool_pattern::ArgMatcher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_tool_pattern::ArgMatcher
+impl core::marker::Freeze for awaken_tool_pattern::ArgMatcher
+impl core::marker::Send for awaken_tool_pattern::ArgMatcher
+impl core::marker::Sync for awaken_tool_pattern::ArgMatcher
+impl core::marker::Unpin for awaken_tool_pattern::ArgMatcher
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::ArgMatcher
+impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::ArgMatcher
+pub enum awaken_tool_pattern::MatchOp
+pub awaken_tool_pattern::MatchOp::Exact
+pub awaken_tool_pattern::MatchOp::Glob
+pub awaken_tool_pattern::MatchOp::NotExact
+pub awaken_tool_pattern::MatchOp::NotGlob
+pub awaken_tool_pattern::MatchOp::NotRegex
+pub awaken_tool_pattern::MatchOp::Regex
+impl core::clone::Clone for awaken_tool_pattern::MatchOp
+pub fn awaken_tool_pattern::MatchOp::clone(&self) -> awaken_tool_pattern::MatchOp
+impl core::cmp::Eq for awaken_tool_pattern::MatchOp
+impl core::cmp::PartialEq for awaken_tool_pattern::MatchOp
+pub fn awaken_tool_pattern::MatchOp::eq(&self, &awaken_tool_pattern::MatchOp) -> bool
+impl core::fmt::Debug for awaken_tool_pattern::MatchOp
+pub fn awaken_tool_pattern::MatchOp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_tool_pattern::MatchOp
+pub fn awaken_tool_pattern::MatchOp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_tool_pattern::MatchOp
+impl core::marker::StructuralPartialEq for awaken_tool_pattern::MatchOp
+impl serde_core::ser::Serialize for awaken_tool_pattern::MatchOp
+pub fn awaken_tool_pattern::MatchOp::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_pattern::MatchOp
+pub fn awaken_tool_pattern::MatchOp::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_tool_pattern::MatchOp
+impl core::marker::Send for awaken_tool_pattern::MatchOp
+impl core::marker::Sync for awaken_tool_pattern::MatchOp
+impl core::marker::Unpin for awaken_tool_pattern::MatchOp
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::MatchOp
+impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::MatchOp
+pub enum awaken_tool_pattern::MatchResult
+pub awaken_tool_pattern::MatchResult::Match
+pub awaken_tool_pattern::MatchResult::Match::specificity: awaken_tool_pattern::Specificity
+pub awaken_tool_pattern::MatchResult::NoMatch
+impl awaken_tool_pattern::MatchResult
+pub fn awaken_tool_pattern::MatchResult::is_match(&self) -> bool
+impl core::clone::Clone for awaken_tool_pattern::MatchResult
+pub fn awaken_tool_pattern::MatchResult::clone(&self) -> awaken_tool_pattern::MatchResult
+impl core::cmp::Eq for awaken_tool_pattern::MatchResult
+impl core::cmp::PartialEq for awaken_tool_pattern::MatchResult
+pub fn awaken_tool_pattern::MatchResult::eq(&self, &awaken_tool_pattern::MatchResult) -> bool
+impl core::fmt::Debug for awaken_tool_pattern::MatchResult
+pub fn awaken_tool_pattern::MatchResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_tool_pattern::MatchResult
+impl core::marker::Freeze for awaken_tool_pattern::MatchResult
+impl core::marker::Send for awaken_tool_pattern::MatchResult
+impl core::marker::Sync for awaken_tool_pattern::MatchResult
+impl core::marker::Unpin for awaken_tool_pattern::MatchResult
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::MatchResult
+impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::MatchResult
+pub enum awaken_tool_pattern::PathSegment
+pub awaken_tool_pattern::PathSegment::AnyIndex
+pub awaken_tool_pattern::PathSegment::Field(alloc::string::String)
+pub awaken_tool_pattern::PathSegment::Index(usize)
+pub awaken_tool_pattern::PathSegment::Wildcard
+impl core::clone::Clone for awaken_tool_pattern::PathSegment
+pub fn awaken_tool_pattern::PathSegment::clone(&self) -> awaken_tool_pattern::PathSegment
+impl core::cmp::Eq for awaken_tool_pattern::PathSegment
+impl core::cmp::PartialEq for awaken_tool_pattern::PathSegment
+pub fn awaken_tool_pattern::PathSegment::eq(&self, &awaken_tool_pattern::PathSegment) -> bool
+impl core::fmt::Debug for awaken_tool_pattern::PathSegment
+pub fn awaken_tool_pattern::PathSegment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_tool_pattern::PathSegment
+pub fn awaken_tool_pattern::PathSegment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_tool_pattern::PathSegment
+impl core::marker::Freeze for awaken_tool_pattern::PathSegment
+impl core::marker::Send for awaken_tool_pattern::PathSegment
+impl core::marker::Sync for awaken_tool_pattern::PathSegment
+impl core::marker::Unpin for awaken_tool_pattern::PathSegment
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::PathSegment
+impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::PathSegment
+pub enum awaken_tool_pattern::ToolIdPatternError
+pub awaken_tool_pattern::ToolIdPatternError::DanglingEscape
+pub awaken_tool_pattern::ToolIdPatternError::Empty
+impl core::cmp::Eq for awaken_tool_pattern::ToolIdPatternError
+impl core::cmp::PartialEq for awaken_tool_pattern::ToolIdPatternError
+pub fn awaken_tool_pattern::ToolIdPatternError::eq(&self, &awaken_tool_pattern::ToolIdPatternError) -> bool
+impl core::error::Error for awaken_tool_pattern::ToolIdPatternError
+impl core::fmt::Debug for awaken_tool_pattern::ToolIdPatternError
+pub fn awaken_tool_pattern::ToolIdPatternError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_tool_pattern::ToolIdPatternError
+pub fn awaken_tool_pattern::ToolIdPatternError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_tool_pattern::ToolIdPatternError
+impl core::marker::Freeze for awaken_tool_pattern::ToolIdPatternError
+impl core::marker::Send for awaken_tool_pattern::ToolIdPatternError
+impl core::marker::Sync for awaken_tool_pattern::ToolIdPatternError
+impl core::marker::Unpin for awaken_tool_pattern::ToolIdPatternError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::ToolIdPatternError
+impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::ToolIdPatternError
+pub enum awaken_tool_pattern::ToolMatcher
+pub awaken_tool_pattern::ToolMatcher::Exact(alloc::string::String)
+pub awaken_tool_pattern::ToolMatcher::Glob(alloc::string::String)
+pub awaken_tool_pattern::ToolMatcher::Regex(regex::regex::string::Regex)
+impl core::clone::Clone for awaken_tool_pattern::ToolMatcher
+pub fn awaken_tool_pattern::ToolMatcher::clone(&self) -> awaken_tool_pattern::ToolMatcher
+impl core::cmp::Eq for awaken_tool_pattern::ToolMatcher
+impl core::cmp::PartialEq for awaken_tool_pattern::ToolMatcher
+pub fn awaken_tool_pattern::ToolMatcher::eq(&self, &Self) -> bool
+impl core::fmt::Debug for awaken_tool_pattern::ToolMatcher
+pub fn awaken_tool_pattern::ToolMatcher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_tool_pattern::ToolMatcher
+pub fn awaken_tool_pattern::ToolMatcher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_tool_pattern::ToolMatcher
+impl core::marker::Send for awaken_tool_pattern::ToolMatcher
+impl core::marker::Sync for awaken_tool_pattern::ToolMatcher
+impl core::marker::Unpin for awaken_tool_pattern::ToolMatcher
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::ToolMatcher
+impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::ToolMatcher
+pub struct awaken_tool_pattern::FieldCondition
+pub awaken_tool_pattern::FieldCondition::op: awaken_tool_pattern::MatchOp
+pub awaken_tool_pattern::FieldCondition::path: alloc::vec::Vec<awaken_tool_pattern::PathSegment>
+pub awaken_tool_pattern::FieldCondition::value: alloc::string::String
+impl core::clone::Clone for awaken_tool_pattern::FieldCondition
+pub fn awaken_tool_pattern::FieldCondition::clone(&self) -> awaken_tool_pattern::FieldCondition
+impl core::cmp::Eq for awaken_tool_pattern::FieldCondition
+impl core::cmp::PartialEq for awaken_tool_pattern::FieldCondition
+pub fn awaken_tool_pattern::FieldCondition::eq(&self, &awaken_tool_pattern::FieldCondition) -> bool
+impl core::fmt::Debug for awaken_tool_pattern::FieldCondition
+pub fn awaken_tool_pattern::FieldCondition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_tool_pattern::FieldCondition
+pub fn awaken_tool_pattern::FieldCondition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_tool_pattern::FieldCondition
+impl core::marker::Freeze for awaken_tool_pattern::FieldCondition
+impl core::marker::Send for awaken_tool_pattern::FieldCondition
+impl core::marker::Sync for awaken_tool_pattern::FieldCondition
+impl core::marker::Unpin for awaken_tool_pattern::FieldCondition
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::FieldCondition
+impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::FieldCondition
+pub struct awaken_tool_pattern::PatternParseError
+pub awaken_tool_pattern::PatternParseError::message: alloc::string::String
+pub awaken_tool_pattern::PatternParseError::position: usize
+impl core::clone::Clone for awaken_tool_pattern::PatternParseError
+pub fn awaken_tool_pattern::PatternParseError::clone(&self) -> awaken_tool_pattern::PatternParseError
+impl core::error::Error for awaken_tool_pattern::PatternParseError
+impl core::fmt::Debug for awaken_tool_pattern::PatternParseError
+pub fn awaken_tool_pattern::PatternParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_tool_pattern::PatternParseError
+pub fn awaken_tool_pattern::PatternParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_tool_pattern::PatternParseError
+impl core::marker::Send for awaken_tool_pattern::PatternParseError
+impl core::marker::Sync for awaken_tool_pattern::PatternParseError
+impl core::marker::Unpin for awaken_tool_pattern::PatternParseError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::PatternParseError
+impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::PatternParseError
+pub struct awaken_tool_pattern::Specificity
+pub awaken_tool_pattern::Specificity::field_count: u8
+pub awaken_tool_pattern::Specificity::field_precision: u8
+pub awaken_tool_pattern::Specificity::has_args: bool
+pub awaken_tool_pattern::Specificity::tool_kind: u8
+impl core::clone::Clone for awaken_tool_pattern::Specificity
+pub fn awaken_tool_pattern::Specificity::clone(&self) -> awaken_tool_pattern::Specificity
+impl core::cmp::Eq for awaken_tool_pattern::Specificity
+impl core::cmp::Ord for awaken_tool_pattern::Specificity
+pub fn awaken_tool_pattern::Specificity::cmp(&self, &awaken_tool_pattern::Specificity) -> core::cmp::Ordering
+impl core::cmp::PartialEq for awaken_tool_pattern::Specificity
+pub fn awaken_tool_pattern::Specificity::eq(&self, &awaken_tool_pattern::Specificity) -> bool
+impl core::cmp::PartialOrd for awaken_tool_pattern::Specificity
+pub fn awaken_tool_pattern::Specificity::partial_cmp(&self, &awaken_tool_pattern::Specificity) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for awaken_tool_pattern::Specificity
+pub fn awaken_tool_pattern::Specificity::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_tool_pattern::Specificity
+impl core::marker::StructuralPartialEq for awaken_tool_pattern::Specificity
+impl core::marker::Freeze for awaken_tool_pattern::Specificity
+impl core::marker::Send for awaken_tool_pattern::Specificity
+impl core::marker::Sync for awaken_tool_pattern::Specificity
+impl core::marker::Unpin for awaken_tool_pattern::Specificity
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::Specificity
+impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::Specificity
+pub struct awaken_tool_pattern::ToolCallPattern
+pub awaken_tool_pattern::ToolCallPattern::args: awaken_tool_pattern::ArgMatcher
+pub awaken_tool_pattern::ToolCallPattern::tool: awaken_tool_pattern::ToolMatcher
+impl awaken_tool_pattern::ToolCallPattern
+pub fn awaken_tool_pattern::ToolCallPattern::parse(&str) -> core::result::Result<Self, awaken_tool_pattern::PatternParseError>
+impl awaken_tool_pattern::ToolCallPattern
+pub fn awaken_tool_pattern::ToolCallPattern::tool(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_tool_pattern::ToolCallPattern::tool_glob(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_tool_pattern::ToolCallPattern::tool_with_primary(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_tool_pattern::ToolCallPattern::with_args(self, awaken_tool_pattern::ArgMatcher) -> Self
+impl core::clone::Clone for awaken_tool_pattern::ToolCallPattern
+pub fn awaken_tool_pattern::ToolCallPattern::clone(&self) -> awaken_tool_pattern::ToolCallPattern
+impl core::cmp::Eq for awaken_tool_pattern::ToolCallPattern
+impl core::cmp::PartialEq for awaken_tool_pattern::ToolCallPattern
+pub fn awaken_tool_pattern::ToolCallPattern::eq(&self, &awaken_tool_pattern::ToolCallPattern) -> bool
+impl core::fmt::Debug for awaken_tool_pattern::ToolCallPattern
+pub fn awaken_tool_pattern::ToolCallPattern::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_tool_pattern::ToolCallPattern
+pub fn awaken_tool_pattern::ToolCallPattern::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_tool_pattern::ToolCallPattern
+impl serde_core::ser::Serialize for awaken_tool_pattern::ToolCallPattern
+pub fn awaken_tool_pattern::ToolCallPattern::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_pattern::ToolCallPattern
+pub fn awaken_tool_pattern::ToolCallPattern::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for awaken_tool_pattern::ToolCallPattern
+impl core::marker::Send for awaken_tool_pattern::ToolCallPattern
+impl core::marker::Sync for awaken_tool_pattern::ToolCallPattern
+impl core::marker::Unpin for awaken_tool_pattern::ToolCallPattern
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_tool_pattern::ToolCallPattern
+impl core::panic::unwind_safe::UnwindSafe for awaken_tool_pattern::ToolCallPattern
+pub fn awaken_tool_pattern::evaluate_field_condition(&awaken_tool_pattern::FieldCondition, &serde_json::value::Value) -> bool
+pub fn awaken_tool_pattern::evaluate_op(&awaken_tool_pattern::MatchOp, &str, &str) -> bool
+pub fn awaken_tool_pattern::op_precision(&awaken_tool_pattern::MatchOp) -> u8
+pub fn awaken_tool_pattern::parse_pattern(&str) -> core::result::Result<awaken_tool_pattern::ToolCallPattern, awaken_tool_pattern::PatternParseError>
+pub fn awaken_tool_pattern::pattern_matches(&awaken_tool_pattern::ToolCallPattern, &str, &serde_json::value::Value) -> awaken_tool_pattern::MatchResult
+pub fn awaken_tool_pattern::resolve_path<'a>(&'a serde_json::value::Value, &[awaken_tool_pattern::PathSegment]) -> alloc::vec::Vec<&'a serde_json::value::Value>
+pub fn awaken_tool_pattern::schema_has_path(&serde_json::value::Value, &[awaken_tool_pattern::PathSegment]) -> bool
+pub fn awaken_tool_pattern::tool_id_match(&str, &str) -> bool
+pub fn awaken_tool_pattern::validate_pattern_fields(&awaken_tool_pattern::ToolCallPattern, &serde_json::value::Value) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_tool_pattern::validate_tool_id_pattern(&str) -> core::result::Result<(), awaken_tool_pattern::ToolIdPatternError>
+pub fn awaken_tool_pattern::value_to_string(&serde_json::value::Value) -> alloc::string::String
+pub fn awaken_tool_pattern::wildcard_match(&str, &str) -> bool

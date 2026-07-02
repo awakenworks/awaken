@@ -219,6 +219,7 @@ pub awaken_agent_contract::agent::message::Message::content: alloc::vec::Vec<awa
 pub awaken_agent_contract::agent::message::Message::id: awaken_agent_contract::agent::message::Id
 pub awaken_agent_contract::agent::message::Message::role: awaken_agent_contract::agent::message::Role
 impl awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::new(awaken_agent_contract::agent::message::Id, awaken_agent_contract::agent::message::Role, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
 pub fn awaken_agent_contract::agent::message::Message::text(awaken_agent_contract::agent::message::Id, awaken_agent_contract::agent::message::Role, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::message::Message::text_content(&self) -> alloc::string::String
 impl core::clone::Clone for awaken_agent_contract::agent::message::Message
@@ -735,6 +736,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::turn
 pub mod awaken_agent_contract::agent::waiting
 pub enum awaken_agent_contract::agent::waiting::WaitingReason
 pub awaken_agent_contract::agent::waiting::WaitingReason::BackgroundTasks
+pub awaken_agent_contract::agent::waiting::WaitingReason::Delegation
 pub awaken_agent_contract::agent::waiting::WaitingReason::ExternalEvent
 pub awaken_agent_contract::agent::waiting::WaitingReason::ManualPause
 pub awaken_agent_contract::agent::waiting::WaitingReason::RateLimit
@@ -761,6 +763,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::w
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::waiting::WaitingReason
 pub struct awaken_agent_contract::agent::waiting::PendingTool
 pub awaken_agent_contract::agent::waiting::PendingTool::arguments: serde_json::value::Value
+pub awaken_agent_contract::agent::waiting::PendingTool::resume_handle: core::option::Option<serde_json::value::Value>
 pub awaken_agent_contract::agent::waiting::PendingTool::tool_id: alloc::string::String
 impl core::clone::Clone for awaken_agent_contract::agent::waiting::PendingTool
 pub fn awaken_agent_contract::agent::waiting::PendingTool::clone(&self) -> awaken_agent_contract::agent::waiting::PendingTool
@@ -913,6 +916,7 @@ impl<T> core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::event
 impl<T> core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::event::envelope::Envelope<T> where T: core::panic::unwind_safe::UnwindSafe
 pub mod awaken_agent_contract::event::kind
 pub enum awaken_agent_contract::event::kind::Kind
+pub awaken_agent_contract::event::kind::Kind::Continuation
 pub awaken_agent_contract::event::kind::Kind::MessageCommitted
 pub awaken_agent_contract::event::kind::Kind::PermissionDecided
 pub awaken_agent_contract::event::kind::Kind::RunPhaseChanged
@@ -1140,10 +1144,14 @@ pub fn awaken_agent_contract::store::run_store::RunStore::get(&self, &awaken_age
 pub mod awaken_agent_contract::store::thread_reader
 pub trait awaken_agent_contract::store::thread_reader::ThreadReader: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::store::thread_reader::ThreadReader::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub fn awaken_agent_contract::store::thread_reader::ThreadReader::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub fn awaken_agent_contract::store::thread_reader::ThreadReader::waiting_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
 pub mod awaken_agent_contract::stream
 pub mod awaken_agent_contract::stream::event
 pub enum awaken_agent_contract::stream::event::Kind
+pub awaken_agent_contract::stream::event::Kind::Continuation
+pub awaken_agent_contract::stream::event::Kind::Continuation::detail: serde_json::value::Value
+pub awaken_agent_contract::stream::event::Kind::Continuation::steered: bool
 pub awaken_agent_contract::stream::event::Kind::OutputText
 pub awaken_agent_contract::stream::event::Kind::OutputText::text: alloc::string::String
 pub awaken_agent_contract::stream::event::Kind::RunFinished
@@ -1256,6 +1264,7 @@ pub awaken_agent_contract::Message::content: alloc::vec::Vec<awaken_agent_contra
 pub awaken_agent_contract::Message::id: awaken_agent_contract::agent::message::Id
 pub awaken_agent_contract::Message::role: awaken_agent_contract::agent::message::Role
 impl awaken_agent_contract::agent::message::Message
+pub fn awaken_agent_contract::agent::message::Message::new(awaken_agent_contract::agent::message::Id, awaken_agent_contract::agent::message::Role, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
 pub fn awaken_agent_contract::agent::message::Message::text(awaken_agent_contract::agent::message::Id, awaken_agent_contract::agent::message::Role, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::message::Message::text_content(&self) -> alloc::string::String
 impl core::clone::Clone for awaken_agent_contract::agent::message::Message
