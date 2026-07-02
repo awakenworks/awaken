@@ -146,6 +146,8 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0034-runtime-axis-model-and-orthogonality.md` | Decision record | Not required | n/a |
 | `adr/0035-environment-provisioning-tools-skills-resources.md` | Decision record | Not required | n/a |
 | `adr/0036-skills-as-runtime-extension-single-tool.md` | Decision record | Not required | n/a |
+| `adr/0037-managed-capability-advertisement-wire-alignment.md` | Decision record | Not required | n/a |
+| `adr/0038-managed-resource-injection-and-store-organization.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
