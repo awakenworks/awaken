@@ -140,6 +140,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0032-runnable-config.md` | Decision record | Not required | n/a |
 | `adr/0033-in-process-run-driver.md` | Decision record | Not required | n/a |
 | `adr/0034-runtime-axis-model-and-orthogonality.md` | Decision record | Not required | n/a |
+| `adr/0035-environment-provisioning-tools-skills-resources.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
