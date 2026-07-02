@@ -75,7 +75,7 @@ fn manifest_admits_resolved_contributions() {
     assert_eq!(contributions.tool_gates.len(), 1);
     assert_eq!(contributions.tool_observers.len(), 1);
     assert_eq!(contributions.run_end_guards.len(), 1);
-    assert_eq!(contributions.state_keys.len(), 4);
+    assert_eq!(contributions.state_keys.len(), 5);
 }
 
 #[test]
@@ -279,6 +279,57 @@ async fn observer_emits_warn_message_and_records() {
     assert_eq!(reaction.messages[0].text_content(), "writing unread a.rs");
     assert_eq!(Metrics::load(&store).total.warned, 1);
     assert_eq!(ViolationLog::load(&store).records.len(), 1);
+}
+
+#[tokio::test]
+async fn observer_records_asked_on_approved_ask_call() {
+    // An ask-violating Write that executed (a resumed, approved ask, since a
+    // fresh ask suspends before the observer) records an `asked` metric.
+    let cfg = r#"{"machines":[{"name":"m","key":"{file_path}","initial":"unread",
+        "transitions":[{"on":"Write(file_path ~ \"*\")","from":"read","to":"written",
+            "on_violation":{"action":"ask"}}]}]}"#;
+    let p = plugin(cfg);
+    let contributions = p.resolve();
+    let observer = &contributions.tool_observers[0];
+    let mut store = Store::new();
+    let reaction = observer
+        .after_tool(
+            &call("Write", json!({"file_path": "a.rs"})),
+            &ToolOutput::ok("call-1", "wrote"),
+            &store,
+        )
+        .await;
+    apply(&mut store, &reaction.state);
+    assert_eq!(Metrics::load(&store).total.asked, 1);
+}
+
+#[tokio::test]
+async fn emit_cooldown_throttles_repeat_reminders() {
+    // A self-loop transition that emits every fire, with a cooldown of 2 ticks:
+    // over three consecutive calls the middle reminder is throttled.
+    let cfg = r#"{"machines":[{"name":"m","scope":"run","key":"{file_path}","initial":"editing",
+        "transitions":[{"on":"Edit(file_path ~ \"*\")","from":"editing","to":"editing",
+            "emit":{"target":"system","content":"check {file_path}","cooldown_turns":2}}]}]}"#;
+    let p = plugin(cfg);
+    let contributions = p.resolve();
+    let observer = &contributions.tool_observers[0];
+    let mut store = Store::new();
+    let mut emitted = 0;
+    for _ in 0..3 {
+        let reaction = observer
+            .after_tool(
+                &call("Edit", json!({"file_path": "a.rs"})),
+                &ToolOutput::ok("call-1", "ok"),
+                &store,
+            )
+            .await;
+        emitted += reaction.messages.len();
+        apply(&mut store, &reaction.state);
+    }
+    assert_eq!(
+        emitted, 2,
+        "the middle reminder is throttled by the cooldown"
+    );
 }
 
 #[tokio::test]
