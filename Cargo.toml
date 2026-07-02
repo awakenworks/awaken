@@ -4,6 +4,7 @@ members = [
     "crates/awaken-agent-contract",
     "crates/awaken-runtime-contract",
     "crates/awaken-runtime",
+    "crates/awaken-tool-pattern",
     "crates/awaken-ext-builtin-tools",
     "crates/awaken-ext-permission",
     "crates/awaken-config-store",
@@ -32,6 +33,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 awaken-agent-contract = { path = "crates/awaken-agent-contract" }
 awaken-runtime-contract = { path = "crates/awaken-runtime-contract" }
+awaken-tool-pattern = { path = "crates/awaken-tool-pattern" }
 awaken-ext-skills = { path = "crates/awaken-ext-skills" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

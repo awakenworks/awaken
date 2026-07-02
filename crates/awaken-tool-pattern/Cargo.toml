@@ -1,0 +1,15 @@
+[package]
+name = "awaken-tool-pattern"
+version = "0.1.0"
+edition = "2024"
+description = "Glob and regex pattern matching for tool calls in Awaken"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+glob-match = "0.2"
+regex = "1"
+thiserror.workspace = true
+
+[lints]
+workspace = true
