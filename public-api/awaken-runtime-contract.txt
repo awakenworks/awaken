@@ -1,4 +1,10 @@
 pub mod awaken_runtime_contract
+pub use awaken_runtime_contract::CancellationToken
+pub use awaken_runtime_contract::Message
+pub use awaken_runtime_contract::MessageId
+pub use awaken_runtime_contract::Role
+pub use awaken_runtime_contract::RunId
+pub use awaken_runtime_contract::Store
 pub mod awaken_runtime_contract::activation
 pub struct awaken_runtime_contract::activation::RunActivation
 pub awaken_runtime_contract::activation::RunActivation::input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
@@ -45,13 +51,52 @@ impl core::marker::Sync for awaken_runtime_contract::activation::TraceContext
 impl core::marker::Unpin for awaken_runtime_contract::activation::TraceContext
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::activation::TraceContext
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::activation::TraceContext
+pub mod awaken_runtime_contract::agent_resolver
+pub enum awaken_runtime_contract::agent_resolver::AgentStep
+pub awaken_runtime_contract::agent_resolver::AgentStep::Done
+pub awaken_runtime_contract::agent_resolver::AgentStep::Done::text: alloc::string::String
+pub awaken_runtime_contract::agent_resolver::AgentStep::Parked
+pub awaken_runtime_contract::agent_resolver::AgentStep::Parked::handle: serde_json::value::Value
+impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentStep
+pub struct awaken_runtime_contract::agent_resolver::AgentError(pub alloc::string::String)
+impl awaken_runtime_contract::agent_resolver::AgentError
+pub fn awaken_runtime_contract::agent_resolver::AgentError::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::error::Error for awaken_runtime_contract::agent_resolver::AgentError
+impl core::fmt::Debug for awaken_runtime_contract::agent_resolver::AgentError
+pub fn awaken_runtime_contract::agent_resolver::AgentError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_runtime_contract::agent_resolver::AgentError
+pub fn awaken_runtime_contract::agent_resolver::AgentError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentError
+impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentError
+impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentError
+impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentError
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentError
+pub struct awaken_runtime_contract::agent_resolver::AgentRequest
+pub awaken_runtime_contract::agent_resolver::AgentRequest::arguments: serde_json::value::Value
+pub awaken_runtime_contract::agent_resolver::AgentRequest::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentRequest
+pub trait awaken_runtime_contract::agent_resolver::AgentResolver: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::agent_resolver::AgentResolver::resume<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 serde_json::value::Value, &'life2 str, core::option::Option<&'life3 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::agent_resolver::AgentStep, awaken_runtime_contract::agent_resolver::AgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_runtime_contract::agent_resolver::AgentResolver::run<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::agent_resolver::AgentRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::agent_resolver::AgentStep, awaken_runtime_contract::agent_resolver::AgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::agent_resolver::AgentResolver::tool_id(&self) -> &str
 pub mod awaken_runtime_contract::capability
 pub struct awaken_runtime_contract::capability::PluginCapability
+pub awaken_runtime_contract::capability::PluginCapability::config_schema: core::option::Option<serde_json::value::Value>
 pub awaken_runtime_contract::capability::PluginCapability::id: alloc::string::String
 pub awaken_runtime_contract::capability::PluginCapability::schema_keys: alloc::vec::Vec<alloc::string::String>
 impl core::clone::Clone for awaken_runtime_contract::capability::PluginCapability
 pub fn awaken_runtime_contract::capability::PluginCapability::clone(&self) -> awaken_runtime_contract::capability::PluginCapability
-impl core::cmp::Eq for awaken_runtime_contract::capability::PluginCapability
 impl core::cmp::PartialEq for awaken_runtime_contract::capability::PluginCapability
 pub fn awaken_runtime_contract::capability::PluginCapability::eq(&self, &awaken_runtime_contract::capability::PluginCapability) -> bool
 impl core::fmt::Debug for awaken_runtime_contract::capability::PluginCapability
@@ -74,7 +119,6 @@ pub awaken_runtime_contract::capability::RuntimeCapabilityCatalog::runtime_versi
 pub awaken_runtime_contract::capability::RuntimeCapabilityCatalog::tools: alloc::vec::Vec<awaken_runtime_contract::capability::ToolCapability>
 impl core::clone::Clone for awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 pub fn awaken_runtime_contract::capability::RuntimeCapabilityCatalog::clone(&self) -> awaken_runtime_contract::capability::RuntimeCapabilityCatalog
-impl core::cmp::Eq for awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 impl core::cmp::PartialEq for awaken_runtime_contract::capability::RuntimeCapabilityCatalog
 pub fn awaken_runtime_contract::capability::RuntimeCapabilityCatalog::eq(&self, &awaken_runtime_contract::capability::RuntimeCapabilityCatalog) -> bool
 impl core::fmt::Debug for awaken_runtime_contract::capability::RuntimeCapabilityCatalog
@@ -499,7 +543,8 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::permissio
 pub trait awaken_runtime_contract::permission::PermissionPolicy: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::permission::PermissionPolicy::decide<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::PermissionDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::permission::ToolGateHook: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::permission::ToolGateHook::gate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::permission::ToolGateHook::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_contract::permission::ToolGateHook::id(&self) -> &str
 pub mod awaken_runtime_contract::plugin
 pub enum awaken_runtime_contract::plugin::BoundViolation
 pub awaken_runtime_contract::plugin::BoundViolation::ActionKind
@@ -508,12 +553,21 @@ pub awaken_runtime_contract::plugin::BoundViolation::ActionKind::plugin: alloc::
 pub awaken_runtime_contract::plugin::BoundViolation::Hook
 pub awaken_runtime_contract::plugin::BoundViolation::Hook::plugin: alloc::string::String
 pub awaken_runtime_contract::plugin::BoundViolation::Hook::point: awaken_runtime_contract::plugin::PhaseHookPoint
+pub awaken_runtime_contract::plugin::BoundViolation::RunEndGuard
+pub awaken_runtime_contract::plugin::BoundViolation::RunEndGuard::id: alloc::string::String
+pub awaken_runtime_contract::plugin::BoundViolation::RunEndGuard::plugin: alloc::string::String
 pub awaken_runtime_contract::plugin::BoundViolation::StateKey
 pub awaken_runtime_contract::plugin::BoundViolation::StateKey::id: alloc::string::String
 pub awaken_runtime_contract::plugin::BoundViolation::StateKey::plugin: alloc::string::String
 pub awaken_runtime_contract::plugin::BoundViolation::Tool
 pub awaken_runtime_contract::plugin::BoundViolation::Tool::id: alloc::string::String
 pub awaken_runtime_contract::plugin::BoundViolation::Tool::plugin: alloc::string::String
+pub awaken_runtime_contract::plugin::BoundViolation::ToolGate
+pub awaken_runtime_contract::plugin::BoundViolation::ToolGate::id: alloc::string::String
+pub awaken_runtime_contract::plugin::BoundViolation::ToolGate::plugin: alloc::string::String
+pub awaken_runtime_contract::plugin::BoundViolation::ToolObserver
+pub awaken_runtime_contract::plugin::BoundViolation::ToolObserver::id: alloc::string::String
+pub awaken_runtime_contract::plugin::BoundViolation::ToolObserver::plugin: alloc::string::String
 impl core::cmp::Eq for awaken_runtime_contract::plugin::BoundViolation
 impl core::cmp::PartialEq for awaken_runtime_contract::plugin::BoundViolation
 pub fn awaken_runtime_contract::plugin::BoundViolation::eq(&self, &awaken_runtime_contract::plugin::BoundViolation) -> bool
@@ -533,6 +587,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::BoundViolation
 pub enum awaken_runtime_contract::plugin::MergeError
 pub awaken_runtime_contract::plugin::MergeError::Bound(awaken_runtime_contract::plugin::BoundViolation)
+pub awaken_runtime_contract::plugin::MergeError::Config(awaken_runtime_contract::plugin::PluginConfigError)
 pub awaken_runtime_contract::plugin::MergeError::DependencyCycle
 pub awaken_runtime_contract::plugin::MergeError::DuplicateActionKind
 pub awaken_runtime_contract::plugin::MergeError::DuplicateActionKind::first: alloc::string::String
@@ -550,6 +605,8 @@ impl core::cmp::PartialEq for awaken_runtime_contract::plugin::MergeError
 pub fn awaken_runtime_contract::plugin::MergeError::eq(&self, &awaken_runtime_contract::plugin::MergeError) -> bool
 impl core::convert::From<awaken_runtime_contract::plugin::BoundViolation> for awaken_runtime_contract::plugin::MergeError
 pub fn awaken_runtime_contract::plugin::MergeError::from(awaken_runtime_contract::plugin::BoundViolation) -> Self
+impl core::convert::From<awaken_runtime_contract::plugin::PluginConfigError> for awaken_runtime_contract::plugin::MergeError
+pub fn awaken_runtime_contract::plugin::MergeError::from(awaken_runtime_contract::plugin::PluginConfigError) -> Self
 impl core::error::Error for awaken_runtime_contract::plugin::MergeError
 pub fn awaken_runtime_contract::plugin::MergeError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for awaken_runtime_contract::plugin::MergeError
@@ -589,11 +646,27 @@ impl core::marker::Sync for awaken_runtime_contract::plugin::PhaseHookPoint
 impl core::marker::Unpin for awaken_runtime_contract::plugin::PhaseHookPoint
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PhaseHookPoint
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PhaseHookPoint
+pub enum awaken_runtime_contract::plugin::RunEndDecision
+pub awaken_runtime_contract::plugin::RunEndDecision::Complete
+pub awaken_runtime_contract::plugin::RunEndDecision::Complete::detail: serde_json::value::Value
+pub awaken_runtime_contract::plugin::RunEndDecision::Steer
+pub awaken_runtime_contract::plugin::RunEndDecision::Steer::detail: serde_json::value::Value
+pub awaken_runtime_contract::plugin::RunEndDecision::Steer::feedback: alloc::string::String
+impl core::marker::Freeze for awaken_runtime_contract::plugin::RunEndDecision
+impl core::marker::Send for awaken_runtime_contract::plugin::RunEndDecision
+impl core::marker::Sync for awaken_runtime_contract::plugin::RunEndDecision
+impl core::marker::Unpin for awaken_runtime_contract::plugin::RunEndDecision
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::RunEndDecision
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::RunEndDecision
 pub struct awaken_runtime_contract::plugin::CapabilityBound
 pub awaken_runtime_contract::plugin::CapabilityBound::action_kinds: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::plugin::CapabilityBound::phase_hooks: alloc::vec::Vec<awaken_runtime_contract::plugin::PhaseHookPoint>
+pub awaken_runtime_contract::plugin::CapabilityBound::run_end_guards: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::plugin::CapabilityBound::state_keys: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::plugin::CapabilityBound::tool_gates: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::plugin::CapabilityBound::tool_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::plugin::CapabilityBound::tool_namespaces: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::plugin::CapabilityBound::tool_observers: alloc::vec::Vec<alloc::string::String>
 impl core::clone::Clone for awaken_runtime_contract::plugin::CapabilityBound
 pub fn awaken_runtime_contract::plugin::CapabilityBound::clone(&self) -> awaken_runtime_contract::plugin::CapabilityBound
 impl core::cmp::Eq for awaken_runtime_contract::plugin::CapabilityBound
@@ -616,9 +689,13 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::CapabilityBound
 pub struct awaken_runtime_contract::plugin::Contributions
 pub awaken_runtime_contract::plugin::Contributions::action_kinds: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::plugin::Contributions::dynamic_tools: alloc::vec::Vec<awaken_runtime_contract::plugin::DynamicTool>
 pub awaken_runtime_contract::plugin::Contributions::phase_hooks: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
 pub awaken_runtime_contract::plugin::Contributions::plugin_id: alloc::string::String
+pub awaken_runtime_contract::plugin::Contributions::run_end_guards: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::RunEndGuard>>
 pub awaken_runtime_contract::plugin::Contributions::state_keys: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::plugin::Contributions::tool_gates: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>
+pub awaken_runtime_contract::plugin::Contributions::tool_observers: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::ToolOutcomeHook>>
 pub awaken_runtime_contract::plugin::Contributions::tools: alloc::vec::Vec<alloc::string::String>
 impl awaken_runtime_contract::plugin::Contributions
 pub fn awaken_runtime_contract::plugin::Contributions::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -630,6 +707,17 @@ impl core::marker::Sync for awaken_runtime_contract::plugin::Contributions
 impl core::marker::Unpin for awaken_runtime_contract::plugin::Contributions
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::Contributions
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::Contributions
+pub struct awaken_runtime_contract::plugin::DynamicTool
+pub awaken_runtime_contract::plugin::DynamicTool::descriptor: awaken_runtime_contract::resolved::ToolDescriptor
+pub awaken_runtime_contract::plugin::DynamicTool::tool: alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>
+impl core::clone::Clone for awaken_runtime_contract::plugin::DynamicTool
+pub fn awaken_runtime_contract::plugin::DynamicTool::clone(&self) -> awaken_runtime_contract::plugin::DynamicTool
+impl core::marker::Freeze for awaken_runtime_contract::plugin::DynamicTool
+impl core::marker::Send for awaken_runtime_contract::plugin::DynamicTool
+impl core::marker::Sync for awaken_runtime_contract::plugin::DynamicTool
+impl core::marker::Unpin for awaken_runtime_contract::plugin::DynamicTool
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::DynamicTool
+impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::DynamicTool
 pub struct awaken_runtime_contract::plugin::PhaseContext
 pub awaken_runtime_contract::plugin::PhaseContext::point: awaken_runtime_contract::plugin::PhaseHookPoint
 pub awaken_runtime_contract::plugin::PhaseContext::run_id: awaken_agent_contract::agent::run::Id
@@ -648,6 +736,28 @@ impl core::marker::Sync for awaken_runtime_contract::plugin::PhaseContext
 impl core::marker::Unpin for awaken_runtime_contract::plugin::PhaseContext
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PhaseContext
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PhaseContext
+pub struct awaken_runtime_contract::plugin::PluginConfigError
+pub awaken_runtime_contract::plugin::PluginConfigError::message: alloc::string::String
+pub awaken_runtime_contract::plugin::PluginConfigError::plugin: alloc::string::String
+impl awaken_runtime_contract::plugin::PluginConfigError
+pub fn awaken_runtime_contract::plugin::PluginConfigError::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::cmp::Eq for awaken_runtime_contract::plugin::PluginConfigError
+impl core::cmp::PartialEq for awaken_runtime_contract::plugin::PluginConfigError
+pub fn awaken_runtime_contract::plugin::PluginConfigError::eq(&self, &awaken_runtime_contract::plugin::PluginConfigError) -> bool
+impl core::convert::From<awaken_runtime_contract::plugin::PluginConfigError> for awaken_runtime_contract::plugin::MergeError
+pub fn awaken_runtime_contract::plugin::MergeError::from(awaken_runtime_contract::plugin::PluginConfigError) -> Self
+impl core::error::Error for awaken_runtime_contract::plugin::PluginConfigError
+impl core::fmt::Debug for awaken_runtime_contract::plugin::PluginConfigError
+pub fn awaken_runtime_contract::plugin::PluginConfigError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_runtime_contract::plugin::PluginConfigError
+pub fn awaken_runtime_contract::plugin::PluginConfigError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::plugin::PluginConfigError
+impl core::marker::Freeze for awaken_runtime_contract::plugin::PluginConfigError
+impl core::marker::Send for awaken_runtime_contract::plugin::PluginConfigError
+impl core::marker::Sync for awaken_runtime_contract::plugin::PluginConfigError
+impl core::marker::Unpin for awaken_runtime_contract::plugin::PluginConfigError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PluginConfigError
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PluginConfigError
 pub struct awaken_runtime_contract::plugin::PluginManifest
 pub awaken_runtime_contract::plugin::PluginManifest::bound: awaken_runtime_contract::plugin::CapabilityBound
 pub awaken_runtime_contract::plugin::PluginManifest::config_sections: alloc::vec::Vec<alloc::string::String>
@@ -675,26 +785,66 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PluginManifest
 pub struct awaken_runtime_contract::plugin::ResolvedExecutionEnv
 pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::action_kinds: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::dynamic_tools: alloc::vec::Vec<awaken_runtime_contract::plugin::DynamicTool>
 pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::order: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::phase_hooks: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
+pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::run_end_guards: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::RunEndGuard>>
 pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::state_keys: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::tool_gates: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>
+pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::tool_observers: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::ToolOutcomeHook>>
 pub awaken_runtime_contract::plugin::ResolvedExecutionEnv::tools: alloc::vec::Vec<alloc::string::String>
 impl awaken_runtime_contract::plugin::ResolvedExecutionEnv
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::dynamic_descriptors(&self) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::dynamic_tool(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::hooks_for(&self, awaken_runtime_contract::plugin::PhaseHookPoint) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
 pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::merge(alloc::vec::Vec<(awaken_runtime_contract::plugin::PluginManifest, awaken_runtime_contract::plugin::Contributions)>) -> core::result::Result<Self, awaken_runtime_contract::plugin::MergeError>
 pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::permits_action_kind(&self, &str) -> bool
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::run_end_guards(&self) -> &[alloc::sync::Arc<dyn awaken_runtime_contract::plugin::RunEndGuard>]
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::tool_gates(&self) -> &[alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>]
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::tool_observers(&self) -> &[alloc::sync::Arc<dyn awaken_runtime_contract::plugin::ToolOutcomeHook>]
 impl core::marker::Freeze for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl core::marker::Send for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl core::marker::Sync for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl core::marker::Unpin for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::ResolvedExecutionEnv
+pub struct awaken_runtime_contract::plugin::RunEndContext<'a>
+pub awaken_runtime_contract::plugin::RunEndContext::cancellation: core::option::Option<&'a tokio_util::sync::cancellation_token::CancellationToken>
+pub awaken_runtime_contract::plugin::RunEndContext::conversation: &'a [awaken_agent_contract::agent::message::Message]
+pub awaken_runtime_contract::plugin::RunEndContext::forced_continuations: usize
+pub awaken_runtime_contract::plugin::RunEndContext::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_runtime_contract::plugin::RunEndContext::state: &'a awaken_agent_contract::agent::state::Store
+impl<'a> core::marker::Freeze for awaken_runtime_contract::plugin::RunEndContext<'a>
+impl<'a> core::marker::Send for awaken_runtime_contract::plugin::RunEndContext<'a>
+impl<'a> core::marker::Sync for awaken_runtime_contract::plugin::RunEndContext<'a>
+impl<'a> core::marker::Unpin for awaken_runtime_contract::plugin::RunEndContext<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::RunEndContext<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::RunEndContext<'a>
+pub struct awaken_runtime_contract::plugin::ToolReaction
+pub awaken_runtime_contract::plugin::ToolReaction::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_runtime_contract::plugin::ToolReaction::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
+impl core::default::Default for awaken_runtime_contract::plugin::ToolReaction
+pub fn awaken_runtime_contract::plugin::ToolReaction::default() -> awaken_runtime_contract::plugin::ToolReaction
+impl core::marker::Freeze for awaken_runtime_contract::plugin::ToolReaction
+impl core::marker::Send for awaken_runtime_contract::plugin::ToolReaction
+impl core::marker::Sync for awaken_runtime_contract::plugin::ToolReaction
+impl core::marker::Unpin for awaken_runtime_contract::plugin::ToolReaction
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::ToolReaction
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::ToolReaction
 pub trait awaken_runtime_contract::plugin::PhaseHook: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::plugin::PhaseHook::on_phase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::plugin::PhaseContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_agent_contract::agent::state::Command>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::plugin::PhaseHook::point(&self) -> awaken_runtime_contract::plugin::PhaseHookPoint
 pub trait awaken_runtime_contract::plugin::Plugin: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::plugin::Plugin::live_version(&self) -> core::option::Option<u64>
 pub fn awaken_runtime_contract::plugin::Plugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
 pub fn awaken_runtime_contract::plugin::Plugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
+pub fn awaken_runtime_contract::plugin::Plugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::Contributions, awaken_runtime_contract::plugin::PluginConfigError>
+pub trait awaken_runtime_contract::plugin::RunEndGuard: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::plugin::RunEndGuard::evaluate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::plugin::RunEndContext<'life2>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::plugin::RunEndDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_contract::plugin::RunEndGuard::id(&self) -> &str
+pub trait awaken_runtime_contract::plugin::ToolOutcomeHook: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::plugin::ToolOutcomeHook::after_tool<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolOutput, &'life3 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::plugin::ToolReaction> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_runtime_contract::plugin::ToolOutcomeHook::id(&self) -> &str
 pub fn awaken_runtime_contract::plugin::enforce_bound(&awaken_runtime_contract::plugin::PluginManifest, &awaken_runtime_contract::plugin::Contributions) -> core::result::Result<(), awaken_runtime_contract::plugin::BoundViolation>
 pub mod awaken_runtime_contract::plugin_config
 pub enum awaken_runtime_contract::plugin_config::Error
@@ -802,6 +952,7 @@ pub awaken_runtime_contract::resolved::ResolvedSpec::catalog_fingerprint: awaken
 pub awaken_runtime_contract::resolved::ResolvedSpec::instructions: alloc::string::String
 pub awaken_runtime_contract::resolved::ResolvedSpec::max_steps: usize
 pub awaken_runtime_contract::resolved::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ModelBinding
+pub awaken_runtime_contract::resolved::ResolvedSpec::plugin_config: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
 pub awaken_runtime_contract::resolved::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::resolved::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 impl core::clone::Clone for awaken_runtime_contract::resolved::ResolvedSpec
@@ -973,6 +1124,9 @@ pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::fingerprint(sel
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::max_steps(self, usize) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::model(self, awaken_runtime_contract::resolved::ModelBinding) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugin_capabilities(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::capability::PluginCapability>) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugin_config(self, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, serde_json::value::Value)>) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugins(self, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tool(self, awaken_runtime_contract::resolved::ToolDescriptor) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tools(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::resolved::ToolDescriptor>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::runnable::RunnableConfigBuilder
@@ -1166,6 +1320,17 @@ pub fn awaken_runtime_contract::tool::Tool::call<'life0, 'async_trait>(&'life0 s
 pub fn awaken_runtime_contract::tool::Tool::id(&self) -> &str
 pub trait awaken_runtime_contract::tool::ToolExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::tool::ToolExecutor::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub enum awaken_runtime_contract::AgentStep
+pub awaken_runtime_contract::AgentStep::Done
+pub awaken_runtime_contract::AgentStep::Done::text: alloc::string::String
+pub awaken_runtime_contract::AgentStep::Parked
+pub awaken_runtime_contract::AgentStep::Parked::handle: serde_json::value::Value
+impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentStep
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentStep
 pub enum awaken_runtime_contract::GateOutcome
 pub awaken_runtime_contract::GateOutcome::Allow
 pub awaken_runtime_contract::GateOutcome::Block
@@ -1288,11 +1453,50 @@ impl core::marker::Sync for awaken_runtime_contract::resume::ResumeResult
 impl core::marker::Unpin for awaken_runtime_contract::resume::ResumeResult
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resume::ResumeResult
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resume::ResumeResult
+pub enum awaken_runtime_contract::RunEndDecision
+pub awaken_runtime_contract::RunEndDecision::Complete
+pub awaken_runtime_contract::RunEndDecision::Complete::detail: serde_json::value::Value
+pub awaken_runtime_contract::RunEndDecision::Steer
+pub awaken_runtime_contract::RunEndDecision::Steer::detail: serde_json::value::Value
+pub awaken_runtime_contract::RunEndDecision::Steer::feedback: alloc::string::String
+impl core::marker::Freeze for awaken_runtime_contract::plugin::RunEndDecision
+impl core::marker::Send for awaken_runtime_contract::plugin::RunEndDecision
+impl core::marker::Sync for awaken_runtime_contract::plugin::RunEndDecision
+impl core::marker::Unpin for awaken_runtime_contract::plugin::RunEndDecision
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::RunEndDecision
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::RunEndDecision
+pub struct awaken_runtime_contract::AgentError(pub alloc::string::String)
+impl awaken_runtime_contract::agent_resolver::AgentError
+pub fn awaken_runtime_contract::agent_resolver::AgentError::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::error::Error for awaken_runtime_contract::agent_resolver::AgentError
+impl core::fmt::Debug for awaken_runtime_contract::agent_resolver::AgentError
+pub fn awaken_runtime_contract::agent_resolver::AgentError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_runtime_contract::agent_resolver::AgentError
+pub fn awaken_runtime_contract::agent_resolver::AgentError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentError
+impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentError
+impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentError
+impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentError
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentError
+pub struct awaken_runtime_contract::AgentRequest
+pub awaken_runtime_contract::AgentRequest::arguments: serde_json::value::Value
+pub awaken_runtime_contract::AgentRequest::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+impl core::marker::Freeze for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::marker::Send for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::marker::Sync for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::marker::Unpin for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::agent_resolver::AgentRequest
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::agent_resolver::AgentRequest
 pub struct awaken_runtime_contract::CapabilityBound
 pub awaken_runtime_contract::CapabilityBound::action_kinds: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::CapabilityBound::phase_hooks: alloc::vec::Vec<awaken_runtime_contract::plugin::PhaseHookPoint>
+pub awaken_runtime_contract::CapabilityBound::run_end_guards: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::CapabilityBound::state_keys: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::CapabilityBound::tool_gates: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::CapabilityBound::tool_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::CapabilityBound::tool_namespaces: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::CapabilityBound::tool_observers: alloc::vec::Vec<alloc::string::String>
 impl core::clone::Clone for awaken_runtime_contract::plugin::CapabilityBound
 pub fn awaken_runtime_contract::plugin::CapabilityBound::clone(&self) -> awaken_runtime_contract::plugin::CapabilityBound
 impl core::cmp::Eq for awaken_runtime_contract::plugin::CapabilityBound
@@ -1377,9 +1581,13 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::llm::C
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::llm::ChatResponse
 pub struct awaken_runtime_contract::Contributions
 pub awaken_runtime_contract::Contributions::action_kinds: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::Contributions::dynamic_tools: alloc::vec::Vec<awaken_runtime_contract::plugin::DynamicTool>
 pub awaken_runtime_contract::Contributions::phase_hooks: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
 pub awaken_runtime_contract::Contributions::plugin_id: alloc::string::String
+pub awaken_runtime_contract::Contributions::run_end_guards: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::RunEndGuard>>
 pub awaken_runtime_contract::Contributions::state_keys: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::Contributions::tool_gates: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>
+pub awaken_runtime_contract::Contributions::tool_observers: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::ToolOutcomeHook>>
 pub awaken_runtime_contract::Contributions::tools: alloc::vec::Vec<alloc::string::String>
 impl awaken_runtime_contract::plugin::Contributions
 pub fn awaken_runtime_contract::plugin::Contributions::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -1487,14 +1695,23 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PluginManifest
 pub struct awaken_runtime_contract::ResolvedExecutionEnv
 pub awaken_runtime_contract::ResolvedExecutionEnv::action_kinds: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::ResolvedExecutionEnv::dynamic_tools: alloc::vec::Vec<awaken_runtime_contract::plugin::DynamicTool>
 pub awaken_runtime_contract::ResolvedExecutionEnv::order: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::ResolvedExecutionEnv::phase_hooks: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
+pub awaken_runtime_contract::ResolvedExecutionEnv::run_end_guards: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::RunEndGuard>>
 pub awaken_runtime_contract::ResolvedExecutionEnv::state_keys: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::ResolvedExecutionEnv::tool_gates: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>
+pub awaken_runtime_contract::ResolvedExecutionEnv::tool_observers: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::ToolOutcomeHook>>
 pub awaken_runtime_contract::ResolvedExecutionEnv::tools: alloc::vec::Vec<alloc::string::String>
 impl awaken_runtime_contract::plugin::ResolvedExecutionEnv
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::dynamic_descriptors(&self) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::dynamic_tool(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::hooks_for(&self, awaken_runtime_contract::plugin::PhaseHookPoint) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::plugin::PhaseHook>>
 pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::merge(alloc::vec::Vec<(awaken_runtime_contract::plugin::PluginManifest, awaken_runtime_contract::plugin::Contributions)>) -> core::result::Result<Self, awaken_runtime_contract::plugin::MergeError>
 pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::permits_action_kind(&self, &str) -> bool
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::run_end_guards(&self) -> &[alloc::sync::Arc<dyn awaken_runtime_contract::plugin::RunEndGuard>]
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::tool_gates(&self) -> &[alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>]
+pub fn awaken_runtime_contract::plugin::ResolvedExecutionEnv::tool_observers(&self) -> &[alloc::sync::Arc<dyn awaken_runtime_contract::plugin::ToolOutcomeHook>]
 impl core::marker::Freeze for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl core::marker::Send for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 impl core::marker::Sync for awaken_runtime_contract::plugin::ResolvedExecutionEnv
@@ -1506,6 +1723,7 @@ pub awaken_runtime_contract::ResolvedSpec::catalog_fingerprint: awaken_runtime_c
 pub awaken_runtime_contract::ResolvedSpec::instructions: alloc::string::String
 pub awaken_runtime_contract::ResolvedSpec::max_steps: usize
 pub awaken_runtime_contract::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ModelBinding
+pub awaken_runtime_contract::ResolvedSpec::plugin_config: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
 pub awaken_runtime_contract::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 impl core::clone::Clone for awaken_runtime_contract::resolved::ResolvedSpec
@@ -1575,6 +1793,18 @@ impl core::marker::Sync for awaken_runtime_contract::activation::RunActivation
 impl core::marker::Unpin for awaken_runtime_contract::activation::RunActivation
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::activation::RunActivation
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::activation::RunActivation
+pub struct awaken_runtime_contract::RunEndContext<'a>
+pub awaken_runtime_contract::RunEndContext::cancellation: core::option::Option<&'a tokio_util::sync::cancellation_token::CancellationToken>
+pub awaken_runtime_contract::RunEndContext::conversation: &'a [awaken_agent_contract::agent::message::Message]
+pub awaken_runtime_contract::RunEndContext::forced_continuations: usize
+pub awaken_runtime_contract::RunEndContext::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_runtime_contract::RunEndContext::state: &'a awaken_agent_contract::agent::state::Store
+impl<'a> core::marker::Freeze for awaken_runtime_contract::plugin::RunEndContext<'a>
+impl<'a> core::marker::Send for awaken_runtime_contract::plugin::RunEndContext<'a>
+impl<'a> core::marker::Sync for awaken_runtime_contract::plugin::RunEndContext<'a>
+impl<'a> core::marker::Unpin for awaken_runtime_contract::plugin::RunEndContext<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::RunEndContext<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::RunEndContext<'a>
 pub struct awaken_runtime_contract::RunnableConfig
 impl awaken_runtime_contract::runnable::RunnableConfig
 pub fn awaken_runtime_contract::runnable::RunnableConfig::builder(impl core::convert::Into<alloc::string::String>) -> awaken_runtime_contract::runnable::RunnableConfigBuilder
@@ -1598,6 +1828,9 @@ pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::fingerprint(sel
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::max_steps(self, usize) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::model(self, awaken_runtime_contract::resolved::ModelBinding) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugin_capabilities(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::capability::PluginCapability>) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugin_config(self, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, serde_json::value::Value)>) -> Self
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::plugins(self, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tool(self, awaken_runtime_contract::resolved::ToolDescriptor) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::tools(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::resolved::ToolDescriptor>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::runnable::RunnableConfigBuilder
@@ -1680,6 +1913,10 @@ impl core::marker::Sync for awaken_runtime_contract::tool::ToolOutput
 impl core::marker::Unpin for awaken_runtime_contract::tool::ToolOutput
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::tool::ToolOutput
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::tool::ToolOutput
+pub trait awaken_runtime_contract::AgentResolver: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::AgentResolver::resume<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 serde_json::value::Value, &'life2 str, core::option::Option<&'life3 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::agent_resolver::AgentStep, awaken_runtime_contract::agent_resolver::AgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_runtime_contract::AgentResolver::run<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::agent_resolver::AgentRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::agent_resolver::AgentStep, awaken_runtime_contract::agent_resolver::AgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::AgentResolver::tool_id(&self) -> &str
 pub trait awaken_runtime_contract::AgentSnapshotResolver
 pub fn awaken_runtime_contract::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 pub trait awaken_runtime_contract::LiveRunControl
@@ -1693,11 +1930,16 @@ pub trait awaken_runtime_contract::PhaseHook: core::marker::Send + core::marker:
 pub fn awaken_runtime_contract::PhaseHook::on_phase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::plugin::PhaseContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_agent_contract::agent::state::Command>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::PhaseHook::point(&self) -> awaken_runtime_contract::plugin::PhaseHookPoint
 pub trait awaken_runtime_contract::Plugin: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::Plugin::live_version(&self) -> core::option::Option<u64>
 pub fn awaken_runtime_contract::Plugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
 pub fn awaken_runtime_contract::Plugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
+pub fn awaken_runtime_contract::Plugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::Contributions, awaken_runtime_contract::plugin::PluginConfigError>
 pub trait awaken_runtime_contract::RawTool: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::RawTool::id(&self) -> &str
 pub fn awaken_runtime_contract::RawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_runtime_contract::RunEndGuard: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::RunEndGuard::evaluate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::plugin::RunEndContext<'life2>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::plugin::RunEndDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_contract::RunEndGuard::id(&self) -> &str
 pub trait awaken_runtime_contract::RunExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::RunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::RunResolver
@@ -1712,5 +1954,6 @@ pub fn awaken_runtime_contract::Tool::id(&self) -> &str
 pub trait awaken_runtime_contract::ToolExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::ToolExecutor::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::ToolGateHook: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::ToolGateHook::gate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::ToolGateHook::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_contract::ToolGateHook::id(&self) -> &str
 pub fn awaken_runtime_contract::validate_resume(&awaken_agent_contract::agent::waiting::WaitingTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
