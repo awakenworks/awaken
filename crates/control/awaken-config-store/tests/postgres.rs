@@ -56,6 +56,7 @@ fn agent_config() -> AgentConfig {
         tool_ids: vec!["echo".to_string()],
         plugin_ids: Vec::new(),
         plugin_config: Default::default(),
+        context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
     }
 }
 
