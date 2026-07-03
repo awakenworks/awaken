@@ -93,7 +93,7 @@ pre-commit:
     #    must not depend on a higher one (deny.toml; INVARIANTS G2/G18/G29).
     #    Skips with a hint if cargo-deny is not installed.
     check-dep-direction:
-      glob: "{Cargo.toml,Cargo.lock,deny.toml,crates/*/Cargo.toml}"
+      glob: "{Cargo.toml,Cargo.lock,deny.toml,crates/**/Cargo.toml}"
       run: |
         if command -v cargo-deny >/dev/null 2>&1; then
           cargo deny --log-level error check bans

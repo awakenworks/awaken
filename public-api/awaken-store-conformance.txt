@@ -1,0 +1,4 @@
+pub mod awaken_store_conformance
+pub async fn awaken_store_conformance::commit_then_read<S: awaken_agent_contract::commit::coordinator::Coordinator + awaken_agent_contract::store::checkpoint::CheckpointReader>(&S)
+pub async fn awaken_store_conformance::commits_accumulate<S: awaken_agent_contract::commit::coordinator::Coordinator + awaken_agent_contract::store::checkpoint::CheckpointReader>(&S)
+pub async fn awaken_store_conformance::events_ordered_and_paged<S: awaken_agent_contract::commit::coordinator::Coordinator + awaken_agent_contract::store::checkpoint::CheckpointReader>(&S)

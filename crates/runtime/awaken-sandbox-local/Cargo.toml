@@ -1,0 +1,15 @@
+[package]
+name = "awaken-sandbox-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-runtime-contract.workspace = true
+awaken-ext-builtin-tools = { workspace = true }
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -541,7 +541,8 @@ def dependency_names(manifest: dict) -> set[str]:
 def iter_crate_manifests() -> list[Path]:
     if not CRATES.exists():
         return []
-    return sorted(CRATES.glob("*/Cargo.toml"))
+    # Crates are grouped by product bucket: crates/<runtime|agents>/<crate>/Cargo.toml.
+    return sorted(CRATES.glob("*/*/Cargo.toml"))
 
 
 def check_dependencies() -> list[str]:
@@ -564,7 +565,11 @@ def check_dependencies() -> list[str]:
 
 
 def text_files(crate_name: str) -> list[Path]:
-    src = CRATES / crate_name / "src"
+    # Resolve the crate under its product bucket (crates/<bucket>/<crate>/src).
+    manifest = next(CRATES.glob(f"*/{crate_name}/Cargo.toml"), None)
+    if manifest is None:
+        return []
+    src = manifest.parent / "src"
     if not src.exists():
         return []
     return sorted(path for path in src.rglob("*.rs") if path.is_file())
@@ -627,8 +632,8 @@ def check_neutral_code_boundaries() -> list[str]:
 def check_builtin_tool_ownership() -> list[str]:
     errors: list[str] = []
     for crate_name in EXTENSION_CRATES:
-        crate_dir = CRATES / crate_name
-        if not crate_dir.exists():
+        crate_dir = next(CRATES.glob(f"*/{crate_name}/Cargo.toml"), None)
+        if crate_dir is None:
             errors.append(f"missing required extension crate {crate_name!r} for concrete builtin tool ids")
     return errors
 
@@ -643,7 +648,10 @@ def check_tests_are_not_arch_owners() -> list[str]:
 
     errors: list[str] = []
     for crate_name in NEUTRAL_CRATES:
-        tests = CRATES / crate_name / "tests"
+        manifest = next(CRATES.glob(f"*/{crate_name}/Cargo.toml"), None)
+        if manifest is None:
+            continue
+        tests = manifest.parent / "tests"
         if not tests.exists():
             continue
         for path in sorted(tests.rglob("*.rs")):
@@ -655,12 +663,36 @@ def check_tests_are_not_arch_owners() -> list[str]:
     return errors
 
 
+def check_bucket_direction() -> list[str]:
+    """The product-bucket rule: crates/agents/* may depend on crates/runtime/*,
+    never the reverse. Keys off the actual directory a crate lives in, so it stays
+    correct as crates are added without touching any allowlist."""
+    errors: list[str] = []
+    bucket: dict[str, str] = {}
+    for manifest_path in iter_crate_manifests():
+        name = package_name(load_manifest(manifest_path))
+        bucket[name] = manifest_path.parent.parent.name  # crates/<bucket>/<crate>
+    for manifest_path in iter_crate_manifests():
+        manifest = load_manifest(manifest_path)
+        name = package_name(manifest)
+        if bucket.get(name) != "runtime":
+            continue
+        for dep in dependency_names(manifest):
+            if bucket.get(dep) == "agents":
+                errors.append(
+                    f"runtime/{name} depends on agents/{dep} "
+                    "(runtime must not depend on agents)"
+                )
+    return errors
+
+
 def main() -> int:
     errors = (
         check_dependencies()
         + check_neutral_code_boundaries()
         + check_builtin_tool_ownership()
         + check_tests_are_not_arch_owners()
+        + check_bucket_direction()
     )
     if errors:
         for error in errors:

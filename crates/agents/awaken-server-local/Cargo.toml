@@ -1,0 +1,44 @@
+[package]
+name = "awaken-server-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "awaken-server-local"
+path = "src/main.rs"
+
+[dependencies]
+awaken-protocol-managed = { workspace = true }
+awaken-protocol-ai-sdk = { workspace = true }
+awaken-protocol-ag-ui = { workspace = true }
+awaken-protocol-a2a = { workspace = true }
+awaken-protocol-transport = { workspace = true }
+awaken-sandbox-local = { workspace = true }
+awaken-store-sqlite = { workspace = true }
+awaken-store-fs = { workspace = true }
+awaken-config-store = { workspace = true }
+awaken-run-ingress = { workspace = true }
+awaken-ext-goal = { workspace = true }
+awaken-ext-state-machine = { workspace = true, features = ["schema"] }
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-runtime = { workspace = true }
+awaken-ext-builtin-tools = { workspace = true }
+awaken-ext-memory = { workspace = true }
+awaken-ext-compact = { workspace = true }
+awaken-ext-permission = { workspace = true }
+awaken-ext-skills = { workspace = true }
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+axum = "0.7"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+# Real-model integration test only (gated, `--ignored`): drive an adapter over a
+# live Anthropic-compatible endpoint through the genai provider.
+awaken-provider-genai = { workspace = true }
+awaken-agent-contract = { workspace = true }

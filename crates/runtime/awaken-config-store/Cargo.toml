@@ -1,0 +1,22 @@
+[package]
+name = "awaken-config-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-runtime-contract.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres", "sqlite"] }
+
+[dev-dependencies]
+awaken-runtime = { workspace = true }
+awaken-agent-contract.workspace = true
+awaken-store-sqlite = { workspace = true }

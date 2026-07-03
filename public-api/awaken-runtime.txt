@@ -1,70 +1,6 @@
 pub mod awaken_runtime
 pub mod awaken_runtime::memory
-pub struct awaken_runtime::memory::CommittedThread
-pub awaken_runtime::memory::CommittedThread::events: alloc::vec::Vec<awaken_agent_contract::event::record::Record>
-pub awaken_runtime::memory::CommittedThread::latest_run: core::option::Option<awaken_agent_contract::agent::run::Record>
-pub awaken_runtime::memory::CommittedThread::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_runtime::memory::CommittedThread::run_facts: alloc::vec::Vec<awaken_agent_contract::fact::run::Fact>
-pub awaken_runtime::memory::CommittedThread::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
-pub awaken_runtime::memory::CommittedThread::thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
-impl core::clone::Clone for awaken_runtime::memory::CommittedThread
-pub fn awaken_runtime::memory::CommittedThread::clone(&self) -> awaken_runtime::memory::CommittedThread
-impl core::default::Default for awaken_runtime::memory::CommittedThread
-pub fn awaken_runtime::memory::CommittedThread::default() -> awaken_runtime::memory::CommittedThread
-impl core::fmt::Debug for awaken_runtime::memory::CommittedThread
-pub fn awaken_runtime::memory::CommittedThread::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_runtime::memory::CommittedThread
-impl core::marker::Send for awaken_runtime::memory::CommittedThread
-impl core::marker::Sync for awaken_runtime::memory::CommittedThread
-impl core::marker::Unpin for awaken_runtime::memory::CommittedThread
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::memory::CommittedThread
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime::memory::CommittedThread
-pub struct awaken_runtime::memory::MemoryCommitCoordinator
-impl awaken_runtime::memory::MemoryCommitCoordinator
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::commit_count(&self) -> u64
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::committed(&self) -> awaken_runtime::memory::CommittedThread
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::new() -> Self
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::waiting_for(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
-impl awaken_agent_contract::commit::coordinator::Coordinator for awaken_runtime::memory::MemoryCommitCoordinator
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::commit::staged::CommitRecord, awaken_agent_contract::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl awaken_agent_contract::store::run_store::RunStore for awaken_runtime::memory::MemoryCommitCoordinator
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::get(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
-impl awaken_agent_contract::store::thread_reader::ThreadReader for awaken_runtime::memory::MemoryCommitCoordinator
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::waiting_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
-impl core::clone::Clone for awaken_runtime::memory::MemoryCommitCoordinator
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::clone(&self) -> awaken_runtime::memory::MemoryCommitCoordinator
-impl core::default::Default for awaken_runtime::memory::MemoryCommitCoordinator
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::default() -> awaken_runtime::memory::MemoryCommitCoordinator
-impl core::fmt::Debug for awaken_runtime::memory::MemoryCommitCoordinator
-pub fn awaken_runtime::memory::MemoryCommitCoordinator::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_runtime::memory::MemoryCommitCoordinator
-impl core::marker::Send for awaken_runtime::memory::MemoryCommitCoordinator
-impl core::marker::Sync for awaken_runtime::memory::MemoryCommitCoordinator
-impl core::marker::Unpin for awaken_runtime::memory::MemoryCommitCoordinator
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::memory::MemoryCommitCoordinator
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime::memory::MemoryCommitCoordinator
-pub struct awaken_runtime::memory::MemoryStreamSink
-impl awaken_runtime::memory::MemoryStreamSink
-pub fn awaken_runtime::memory::MemoryStreamSink::events(&self) -> alloc::vec::Vec<awaken_agent_contract::stream::event::Event>
-pub fn awaken_runtime::memory::MemoryStreamSink::new() -> Self
-impl awaken_agent_contract::stream::sink::Sink for awaken_runtime::memory::MemoryStreamSink
-pub fn awaken_runtime::memory::MemoryStreamSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl core::clone::Clone for awaken_runtime::memory::MemoryStreamSink
-pub fn awaken_runtime::memory::MemoryStreamSink::clone(&self) -> awaken_runtime::memory::MemoryStreamSink
-impl core::default::Default for awaken_runtime::memory::MemoryStreamSink
-pub fn awaken_runtime::memory::MemoryStreamSink::default() -> awaken_runtime::memory::MemoryStreamSink
-impl core::fmt::Debug for awaken_runtime::memory::MemoryStreamSink
-pub fn awaken_runtime::memory::MemoryStreamSink::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_runtime::memory::MemoryStreamSink
-impl core::marker::Send for awaken_runtime::memory::MemoryStreamSink
-impl core::marker::Sync for awaken_runtime::memory::MemoryStreamSink
-impl core::marker::Unpin for awaken_runtime::memory::MemoryStreamSink
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime::memory::MemoryStreamSink
-impl core::panic::unwind_safe::UnwindSafe for awaken_runtime::memory::MemoryStreamSink
-pub fn awaken_runtime::memory::replay_latest_phase(&awaken_runtime::memory::CommittedThread, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Phase>
-pub fn awaken_runtime::memory::replay_state(&awaken_runtime::memory::CommittedThread) -> awaken_agent_contract::agent::state::Store
+pub use awaken_runtime::memory::<<awaken_store_inmem::*>>
 pub struct awaken_runtime::DirectRunIngress
 impl awaken_runtime::DirectRunIngress
 pub fn awaken_runtime::DirectRunIngress::new(alloc::sync::Arc<awaken_runtime::Runtime>) -> Self
@@ -124,6 +60,7 @@ pub fn awaken_runtime::Runtime::with_resolver(self, alloc::sync::Arc<dyn awaken_
 pub fn awaken_runtime::Runtime::with_tool(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> Self
 impl awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::install_for_resume(&self, &awaken_runtime_contract::runnable::RunnableConfig) -> core::result::Result<(), awaken_runtime_contract::execution::Error>
+pub fn awaken_runtime::Runtime::prepare(&self, &awaken_runtime_contract::runnable::RunnableConfig, alloc::string::String, impl core::convert::Into<awaken_runtime::RunInput>) -> core::result::Result<(awaken_agent_contract::agent::run::Id, awaken_runtime_contract::activation::RunActivation), awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::run(&self, &awaken_runtime_contract::runnable::RunnableConfig, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::run_to_completion<F>(&self, &awaken_runtime_contract::runnable::RunnableConfig, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext, F) -> core::result::Result<awaken_agent_contract::agent::run::Phase, awaken_runtime_contract::execution::Error> where F: core::ops::function::FnMut(&awaken_agent_contract::agent::waiting::WaitingTicket) -> awaken_runtime_contract::resume::ResumeResult
 pub async fn awaken_runtime::Runtime::start_turn(&self, &awaken_runtime_contract::runnable::RunnableConfig, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::Phase), awaken_runtime_contract::execution::Error>

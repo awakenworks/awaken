@@ -1,0 +1,47 @@
+[package]
+name = "awaken-runtime-examples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-runtime = { workspace = true }
+awaken-ext-permission = { workspace = true }
+async-trait.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+# Optional, behind the coding-agent features (kept out of the minimal teaching
+# examples so direct_runtime/hello_agent stay light).
+awaken-ext-builtin-tools = { workspace = true, optional = true }
+awaken-provider-genai = { workspace = true, optional = true }
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
+genai = { workspace = true, optional = true }
+anyhow = { version = "1", optional = true }
+
+[features]
+# Core coding-agent logic (config, tools, permission, run/resume loop). Light
+# enough for the offline smoke test — no TUI, no real model.
+coding-agent = ["dep:awaken-ext-builtin-tools"]
+# The interactive TUI binary on top of the core: a real model and a terminal UI.
+coding-agent-tui = [
+    "coding-agent",
+    "dep:awaken-provider-genai",
+    "dep:genai",
+    "dep:ratatui",
+    "dep:crossterm",
+    "dep:anyhow",
+]
+
+[dev-dependencies]
+# `hello_agent` reuses the config domain's pure `compile()` to derive the
+# fingerprint — the embedded path borrows the producer, not the cloud storage.
+awaken-config-store = { workspace = true }
+
+[[example]]
+name = "coding_agent"
+required-features = ["coding-agent-tui"]
