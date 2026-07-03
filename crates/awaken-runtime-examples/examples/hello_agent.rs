@@ -31,6 +31,7 @@ async fn main() {
         tool_ids: Vec::new(),
         plugin_ids: Vec::new(),
         plugin_config: Default::default(),
+        context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
     };
 
     // 2. Compile to a runnable config — the fingerprint is sha256(config), stamped

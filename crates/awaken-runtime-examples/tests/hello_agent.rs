@@ -17,6 +17,7 @@ async fn hello_agent_example_runs_to_completion() {
         tool_ids: Vec::new(),
         plugin_ids: Vec::new(),
         plugin_config: Default::default(),
+        context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
     };
     let runnable = compile(&config, &[]).expect("compile");
 
