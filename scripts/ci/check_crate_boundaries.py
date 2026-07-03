@@ -408,6 +408,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-store-sqlite",
         "awaken-store-fs",
         "awaken-config-store",
+        "awaken-run-ingress",
         "awaken-ext-goal",
         "awaken-ext-state-machine",
         "awaken-agent-contract",
