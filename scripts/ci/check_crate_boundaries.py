@@ -279,7 +279,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # agent's config/prompts and the pure fold policy. Depends only on the runtime
     # contract; the host wires it onto the aux-agent substrate.
     "awaken-ext-compact": {
+        "serde",
+        "serde_json",
+        "async-trait",
+        "awaken-agent-contract",
         "awaken-runtime-contract",
+        "tokio",
     },
     # MCP client extension: connects to external Model Context Protocol servers
     # and exposes their tools as runtime `RawTool`s. Like the other extensions it
