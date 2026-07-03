@@ -75,12 +75,41 @@ pub struct PhaseContext {
     pub point: PhaseHookPoint,
 }
 
+/// What a phase hook stages: durable state commands and, at `BeforeInference`,
+/// request-only context messages prepended to the model request (never committed).
+/// Mirrors [`ToolReaction`] so the two message-injecting hooks share one shape.
+/// Outside `BeforeInference` the `context` is ignored.
+#[derive(Debug, Default, Clone)]
+pub struct PhaseReaction {
+    pub state: Vec<StateCommand>,
+    pub context: Vec<Message>,
+}
+
+impl PhaseReaction {
+    /// A reaction that only stages state (the common case).
+    pub fn state(state: Vec<StateCommand>) -> Self {
+        Self {
+            state,
+            context: Vec::new(),
+        }
+    }
+
+    /// A reaction that only injects request-only context (a `BeforeInference` hook).
+    pub fn context(context: Vec<Message>) -> Self {
+        Self {
+            state: Vec::new(),
+            context,
+        }
+    }
+}
+
 /// A phase hook: behavior contributed by a plugin at one phase point. Async so a
-/// real hook can consult an external system; it can only stage state commands.
+/// real hook can consult an external system. It stages state commands and, at
+/// `BeforeInference`, request-only context (e.g. recalled memories).
 #[async_trait]
 pub trait PhaseHook: Send + Sync {
     fn point(&self) -> PhaseHookPoint;
-    async fn on_phase(&self, ctx: &PhaseContext) -> Vec<StateCommand>;
+    async fn on_phase(&self, ctx: &PhaseContext) -> PhaseReaction;
 }
 
 /// What a run-end guard sees when the model/tool loop reaches a natural end (a
@@ -594,8 +623,8 @@ mod tests {
         fn point(&self) -> PhaseHookPoint {
             self.0
         }
-        async fn on_phase(&self, _ctx: &PhaseContext) -> Vec<StateCommand> {
-            Vec::new()
+        async fn on_phase(&self, _ctx: &PhaseContext) -> PhaseReaction {
+            PhaseReaction::default()
         }
     }
 
