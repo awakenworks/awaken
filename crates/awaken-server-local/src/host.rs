@@ -676,7 +676,8 @@ impl SharedHost {
             if let Some(block) = mem.recall_block() {
                 messages.push(Message::text(
                     MessageId(format!(
-                        "mem-recall-{}",
+                        "{}{}",
+                        crate::memory::RECALL_MSG_PREFIX,
                         BASE_SEQ.fetch_add(1, Ordering::SeqCst)
                     )),
                     Role::System,
