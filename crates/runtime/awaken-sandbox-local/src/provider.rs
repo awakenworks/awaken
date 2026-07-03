@@ -50,6 +50,8 @@ pub(crate) fn resolve_source(
     match source {
         pc::MountSource::File { file_id, .. } => by_id(file_id),
         pc::MountSource::Resource { resource_id, .. } => by_id(resource_id),
+        // The broker is faked locally by the seed map / store keyed on the reference.
+        pc::MountSource::Secret { reference, .. } => by_id(reference),
         pc::MountSource::Other(v) => v
             .get("content")
             .and_then(|c| c.as_str())
@@ -63,6 +65,7 @@ pub(crate) fn declared_hash(source: &pc::MountSource) -> Option<&str> {
     match source {
         pc::MountSource::File { content_hash, .. } => content_hash.as_deref(),
         pc::MountSource::Resource { content_hash, .. } => content_hash.as_deref(),
+        pc::MountSource::Secret { content_hash, .. } => content_hash.as_deref(),
         _ => None,
     }
 }
