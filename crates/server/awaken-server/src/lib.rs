@@ -17,6 +17,7 @@ mod compact;
 mod config;
 mod config_plane;
 mod delegate;
+mod durable_ops;
 mod host;
 mod hub;
 mod judge;
@@ -855,7 +856,14 @@ fn mount(host: Arc<SharedHost>) -> Router {
     let ai_sdk = awaken_protocol_ai_sdk::router(Arc::new(AiSdkHost::new(host.clone())));
     let ag_ui = awaken_protocol_ag_ui::router(Arc::new(AgUiHost::new(host.clone())));
     let a2a = awaken_protocol_a2a::router(Arc::new(A2aHost::new(host.clone())));
-    managed.merge(ai_sdk).merge(ag_ui).merge(a2a)
+    // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
+    // (supersede / reconcile / reap / dead-letter GC) over the same shared host.
+    let durable_ops = crate::durable_ops::durable_ops_router(host.clone());
+    managed
+        .merge(ai_sdk)
+        .merge(ag_ui)
+        .merge(a2a)
+        .merge(durable_ops)
 }
 
 /// Build the server router backed by the kernel with the given model.
@@ -953,4 +961,113 @@ pub fn build_config_router() -> Router {
     let host = SharedHost::new(Arc::new(InstructionEchoModel), "config")
         .with_config_service(service.clone());
     mount(Arc::new(host)).merge(config_plane::config_router(service))
+}
+
+/// A tool gate that defers every tool call as a committed `ScheduledAction`
+/// (ADR-0020, slice E): instead of running inline or parking for a human, the call
+/// is scheduled, keyed by its call id, and the durable dispatch worker performs it
+/// out of band. In direct mode a scheduled run would park; under
+/// `AWAKEN_INGRESS=durable` the worker's scheduled-action loop performs it and the
+/// run completes autonomously.
+struct ScheduleGate;
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::permission::ToolGateHook for ScheduleGate {
+    async fn gate(
+        &self,
+        ctx: &awaken_runtime_contract::permission::PermissionContext,
+        _state: &awaken_agent_contract::agent::state::Store,
+    ) -> awaken_runtime_contract::permission::GateOutcome {
+        awaken_runtime_contract::permission::GateOutcome::Schedule {
+            correlation_id: format!("sched-{}", ctx.call_id),
+            action_kind: None,
+        }
+    }
+}
+
+/// A router whose tool gate defers every tool call as a `ScheduledAction`
+/// (ADR-0020, slice E). Drive it with `AWAKEN_INGRESS=durable` so the dispatch
+/// worker performs the deferred actions out of band: the probe model's
+/// write→read tool calls are each scheduled and auto-performed, so the run
+/// completes without any human confirmation.
+pub fn build_schedule_router() -> Router {
+    let host = SharedHost::new(Arc::new(ProbeModel), "schedule")
+        .with_gate_override(Arc::new(ScheduleGate));
+    mount(Arc::new(host))
+}
+
+/// A router that routes `agent_run` for `researcher` to a REMOTE A2A agent at
+/// `AWAKEN_REMOTE_AGENT_URL` (instead of a local sub-run). Exercises the remote
+/// delegation path — `message:send` → poll `get_task` → result — across a real A2A
+/// hop to a peer server. The peer echoes, so the delegate result round-trips back.
+pub fn build_remote_delegation_router() -> Router {
+    let url = std::env::var("AWAKEN_REMOTE_AGENT_URL")
+        .expect("AWAKEN_REMOTE_AGENT_URL must be set for delegate-remote mode");
+    let host = SharedHost::new(Arc::new(DelegatingModel), "delegate-remote")
+        .with_remote_a2a("researcher", Arc::new(HttpTransport::new(url)));
+    mount(Arc::new(host))
+}
+
+/// A deterministic model for the skills e2e (ADR-0036). On the user turn it calls
+/// `list_skills` to discover the offered skills; given the catalog it activates the
+/// `greet` skill via the `Skill` tool; given the activation instructions it replies
+/// with them — so an e2e can assert discover → activate → use end to end. Stateless.
+pub struct SkillDrivingModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for SkillDrivingModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last = request.messages.last().expect("a message");
+        // A tool result carries its text in nested blocks, which `block_text` skips;
+        // read those too so the catalog (a tool result) is visible to the model.
+        let last_text: String = last
+            .content
+            .iter()
+            .flat_map(|b| match b {
+                ContentBlock::Text { text } => vec![text.clone()],
+                ContentBlock::ToolResult { content, .. } => content
+                    .iter()
+                    .filter_map(|inner| match inner {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => vec![],
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let output = match last.role {
+            ChatRole::User => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "l".into(),
+                tool_id: "list_skills".into(),
+                arguments: serde_json::json!({}),
+            }]),
+            ChatRole::Tool if last_text.contains("\"skills\"") => {
+                // The catalog came back — activate the offered `greet` skill.
+                AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: "s".into(),
+                    tool_id: "Skill".into(),
+                    arguments: serde_json::json!({ "skill": "greet" }),
+                }])
+            }
+            ChatRole::Tool => AssistantOutput::text(format!("USED-SKILL: {last_text}")),
+            _ => AssistantOutput::text("hmm"),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+        })
+    }
+}
+
+/// A router offering skills on every thread (ADR-0036), driven by a model that
+/// discovers, activates, and uses one. The whole skill set is fronted by the single
+/// `Skill` tool plus `list_skills`; activation returns the skill's instructions.
+pub fn build_skills_router() -> Router {
+    let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
+    let review = SkillSpec::new("review", "Review", "review code", "REVIEW-BODY");
+    build_router_with_skills(Arc::new(SkillDrivingModel), "skills", vec![greet, review])
 }
