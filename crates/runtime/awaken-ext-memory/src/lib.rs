@@ -14,10 +14,13 @@
 //! within-session window management. They share only the aux-agent substrate.
 
 pub mod agent;
+pub mod plugin;
 pub mod recall;
 pub mod select;
 pub mod store;
 pub mod tool;
+
+pub use plugin::{MEMORY_PLUGIN_ID, MemoryPlugin};
 
 pub use agent::{
     DEFAULT_MEMORY_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, default_memory_agent,
