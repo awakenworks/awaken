@@ -8,10 +8,9 @@ use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::project::{
     AgentEvent, ToolDisposition, Transcoder, project_messages, terminal_waiting,
 };
+use awaken_protocol_transport::{StepOutcome, blocks_text};
 use serde_json::Value;
 
-use crate::port::StepOutcome;
-use crate::request::blocks_text;
 use crate::types::{UIStreamEvent, history_message, text_parts};
 
 /// The AI SDK v6 transcoder: neutral projection events to UI Message Stream parts.
@@ -185,8 +184,8 @@ pub fn encode_history(messages: &[Message]) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::port::Pending;
     use awaken_agent_contract::agent::message::Id;
+    use awaken_protocol_transport::Pending;
     use serde_json::json;
 
     fn assistant_tool(id: &str, call: &str, name: &str, args: Value) -> Message {

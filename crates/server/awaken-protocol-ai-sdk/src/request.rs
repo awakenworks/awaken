@@ -178,21 +178,10 @@ pub fn result_text(value: &Value) -> String {
     }
 }
 
-/// Convert content blocks to a plain string (used to bound tool outputs to text).
-pub fn blocks_text(content: &[ContentBlock]) -> String {
-    content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_protocol_transport::blocks_text;
     use serde_json::json;
 
     fn ui(role: &str, id: &str, parts: Vec<Value>) -> UIMessage {

@@ -1,4 +1,4 @@
-//! The axum router: A2A `message:send` + agent-card routes over an [`A2aRuntime`].
+//! The axum router: A2A `message:send` + agent-card routes over a `ProtocolRuntime`.
 //!
 //! Handlers decode the request, drive one turn (or resume a parked run on the same
 //! context) through the port, and project the committed step into an A2A `Task`.
@@ -16,15 +16,16 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume};
+
 use crate::encoder::encode_task;
-use crate::port::{A2aRuntime, DriverError, Pending, Resume};
 use crate::request::process;
 use crate::types::{
     AgentCapabilities, AgentCard, AgentSkill, ErrorResponse, SendMessageRequest,
     SendMessageResponse, Task,
 };
 
-type Runtime = Arc<dyn A2aRuntime>;
+type Runtime = Arc<dyn ProtocolRuntime>;
 
 /// A JSON body extractor for the A2A routes. On a decode failure it returns the
 /// A2A error envelope (`{ "error": { code, message } }`) with a 400, not axum's

@@ -18,6 +18,7 @@ members = [
     "crates/stores/awaken-store-sqlite",
     "crates/contract/awaken-dispatch-contract",
     "crates/server/awaken-dispatch",
+    "crates/server/awaken-protocol-transport",
     "crates/server/awaken-protocol-managed",
     "crates/server/awaken-protocol-ai-sdk",
     "crates/server/awaken-protocol-ag-ui",
@@ -46,6 +47,7 @@ awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
 awaken-store-fs = { path = "crates/stores/awaken-store-fs" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
+awaken-protocol-transport = { path = "crates/server/awaken-protocol-transport" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

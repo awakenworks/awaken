@@ -1,0 +1,69 @@
+pub mod awaken_protocol_transport
+pub enum awaken_protocol_transport::DriverError
+pub awaken_protocol_transport::DriverError::BadRequest(alloc::string::String)
+pub awaken_protocol_transport::DriverError::Internal(alloc::string::String)
+impl core::error::Error for awaken_protocol_transport::DriverError
+impl core::fmt::Debug for awaken_protocol_transport::DriverError
+pub fn awaken_protocol_transport::DriverError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_protocol_transport::DriverError
+pub fn awaken_protocol_transport::DriverError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_protocol_transport::DriverError
+impl core::marker::Send for awaken_protocol_transport::DriverError
+impl core::marker::Sync for awaken_protocol_transport::DriverError
+impl core::marker::Unpin for awaken_protocol_transport::DriverError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::DriverError
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::DriverError
+pub enum awaken_protocol_transport::Resume
+pub awaken_protocol_transport::Resume::ClientResult
+pub awaken_protocol_transport::Resume::ClientResult::content: alloc::string::String
+pub awaken_protocol_transport::Resume::ClientResult::is_error: bool
+pub awaken_protocol_transport::Resume::Confirm
+pub awaken_protocol_transport::Resume::Confirm::allow: bool
+pub awaken_protocol_transport::Resume::Confirm::note: core::option::Option<alloc::string::String>
+impl core::clone::Clone for awaken_protocol_transport::Resume
+pub fn awaken_protocol_transport::Resume::clone(&self) -> awaken_protocol_transport::Resume
+impl core::fmt::Debug for awaken_protocol_transport::Resume
+pub fn awaken_protocol_transport::Resume::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_protocol_transport::Resume
+impl core::marker::Send for awaken_protocol_transport::Resume
+impl core::marker::Sync for awaken_protocol_transport::Resume
+impl core::marker::Unpin for awaken_protocol_transport::Resume
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::Resume
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::Resume
+pub struct awaken_protocol_transport::Pending
+pub awaken_protocol_transport::Pending::client_executed: bool
+pub awaken_protocol_transport::Pending::input: serde_json::value::Value
+pub awaken_protocol_transport::Pending::name: alloc::string::String
+pub awaken_protocol_transport::Pending::tool_use_id: alloc::string::String
+impl core::clone::Clone for awaken_protocol_transport::Pending
+pub fn awaken_protocol_transport::Pending::clone(&self) -> awaken_protocol_transport::Pending
+impl core::fmt::Debug for awaken_protocol_transport::Pending
+pub fn awaken_protocol_transport::Pending::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_protocol_transport::Pending
+impl core::marker::Send for awaken_protocol_transport::Pending
+impl core::marker::Sync for awaken_protocol_transport::Pending
+impl core::marker::Unpin for awaken_protocol_transport::Pending
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::Pending
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::Pending
+pub struct awaken_protocol_transport::StepOutcome
+pub awaken_protocol_transport::StepOutcome::exhausted: bool
+pub awaken_protocol_transport::StepOutcome::new_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_protocol_transport::StepOutcome::pending: core::option::Option<awaken_protocol_transport::Pending>
+pub awaken_protocol_transport::StepOutcome::waiting: bool
+impl core::clone::Clone for awaken_protocol_transport::StepOutcome
+pub fn awaken_protocol_transport::StepOutcome::clone(&self) -> awaken_protocol_transport::StepOutcome
+impl core::fmt::Debug for awaken_protocol_transport::StepOutcome
+pub fn awaken_protocol_transport::StepOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_protocol_transport::StepOutcome
+impl core::marker::Send for awaken_protocol_transport::StepOutcome
+impl core::marker::Sync for awaken_protocol_transport::StepOutcome
+impl core::marker::Unpin for awaken_protocol_transport::StepOutcome
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_transport::StepOutcome
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_transport::StepOutcome
+pub trait awaken_protocol_transport::ProtocolRuntime: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_transport::ProtocolRuntime::history<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_agent_contract::agent::message::Message>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_protocol_transport::ProtocolRuntime::model(&self) -> alloc::string::String
+pub fn awaken_protocol_transport::ProtocolRuntime::pending<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_transport::Pending>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_protocol_transport::ProtocolRuntime::resume<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_protocol_transport::Resume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_transport::StepOutcome, awaken_protocol_transport::DriverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_protocol_transport::ProtocolRuntime::run_turn<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_transport::StepOutcome, awaken_protocol_transport::DriverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_protocol_transport::blocks_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String

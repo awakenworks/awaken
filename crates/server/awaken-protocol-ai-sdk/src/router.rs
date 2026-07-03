@@ -1,4 +1,4 @@
-//! The axum router: AI SDK v6 UI Message Stream routes over an [`AiSdkRuntime`].
+//! The axum router: AI SDK v6 UI Message Stream routes over a `ProtocolRuntime`.
 //!
 //! Handlers decode the request, drive one turn or resume through the port, and
 //! project the committed step into a UI Message Stream SSE response. No runtime or
@@ -14,12 +14,13 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
+use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+
 use crate::encoder::{encode_history, encode_step};
-use crate::port::{AiSdkRuntime, DriverError, Pending, Resume, StepOutcome};
 use crate::request::{DecisionKind, process_request, result_text};
 use crate::types::{AiSdkChatRequest, HistoryResponse, UIStreamEvent};
 
-type Runtime = Arc<dyn AiSdkRuntime>;
+type Runtime = Arc<dyn ProtocolRuntime>;
 
 /// The AI SDK v6 header `DefaultChatTransport` uses to identify the stream format.
 const AI_SDK_STREAM_HEADER: &str = "x-vercel-ai-ui-message-stream";
