@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-03
+- Amended: 2026-07-04 (Slice 3/5 mechanism decisions — see Amendment)
 - Builds on: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (kernel is
   sandbox-agnostic; a rooted tool is just a `RawTool`, D6),
   [ADR-0035](0035-environment-provisioning-tools-skills-resources.md)
@@ -97,6 +98,9 @@ adapters**. The neutral seam is realized as the crate
 | `SandboxHandle` | Value object | a durable, serializable reference to reconnect across restart/host | — | live connection state | orphaned remote sandbox | lifecycle test (serialize → `adopt`) |
 | `EnvironmentKind` | Value object (declared) | the declared userland shape (Scope/Sandbox/IsolatedRoot/Image/LocalDir) | `RootfsSource` | the realized live env; host paths (G3) | unreproducible environment | admission (digest rule) |
 | Provider tiers (Lexical/Bwrap/Container/K8s) | Adapters | realize the seam at one `IsolationClass` | `SandboxProvider` | the neutral contract's shape | untrusted/opaque code on a non-transparent tier | `SandboxCapabilities.tool_transparent` + `prepare_environment` gate |
+| `AgentChannel` | Boundary port (capability) | hand a consumer one duplex to a spawned agent process; only `tool_transparent` tiers implement it | `awaken-connection` Channel, `ProcessId` | raw stdio on the neutral data contract; protocol semantics (G3) | a non-transparent tier forced to expose a stream it cannot back | ISP: a segregated port, never `ProcessHandle::streams`; `tool_transparent` + object-safety test |
+| `RunEventSink` (binding seam) | Boundary port | the sole crate permitted to depend on runtime-core; commit projected neutral events (seq + lease nonce) | `StepOutcome`, event sequence | ACP vocabulary; provider mechanism; commit truth beyond append (G13) | agents-plane tangled directly into runtime-core | `check_crate_boundaries.py` (only this crate → runtime); monotonic-seq test |
+| `MountSource::Secret` | Value object (declared) | a file-materialized credential with `MountLifetime` + optional write-back | `MountAccess`, `MountLifetime` | inline secret bytes crossing the seam (reference only, G3) | an agent auth file left unrefreshed or leaked upward | admission (secret-ref only); write-back-plan test |
 
 ## Guardrails
 
@@ -127,10 +131,23 @@ it without changing the contract:
    the existing lexical jail for trusted in-process tools.
 2. **`BwrapProvider`** (`tool_transparent = true`) + oversight's pure argv
    renderers — the first tier that can host Claude Code.
-3. `awaken-protocol-acp` bridge + an agents-plane supervisor (session-runner
-   shape) — running an opaque agent as a first-class, protocol-bridged capability.
+3. `awaken-protocol-acp` bridge + agents-plane supervisor (session-runner shape),
+   an ACL over the official `agent-client-protocol`. The spawned agent's duplex is
+   obtained through a segregated `AgentChannel` capability port (not
+   `ProcessHandle::streams`), realized by one transport concept —
+   `awaken-connection` (core-only; foundation rev already pinned via
+   `awaken-scoped-migration`), with local/bwrap backing it by pipes. Events are
+   projected and committed only through the `RunEventSink` binding seam (the sole
+   runtime-core dependant). File-materialized credentials use `MountSource::Secret`
+   with a write-back plan.
 4. `FsFileStore` + `resourced`-style fan-out + managed `/v1/files`.
-5. `DockerProvider` → `K8sProvider` (distributed repo), reusing `adopt`/`lease`.
+5. `DockerProvider` → `K8sProvider`, reusing `adopt`/`lease`. In-repo as below-seam
+   provider crates until a distributed deployment is real, then extracted to a
+   distributed repo; never depended on by the agents plane. K8s maps `spawn` to a
+   process-as-container (Job/Pod command), not exec-into-idle; orphan reaping uses
+   native GC (ownerReferences / TTL), a custom reaper only for Docker; artifacts are
+   retrieved out-of-band via an object-store/PVC-backed `outputs_path`, not streamed
+   through the control plane.
 
 ## Consequences
 
@@ -154,3 +171,57 @@ it without changing the contract:
   convenience for in-process tools and is explicitly barred (by
   `tool_transparent = false`) from hosting an opaque agent — closing the original
   correctness gap.
+- **Slice 3/5 are opposite sides of one seam (solidified).** Slice 3 (supervise +
+  protocol-bridge) is an agents-plane *consumer*; Slice 5 (Docker/K8s) is a
+  below-seam *adapter*. They never depend on each other — only on the contract —
+  and `check_crate_boundaries.py` ALLOWED_DEPS forbids the shortcut.
+- **Transport is segregated, not widened onto every process.** Exposing the agent
+  duplex as a separate `AgentChannel` capability (ISP) keeps the provisioning
+  contract data-only and spares tiers that never host a protocol; one transport
+  concept (`awaken-connection`) covers pipe/ws/attach, so the bridge is written once.
+- **Known gaps made explicit, not silently deferred.** File-based credentials +
+  write-back are modelled as `MountSource::Secret` (env-only `EnvValue::Secret` was
+  insufficient for CLI agents); the runtime-core dependency is confined to one
+  `RunEventSink` binding crate; the K8s process/GC/artifact choices avoid
+  re-implementing platform mechanisms.
+
+## Amendment (2026-07-04): Slice 3 & 5 Mechanism Decisions
+
+A design review against simple-design/DDD confirmed the structural decisions above
+and refined the Slice 3/5 mechanisms. This amendment records the decisions and the
+trade-offs accepted; the Role Catalog, First Slice, and Consequences are updated in
+place accordingly.
+
+**Solidified (unchanged, now load-bearing):**
+
+- One process-level seam; Slice 3 above it (agents plane), Slice 5 below it
+  (provider adapters). No cross-dependency; boundary-checked.
+- ACL over the official ACP; no protocol re-implementation. Process-group reaping,
+  no-ambient env. Truth commits in runtime-core, fed by projected neutral events.
+
+**Revised (better alternative adopted):**
+
+- *Agent duplex* — a segregated `AgentChannel` capability port, not
+  `ProcessHandle::streams`; a single transport concept (`awaken-connection`,
+  core-only) instead of a parallel `futures-io` duplex on the neutral contract.
+- *K8s process model* — process-as-container (Job/Pod command), not exec-into-idle.
+- *Orphan reaping* — native GC (ownerReferences / TTL); a custom reaper only for
+  Docker, which lacks equivalents.
+- *Artifacts* — out-of-band via an object-store/PVC-backed `outputs_path`; the
+  control plane is not an artifact conduit (`read_artifact` direct-read is a
+  local-tier convenience).
+
+**Gaps closed:**
+
+- File-materialized credentials + post-run refresh → `MountSource::Secret` with a
+  write-back plan.
+- Runtime-core coupling confined to one `RunEventSink` binding crate — the only
+  crate permitted to depend on runtime-core (G2 boundary).
+
+**Trade-offs accepted:**
+
+- A second capability port (`AgentChannel`) enlarges the surface, justified by ISP:
+  tiers that never host a protocol stay unburdened.
+- Process-as-container complicates multi-`spawn` per sandbox; accepted because the
+  common case is one agent per environment and it buys native
+  restart/observability/GC.
