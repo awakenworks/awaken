@@ -26,8 +26,8 @@ use awaken_ext_goal::{
 };
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
-use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
+use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::agent_resolver::AgentResolver;
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -176,7 +176,11 @@ struct SessionState {
 /// coordinator (the source of committed truth), its sandbox root, and its
 /// position.
 pub(crate) struct SessionCtx {
-    pub(crate) runtime: Runtime,
+    pub(crate) runtime: Arc<Runtime>,
+    /// The delivery seam a turn's execution goes through (slice C): `DirectRunIngress`
+    /// by default; a `DurableRunIngress` when durable dispatch is enabled (slice D).
+    /// Both drive the same `runtime`/`commit`; only the delivery guarantees differ.
+    ingress: Arc<dyn RunIngress>,
     config: RunnableConfig,
     pub(crate) commit: Arc<HostCommit>,
     pub(crate) thread_id: ThreadId,
@@ -673,8 +677,15 @@ impl SharedHost {
                 .map_err(|e| HostError::internal(e.to_string()))?;
             state.parked = Some(run_id);
         }
+        let runtime = Arc::new(runtime);
+        // The foreground delivery seam (slice C): a turn's execution goes through
+        // `RunIngress::submit` rather than calling `runtime.start_turn` directly.
+        // Direct ingress runs inline on the same `runtime`, so behavior is identical;
+        // durable dispatch (slice D) swaps this without touching the turn path.
+        let ingress: Arc<dyn RunIngress> = Arc::new(DirectRunIngress::new(runtime.clone()));
         let ctx = Arc::new(SessionCtx {
             runtime,
+            ingress,
             config,
             commit,
             thread_id,
@@ -772,9 +783,16 @@ impl SharedHost {
         };
         messages.extend(input);
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
-        let (run_id, phase) = ctx
+        // Prepare the activation (install catalog + register snapshot + mint ids),
+        // then deliver it through the ingress seam. Direct ingress executes inline,
+        // so this is behavior-identical to the former `start_turn` call.
+        let (run_id, activation) = ctx
             .runtime
-            .start_turn(&ctx.config, thread, messages, ctx.context())
+            .prepare(&ctx.config, thread.to_string(), messages)
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        let phase = ctx
+            .ingress
+            .submit(activation, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
