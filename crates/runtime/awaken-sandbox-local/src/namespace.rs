@@ -18,7 +18,10 @@ use awaken_provisioning_contract as pc;
 use serde_json::json;
 use tokio::process::Command as TokioCommand;
 
-use crate::provider::LocalProcess;
+use std::sync::Arc;
+
+use crate::file_store::FileStore;
+use crate::provider::{LocalProcess, resolve_source, verify};
 use crate::{IsolatedRoot, content_fingerprint};
 
 fn err(e: impl ToString) -> pc::SandboxError {
@@ -139,6 +142,7 @@ pub fn sandbox_exec_argv(input: &RenderInput) -> Vec<String> {
 pub struct NamespaceProvider {
     base: PathBuf,
     blobs: std::collections::HashMap<String, Vec<u8>>,
+    file_store: Option<Arc<dyn FileStore>>,
 }
 
 impl NamespaceProvider {
@@ -146,12 +150,20 @@ impl NamespaceProvider {
         Self {
             base: base.into(),
             blobs: std::collections::HashMap::new(),
+            file_store: None,
         }
     }
 
     #[must_use]
     pub fn with_blob(mut self, id: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
         self.blobs.insert(id.into(), bytes.into());
+        self
+    }
+
+    /// Resolve `File`/`Resource` mounts from a content-addressed store.
+    #[must_use]
+    pub fn with_file_store(mut self, store: Arc<dyn FileStore>) -> Self {
+        self.file_store = Some(store);
         self
     }
 
@@ -168,16 +180,52 @@ impl NamespaceProvider {
         }
     }
 
-    fn resolve_blob(&self, source: &pc::MountSource) -> Option<Vec<u8>> {
-        match source {
-            pc::MountSource::File { file_id, .. } => self.blobs.get(file_id).cloned(),
-            pc::MountSource::Resource { resource_id, .. } => self.blobs.get(resource_id).cloned(),
-            pc::MountSource::Other(v) => v
-                .get("content")
-                .and_then(|c| c.as_str())
-                .map(|s| s.as_bytes().to_vec()),
-            pc::MountSource::MemoryStore { .. } => None,
+    /// Realize the mounts under `root`, all-or-nothing: any failure reaps the tree.
+    fn realize_layout(
+        &self,
+        root: &IsolatedRoot,
+        spec: &pc::SandboxSpec,
+    ) -> Result<(Vec<RenderMount>, Vec<pc::RealizedMount>), pc::SandboxError> {
+        let mut layout = Vec::new();
+        let mut realized = Vec::new();
+        for req in &spec.mounts {
+            let host = root.resolve(&req.mount_path).map_err(err)?;
+            let bytes = resolve_source(&req.source, &self.blobs, &self.file_store);
+            match &bytes {
+                Some(bytes) => {
+                    verify(&req.source, bytes)?; // fail closed on content-hash mismatch
+                    if let Some(parent) = host.parent() {
+                        std::fs::create_dir_all(parent).map_err(err)?;
+                    }
+                    std::fs::write(&host, bytes).map_err(err)?;
+                }
+                None if req.required => {
+                    return Err(err(format!(
+                        "required mount {:?} has no resolvable source",
+                        req.mount_id
+                    )));
+                }
+                None => {
+                    if let Some(parent) = host.parent() {
+                        std::fs::create_dir_all(parent).map_err(err)?;
+                    }
+                    std::fs::write(&host, b"").map_err(err)?;
+                }
+            }
+            layout.push(RenderMount {
+                host: host.clone(),
+                dest: req.mount_path.clone(),
+                read_only: req.access == pc::MountAccess::ReadOnly,
+            });
+            realized.push(pc::RealizedMount {
+                mount_id: req.mount_id.clone(),
+                mount_path: req.mount_path.clone(),
+                access: req.access,
+                realization: pc::Realization::Bind,
+                content_hash: bytes.as_ref().map(|b| content_fingerprint(b)),
+            });
         }
+        Ok((layout, realized))
     }
 }
 
@@ -214,45 +262,13 @@ impl pc::SandboxProvider for NamespaceProvider {
             }
         }
 
-        let mut layout = Vec::new();
-        let mut realized = Vec::new();
-        for req in &spec.mounts {
-            let host = root.resolve(&req.mount_path).map_err(err)?;
-            let bytes = self.resolve_blob(&req.source);
-            match &bytes {
-                Some(bytes) => {
-                    if let Some(parent) = host.parent() {
-                        std::fs::create_dir_all(parent).map_err(err)?;
-                    }
-                    std::fs::write(&host, bytes).map_err(err)?;
-                }
-                None if req.required => {
-                    return Err(err(format!(
-                        "required mount {:?} has no resolvable source",
-                        req.mount_id
-                    )));
-                }
-                None => {
-                    if let Some(parent) = host.parent() {
-                        std::fs::create_dir_all(parent).map_err(err)?;
-                    }
-                    std::fs::write(&host, b"").map_err(err)?;
-                }
+        let (layout, realized) = match self.realize_layout(&root, spec) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(root.root());
+                return Err(e);
             }
-            let read_only = req.access == pc::MountAccess::ReadOnly;
-            layout.push(RenderMount {
-                host: host.clone(),
-                dest: req.mount_path.clone(),
-                read_only,
-            });
-            realized.push(pc::RealizedMount {
-                mount_id: req.mount_id.clone(),
-                mount_path: req.mount_path.clone(),
-                access: req.access,
-                realization: pc::Realization::Bind,
-                content_hash: bytes.as_ref().map(|b| content_fingerprint(b)),
-            });
-        }
+        };
 
         Ok(Box::new(NamespaceSandbox {
             id: spec.scope.clone(),
