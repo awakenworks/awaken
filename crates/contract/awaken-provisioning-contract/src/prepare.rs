@@ -54,14 +54,13 @@ pub fn prepare_environment(
     }
 
     // Read-only mounts require OS-enforced read-only.
-    if !caps.enforced_readonly {
-        if let Some(m) = spec
+    if !caps.enforced_readonly
+        && let Some(m) = spec
             .mounts
             .iter()
             .find(|m| m.access == MountAccess::ReadOnly)
-        {
-            return Err(PrepareError::ReadOnlyUnsupported(m.mount_id.clone()));
-        }
+    {
+        return Err(PrepareError::ReadOnlyUnsupported(m.mount_id.clone()));
     }
 
     // Env: no reserved keys; egress-only secrets need substitution support.

@@ -40,6 +40,7 @@ awaken-store-schema = { path = "crates/stores/awaken-store-schema" }
 awaken-store-sqlite = { path = "crates/stores/awaken-store-sqlite" }
 awaken-store-postgres = { path = "crates/stores/awaken-store-postgres" }
 awaken-config-store = { path = "crates/control/awaken-config-store" }
+awaken-provisioning-contract = { path = "crates/contract/awaken-provisioning-contract" }
 awaken-sandbox-local = { path = "crates/worker/awaken-sandbox-local" }
 awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
