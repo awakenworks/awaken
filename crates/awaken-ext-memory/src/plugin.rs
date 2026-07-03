@@ -20,7 +20,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, PhaseContext, PhaseHook, PhaseHookPoint, PhaseReaction, Plugin,
-    PluginManifest,
+    PluginConfigError, PluginManifest,
 };
 
 use crate::recall::{RecallBounds, render};
@@ -55,6 +55,19 @@ impl MemoryPlugin {
         self.selector = Some(selector);
         self
     }
+
+    /// Contribute the recall hook with the given bounds (shared by the config-free
+    /// and configured resolve paths).
+    fn contribute(&self, bounds: RecallBounds) -> Contributions {
+        let mut contributions = Contributions::new(MEMORY_PLUGIN_ID);
+        contributions.phase_hooks.push(Arc::new(RecallHook {
+            store: self.store.clone(),
+            bounds,
+            selector: self.selector.clone(),
+            cache: Mutex::new(HashMap::new()),
+        }));
+        contributions
+    }
 }
 
 impl Plugin for MemoryPlugin {
@@ -62,7 +75,7 @@ impl Plugin for MemoryPlugin {
         PluginManifest {
             id: MEMORY_PLUGIN_ID.into(),
             requires: Vec::new(),
-            config_sections: Vec::new(),
+            config_sections: vec![MEMORY_PLUGIN_ID.into()],
             bound: CapabilityBound {
                 phase_hooks: vec![PhaseHookPoint::BeforeInference],
                 ..Default::default()
@@ -71,15 +84,50 @@ impl Plugin for MemoryPlugin {
     }
 
     fn resolve(&self) -> Contributions {
-        let mut contributions = Contributions::new(MEMORY_PLUGIN_ID);
-        contributions.phase_hooks.push(Arc::new(RecallHook {
-            store: self.store.clone(),
-            bounds: self.bounds.clone(),
-            selector: self.selector.clone(),
-            cache: Mutex::new(HashMap::new()),
-        }));
-        contributions
+        self.contribute(self.bounds.clone())
     }
+
+    fn resolve_configured(
+        &self,
+        config: Option<&serde_json::Value>,
+    ) -> Result<Contributions, PluginConfigError> {
+        // The `memory` section overrides the recall bounds; absent uses the
+        // constructed defaults. `#[serde(default)]` on `RecallBounds` fills any
+        // unset field, so a partial section is valid.
+        let bounds = match config {
+            Some(value) => serde_json::from_value::<RecallBounds>(value.clone())
+                .map_err(|e| PluginConfigError::new(MEMORY_PLUGIN_ID, e.to_string()))?,
+            None => self.bounds.clone(),
+        };
+        Ok(self.contribute(bounds))
+    }
+}
+
+/// The JSON Schema for the `memory` config section (the recall bounds), for a
+/// config frontend to discover and author.
+pub fn config_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "per_entry_chars": {
+                "type": "integer", "minimum": 0,
+                "description": "Truncate each memory to this many characters (0 = unbounded)."
+            },
+            "total_chars": {
+                "type": "integer", "minimum": 0,
+                "description": "Cap the whole recall block to this many characters."
+            },
+            "max_entries": {
+                "type": "integer", "minimum": 1,
+                "description": "Inject at most this many memories."
+            },
+            "select_over": {
+                "type": "integer", "minimum": 0,
+                "description": "Use relevance selection once the store holds more than this many memories."
+            }
+        },
+        "additionalProperties": false
+    })
 }
 
 /// The `BeforeInference` hook. Relevance selection runs at most once per run (the
@@ -183,12 +231,39 @@ mod tests {
     }
 
     #[test]
-    fn manifest_declares_the_before_inference_hook() {
+    fn manifest_declares_the_before_inference_hook_and_config_section() {
         let plugin = MemoryPlugin::new(store_with(&[]), RecallBounds::default());
+        let manifest = plugin.manifest();
         assert_eq!(
-            plugin.manifest().bound.phase_hooks,
+            manifest.bound.phase_hooks,
             vec![PhaseHookPoint::BeforeInference]
         );
+        assert_eq!(manifest.config_sections, vec![MEMORY_PLUGIN_ID.to_string()]);
+    }
+
+    #[test]
+    fn resolve_configured_reads_bounds_and_fails_closed_on_bad_config() {
+        let plugin = MemoryPlugin::new(store_with(&[]), RecallBounds::default());
+        // A valid (partial) section resolves.
+        let ok = serde_json::json!({ "max_entries": 3, "select_over": 2 });
+        assert_eq!(
+            plugin
+                .resolve_configured(Some(&ok))
+                .unwrap()
+                .phase_hooks
+                .len(),
+            1
+        );
+        // None uses the constructed defaults.
+        assert!(plugin.resolve_configured(None).is_ok());
+        // A malformed section fails closed.
+        let bad = serde_json::json!({ "max_entries": "lots" });
+        assert!(plugin.resolve_configured(Some(&bad)).is_err());
+    }
+
+    #[test]
+    fn config_schema_is_an_object() {
+        assert_eq!(super::config_schema()["type"], "object");
     }
 
     #[tokio::test(flavor = "current_thread")]

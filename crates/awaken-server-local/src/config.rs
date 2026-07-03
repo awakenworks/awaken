@@ -170,11 +170,18 @@ pub(crate) fn server_config(
 /// config frontend can discover and author each section. One place declares a
 /// plugin's id and its schema, so registration and discovery cannot drift.
 pub(crate) fn platform_plugin_capabilities() -> Vec<PluginCapability> {
-    vec![PluginCapability {
-        id: STATE_MACHINE_PLUGIN_ID.to_string(),
-        schema_keys: vec![STATE_MACHINE_PLUGIN_ID.to_string()],
-        config_schema: Some(awaken_ext_state_machine::config_schema()),
-    }]
+    vec![
+        PluginCapability {
+            id: STATE_MACHINE_PLUGIN_ID.to_string(),
+            schema_keys: vec![STATE_MACHINE_PLUGIN_ID.to_string()],
+            config_schema: Some(awaken_ext_state_machine::config_schema()),
+        },
+        PluginCapability {
+            id: awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),
+            schema_keys: vec![awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()],
+            config_schema: Some(awaken_ext_memory::memory_config_schema()),
+        },
+    ]
 }
 
 /// The server's base authorization gate (the declarative permission policy). A
