@@ -41,6 +41,41 @@ async fn capabilities_are_workdir_and_not_tool_transparent() {
 }
 
 #[tokio::test]
+async fn secret_mount_materializes_the_brokered_credential_into_the_sandbox() {
+    let tmp = tempfile::tempdir().unwrap();
+    // The broker is faked by the seed map keyed on the secret reference.
+    let provider =
+        LocalProvider::new(tmp.path()).with_blob("broker://anthropic/key", b"sk-secret".to_vec());
+    let mut spec = spec("t-secret");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "auth".into(),
+        source: pc::MountSource::Secret {
+            reference: "broker://anthropic/key".into(),
+            content_hash: None,
+        },
+        mount_path: "/workspace/.auth".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    });
+    assert!(spec.mounts[0].is_secret_writeback());
+
+    let sandbox = provider.create(&spec).await.unwrap();
+    assert_eq!(sandbox.realized().len(), 1);
+
+    let proc = sandbox
+        .spawn(sh(
+            r#"cat workspace/.auth > "$AWAKEN_OUTPUTS_DIR/seen.txt""#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(proc.wait().await.unwrap().code, Some(0));
+    let arts = sandbox.artifacts().await.unwrap();
+    let seen = arts.iter().find(|a| a.path.ends_with("/seen.txt")).unwrap();
+    assert_eq!(sandbox.read_artifact(&seen.id).await.unwrap(), b"sk-secret");
+}
+
+#[tokio::test]
 async fn spawn_writes_output_and_artifacts_round_trip() {
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path());
