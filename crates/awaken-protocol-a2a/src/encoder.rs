@@ -9,7 +9,8 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message as AgentMessage, Role};
 
-use crate::port::StepOutcome;
+use awaken_protocol_transport::StepOutcome;
+
 use crate::types::{Message, MessageRole, Part, Task, TaskState, TaskStatus};
 
 /// Build the `Task` returned for a step on `thread`. `history` is the thread's full
@@ -91,8 +92,8 @@ fn block_text(content: &[ContentBlock]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::port::Pending;
     use awaken_agent_contract::agent::message::Id as MessageId;
+    use awaken_protocol_transport::Pending;
 
     fn msg(id: &str, role: Role, text: &str) -> AgentMessage {
         AgentMessage::text(MessageId(id.into()), role, text)

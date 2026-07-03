@@ -151,21 +151,10 @@ fn extract_tool_results(messages: &[AgUiMessage]) -> Vec<ToolResultInput> {
         .collect()
 }
 
-/// Convert content blocks to a plain string (bounds tool outputs to text).
-pub fn blocks_text(content: &[ContentBlock]) -> String {
-    content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_protocol_transport::blocks_text;
     use serde_json::json;
 
     fn msg(role: &str, id: &str, content: Option<&str>, tool_call_id: Option<&str>) -> AgUiMessage {

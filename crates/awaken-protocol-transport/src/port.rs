@@ -1,9 +1,10 @@
-//! The runtime seam the AI SDK adapter drives (DDD port).
+//! The neutral runtime seam every protocol adapter drives (DDD port).
 //!
-//! Implemented by the server over the neutral shared host; the adapter never
-//! constructs a runtime. The vocabulary here is neutral — `Message`, a step
-//! outcome, a pending tool, a resume command — with no AI SDK wire types, so the
-//! same host can back other protocol adapters on the same thread.
+//! Implemented by the server over the neutral shared host; an adapter never
+//! constructs a runtime. The vocabulary is neutral — `Message`, a step outcome, a
+//! pending tool, a resume command — with no wire types, so one host backs every
+//! adapter (AG-UI, AI SDK, A2A) on the same thread, and a turn started through one
+//! protocol is resumable and observable through another.
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
@@ -53,7 +54,7 @@ pub enum DriverError {
 
 /// The neutral runtime seam. Implemented by the server over the shared host.
 #[async_trait]
-pub trait AiSdkRuntime: Send + Sync {
+pub trait ProtocolRuntime: Send + Sync {
     /// Run one turn on `thread` with the (already converted) new `messages`,
     /// optionally naming the agent. Runs to the first park or the natural end.
     async fn run_turn(
@@ -79,6 +80,6 @@ pub trait AiSdkRuntime: Send + Sync {
     /// All committed messages on `thread` (history), oldest first.
     async fn history(&self, thread: &str) -> Vec<Message>;
 
-    /// The model id echoed in metadata.
+    /// The model id echoed in adapter metadata (AI SDK / AG-UI) or the A2A card.
     fn model(&self) -> String;
 }

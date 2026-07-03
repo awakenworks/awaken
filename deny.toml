@@ -53,6 +53,7 @@ wrappers = [
     "awaken-run-ingress",
     "awaken-ext-mcp",
     "awaken-ext-state-machine",
+    "awaken-protocol-transport",
     "awaken-protocol-managed",
     "awaken-protocol-ai-sdk",
     "awaken-protocol-ag-ui",
