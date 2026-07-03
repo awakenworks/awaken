@@ -195,45 +195,9 @@ impl LocalSandbox {
         self.root.resolve(&self.outputs_path).map_err(err)
     }
 
-    /// Depth-first scan of the outputs dir → `(artifact, host_path)` pairs. The id
-    /// is derived from the sandbox-relative path so `read_artifact` can recompute it.
+    /// Outputs scan → `(artifact, host_path)` pairs (shared with other tiers).
     fn scan(&self) -> Result<Vec<(pc::Artifact, PathBuf)>, pc::SandboxError> {
-        let base = self.host_outputs()?;
-        let mut out = Vec::new();
-        let mut stack = vec![base.clone()];
-        while let Some(dir) = stack.pop() {
-            let entries = match std::fs::read_dir(&dir) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let ft = match entry.file_type() {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
-                if ft.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                let rel = path.strip_prefix(&base).unwrap_or(&path);
-                let rel_str = rel.to_string_lossy().replace('\\', "/");
-                let sandbox_path =
-                    format!("{}/{}", self.outputs_path.trim_end_matches('/'), rel_str);
-                let bytes = std::fs::read(&path).map_err(err)?;
-                out.push((
-                    pc::Artifact {
-                        id: content_fingerprint(rel_str.as_bytes()),
-                        path: sandbox_path,
-                        size_bytes: bytes.len() as u64,
-                        content_hash: content_fingerprint(&bytes),
-                    },
-                    path,
-                ));
-            }
-        }
-        out.sort_by(|a, b| a.0.path.cmp(&b.0.path));
-        Ok(out)
+        crate::artifacts::scan_outputs(&self.host_outputs()?, &self.outputs_path)
     }
 }
 
@@ -290,11 +254,7 @@ impl pc::Sandbox for LocalSandbox {
         cmd.stdout(out).stderr(e);
 
         let child = cmd.spawn().map_err(err)?;
-        let pid = child.id().map(|p| p.to_string()).unwrap_or_default();
-        Ok(Box::new(LocalProcess {
-            id: pid,
-            child: AsyncMutex::new(child),
-        }))
+        Ok(Box::new(LocalProcess::spawned(child)))
     }
 
     async fn attach(
@@ -358,10 +318,22 @@ impl pc::Sandbox for LocalSandbox {
     }
 }
 
-/// A process launched by [`LocalSandbox::spawn`].
+/// A process launched by a local-machine sandbox tier (shared by `LocalProvider`
+/// and `NamespaceProvider`).
 pub struct LocalProcess {
     id: String,
     child: AsyncMutex<Child>,
+}
+
+impl LocalProcess {
+    /// Wrap a freshly spawned child; the id is its OS pid (empty if already reaped).
+    pub(crate) fn spawned(child: Child) -> Self {
+        let id = child.id().map(|p| p.to_string()).unwrap_or_default();
+        Self {
+            id,
+            child: AsyncMutex::new(child),
+        }
+    }
 }
 
 fn to_exit(status: std::process::ExitStatus) -> pc::ExitStatus {
