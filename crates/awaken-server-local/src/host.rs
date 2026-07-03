@@ -45,6 +45,7 @@ use crate::compact::{Compaction, DEFAULT_COMPACT_INSTRUCTIONS, default_compact_a
 use crate::config::{build_runtime, server_config, server_gate};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
+use crate::judge::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 use crate::memory::{DEFAULT_MEMORY_INSTRUCTIONS, MemoryExtraction, default_memory_agent};
 use crate::store::HostCommit;
 
@@ -220,8 +221,10 @@ fn detail_str(detail: &serde_json::Value, key: &str) -> String {
 /// its verdict is not biased by the doer's working state.
 struct KernelJudgeRunner {
     llm: Arc<dyn LlmExecutor>,
-    model_ref: String,
     provider: LocalSandboxProvider,
+    /// The judge is resolved by id from here, so its model/instructions/window are
+    /// configured per-agent rather than hard-coded (like memory and compact).
+    catalog: Arc<AgentCatalog>,
     seq: AtomicU64,
 }
 
@@ -232,12 +235,14 @@ impl DelegateRunner for KernelJudgeRunner {
         // The judge sees only its prompt (a fresh window); its cancellation is the
         // parent run's, so cancelling the outcome cancels the judge too.
         let name = format!("{}-judge-{n}", request.agent_id);
-        let text = crate::subagent::run_subagent(
-            self.llm.clone(),
-            &self.model_ref,
+        let text = crate::subagent::run_configured_subrun(
+            &self.catalog,
             &self.provider,
+            self.llm.clone(),
+            &request.agent_id,
             &name,
-            &request.prompt,
+            request.prompt,
+            Vec::new(),
             request.cancellation,
         )
         .await
@@ -419,13 +424,19 @@ impl SharedHost {
     /// kernel, instead of the deterministic keyword grader. The judge grades in its
     /// own fresh context.
     pub fn with_judge(mut self, judge_agent_id: impl Into<String>) -> Self {
+        let id = judge_agent_id.into();
+        let catalog = Arc::new(AgentCatalog::new().with_agent(default_judge_agent(
+            &self.model_ref,
+            &id,
+            DEFAULT_JUDGE_INSTRUCTIONS,
+        )));
         let runner = Arc::new(KernelJudgeRunner {
             llm: self.llm.clone(),
-            model_ref: self.model_ref.clone(),
             provider: LocalSandboxProvider::new(sub_base("judge")),
+            catalog,
             seq: AtomicU64::new(0),
         });
-        self.grader = Arc::new(DelegateGrader::new(runner, judge_agent_id));
+        self.grader = Arc::new(DelegateGrader::new(runner, id));
         self
     }
 
