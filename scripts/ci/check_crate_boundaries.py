@@ -263,6 +263,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-contract",
         "tokio",
     },
+    # Memory extension: cross-session memory as a bounded context — the file store,
+    # the `write_memory` tool, the extractor agent's config/prompts, and bounded
+    # recall. Depends only on the runtime contract (like `awaken-ext-goal`); the
+    # host wires it onto the aux-agent substrate.
+    "awaken-ext-memory": {
+        "serde",
+        "serde_json",
+        "async-trait",
+        "awaken-runtime-contract",
+        "tokio",
+    },
     # MCP client extension: connects to external Model Context Protocol servers
     # and exposes their tools as runtime `RawTool`s. Like the other extensions it
     # depends only on the runtime contract; as an adapter to an external wire
@@ -352,6 +363,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-builtin-tools",
         "awaken-ext-permission",
         "awaken-ext-skills",
+        "awaken-ext-memory",
         "async-trait",
         "serde_json",
         "thiserror",
