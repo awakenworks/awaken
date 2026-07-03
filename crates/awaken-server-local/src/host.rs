@@ -42,7 +42,7 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
 use crate::compact::{Compaction, DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
-use crate::config::{block_text, build_runtime, server_config, server_gate};
+use crate::config::{build_runtime, server_config, server_gate};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::judge::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
@@ -62,24 +62,6 @@ fn sub_base(kind: &str) -> PathBuf {
         format!("{pid}-{kind}-{n}")
     };
     std::env::temp_dir().join("awaken-server-local").join(name)
-}
-
-/// Build the request-only recall prelude from a cached recall block (empty when
-/// nothing was recalled). Re-built each turn so the model always sees memories,
-/// without them entering the committed transcript.
-fn recall_prelude(cache: &Option<String>) -> Vec<Message> {
-    match cache {
-        Some(block) => vec![Message::text(
-            MessageId(format!(
-                "{}{}",
-                crate::memory::RECALL_MSG_PREFIX,
-                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-            )),
-            Role::System,
-            block.clone(),
-        )],
-        None => Vec::new(),
-    }
 }
 
 /// A filesystem-safe database filename stem for a thread id (durable store).
@@ -185,12 +167,6 @@ struct SessionState {
     /// has already been handed to the extractor, so each turn extracts only the
     /// new messages instead of re-processing (and re-billing) the whole history.
     last_extracted_len: usize,
-    /// Whether recall has been computed for this session yet (the relevance
-    /// selection runs once, on the first turn).
-    recalled: bool,
-    /// The computed recall block, re-injected as request-only context every turn so
-    /// it is available to the model without being committed to the transcript.
-    recall_cache: Option<String>,
 }
 
 /// One thread's live state: an isolated runtime, its config, its commit
@@ -580,6 +556,17 @@ impl SharedHost {
             skill_descriptors = wiring.descriptors;
             skill_registry = Some(wiring.registry);
         }
+        // Memory recall is a plugin: it contributes a BeforeInference hook that
+        // injects bounded recall as request-only context (never committed). Install
+        // it and list its id so it is active for the run (G30).
+        let mut plugin_ids: Vec<String> = Vec::new();
+        if let Some(mem) = &self.memory {
+            runtime = runtime.with_plugin(Arc::new(awaken_ext_memory::MemoryPlugin::new(
+                mem.store(),
+                mem.bounds(),
+            )));
+            plugin_ids.push(awaken_ext_memory::MEMORY_PLUGIN_ID.to_string());
+        }
         // When compaction is on, the main agent runs a rolling window matching the
         // compactor's `keep_last`, so summarized older turns leave the model view.
         let context_policy = match &self.compaction {
@@ -592,7 +579,7 @@ impl SharedHost {
             &self.model_ref,
             &self.client_tools,
             &self.delegates,
-            &[],
+            &plugin_ids,
             &skill_descriptors,
             context_policy,
         );
@@ -685,25 +672,8 @@ impl SharedHost {
         if st.parked.is_some() {
             return Err(HostError::bad_request("thread is awaiting a tool decision"));
         }
-        // Recall: on a session's first turn, load memories saved in past
-        // conversations (relevance-selected by the user's message when the store is
-        // large). Cached and re-injected every turn as request-only context — the
-        // agent sees it, but it is never committed to the transcript, so it is not
-        // replayed or re-extracted.
-        if let Some(mem) = &self.memory
-            && !st.recalled
-        {
-            st.recalled = true;
-            let query: String = input
-                .iter()
-                .filter(|m| m.role == Role::User)
-                .map(|m| block_text(&m.content))
-                .collect::<Vec<_>>()
-                .join("\n");
-            st.recall_cache = mem.recall_for(&query).await;
-        }
-        let prelude = recall_prelude(&st.recall_cache);
-
+        // Recall is injected by the memory plugin's BeforeInference hook (request-only,
+        // never committed), so the host does not touch it here.
         let mut messages: Vec<Message> = Vec::new();
         messages.extend(
             std::mem::take(&mut st.pending_system)
@@ -727,12 +697,7 @@ impl SharedHost {
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
         let (run_id, phase) = ctx
             .runtime
-            .start_turn(
-                &ctx.config,
-                thread,
-                messages,
-                ctx.context().with_context_prelude(prelude),
-            )
+            .start_turn(&ctx.config, thread, messages, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
@@ -809,7 +774,6 @@ impl SharedHost {
     ) -> Result<TurnResult, HostError> {
         let ctx = self.ctx_for(thread).await?;
         let mut st = ctx.state.lock().await;
-        let prelude = recall_prelude(&st.recall_cache);
         let run_id = st
             .parked
             .clone()
@@ -836,11 +800,7 @@ impl SharedHost {
             let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input(input), 0);
             let phase = ctx
                 .runtime
-                .resume(
-                    command,
-                    &*ctx.commit,
-                    ctx.context().with_context_prelude(prelude.clone()),
-                )
+                .resume(command, &*ctx.commit, ctx.context())
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
             let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
@@ -872,11 +832,7 @@ impl SharedHost {
         let command = ResumeCommand::from_ticket(&ticket, result, 0);
         let phase = ctx
             .runtime
-            .resume(
-                command,
-                &*ctx.commit,
-                ctx.context().with_context_prelude(prelude),
-            )
+            .resume(command, &*ctx.commit, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
