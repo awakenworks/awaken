@@ -15,6 +15,7 @@ mod agent_catalog;
 mod background;
 mod compact;
 mod config;
+mod config_plane;
 mod delegate;
 mod host;
 mod hub;
@@ -208,6 +209,31 @@ impl LlmExecutor for StateMachineModel {
         };
         Ok(ChatResponse {
             output,
+            usage: None,
+        })
+    }
+}
+
+/// A deterministic model that echoes the system prompt (an agent's instructions),
+/// so a config e2e can assert a *published* agent's own instructions reached the
+/// run. Reads the last system message. Stateless.
+pub struct InstructionEchoModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for InstructionEchoModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let system = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::System)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        Ok(ChatResponse {
+            output: AssistantOutput::text(format!("instructions: {system}")),
             usage: None,
         })
     }
@@ -422,13 +448,13 @@ impl ManagedHost {
 impl SessionRuntime for ManagedHost {
     async fn run_turn(
         &self,
-        _agent: &str,
+        agent: &str,
         thread: &str,
         content: Vec<ContentBlock>,
     ) -> Result<TurnOutcome, RunError> {
         let result = self
             .host
-            .run_turn(thread, vec![user_message(content)])
+            .run_turn(Some(agent), thread, vec![user_message(content)])
             .await
             .map_err(to_run_error)?;
         Ok(to_turn_outcome(result))
@@ -603,7 +629,7 @@ impl AiSdkRuntime for AiSdkHost {
     ) -> Result<StepOutcome, DriverError> {
         let result = self
             .host
-            .run_turn(thread, messages)
+            .run_turn(None, thread, messages)
             .await
             .map_err(to_driver_error)?;
         Ok(to_step_outcome(result))
@@ -691,7 +717,7 @@ impl A2aRuntime for A2aHost {
     ) -> Result<A2aStep, A2aErr> {
         let result = self
             .host
-            .run_turn(thread, messages)
+            .run_turn(None, thread, messages)
             .await
             .map_err(to_a2a_error)?;
         Ok(to_a2a_step(result))
@@ -779,7 +805,7 @@ impl AgUiRuntime for AgUiHost {
     ) -> Result<AgStep, AgErr> {
         let result = self
             .host
-            .run_turn(thread, messages)
+            .run_turn(None, thread, messages)
             .await
             .map_err(to_ag_error)?;
         Ok(to_ag_step(result))
@@ -912,4 +938,19 @@ pub fn build_statemachine_router() -> Router {
     let host =
         SharedHost::new(Arc::new(StateMachineModel), "statemachine").with_state_machine(machine);
     mount(Arc::new(host))
+}
+
+/// A router with the config data plane (`/v1/config/agents/*`) over an in-memory
+/// SQLite config store, plus the protocol adapters. A session for a *published*
+/// agent runs with that agent's installed config (slice A); the model echoes the
+/// agent's instructions so an e2e can assert the published config took effect.
+pub fn build_config_router() -> Router {
+    let registry = Arc::new(
+        awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
+    );
+    let tools = config::advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
+    let service = Arc::new(config_plane::ConfigService::new(registry, tools));
+    let host = SharedHost::new(Arc::new(InstructionEchoModel), "config")
+        .with_config_service(service.clone());
+    mount(Arc::new(host)).merge(config_plane::config_router(service))
 }
