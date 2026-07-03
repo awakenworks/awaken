@@ -94,6 +94,56 @@ async fn live_memory_extraction_writes_a_memory_file() {
 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
+async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation() {
+    let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
+    let mem_dir = tmp_dir("loop");
+    let host = host.with_memory(&mem_dir);
+
+    // Conversation 1: the user states a durable preference; extraction saves it.
+    host.run_turn(
+        "conv-1",
+        user("Remember for the future: my favorite programming language is Rust. Acknowledge briefly."),
+    )
+    .await
+    .expect("conversation 1 turn");
+    assert!(
+        host.drain_memory(Duration::from_secs(90)).await,
+        "memory extraction should finish"
+    );
+    let files: Vec<_> = std::fs::read_dir(&mem_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(!files.is_empty(), "a memory should have been generated");
+
+    // Conversation 2 (a fresh thread, no shared transcript): the saved memory is
+    // recalled into context and the live model uses it to answer.
+    let phase = host
+        .run_turn(
+            "conv-2",
+            user("Based on what you remember about me, what is my favorite programming language? Answer with just the language name."),
+        )
+        .await
+        .expect("conversation 2 turn");
+    let reply = phase
+        .new_messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::Assistant)
+        .map(|m| m.text_content())
+        .unwrap_or_default();
+    eprintln!("recall-based reply: {reply:?}");
+    assert!(
+        reply.to_lowercase().contains("rust"),
+        "the fresh conversation should recall and use the saved memory; got: {reply:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
     // The judge is now an ordinary agent resolved by id; grade with a real one.

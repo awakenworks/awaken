@@ -167,6 +167,10 @@ struct SessionState {
     /// has already been handed to the extractor, so each turn extracts only the
     /// new messages instead of re-processing (and re-billing) the whole history.
     last_extracted_len: usize,
+    /// Whether saved memories have been recalled into this session yet. Set on the
+    /// first turn so past memories are loaded into context once per session (like
+    /// an always-loaded index), not re-injected every turn.
+    recalled: bool,
 }
 
 /// One thread's live state: an isolated runtime, its config, its commit
@@ -661,16 +665,36 @@ impl SharedHost {
         if st.parked.is_some() {
             return Err(HostError::bad_request("thread is awaiting a tool decision"));
         }
-        let mut messages: Vec<Message> = std::mem::take(&mut st.pending_system)
-            .into_iter()
-            .map(|text| {
-                Message::text(
-                    MessageId(format!("sys-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst))),
+        let mut messages: Vec<Message> = Vec::new();
+        // Recall: on a session's first turn, load memories saved in past
+        // conversations and inject them as a leading system message, so the agent
+        // can actually use what earlier turns produced. Once per session.
+        if let Some(mem) = &self.memory
+            && !st.recalled
+        {
+            st.recalled = true;
+            if let Some(block) = mem.recall_block() {
+                messages.push(Message::text(
+                    MessageId(format!(
+                        "mem-recall-{}",
+                        BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+                    )),
                     Role::System,
-                    text,
-                )
-            })
-            .collect();
+                    block,
+                ));
+            }
+        }
+        messages.extend(
+            std::mem::take(&mut st.pending_system)
+                .into_iter()
+                .map(|text| {
+                    Message::text(
+                        MessageId(format!("sys-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst))),
+                        Role::System,
+                        text,
+                    )
+                }),
+        );
         // Expand a user `/skill-name` into the skill's instructions before the turn.
         let input = match &ctx.skill_registry {
             Some(registry) => {
@@ -1184,6 +1208,104 @@ mod tests {
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         assert_eq!(reply, "seen-summary");
+    }
+
+    /// The extractor saves "the user prefers tea"; the main agent answers "tea"
+    /// only when that memory is present in its system context (recalled).
+    struct MemLoopModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for MemLoopModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            use awaken_runtime_contract::llm::{ChatRole, ToolCall};
+            let system_text: String = request
+                .messages
+                .iter()
+                .filter(|m| m.role == ChatRole::System)
+                .flat_map(|m| m.content.iter())
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if system_text.contains("memory extraction sub-agent") {
+                let already = request.messages.iter().any(|m| {
+                    m.role == ChatRole::Tool
+                        && m.content.iter().any(|b| match b {
+                            ContentBlock::ToolResult { content, .. } => {
+                                block_text(content).contains("saved memory")
+                            }
+                            _ => false,
+                        })
+                });
+                let output = if already {
+                    AssistantOutput::text("done")
+                } else {
+                    AssistantOutput::from_tool_calls(vec![ToolCall {
+                        call_id: "w".into(),
+                        tool_id: "write_memory".into(),
+                        arguments: serde_json::json!({
+                            "name": "beverage-preference",
+                            "content": "the user prefers tea",
+                        }),
+                    }])
+                };
+                return Ok(ChatResponse {
+                    output,
+                    usage: None,
+                });
+            }
+            // Main agent: answer from recalled memory when present.
+            let reply = if system_text.contains("the user prefers tea") {
+                "tea"
+            } else {
+                "ok"
+            };
+            Ok(ChatResponse {
+                output: AssistantOutput::text(reply),
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
+        let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let mem_dir = std::env::temp_dir().join(format!("awaken-loop-mem-{stamp}"));
+        let host = SharedHost::new(Arc::new(MemLoopModel), "stub").with_memory(&mem_dir);
+        let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
+
+        // Thread 1: the user states a preference; extraction saves it.
+        host.run_turn("thread-1", user("I really enjoy tea in the morning"))
+            .await
+            .expect("thread 1 turn");
+        assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+        assert!(
+            mem_dir.join("beverage-preference.md").exists(),
+            "the preference should be saved"
+        );
+
+        // Thread 2 (a fresh conversation): the saved memory is recalled into context
+        // and the agent uses it to answer.
+        let r = host
+            .run_turn("thread-2", user("What beverage do I prefer?"))
+            .await
+            .expect("thread 2 turn");
+        let reply = r
+            .new_messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        assert_eq!(
+            reply, "tea",
+            "the fresh thread should recall and use the saved memory"
+        );
     }
 
     /// The main agent parks on a `write` (Ask-gated) then finishes on resume; the
