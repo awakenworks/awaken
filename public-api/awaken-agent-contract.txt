@@ -1475,6 +1475,8 @@ pub awaken_agent_contract::ThreadCommit::run_fact: awaken_agent_contract::fact::
 pub awaken_agent_contract::ThreadCommit::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub awaken_agent_contract::ThreadCommit::thread_id: awaken_agent_contract::agent::thread::Id
 pub awaken_agent_contract::ThreadCommit::waiting: core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
+impl awaken_agent_contract::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::commit::staged::ThreadCommit::validate(&self) -> core::result::Result<(), awaken_agent_contract::commit::staged::ValidationError>
 impl core::clone::Clone for awaken_agent_contract::commit::staged::ThreadCommit
 pub fn awaken_agent_contract::commit::staged::ThreadCommit::clone(&self) -> awaken_agent_contract::commit::staged::ThreadCommit
 impl core::cmp::PartialEq for awaken_agent_contract::commit::staged::ThreadCommit
