@@ -24,7 +24,9 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
+use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -530,5 +532,83 @@ async fn success_transition_emit_is_in_the_models_next_request() {
         llm.request_texts(1).iter().any(|t| t == emit),
         "the transition emit must be in the model's next request: {:?}",
         llm.request_texts(1)
+    );
+}
+
+/// A gate that parks the `Park` tool pending an out-of-band decision, and allows
+/// everything else — so a real tool runs (and the FSM emits) before the park.
+struct ParkTheParkTool;
+
+#[async_trait::async_trait]
+impl ToolGateHook for ParkTheParkTool {
+    async fn gate(
+        &self,
+        ctx: &PermissionContext,
+        _state: &awaken_agent_contract::agent::state::Store,
+    ) -> GateOutcome {
+        if ctx.tool_id == "Park" {
+            GateOutcome::Suspend {
+                ticket_id: "park-ticket".to_string(),
+            }
+        } else {
+            GateOutcome::Allow
+        }
+    }
+}
+
+fn park_resume_command() -> ResumeCommand {
+    ResumeCommand {
+        correlation_id: "park-ticket".to_string(),
+        run_id: RunId("run-1".to_string()),
+        thread_id: ThreadId("thread-1".to_string()),
+        snapshot_id: "snapshot-1".to_string(),
+        catalog_fingerprint: "catalog-a".to_string(),
+        result: ResumeResult::allow(),
+        now_ms: 0,
+    }
+}
+
+#[tokio::test]
+async fn emit_survives_a_park_and_is_in_the_resumed_request() {
+    // Turn 0 `Write` executes and the FSM emits guidance; turn 1 parks on a gated
+    // `Park` tool. After resume, the emit (committed on turn 0, before the park)
+    // must still be in the message list the model is shown on the resumed turn.
+    let llm = Arc::new(RecordingLlm::new(vec![
+        AssistantOutput::from_tool_calls(vec![tool_call("c1", "Write", "a.rs")]),
+        AssistantOutput::from_tool_calls(vec![tool_call("c2", "Park", "a.rs")]),
+    ]));
+    let plugin =
+        StateMachinePlugin::from_config(StateMachineConfig::from_json_str(EMIT_ON_WRITE).unwrap())
+            .unwrap();
+    let runtime = Runtime::new()
+        .with_llm(llm.clone())
+        .with_tool(Arc::new(OkTool("Write")))
+        .with_tool(Arc::new(OkTool("Park")))
+        .with_gate(Arc::new(ParkTheParkTool))
+        .with_plugin(Arc::new(plugin));
+    install(&runtime);
+    // Resume rebuilds the run from the snapshot registry, so register it.
+    runtime.register_snapshot(activation().snapshot);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let parked = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(parked, Phase::Waiting, "the Park tool parks the run");
+
+    // Resume: the parked tool runs and the loop continues to a fresh inference.
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let ended = runtime
+        .resume(park_resume_command(), commit.as_ref(), context)
+        .await
+        .expect("resume runs");
+    assert_eq!(ended, Phase::Ended(EndCause::NaturalEnd));
+
+    // The resumed inference (index 2 across the whole run) still carries the emit
+    // committed on turn 0 — proof it survived the park boundary.
+    let emit = "saved a.rs; read it to verify";
+    let resumed = llm.request_texts(2);
+    assert!(
+        resumed.iter().any(|t| t == emit),
+        "the emit must survive the park and appear in the resumed request: {resumed:?}"
     );
 }
