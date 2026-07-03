@@ -15,12 +15,14 @@
 
 pub mod agent;
 pub mod recall;
+pub mod select;
 pub mod store;
 pub mod tool;
 
 pub use agent::{
     DEFAULT_MEMORY_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, default_memory_agent,
 };
-pub use recall::{RecallBounds, recall_block};
+pub use recall::{RecallBounds, recall_block, recall_relevant};
+pub use select::select_relevant;
 pub use store::{MemoryStore, sanitize_stem};
 pub use tool::{WriteMemoryTool, write_memory_descriptor};

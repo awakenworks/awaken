@@ -29,6 +29,7 @@ pub fn sanitize_stem(name: &str) -> String {
 }
 
 /// One saved memory read back from disk.
+#[derive(Clone)]
 pub struct Entry {
     pub path: PathBuf,
     pub content: String,
