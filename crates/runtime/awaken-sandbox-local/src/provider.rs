@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::process::Stdio as ProcStdio;
 
 use async_trait::async_trait;
+use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_provisioning_contract as pc;
 use serde_json::json;
 use tokio::process::{Child, Command as TokioCommand};
@@ -115,6 +116,41 @@ impl LocalProvider {
         self
     }
 
+    /// Realize a sandbox and return the concrete [`LocalSandbox`], so a caller can
+    /// use the tool-transparent [`LocalSandbox::spawn_agent`] capability. The trait
+    /// `create` delegates here and boxes the result.
+    pub async fn create_sandbox(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<LocalSandbox, pc::SandboxError> {
+        // Fail closed against our capabilities (isolation, ro, egress secrets, …).
+        pc::prepare_environment(spec, &Self::caps()).map_err(err)?;
+
+        let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
+        std::fs::create_dir_all(sandbox.root.root()).map_err(err)?;
+        // Outputs directory (sandbox-absolute → rejailed host path).
+        let host_outputs = sandbox.root.resolve(&spec.outputs_path).map_err(err)?;
+        std::fs::create_dir_all(&host_outputs).map_err(err)?;
+
+        // Base env: non-secret literals only (a local provider has no egress broker).
+        for var in &spec.env {
+            if let pc::EnvValue::Inline { value } = &var.value {
+                sandbox.base_env.push((var.name.clone(), value.clone()));
+            }
+        }
+        // All-or-nothing: a failed mount reaps the whole environment (no partial dir).
+        for req in &spec.mounts {
+            match self.realize_mount(&sandbox.root, req) {
+                Ok(m) => sandbox.realized.push(m),
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(sandbox.root.root());
+                    return Err(e);
+                }
+            }
+        }
+        Ok(sandbox)
+    }
+
     fn caps() -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
             isolation: pc::IsolationClass::Workdir,
@@ -193,32 +229,7 @@ impl pc::SandboxProvider for LocalProvider {
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        // Fail closed against our capabilities (isolation, ro, egress secrets, …).
-        pc::prepare_environment(spec, &Self::caps()).map_err(err)?;
-
-        let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
-        std::fs::create_dir_all(sandbox.root.root()).map_err(err)?;
-        // Outputs directory (sandbox-absolute → rejailed host path).
-        let host_outputs = sandbox.root.resolve(&spec.outputs_path).map_err(err)?;
-        std::fs::create_dir_all(&host_outputs).map_err(err)?;
-
-        // Base env: non-secret literals only (a local provider has no egress broker).
-        for var in &spec.env {
-            if let pc::EnvValue::Inline { value } = &var.value {
-                sandbox.base_env.push((var.name.clone(), value.clone()));
-            }
-        }
-        // All-or-nothing: a failed mount reaps the whole environment (no partial dir).
-        for req in &spec.mounts {
-            match self.realize_mount(&sandbox.root, req) {
-                Ok(m) => sandbox.realized.push(m),
-                Err(e) => {
-                    let _ = std::fs::remove_dir_all(sandbox.root.root());
-                    return Err(e);
-                }
-            }
-        }
-        Ok(Box::new(sandbox))
+        Ok(Box::new(self.create_sandbox(spec).await?))
     }
 
     async fn adopt(
@@ -254,24 +265,10 @@ impl LocalSandbox {
     fn scan(&self) -> Result<Vec<(pc::Artifact, PathBuf)>, pc::SandboxError> {
         crate::artifacts::scan_outputs(&self.host_outputs()?, &self.outputs_path)
     }
-}
 
-#[async_trait]
-impl pc::Sandbox for LocalSandbox {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn handle(&self) -> pc::SandboxHandle {
-        let mut h = pc::SandboxHandle::new("local", &self.id);
-        h.extra = Some(json!({ "outputs_path": self.outputs_path }));
-        h
-    }
-
-    async fn spawn(
-        &self,
-        command: pc::Command,
-    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+    /// Build the child command (program, args, jailed cwd, reserved + declared env),
+    /// leaving stdio for the caller to configure. Shared by `spawn`/`spawn_agent`.
+    fn build_command(&self, command: &pc::Command) -> Result<TokioCommand, pc::SandboxError> {
         let program = command
             .argv
             .first()
@@ -301,6 +298,54 @@ impl pc::Sandbox for LocalSandbox {
                 cmd.env(&var.name, value);
             }
         }
+        Ok(cmd)
+    }
+
+    /// The tool-transparent capability (ADR-0041 amendment): launch an opaque agent
+    /// with piped stdio and hand back its [`pc::ProcessHandle`] plus a duplex
+    /// [`AgentChannel`] (its stdout+stdin). The bridge drives ACP over the channel
+    /// while the supervisor polls the handle. The Workdir tier realizes the same
+    /// channel plumbing the transparent tiers use; production agents still require a
+    /// `tool_transparent` tier (gated by `prepare_environment`).
+    pub async fn spawn_agent(
+        &self,
+        command: pc::Command,
+    ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
+        let mut cmd = self.build_command(&command)?;
+        cmd.stdin(ProcStdio::piped())
+            .stdout(ProcStdio::piped())
+            .stderr(ProcStdio::null());
+        let mut child = cmd.spawn().map_err(err)?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| err("agent stdin was not piped"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| err("agent stdout was not piped"))?;
+        let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
+        Ok((Box::new(LocalProcess::spawned(child)), channel))
+    }
+}
+
+#[async_trait]
+impl pc::Sandbox for LocalSandbox {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn handle(&self) -> pc::SandboxHandle {
+        let mut h = pc::SandboxHandle::new("local", &self.id);
+        h.extra = Some(json!({ "outputs_path": self.outputs_path }));
+        h
+    }
+
+    async fn spawn(
+        &self,
+        command: pc::Command,
+    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+        let mut cmd = self.build_command(&command)?;
         let (out, e) = match command.stdio {
             pc::Stdio::Inherit => (ProcStdio::inherit(), ProcStdio::inherit()),
             pc::Stdio::Piped => (ProcStdio::piped(), ProcStdio::piped()),

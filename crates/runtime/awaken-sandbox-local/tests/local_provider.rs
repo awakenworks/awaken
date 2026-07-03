@@ -41,6 +41,32 @@ async fn capabilities_are_workdir_and_not_tool_transparent() {
 }
 
 #[tokio::test]
+async fn spawn_agent_yields_a_duplex_channel_to_the_process() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
+    let sandbox = provider.create_sandbox(&spec("t-agent")).await.unwrap();
+
+    // `cat` stands in for an opaque agent: it echoes stdin back on stdout, proving
+    // the pipe-backed AgentChannel round-trips in both directions.
+    let (proc, mut chan) = sandbox
+        .spawn_agent(pc::Command::new(["cat"]))
+        .await
+        .unwrap();
+
+    chan.write_all(b"ping\n").await.unwrap();
+    chan.flush().await.unwrap();
+    let mut buf = vec![0u8; 5];
+    chan.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"ping\n");
+
+    // Closing the write half ends `cat`; the process exits 0.
+    drop(chan);
+    assert_eq!(proc.wait().await.unwrap().code, Some(0));
+}
+
+#[tokio::test]
 async fn secret_mount_materializes_the_brokered_credential_into_the_sandbox() {
     let tmp = tempfile::tempdir().unwrap();
     // The broker is faked by the seed map keyed on the secret reference.
