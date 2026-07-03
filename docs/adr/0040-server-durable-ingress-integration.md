@@ -52,31 +52,37 @@ with a wall-clock + sequence run id, which cannot collide across restarts. This
 is the concrete instance of the ADR-0009 note that "the durable path supplies
 explicit, stable ids" rather than the ergonomic in-process counter.
 
-### D3 — The ADR-0009 follow-ons need no new server code (slice E)
+### D3 — The ADR-0009 follow-ons are exposed and exercised at the server (slice E)
 
-The four supplements — autonomous service/reconciler (ADR-0011), dead-letter GC
-(ADR-0015), scheduled wake (ADR-0020), and epoch supersession (ADR-0022) — are
-implemented in `awaken-run-ingress` and are already verified **on the server's
-exact concrete persistence stack**, `SqliteDispatchStore` + `SqliteCommitCoordinator`,
-by `crates/awaken-run-ingress/tests/sqlite_dispatch.rs`:
+The four supplements — reconcile (ADR-0011), dead-letter GC (ADR-0015), scheduled
+wake (ADR-0020), and epoch supersession (ADR-0022) — are implemented in
+`awaken-run-ingress` and their deep state machine is verified deterministically
+**on the server's exact concrete persistence stack**, `SqliteDispatchStore` +
+`SqliteCommitCoordinator`, by `crates/awaken-run-ingress/tests/sqlite_dispatch.rs`
+(`durable_loop_runs_entirely_on_sqlite`, `dead_letter_budget_on_sqlite`,
+`dead_letter_ttl_gc_on_sqlite`, `scheduled_delivery_due_on_sqlite`,
+`supersession_on_sqlite`, …). Slice E makes each **reachable and exercised through
+the server**, each with its own e2e:
 
-| ADR-0009 follow-on | Behavior | Test on the server's SQLite stack |
+| ADR | Server feature | e2e |
 | --- | --- | --- |
-| ADR-0011 | reconcile / recover an enqueued run; survive a fresh store handle | `durable_loop_runs_entirely_on_sqlite`, `sqlite_dispatch_opens_a_file_and_persists`, `renew_owned_leases_on_sqlite` |
-| ADR-0015 | dead-letter after the retry budget; time-windowed GC | `dead_letter_budget_on_sqlite`, `dead_letter_ttl_gc_on_sqlite` |
-| ADR-0020 | perform a scheduled action when due | `scheduled_delivery_due_on_sqlite` |
-| ADR-0022 | newest submission supersedes stale pending work | `supersession_on_sqlite` |
+| ADR-0022 | `POST /v1/durable/threads/:t/supersede` — a newest-wins turn (`SharedHost::supersede_turn` → `submit_superseding`); `superseded` is observable | `managed_supersede_e2e` — a parked run is superseded end to end |
+| ADR-0020 | the `schedule` server mode: a gate defers tool calls as `ScheduledAction`s; the durable worker performs them out of band | `managed_scheduled_e2e` — write→read performed autonomously, no confirmation |
+| ADR-0011 | `POST /v1/durable/threads/:t/reconcile` — reclaim runnable work | `managed_durable_ops_e2e` — verb wired + fails closed off-durable |
+| ADR-0015 | `POST …/reap`, `GET …/dead-letters`, `POST …/dead-letters/purge` | `managed_durable_ops_e2e` — verbs wired + fail closed |
 
-Because the durable server (D2) composes exactly this stack, these are covered
-without duplicating them as server-local tests. What is *not* yet built is an
-operational **surface** for them — an HTTP verb to purge dead-letters, submit a
-superseding run, or a per-session reconciler daemon lifecycle. That is deferred
-deliberately: these are background/operational actions, not synchronous
-request/response turns, so an HTTP shape for them is a product decision, not a
-correctness gap. Spawning a per-session `DispatchService` daemon was also declined
-for now — with no server model that emits scheduled actions, the daemon would add
-a background task and lifecycle risk per session with no behavior the synchronous
-`submit_background` drain does not already produce.
+The operational verbs live in `durable_ops.rs`, mounted on every server; each
+fails closed with 400 unless `AWAKEN_INGRESS=durable`. Supersession and scheduled
+wake are demonstrated with their full behavior over HTTP. Reconcile and
+dead-letter/reap/purge are exposed as operable, fail-closed verbs and their deep
+crash/lease state machine stays covered by the store-level tests above — a crashed
+`running` dispatch (an unsettled lease) cannot be produced without an actual
+process crash mid-execution, so it is proven at the store level rather than via a
+timing-dependent HTTP kill. A standing per-session reconciler **daemon**
+(`DispatchService::spawn_with_wake`) remains a scoped follow-up: recovery is
+available on demand via `reconcile`, and an always-on daemon is warranted once a
+deployment emits scheduled actions autonomously or needs out-of-band GC without an
+operator call.
 
 ## Consequences
 

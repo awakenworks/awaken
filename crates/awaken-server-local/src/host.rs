@@ -316,6 +316,11 @@ pub struct SharedHost {
     /// runtime config is the installed (published) config for its agent, if any,
     /// else the built-in default (slice A).
     pub(crate) config_service: Option<Arc<crate::config_plane::ConfigService>>,
+    /// An optional tool gate that replaces the default authorization gate on every
+    /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
+    /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch
+    /// worker performs them out of band.
+    pub(crate) gate_override: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
 }
 
 impl SharedHost {
@@ -348,6 +353,7 @@ impl SharedHost {
             compact_config: None,
             compact_summarizer: None,
             config_service: None,
+            gate_override: None,
         }
     }
 
@@ -407,6 +413,17 @@ impl SharedHost {
             Some(mem) => mem.drain(timeout).await,
             None => true,
         }
+    }
+
+    /// Replace the default authorization gate on every thread with `gate` (slice
+    /// E): the scheduled-action server uses a gate that defers tool calls so the
+    /// durable worker performs them (ADR-0020).
+    pub fn with_gate_override(
+        mut self,
+        gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
+    ) -> Self {
+        self.gate_override = Some(gate);
+        self
     }
 
     /// Wire the config data plane, so a session's agent resolves to its installed
@@ -655,6 +672,12 @@ impl SharedHost {
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread).await?);
         let mut runtime = build_runtime(self.llm.clone(), &env);
+        // A gate override (slice E) replaces the default authorization gate — e.g.
+        // a scheduling gate that defers tool calls as `ScheduledAction`s so the
+        // durable worker performs them out of band (ADR-0020).
+        if let Some(gate) = &self.gate_override {
+            runtime = runtime.with_gate(gate.clone());
+        }
         // Delegation is a runtime concern: inject the resolver so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
         if let Some(resolver) = self.agent_resolver() {

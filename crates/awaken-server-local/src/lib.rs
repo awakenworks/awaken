@@ -962,3 +962,36 @@ pub fn build_config_router() -> Router {
         .with_config_service(service.clone());
     mount(Arc::new(host)).merge(config_plane::config_router(service))
 }
+
+/// A tool gate that defers every tool call as a committed `ScheduledAction`
+/// (ADR-0020, slice E): instead of running inline or parking for a human, the call
+/// is scheduled, keyed by its call id, and the durable dispatch worker performs it
+/// out of band. In direct mode a scheduled run would park; under
+/// `AWAKEN_INGRESS=durable` the worker's scheduled-action loop performs it and the
+/// run completes autonomously.
+struct ScheduleGate;
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::permission::ToolGateHook for ScheduleGate {
+    async fn gate(
+        &self,
+        ctx: &awaken_runtime_contract::permission::PermissionContext,
+        _state: &awaken_agent_contract::agent::state::Store,
+    ) -> awaken_runtime_contract::permission::GateOutcome {
+        awaken_runtime_contract::permission::GateOutcome::Schedule {
+            correlation_id: format!("sched-{}", ctx.call_id),
+            action_kind: None,
+        }
+    }
+}
+
+/// A router whose tool gate defers every tool call as a `ScheduledAction`
+/// (ADR-0020, slice E). Drive it with `AWAKEN_INGRESS=durable` so the dispatch
+/// worker performs the deferred actions out of band: the probe model's
+/// write→read tool calls are each scheduled and auto-performed, so the run
+/// completes without any human confirmation.
+pub fn build_schedule_router() -> Router {
+    let host = SharedHost::new(Arc::new(ProbeModel), "schedule")
+        .with_gate_override(Arc::new(ScheduleGate));
+    mount(Arc::new(host))
+}
