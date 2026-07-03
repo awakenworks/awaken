@@ -68,6 +68,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
 | `design/error-taxonomy.md` | Decision record | Not required | n/a |
 | `design/packaging-enforcement-matrix.md` | Meta / introspection | Not required | n/a |
+| `design/runtime-persistence.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/tool-state-machine.md` | Role owner | Required | self |
 | `design/plugin-configuration.md` | Role owner | Required | self |
 | `adr/0001-documentation-model-and-vocabulary-alignment.md` | Decision record | Not required | n/a |
@@ -108,3 +109,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0036-skills-as-runtime-extension-single-tool.md` | Decision record | Not required | n/a |
 | `adr/0037-managed-capability-advertisement-wire-alignment.md` | Decision record | Not required | n/a |
 | `adr/0038-managed-resource-injection-and-store-organization.md` | Decision record | Not required | n/a |
+| `adr/0039-runtime-persistence-port-convergence-and-store-naming.md` | Decision record | Not required | n/a |
