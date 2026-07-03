@@ -17,6 +17,7 @@ mod compact;
 mod config;
 mod config_plane;
 mod delegate;
+mod durable_ops;
 mod host;
 mod hub;
 mod judge;
@@ -855,7 +856,14 @@ fn mount(host: Arc<SharedHost>) -> Router {
     let ai_sdk = awaken_protocol_ai_sdk::router(Arc::new(AiSdkHost::new(host.clone())));
     let ag_ui = awaken_protocol_ag_ui::router(Arc::new(AgUiHost::new(host.clone())));
     let a2a = awaken_protocol_a2a::router(Arc::new(A2aHost::new(host.clone())));
-    managed.merge(ai_sdk).merge(ag_ui).merge(a2a)
+    // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
+    // (supersede / reconcile / reap / dead-letter GC) over the same shared host.
+    let durable_ops = crate::durable_ops::durable_ops_router(host.clone());
+    managed
+        .merge(ai_sdk)
+        .merge(ag_ui)
+        .merge(a2a)
+        .merge(durable_ops)
 }
 
 /// Build the server router backed by the kernel with the given model.

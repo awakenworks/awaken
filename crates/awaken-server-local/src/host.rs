@@ -26,7 +26,7 @@ use awaken_ext_goal::{
 };
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
-use awaken_run_ingress::{DurableRunIngress, MemoryDispatchStore, SqliteDispatchStore};
+use awaken_run_ingress::{DurableRunIngress, SqliteDispatchStore};
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::CancellationToken;
@@ -194,6 +194,11 @@ pub(crate) struct SessionCtx {
     /// True when `ingress` is durable: a turn is submitted through the dispatch
     /// queue (`submit_background`) rather than executed inline (slice D).
     durable: bool,
+    /// The concrete durable ingress, present iff `durable`. Kept alongside the
+    /// boxed `ingress` so the ADR-0009 operational verbs (recover / reap /
+    /// dead-letter GC / superseding submit — slice E) stay reachable; the boxed
+    /// trait object erases them.
+    pub(crate) durable_ingress: Option<Arc<DurableRunIngress<SqliteDispatchStore>>>,
     config: RunnableConfig,
     pub(crate) commit: Arc<HostCommit>,
     pub(crate) thread_id: ThreadId,
@@ -596,37 +601,40 @@ impl SharedHost {
         thread: &str,
         runtime: Arc<Runtime>,
         commit: Arc<HostCommit>,
-    ) -> Result<(Arc<dyn RunIngress>, bool), HostError> {
+    ) -> Result<
+        (
+            Arc<dyn RunIngress>,
+            Option<Arc<DurableRunIngress<SqliteDispatchStore>>>,
+        ),
+        HostError,
+    > {
         let durable = std::env::var("AWAKEN_INGRESS").is_ok_and(|value| value == "durable");
         if !durable {
-            return Ok((Arc::new(DirectRunIngress::new(runtime)), false));
+            return Ok((Arc::new(DirectRunIngress::new(runtime)), None));
         }
         // A durable dispatch store: a SQLite queue under the store dir (survives a
-        // restart), or an in-memory queue when no store dir is configured.
-        let ingress: Arc<dyn RunIngress> = match &self.store_dir {
+        // restart), or a private in-memory SQLite queue when no store dir is set.
+        // Always SQLite so the concrete ingress type is fixed and its operational
+        // verbs (recover / reap / supersede — ADR-0009 follow-ons) stay reachable.
+        let store = Arc::new(match &self.store_dir {
             Some(dir) => {
                 std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
                 let path = dir.join(format!("{}-dispatch.db", sanitize_thread(thread)));
-                let store = Arc::new(
-                    SqliteDispatchStore::open(&path.to_string_lossy())
-                        .map_err(|e| HostError::internal(e.to_string()))?,
-                );
-                let ingress = DurableRunIngress::new(runtime, store, commit);
-                // Startup recovery: reclaim any dispatch a prior process crashed on
-                // mid-flight, driving it to completion against committed truth.
-                ingress
-                    .recover(now_ms())
-                    .await
-                    .map_err(|e| HostError::internal(e.to_string()))?;
-                Arc::new(ingress)
+                SqliteDispatchStore::open(&path.to_string_lossy())
+                    .map_err(|e| HostError::internal(e.to_string()))?
             }
-            None => Arc::new(DurableRunIngress::new(
-                runtime,
-                Arc::new(MemoryDispatchStore::new()),
-                commit,
-            )),
-        };
-        Ok((ingress, true))
+            None => SqliteDispatchStore::open_in_memory()
+                .map_err(|e| HostError::internal(e.to_string()))?,
+        });
+        let ingress = Arc::new(DurableRunIngress::new(runtime, store, commit));
+        // Startup recovery: reclaim any dispatch a prior process crashed on
+        // mid-flight, driving it to completion against committed truth.
+        ingress
+            .recover(now_ms())
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        let boxed: Arc<dyn RunIngress> = ingress.clone();
+        Ok((boxed, Some(ingress)))
     }
 
     async fn ctx_for(
@@ -742,13 +750,15 @@ impl SharedHost {
         // `RunIngress` rather than calling `runtime.start_turn` directly. Direct
         // ingress runs inline on the same `runtime`; durable ingress queues the run
         // through a dispatch store first. Both share this thread's `runtime`/`commit`.
-        let (ingress, durable) = self
+        let (ingress, durable_ingress) = self
             .build_ingress(thread, runtime.clone(), commit.clone())
             .await?;
+        let durable = durable_ingress.is_some();
         let ctx = Arc::new(SessionCtx {
             runtime,
             ingress,
             durable,
+            durable_ingress,
             config,
             commit,
             thread_id,
@@ -818,10 +828,39 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<TurnResult, HostError> {
+        self.deliver_turn(agent, thread, input, false).await
+    }
+
+    /// Submit a turn that *supersedes* the thread's prior pending/parked work
+    /// (ADR-0022, slice E): the newest submission wins, stale dispatches are marked
+    /// superseded and never claimed again, then the new run is driven. Requires
+    /// durable ingress. Unlike `run_turn` it does not fail closed on a parked
+    /// thread — superseding a parked run is the point.
+    pub(crate) async fn supersede_turn(
+        &self,
+        agent: Option<&str>,
+        thread: &str,
+        input: Vec<Message>,
+    ) -> Result<TurnResult, HostError> {
+        self.deliver_turn(agent, thread, input, true).await
+    }
+
+    async fn deliver_turn(
+        &self,
+        agent: Option<&str>,
+        thread: &str,
+        input: Vec<Message>,
+        supersede: bool,
+    ) -> Result<TurnResult, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
         let mut st = ctx.state.lock().await;
-        if st.parked.is_some() {
+        if st.parked.is_some() && !supersede {
             return Err(HostError::bad_request("thread is awaiting a tool decision"));
+        }
+        if supersede && ctx.durable_ingress.is_none() {
+            return Err(HostError::bad_request(
+                "supersede requires durable ingress (set AWAKEN_INGRESS=durable)",
+            ));
         }
         // Recall is injected by the memory plugin's BeforeInference hook (request-only,
         // never committed), so the host does not touch it here.
@@ -869,10 +908,18 @@ impl SharedHost {
             run_id = uid;
         }
         // Durable ingress queues the run through the dispatch store and drives it
-        // via the worker (`submit_background`); direct ingress runs it inline
-        // (`submit`). Both drive to the same terminal/parked phase and commit
-        // through the same boundary, so `finish_step` is identical either way.
-        let phase = if ctx.durable {
+        // via the worker (`submit_background`); a superseding submit first marks the
+        // thread's stale pending/parked dispatches superseded (ADR-0022); direct
+        // ingress runs it inline (`submit`). All drive to the same terminal/parked
+        // phase and commit through the same boundary, so `finish_step` is identical.
+        let phase = if supersede {
+            ctx.durable_ingress
+                .as_ref()
+                .expect("supersede requires durable ingress")
+                .submit_superseding(activation)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?
+        } else if ctx.durable {
             ctx.ingress
                 .submit_background(activation)
                 .await
@@ -920,6 +967,83 @@ impl SharedHost {
         st.last_extracted_len = committed.len();
         drop(st);
         mem.trigger(thread, delta).await;
+    }
+
+    /// The durable ingress for `thread`, building the session if needed. Errors
+    /// unless the server runs in durable mode (`AWAKEN_INGRESS=durable`). This is
+    /// the operational entry for the ADR-0009 follow-on verbs (slice E): recover
+    /// (ADR-0011), reap / dead-letter GC (ADR-0015), and superseding submit
+    /// (ADR-0022).
+    pub(crate) async fn durable_ingress(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<DurableRunIngress<SqliteDispatchStore>>, HostError> {
+        let ctx = self.ctx_for(thread, None).await?;
+        ctx.durable_ingress.clone().ok_or_else(|| {
+            HostError::bad_request("durable ingress not enabled (set AWAKEN_INGRESS=durable)")
+        })
+    }
+
+    /// Reconcile `thread`'s dispatch queue (ADR-0011, slice E): reclaim and re-run
+    /// any dispatch left runnable by a crash. Returns the recovered run ids.
+    pub(crate) async fn reconcile(&self, thread: &str) -> Result<Vec<String>, HostError> {
+        let processed = self
+            .durable_ingress(thread)
+            .await?
+            .recover(now_ms())
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        Ok(processed.into_iter().map(|(id, _)| id.0).collect())
+    }
+
+    /// Reap crashed dispatches on `thread` that have exhausted `max_attempts`
+    /// crash-recoveries as of `now_ms` (ADR-0015, slice E). Returns how many were
+    /// dead-lettered. `now_ms` is an as-of cutoff so an operator (or a test) can
+    /// reap against a chosen clock.
+    pub(crate) async fn reap(
+        &self,
+        thread: &str,
+        max_attempts: u64,
+        now_ms: u64,
+    ) -> Result<usize, HostError> {
+        self.durable_ingress(thread)
+            .await?
+            .reap(max_attempts, now_ms)
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))
+    }
+
+    /// The run ids currently dead-lettered on `thread` (ADR-0015, slice E).
+    pub(crate) async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, HostError> {
+        let ids = self
+            .durable_ingress(thread)
+            .await?
+            .dead_letters()
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        Ok(ids.into_iter().map(|id| id.0).collect())
+    }
+
+    /// Operator GC: purge every dead-lettered dispatch on `thread` (ADR-0015,
+    /// slice E). Returns how many were removed.
+    pub(crate) async fn purge_dead_letters(&self, thread: &str) -> Result<usize, HostError> {
+        self.durable_ingress(thread)
+            .await?
+            .purge_dead_letters()
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))
+    }
+
+    /// The run ids superseded by a newer submission on `thread` (ADR-0022,
+    /// slice E).
+    pub(crate) async fn superseded(&self, thread: &str) -> Result<Vec<String>, HostError> {
+        let ids = self
+            .durable_ingress(thread)
+            .await?
+            .superseded()
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        Ok(ids.into_iter().map(|id| id.0).collect())
     }
 
     /// Resume the run parked on `thread`, answering `tool_use_id` with `resume`.
