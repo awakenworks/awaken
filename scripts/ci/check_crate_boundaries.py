@@ -276,6 +276,19 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
         "http-body-util",
     },
+    # ACP bridge + supervisor (ADR-0041 Slice 3): the anti-corruption boundary
+    # between an opaque agent's protocol stream and the neutral runtime. It drives
+    # an `AgentChannel` (the transport seam) + `ProcessHandle` and projects events
+    # through the `RunEventSink` binding port; it constructs no store. Agents plane.
+    "awaken-protocol-acp": {
+        "awaken-agent-channel",
+        "awaken-provisioning-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tokio",
+    },
     # AI SDK v6 protocol adapter: the anti-corruption boundary between the Vercel
     # AI SDK UI Message Stream wire and the neutral runtime. Like the managed
     # adapter it owns public DTOs + the axum router, depends only on the
