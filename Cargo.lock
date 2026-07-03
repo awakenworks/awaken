@@ -473,6 +473,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-local",
+ "awaken-store-fs",
  "awaken-store-sqlite",
  "axum",
  "http-body-util",

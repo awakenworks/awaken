@@ -406,6 +406,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-provider-genai",
         "awaken-sandbox-local",
         "awaken-store-sqlite",
+        "awaken-store-fs",
         "awaken-ext-goal",
         "awaken-ext-state-machine",
         "awaken-agent-contract",
