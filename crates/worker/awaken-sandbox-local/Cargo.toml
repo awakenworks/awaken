@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 awaken-runtime-contract.workspace = true
-awaken-ext-builtin-tools = { path = "../../runtime/awaken-ext-builtin-tools" }
+awaken-ext-builtin-tools = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -9,26 +9,26 @@ name = "awaken-server"
 path = "src/main.rs"
 
 [dependencies]
-awaken-protocol-managed = { path = "../awaken-protocol-managed" }
-awaken-protocol-ai-sdk = { path = "../awaken-protocol-ai-sdk" }
-awaken-protocol-ag-ui = { path = "../awaken-protocol-ag-ui" }
-awaken-protocol-a2a = { path = "../awaken-protocol-a2a" }
-awaken-protocol-transport = { path = "../awaken-protocol-transport" }
-awaken-sandbox-local = { path = "../../worker/awaken-sandbox-local" }
-awaken-store-sqlite = { path = "../../stores/awaken-store-sqlite" }
-awaken-store-fs = { path = "../../stores/awaken-store-fs" }
-awaken-config-store = { path = "../../control/awaken-config-store" }
-awaken-dispatch = { path = "../awaken-dispatch" }
-awaken-ext-goal = { path = "../../runtime/awaken-ext-goal" }
-awaken-ext-state-machine = { path = "../../runtime/awaken-ext-state-machine", features = ["schema"] }
+awaken-protocol-managed = { workspace = true }
+awaken-protocol-ai-sdk = { workspace = true }
+awaken-protocol-ag-ui = { workspace = true }
+awaken-protocol-a2a = { workspace = true }
+awaken-protocol-transport = { workspace = true }
+awaken-sandbox-local = { workspace = true }
+awaken-store-sqlite = { workspace = true }
+awaken-store-fs = { workspace = true }
+awaken-config-store = { workspace = true }
+awaken-dispatch = { workspace = true }
+awaken-ext-goal = { workspace = true }
+awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-runtime = { path = "../../runtime/awaken-runtime" }
-awaken-ext-builtin-tools = { path = "../../runtime/awaken-ext-builtin-tools" }
-awaken-ext-memory = { path = "../../runtime/awaken-ext-memory" }
-awaken-ext-compact = { path = "../../runtime/awaken-ext-compact" }
-awaken-ext-permission = { path = "../../runtime/awaken-ext-permission" }
-awaken-ext-skills = { path = "../../runtime/awaken-ext-skills" }
+awaken-runtime = { workspace = true }
+awaken-ext-builtin-tools = { workspace = true }
+awaken-ext-memory = { workspace = true }
+awaken-ext-compact = { workspace = true }
+awaken-ext-permission = { workspace = true }
+awaken-ext-skills = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -40,5 +40,5 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 # Real-model integration test only (gated, `--ignored`): drive an adapter over a
 # live Anthropic-compatible endpoint through the genai provider.
-awaken-provider-genai = { path = "../../runtime/awaken-provider-genai" }
-awaken-agent-contract = { path = "../../contract/awaken-agent-contract" }
+awaken-provider-genai = { workspace = true }
+awaken-agent-contract = { workspace = true }

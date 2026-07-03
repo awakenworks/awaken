@@ -8,16 +8,16 @@ publish = false
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-runtime = { path = "../../runtime/awaken-runtime" }
-awaken-ext-permission = { path = "../../runtime/awaken-ext-permission" }
+awaken-runtime = { workspace = true }
+awaken-ext-permission = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
 # Optional, behind the coding-agent features (kept out of the minimal teaching
 # examples so direct_runtime/hello_agent stay light).
-awaken-ext-builtin-tools = { path = "../../runtime/awaken-ext-builtin-tools", optional = true }
-awaken-provider-genai = { path = "../../runtime/awaken-provider-genai", optional = true }
+awaken-ext-builtin-tools = { workspace = true, optional = true }
+awaken-provider-genai = { workspace = true, optional = true }
 ratatui = { version = "0.29", optional = true }
 crossterm = { version = "0.28", optional = true }
 genai = { workspace = true, optional = true }
@@ -40,7 +40,7 @@ coding-agent-tui = [
 [dev-dependencies]
 # `hello_agent` reuses the config domain's pure `compile()` to derive the
 # fingerprint — the embedded path borrows the producer, not the cloud storage.
-awaken-config-store = { path = "../../control/awaken-config-store" }
+awaken-config-store = { workspace = true }
 
 [[example]]
 name = "coding_agent"

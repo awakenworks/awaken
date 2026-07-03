@@ -10,7 +10,6 @@ use awaken_agent_contract::event::draft::Draft;
 use awaken_agent_contract::event::kind::Kind as EventKind;
 use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
-use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 #[tokio::test]

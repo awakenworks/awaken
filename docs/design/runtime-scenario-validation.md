@@ -67,7 +67,7 @@ Organize executable scenarios by boundary, not by product workflow or concrete
 tool family:
 
 ```text
-crates/runtime/awaken-runtime/tests/
+crates/awaken-runtime/tests/
   scenarios/
     mod.rs
     multi_agent.rs
@@ -81,14 +81,14 @@ crates/runtime/awaken-runtime/tests/
     fake_backend.rs
     fake_commit_store.rs
 
-crates/runtime/awaken-ext-builtin-tools/tests/
+crates/awaken-ext-builtin-tools/tests/
   scenarios/
     delegation_tool.rs
     task_tools.rs
   support/
 
-crates/contract/awaken-runtime-contract/tests/
-crates/contract/awaken-agent-contract/tests/
+crates/awaken-runtime-contract/tests/
+crates/awaken-agent-contract/tests/
 ```
 
 `awaken-runtime` scenario tests own neutral mechanism behavior: commit staging,

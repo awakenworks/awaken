@@ -22,7 +22,7 @@ schemars = { version = "1", optional = true }
 schema = ["dep:schemars"]
 
 [dev-dependencies]
-awaken-runtime = { path = "../awaken-runtime" }
+awaken-runtime = { workspace = true }
 tokio.workspace = true
 
 [lints]
