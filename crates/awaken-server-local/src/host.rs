@@ -676,9 +676,17 @@ impl SharedHost {
             .map_err(|e| HostError::internal(e.to_string()))?;
         let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
         drop(st);
-        self.maybe_extract_memory(&ctx, thread, &result.phase).await;
-        self.maybe_compact(&ctx, thread, &result.phase).await;
+        self.run_aux_after_step(&ctx, thread, &result.phase).await;
         Ok(result)
+    }
+
+    /// Fire the out-of-band auxiliary agents (memory extraction, compaction) after a
+    /// step reaches a terminal phase. Shared by `run_turn` and `resume`, so a turn
+    /// that ended via a tool/delegation resume gets the same treatment as one that
+    /// ended directly. No-op while the run is still parked.
+    async fn run_aux_after_step(&self, ctx: &Arc<SessionCtx>, thread: &str, phase: &Phase) {
+        self.maybe_extract_memory(ctx, thread, phase).await;
+        self.maybe_compact(ctx, thread, phase).await;
     }
 
     /// Fire out-of-band memory extraction when a turn reaches a terminal phase
@@ -769,7 +777,10 @@ impl SharedHost {
                 .resume(command, &*ctx.commit, ctx.context())
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
-            return Ok(self.finish_step(&ctx, &mut st, run_id, phase, before, thread));
+            let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
+            drop(st);
+            self.run_aux_after_step(&ctx, thread, &result.phase).await;
+            return Ok(result);
         }
 
         self.check_pending(&ticket, tool_use_id, resume.wants_client())?;
@@ -798,7 +809,10 @@ impl SharedHost {
             .resume(command, &*ctx.commit, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(self.finish_step(&ctx, &mut st, run_id, phase, before, thread))
+        let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
+        drop(st);
+        self.run_aux_after_step(&ctx, thread, &result.phase).await;
+        Ok(result)
     }
 
     /// Define an outcome and drive the grade->revise loop over `thread`, bounded
@@ -1159,6 +1173,104 @@ mod tests {
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         assert_eq!(reply, "seen-summary");
+    }
+
+    /// The main agent parks on a `write` (Ask-gated) then finishes on resume; the
+    /// extractor saves a memory. Proves resume-ended turns trigger the aux agents.
+    struct ResumeMemModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for ResumeMemModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            use awaken_runtime_contract::llm::{ChatRole, ToolCall};
+            let saw_tool = request.messages.iter().any(|m| m.role == ChatRole::Tool);
+            // The extractor's own write_memory succeeded (its result text), distinct
+            // from the main turn's `write` result that is also in its seeded context.
+            let saved_memory = request.messages.iter().any(|m| {
+                m.role == ChatRole::Tool
+                    && m.content.iter().any(|b| match b {
+                        ContentBlock::ToolResult { content, .. } => {
+                            block_text(content).contains("saved memory")
+                        }
+                        _ => false,
+                    })
+            });
+            let is_extractor = request.messages.iter().any(|m| {
+                m.role == ChatRole::System
+                    && m.content.iter().any(|b| match b {
+                        ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
+                        _ => false,
+                    })
+            });
+            let output = if is_extractor {
+                if saved_memory {
+                    AssistantOutput::text("extracted")
+                } else {
+                    AssistantOutput::from_tool_calls(vec![ToolCall {
+                        call_id: "mw".into(),
+                        tool_id: "write_memory".into(),
+                        arguments: serde_json::json!({ "name": "resumed", "content": "after-resume" }),
+                    }])
+                }
+            } else if saw_tool {
+                AssistantOutput::text("done")
+            } else {
+                AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: "w1".into(),
+                    tool_id: "write".into(),
+                    arguments: serde_json::json!({ "path": "note.txt", "content": "x" }),
+                }])
+            };
+            Ok(ChatResponse {
+                output,
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_ended_turn_triggers_memory_extraction() {
+        let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let mem_dir = std::env::temp_dir().join(format!("awaken-resume-mem-{stamp}"));
+        let host = SharedHost::new(Arc::new(ResumeMemModel), "stub").with_memory(&mem_dir);
+
+        // Turn 1 parks on the Ask-gated `write`.
+        let r1 = host
+            .run_turn(
+                "t-res",
+                vec![Message::text(MessageId("u1".into()), Role::User, "hi")],
+            )
+            .await
+            .expect("turn 1");
+        assert!(
+            matches!(r1.phase, Phase::Waiting),
+            "turn should park on write"
+        );
+        let pending = r1.pending.expect("a pending tool");
+
+        // Resume approves the write; the turn now ends and extraction fires.
+        let r2 = host
+            .resume(
+                "t-res",
+                &pending.tool_use_id,
+                HostResume::Confirm {
+                    allow: true,
+                    note: None,
+                },
+            )
+            .await
+            .expect("resume");
+        assert!(
+            matches!(r2.phase, Phase::Ended(_)),
+            "resume should end the turn"
+        );
+
+        assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+        let saved = std::fs::read_to_string(mem_dir.join("resumed.md")).expect("memory file");
+        assert_eq!(saved, "after-resume");
     }
 
     /// The extractor writes a `seen.md` whose content is the non-prompt user texts
