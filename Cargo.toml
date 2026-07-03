@@ -33,6 +33,7 @@ awaken-protocol-a2a = { path = "crates/server/awaken-protocol-a2a" }
 awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui" }
 awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk" }
 awaken-protocol-managed = { path = "crates/server/awaken-protocol-managed" }
+awaken-protocol-acp = { path = "crates/server/awaken-protocol-acp" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
 awaken-store-fs = { path = "crates/stores/awaken-store-fs" }
