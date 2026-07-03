@@ -23,6 +23,7 @@ use crate::Error;
 use crate::capability::RunIngressCapabilities;
 use crate::clock::Clock;
 use crate::dispatch::{Dispatch, DispatchSummary, PendingInput, SubmitOptions};
+use crate::live_control::LiveRunControlService;
 use crate::request::RunExecutionRequest;
 use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
@@ -61,6 +62,13 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     /// The worker, for out-of-band driving (recovery sweeps, background loops).
     pub fn worker(&self) -> &DispatchWorker<S> {
         &self.worker
+    }
+
+    /// A fail-closed live-control service over this ingress's worker (G18): cancel
+    /// a live/queued/parked run, or wake a live one, by correlation id (ADR-0018).
+    /// Shares the same worker/store/runtime, so it owns no second commit boundary.
+    pub fn live_control(&self) -> LiveRunControlService<S> {
+        LiveRunControlService::new(self.worker.clone())
     }
 
     /// Start an autonomous daemon that drains this queue against its runtime,

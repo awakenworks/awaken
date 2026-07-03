@@ -26,7 +26,9 @@ use awaken_ext_goal::{
 };
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
-use awaken_run_ingress::{DurableRunIngress, SqliteDispatchStore};
+use awaken_run_ingress::{
+    DispatchService, DispatchServiceConfig, DurableRunIngress, SqliteDispatchStore, SystemClock,
+};
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::CancellationToken;
@@ -199,6 +201,10 @@ pub(crate) struct SessionCtx {
     /// dead-letter GC / superseding submit — slice E) stay reachable; the boxed
     /// trait object erases them.
     pub(crate) durable_ingress: Option<Arc<DurableRunIngress<SqliteDispatchStore>>>,
+    /// The standing dispatch daemon for this session (ADR-0011), present when
+    /// durable + `AWAKEN_DISPATCH_DAEMON=1`. Held here to keep the background task
+    /// alive for the session's lifetime; it drains the shared queue autonomously.
+    dispatch_service: Option<DispatchService<SqliteDispatchStore>>,
     config: RunnableConfig,
     pub(crate) commit: Arc<HostCommit>,
     pub(crate) thread_id: ThreadId,
@@ -321,6 +327,11 @@ pub struct SharedHost {
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch
     /// worker performs them out of band.
     pub(crate) gate_override: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
+    /// When true (durable + `AWAKEN_DISPATCH_DAEMON=1`), each durable session runs
+    /// a standing `DispatchService` daemon (ADR-0011): it drains the queue on a
+    /// nudge/timer and reaps + relays autonomously, so background-submitted runs
+    /// complete without a foreground request driving them (slice E follow-up).
+    pub(crate) dispatch_daemon: bool,
 }
 
 impl SharedHost {
@@ -354,6 +365,7 @@ impl SharedHost {
             compact_summarizer: None,
             config_service: None,
             gate_override: None,
+            dispatch_daemon: std::env::var("AWAKEN_DISPATCH_DAEMON").is_ok_and(|v| v == "1"),
         }
     }
 
@@ -777,11 +789,22 @@ impl SharedHost {
             .build_ingress(thread, runtime.clone(), commit.clone())
             .await?;
         let durable = durable_ingress.is_some();
+        // Spawn the standing dispatch daemon for this session when enabled: it
+        // drains the shared queue on a nudge/timer and reaps + relays autonomously
+        // (ADR-0011). Runs on the same worker/store as the ingress.
+        let dispatch_service = if self.dispatch_daemon {
+            durable_ingress.as_ref().map(|ing| {
+                ing.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default())
+            })
+        } else {
+            None
+        };
         let ctx = Arc::new(SessionCtx {
             runtime,
             ingress,
             durable,
             durable_ingress,
+            dispatch_service,
             config,
             commit,
             thread_id,
@@ -1067,6 +1090,112 @@ impl SharedHost {
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         Ok(ids.into_iter().map(|id| id.0).collect())
+    }
+
+    /// Enqueue a run for the standing dispatch daemon to drive autonomously
+    /// (ADR-0011, slice E follow-up): prepare the activation and hand it to the
+    /// daemon via `DispatchService::submit` (durable enqueue + wake), returning
+    /// immediately with the run id. The daemon drains it out of band — no
+    /// foreground request drives it — so the caller observes completion by polling
+    /// committed truth. Requires `AWAKEN_DISPATCH_DAEMON=1`.
+    pub(crate) async fn submit_background_async(
+        &self,
+        agent: Option<&str>,
+        thread: &str,
+        input: Vec<Message>,
+    ) -> Result<String, HostError> {
+        let ctx = self.ctx_for(thread, agent).await?;
+        let service = ctx.dispatch_service.as_ref().ok_or_else(|| {
+            HostError::bad_request("dispatch daemon not enabled (set AWAKEN_DISPATCH_DAEMON=1)")
+        })?;
+        let mut messages: Vec<Message> = {
+            let mut st = ctx.state.lock().await;
+            std::mem::take(&mut st.pending_system)
+                .into_iter()
+                .map(|text| {
+                    Message::text(
+                        MessageId(format!("sys-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst))),
+                        Role::System,
+                        text,
+                    )
+                })
+                .collect()
+        };
+        messages.extend(input);
+        let (_run_id, mut activation) = ctx
+            .runtime
+            .prepare(&ctx.config, thread.to_string(), messages)
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        // Restart-unique run id, same rationale as the foreground durable path.
+        let uid = RunId(format!(
+            "run-{}-{}",
+            now_ms(),
+            BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        activation.run_id = uid.clone();
+        service
+            .submit(activation)
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        Ok(uid.0)
+    }
+
+    /// Cancel a run by id through the durable live-control seam (ADR-0018, slice E
+    /// follow-up): tries the runtime live channel first (in-flight runs), then the
+    /// dispatch store for a queued or parked run, committing a terminal `Cancelled`
+    /// fact. Fail-closed: an unknown run id errors rather than silently succeeding.
+    pub(crate) async fn cancel_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
+        self.durable_ingress(thread)
+            .await?
+            .live_control()
+            .cancel(run_id)
+            .await
+            .map_err(|e| HostError::bad_request(e.to_string()))
+    }
+
+    /// Wake a live run by id through the durable live-control seam (ADR-0018): a
+    /// live-only nudge. Fail-closed — no live subscriber is a hard error (G5).
+    pub(crate) async fn wake_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
+        self.durable_ingress(thread)
+            .await?
+            .live_control()
+            .wake(run_id)
+            .map_err(|e| HostError::bad_request(e.to_string()))
+    }
+
+    /// Stage a durable cross-thread delivery answering `thread`'s parked run, then
+    /// let the daemon relay it (ADR-0017, slice E follow-up). Resolves the parked
+    /// run's waiting ticket from committed truth, stages a decision into the outbox
+    /// via `DispatchService::send`, and the daemon relays it to the run's pending
+    /// input and wakes it. Exercises the outbox stage→relay path. Requires the
+    /// daemon and a parked run.
+    pub(crate) async fn stage_decision(
+        &self,
+        thread: &str,
+        allow: bool,
+    ) -> Result<String, HostError> {
+        let ctx = self.ctx_for(thread, None).await?;
+        let service = ctx.dispatch_service.as_ref().ok_or_else(|| {
+            HostError::bad_request("dispatch daemon not enabled (set AWAKEN_DISPATCH_DAEMON=1)")
+        })?;
+        let thread_id = ThreadId(thread.to_string());
+        let (run_id, ticket) = ctx
+            .commit
+            .open_wait_for_thread(&thread_id)
+            .ok_or_else(|| HostError::bad_request("no parked run on this thread to deliver to"))?;
+        let input = awaken_run_ingress::PendingInput {
+            message_id: format!("xthread-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst)),
+            run_id: run_id.clone(),
+            thread_id,
+            correlation_id: ticket.correlation_id,
+            available_at_ms: None,
+            result: ResumeResult::Decision { allow, note: None },
+        };
+        service
+            .send(input)
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        Ok(run_id.0)
     }
 
     /// Resume the run parked on `thread`, answering `tool_use_id` with `resume`.
