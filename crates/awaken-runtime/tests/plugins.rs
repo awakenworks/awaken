@@ -50,7 +50,7 @@ impl PhaseHook for MarkHook {
     fn point(&self) -> PhaseHookPoint {
         PhaseHookPoint::StepStart
     }
-    async fn on_phase(&self, ctx: &PhaseContext) -> PhaseReaction {
+    async fn on_phase(&self, ctx: &PhaseContext, _conversation: &[Message]) -> PhaseReaction {
         PhaseReaction::state(vec![StateCommand::set(
             Scope::Run,
             MergePolicy::Disjoint,

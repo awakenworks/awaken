@@ -434,6 +434,7 @@ async fn drive(
             run_id,
             step,
             PhaseHookPoint::StepStart,
+            &transcript,
             &mut staged_state,
         )
         .await;
@@ -442,6 +443,7 @@ async fn drive(
             run_id,
             step,
             PhaseHookPoint::BeforeInference,
+            &transcript,
             &mut staged_state,
         )
         .await;
@@ -470,6 +472,7 @@ async fn drive(
             run_id,
             step,
             PhaseHookPoint::AfterInference,
+            &transcript,
             &mut staged_state,
         )
         .await;
@@ -673,6 +676,7 @@ async fn drive(
             run_id,
             step,
             PhaseHookPoint::StepEnd,
+            &transcript,
             &mut staged_state,
         )
         .await;
@@ -759,6 +763,7 @@ async fn run_phase_hooks(
     run_id: &RunId,
     step: usize,
     point: PhaseHookPoint,
+    conversation: &[Message],
     staged_state: &mut Vec<StateCommand>,
 ) -> Vec<Message> {
     let mut context = Vec::new();
@@ -768,7 +773,7 @@ async fn run_phase_hooks(
             step,
             point,
         };
-        let reaction = hook.on_phase(&ctx).await;
+        let reaction = hook.on_phase(&ctx, conversation).await;
         staged_state.extend(reaction.state);
         context.extend(reaction.context);
     }
