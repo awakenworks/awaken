@@ -144,6 +144,60 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
+async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent() {
+    let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
+    let mem_dir = tmp_dir("select");
+    std::fs::create_dir_all(&mem_dir).unwrap();
+
+    // Pre-populate MORE than the recall `select_over` threshold (12) so the recall
+    // hook uses the relevance selector (a `memory-selector` sub-agent), not the
+    // whole-store bounded path. 12 unrelated memories + 1 answer.
+    let noise = [
+        "the user's favorite color is blue",
+        "the user works in Berlin",
+        "the user prefers tea over coffee",
+        "the user drives a red bicycle",
+        "the user's favorite language is Rust",
+        "the user reads science fiction",
+        "the user wakes up at 6am",
+        "the user likes hiking on weekends",
+        "the user's office is on the third floor",
+        "the user plays the guitar",
+        "the user was born in spring",
+        "the user enjoys cooking pasta",
+    ];
+    for (i, n) in noise.iter().enumerate() {
+        std::fs::write(mem_dir.join(format!("noise-{i}.md")), n).unwrap();
+    }
+    std::fs::write(mem_dir.join("pet.md"), "the user's dog is named Rex").unwrap();
+
+    let host = host.with_memory(&mem_dir);
+
+    // A pointed question: the selector sub-agent must pick the dog memory out of 13,
+    // and the main model must answer from it.
+    let phase = host
+        .run_turn(
+            "select-e2e",
+            user("Based on what you remember about me, what is my dog's name? Answer with just the name."),
+        )
+        .await
+        .expect("turn");
+    let reply = phase
+        .new_messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::Assistant)
+        .map(|m| m.text_content())
+        .unwrap_or_default();
+    eprintln!("selector-based reply: {reply:?}");
+    assert!(
+        reply.to_lowercase().contains("rex"),
+        "the selector should surface the dog memory and the model use it; got: {reply:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
     // The judge is now an ordinary agent resolved by id; grade with a real one.
