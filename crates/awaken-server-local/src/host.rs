@@ -162,6 +162,10 @@ struct SessionState {
     /// How many committed `Continuation` (outcome) rounds have already been
     /// projected, so a second `define_outcome` on the thread reports only its own.
     consumed_rounds: usize,
+    /// Cursor for out-of-band memory extraction: the committed-message count that
+    /// has already been handed to the extractor, so each turn extracts only the
+    /// new messages instead of re-processing (and re-billing) the whole history.
+    last_extracted_len: usize,
 }
 
 /// One thread's live state: an isolated runtime, its config, its commit
@@ -678,16 +682,27 @@ impl SharedHost {
     }
 
     /// Fire out-of-band memory extraction when a turn reaches a terminal phase
-    /// (not parked) and memory is enabled. Seeds the extractor with the thread's
-    /// committed history; the run is fire-and-forget (drained at shutdown).
+    /// (not parked) and memory is enabled. Seeds the extractor with only the
+    /// messages committed since the last extraction (a per-thread cursor), so a
+    /// long conversation is not re-processed every turn. Fire-and-forget (drained
+    /// at shutdown). The cursor advances optimistically on trigger.
     async fn maybe_extract_memory(&self, ctx: &SessionCtx, thread: &str, phase: &Phase) {
         if matches!(phase, Phase::Waiting) {
             return;
         }
-        if let Some(mem) = &self.memory {
-            let committed = ctx.commit.committed_messages(&ctx.thread_id);
-            mem.trigger(thread, committed).await;
+        let Some(mem) = &self.memory else {
+            return;
+        };
+        let committed = ctx.commit.committed_messages(&ctx.thread_id);
+        let mut st = ctx.state.lock().await;
+        let cursor = st.last_extracted_len.min(committed.len());
+        if committed.len() <= cursor {
+            return; // no new messages since the last extraction
         }
+        let delta = committed[cursor..].to_vec();
+        st.last_extracted_len = committed.len();
+        drop(st);
+        mem.trigger(thread, delta).await;
     }
 
     /// Fire background compaction when a terminal turn's history is long. On
@@ -1144,6 +1159,75 @@ mod tests {
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
         assert_eq!(reply, "seen-summary");
+    }
+
+    /// The extractor writes a `seen.md` whose content is the non-prompt user texts
+    /// it was seeded with, so a test can check which messages each extraction saw.
+    struct CursorModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for CursorModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            use awaken_runtime_contract::llm::{ChatRole, ToolCall};
+            let is_extractor = request.messages.iter().any(|m| {
+                m.role == ChatRole::System
+                    && m.content.iter().any(|b| match b {
+                        ContentBlock::Text { text } => text.contains("memory extraction sub-agent"),
+                        _ => false,
+                    })
+            });
+            if !is_extractor {
+                return Ok(ChatResponse {
+                    output: AssistantOutput::text("ok"),
+                    usage: None,
+                });
+            }
+            if request.messages.iter().any(|m| m.role == ChatRole::Tool) {
+                return Ok(ChatResponse {
+                    output: AssistantOutput::text("extracted"),
+                    usage: None,
+                });
+            }
+            // Join the user texts it was seeded with, excluding the extraction prompt.
+            let seen: Vec<String> = request
+                .messages
+                .iter()
+                .filter(|m| m.role == ChatRole::User)
+                .map(|m| block_text(&m.content))
+                .filter(|t| !t.contains("Extract durable memories"))
+                .collect();
+            Ok(ChatResponse {
+                output: AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: "w".into(),
+                    tool_id: "write_memory".into(),
+                    arguments: serde_json::json!({ "name": "seen", "content": seen.join(",") }),
+                }]),
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn extraction_cursor_only_processes_new_messages() {
+        let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let mem_dir = std::env::temp_dir().join(format!("awaken-cursor-mem-{stamp}"));
+        let host = SharedHost::new(Arc::new(CursorModel), "stub").with_memory(&mem_dir);
+        let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
+
+        host.run_turn("t-cur", user("alpha")).await.expect("turn 1");
+        assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+        host.run_turn("t-cur", user("beta")).await.expect("turn 2");
+        assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+
+        // The second extraction saw only "beta" — turn 1's "alpha" was past the cursor.
+        let seen = std::fs::read_to_string(mem_dir.join("seen.md")).expect("seen file");
+        assert_eq!(
+            seen, "beta",
+            "cursor should exclude already-extracted messages"
+        );
     }
 
     #[tokio::test]
