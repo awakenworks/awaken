@@ -176,6 +176,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-ext-compact"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-runtime-contract",
+]
+
+[[package]]
 name = "awaken-ext-goal"
 version = "1.0.0-dev"
 dependencies = [
@@ -434,6 +441,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-ext-builtin-tools",
+ "awaken-ext-compact",
  "awaken-ext-goal",
  "awaken-ext-memory",
  "awaken-ext-permission",
