@@ -360,6 +360,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-provisioning-contract"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-run-ingress"
 version = "1.0.0-dev"
 dependencies = [

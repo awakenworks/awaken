@@ -74,6 +74,18 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "thiserror",
     },
+    # Provisioning contract: the neutral, data-only sandbox vocabulary and ports
+    # (SandboxProvider / Sandbox / prepare_environment / admission). Names no OS
+    # mechanism, host path, wire, or runtime type, so concrete realizers (lexical /
+    # namespace / container) depend on it without pulling anything upward (G2/G3).
+    "awaken-provisioning-contract": {
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        # dev-only: a fake exercises the async ports in unit tests.
+        "tokio",
+    },
     # Builtin tools extension: owns concrete tool ids and runs them in-process
     # (ADR-0007). It implements the async `Tool`/`RawTool` ports (`async-trait`,
     # `tokio`), hand tools touch the filesystem (`glob`, `regex`, `tempfile` for
