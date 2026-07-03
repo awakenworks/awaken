@@ -1,18 +1,12 @@
-// Durability boundary across a real process restart, via the official Anthropic
-// TS SDK. This pins down exactly how far durability reaches today:
-//
-//   * Runtime truth IS durable. A mutating tool parks for approval; the waiting
-//     ticket + transcript commit to a per-thread SQLite database under
-//     AWAKEN_STORAGE_DIR, and that database survives the server process dying.
-//   * The managed *session registry* is NOT durable. `ManagedState.sessions` is
-//     an in-memory map, so a fresh process does not know the old `session.id` and
-//     returns 404 — even though the run's committed truth is on disk.
-//
-// So the missing piece for end-to-end resume is a durable session→thread
-// registry (or lazy session rehydration from committed truth), not the store.
-// When that lands, flip the post-restart expectation from 404 to a completed
-// resume. Until then this guards the boundary and exercises the durable commit
-// path through HTTP.
+// Durable cross-restart recovery across a real process restart, via the official
+// Anthropic TS SDK. A mutating tool parks for approval; its waiting ticket +
+// transcript commit to a per-thread SQLite database under AWAKEN_STORAGE_DIR. We
+// KILL the server process and start a fresh one over the same storage directory,
+// then approve on the SAME session. The rebuilt process has no in-memory session
+// state, so the managed adapter rehydrates the session from committed truth
+// (ADR-0039 lazy session rehydration) and the host recovers the parked run from
+// the SQLite file — the run resumes and completes end-to-end. This exercises the
+// durable commit + hydrate + fact-authority read path through HTTP.
 //
 // Run: (from e2e/)  node managed_restart_e2e.mjs
 
@@ -74,24 +68,28 @@ async function main() {
   assert.deepEqual(dbsAfter, dbsBefore, 'the committed sqlite database survived the restart');
   pass('committed truth persisted on disk across a real process restart');
 
-  // The managed session registry is in-memory, so the fresh process cannot resolve
-  // the old session id yet. This documents the boundary; flip to a resume when a
-  // durable session registry lands.
+  // Approve on the fresh process: the adapter rehydrates the session from durable
+  // truth (ADR-0039) and the host recovers the parked run from the SQLite file, so
+  // the run resumes and completes end-to-end — no in-memory session state needed.
   try {
     await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'allow' }],
       betas: BETAS,
     });
-    assert.fail('expected 404: managed sessions are not durable yet');
-  } catch (err) {
-    assert.equal(err.status, 404, 'managed session is not recoverable after restart (in-memory registry)');
-    pass('boundary confirmed: store is durable, managed session registry is not (needs durable sessions)');
+    const events = await listEvents(session.id);
+    const lastIdle = [...events].reverse().find((e) => e.type === 'session.status_idle');
+    assert.equal(lastIdle.stop_reason.type, 'end_turn', 'parked run resumed and completed after restart');
+    const results = events.filter((e) => e.type === 'agent.tool_result');
+    assert.ok(
+      JSON.stringify(results.at(-1)?.content ?? '').includes('SURVIVE-RESTART'),
+      'read-back reflects the pre-restart write — durable state resumed on a fresh process',
+    );
+    pass('parked run resumed from durable truth on a fresh process and completed');
+    console.log('E2E PASS: durable cross-restart recovery via TS SDK.');
   } finally {
     await stopServer(b.server);
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
-
-  console.log('E2E PASS: durability boundary (durable store, non-durable managed session) verified.');
 }
 
 main().catch((err) => {
