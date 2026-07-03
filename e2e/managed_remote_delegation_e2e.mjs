@@ -51,7 +51,20 @@ async function main() {
     assert.ok(reply.includes('do the research'), 'the remote peer echoed the delegated input back over A2A');
     pass('remote A2A delegation round-tripped: A → B (echo) → A');
 
-    console.log('E2E PASS: remote A2A delegation across two servers.');
+    // Outbound discovery: A fetches the remote delegate's A2A agent card over the
+    // A2A client (agent-card GET on B).
+    const card = await fetch(`${BASE_A}/v1/delegates/researcher/card`);
+    assert.equal(card.status, 200, 'remote agent card fetched');
+    const cardBody = await card.json();
+    assert.ok(cardBody.card && typeof cardBody.card === 'object', 'the remote A2A agent card came back');
+    pass('remote agent card fetched over the A2A client (outbound discovery)');
+
+    // Fail closed: a card for an unregistered remote id is a 400.
+    const ghost = await fetch(`${BASE_A}/v1/delegates/ghost/card`);
+    assert.equal(ghost.status, 400, 'an unregistered remote id fails closed');
+    pass('unregistered remote id fails closed on card fetch');
+
+    console.log('E2E PASS: remote A2A delegation + outbound card discovery across two servers.');
   } finally {
     await stopServer(a.server);
     await stopServer(b.server);

@@ -41,7 +41,9 @@ pub fn durable_ops_router(host: Arc<SharedHost>) -> Router {
         .route("/v1/durable/threads/:thread/deliver", post(deliver))
         .route("/v1/durable/threads/:thread/supersede", post(supersede))
         .route("/v1/durable/threads/:thread/superseded", get(superseded))
+        .route("/v1/durable/threads/:thread/dispatches", get(dispatches))
         .route("/v1/durable/threads/:thread/messages", get(messages))
+        .route("/v1/delegates/:agent_id/card", get(delegate_card))
         .route("/v1/durable/threads/:thread/reconcile", post(reconcile))
         .route("/v1/durable/threads/:thread/reap", post(reap))
         .route(
@@ -187,6 +189,22 @@ async fn supersede(
     )
 }
 
+/// Fetch a registered remote delegate's A2A agent card (outbound discovery over
+/// the A2A client). Fails closed (400) if the id is not a registered remote agent.
+async fn delegate_card(
+    State(host): State<Arc<SharedHost>>,
+    Path(agent_id): Path<String>,
+) -> (StatusCode, Json<Value>) {
+    respond(
+        host.remote_agent_card(&agent_id)
+            .await
+            .and_then(|card| {
+                serde_json::to_value(card).map_err(|e| HostError::internal(e.to_string()))
+            })
+            .map(|card| json!({ "agent_id": agent_id, "card": card })),
+    )
+}
+
 /// Committed truth for `thread` — the observation channel for out-of-band work
 /// (e.g. a daemon-drained run), which never flows through a session's in-memory
 /// event log. Returns each committed message's role and text.
@@ -211,6 +229,23 @@ async fn superseded(
             .await
             .map(|ids| json!({ "superseded": ids })),
     )
+}
+
+/// An operational snapshot of the thread's dispatch queue (ADR-0025): every row in
+/// enqueue order with its status and attempt count.
+async fn dispatches(
+    State(host): State<Arc<SharedHost>>,
+    Path(thread): Path<String>,
+) -> (StatusCode, Json<Value>) {
+    respond(host.list_dispatches(&thread).await.map(|rows| {
+        let out: Vec<Value> = rows
+            .into_iter()
+            .map(|(run_id, status, attempts)| {
+                json!({ "run_id": run_id, "status": status, "attempts": attempts })
+            })
+            .collect();
+        json!({ "dispatches": out })
+    }))
 }
 
 async fn reconcile(
