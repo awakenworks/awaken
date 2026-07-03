@@ -1080,6 +1080,24 @@ impl SharedHost {
             .map_err(|e| HostError::internal(e.to_string()))
     }
 
+    /// An operational snapshot of `thread`'s dispatch queue (ADR-0025): every row
+    /// in enqueue order with its status and attempt count — the monitoring surface.
+    pub(crate) async fn list_dispatches(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<(String, String, u64)>, HostError> {
+        let rows = self
+            .durable_ingress(thread)
+            .await?
+            .list_dispatches()
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(|d| (d.run_id.0, format!("{:?}", d.status), d.attempt_count))
+            .collect())
+    }
+
     /// The run ids superseded by a newer submission on `thread` (ADR-0022,
     /// slice E).
     pub(crate) async fn superseded(&self, thread: &str) -> Result<Vec<String>, HostError> {
