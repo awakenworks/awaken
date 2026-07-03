@@ -736,6 +736,24 @@ impl core::marker::Sync for awaken_runtime_contract::plugin::PhaseContext
 impl core::marker::Unpin for awaken_runtime_contract::plugin::PhaseContext
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PhaseContext
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PhaseContext
+pub struct awaken_runtime_contract::plugin::PhaseReaction
+pub awaken_runtime_contract::plugin::PhaseReaction::context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_runtime_contract::plugin::PhaseReaction::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
+impl awaken_runtime_contract::plugin::PhaseReaction
+pub fn awaken_runtime_contract::plugin::PhaseReaction::context(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
+pub fn awaken_runtime_contract::plugin::PhaseReaction::state(alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> Self
+impl core::clone::Clone for awaken_runtime_contract::plugin::PhaseReaction
+pub fn awaken_runtime_contract::plugin::PhaseReaction::clone(&self) -> awaken_runtime_contract::plugin::PhaseReaction
+impl core::default::Default for awaken_runtime_contract::plugin::PhaseReaction
+pub fn awaken_runtime_contract::plugin::PhaseReaction::default() -> awaken_runtime_contract::plugin::PhaseReaction
+impl core::fmt::Debug for awaken_runtime_contract::plugin::PhaseReaction
+pub fn awaken_runtime_contract::plugin::PhaseReaction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_runtime_contract::plugin::PhaseReaction
+impl core::marker::Send for awaken_runtime_contract::plugin::PhaseReaction
+impl core::marker::Sync for awaken_runtime_contract::plugin::PhaseReaction
+impl core::marker::Unpin for awaken_runtime_contract::plugin::PhaseReaction
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::PhaseReaction
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::PhaseReaction
 pub struct awaken_runtime_contract::plugin::PluginConfigError
 pub awaken_runtime_contract::plugin::PluginConfigError::message: alloc::string::String
 pub awaken_runtime_contract::plugin::PluginConfigError::plugin: alloc::string::String
@@ -832,7 +850,7 @@ impl core::marker::Unpin for awaken_runtime_contract::plugin::ToolReaction
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugin::ToolReaction
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::ToolReaction
 pub trait awaken_runtime_contract::plugin::PhaseHook: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::plugin::PhaseHook::on_phase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::plugin::PhaseContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_agent_contract::agent::state::Command>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::plugin::PhaseHook::on_phase<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::plugin::PhaseContext, &'life2 [awaken_agent_contract::agent::message::Message]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::plugin::PhaseReaction> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::plugin::PhaseHook::point(&self) -> awaken_runtime_contract::plugin::PhaseHookPoint
 pub trait awaken_runtime_contract::plugin::Plugin: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::plugin::Plugin::live_version(&self) -> core::option::Option<u64>
@@ -880,6 +898,30 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin_co
 pub trait awaken_runtime_contract::plugin_config::PluginConfigValidator
 pub fn awaken_runtime_contract::plugin_config::PluginConfigValidator::validate_plugin_config(&self, &str, &serde_json::value::Value) -> core::result::Result<awaken_runtime_contract::plugin_config::PluginConfigValidation, awaken_runtime_contract::plugin_config::Error>
 pub mod awaken_runtime_contract::resolved
+pub enum awaken_runtime_contract::resolved::ContextPolicy
+pub awaken_runtime_contract::resolved::ContextPolicy::KeepAll
+pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast
+pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast::keep_last: usize
+impl core::clone::Clone for awaken_runtime_contract::resolved::ContextPolicy
+pub fn awaken_runtime_contract::resolved::ContextPolicy::clone(&self) -> awaken_runtime_contract::resolved::ContextPolicy
+impl core::cmp::Eq for awaken_runtime_contract::resolved::ContextPolicy
+impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ContextPolicy
+pub fn awaken_runtime_contract::resolved::ContextPolicy::eq(&self, &awaken_runtime_contract::resolved::ContextPolicy) -> bool
+impl core::default::Default for awaken_runtime_contract::resolved::ContextPolicy
+pub fn awaken_runtime_contract::resolved::ContextPolicy::default() -> awaken_runtime_contract::resolved::ContextPolicy
+impl core::fmt::Debug for awaken_runtime_contract::resolved::ContextPolicy
+pub fn awaken_runtime_contract::resolved::ContextPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::resolved::ContextPolicy
+impl serde_core::ser::Serialize for awaken_runtime_contract::resolved::ContextPolicy
+pub fn awaken_runtime_contract::resolved::ContextPolicy::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::resolved::ContextPolicy
+pub fn awaken_runtime_contract::resolved::ContextPolicy::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::resolved::ContextPolicy
+impl core::marker::Send for awaken_runtime_contract::resolved::ContextPolicy
+impl core::marker::Sync for awaken_runtime_contract::resolved::ContextPolicy
+impl core::marker::Unpin for awaken_runtime_contract::resolved::ContextPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolved::ContextPolicy
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ContextPolicy
 pub struct awaken_runtime_contract::resolved::CatalogFingerprint(pub alloc::string::String)
 impl core::clone::Clone for awaken_runtime_contract::resolved::CatalogFingerprint
 pub fn awaken_runtime_contract::resolved::CatalogFingerprint::clone(&self) -> awaken_runtime_contract::resolved::CatalogFingerprint
@@ -949,6 +991,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::resolv
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::resolved::ResolvedRun
 pub struct awaken_runtime_contract::resolved::ResolvedSpec
 pub awaken_runtime_contract::resolved::ResolvedSpec::catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
+pub awaken_runtime_contract::resolved::ResolvedSpec::context_policy: awaken_runtime_contract::resolved::ContextPolicy
 pub awaken_runtime_contract::resolved::ResolvedSpec::instructions: alloc::string::String
 pub awaken_runtime_contract::resolved::ResolvedSpec::max_steps: usize
 pub awaken_runtime_contract::resolved::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ModelBinding
@@ -1120,6 +1163,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable:
 pub struct awaken_runtime_contract::runnable::RunnableConfigBuilder
 impl awaken_runtime_contract::runnable::RunnableConfigBuilder
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::build(self) -> awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::context_policy(self, awaken_runtime_contract::resolved::ContextPolicy) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::max_steps(self, usize) -> Self
@@ -1720,6 +1764,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::plugi
 impl !core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::plugin::ResolvedExecutionEnv
 pub struct awaken_runtime_contract::ResolvedSpec
 pub awaken_runtime_contract::ResolvedSpec::catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint
+pub awaken_runtime_contract::ResolvedSpec::context_policy: awaken_runtime_contract::resolved::ContextPolicy
 pub awaken_runtime_contract::ResolvedSpec::instructions: alloc::string::String
 pub awaken_runtime_contract::ResolvedSpec::max_steps: usize
 pub awaken_runtime_contract::ResolvedSpec::model_binding: awaken_runtime_contract::resolved::ModelBinding
@@ -1824,6 +1869,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::runnable:
 pub struct awaken_runtime_contract::RunnableConfigBuilder
 impl awaken_runtime_contract::runnable::RunnableConfigBuilder
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::build(self) -> awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::context_policy(self, awaken_runtime_contract::resolved::ContextPolicy) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::runnable::RunnableConfigBuilder::max_steps(self, usize) -> Self
@@ -1927,7 +1973,7 @@ pub fn awaken_runtime_contract::LlmExecutor::infer_streaming<'life0, 'life1, 'as
 pub trait awaken_runtime_contract::PermissionPolicy: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::PermissionPolicy::decide<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::PermissionDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::PhaseHook: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::PhaseHook::on_phase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::plugin::PhaseContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_agent_contract::agent::state::Command>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::PhaseHook::on_phase<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::plugin::PhaseContext, &'life2 [awaken_agent_contract::agent::message::Message]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::plugin::PhaseReaction> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::PhaseHook::point(&self) -> awaken_runtime_contract::plugin::PhaseHookPoint
 pub trait awaken_runtime_contract::Plugin: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::Plugin::live_version(&self) -> core::option::Option<u64>
