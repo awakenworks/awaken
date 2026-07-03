@@ -21,6 +21,9 @@ pub struct RecallBounds {
     pub total_chars: usize,
     /// Include at most this many memories (newest first).
     pub max_entries: usize,
+    /// Once the store holds more than this many memories, use relevance selection
+    /// (a single model call) instead of injecting the newest ones wholesale.
+    pub select_over: usize,
 }
 
 impl Default for RecallBounds {
@@ -29,6 +32,7 @@ impl Default for RecallBounds {
             per_entry_chars: 1500,
             total_chars: 8000,
             max_entries: 40,
+            select_over: 12,
         }
     }
 }
@@ -45,7 +49,38 @@ fn truncate(text: &str, cap: usize) -> String {
 /// Newest memories are kept; older ones are dropped once a cap is hit, with a
 /// trailing note recording how many were omitted.
 pub fn recall_block(store: &MemoryStore, bounds: &RecallBounds) -> Option<String> {
+    render(&store.entries(), bounds)
+}
+
+/// Relevance-aware recall (optimizations ① + ③): when the store is small, inject
+/// the newest memories bounded; once it grows past `bounds.select_over`, pick the
+/// relevant ones for `query` with a single model call, then bound-render those.
+pub async fn recall_relevant(
+    store: &MemoryStore,
+    bounds: &RecallBounds,
+    llm: &dyn awaken_runtime_contract::llm::LlmExecutor,
+    model: &awaken_runtime_contract::resolved::ModelBinding,
+    query: &str,
+) -> Option<String> {
     let entries = store.entries();
+    if entries.len() <= bounds.select_over {
+        return render(&entries, bounds);
+    }
+    let picked =
+        crate::select::select_relevant(llm, model, query, &entries, bounds.max_entries).await;
+    if picked.is_empty() {
+        return None;
+    }
+    let selected: Vec<crate::store::Entry> = picked
+        .into_iter()
+        .filter_map(|i| entries.get(i).cloned())
+        .collect();
+    render(&selected, bounds)
+}
+
+/// Render an already-ordered (newest-first) slice of entries into a bounded recall
+/// block. Shared by whole-store recall and relevance-selected recall.
+pub fn render(entries: &[crate::store::Entry], bounds: &RecallBounds) -> Option<String> {
     if entries.is_empty() {
         return None;
     }
@@ -134,7 +169,7 @@ mod tests {
         let bounds = RecallBounds {
             total_chars: 60,
             per_entry_chars: 0,
-            max_entries: 40,
+            ..RecallBounds::default()
         };
         let block = recall_block(&store, &bounds).unwrap();
         // Newest fits; older is dropped by the total cap and noted.

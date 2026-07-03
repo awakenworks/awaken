@@ -42,7 +42,7 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
 use crate::compact::{Compaction, DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
-use crate::config::{build_runtime, server_config, server_gate};
+use crate::config::{block_text, build_runtime, server_config, server_gate};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::judge::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
@@ -673,7 +673,14 @@ impl SharedHost {
             && !st.recalled
         {
             st.recalled = true;
-            if let Some(block) = mem.recall_block() {
+            // The user's message drives relevance selection when the store is large.
+            let query: String = input
+                .iter()
+                .filter(|m| m.role == Role::User)
+                .map(|m| block_text(&m.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if let Some(block) = mem.recall_for(&query).await {
                 messages.push(Message::text(
                     MessageId(format!(
                         "{}{}",
