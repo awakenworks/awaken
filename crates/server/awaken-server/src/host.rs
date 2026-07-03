@@ -290,6 +290,10 @@ pub struct SharedHost {
     /// agent runs a matching `KeepLast` window so those raw turns leave the model view.
     compact_config: Option<CompactConfig>,
     compact_summarizer: Option<Arc<dyn Summarizer>>,
+    /// The config data plane, when the server exposes `/v1/config/*`. A thread's
+    /// runtime config is the installed (published) config for its agent, if any,
+    /// else the built-in default (slice A).
+    pub(crate) config_service: Option<Arc<crate::config_plane::ConfigService>>,
 }
 
 impl SharedHost {
@@ -321,6 +325,7 @@ impl SharedHost {
             memory_selector: None,
             compact_config: None,
             compact_summarizer: None,
+            config_service: None,
         }
     }
 
@@ -380,6 +385,13 @@ impl SharedHost {
             Some(mem) => mem.drain(timeout).await,
             None => true,
         }
+    }
+
+    /// Wire the config data plane, so a session's agent resolves to its installed
+    /// (published) config (slice A).
+    pub fn with_config_service(mut self, service: Arc<crate::config_plane::ConfigService>) -> Self {
+        self.config_service = Some(service);
+        self
     }
 
     /// Add client-executed tools: those ids are model-visible but unregistered, so
@@ -553,7 +565,11 @@ impl SharedHost {
         }
     }
 
-    async fn ctx_for(&self, thread: &str) -> Result<Arc<SessionCtx>, HostError> {
+    async fn ctx_for(
+        &self,
+        thread: &str,
+        agent: Option<&str>,
+    ) -> Result<Arc<SessionCtx>, HostError> {
         let mut sessions = self.sessions.lock().await;
         if let Some(ctx) = sessions.get(thread) {
             return Ok(ctx.clone());
@@ -622,15 +638,25 @@ impl SharedHost {
             }
             _ => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         };
-        let config = server_config(
-            &self.model_ref,
-            &self.client_tools,
-            &self.delegates,
-            &plugin_ids,
-            &self.plugin_config,
-            &skill_descriptors,
-            context_policy,
-        );
+        // A published agent runs with its own installed config (slice A); an
+        // unknown/unpublished agent falls back to the server's built-in default,
+        // carrying the run's dynamic plugin list and context policy.
+        let installed = self
+            .config_service
+            .as_ref()
+            .zip(agent)
+            .and_then(|(svc, agent)| svc.installed(agent));
+        let config = installed.unwrap_or_else(|| {
+            server_config(
+                &self.model_ref,
+                &self.client_tools,
+                &self.delegates,
+                &plugin_ids,
+                &self.plugin_config,
+                &skill_descriptors,
+                context_policy,
+            )
+        });
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and a parked run (e.g. after a
         // restart). `consumed_rounds` starts past any prior outcome rounds so a new
@@ -667,7 +693,7 @@ impl SharedHost {
     /// parked thread's committed transcript even before any session touches it
     /// (ADR-0039), enabling post-restart session rehydration.
     pub async fn committed_messages(&self, thread: &str) -> Vec<Message> {
-        match self.ctx_for(thread).await {
+        match self.ctx_for(thread, None).await {
             Ok(ctx) => ctx.commit.committed_messages(&ctx.thread_id),
             Err(_) => Vec::new(),
         }
@@ -675,7 +701,7 @@ impl SharedHost {
 
     /// True when `thread` has a run parked awaiting a decision.
     pub async fn is_parked(&self, thread: &str) -> bool {
-        let ctx = match self.ctx_for(thread).await {
+        let ctx = match self.ctx_for(thread, None).await {
             Ok(ctx) => ctx,
             Err(_) => return false,
         };
@@ -684,7 +710,7 @@ impl SharedHost {
 
     /// The tool a parked run on `thread` is waiting on, if any.
     pub async fn pending_tool(&self, thread: &str) -> Option<PendingTool> {
-        let ctx = self.ctx_for(thread).await.ok()?;
+        let ctx = self.ctx_for(thread, None).await.ok()?;
         let st = ctx.state.lock().await;
         let run_id = st.parked.clone()?;
         pending_from_ticket(&ctx.commit.waiting_ticket(&run_id)?, &self.client_tools)
@@ -692,7 +718,7 @@ impl SharedHost {
 
     /// Buffer a system message; it is prepended to the next turn's input.
     pub async fn add_system(&self, thread: &str, text: &str) -> Result<(), HostError> {
-        let ctx = self.ctx_for(thread).await?;
+        let ctx = self.ctx_for(thread, None).await?;
         ctx.state.lock().await.pending_system.push(text.to_string());
         Ok(())
     }
@@ -703,7 +729,7 @@ impl SharedHost {
     /// running. Never blocks on the run's own state lock — it only touches the
     /// separate cancel slot — so it works from a concurrent request.
     pub async fn interrupt(&self, thread: &str) -> Result<(), HostError> {
-        let ctx = self.ctx_for(thread).await?;
+        let ctx = self.ctx_for(thread, None).await?;
         if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
             token.cancel();
         }
@@ -714,10 +740,11 @@ impl SharedHost {
     /// Runs to the first pause (a parked tool) or the natural end.
     pub async fn run_turn(
         &self,
+        agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
     ) -> Result<TurnResult, HostError> {
-        let ctx = self.ctx_for(thread).await?;
+        let ctx = self.ctx_for(thread, agent).await?;
         let mut st = ctx.state.lock().await;
         if st.parked.is_some() {
             return Err(HostError::bad_request("thread is awaiting a tool decision"));
@@ -798,7 +825,7 @@ impl SharedHost {
         tool_use_id: &str,
         resume: HostResume,
     ) -> Result<TurnResult, HostError> {
-        let ctx = self.ctx_for(thread).await?;
+        let ctx = self.ctx_for(thread, None).await?;
         let mut st = ctx.state.lock().await;
         let run_id = st
             .parked
@@ -877,7 +904,7 @@ impl SharedHost {
         rubric: &str,
         max_iterations: u32,
     ) -> Result<HostOutcomeReport, HostError> {
-        let ctx = self.ctx_for(thread).await?;
+        let ctx = self.ctx_for(thread, None).await?;
         let mut st = ctx.state.lock().await;
         let goal = GoalSpec::new(description, rubric, max_iterations);
 
