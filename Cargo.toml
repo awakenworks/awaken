@@ -21,6 +21,7 @@ members = [
     "crates/awaken-sandbox-local",
     "crates/awaken-ext-goal",
     "crates/awaken-ext-memory",
+    "crates/awaken-ext-compact",
     "crates/awaken-ext-state-machine",
     "crates/awaken-ext-mcp",
     "crates/awaken-ext-skills",

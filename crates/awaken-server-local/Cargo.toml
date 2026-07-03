@@ -22,6 +22,7 @@ awaken-runtime-contract.workspace = true
 awaken-runtime = { path = "../awaken-runtime" }
 awaken-ext-builtin-tools = { path = "../awaken-ext-builtin-tools" }
 awaken-ext-memory = { path = "../awaken-ext-memory" }
+awaken-ext-compact = { path = "../awaken-ext-compact" }
 awaken-ext-permission = { path = "../awaken-ext-permission" }
 awaken-ext-skills = { path = "../awaken-ext-skills" }
 async-trait.workspace = true
