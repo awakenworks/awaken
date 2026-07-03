@@ -477,6 +477,12 @@ impl SessionRuntime for ManagedHost {
         })
     }
 
+    /// Committed transcript from durable truth, so the adapter can rehydrate a
+    /// session lost to a process restart and resume its parked run (ADR-0039).
+    async fn committed_messages(&self, thread: &str) -> Vec<awaken_agent_contract::Message> {
+        self.host.committed_messages(thread).await
+    }
+
     fn model(&self) -> String {
         self.host.model()
     }
