@@ -94,6 +94,38 @@ async fn live_memory_extraction_writes_a_memory_file() {
 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
+async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
+    let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
+    // The judge is now an ordinary agent resolved by id; grade with a real one.
+    let host = host.with_judge("judge");
+
+    let report = host
+        .define_outcome(
+            "goal-e2e",
+            "Reply with exactly the single word BANANA and nothing else.",
+            "the reply contains the word BANANA",
+            3,
+        )
+        .await
+        .expect("define_outcome");
+
+    let last = report.iterations.last().expect("at least one round");
+    eprintln!(
+        "judge rounds: {:?}",
+        report
+            .iterations
+            .iter()
+            .map(|i| (i.result.clone(), i.explanation.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        last.result, "satisfied",
+        "the live judge should mark the BANANA deliverable satisfied"
+    );
+}
+
+#[tokio::test]
+#[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_compaction_summarizes_and_the_conversation_continues() {
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
     // Compact once history passes 4 messages, keeping the last 2 verbatim.
