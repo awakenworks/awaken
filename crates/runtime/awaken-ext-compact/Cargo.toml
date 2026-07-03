@@ -1,0 +1,8 @@
+[package]
+name = "awaken-ext-compact"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-runtime-contract.workspace = true

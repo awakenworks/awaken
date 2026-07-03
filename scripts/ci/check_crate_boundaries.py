@@ -275,6 +275,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-contract",
         "tokio",
     },
+    # Compaction extension: within-session context compaction — the compactor
+    # agent's config/prompts and the pure fold policy. Depends only on the runtime
+    # contract; the host wires it onto the aux-agent substrate.
+    "awaken-ext-compact": {
+        "awaken-runtime-contract",
+    },
     # MCP client extension: connects to external Model Context Protocol servers
     # and exposes their tools as runtime `RawTool`s. Like the other extensions it
     # depends only on the runtime contract; as an adapter to an external wire
@@ -365,6 +371,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-permission",
         "awaken-ext-skills",
         "awaken-ext-memory",
+        "awaken-ext-compact",
         "async-trait",
         "serde_json",
         "thiserror",

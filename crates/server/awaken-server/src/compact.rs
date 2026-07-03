@@ -19,35 +19,16 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_ext_compact::{COMPACT_AGENT_ID, SUMMARIZE_PROMPT, fold_point};
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_sandbox_local::LocalSandboxProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
 use crate::subagent::run_configured_subrun;
 
-/// The agent id under which the compactor is registered.
-pub const COMPACT_AGENT_ID: &str = "compactor";
-
-/// Default compaction instructions, used when a host does not supply its own
-/// `compactor` config.
-pub const DEFAULT_COMPACT_INSTRUCTIONS: &str = "\
-You are a conversation-compaction sub-agent. You are given the earlier part of a \
-conversation that is about to be dropped from the working context. Write a concise \
-summary that preserves the durable facts a continuation needs: decisions made, \
-constraints, open questions, and important results. Omit small talk and \
-already-resolved detail. Reply with only the summary text.";
-
-/// A default `compactor` agent config: no tools, a summary-only prompt.
-pub fn default_compact_agent(model_ref: &str, instructions: &str) -> RunnableConfig {
-    RunnableConfig::builder(COMPACT_AGENT_ID)
-        .instructions(instructions)
-        .model(ModelBinding::new("default", model_ref, "default"))
-        .max_steps(2)
-        .build()
-}
+// The config pieces the host wires (registering the default compactor agent).
+pub use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
 
 /// Triggers out-of-band context compaction after a main turn.
 pub struct Compaction {
@@ -90,23 +71,17 @@ impl Compaction {
         F: FnOnce(String) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        if committed.len() <= self.threshold {
-            return;
-        }
         if self.catalog.resolve(COMPACT_AGENT_ID).is_none() {
             return;
         }
-        let fold_to = committed.len().saturating_sub(self.keep_last);
-        if fold_to == 0 {
+        let Some(fold_to) = fold_point(committed.len(), self.threshold, self.keep_last) else {
             return;
-        }
+        };
         let mut seed: Vec<Message> = committed.into_iter().take(fold_to).collect();
         seed.push(Message {
             id: MessageId(format!("{thread}-compact-prompt")),
             role: Role::User,
-            content: vec![ContentBlock::text(
-                "Summarize the conversation above per your instructions.",
-            )],
+            content: vec![ContentBlock::text(SUMMARIZE_PROMPT)],
         });
 
         let llm = self.llm.clone();
