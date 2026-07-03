@@ -42,6 +42,15 @@ pre-commit:
       glob: "{Cargo.toml,Cargo.lock,crates/**/*.rs,crates/**/Cargo.toml,apps/**/*.rs,apps/**/Cargo.toml,tests/**/*.rs,xtask/**/*.rs,xtask/**/Cargo.toml}"
       run: scripts/ci/check-rust.sh --quick
 
+    # Architecture fitness (pure Python, no toolchain): crate layering and the
+    # product-bucket direction. crates/runtime/* must never depend on — hence can
+    # never call — crates/agents/*; contracts stay below the kernel, extensions on
+    # top. Runs on its own so the boundary is enforced even if the Rust hooks are
+    # skipped (e.g. cargo absent).
+    check-crate-boundaries:
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml}"
+      run: python3 scripts/ci/check_crate_boundaries.py
+
     # 5. Frontend checks are active as soon as package.json exists. The frontend
     #    project must expose lint/typecheck/build scripts.
     frontend-quick:
