@@ -37,6 +37,7 @@ use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::ToolOutput;
 use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_store_fs::FsCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin, Summarizer};
@@ -264,6 +265,10 @@ pub struct SharedHost {
     /// single `Skill` tool; the model activates one by id to load its instructions.
     skills: Vec<SkillSpec>,
     pub(crate) delegates: HashSet<String>,
+    /// Runtime plugins this host activates on every thread, and their config
+    /// sections (e.g. the tool state machine). Empty by default.
+    pub(crate) plugin_ids: Vec<String>,
+    pub(crate) plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
     hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
@@ -299,6 +304,8 @@ impl SharedHost {
             client_tools: HashSet::new(),
             skills: Vec::new(),
             delegates: HashSet::new(),
+            plugin_ids: Vec::new(),
+            plugin_config: std::collections::BTreeMap::new(),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
             // Composition root: the deployment picks durability via the
@@ -385,6 +392,19 @@ impl SharedHost {
     /// Add local delegate agents callable via `agent_run`.
     pub fn with_delegates(mut self, delegates: HashSet<String>) -> Self {
         self.delegates.extend(delegates);
+        self
+    }
+
+    /// Activate the tool state machine on every thread with `config` (its
+    /// `{"machines":[…]}` section). The plugin gates and advances tool calls per
+    /// the declared transitions (ADR tool-state-machine).
+    pub fn with_state_machine(mut self, config: serde_json::Value) -> Self {
+        self.plugin_ids
+            .push(awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID.to_string());
+        self.plugin_config.insert(
+            awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID.to_string(),
+            config,
+        );
         self
     }
 
@@ -510,18 +530,26 @@ impl SharedHost {
         )))
     }
 
-    /// Build a thread's commit boundary: a durable SQLite database under the
-    /// configured store directory, or an in-memory coordinator when none is set.
-    fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
-        match &self.store_dir {
-            Some(dir) => {
-                std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
-                let path = dir.join(format!("{}.db", sanitize_thread(thread)));
-                let sqlite = SqliteCommitCoordinator::open(&path.to_string_lossy())
-                    .map_err(|e| HostError::internal(e.to_string()))?;
-                Ok(HostCommit::Sqlite(sqlite))
-            }
-            None => Ok(HostCommit::Memory(MemoryCommitCoordinator::new())),
+    /// Build a thread's commit boundary under the configured store directory: a
+    /// durable SQLite database (default) or the filesystem append-log backend when
+    /// `AWAKEN_STORE=fs`, or an in-memory coordinator when no store dir is set.
+    async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
+        let Some(dir) = &self.store_dir else {
+            return Ok(HostCommit::Memory(MemoryCommitCoordinator::new()));
+        };
+        std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
+        let fs_backend = std::env::var("AWAKEN_STORE").is_ok_and(|value| value == "fs");
+        if fs_backend {
+            let thread_dir = dir.join(sanitize_thread(thread));
+            let fs = FsCommitCoordinator::open(&thread_dir)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?;
+            Ok(HostCommit::Fs(fs))
+        } else {
+            let path = dir.join(format!("{}.db", sanitize_thread(thread)));
+            let sqlite = SqliteCommitCoordinator::open(&path.to_string_lossy())
+                .map_err(|e| HostError::internal(e.to_string()))?;
+            Ok(HostCommit::Sqlite(sqlite))
         }
     }
 
@@ -537,7 +565,7 @@ impl SharedHost {
                 .map_err(|e| HostError::internal(e.to_string()))?,
         );
         let thread_id = ThreadId(thread.to_string());
-        let commit = Arc::new(self.build_commit(thread)?);
+        let commit = Arc::new(self.build_commit(thread).await?);
         let mut runtime = build_runtime(self.llm.clone(), &env);
         // Delegation is a runtime concern: inject the resolver so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
@@ -569,7 +597,9 @@ impl SharedHost {
         // Memory recall is a plugin: it contributes a BeforeInference hook that
         // injects bounded recall as request-only context (never committed). Install
         // it and list its id so it is active for the run (G30).
-        let mut plugin_ids: Vec<String> = Vec::new();
+        // Seed with host-registered plugins (e.g. the tool state machine via
+        // `with_state_machine`), then append the per-run memory/compact plugins.
+        let mut plugin_ids: Vec<String> = self.plugin_ids.clone();
         if let Some(mem) = &self.memory {
             let mut plugin = awaken_ext_memory::MemoryPlugin::new(mem.store(), mem.bounds());
             if let Some(selector) = &self.memory_selector {
@@ -597,6 +627,7 @@ impl SharedHost {
             &self.client_tools,
             &self.delegates,
             &plugin_ids,
+            &self.plugin_config,
             &skill_descriptors,
             context_policy,
         );
@@ -865,6 +896,7 @@ impl SharedHost {
             &self.client_tools,
             &HashSet::new(),
             &["goal".to_string()],
+            &self.plugin_config,
             &[],
             awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         );
