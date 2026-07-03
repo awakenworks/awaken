@@ -1,0 +1,395 @@
+//! `LocalProvider` — the `awaken-provisioning-contract` seam realized on the local
+//! machine (ADR-0041, first slice / Workdir tier).
+//!
+//! It launches real processes via [`tokio::process`], jailing *paths it resolves*
+//! under an [`IsolatedRoot`] and exposing the outputs directory to a spawned
+//! process through the reserved `AWAKEN_OUTPUTS_DIR` / `AWAKEN_PROJECT_DIR` env
+//! vars. It reports `tool_transparent = false`: a launched process is **not**
+//! OS-confined (a lexical jail cannot confine an opaque agent), so
+//! [`prepare_environment`](awaken_provisioning_contract::prepare_environment)
+//! refuses to place a `Namespace`/`Container` workload here — that is the Bwrap /
+//! container tier's job. This provider is for trusted, single-machine execution
+//! (CI, dev, the runtime's own in-process tools) plus the full artifact/reattach/
+//! lease lifecycle the contract requires.
+//!
+//! It is additive: the pre-contract [`crate::Environment`] / [`crate::SandboxProvider`]
+//! surface used elsewhere is untouched (a later slice may unify them).
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Stdio as ProcStdio;
+
+use async_trait::async_trait;
+use awaken_provisioning_contract as pc;
+use serde_json::json;
+use tokio::process::{Child, Command as TokioCommand};
+use tokio::sync::Mutex as AsyncMutex;
+
+use crate::{IsolatedRoot, content_fingerprint};
+
+fn err(e: impl ToString) -> pc::SandboxError {
+    pc::SandboxError::new(e.to_string())
+}
+
+/// Realizes [`LocalSandbox`] environments as directories under a base path.
+pub struct LocalProvider {
+    base: PathBuf,
+    /// In-memory blob resolver for `File`/`Resource` mounts (Slice-4 replaces this
+    /// with a real `FileStore`). Keyed by `file_id` / `resource_id`.
+    blobs: HashMap<String, Vec<u8>>,
+}
+
+impl LocalProvider {
+    pub fn new(base: impl Into<PathBuf>) -> Self {
+        Self {
+            base: base.into(),
+            blobs: HashMap::new(),
+        }
+    }
+
+    /// Register bytes a `File`/`Resource` mount can resolve to (test/seed helper).
+    #[must_use]
+    pub fn with_blob(mut self, id: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
+        self.blobs.insert(id.into(), bytes.into());
+        self
+    }
+
+    fn caps() -> pc::SandboxCapabilities {
+        pc::SandboxCapabilities {
+            isolation: pc::IsolationClass::Workdir,
+            tool_transparent: false,
+            path_fidelity: false,
+            enforced_readonly: false,
+            network_isolation: false,
+            secret_egress_substitution: false,
+            resource_limits: false,
+            custom_rootfs: false,
+        }
+    }
+
+    fn resolve_blob(&self, source: &pc::MountSource) -> Option<Vec<u8>> {
+        match source {
+            pc::MountSource::File { file_id, .. } => self.blobs.get(file_id).cloned(),
+            pc::MountSource::Resource { resource_id, .. } => self.blobs.get(resource_id).cloned(),
+            pc::MountSource::Other(v) => v
+                .get("content")
+                .and_then(|c| c.as_str())
+                .map(|s| s.as_bytes().to_vec()),
+            pc::MountSource::MemoryStore { .. } => None,
+        }
+    }
+
+    fn realize_mount(
+        &self,
+        root: &IsolatedRoot,
+        req: &pc::MountRequirement,
+    ) -> Result<pc::RealizedMount, pc::SandboxError> {
+        let host = root.resolve(&req.mount_path).map_err(err)?;
+        let bytes = self.resolve_blob(&req.source);
+        match bytes {
+            Some(bytes) => {
+                if let Some(parent) = host.parent() {
+                    std::fs::create_dir_all(parent).map_err(err)?;
+                }
+                std::fs::write(&host, &bytes).map_err(err)?;
+                Ok(pc::RealizedMount {
+                    mount_id: req.mount_id.clone(),
+                    mount_path: req.mount_path.clone(),
+                    access: req.access,
+                    realization: pc::Realization::Copy,
+                    content_hash: Some(content_fingerprint(&bytes)),
+                })
+            }
+            None if req.required => Err(err(format!(
+                "required mount {:?} has no resolvable source on the local provider",
+                req.mount_id
+            ))),
+            None => {
+                // Optional + unresolvable: create an empty placeholder so the path exists.
+                if let Some(parent) = host.parent() {
+                    std::fs::create_dir_all(parent).map_err(err)?;
+                }
+                std::fs::write(&host, b"").map_err(err)?;
+                Ok(pc::RealizedMount {
+                    mount_id: req.mount_id.clone(),
+                    mount_path: req.mount_path.clone(),
+                    access: req.access,
+                    realization: pc::Realization::Copy,
+                    content_hash: None,
+                })
+            }
+        }
+    }
+
+    fn build(&self, id: &str, outputs_path: &str) -> LocalSandbox {
+        let dir = self.base.join(id);
+        LocalSandbox {
+            id: id.to_string(),
+            root: IsolatedRoot::new(dir),
+            outputs_path: outputs_path.to_string(),
+            base_env: Vec::new(),
+            realized: Vec::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl pc::SandboxProvider for LocalProvider {
+    fn capabilities(&self) -> pc::SandboxCapabilities {
+        Self::caps()
+    }
+
+    async fn create(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        // Fail closed against our capabilities (isolation, ro, egress secrets, …).
+        pc::prepare_environment(spec, &Self::caps()).map_err(err)?;
+
+        let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
+        std::fs::create_dir_all(sandbox.root.root()).map_err(err)?;
+        // Outputs directory (sandbox-absolute → rejailed host path).
+        let host_outputs = sandbox.root.resolve(&spec.outputs_path).map_err(err)?;
+        std::fs::create_dir_all(&host_outputs).map_err(err)?;
+
+        // Base env: non-secret literals only (a local provider has no egress broker).
+        for var in &spec.env {
+            if let pc::EnvValue::Inline { value } = &var.value {
+                sandbox.base_env.push((var.name.clone(), value.clone()));
+            }
+        }
+        for req in &spec.mounts {
+            sandbox
+                .realized
+                .push(self.realize_mount(&sandbox.root, req)?);
+        }
+        Ok(Box::new(sandbox))
+    }
+
+    async fn adopt(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        let outputs_path = handle
+            .extra
+            .as_ref()
+            .and_then(|v| v.get("outputs_path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("/mnt/session/outputs");
+        Ok(Box::new(self.build(&handle.sandbox_id, outputs_path)))
+    }
+}
+
+/// A realized local environment: an [`IsolatedRoot`] directory plus its outputs
+/// path and base env. Path-jailed but not OS-confined (Workdir tier).
+pub struct LocalSandbox {
+    id: String,
+    root: IsolatedRoot,
+    outputs_path: String,
+    base_env: Vec<(String, String)>,
+    realized: Vec<pc::RealizedMount>,
+}
+
+impl LocalSandbox {
+    fn host_outputs(&self) -> Result<PathBuf, pc::SandboxError> {
+        self.root.resolve(&self.outputs_path).map_err(err)
+    }
+
+    /// Depth-first scan of the outputs dir → `(artifact, host_path)` pairs. The id
+    /// is derived from the sandbox-relative path so `read_artifact` can recompute it.
+    fn scan(&self) -> Result<Vec<(pc::Artifact, PathBuf)>, pc::SandboxError> {
+        let base = self.host_outputs()?;
+        let mut out = Vec::new();
+        let mut stack = vec![base.clone()];
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let ft = match entry.file_type() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                if ft.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let rel = path.strip_prefix(&base).unwrap_or(&path);
+                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                let sandbox_path =
+                    format!("{}/{}", self.outputs_path.trim_end_matches('/'), rel_str);
+                let bytes = std::fs::read(&path).map_err(err)?;
+                out.push((
+                    pc::Artifact {
+                        id: content_fingerprint(rel_str.as_bytes()),
+                        path: sandbox_path,
+                        size_bytes: bytes.len() as u64,
+                        content_hash: content_fingerprint(&bytes),
+                    },
+                    path,
+                ));
+            }
+        }
+        out.sort_by(|a, b| a.0.path.cmp(&b.0.path));
+        Ok(out)
+    }
+}
+
+#[async_trait]
+impl pc::Sandbox for LocalSandbox {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn handle(&self) -> pc::SandboxHandle {
+        let mut h = pc::SandboxHandle::new("local", &self.id);
+        h.extra = Some(json!({ "outputs_path": self.outputs_path }));
+        h
+    }
+
+    async fn spawn(
+        &self,
+        command: pc::Command,
+    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+        let program = command
+            .argv
+            .first()
+            .ok_or_else(|| err("command argv is empty"))?;
+        let cwd_logical = if command.cwd.is_empty() {
+            "/"
+        } else {
+            &command.cwd
+        };
+        let host_cwd = self.root.resolve(cwd_logical).map_err(err)?;
+        std::fs::create_dir_all(&host_cwd).map_err(err)?;
+        let host_outputs = self.host_outputs()?;
+        std::fs::create_dir_all(&host_outputs).map_err(err)?;
+
+        let mut cmd = TokioCommand::new(program);
+        cmd.args(&command.argv[1..]);
+        cmd.current_dir(&host_cwd);
+        // Reserved, runtime-owned env: where the agent writes/works (the local tier
+        // has no path fidelity, so a process finds the outputs dir via this var).
+        cmd.env("AWAKEN_OUTPUTS_DIR", &host_outputs);
+        cmd.env("AWAKEN_PROJECT_DIR", &host_cwd);
+        for (k, v) in &self.base_env {
+            cmd.env(k, v);
+        }
+        for var in &command.env {
+            if let pc::EnvValue::Inline { value } = &var.value {
+                cmd.env(&var.name, value);
+            }
+        }
+        let (out, e) = match command.stdio {
+            pc::Stdio::Inherit => (ProcStdio::inherit(), ProcStdio::inherit()),
+            pc::Stdio::Piped => (ProcStdio::piped(), ProcStdio::piped()),
+            pc::Stdio::Null => (ProcStdio::null(), ProcStdio::null()),
+        };
+        cmd.stdout(out).stderr(e);
+
+        let child = cmd.spawn().map_err(err)?;
+        let pid = child.id().map(|p| p.to_string()).unwrap_or_default();
+        Ok(Box::new(LocalProcess {
+            id: pid,
+            child: AsyncMutex::new(child),
+        }))
+    }
+
+    async fn attach(
+        &self,
+        _req: pc::MountRequirement,
+    ) -> Result<pc::RealizedMount, pc::SandboxError> {
+        // Runtime attach after create realizes to disk but is not reflected in
+        // `realized()` (which reports the create-time set); the caller owns the
+        // returned ref. Provider re-borrows `&self`, so we resolve without state.
+        Err(err(
+            "runtime attach is realized by the provider that owns the blob store (Slice 4)",
+        ))
+    }
+
+    async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
+        Ok(self.scan()?.into_iter().map(|(a, _)| a).collect())
+    }
+
+    async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        for (artifact, host) in self.scan()? {
+            if artifact.id == id {
+                return std::fs::read(&host).map_err(err);
+            }
+        }
+        Err(err(format!("no artifact with id {id:?}")))
+    }
+
+    fn realized(&self) -> &[pc::RealizedMount] {
+        &self.realized
+    }
+
+    async fn process(
+        &self,
+        _process_id: &str,
+    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+        // A local child is owned by its spawner's process; once that process is
+        // gone there is nothing to re-open (no OS-level process registry here).
+        Err(err(
+            "local provider cannot reattach to a process across owners",
+        ))
+    }
+
+    async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
+        Ok(if self.root.root().exists() {
+            pc::SandboxStatus::Ready
+        } else {
+            pc::SandboxStatus::Terminated
+        })
+    }
+
+    async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
+        Ok(()) // no lease: a local sandbox dies with its owner.
+    }
+
+    async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        let root = self.root.root();
+        if root.exists() {
+            std::fs::remove_dir_all(root).map_err(err)?;
+        }
+        Ok(())
+    }
+}
+
+/// A process launched by [`LocalSandbox::spawn`].
+pub struct LocalProcess {
+    id: String,
+    child: AsyncMutex<Child>,
+}
+
+fn to_exit(status: std::process::ExitStatus) -> pc::ExitStatus {
+    pc::ExitStatus {
+        code: status.code(),
+        signaled: status.code().is_none(),
+    }
+}
+
+#[async_trait]
+impl pc::ProcessHandle for LocalProcess {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+        let mut child = self.child.lock().await;
+        Ok(to_exit(child.wait().await.map_err(err)?))
+    }
+
+    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+        let mut child = self.child.lock().await;
+        Ok(child.try_wait().map_err(err)?.map(to_exit))
+    }
+
+    async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
+        // std/tokio only expose SIGKILL portably; all variants terminate.
+        let mut child = self.child.lock().await;
+        child.start_kill().map_err(err)
+    }
+}
