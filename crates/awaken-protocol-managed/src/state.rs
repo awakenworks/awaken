@@ -133,6 +133,14 @@ pub trait SessionRuntime: Send + Sync {
         is_error: bool,
     ) -> Result<TurnOutcome, RunError>;
 
+    /// The committed transcript for `thread`, in commit order. Used to rehydrate a
+    /// session whose in-memory record was lost (e.g. after a process restart) from
+    /// durable truth: a non-empty result means the thread exists in the store. The
+    /// default reports nothing, so an ephemeral host never rehydrates.
+    async fn committed_messages(&self, _thread: &str) -> Vec<Message> {
+        Vec::new()
+    }
+
     /// Buffer a system message; it is prepended to the next turn's input.
     async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError>;
 
@@ -282,6 +290,72 @@ impl ManagedState {
         session
     }
 
+    /// A session object reconstructed for a rehydrated (post-restart) session. It
+    /// reuses the runtime's advertised surface; environment/title/metadata default
+    /// because the original create request is no longer available.
+    fn rehydrated_session(&self, id: &str) -> Session {
+        let caps = self.runtime.capabilities();
+        let agent_id = "assistant".to_string();
+        Session {
+            id: id.to_string(),
+            kind: "session",
+            agent: SessionAgent {
+                id: agent_id.clone(),
+                kind: "agent",
+                version: 1,
+                model: self.runtime.model(),
+                name: agent_id,
+                tools: project::agent_tools(&caps),
+                mcp_servers: Vec::new(),
+                skills: project::agent_skills(&caps),
+                multiagent: project::agent_multiagent(&caps),
+            },
+            environment_id: "env_local".to_string(),
+            created_at: PROCESSED_AT.to_string(),
+            updated_at: PROCESSED_AT.to_string(),
+            archived_at: None,
+            title: None,
+            metadata: Default::default(),
+            resources: Vec::new(),
+            outcome_evaluations: Vec::new(),
+            status: "idle",
+        }
+    }
+
+    /// Recover a session whose in-memory record was lost from durable truth (a
+    /// process restart, ADR-0039). If the store holds a committed transcript for
+    /// `id`, rebuild the record — the projected history plus a reconstructed
+    /// session object — so a resume can continue the parked run. A thread with no
+    /// committed truth stays `NotFound` (fail closed): the store is authoritative.
+    async fn ensure_session(&self, id: &str) -> Result<(), StateError> {
+        if self.sessions.lock().unwrap().contains_key(id) {
+            return Ok(());
+        }
+        let messages = self.runtime.committed_messages(id).await;
+        if messages.is_empty() {
+            return Err(StateError::NotFound);
+        }
+        let events: Vec<Event> = project_messages(&messages, None)
+            .into_iter()
+            .map(|event| Event {
+                id: event.id.unwrap_or_else(|| self.next_event_id()),
+                kind: event.kind,
+                processed_at: Some(PROCESSED_AT.to_string()),
+            })
+            .collect();
+        let record = SessionRecord {
+            agent_id: "assistant".to_string(),
+            session: self.rehydrated_session(id),
+            events,
+        };
+        self.sessions
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_insert(record);
+        Ok(())
+    }
+
     /// `GET /v1/sessions/{id}`.
     pub fn get_session(&self, id: &str) -> Result<Session, StateError> {
         let sessions = self.sessions.lock().unwrap();
@@ -373,6 +447,10 @@ impl ManagedState {
         session_id: &str,
         req: SendEventsRequest,
     ) -> Result<SendEventsResponse, StateError> {
+        // Recover the session from durable truth if its in-memory record was lost
+        // (a process restart) before resolving the agent — so a resume continues
+        // the parked run instead of failing closed (ADR-0039).
+        self.ensure_session(session_id).await?;
         let agent_id = {
             let sessions = self.sessions.lock().unwrap();
             sessions
