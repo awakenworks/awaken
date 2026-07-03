@@ -414,11 +414,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # distributed repo and plugs in through the `SandboxProvider` trait.
     "awaken-sandbox-local": {
         "awaken-runtime-contract",
+        # Implements the neutral sandbox ports (ADR-0041): a LocalProvider over the
+        # provisioning contract, alongside the pre-contract Environment surface.
+        "awaken-provisioning-contract",
         "awaken-ext-builtin-tools",
         "async-trait",
         "serde_json",
         "thiserror",
         "tokio",
+        # dev-only: temp dirs for the LocalProvider spawn/artifact tests.
+        "tempfile",
     },
     # Single-machine assembly binary: the composition root that wires the kernel
     # (built-in tools + permission gate + model port) behind the managed adapter.
