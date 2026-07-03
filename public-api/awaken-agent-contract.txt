@@ -854,6 +854,8 @@ pub awaken_agent_contract::commit::staged::ThreadCommit::run_fact: awaken_agent_
 pub awaken_agent_contract::commit::staged::ThreadCommit::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub awaken_agent_contract::commit::staged::ThreadCommit::thread_id: awaken_agent_contract::agent::thread::Id
 pub awaken_agent_contract::commit::staged::ThreadCommit::waiting: core::option::Option<awaken_agent_contract::agent::waiting::WaitingTicket>
+impl awaken_agent_contract::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::commit::staged::ThreadCommit::validate(&self) -> core::result::Result<(), awaken_agent_contract::commit::staged::ValidationError>
 impl core::clone::Clone for awaken_agent_contract::commit::staged::ThreadCommit
 pub fn awaken_agent_contract::commit::staged::ThreadCommit::clone(&self) -> awaken_agent_contract::commit::staged::ThreadCommit
 impl core::cmp::PartialEq for awaken_agent_contract::commit::staged::ThreadCommit
@@ -871,6 +873,17 @@ impl core::marker::Sync for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::marker::Unpin for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::staged::ThreadCommit
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::staged::ThreadCommit
+pub struct awaken_agent_contract::commit::staged::ValidationError(_)
+impl core::fmt::Debug for awaken_agent_contract::commit::staged::ValidationError
+pub fn awaken_agent_contract::commit::staged::ValidationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_agent_contract::commit::staged::ValidationError
+pub fn awaken_agent_contract::commit::staged::ValidationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_agent_contract::commit::staged::ValidationError
+impl core::marker::Send for awaken_agent_contract::commit::staged::ValidationError
+impl core::marker::Sync for awaken_agent_contract::commit::staged::ValidationError
+impl core::marker::Unpin for awaken_agent_contract::commit::staged::ValidationError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::commit::staged::ValidationError
+impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::commit::staged::ValidationError
 pub mod awaken_agent_contract::event
 pub mod awaken_agent_contract::event::draft
 pub struct awaken_agent_contract::event::draft::Draft
