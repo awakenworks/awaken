@@ -396,3 +396,139 @@ async fn malformed_section_fails_the_run_closed() {
         "a malformed plugin config fails the run closed"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Direct model-visibility: capture each inference request and assert an emitted
+// message is actually in the message list the model is shown on the next turn
+// (not merely committed to the transcript).
+// ---------------------------------------------------------------------------
+
+/// A scripted model that also records the message list of every request it is
+/// given, so a test can assert exactly what the model saw on each turn.
+struct RecordingLlm {
+    turns: Mutex<Vec<AssistantOutput>>,
+    step: AtomicUsize,
+    seen: Mutex<Vec<Vec<Message>>>,
+}
+
+impl RecordingLlm {
+    fn new(turns: Vec<AssistantOutput>) -> Self {
+        Self {
+            turns: Mutex::new(turns),
+            step: AtomicUsize::new(0),
+            seen: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The neutral message list shown to the model on inference `turn` (0-based).
+    fn request_texts(&self, turn: usize) -> Vec<String> {
+        self.seen
+            .lock()
+            .unwrap()
+            .get(turn)
+            .map(|msgs| msgs.iter().map(Message::text_content).collect())
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for RecordingLlm {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        // Record the neutral messages the runtime assembled for this turn.
+        let messages = request
+            .messages
+            .iter()
+            .map(|m| Message {
+                id: MessageId(String::new()),
+                role: Role::User,
+                content: m.content.clone(),
+            })
+            .collect();
+        self.seen.lock().unwrap().push(messages);
+
+        let idx = self.step.fetch_add(1, Ordering::SeqCst);
+        let turns = self.turns.lock().unwrap();
+        let output = turns
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| AssistantOutput::text("done"));
+        Ok(ChatResponse {
+            output,
+            usage: None,
+        })
+    }
+}
+
+const EMIT_ON_WRITE: &str = r#"{"machines":[{
+    "name":"m","scope":"run","key":"","initial":"start","terminal":["done"],
+    "transitions":[{"on":"Write(file_path ~ \"*\")","from":"start","to":"done",
+        "emit":{"target":"conversation","content":"saved {file_path}; read it to verify"}}]}]}"#;
+
+#[tokio::test]
+async fn warn_emit_is_in_the_models_next_request() {
+    // A warn violation on `Write` emits guidance; the model must literally see it
+    // on the turn after the tool call — not just have it committed.
+    let llm = Arc::new(RecordingLlm::new(vec![AssistantOutput::from_tool_calls(
+        vec![tool_call("c1", "Write", "a.rs")],
+    )]));
+    let plugin =
+        StateMachinePlugin::from_config(StateMachineConfig::from_json_str(WARN_ON_UNREAD).unwrap())
+            .unwrap();
+    let runtime = Runtime::new()
+        .with_llm(llm.clone())
+        .with_tool(Arc::new(OkTool("Write")))
+        .with_plugin(Arc::new(plugin));
+    install(&runtime);
+
+    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
+    let phase = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+
+    // Turn 0 (before the tool call) must NOT contain the emit; turn 1 (right after
+    // the Write) MUST — proving it was injected between the two model calls.
+    let emit = "writing unread a.rs";
+    assert!(
+        !llm.request_texts(0).iter().any(|t| t == emit),
+        "the emit must not exist before the tool call"
+    );
+    assert!(
+        llm.request_texts(1).iter().any(|t| t == emit),
+        "the emit must be in the model's very next request: {:?}",
+        llm.request_texts(1)
+    );
+}
+
+#[tokio::test]
+async fn success_transition_emit_is_in_the_models_next_request() {
+    // A successful transition's `emit` (with a {file_path} interpolation) is shown
+    // to the model on the next inference, carrying the tool's own argument.
+    let llm = Arc::new(RecordingLlm::new(vec![AssistantOutput::from_tool_calls(
+        vec![tool_call("c1", "Write", "a.rs")],
+    )]));
+    let plugin =
+        StateMachinePlugin::from_config(StateMachineConfig::from_json_str(EMIT_ON_WRITE).unwrap())
+            .unwrap();
+    let runtime = Runtime::new()
+        .with_llm(llm.clone())
+        .with_tool(Arc::new(OkTool("Write")))
+        .with_plugin(Arc::new(plugin));
+    install(&runtime);
+
+    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
+    let phase = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+
+    let emit = "saved a.rs; read it to verify";
+    assert!(
+        !llm.request_texts(0).iter().any(|t| t == emit),
+        "the emit must not exist before the transition fires"
+    );
+    assert!(
+        llm.request_texts(1).iter().any(|t| t == emit),
+        "the transition emit must be in the model's next request: {:?}",
+        llm.request_texts(1)
+    );
+}
