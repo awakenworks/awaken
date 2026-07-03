@@ -86,6 +86,15 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: a fake exercises the async ports in unit tests.
         "tokio",
     },
+    # Agent-transport seam (ADR-0041 amendment): the segregated `AgentChannel`
+    # duplex + `AgentTransport` capability port, kept off `ProcessHandle` (ISP).
+    # A leaf over tokio's async IO traits; names no provider, protocol, or host
+    # path, so a tool-transparent provider and the ACP bridge both depend on it.
+    "awaken-agent-channel": {
+        "async-trait",
+        "thiserror",
+        "tokio",
+    },
     # Builtin tools extension: owns concrete tool ids and runs them in-process
     # (ADR-0007). It implements the async `Tool`/`RawTool` ports (`async-trait`,
     # `tokio`), hand tools touch the filesystem (`glob`, `regex`, `tempfile` for
@@ -417,6 +426,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Implements the neutral sandbox ports (ADR-0041): a LocalProvider over the
         # provisioning contract, alongside the pre-contract Environment surface.
         "awaken-provisioning-contract",
+        # The tool-transparent capability: spawn_agent returns a pipe-backed AgentChannel.
+        "awaken-agent-channel",
         "awaken-ext-builtin-tools",
         "async-trait",
         "serde_json",
