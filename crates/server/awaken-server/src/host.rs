@@ -301,7 +301,14 @@ impl SharedHost {
             delegates: HashSet::new(),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
-            store_dir: None,
+            // Composition root: the deployment picks durability via the
+            // environment. `AWAKEN_STORAGE_DIR` set → each thread commits to a
+            // durable SQLite database under it (survives a restart); unset (unit
+            // tests, ephemeral use) → in-memory. `with_store_dir` still overrides.
+            store_dir: std::env::var("AWAKEN_STORAGE_DIR")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
             remote_agents: HashMap::new(),
             memory: None,
             memory_selector: None,
