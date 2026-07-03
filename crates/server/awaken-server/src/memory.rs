@@ -223,6 +223,38 @@ impl MemoryExtraction {
             .await;
     }
 
+    /// Load every saved memory as one recall block for injection into a new
+    /// conversation's context, or `None` when nothing has been saved yet. This is
+    /// the read side that closes the loop: a memory written after one turn is read
+    /// back here so a later turn (or a fresh thread) can use it. Files are read in
+    /// sorted order for a stable block.
+    pub fn recall_block(&self) -> Option<String> {
+        let mut entries: Vec<String> = Vec::new();
+        if let Ok(read_dir) = std::fs::read_dir(&self.root) {
+            let mut paths: Vec<PathBuf> = read_dir
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "md"))
+                .collect();
+            paths.sort();
+            for path in paths {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        entries.push(text.to_string());
+                    }
+                }
+            }
+        }
+        if entries.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "Memories from earlier conversations (use them if relevant to the user's request):\n\n{}",
+            entries.join("\n\n")
+        ))
+    }
+
     /// Await in-flight extractions up to `timeout` (shutdown flush).
     pub async fn drain(&self, timeout: Duration) -> bool {
         self.background.drain(timeout).await
