@@ -274,6 +274,9 @@ pub struct SharedHost {
     /// Out-of-band memory extraction, when enabled with [`with_memory`]. After a
     /// turn reaches a natural end it fires a background `memory-extractor` sub-run.
     memory: Option<Arc<MemoryExtraction>>,
+    /// The relevance selector for recall (a `memory-selector` sub-agent), wired
+    /// into the memory recall plugin when memory is enabled.
+    memory_selector: Option<Arc<dyn awaken_ext_memory::RecallSelector>>,
     /// Out-of-band context compaction, when enabled with [`with_compaction`]. After
     /// a long turn it summarizes older history in the background; the main agent
     /// runs a matching `KeepLast` window so the summary replaces the raw turns.
@@ -297,6 +300,7 @@ impl SharedHost {
             store_dir: None,
             remote_agents: HashMap::new(),
             memory: None,
+            memory_selector: None,
             compaction: None,
         }
     }
@@ -352,6 +356,13 @@ impl SharedHost {
             mem_dir.into(),
         );
         self.memory = Some(Arc::new(extraction));
+        // The recall plugin uses this selector once the store grows: a single-step
+        // `memory-selector` sub-agent picks the memories relevant to the user's
+        // message.
+        self.memory_selector = Some(Arc::new(crate::memory::AgentSelector::new(
+            self.llm.clone(),
+            &self.model_ref,
+        )));
         self
     }
 
@@ -561,10 +572,11 @@ impl SharedHost {
         // it and list its id so it is active for the run (G30).
         let mut plugin_ids: Vec<String> = Vec::new();
         if let Some(mem) = &self.memory {
-            runtime = runtime.with_plugin(Arc::new(awaken_ext_memory::MemoryPlugin::new(
-                mem.store(),
-                mem.bounds(),
-            )));
+            let mut plugin = awaken_ext_memory::MemoryPlugin::new(mem.store(), mem.bounds());
+            if let Some(selector) = &self.memory_selector {
+                plugin = plugin.with_selector(selector.clone());
+            }
+            runtime = runtime.with_plugin(Arc::new(plugin));
             plugin_ids.push(awaken_ext_memory::MEMORY_PLUGIN_ID.to_string());
         }
         // When compaction is on, the main agent runs a rolling window matching the

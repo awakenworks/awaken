@@ -56,6 +56,27 @@ pub fn default_memory_agent(model_ref: &str, instructions: &str) -> RunnableConf
         .build()
 }
 
+/// The agent id of the relevance selector (a single-step, tool-free agent).
+pub const SELECTOR_AGENT_ID: &str = "memory-selector";
+
+/// Default selector instructions. The host seeds the query + memory manifest as
+/// input; the agent replies with the relevant bracketed indices.
+pub const DEFAULT_SELECTOR_INSTRUCTIONS: &str = "\
+You select which of a user's saved memories are relevant to their current message. \
+Reply with ONLY the bracketed indices of the relevant memories (e.g. `[0], [3]`), \
+comma-separated, at most the requested count. If none are relevant, reply NONE. \
+Do not explain, do not use tools.";
+
+/// A default `memory-selector` agent config: no tools, a single step (it replies
+/// once), and no plugins — so it cannot recurse into memory recall.
+pub fn default_selector_agent(model_ref: &str, instructions: &str) -> RunnableConfig {
+    RunnableConfig::builder(SELECTOR_AGENT_ID)
+        .instructions(instructions)
+        .model(ModelBinding::new("default", model_ref, "default"))
+        .max_steps(1)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
