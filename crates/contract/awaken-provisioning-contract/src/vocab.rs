@@ -51,6 +51,16 @@ pub enum MountSource {
     },
     /// A persistent memory store, mounted for read/write (typically via FUSE).
     MemoryStore { store_id: String },
+    /// A file-materialized credential (ADR-0041 amendment). The provider writes the
+    /// broker-resolved secret to `mount_path`, honoring the requirement's
+    /// [`MountAccess`]/[`MountLifetime`]; a `ReadWrite` + `Durable` secret mount is
+    /// written back to the broker after the run (CLI agents that refresh their own
+    /// auth file). Only the broker `reference` crosses the seam — never the bytes (G3).
+    Secret {
+        reference: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_hash: Option<String>,
+    },
     /// Forward-compat escape: an unknown source a newer provider understands.
     Other(Value),
 }
@@ -67,6 +77,17 @@ pub struct MountRequirement {
     /// A required mount that fails to realize aborts the whole environment
     /// (all-or-nothing); an optional one is skipped.
     pub required: bool,
+}
+
+impl MountRequirement {
+    /// A secret credential the provider must write back after the run: a durable,
+    /// writable [`MountSource::Secret`] (an agent that refreshes its own auth file).
+    #[must_use]
+    pub fn is_secret_writeback(&self) -> bool {
+        matches!(self.source, MountSource::Secret { .. })
+            && self.access == MountAccess::ReadWrite
+            && self.lifetime == MountLifetime::Durable
+    }
 }
 
 /// How a provider realized a mount.
@@ -182,4 +203,80 @@ pub struct Artifact {
     pub path: String,
     pub size_bytes: u64,
     pub content_hash: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(source: MountSource, access: MountAccess, lifetime: MountLifetime) -> MountRequirement {
+        MountRequirement {
+            mount_id: "cred".into(),
+            source,
+            mount_path: "/home/agent/.config/auth.json".into(),
+            access,
+            lifetime,
+            required: true,
+        }
+    }
+
+    #[test]
+    fn secret_source_round_trips_as_a_reference_only() {
+        let src = MountSource::Secret {
+            reference: "broker://anthropic/key".into(),
+            content_hash: None,
+        };
+        let wire = serde_json::to_string(&src).unwrap();
+        assert!(wire.contains("\"kind\":\"secret\""));
+        assert!(wire.contains("broker://anthropic/key"));
+        assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), src);
+    }
+
+    #[test]
+    fn durable_writable_secret_is_a_writeback() {
+        let m = req(
+            MountSource::Secret {
+                reference: "r".into(),
+                content_hash: None,
+            },
+            MountAccess::ReadWrite,
+            MountLifetime::Durable,
+        );
+        assert!(m.is_secret_writeback());
+    }
+
+    #[test]
+    fn readonly_or_ephemeral_secret_is_not_a_writeback() {
+        let ro = req(
+            MountSource::Secret {
+                reference: "r".into(),
+                content_hash: None,
+            },
+            MountAccess::ReadOnly,
+            MountLifetime::Durable,
+        );
+        let per_run = req(
+            MountSource::Secret {
+                reference: "r".into(),
+                content_hash: None,
+            },
+            MountAccess::ReadWrite,
+            MountLifetime::PerRun,
+        );
+        assert!(!ro.is_secret_writeback());
+        assert!(!per_run.is_secret_writeback());
+    }
+
+    #[test]
+    fn non_secret_source_is_never_a_writeback() {
+        let m = req(
+            MountSource::File {
+                file_id: "f".into(),
+                content_hash: None,
+            },
+            MountAccess::ReadWrite,
+            MountLifetime::Durable,
+        );
+        assert!(!m.is_secret_writeback());
+    }
 }
