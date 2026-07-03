@@ -17,6 +17,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
-awaken-runtime = { path = "../../runtime/awaken-runtime" }
+awaken-runtime = { workspace = true }
 awaken-agent-contract.workspace = true
-awaken-store-sqlite = { path = "../../stores/awaken-store-sqlite" }
+awaken-store-sqlite = { workspace = true }

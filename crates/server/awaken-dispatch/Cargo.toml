@@ -7,9 +7,9 @@ license.workspace = true
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-dispatch-contract = { path = "../../contract/awaken-dispatch-contract" }
-awaken-runtime = { path = "../../runtime/awaken-runtime" }
-awaken-ext-builtin-tools = { path = "../../runtime/awaken-ext-builtin-tools" }
+awaken-dispatch-contract = { workspace = true }
+awaken-runtime = { workspace = true }
+awaken-ext-builtin-tools = { workspace = true }
 async-trait.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
@@ -28,8 +28,8 @@ futures-lite = { version = "2", optional = true }
 nats = ["dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
-awaken-store-postgres = { path = "../../stores/awaken-store-postgres" }
-awaken-store-sqlite = { path = "../../stores/awaken-store-sqlite" }
+awaken-store-postgres = { workspace = true }
+awaken-store-sqlite = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

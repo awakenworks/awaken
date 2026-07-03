@@ -1,36 +1,12 @@
 [workspace]
 resolver = "2"
+# Product buckets by directory (single workspace):
+#   crates/runtime/* → Awaken runtime (Build); a self-contained lower layer.
+#   crates/agents/*  → Awaken Agents (Run); may depend on runtime/, never the reverse
+#                      (enforced by scripts/ci/check_crate_boundaries.py).
 members = [
-    "crates/contract/awaken-agent-contract",
-    "crates/contract/awaken-runtime-contract",
-    "crates/runtime/awaken-runtime",
-    "crates/runtime/awaken-tool-pattern",
-    "crates/runtime/awaken-ext-builtin-tools",
-    "crates/runtime/awaken-ext-permission",
-    "crates/control/awaken-config-store",
-    "crates/devtools/awaken-runtime-examples",
-    "crates/runtime/awaken-provider-genai",
-    "crates/runtime/awaken-store-inmem",
-    "crates/stores/awaken-store-fs",
-    "crates/stores/awaken-store-conformance",
-    "crates/stores/awaken-store-schema",
-    "crates/stores/awaken-store-postgres",
-    "crates/stores/awaken-store-sqlite",
-    "crates/contract/awaken-dispatch-contract",
-    "crates/server/awaken-dispatch",
-    "crates/server/awaken-protocol-transport",
-    "crates/server/awaken-protocol-managed",
-    "crates/server/awaken-protocol-ai-sdk",
-    "crates/server/awaken-protocol-ag-ui",
-    "crates/server/awaken-protocol-a2a",
-    "crates/worker/awaken-sandbox-local",
-    "crates/runtime/awaken-ext-goal",
-    "crates/runtime/awaken-ext-memory",
-    "crates/runtime/awaken-ext-compact",
-    "crates/runtime/awaken-ext-state-machine",
-    "crates/runtime/awaken-ext-mcp",
-    "crates/runtime/awaken-ext-skills",
-    "crates/server/awaken-server",
+    "crates/runtime/*",
+    "crates/agents/*",
 ]
 
 [workspace.package]
@@ -41,13 +17,34 @@ license = "Apache-2.0"
 [workspace.dependencies]
 awaken-agent-contract = { path = "crates/contract/awaken-agent-contract" }
 awaken-runtime-contract = { path = "crates/contract/awaken-runtime-contract" }
+awaken-runtime = { path = "crates/runtime/awaken-runtime" }
 awaken-tool-pattern = { path = "crates/runtime/awaken-tool-pattern" }
+awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai" }
+awaken-ext-permission = { path = "crates/runtime/awaken-ext-permission" }
+awaken-ext-mcp = { path = "crates/runtime/awaken-ext-mcp" }
 awaken-ext-skills = { path = "crates/runtime/awaken-ext-skills" }
+awaken-ext-goal = { path = "crates/runtime/awaken-ext-goal" }
+awaken-ext-state-machine = { path = "crates/runtime/awaken-ext-state-machine" }
+awaken-ext-compact = { path = "crates/runtime/awaken-ext-compact" }
+awaken-ext-memory = { path = "crates/runtime/awaken-ext-memory" }
+awaken-ext-builtin-tools = { path = "crates/runtime/awaken-ext-builtin-tools" }
+awaken-protocol-transport = { path = "crates/server/awaken-protocol-transport" }
+awaken-protocol-a2a = { path = "crates/server/awaken-protocol-a2a" }
+awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui" }
+awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk" }
+awaken-protocol-managed = { path = "crates/server/awaken-protocol-managed" }
+awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
 awaken-store-fs = { path = "crates/stores/awaken-store-fs" }
-awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
+awaken-store-schema = { path = "crates/stores/awaken-store-schema" }
+awaken-store-sqlite = { path = "crates/stores/awaken-store-sqlite" }
+awaken-store-postgres = { path = "crates/stores/awaken-store-postgres" }
+awaken-config-store = { path = "crates/control/awaken-config-store" }
+awaken-sandbox-local = { path = "crates/worker/awaken-sandbox-local" }
+awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
-awaken-protocol-transport = { path = "crates/server/awaken-protocol-transport" }
+awaken-dispatch = { path = "crates/server/awaken-dispatch" }
+awaken-server = { path = "crates/server/awaken-server" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

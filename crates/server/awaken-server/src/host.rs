@@ -1636,7 +1636,10 @@ mod tests {
         let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
 
         // Turn 1: only the single user message → below threshold, no summary injected.
-        let r1 = host.run_turn("t-c", user("u1")).await.expect("turn 1");
+        let r1 = host
+            .run_turn(None, "t-c", user("u1"))
+            .await
+            .expect("turn 1");
         assert!(matches!(r1.phase, Phase::Ended(_)));
         let reply1 = r1
             .new_messages
@@ -1649,7 +1652,10 @@ mod tests {
 
         // Turn 2: the conversation now exceeds the threshold, so the compact plugin's
         // BeforeInference hook summarizes the older slice inline and the model sees it.
-        let r2 = host.run_turn("t-c", user("u2")).await.expect("turn 2");
+        let r2 = host
+            .run_turn(None, "t-c", user("u2"))
+            .await
+            .expect("turn 2");
         let reply2 = r2
             .new_messages
             .iter()
@@ -1730,7 +1736,7 @@ mod tests {
         let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
         // Thread 1: the user states a preference; extraction saves it.
-        host.run_turn("thread-1", user("I really enjoy tea in the morning"))
+        host.run_turn(None, "thread-1", user("I really enjoy tea in the morning"))
             .await
             .expect("thread 1 turn");
         assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
@@ -1742,7 +1748,7 @@ mod tests {
         // Thread 2 (a fresh conversation): the saved memory is recalled into context
         // and the agent uses it to answer.
         let r = host
-            .run_turn("thread-2", user("What beverage do I prefer?"))
+            .run_turn(None, "thread-2", user("What beverage do I prefer?"))
             .await
             .expect("thread 2 turn");
         let reply = r
@@ -1823,6 +1829,7 @@ mod tests {
         // Turn 1 parks on the Ask-gated `write`.
         let r1 = host
             .run_turn(
+                None,
                 "t-res",
                 vec![Message::text(MessageId("u1".into()), Role::User, "hi")],
             )
@@ -1912,9 +1919,13 @@ mod tests {
         let host = SharedHost::new(Arc::new(CursorModel), "stub").with_memory(&mem_dir);
         let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
-        host.run_turn("t-cur", user("alpha")).await.expect("turn 1");
+        host.run_turn(None, "t-cur", user("alpha"))
+            .await
+            .expect("turn 1");
         assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
-        host.run_turn("t-cur", user("beta")).await.expect("turn 2");
+        host.run_turn(None, "t-cur", user("beta"))
+            .await
+            .expect("turn 2");
         assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
 
         // The second extraction saw only "beta" — turn 1's "alpha" was past the cursor.
@@ -1936,7 +1947,7 @@ mod tests {
             Role::User,
             "I really like rust",
         )];
-        let result = host.run_turn("t-mem", input).await.expect("run turn");
+        let result = host.run_turn(None, "t-mem", input).await.expect("run turn");
         assert!(matches!(result.phase, Phase::Ended(_)), "turn should end");
 
         let drained = host.drain_memory(std::time::Duration::from_secs(10)).await;

@@ -25,6 +25,9 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 
 /// One thread's commit boundary. `Memory` is ephemeral; `Sqlite` and `Fs` are
 /// durable (a parked run and its history survive a process restart).
+// Exactly one `HostCommit` exists per live session (not stored in bulk), so the
+// per-backend size spread is immaterial; boxing would only add an indirection.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum HostCommit {
     Memory(MemoryCommitCoordinator),
     Sqlite(SqliteCommitCoordinator),

@@ -58,7 +58,7 @@ The four supplements — reconcile (ADR-0011), dead-letter GC (ADR-0015), schedu
 wake (ADR-0020), and epoch supersession (ADR-0022) — are implemented in
 `awaken-dispatch` and their deep state machine is verified deterministically
 **on the server's exact concrete persistence stack**, `SqliteDispatchStore` +
-`SqliteCommitCoordinator`, by `crates/server/awaken-dispatch/tests/sqlite_dispatch.rs`
+`SqliteCommitCoordinator`, by `crates/awaken-dispatch/tests/sqlite_dispatch.rs`
 (`durable_loop_runs_entirely_on_sqlite`, `dead_letter_budget_on_sqlite`,
 `dead_letter_ttl_gc_on_sqlite`, `scheduled_delivery_due_on_sqlite`,
 `supersession_on_sqlite`, …). Slice E makes each **reachable and exercised through
