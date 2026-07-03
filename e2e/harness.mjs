@@ -82,6 +82,29 @@ export async function withServer(mode, port, fn) {
   }
 }
 
+// Spawn the server without a fixed lifetime, so a test can stop and restart it
+// (e.g. to verify durable state survives a process restart). `extraEnv` layers on
+// top of the inherited environment — pass `AWAKEN_STORAGE_DIR` for durability.
+export function spawnServer(mode, port, extraEnv = {}) {
+  const bin = ensureBuilt();
+  const addr = `127.0.0.1:${port}`;
+  const server = spawn(bin, {
+    env: { ...process.env, AWAKEN_HTTP_ADDR: addr, AWAKEN_MODEL_MODE: mode, ...extraEnv },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  return { server, baseUrl: `http://${addr}` };
+}
+
+// Stop a spawned server and resolve once the process has actually exited, so the
+// TCP port is free and the SQLite files are flushed before a restart rebinds.
+export function stopServer(server) {
+  return new Promise((resolve) => {
+    if (server.exitCode !== null) return resolve();
+    server.on('exit', () => resolve());
+    server.kill('SIGINT');
+  });
+}
+
 export function pass(msg) {
   console.log(`  ok: ${msg}`);
 }
