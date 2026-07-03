@@ -49,6 +49,7 @@ pub fn compile(
         .tools(descriptors)
         .plugins(config.plugin_ids.clone())
         .plugin_config(config.plugin_config.clone())
+        .context_policy(config.context_policy.clone())
         .fingerprint(fingerprint_of(config)?)
         .build())
 }
@@ -75,6 +76,7 @@ mod tests {
             tool_ids: tools.iter().map(|s| s.to_string()).collect(),
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
+            context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         }
     }
 
@@ -105,6 +107,26 @@ mod tests {
             compile(&other, &tools).unwrap().snapshot().fingerprint.0,
             fp
         );
+    }
+
+    #[test]
+    fn context_policy_flows_into_the_compiled_spec_and_fingerprint() {
+        use awaken_runtime_contract::resolved::ContextPolicy;
+        let mut cfg = config(&[]);
+        cfg.context_policy = ContextPolicy::KeepLast { keep_last: 3 };
+        let compiled = compile(&cfg, &[]).unwrap();
+        assert_eq!(
+            compiled.snapshot().resolved_spec.context_policy,
+            ContextPolicy::KeepLast { keep_last: 3 }
+        );
+        // The policy is part of the content address: changing it changes the hash.
+        let default_fp = compile(&config(&[]), &[])
+            .unwrap()
+            .snapshot()
+            .fingerprint
+            .0
+            .clone();
+        assert_ne!(compiled.snapshot().fingerprint.0, default_fp);
     }
 
     #[test]
