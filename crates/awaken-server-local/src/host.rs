@@ -264,6 +264,10 @@ pub struct SharedHost {
     /// single `Skill` tool; the model activates one by id to load its instructions.
     skills: Vec<SkillSpec>,
     pub(crate) delegates: HashSet<String>,
+    /// Runtime plugins this host activates on every thread, and their config
+    /// sections (e.g. the tool state machine). Empty by default.
+    pub(crate) plugin_ids: Vec<String>,
+    pub(crate) plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
     sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
     hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
@@ -299,6 +303,8 @@ impl SharedHost {
             client_tools: HashSet::new(),
             skills: Vec::new(),
             delegates: HashSet::new(),
+            plugin_ids: Vec::new(),
+            plugin_config: std::collections::BTreeMap::new(),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
             // Composition root: the deployment picks durability via the
@@ -385,6 +391,19 @@ impl SharedHost {
     /// Add local delegate agents callable via `agent_run`.
     pub fn with_delegates(mut self, delegates: HashSet<String>) -> Self {
         self.delegates.extend(delegates);
+        self
+    }
+
+    /// Activate the tool state machine on every thread with `config` (its
+    /// `{"machines":[…]}` section). The plugin gates and advances tool calls per
+    /// the declared transitions (ADR tool-state-machine).
+    pub fn with_state_machine(mut self, config: serde_json::Value) -> Self {
+        self.plugin_ids
+            .push(awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID.to_string());
+        self.plugin_config.insert(
+            awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID.to_string(),
+            config,
+        );
         self
     }
 
@@ -569,7 +588,9 @@ impl SharedHost {
         // Memory recall is a plugin: it contributes a BeforeInference hook that
         // injects bounded recall as request-only context (never committed). Install
         // it and list its id so it is active for the run (G30).
-        let mut plugin_ids: Vec<String> = Vec::new();
+        // Seed with host-registered plugins (e.g. the tool state machine via
+        // `with_state_machine`), then append the per-run memory/compact plugins.
+        let mut plugin_ids: Vec<String> = self.plugin_ids.clone();
         if let Some(mem) = &self.memory {
             let mut plugin = awaken_ext_memory::MemoryPlugin::new(mem.store(), mem.bounds());
             if let Some(selector) = &self.memory_selector {
@@ -597,6 +618,7 @@ impl SharedHost {
             &self.client_tools,
             &self.delegates,
             &plugin_ids,
+            &self.plugin_config,
             &skill_descriptors,
             context_policy,
         );
@@ -865,6 +887,7 @@ impl SharedHost {
             &self.client_tools,
             &HashSet::new(),
             &["goal".to_string()],
+            &self.plugin_config,
             &[],
             awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         );

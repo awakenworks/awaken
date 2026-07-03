@@ -175,6 +175,44 @@ impl LlmExecutor for ProbeModel {
     }
 }
 
+/// A deterministic model for the state-machine e2e. It calls `glob` (an
+/// auto-allowed perception tool that succeeds against an empty sandbox) twice: the
+/// first walks the machine `s0 -> s1` (firing its emit); the second is out of order
+/// (`glob` is only defined from `s0`), so the machine gate rejects it as a
+/// violation. Then it ends. This exercises the tool state machine's gate, advance,
+/// emit, and violation paths end to end. Stateless.
+pub struct StateMachineModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for StateMachineModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let steps = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .count();
+        let glob = |call_id: &str| {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: call_id.into(),
+                tool_id: "glob".into(),
+                arguments: serde_json::json!({ "pattern": "*.txt" }),
+            }])
+        };
+        let output = match steps {
+            0 => glob("g1"),
+            1 => glob("g2"),
+            _ => AssistantOutput::text("done"),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+        })
+    }
+}
+
 /// A deterministic model for the outcome e2e: replies with a draft, and revises to
 /// include "FINAL" once it sees the goal loop's feedback. Stateless.
 pub struct ReviseModel;
@@ -849,5 +887,29 @@ pub fn build_custom_router() -> Router {
 pub fn build_delegation_router() -> Router {
     let roster = HashSet::from(["researcher".to_string()]);
     let host = SharedHost::new(Arc::new(DelegatingModel), "delegate").with_delegates(roster);
+    mount(Arc::new(host))
+}
+
+/// A router whose agent activates the tool state machine (the state-machine e2e).
+/// The machine defines `glob` as a single transition out of the initial state, so
+/// the driving model's first `glob` advances it (emitting a context message) and
+/// the second is a precondition violation the gate denies.
+pub fn build_statemachine_router() -> Router {
+    let machine = serde_json::json!({
+        "machines": [{
+            "name": "walk",
+            "initial": "s0",
+            "terminal": ["s1"],
+            "transitions": [{
+                "on": "glob",
+                "from": ["s0"],
+                "to": "s1",
+                "emit": { "target": "system", "content": "advanced to s1", "cooldown_turns": 0 },
+                "on_violation": { "action": "deny", "reason": "glob is only allowed from the start state" }
+            }]
+        }]
+    });
+    let host =
+        SharedHost::new(Arc::new(StateMachineModel), "statemachine").with_state_machine(machine);
     mount(Arc::new(host))
 }
