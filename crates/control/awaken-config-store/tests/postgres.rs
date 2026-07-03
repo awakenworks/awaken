@@ -2,7 +2,7 @@
 //! each test in a fresh schema (the store takes no prefix; ADR-0029/ADR-0031).
 
 use awaken_config_store::{
-    AgentConfig, ConfigStore, PostgresConfigStore, StoredPublication, compile,
+    AgentConfig, ConfigRegistry, PostgresConfigStore, StoredPublication, compile,
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use sqlx::Executor;

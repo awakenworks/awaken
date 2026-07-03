@@ -139,7 +139,7 @@ postgres/sqlite/schema unchanged, D5); (ADR-0038) `FileStore`
 | Aggregate | Ports | Owning contract crate | Guardrail |
 |---|---|---|---|
 | Runtime truth | `CommitCoordinator`, `CheckpointReader`, `StreamSink` | `awaken-agent-contract` | G1, G13 |
-| Dispatch | `DispatchQueue`, `Inbox`, `Outbox` | new `awaken-run-ingress-contract` | G5, G6, G18 |
+| Dispatch | `DispatchQueue`, `Inbox`, `Outbox` | new `awaken-dispatch-contract` | G5, G6, G18 |
 | Config | `ConfigRegistry` | `awaken-config-store` | G3 |
 
 Backends (`awaken-store-*`) implement the union; the direction is enforced by
@@ -148,7 +148,7 @@ cross-backend conformance suite.
 
 ### Slices
 
-- **2.1** — extract `awaken-run-ingress-contract` (move + rename `DispatchQueue` /
+- **2.1** — extract `awaken-dispatch-contract` (move + rename `DispatchQueue` /
   `Inbox` / `Outbox`); define `CheckpointReader` and extend `ThreadCommit` with
   events + outbox intents in `awaken-agent-contract`; apply the D2 rename set.
   Behavior-preserving.

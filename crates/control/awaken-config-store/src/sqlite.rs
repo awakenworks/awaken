@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::AgentConfig;
 use crate::schema::config_bundle;
-use crate::store::{ConfigStore, ConfigStoreError, StoredPublication};
+use crate::store::{ConfigRegistry, ConfigStoreError, StoredPublication};
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in.
 const NS: &str = "config";
@@ -21,7 +21,7 @@ pub enum StoreError {
     Migrate(String),
 }
 
-/// A SQLite-backed [`ConfigStore`].
+/// A SQLite-backed [`ConfigRegistry`].
 pub struct SqliteConfigStore {
     conn: Arc<Mutex<Connection>>,
 }
@@ -72,7 +72,7 @@ fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
 }
 
 #[async_trait]
-impl ConfigStore for SqliteConfigStore {
+impl ConfigRegistry for SqliteConfigStore {
     async fn put_config(&self, config: &AgentConfig) -> Result<(), ConfigStoreError> {
         let id = config.id.clone();
         let data = serde_json::to_string(config).map_err(reject)?;

@@ -18,8 +18,8 @@ use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchStatus, DispatchSummary, Lease,
-    MessageOutbox, PendingInbox, PendingInput, PendingRecord, RunDispatch, SubmitOptions,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
+    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -108,7 +108,7 @@ impl SqliteDispatchStore {
 }
 
 #[async_trait]
-impl RunDispatch for SqliteDispatchStore {
+impl DispatchQueue for SqliteDispatchStore {
     async fn enqueue_with(
         &self,
         request: RunExecutionRequest,
@@ -583,7 +583,7 @@ impl RunDispatch for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl PendingInbox for SqliteDispatchStore {
+impl Inbox for SqliteDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let result_json = json(&input.result)?;
         self.with_conn(move |conn, p| {
@@ -714,7 +714,7 @@ impl PendingInbox for SqliteDispatchStore {
 }
 
 #[async_trait]
-impl MessageOutbox for SqliteDispatchStore {
+impl Outbox for SqliteDispatchStore {
     async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let payload = json(&input)?;
         self.with_conn(move |conn, p| {

@@ -195,7 +195,7 @@ protocol projection. Once those are mixed, readers cannot tell where `RunRecord`
 
 | Layer | Rule | Example |
 |---|---|---|
-| Crate | express packaging layer and dependency direction | `awaken-agent-contract`, `awaken-runtime`, `awaken-run-ingress-contract`, `awaken-protocol-replay-contract` |
+| Crate | express packaging layer and dependency direction | `awaken-agent-contract`, `awaken-runtime`, `awaken-dispatch-contract`, `awaken-protocol-replay-contract` |
 | Module | express domain context | `agent::stream`, `agent::event`, `agent::fact` |
 | Type | keep the industry short name inside its module | `Event`, `Record`, `Message`, `ToolCall` |
 
@@ -215,7 +215,7 @@ Crate boundaries:
 | `awaken-agent-contract` | Agent-domain contract: message, thread, run, tool call, approval, stream, event, fact, state, and commit ports | server routes, HTTP, store implementations, protocol DTOs |
 | `awaken-runtime-contract` | Internal runtime-facing contract: snapshot execution, snapshot lookup/listing, runtime capability, plugin config validation, activation, and execution entrypoint ports | config CRUD, admin workflow, public protocol DTOs, durable ingress internals, runtime loop implementation details |
 | `awaken-runtime` | agent kernel: execution loop, tool pipeline, plugin hooks, resolution, provider routing, and production of stream events, event drafts, and fact commit plans | durable dispatch, HTTP, protocol projection |
-| `awaken-run-ingress-contract` | server run-delivery contract: dispatch records, claim/lease state, pending input, live-command delivery, and runtime-store facade | runtime loop implementation types, protocol replay rows, store backend implementations |
+| `awaken-dispatch-contract` | server run-delivery contract: dispatch records, claim/lease state, pending input, live-command delivery, and runtime-store facade | runtime loop implementation types, protocol replay rows, store backend implementations |
 | `awaken-protocol-replay-contract` | protocol replay contract: public stream replay rows, cursors, redaction state, and replay-log ports | runtime truth, run-dispatch lifecycle, adapter-specific DTO logic |
 | `awaken-config-contract` | config-domain contract: config store ports, registry graph, model/agent definitions, published config, registry/audit records, and materialized runtime input data | live runtime objects, runtime commit authority, protocol projection, admin assistant tool execution |
 | `awaken-admin-contract` | optional admin-only route DTOs or reusable admin API values, if they become stable enough to share | general config publication, registry graph, materialized runtime input data |
@@ -287,10 +287,10 @@ The intended dependency direction is:
 awaken-agent-contract
   <- awaken-runtime-contract
   <- awaken-runtime
-  <- awaken-run-ingress-contract
+  <- awaken-dispatch-contract
   <- awaken-stores
 
-awaken-runtime-contract + awaken-runtime + awaken-run-ingress-contract
+awaken-runtime-contract + awaken-runtime + awaken-dispatch-contract
   <- run-ingress implementation
 
 awaken-runtime + awaken-agent-contract

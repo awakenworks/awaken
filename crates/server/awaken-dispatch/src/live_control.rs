@@ -15,7 +15,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 
-use crate::dispatch::DispatchStore;
+use crate::dispatch::Dispatch;
 use crate::worker::DispatchWorker;
 
 /// Errors produced by [`LiveRunControlService`] operations.
@@ -44,7 +44,7 @@ pub struct LiveRunControlService<S> {
     worker: Arc<DispatchWorker<S>>,
 }
 
-impl<S: DispatchStore + 'static> LiveRunControlService<S> {
+impl<S: Dispatch + 'static> LiveRunControlService<S> {
     /// Build from a dispatch worker. The worker carries both the runtime
     /// live-control handle and the durable dispatch store, keeping this service
     /// free of a second commit boundary (G6/G13).
