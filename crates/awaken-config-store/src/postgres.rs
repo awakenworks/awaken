@@ -6,7 +6,7 @@ use sqlx::types::Json;
 
 use crate::config::AgentConfig;
 use crate::schema::config_bundle;
-use crate::store::{ConfigStore, ConfigStoreError, StoredPublication};
+use crate::store::{ConfigRegistry, ConfigStoreError, StoredPublication};
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in, so the
 /// `config_*` tables coexist with the runtime's `runtime_*` in one database.
@@ -21,7 +21,7 @@ pub enum StoreError {
     Migrate(String),
 }
 
-/// A Postgres-backed [`ConfigStore`].
+/// A Postgres-backed [`ConfigRegistry`].
 pub struct PostgresConfigStore {
     pool: PgPool,
 }
@@ -53,7 +53,7 @@ fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
 }
 
 #[async_trait::async_trait]
-impl ConfigStore for PostgresConfigStore {
+impl ConfigRegistry for PostgresConfigStore {
     async fn put_config(&self, config: &AgentConfig) -> Result<(), ConfigStoreError> {
         sqlx::query(&format!(
             "INSERT INTO {NS}_agent (id, data) VALUES ($1, $2) \

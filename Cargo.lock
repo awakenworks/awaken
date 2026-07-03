@@ -354,6 +354,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-ext-builtin-tools",
+ "awaken-run-ingress-contract",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
@@ -370,12 +371,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-run-ingress-contract"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-runtime-contract",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "awaken-runtime"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-runtime-contract",
+ "awaken-store-inmem",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -470,6 +483,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-store-conformance"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-agent-contract",
+ "serde_json",
+]
+
+[[package]]
+name = "awaken-store-fs"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-store-conformance",
+ "awaken-store-inmem",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-store-inmem"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-store-conformance",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-store-postgres"
 version = "1.0.0-dev"
 dependencies = [
@@ -498,6 +542,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-scoped-migration",
+ "awaken-store-conformance",
  "awaken-store-schema",
  "rusqlite",
  "serde",

@@ -24,6 +24,7 @@ use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::commit::coordinator::{Coordinator as CommitCoordinator, Error};
 use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::event::record::Record as EventRecord;
+use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use sqlx::Row;
@@ -51,6 +52,11 @@ struct Projection {
     sequence: u64,
     messages: Vec<(ThreadId, Message)>,
     run_records: HashMap<RunId, RunRecord>,
+    /// The latest committed run per thread, in commit order (for `latest_run`).
+    latest_by_thread: HashMap<ThreadId, RunRecord>,
+    /// Committed events in commit order (for `list_events`), a fact-derived cache
+    /// rebuilt from the durable event table on construction.
+    events: Vec<EventRecord>,
     waiting: HashMap<RunId, WaitingTicket>,
 }
 
@@ -243,12 +249,16 @@ impl CommitCoordinator for PostgresCommitCoordinator {
         for message in commit.messages {
             projection.messages.push((thread_id.clone(), message));
         }
+        projection.events.extend(committed_events);
         let record = RunRecord {
             id: run_id.clone(),
-            thread_id,
+            thread_id: thread_id.clone(),
             phase,
         };
-        projection.run_records.insert(run_id.clone(), record);
+        projection
+            .run_records
+            .insert(run_id.clone(), record.clone());
+        projection.latest_by_thread.insert(thread_id, record);
         if parked {
             projection
                 .waiting
@@ -277,6 +287,44 @@ impl ThreadReader for PostgresCommitCoordinator {
 
     fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
         self.waiting_for(run_id)
+    }
+}
+
+/// The merged read repository (ADR-0039 D1), served from the fact-derived
+/// projection that `hydrate` rebuilt from the durable tables (D4).
+impl CheckpointReader for PostgresCommitCoordinator {
+    fn run(&self, id: &RunId) -> Option<RunRecord> {
+        self.get(id)
+    }
+
+    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+        self.projection
+            .lock()
+            .ok()
+            .and_then(|p| p.latest_by_thread.get(thread_id).cloned())
+    }
+
+    fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
+        let after = from.unwrap_or(0);
+        let projection = match self.projection.lock() {
+            Ok(projection) => projection,
+            Err(_) => return Vec::new(),
+        };
+        projection
+            .events
+            .iter()
+            .filter(|event| event.sequence > after)
+            .filter(|event| match scope {
+                EventScope::Run(run_id) => &event.run_id == run_id,
+                EventScope::Thread(thread_id) => projection
+                    .run_records
+                    .get(&event.run_id)
+                    .map(|record| &record.thread_id == thread_id)
+                    .unwrap_or(false),
+            })
+            .take(limit)
+            .cloned()
+            .collect()
     }
 }
 
@@ -322,14 +370,35 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
         let run_id: String = row.try_get("run_id")?;
         let thread_id: String = row.try_get("thread_id")?;
         let Json(phase): Json<Phase> = row.try_get("phase")?;
-        projection.run_records.insert(
-            RunId(run_id.clone()),
-            RunRecord {
-                id: RunId(run_id),
-                thread_id: ThreadId(thread_id),
-                phase,
-            },
-        );
+        let record = RunRecord {
+            id: RunId(run_id.clone()),
+            thread_id: ThreadId(thread_id.clone()),
+            phase,
+        };
+        projection.run_records.insert(RunId(run_id), record.clone());
+        projection
+            .latest_by_thread
+            .insert(ThreadId(thread_id), record);
+    }
+
+    // Rebuild the committed event cache from the durable event log, in order.
+    let event_rows = sqlx::query(&format!(
+        "SELECT sequence, run_id, kind, payload FROM {NS}_event ORDER BY sequence"
+    ))
+    .fetch_all(pool)
+    .await?;
+    for row in event_rows {
+        let sequence: i64 = row.try_get("sequence")?;
+        let run_id: String = row.try_get("run_id")?;
+        let Json(kind) =
+            row.try_get::<Json<awaken_agent_contract::event::kind::Kind>, _>("kind")?;
+        let Json(payload) = row.try_get::<Json<serde_json::Value>, _>("payload")?;
+        projection.events.push(EventRecord {
+            sequence: sequence as u64,
+            run_id: RunId(run_id),
+            kind,
+            payload,
+        });
     }
 
     let waiting_rows = sqlx::query(&format!("SELECT run_id, ticket FROM {NS}_waiting"))

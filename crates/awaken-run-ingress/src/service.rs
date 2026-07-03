@@ -17,7 +17,7 @@ use awaken_runtime_contract::activation::RunActivation;
 
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{DispatchStore, PendingInput};
+use crate::dispatch::{Dispatch, PendingInput};
 use crate::request::RunExecutionRequest;
 use crate::wake::{LocalWakeSignal, WakeSignal};
 use crate::worker::DispatchWorker;
@@ -60,7 +60,7 @@ pub struct DispatchService<S> {
     renewal: Option<JoinHandle<()>>,
 }
 
-impl<S: DispatchStore + 'static> DispatchService<S> {
+impl<S: Dispatch + 'static> DispatchService<S> {
     /// Start the daemon with the single-process wake signal.
     pub fn spawn(
         worker: Arc<DispatchWorker<S>>,
@@ -147,7 +147,7 @@ impl<S: DispatchStore + 'static> DispatchService<S> {
 
 /// Renew this daemon's in-flight leases on a cadence, so a long-running run is not
 /// reclaimed by another node's recovery while it is still executing (ADR-0024).
-async fn renewal_loop<S: DispatchStore + 'static>(
+async fn renewal_loop<S: Dispatch + 'static>(
     worker: Arc<DispatchWorker<S>>,
     clock: Arc<dyn Clock>,
     shutdown: CancellationToken,
@@ -167,7 +167,7 @@ async fn renewal_loop<S: DispatchStore + 'static>(
     }
 }
 
-async fn run_loop<S: DispatchStore + 'static>(
+async fn run_loop<S: Dispatch + 'static>(
     worker: Arc<DispatchWorker<S>>,
     clock: Arc<dyn Clock>,
     wake: Arc<dyn WakeSignal>,

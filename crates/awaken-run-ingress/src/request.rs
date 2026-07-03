@@ -9,38 +9,15 @@
 
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-/// The durable, serializable record of an accepted run. It is exactly the data
-/// a durable dispatch queue stores and replays; it holds no `Arc<dyn ...>`,
-/// registry, or live handle (G3). The runtime builds live execution objects
-/// from the activation's pinned snapshot on each attempt (G4).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RunExecutionRequest {
-    pub activation: RunActivation,
-}
-
-impl RunExecutionRequest {
-    pub fn new(activation: RunActivation) -> Self {
-        Self { activation }
-    }
-
-    pub fn run_id(&self) -> &RunId {
-        &self.activation.run_id
-    }
-
-    pub fn thread_id(&self) -> &ThreadId {
-        &self.activation.thread_id
-    }
-}
+// The serializable durable-run instruction moved to the dispatch contract
+// (ADR-0039 2.1); re-exported so `crate::request::RunExecutionRequest` is stable.
+pub use awaken_run_ingress_contract::request::RunExecutionRequest;
 
 /// Per-attempt live wiring. The durable host holds one of these and rebuilds a
 /// [`RuntimeRunContext`] for every execute/resume attempt, binding the run to the

@@ -23,4 +23,4 @@ pub use config::AgentConfig;
 pub use postgres::{PostgresConfigStore, StoreError as PostgresStoreError};
 pub use schema::config_bundle;
 pub use sqlite::{SqliteConfigStore, StoreError as SqliteStoreError};
-pub use store::{ConfigStore, PublicationState, StoredPublication};
+pub use store::{ConfigRegistry, PublicationState, StoredPublication};

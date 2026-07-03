@@ -5,7 +5,7 @@
 //! loop, it calls the same `RunExecutor`/`Runtime::resume` a direct caller would,
 //! and it decides execute-vs-resume from *committed truth* — the waiting ticket
 //! and the run record — not from a duplicated status in the queue. That keeps the
-//! RunDispatch aggregate free of run-outcome truth.
+//! DispatchQueue aggregate free of run-outcome truth.
 
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
 use crate::Error;
-use crate::dispatch::{DispatchOutcome, DispatchStore, PendingInput};
+use crate::dispatch::{Dispatch, DispatchOutcome, PendingInput};
 use crate::request::RunExecutionContext;
 
 /// Default lease: how long a claimed dispatch is owned before it is reclaimable.
@@ -41,7 +41,7 @@ pub struct DispatchWorker<S> {
     lease_ms: u64,
 }
 
-impl<S: DispatchStore> DispatchWorker<S> {
+impl<S: Dispatch> DispatchWorker<S> {
     /// Wire a worker to its runtime, dispatch store, and durable commit boundary.
     /// The `commit` handle is the single source of durable truth: it is the
     /// commit coordinator the runtime writes through *and* the read port the

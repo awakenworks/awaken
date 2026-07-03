@@ -329,7 +329,7 @@ pub async fn schema_pool(schema: &'static str) -> Option<PgPool> {
 
 /// Shared spec for revision-guarded pending edit/retract (M3a): every backend
 /// must match this behaviour, so the test body lives here once.
-pub async fn assert_pending_revision_cas<S: awaken_run_ingress::PendingInbox>(store: &S) {
+pub async fn assert_pending_revision_cas<S: awaken_run_ingress::Inbox>(store: &S) {
     use awaken_run_ingress::{CasOutcome, PendingInput};
     let thread = ThreadId(THREAD.to_string());
     let input = |result| PendingInput {
@@ -384,7 +384,7 @@ pub async fn assert_pending_revision_cas<S: awaken_run_ingress::PendingInbox>(st
 /// Shared spec for the cross-thread outbox + relay (M3b): every backend must
 /// match. A staged delivery is not visible as pending until relayed; relay is
 /// idempotent and moves it to the *target* thread's pending input.
-pub async fn assert_cross_thread_outbox<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_cross_thread_outbox<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::PendingInput;
     let target = ThreadId("thread-2".to_string());
     let input = PendingInput {
@@ -411,7 +411,7 @@ pub async fn assert_cross_thread_outbox<S: awaken_run_ingress::DispatchStore>(st
 
 /// Shared spec for scheduled delivery (M4): a future-dated pending input is not
 /// claimable until its time has come; every backend must gate the wake the same.
-pub async fn assert_scheduled_due<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::{DispatchOutcome, PendingInput, RunExecutionRequest};
     let run = RunId("run-1".to_string());
     store
@@ -459,7 +459,7 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::DispatchStore>(store: &
 /// Shared spec for the crash-retry budget and dead-letter (M5): a run reclaimed
 /// past its budget is dead-lettered and no longer claimed, and `requeue` brings
 /// it back. Every backend must match.
-pub async fn assert_dead_letter<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::RunExecutionRequest;
     let run = RunId("run-1".to_string());
     store
@@ -495,7 +495,7 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::DispatchStore>(store: &S)
 /// Shared spec for durable cancel: a pending or parked dispatch is cancellable
 /// (returns its thread id and is removed); a running one is not. Every backend
 /// must match.
-pub async fn assert_cancel<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::RunExecutionRequest;
     let thread = Some(ThreadId(THREAD.to_string()));
 
@@ -550,7 +550,7 @@ pub async fn assert_cancel<S: awaken_run_ingress::DispatchStore>(store: &S) {
 }
 
 /// Shared spec for priority, dedupe, and dead-letter GC. Every backend matches.
-pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SubmitOptions};
     let req = |id: &str| RunExecutionRequest::new(activation(id));
 
@@ -644,7 +644,7 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::DispatchStore>(sto
 
 /// Shared spec for the dispatch query surface (ADR-0025): list_dispatches reports
 /// each row's status and attempts. Every backend matches.
-pub async fn assert_list_dispatches<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::{DispatchStatus, RunExecutionRequest};
 
     // A fresh run is Pending; once claimed it is Running.
@@ -665,7 +665,7 @@ pub async fn assert_list_dispatches<S: awaken_run_ingress::DispatchStore>(store:
 
 /// Shared spec for the daemon's bulk lease renewal (ADR-0024): renewing an owner's
 /// in-flight leases keeps them from being reclaimed. Every backend matches.
-pub async fn assert_renew_owned_leases<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::RunExecutionRequest;
 
     // owner-a claims two runs at t=0 with a 100ms lease (expire at 100).
@@ -693,7 +693,7 @@ pub async fn assert_renew_owned_leases<S: awaken_run_ingress::DispatchStore>(sto
 
 /// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only
 /// dead-letters older than the cutoff; younger ones stay. Every backend matches.
-pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::RunExecutionRequest;
 
     // A run is dead-lettered at t=1000 (claimed with a 1ms lease at t=0, then
@@ -723,7 +723,7 @@ pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::DispatchStore>(sto
 /// Shared spec for epoch supersession (ADR-0022): a superseding submit abandons
 /// the thread's prior parked work; only the newest run stays claimable. Every
 /// backend matches.
-pub async fn assert_supersession<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SubmitOptions};
 
     // An older run parks on the thread.
@@ -769,7 +769,7 @@ pub async fn assert_supersession<S: awaken_run_ingress::DispatchStore>(store: &S
 
 /// Shared spec for the idle-thread inbox (ADR-0021): unbound input is listed for
 /// its thread, and a Done settle that consumed it removes it. Every backend matches.
-pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest};
     use awaken_runtime_contract::resume::ResumeResult;
 
@@ -812,7 +812,7 @@ pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::DispatchStore>(stor
 /// Shared spec for lease renewal (the multi-node liveness knob). A run's owner
 /// extends its lease so another node's recovery cannot steal it; a non-owner
 /// cannot renew; an un-renewed lease still expires. Every backend matches.
-pub async fn assert_lease_renewal<S: awaken_run_ingress::DispatchStore>(store: &S) {
+pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::RunExecutionRequest;
     let run = RunId("run-1".to_string());
     store

@@ -1355,6 +1355,7 @@ async fn finish(
             messages: new_messages,
             state: staged_state,
             events,
+            outbox: Vec::new(),
             waiting,
         };
         coordinator

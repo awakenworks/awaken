@@ -9,8 +9,8 @@
 //! control without owning the loop, agent truth, or a second commit mechanism
 //! (G6). Committed facts remain the single authority (G1/G13).
 //!
-//! The aggregates follow the run-ingress design's DDD split: [`RunDispatch`] owns
-//! delivery opportunity (claim/lease/recovery), [`PendingInbox`] owns the
+//! The aggregates follow the run-ingress design's DDD split: [`DispatchQueue`] owns
+//! delivery opportunity (claim/lease/recovery), [`Inbox`] owns the
 //! thread's pending input, and run outcome stays in committed facts, read back
 //! through the commit boundary's `ThreadReader`/`RunStore` ports.
 
@@ -32,9 +32,8 @@ mod worker;
 pub use capability::RunIngressCapabilities;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchStatus, DispatchStore,
-    DispatchSummary, Lease, MessageOutbox, PendingInbox, PendingInput, PendingRecord, RunDispatch,
-    SubmitOptions,
+    CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
+    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;

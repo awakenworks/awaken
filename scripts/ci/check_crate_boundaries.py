@@ -30,12 +30,49 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-runtime": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
+        # The in-memory reference store lives in its own backend crate (ADR-0039
+        # 2.2); the kernel re-exports it at `memory` for its default local wiring.
+        "awaken-store-inmem",
         "serde",
         "serde_json",
         "thiserror",
         "async-trait",
         "tokio",
         "tokio-util",
+    },
+    # In-memory reference store backend (ADR-0039 2.2): the neutral commit/read
+    # ports over `RwLock`/`HashMap`, dependency-free apart from the contract.
+    "awaken-store-inmem": {
+        "awaken-agent-contract",
+        "awaken-store-conformance",
+        "async-trait",
+        "serde_json",
+        "tokio",
+    },
+    # Filesystem store backend (ADR-0039 2.3): a durable append-only commit log
+    # with crash recovery, reusing the in-memory read model as its cache.
+    "awaken-store-fs": {
+        "awaken-agent-contract",
+        "awaken-store-inmem",
+        "awaken-store-conformance",
+        "async-trait",
+        "serde_json",
+        "tokio",
+    },
+    # Trait-generic store conformance suite (ADR-0039 2.6): backend-agnostic
+    # behavioural checks every store backend runs from its own test crate.
+    "awaken-store-conformance": {
+        "awaken-agent-contract",
+        "serde_json",
+    },
+    # Dispatch / run-ingress contract (ADR-0039 2.1): the durable-dispatch port
+    # surface, factored out of the host so backends can depend on it (G2).
+    "awaken-run-ingress-contract": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "async-trait",
+        "serde",
+        "thiserror",
     },
     # Builtin tools extension: owns concrete tool ids and runs them in-process
     # (ADR-0007). It implements the async `Tool`/`RawTool` ports (`async-trait`,
@@ -157,6 +194,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-store-schema",
+        "awaken-store-conformance",
         "awaken-scoped-migration",
         "async-trait",
         "rusqlite",
@@ -172,6 +210,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-run-ingress": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
+        "awaken-run-ingress-contract",
         "awaken-runtime",
         "awaken-ext-builtin-tools",
         "awaken-scoped-migration",
