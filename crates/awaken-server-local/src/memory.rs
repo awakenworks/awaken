@@ -8,13 +8,17 @@
 //! the host after a turn, and reads memories back for recall.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
-    EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryStore, RecallBounds, WriteMemoryTool,
+    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryStore, RecallBounds,
+    RecallSelector, SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent, parse_indices,
+    select_input,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_sandbox_local::LocalSandboxProvider;
@@ -25,6 +29,55 @@ use crate::subagent::run_configured_subrun;
 
 // The config pieces the host wires (registering the default extractor agent).
 pub use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
+
+/// A [`RecallSelector`] backed by the `memory-selector` sub-agent: a single-step,
+/// tool-free, plugin-free agent run through the shared aux-agent substrate. Because
+/// it activates no plugins, it cannot recurse into memory recall.
+pub(crate) struct AgentSelector {
+    llm: Arc<dyn LlmExecutor>,
+    provider: Arc<LocalSandboxProvider>,
+    catalog: Arc<AgentCatalog>,
+    seq: AtomicU64,
+}
+
+impl AgentSelector {
+    pub(crate) fn new(llm: Arc<dyn LlmExecutor>, model_ref: &str) -> Self {
+        let catalog = Arc::new(AgentCatalog::new().with_agent(default_selector_agent(
+            model_ref,
+            DEFAULT_SELECTOR_INSTRUCTIONS,
+        )));
+        let base = std::env::temp_dir()
+            .join("awaken-server-local")
+            .join(format!("{}-mem-select", std::process::id()));
+        Self {
+            llm,
+            provider: Arc::new(LocalSandboxProvider::new(base)),
+            catalog,
+            seq: AtomicU64::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl RecallSelector for AgentSelector {
+    async fn select(&self, query: &str, manifest: &[(usize, String)], max: usize) -> Vec<usize> {
+        let n = self.seq.fetch_add(1, Ordering::SeqCst);
+        let input = select_input(query, manifest, max);
+        let reply = run_configured_subrun(
+            &self.catalog,
+            &self.provider,
+            self.llm.clone(),
+            SELECTOR_AGENT_ID,
+            &format!("mem-select-{n}"),
+            input,
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap_or_default();
+        parse_indices(&reply, manifest.len(), max)
+    }
+}
 
 /// Message-id prefix for injected recall blocks. Shared so the host stamps it and
 /// extraction filters it (recall is context, not a conversation fact).
@@ -162,6 +215,32 @@ mod tests {
             role: Role::User,
             content: vec![ContentBlock::text(text)],
         }
+    }
+
+    /// A model that replies with fixed selection indices, standing in for the
+    /// `memory-selector` sub-agent.
+    struct IndexModel;
+
+    #[async_trait]
+    impl LlmExecutor for IndexModel {
+        async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("relevant: [1], [2]"),
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_selector_runs_the_subagent_and_parses_its_reply() {
+        let selector = AgentSelector::new(Arc::new(IndexModel), "stub");
+        let manifest = vec![
+            (0usize, "alpha".to_string()),
+            (1, "beta".to_string()),
+            (2, "gamma".to_string()),
+        ];
+        let picked = selector.select("which?", &manifest, 5).await;
+        assert_eq!(picked, vec![1, 2]);
     }
 
     #[tokio::test]

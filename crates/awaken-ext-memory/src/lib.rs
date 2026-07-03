@@ -23,9 +23,10 @@ pub mod tool;
 pub use plugin::{MEMORY_PLUGIN_ID, MemoryPlugin};
 
 pub use agent::{
-    DEFAULT_MEMORY_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, default_memory_agent,
+    DEFAULT_MEMORY_INSTRUCTIONS, DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID,
+    SELECTOR_AGENT_ID, default_memory_agent, default_selector_agent,
 };
 pub use recall::{RecallBounds, recall_block, recall_relevant};
-pub use select::select_relevant;
+pub use select::{RecallSelector, parse_indices, select_input, select_relevant};
 pub use store::{MemoryStore, sanitize_stem};
 pub use tool::{WriteMemoryTool, write_memory_descriptor};

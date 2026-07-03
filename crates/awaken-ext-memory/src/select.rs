@@ -2,11 +2,43 @@
 //! pick which memories are relevant to the user's message with a **single model
 //! call** — not a sub-agent. Cheap, structured-ish, and fail-open on error.
 
+use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 
 use crate::store::Entry;
+
+/// Selects which saved memories are relevant to a user's message. Implemented by
+/// the host — over a single model call or a `memory-selector` sub-agent — so the
+/// memory crate stays free of the aux-agent substrate (like goal's grader port).
+#[async_trait]
+pub trait RecallSelector: Send + Sync {
+    /// Return the indices (into the manifest) of the memories relevant to `query`,
+    /// at most `max`. Empty means none are relevant.
+    async fn select(&self, query: &str, manifest: &[(usize, String)], max: usize) -> Vec<usize>;
+}
+
+/// A one-line-per-memory manifest `(index, gist)` for a selector to choose from.
+pub fn manifest(entries: &[Entry]) -> Vec<(usize, String)> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (i, gist(e)))
+        .collect()
+}
+
+/// The user's message from a conversation (their most recent user text), used as
+/// the relevance query.
+pub fn query_from(conversation: &[Message]) -> String {
+    conversation
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::User)
+        .map(|m| m.text_content())
+        .unwrap_or_default()
+}
 
 const SELECT_SYSTEM: &str = "\
 You select which of a user's saved memories are relevant to their current message. \
@@ -28,7 +60,8 @@ fn gist(entry: &Entry) -> String {
 
 /// Parse the bracketed/loose integers in `reply` that fall in `0..n`, de-duplicated
 /// and in first-seen order, capped at `max`. Empty when the model picked none.
-fn parse_indices(reply: &str, n: usize, max: usize) -> Vec<usize> {
+/// Exposed so an agent-based selector can parse its sub-agent's reply.
+pub fn parse_indices(reply: &str, n: usize, max: usize) -> Vec<usize> {
     let mut out: Vec<usize> = Vec::new();
     let mut num = String::new();
     let flush = |num: &mut String, out: &mut Vec<usize>| {
@@ -50,6 +83,19 @@ fn parse_indices(reply: &str, n: usize, max: usize) -> Vec<usize> {
     flush(&mut num, &mut out);
     out.truncate(max);
     out
+}
+
+/// The user-message body handed to a `memory-selector` sub-agent: the query plus
+/// the numbered manifest. The agent replies with the relevant bracketed indices.
+pub fn select_input(query: &str, manifest: &[(usize, String)], max: usize) -> String {
+    let lines = manifest
+        .iter()
+        .map(|(i, g)| format!("[{i}] {g}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "User message:\n{query}\n\nSaved memories:\n{lines}\n\nReturn up to {max} relevant indices."
+    )
 }
 
 /// Choose the memories relevant to `query`, returning their indices into `entries`.
