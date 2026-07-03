@@ -74,7 +74,7 @@ impl PhaseHook for RecallHook {
         PhaseHookPoint::BeforeInference
     }
 
-    async fn on_phase(&self, _ctx: &PhaseContext) -> PhaseReaction {
+    async fn on_phase(&self, _ctx: &PhaseContext, _conversation: &[Message]) -> PhaseReaction {
         match recall_block(&self.store, &self.bounds) {
             Some(block) => PhaseReaction::context(vec![Message::text(
                 MessageId("mem-recall".into()),
@@ -120,11 +120,14 @@ mod tests {
         );
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook
-            .on_phase(&PhaseContext {
-                run_id: awaken_agent_contract::agent::run::Id("r".into()),
-                step: 0,
-                point: PhaseHookPoint::BeforeInference,
-            })
+            .on_phase(
+                &PhaseContext {
+                    run_id: awaken_agent_contract::agent::run::Id("r".into()),
+                    step: 0,
+                    point: PhaseHookPoint::BeforeInference,
+                },
+                &[],
+            )
             .await;
         assert!(reaction.state.is_empty(), "recall stages no state");
         assert_eq!(reaction.context.len(), 1);
@@ -141,11 +144,14 @@ mod tests {
         let plugin = MemoryPlugin::new(store_with(&[]), RecallBounds::default());
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook
-            .on_phase(&PhaseContext {
-                run_id: awaken_agent_contract::agent::run::Id("r".into()),
-                step: 0,
-                point: PhaseHookPoint::BeforeInference,
-            })
+            .on_phase(
+                &PhaseContext {
+                    run_id: awaken_agent_contract::agent::run::Id("r".into()),
+                    step: 0,
+                    point: PhaseHookPoint::BeforeInference,
+                },
+                &[],
+            )
             .await;
         assert!(reaction.context.is_empty());
     }
