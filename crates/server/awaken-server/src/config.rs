@@ -181,6 +181,11 @@ pub(crate) fn platform_plugin_capabilities() -> Vec<PluginCapability> {
             schema_keys: vec![awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()],
             config_schema: Some(awaken_ext_memory::memory_config_schema()),
         },
+        PluginCapability {
+            id: awaken_ext_compact::COMPACT_PLUGIN_ID.to_string(),
+            schema_keys: vec![awaken_ext_compact::COMPACT_PLUGIN_ID.to_string()],
+            config_schema: Some(awaken_ext_compact::compact_config_schema()),
+        },
     ]
 }
 

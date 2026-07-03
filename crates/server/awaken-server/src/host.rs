@@ -39,9 +39,11 @@ use awaken_runtime_contract::tool::ToolOutput;
 use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
+use awaken_ext_compact::{CompactConfig, CompactPlugin, Summarizer};
+
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
-use crate::compact::{Compaction, DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
+use crate::compact::AgentSummarizer;
 use crate::config::{build_runtime, server_config, server_gate};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
@@ -277,10 +279,12 @@ pub struct SharedHost {
     /// The relevance selector for recall (a `memory-selector` sub-agent), wired
     /// into the memory recall plugin when memory is enabled.
     memory_selector: Option<Arc<dyn awaken_ext_memory::RecallSelector>>,
-    /// Out-of-band context compaction, when enabled with [`with_compaction`]. After
-    /// a long turn it summarizes older history in the background; the main agent
-    /// runs a matching `KeepLast` window so the summary replaces the raw turns.
-    compaction: Option<Arc<Compaction>>,
+    /// Context compaction, when enabled with [`with_compaction`]. The config is
+    /// installed on the `compact` plugin (a `BeforeInference` hook); the summarizer
+    /// is a `compactor` sub-agent the plugin calls to fold the older slice. The main
+    /// agent runs a matching `KeepLast` window so those raw turns leave the model view.
+    compact_config: Option<CompactConfig>,
+    compact_summarizer: Option<Arc<dyn Summarizer>>,
 }
 
 impl SharedHost {
@@ -301,40 +305,28 @@ impl SharedHost {
             remote_agents: HashMap::new(),
             memory: None,
             memory_selector: None,
-            compaction: None,
+            compact_config: None,
+            compact_summarizer: None,
         }
     }
 
-    /// Enable background context compaction. Once a thread's committed history
-    /// exceeds `threshold` messages, a `compactor` sub-agent summarizes everything
-    /// but the last `keep_last` messages; the summary is prepended (as a system
-    /// message) to the next turn, and the main agent runs a matching `KeepLast`
+    /// Enable context compaction. Once a turn's conversation exceeds `threshold`
+    /// messages, the `compact` plugin's `BeforeInference` hook summarizes everything
+    /// but the last `keep_last` messages (through a `compactor` sub-agent) and injects
+    /// the summary as request-only context; the main agent runs a matching `KeepLast`
     /// window so those older raw turns drop from the model view. Non-destructive:
-    /// committed truth is never rewritten. Drain with [`drain_memory`] is separate;
-    /// compaction is drained by [`drain_compaction`](Self::drain_compaction).
+    /// committed truth is never rewritten (G13). The bounds are also exposed as the
+    /// `compact` config section, so a per-run `plugin_config` can override them.
     pub fn with_compaction(mut self, threshold: usize, keep_last: usize) -> Self {
-        let catalog = Arc::new(AgentCatalog::new().with_agent(default_compact_agent(
-            &self.model_ref,
-            DEFAULT_COMPACT_INSTRUCTIONS,
-        )));
-        self.compaction = Some(Arc::new(Compaction::new(
-            self.llm.clone(),
-            Arc::new(LocalSandboxProvider::new(sub_base("compact"))),
-            catalog,
-            Arc::new(BackgroundRuns::new()),
+        self.compact_config = Some(CompactConfig {
             threshold,
             keep_last,
+        });
+        self.compact_summarizer = Some(Arc::new(AgentSummarizer::new(
+            self.llm.clone(),
+            &self.model_ref,
         )));
         self
-    }
-
-    /// Await in-flight background compactions up to `timeout`. `true` if all
-    /// finished (or compaction is disabled).
-    pub async fn drain_compaction(&self, timeout: std::time::Duration) -> bool {
-        match &self.compaction {
-            Some(c) => c.drain(timeout).await,
-            None => true,
-        }
     }
 
     /// Enable out-of-band memory extraction, writing memories under `mem_dir`. After
@@ -579,13 +571,19 @@ impl SharedHost {
             runtime = runtime.with_plugin(Arc::new(plugin));
             plugin_ids.push(awaken_ext_memory::MEMORY_PLUGIN_ID.to_string());
         }
-        // When compaction is on, the main agent runs a rolling window matching the
-        // compactor's `keep_last`, so summarized older turns leave the model view.
-        let context_policy = match &self.compaction {
-            Some(c) => awaken_runtime_contract::resolved::ContextPolicy::KeepLast {
-                keep_last: c.keep_last(),
-            },
-            None => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        // Compaction is a plugin too: a BeforeInference hook that folds the older
+        // slice into a summary and injects it request-only. The main agent runs a
+        // rolling window matching the config's `keep_last`, so summarized older turns
+        // leave the model view.
+        let context_policy = match (&self.compact_config, &self.compact_summarizer) {
+            (Some(config), Some(summarizer)) => {
+                let keep_last = config.keep_last;
+                let plugin = CompactPlugin::new(config.clone()).with_summarizer(summarizer.clone());
+                runtime = runtime.with_plugin(Arc::new(plugin));
+                plugin_ids.push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
+                awaken_runtime_contract::resolved::ContextPolicy::KeepLast { keep_last }
+            }
+            _ => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         };
         let config = server_config(
             &self.model_ref,
@@ -718,13 +716,13 @@ impl SharedHost {
         Ok(result)
     }
 
-    /// Fire the out-of-band auxiliary agents (memory extraction, compaction) after a
-    /// step reaches a terminal phase. Shared by `run_turn` and `resume`, so a turn
-    /// that ended via a tool/delegation resume gets the same treatment as one that
-    /// ended directly. No-op while the run is still parked.
+    /// Fire the out-of-band auxiliary agents (memory extraction) after a step reaches
+    /// a terminal phase. Shared by `run_turn` and `resume`, so a turn that ended via a
+    /// tool/delegation resume gets the same treatment as one that ended directly.
+    /// No-op while the run is still parked. (Compaction is not out-of-band: it runs
+    /// inline as the `compact` plugin's `BeforeInference` hook.)
     async fn run_aux_after_step(&self, ctx: &Arc<SessionCtx>, thread: &str, phase: &Phase) {
         self.maybe_extract_memory(ctx, thread, phase).await;
-        self.maybe_compact(ctx, thread, phase).await;
     }
 
     /// Fire out-of-band memory extraction when a turn reaches a terminal phase
@@ -749,30 +747,6 @@ impl SharedHost {
         st.last_extracted_len = committed.len();
         drop(st);
         mem.trigger(thread, delta).await;
-    }
-
-    /// Fire background compaction when a terminal turn's history is long. On
-    /// completion the summary is prepended to the thread's next turn as a system
-    /// message; the raw older turns drop from the model view via the agent's
-    /// `KeepLast` window. Fire-and-forget (drained at shutdown).
-    async fn maybe_compact(&self, ctx: &Arc<SessionCtx>, thread: &str, phase: &Phase) {
-        if matches!(phase, Phase::Waiting) {
-            return;
-        }
-        if let Some(compaction) = &self.compaction {
-            let committed = ctx.commit.committed_messages(&ctx.thread_id);
-            let ctx_for_delivery = ctx.clone();
-            compaction
-                .trigger(thread, committed, move |summary| async move {
-                    ctx_for_delivery
-                        .state
-                        .lock()
-                        .await
-                        .pending_system
-                        .push(format!("Summary of earlier conversation: {summary}"));
-                })
-                .await;
-        }
     }
 
     /// Resume the run parked on `thread`, answering `tool_use_id` with `resume`.
@@ -1189,28 +1163,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compaction_summary_reaches_the_next_turn() {
+    async fn compaction_summary_reaches_the_same_long_turn() {
         let host = SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction(1, 1);
         let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
 
-        // Turn 1: 2 messages committed (> threshold 1) → fires compaction.
+        // Turn 1: only the single user message → below threshold, no summary injected.
         let r1 = host.run_turn("t-c", user("u1")).await.expect("turn 1");
         assert!(matches!(r1.phase, Phase::Ended(_)));
-        assert!(
-            host.drain_compaction(std::time::Duration::from_secs(10))
-                .await
-        );
-
-        // Turn 2: the delivered summary is now a pending system message the model sees.
-        let r2 = host.run_turn("t-c", user("u2")).await.expect("turn 2");
-        let reply = r2
+        let reply1 = r1
             .new_messages
             .iter()
             .rev()
             .find(|m| m.role == Role::Assistant)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
-        assert_eq!(reply, "seen-summary");
+        assert_eq!(reply1, "no-summary", "short turn is not compacted");
+
+        // Turn 2: the conversation now exceeds the threshold, so the compact plugin's
+        // BeforeInference hook summarizes the older slice inline and the model sees it.
+        let r2 = host.run_turn("t-c", user("u2")).await.expect("turn 2");
+        let reply2 = r2
+            .new_messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        assert_eq!(reply2, "seen-summary");
     }
 
     /// The extractor saves "the user prefers tea"; the main agent answers "tea"
