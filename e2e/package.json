@@ -7,7 +7,8 @@
   "scripts": {
     "test": "node managed_e2e.mjs && node managed_capabilities_e2e.mjs && node managed_hitl_e2e.mjs && node managed_outcome_e2e.mjs && node managed_custom_e2e.mjs && node managed_delegation_e2e.mjs && node managed_multimodal_e2e.mjs && node managed_restart_e2e.mjs && node managed_statemachine_e2e.mjs && node ai_sdk_e2e.mjs && node ag_ui_e2e.mjs && node a2a_e2e.mjs",
     "test:protocols": "node managed_multimodal_e2e.mjs && node ai_sdk_e2e.mjs && node ag_ui_e2e.mjs && node a2a_e2e.mjs",
-    "test:durable": "AWAKEN_STORAGE_DIR=${AWAKEN_STORAGE_DIR:-/tmp/awaken-e2e-store} node managed_e2e.mjs && AWAKEN_STORAGE_DIR=${AWAKEN_STORAGE_DIR:-/tmp/awaken-e2e-store} node managed_hitl_e2e.mjs && node managed_restart_e2e.mjs"
+    "test:durable": "AWAKEN_STORAGE_DIR=${AWAKEN_STORAGE_DIR:-/tmp/awaken-e2e-store} node managed_e2e.mjs && AWAKEN_STORAGE_DIR=${AWAKEN_STORAGE_DIR:-/tmp/awaken-e2e-store} node managed_hitl_e2e.mjs && node managed_restart_e2e.mjs",
+    "test:fs": "AWAKEN_STORAGE_DIR=${AWAKEN_STORAGE_DIR:-/tmp/awaken-fs-e2e} AWAKEN_STORE=fs node managed_statemachine_e2e.mjs && AWAKEN_STORAGE_DIR=${AWAKEN_STORAGE_DIR:-/tmp/awaken-fs-e2e} AWAKEN_STORE=fs node ai_sdk_e2e.mjs && AWAKEN_STORAGE_DIR=${AWAKEN_STORAGE_DIR:-/tmp/awaken-fs-e2e} AWAKEN_STORE=fs node ag_ui_e2e.mjs && AWAKEN_STORAGE_DIR=${AWAKEN_STORAGE_DIR:-/tmp/awaken-fs-e2e} AWAKEN_STORE=fs node a2a_e2e.mjs"
   },
   "dependencies": {
     "@a2a-js/sdk": "^0.3.13",

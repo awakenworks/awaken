@@ -37,6 +37,7 @@ use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::ToolOutput;
 use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_store_fs::FsCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin, Summarizer};
@@ -529,18 +530,26 @@ impl SharedHost {
         )))
     }
 
-    /// Build a thread's commit boundary: a durable SQLite database under the
-    /// configured store directory, or an in-memory coordinator when none is set.
-    fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
-        match &self.store_dir {
-            Some(dir) => {
-                std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
-                let path = dir.join(format!("{}.db", sanitize_thread(thread)));
-                let sqlite = SqliteCommitCoordinator::open(&path.to_string_lossy())
-                    .map_err(|e| HostError::internal(e.to_string()))?;
-                Ok(HostCommit::Sqlite(sqlite))
-            }
-            None => Ok(HostCommit::Memory(MemoryCommitCoordinator::new())),
+    /// Build a thread's commit boundary under the configured store directory: a
+    /// durable SQLite database (default) or the filesystem append-log backend when
+    /// `AWAKEN_STORE=fs`, or an in-memory coordinator when no store dir is set.
+    async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
+        let Some(dir) = &self.store_dir else {
+            return Ok(HostCommit::Memory(MemoryCommitCoordinator::new()));
+        };
+        std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
+        let fs_backend = std::env::var("AWAKEN_STORE").is_ok_and(|value| value == "fs");
+        if fs_backend {
+            let thread_dir = dir.join(sanitize_thread(thread));
+            let fs = FsCommitCoordinator::open(&thread_dir)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?;
+            Ok(HostCommit::Fs(fs))
+        } else {
+            let path = dir.join(format!("{}.db", sanitize_thread(thread)));
+            let sqlite = SqliteCommitCoordinator::open(&path.to_string_lossy())
+                .map_err(|e| HostError::internal(e.to_string()))?;
+            Ok(HostCommit::Sqlite(sqlite))
         }
     }
 
@@ -556,7 +565,7 @@ impl SharedHost {
                 .map_err(|e| HostError::internal(e.to_string()))?,
         );
         let thread_id = ThreadId(thread.to_string());
-        let commit = Arc::new(self.build_commit(thread)?);
+        let commit = Arc::new(self.build_commit(thread).await?);
         let mut runtime = build_runtime(self.llm.clone(), &env);
         // Delegation is a runtime concern: inject the resolver so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.

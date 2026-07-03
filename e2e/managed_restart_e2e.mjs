@@ -32,7 +32,7 @@ async function main() {
   fs.mkdirSync(STORE_DIR, { recursive: true });
 
   // ---- server A: start a run that parks on a tool confirmation ----
-  const a = spawnServer('probe', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR });
+  const a = spawnServer('probe', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_STORE: 'sqlite' });
   await waitForPort(PORT);
 
   const session = await client.beta.sessions.create({
@@ -59,7 +59,7 @@ async function main() {
 
   // ---- kill A, start a fresh server B over the SAME storage directory ----
   await stopServer(a.server);
-  const b = spawnServer('probe', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR });
+  const b = spawnServer('probe', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_STORE: 'sqlite' });
   await waitForPort(PORT);
 
   // The durable truth survived the process death (this is the guarantee the
