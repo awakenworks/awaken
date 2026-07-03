@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_run_ingress::{
-    DurableRunIngress, PendingInbox, PendingInput, PostgresDispatchStore, RunDispatch,
+    DispatchQueue, DurableRunIngress, Inbox, PendingInput, PostgresDispatchStore,
     RunExecutionRequest,
 };
 use awaken_runtime::RunIngress;

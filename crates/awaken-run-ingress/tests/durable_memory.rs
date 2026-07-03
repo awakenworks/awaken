@@ -15,8 +15,8 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_builtin_tools::MessageSender;
 use awaken_run_ingress::{
-    DispatchOutcome, DispatchWorker, DurableRunIngress, MemoryDispatchStore, OutboxMessageSender,
-    PendingInbox, PendingInput, RunDispatch, RunExecutionRequest, RunIngressCapabilities,
+    DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, MemoryDispatchStore,
+    OutboxMessageSender, PendingInput, RunExecutionRequest, RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress};

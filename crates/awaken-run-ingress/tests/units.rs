@@ -9,7 +9,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::stream::sink::Sink;
 use awaken_run_ingress::{
-    Clock, DispatchWorker, DurableRunIngress, ManualClock, MemoryDispatchStore, RunDispatch,
+    Clock, DispatchQueue, DispatchWorker, DurableRunIngress, ManualClock, MemoryDispatchStore,
     RunExecutionContext, RunExecutionRequest, SystemClock,
 };
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};

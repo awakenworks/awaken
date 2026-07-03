@@ -18,8 +18,8 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchStatus, DispatchSummary, Lease,
-    MessageOutbox, PendingInbox, PendingInput, PendingRecord, RunDispatch, SubmitOptions,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
+    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::request::RunExecutionRequest;
@@ -88,7 +88,7 @@ impl PostgresDispatchStore {
 }
 
 #[async_trait]
-impl RunDispatch for PostgresDispatchStore {
+impl DispatchQueue for PostgresDispatchStore {
     async fn enqueue_with(
         &self,
         request: RunExecutionRequest,
@@ -493,7 +493,7 @@ impl RunDispatch for PostgresDispatchStore {
 }
 
 #[async_trait]
-impl PendingInbox for PostgresDispatchStore {
+impl Inbox for PostgresDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let p = NS;
         let result = sqlx::query(&format!(
@@ -600,7 +600,7 @@ impl PendingInbox for PostgresDispatchStore {
 }
 
 #[async_trait]
-impl MessageOutbox for PostgresDispatchStore {
+impl Outbox for PostgresDispatchStore {
     async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let p = NS;
         let result = sqlx::query(&format!(

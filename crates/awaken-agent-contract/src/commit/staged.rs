@@ -20,6 +20,11 @@ pub struct ThreadCommit {
     pub messages: Vec<crate::agent::message::Message>,
     pub state: Vec<crate::agent::state::Command>,
     pub events: Vec<crate::event::draft::Draft>,
+    /// Cross-thread deliveries staged to commit atomically with this checkpoint
+    /// (ADR-0039 D3, G13). Empty by default; a durable backend relays them once
+    /// the commit is visible. Never a parallel writer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outbox: Vec<OutboxIntent>,
     /// A same-run pause committed atomically with this checkpoint. `Some` parks
     /// the run; `None` clears any prior ticket (resume/terminal).
     #[serde(default)]
@@ -55,6 +60,17 @@ impl ThreadCommit {
         }
         Ok(())
     }
+}
+
+/// A cross-thread delivery staged inside a [`ThreadCommit`] so it becomes durable
+/// in the same transaction as the checkpoint (G13). The neutral agent-truth shape:
+/// a target thread and an opaque payload, keyed by `message_id` for idempotent
+/// relay into the target thread's pending input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutboxIntent {
+    pub message_id: String,
+    pub target_thread: crate::agent::thread::Id,
+    pub payload: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

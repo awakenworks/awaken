@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_config_store::{
-    AgentConfig, ConfigStore, SqliteConfigStore, StoredPublication, compile,
+    AgentConfig, ConfigRegistry, SqliteConfigStore, StoredPublication, compile,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;

@@ -14,8 +14,8 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_run_ingress::{
-    DispatchServiceConfig, DurableRunIngress, ManualClock, MemoryDispatchStore, PendingInput,
-    RunDispatch, RunExecutionRequest, SystemClock,
+    DispatchQueue, DispatchServiceConfig, DurableRunIngress, ManualClock, MemoryDispatchStore,
+    PendingInput, RunExecutionRequest, SystemClock,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::ResumeResult;
