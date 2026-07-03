@@ -426,7 +426,9 @@ async fn drive(
         }
         let env: &ResolvedExecutionEnv = live_env.as_ref().unwrap_or(env);
 
-        // Phase hooks contribute state through the commit path only (G9/G30).
+        // Phase hooks stage state (G9/G30). A BeforeInference hook may also inject
+        // request-only context (e.g. recalled memories), prepended to this
+        // inference and never committed.
         run_phase_hooks(
             env,
             run_id,
@@ -435,7 +437,7 @@ async fn drive(
             &mut staged_state,
         )
         .await;
-        run_phase_hooks(
+        let prelude = run_phase_hooks(
             env,
             run_id,
             step,
@@ -446,7 +448,7 @@ async fn drive(
 
         let request = build_chat_request(
             &resolved.spec,
-            &context.context_prelude,
+            &prelude,
             &transcript,
             &env.dynamic_descriptors(),
         );
@@ -748,21 +750,29 @@ async fn infer_with_retry(
 
 /// Run every hook registered for one phase point, in dependency order, staging
 /// their state commands. Hooks return data; they never write a store (G9/G30).
+/// Run every phase hook registered for `point`, staging their state commands and
+/// collecting their request-only context messages. The context is meaningful only
+/// at `BeforeInference` (where the caller prepends it to the request); other points
+/// discard it.
 async fn run_phase_hooks(
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
     step: usize,
     point: PhaseHookPoint,
     staged_state: &mut Vec<StateCommand>,
-) {
+) -> Vec<Message> {
+    let mut context = Vec::new();
     for hook in env.hooks_for(point) {
         let ctx = PhaseContext {
             run_id: run_id.clone(),
             step,
             point,
         };
-        staged_state.extend(hook.on_phase(&ctx).await);
+        let reaction = hook.on_phase(&ctx).await;
+        staged_state.extend(reaction.state);
+        context.extend(reaction.context);
     }
+    context
 }
 
 /// The runtime's view of a run-end consultation, folding the registered guards'

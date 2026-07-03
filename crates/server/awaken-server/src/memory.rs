@@ -14,7 +14,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
-    EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryStore, RecallBounds, WriteMemoryTool, recall_block,
+    EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryStore, RecallBounds, WriteMemoryTool,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_sandbox_local::LocalSandboxProvider;
@@ -104,31 +104,15 @@ impl MemoryExtraction {
             .await;
     }
 
-    /// Load saved memories as one bounded recall block for injection into a new
-    /// conversation, or `None` when nothing is saved. Relevance-aware: a small
-    /// store injects the newest memories bounded (①); a large one selects the ones
-    /// relevant to `query` with a single model call (③). Both live in
-    /// `awaken-ext-memory`.
-    pub async fn recall_for(&self, query: &str) -> Option<String> {
-        match self
-            .catalog
-            .resolve(MEMORY_AGENT_ID)
-            .map(|c| c.snapshot().resolved_spec.model_binding.clone())
-        {
-            Some(model) => {
-                awaken_ext_memory::recall_relevant(
-                    &self.store,
-                    &self.bounds,
-                    self.llm.as_ref(),
-                    &model,
-                    query,
-                )
-                .await
-            }
-            // No extractor agent registered → no selection model; fall back to the
-            // whole-store bounded recall.
-            None => recall_block(&self.store, &self.bounds),
-        }
+    /// The memory store (shared with the recall plugin, which reads it at
+    /// `BeforeInference`).
+    pub fn store(&self) -> MemoryStore {
+        self.store.clone()
+    }
+
+    /// The recall bounds (shared with the recall plugin).
+    pub fn bounds(&self) -> RecallBounds {
+        self.bounds.clone()
     }
 
     /// Await in-flight extractions up to `timeout` (shutdown flush).
@@ -211,9 +195,7 @@ mod tests {
             "user likes rust"
         );
         // The read side surfaces it through bounded recall.
-        let block = extraction
-            .recall_for("what do i like?")
-            .await
+        let block = awaken_ext_memory::recall_block(&extraction.store(), &extraction.bounds())
             .expect("recall block");
         assert!(block.contains("user likes rust"), "got: {block}");
     }
