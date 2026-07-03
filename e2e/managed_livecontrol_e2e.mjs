@@ -51,6 +51,19 @@ async function main() {
     const runId = sub.body.run_id;
     pass(`run ${runId} background-submitted; daemon parks it on the write tool`);
 
+    // The queue snapshot shows the run once it is enqueued/parked (ADR-0025).
+    let snapshotted = false;
+    for (let i = 0; i < 100; i++) {
+      const snap = await (await fetch(`${BASE}/v1/durable/threads/${T}/dispatches`)).json();
+      if ((snap.dispatches ?? []).some((d) => d.run_id === runId)) {
+        snapshotted = true;
+        break;
+      }
+      await sleep(50);
+    }
+    assert.ok(snapshotted, 'the dispatch queue snapshot lists the run (list_dispatches)');
+    pass('dispatch queue snapshot surfaces the run and its status (ADR-0025)');
+
     // Give the daemon a moment to claim + park the run, then cancel it by id.
     let cancelled = false;
     for (let i = 0; i < 100; i++) {
