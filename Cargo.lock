@@ -459,8 +459,10 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-ext-builtin-tools",
+ "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]
