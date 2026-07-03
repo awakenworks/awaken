@@ -30,7 +30,10 @@ use serde_json::Value;
 
 /// The `awaken-provisioning-contract` seam realized locally (ADR-0041). Additive:
 /// the pre-contract `Environment`/`SandboxProvider` surface below is unchanged.
+mod artifacts;
+mod namespace;
 mod provider;
+pub use namespace::{NamespaceProvider, bubblewrap_argv, sandbox_exec_argv};
 pub use provider::{LocalProcess, LocalProvider, LocalSandbox};
 
 /// A logical path escaped its environment root.

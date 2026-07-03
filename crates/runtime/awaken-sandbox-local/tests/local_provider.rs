@@ -3,7 +3,7 @@
 //! process lifecycle. Trusted Workdir tier (not tool-transparent).
 
 use awaken_provisioning_contract as pc;
-use awaken_provisioning_contract::{ProcessHandle, Sandbox, SandboxProvider};
+use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_local::LocalProvider;
 
 fn spec(scope: &str) -> pc::SandboxSpec {
