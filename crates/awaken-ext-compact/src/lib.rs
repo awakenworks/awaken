@@ -11,9 +11,15 @@
 //! They share only the aux-agent substrate.
 
 pub mod agent;
+pub mod config;
 pub mod fold;
+pub mod plugin;
 
 pub use agent::{
     COMPACT_AGENT_ID, DEFAULT_COMPACT_INSTRUCTIONS, SUMMARIZE_PROMPT, default_compact_agent,
 };
+pub use config::CompactConfig;
 pub use fold::fold_point;
+pub use plugin::{
+    COMPACT_PLUGIN_ID, CompactPlugin, Summarizer, config_schema as compact_config_schema,
+};

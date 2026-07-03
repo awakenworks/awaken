@@ -249,13 +249,8 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
         assert!(matches!(phase.phase, Phase::Ended(_)));
     }
 
-    assert!(
-        host.drain_compaction(Duration::from_secs(90)).await,
-        "compaction should finish against the live model"
-    );
-
-    // A follow-up turn still completes: the summary was injected and the windowed
-    // context is coherent for the live model.
+    // A follow-up turn still completes: the compact plugin summarized the older slice
+    // inline (BeforeInference) and the windowed context is coherent for the live model.
     let phase = host
         .run_turn(
             "compact-e2e",

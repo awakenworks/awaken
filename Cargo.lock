@@ -179,7 +179,12 @@ dependencies = [
 name = "awaken-ext-compact"
 version = "1.0.0-dev"
 dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
  "awaken-runtime-contract",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
