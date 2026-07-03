@@ -901,7 +901,7 @@ pub fn build_statemachine_router() -> Router {
             "initial": "s0",
             "terminal": ["s1"],
             "transitions": [{
-                "on": "glob",
+                "on": "glob(pattern ~ \"*\")",
                 "from": ["s0"],
                 "to": "s1",
                 "emit": { "target": "system", "content": "advanced to s1", "cooldown_turns": 0 },
