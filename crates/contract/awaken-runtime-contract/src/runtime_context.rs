@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
@@ -24,6 +25,12 @@ pub struct RuntimeRunContext {
     pub reader: Option<Arc<dyn ThreadReader>>,
     /// Cooperative cancellation observed at step boundaries.
     pub cancellation: Option<CancellationToken>,
+    /// Request-only context prepended to every inference this attempt, *never*
+    /// committed to the transcript — e.g. recalled memories or retrieved docs. The
+    /// caller re-supplies it per attempt; it stays out of durable truth (G13), so
+    /// it is not replayed and not re-extracted. Injected after the agent
+    /// instructions, before the conversation.
+    pub context_prelude: Vec<Message>,
 }
 
 impl RuntimeRunContext {
@@ -54,6 +61,14 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
         self.cancellation = Some(token);
+        self
+    }
+
+    /// Provide request-only context messages prepended to every inference this
+    /// attempt (never committed). Re-supply per attempt.
+    #[must_use]
+    pub fn with_context_prelude(mut self, prelude: Vec<Message>) -> Self {
+        self.context_prelude = prelude;
         self
     }
 
