@@ -467,6 +467,7 @@ name = "awaken-sandbox-local"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-agent-channel",
  "awaken-ext-builtin-tools",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",

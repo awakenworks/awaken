@@ -426,6 +426,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Implements the neutral sandbox ports (ADR-0041): a LocalProvider over the
         # provisioning contract, alongside the pre-contract Environment surface.
         "awaken-provisioning-contract",
+        # The tool-transparent capability: spawn_agent returns a pipe-backed AgentChannel.
+        "awaken-agent-channel",
         "awaken-ext-builtin-tools",
         "async-trait",
         "serde_json",
