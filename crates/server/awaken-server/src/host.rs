@@ -631,12 +631,14 @@ impl SharedHost {
     }
 
     /// All messages committed on `thread` so far (the source of history). Empty
-    /// when the thread has not run yet.
+    /// when the thread has not run yet. Resolves through `ctx_for`, so a durable
+    /// thread is hydrated from its store on demand — a fresh process reads a
+    /// parked thread's committed transcript even before any session touches it
+    /// (ADR-0039), enabling post-restart session rehydration.
     pub async fn committed_messages(&self, thread: &str) -> Vec<Message> {
-        let sessions = self.sessions.lock().await;
-        match sessions.get(thread) {
-            Some(ctx) => ctx.commit.committed_messages(&ctx.thread_id),
-            None => Vec::new(),
+        match self.ctx_for(thread).await {
+            Ok(ctx) => ctx.commit.committed_messages(&ctx.thread_id),
+            Err(_) => Vec::new(),
         }
     }
 
