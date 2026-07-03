@@ -134,6 +134,20 @@ mod tests {
         assert_eq!(&got, b"do the task\n");
     }
 
+    #[tokio::test]
+    async fn split_channel_flush_and_shutdown_delegate_to_the_writer() {
+        let (writer, mut peer) = tokio::io::duplex(64);
+        let (reader, _unused) = tokio::io::duplex(64);
+        let mut chan = SplitChannel::new(reader, writer);
+        chan.write_all(b"bye").await.unwrap();
+        chan.flush().await.unwrap();
+        chan.shutdown().await.unwrap();
+        // The peer sees EOF after shutdown, having received the bytes.
+        let mut got = Vec::new();
+        peer.read_to_end(&mut got).await.unwrap();
+        assert_eq!(got, b"bye");
+    }
+
     struct FakeTransport {
         transparent: bool,
     }
