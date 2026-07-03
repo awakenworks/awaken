@@ -274,6 +274,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-protocol-transport",
  "axum",
  "http-body-util",
  "serde",
@@ -290,6 +291,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-protocol-transport",
  "axum",
  "http-body-util",
  "serde",
@@ -306,6 +308,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-protocol-transport",
  "axum",
  "http-body-util",
  "serde",
@@ -330,6 +333,16 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+]
+
+[[package]]
+name = "awaken-protocol-transport"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -470,6 +483,7 @@ dependencies = [
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",
  "awaken-protocol-managed",
+ "awaken-protocol-transport",
  "awaken-provider-genai",
  "awaken-run-ingress",
  "awaken-runtime",

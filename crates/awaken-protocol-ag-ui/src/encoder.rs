@@ -4,9 +4,8 @@
 //! thread/run ids and mints tool-result message ids, so it is stateful `&mut self`.
 
 use awaken_agent_contract::project::{AgentEvent, Transcoder, project_messages, terminal_waiting};
+use awaken_protocol_transport::{StepOutcome, blocks_text};
 
-use crate::port::StepOutcome;
-use crate::request::blocks_text;
 use crate::types::AgUiEvent;
 
 /// The AG-UI transcoder: neutral projection events to AG-UI events. `RunStarted`
@@ -113,9 +112,9 @@ pub fn encode_step(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::port::Pending;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id, Message, Role};
+    use awaken_protocol_transport::Pending;
     use serde_json::json;
 
     #[test]

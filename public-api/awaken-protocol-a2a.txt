@@ -1,4 +1,9 @@
 pub mod awaken_protocol_a2a
+pub use awaken_protocol_a2a::DriverError
+pub use awaken_protocol_a2a::Pending
+pub use awaken_protocol_a2a::ProtocolRuntime
+pub use awaken_protocol_a2a::Resume
+pub use awaken_protocol_a2a::StepOutcome
 pub mod awaken_protocol_a2a::client
 pub struct awaken_protocol_a2a::client::ClientError(pub alloc::string::String)
 impl awaken_protocol_a2a::client::ClientError
@@ -48,75 +53,7 @@ pub async fn awaken_protocol_a2a::client::send_message(&dyn awaken_protocol_a2a:
 pub fn awaken_protocol_a2a::client::task_cancel_path(&str) -> alloc::string::String
 pub fn awaken_protocol_a2a::client::task_path(&str) -> alloc::string::String
 pub mod awaken_protocol_a2a::encoder
-pub fn awaken_protocol_a2a::encoder::encode_task(&str, &[awaken_agent_contract::agent::message::Message], &awaken_protocol_a2a::port::StepOutcome) -> awaken_protocol_a2a::types::Task
-pub mod awaken_protocol_a2a::port
-pub enum awaken_protocol_a2a::port::DriverError
-pub awaken_protocol_a2a::port::DriverError::BadRequest(alloc::string::String)
-pub awaken_protocol_a2a::port::DriverError::Internal(alloc::string::String)
-impl core::error::Error for awaken_protocol_a2a::port::DriverError
-impl core::fmt::Debug for awaken_protocol_a2a::port::DriverError
-pub fn awaken_protocol_a2a::port::DriverError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_protocol_a2a::port::DriverError
-pub fn awaken_protocol_a2a::port::DriverError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_protocol_a2a::port::DriverError
-impl core::marker::Send for awaken_protocol_a2a::port::DriverError
-impl core::marker::Sync for awaken_protocol_a2a::port::DriverError
-impl core::marker::Unpin for awaken_protocol_a2a::port::DriverError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::port::DriverError
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::port::DriverError
-pub enum awaken_protocol_a2a::port::Resume
-pub awaken_protocol_a2a::port::Resume::ClientResult
-pub awaken_protocol_a2a::port::Resume::ClientResult::content: alloc::string::String
-pub awaken_protocol_a2a::port::Resume::ClientResult::is_error: bool
-pub awaken_protocol_a2a::port::Resume::Confirm
-pub awaken_protocol_a2a::port::Resume::Confirm::allow: bool
-pub awaken_protocol_a2a::port::Resume::Confirm::note: core::option::Option<alloc::string::String>
-impl core::clone::Clone for awaken_protocol_a2a::port::Resume
-pub fn awaken_protocol_a2a::port::Resume::clone(&self) -> awaken_protocol_a2a::port::Resume
-impl core::fmt::Debug for awaken_protocol_a2a::port::Resume
-pub fn awaken_protocol_a2a::port::Resume::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_protocol_a2a::port::Resume
-impl core::marker::Send for awaken_protocol_a2a::port::Resume
-impl core::marker::Sync for awaken_protocol_a2a::port::Resume
-impl core::marker::Unpin for awaken_protocol_a2a::port::Resume
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::port::Resume
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::port::Resume
-pub struct awaken_protocol_a2a::port::Pending
-pub awaken_protocol_a2a::port::Pending::client_executed: bool
-pub awaken_protocol_a2a::port::Pending::input: serde_json::value::Value
-pub awaken_protocol_a2a::port::Pending::name: alloc::string::String
-pub awaken_protocol_a2a::port::Pending::tool_use_id: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::port::Pending
-pub fn awaken_protocol_a2a::port::Pending::clone(&self) -> awaken_protocol_a2a::port::Pending
-impl core::fmt::Debug for awaken_protocol_a2a::port::Pending
-pub fn awaken_protocol_a2a::port::Pending::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_protocol_a2a::port::Pending
-impl core::marker::Send for awaken_protocol_a2a::port::Pending
-impl core::marker::Sync for awaken_protocol_a2a::port::Pending
-impl core::marker::Unpin for awaken_protocol_a2a::port::Pending
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::port::Pending
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::port::Pending
-pub struct awaken_protocol_a2a::port::StepOutcome
-pub awaken_protocol_a2a::port::StepOutcome::exhausted: bool
-pub awaken_protocol_a2a::port::StepOutcome::new_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_protocol_a2a::port::StepOutcome::pending: core::option::Option<awaken_protocol_a2a::port::Pending>
-pub awaken_protocol_a2a::port::StepOutcome::waiting: bool
-impl core::clone::Clone for awaken_protocol_a2a::port::StepOutcome
-pub fn awaken_protocol_a2a::port::StepOutcome::clone(&self) -> awaken_protocol_a2a::port::StepOutcome
-impl core::fmt::Debug for awaken_protocol_a2a::port::StepOutcome
-pub fn awaken_protocol_a2a::port::StepOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_protocol_a2a::port::StepOutcome
-impl core::marker::Send for awaken_protocol_a2a::port::StepOutcome
-impl core::marker::Sync for awaken_protocol_a2a::port::StepOutcome
-impl core::marker::Unpin for awaken_protocol_a2a::port::StepOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::port::StepOutcome
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::port::StepOutcome
-pub trait awaken_protocol_a2a::port::A2aRuntime: core::marker::Send + core::marker::Sync
-pub fn awaken_protocol_a2a::port::A2aRuntime::history<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_agent_contract::agent::message::Message>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_protocol_a2a::port::A2aRuntime::model(&self) -> alloc::string::String
-pub fn awaken_protocol_a2a::port::A2aRuntime::pending<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_a2a::port::Pending>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_protocol_a2a::port::A2aRuntime::resume<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_protocol_a2a::port::Resume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::port::StepOutcome, awaken_protocol_a2a::port::DriverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_protocol_a2a::port::A2aRuntime::run_turn<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::port::StepOutcome, awaken_protocol_a2a::port::DriverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_protocol_a2a::encoder::encode_task(&str, &[awaken_agent_contract::agent::message::Message], &awaken_protocol_transport::port::StepOutcome) -> awaken_protocol_a2a::types::Task
 pub mod awaken_protocol_a2a::request
 pub struct awaken_protocol_a2a::request::Processed
 pub awaken_protocol_a2a::request::Processed::agent_id: core::option::Option<alloc::string::String>
@@ -133,7 +70,7 @@ pub fn awaken_protocol_a2a::request::process(awaken_protocol_a2a::types::SendMes
 pub mod awaken_protocol_a2a::router
 pub const awaken_protocol_a2a::router::JSONRPC_PATH: &str
 pub fn awaken_protocol_a2a::router::agent_card(&str) -> awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::router::router(alloc::sync::Arc<dyn awaken_protocol_a2a::port::A2aRuntime>) -> axum::routing::Router
+pub fn awaken_protocol_a2a::router::router(alloc::sync::Arc<dyn awaken_protocol_transport::port::ProtocolRuntime>) -> axum::routing::Router
 pub mod awaken_protocol_a2a::types
 pub enum awaken_protocol_a2a::types::MessageRole
 pub awaken_protocol_a2a::types::MessageRole::Agent
@@ -491,37 +428,6 @@ impl core::marker::Sync for awaken_protocol_a2a::types::TaskStatus
 impl core::marker::Unpin for awaken_protocol_a2a::types::TaskStatus
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::TaskStatus
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::TaskStatus
-pub enum awaken_protocol_a2a::DriverError
-pub awaken_protocol_a2a::DriverError::BadRequest(alloc::string::String)
-pub awaken_protocol_a2a::DriverError::Internal(alloc::string::String)
-impl core::error::Error for awaken_protocol_a2a::port::DriverError
-impl core::fmt::Debug for awaken_protocol_a2a::port::DriverError
-pub fn awaken_protocol_a2a::port::DriverError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_protocol_a2a::port::DriverError
-pub fn awaken_protocol_a2a::port::DriverError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_protocol_a2a::port::DriverError
-impl core::marker::Send for awaken_protocol_a2a::port::DriverError
-impl core::marker::Sync for awaken_protocol_a2a::port::DriverError
-impl core::marker::Unpin for awaken_protocol_a2a::port::DriverError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::port::DriverError
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::port::DriverError
-pub enum awaken_protocol_a2a::Resume
-pub awaken_protocol_a2a::Resume::ClientResult
-pub awaken_protocol_a2a::Resume::ClientResult::content: alloc::string::String
-pub awaken_protocol_a2a::Resume::ClientResult::is_error: bool
-pub awaken_protocol_a2a::Resume::Confirm
-pub awaken_protocol_a2a::Resume::Confirm::allow: bool
-pub awaken_protocol_a2a::Resume::Confirm::note: core::option::Option<alloc::string::String>
-impl core::clone::Clone for awaken_protocol_a2a::port::Resume
-pub fn awaken_protocol_a2a::port::Resume::clone(&self) -> awaken_protocol_a2a::port::Resume
-impl core::fmt::Debug for awaken_protocol_a2a::port::Resume
-pub fn awaken_protocol_a2a::port::Resume::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_protocol_a2a::port::Resume
-impl core::marker::Send for awaken_protocol_a2a::port::Resume
-impl core::marker::Sync for awaken_protocol_a2a::port::Resume
-impl core::marker::Unpin for awaken_protocol_a2a::port::Resume
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::port::Resume
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::port::Resume
 pub enum awaken_protocol_a2a::TaskState
 pub awaken_protocol_a2a::TaskState::AuthRequired
 pub awaken_protocol_a2a::TaskState::Completed
@@ -625,21 +531,6 @@ impl core::marker::Sync for awaken_protocol_a2a::client::HttpTransport
 impl core::marker::Unpin for awaken_protocol_a2a::client::HttpTransport
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::client::HttpTransport
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::client::HttpTransport
-pub struct awaken_protocol_a2a::Pending
-pub awaken_protocol_a2a::Pending::client_executed: bool
-pub awaken_protocol_a2a::Pending::input: serde_json::value::Value
-pub awaken_protocol_a2a::Pending::name: alloc::string::String
-pub awaken_protocol_a2a::Pending::tool_use_id: alloc::string::String
-impl core::clone::Clone for awaken_protocol_a2a::port::Pending
-pub fn awaken_protocol_a2a::port::Pending::clone(&self) -> awaken_protocol_a2a::port::Pending
-impl core::fmt::Debug for awaken_protocol_a2a::port::Pending
-pub fn awaken_protocol_a2a::port::Pending::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_protocol_a2a::port::Pending
-impl core::marker::Send for awaken_protocol_a2a::port::Pending
-impl core::marker::Sync for awaken_protocol_a2a::port::Pending
-impl core::marker::Unpin for awaken_protocol_a2a::port::Pending
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::port::Pending
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::port::Pending
 pub struct awaken_protocol_a2a::Response
 pub awaken_protocol_a2a::Response::body: alloc::vec::Vec<u8>
 pub awaken_protocol_a2a::Response::status: u16
@@ -683,21 +574,6 @@ impl core::marker::Sync for awaken_protocol_a2a::types::SendMessageResponse
 impl core::marker::Unpin for awaken_protocol_a2a::types::SendMessageResponse
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::SendMessageResponse
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::SendMessageResponse
-pub struct awaken_protocol_a2a::StepOutcome
-pub awaken_protocol_a2a::StepOutcome::exhausted: bool
-pub awaken_protocol_a2a::StepOutcome::new_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_protocol_a2a::StepOutcome::pending: core::option::Option<awaken_protocol_a2a::port::Pending>
-pub awaken_protocol_a2a::StepOutcome::waiting: bool
-impl core::clone::Clone for awaken_protocol_a2a::port::StepOutcome
-pub fn awaken_protocol_a2a::port::StepOutcome::clone(&self) -> awaken_protocol_a2a::port::StepOutcome
-impl core::fmt::Debug for awaken_protocol_a2a::port::StepOutcome
-pub fn awaken_protocol_a2a::port::StepOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_protocol_a2a::port::StepOutcome
-impl core::marker::Send for awaken_protocol_a2a::port::StepOutcome
-impl core::marker::Sync for awaken_protocol_a2a::port::StepOutcome
-impl core::marker::Unpin for awaken_protocol_a2a::port::StepOutcome
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::port::StepOutcome
-impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::port::StepOutcome
 pub struct awaken_protocol_a2a::Task
 pub awaken_protocol_a2a::Task::artifacts: alloc::vec::Vec<awaken_protocol_a2a::types::Artifact>
 pub awaken_protocol_a2a::Task::context_id: alloc::string::String
@@ -722,15 +598,9 @@ impl core::marker::Sync for awaken_protocol_a2a::types::Task
 impl core::marker::Unpin for awaken_protocol_a2a::types::Task
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_a2a::types::Task
 impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_a2a::types::Task
-pub trait awaken_protocol_a2a::A2aRuntime: core::marker::Send + core::marker::Sync
-pub fn awaken_protocol_a2a::A2aRuntime::history<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_agent_contract::agent::message::Message>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_protocol_a2a::A2aRuntime::model(&self) -> alloc::string::String
-pub fn awaken_protocol_a2a::A2aRuntime::pending<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_protocol_a2a::port::Pending>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_protocol_a2a::A2aRuntime::resume<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_protocol_a2a::port::Resume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::port::StepOutcome, awaken_protocol_a2a::port::DriverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_protocol_a2a::A2aRuntime::run_turn<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::port::StepOutcome, awaken_protocol_a2a::port::DriverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_protocol_a2a::Transport: core::marker::Send + core::marker::Sync
 pub fn awaken_protocol_a2a::Transport::request<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::vec::Vec<u8>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::client::Response, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 impl awaken_protocol_a2a::client::Transport for awaken_protocol_a2a::client::HttpTransport
 pub fn awaken_protocol_a2a::client::HttpTransport::request<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::vec::Vec<u8>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::client::Response, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_a2a::agent_card(&str) -> awaken_protocol_a2a::types::AgentCard
-pub fn awaken_protocol_a2a::router(alloc::sync::Arc<dyn awaken_protocol_a2a::port::A2aRuntime>) -> axum::routing::Router
+pub fn awaken_protocol_a2a::router(alloc::sync::Arc<dyn awaken_protocol_transport::port::ProtocolRuntime>) -> axum::routing::Router

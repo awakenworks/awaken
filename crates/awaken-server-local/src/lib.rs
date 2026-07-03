@@ -32,21 +32,13 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Phase};
-use awaken_protocol_a2a::port::{
-    A2aRuntime, DriverError as A2aErr, Pending as A2aPending, Resume as A2aResume,
-    StepOutcome as A2aStep,
-};
-use awaken_protocol_ag_ui::port::{
-    AgUiRuntime, DriverError as AgErr, Pending as AgPending, Resume as AgResume,
-    StepOutcome as AgStep,
-};
-use awaken_protocol_ai_sdk::port::{
-    AiSdkRuntime, DriverError, Pending as AiPending, Resume as AiResume, StepOutcome,
-};
 use awaken_protocol_managed::dto::StopReason;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
     OutcomeReport, Pending, RunError, SessionRuntime, TurnOutcome, router,
+};
+use awaken_protocol_transport::{
+    DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume, StepOutcome,
 };
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
@@ -580,7 +572,12 @@ impl SessionRuntime for ManagedHost {
     }
 }
 
-// ── AI SDK adapter over the shared host ─────────────────────────────────────
+// ── Protocol adapter over the shared host ───────────────────────────────────
+//
+// AG-UI, AI SDK, and A2A all drive one neutral `ProtocolRuntime` seam
+// (`awaken-protocol-transport`), so a single host impl backs all three: a turn
+// started through one protocol is resumable and observable through another on the
+// same thread. Each wire adapter keeps only its own encoder + router.
 
 fn to_driver_error(err: HostError) -> DriverError {
     match err.kind {
@@ -589,8 +586,8 @@ fn to_driver_error(err: HostError) -> DriverError {
     }
 }
 
-fn to_ai_pending(pending: Option<PendingTool>) -> Option<AiPending> {
-    pending.map(|p| AiPending {
+fn to_port_pending(pending: Option<PendingTool>) -> Option<PortPending> {
+    pending.map(|p| PortPending {
         tool_use_id: p.tool_use_id,
         name: p.name,
         input: p.input,
@@ -603,25 +600,26 @@ fn to_step_outcome(result: TurnResult) -> StepOutcome {
         waiting: matches!(result.phase, Phase::Waiting),
         exhausted: matches!(result.phase, Phase::Ended(EndCause::MaxSteps)),
         new_messages: result.new_messages,
-        pending: to_ai_pending(result.pending),
+        pending: to_port_pending(result.pending),
     }
 }
 
-/// The AI SDK `AiSdkRuntime` port implemented over the shared host — the twin of
-/// [`ManagedHost`]. Both hold the same `Arc<SharedHost>`, so a turn started by one
-/// protocol is resumable and observable through the other on the same thread.
-pub struct AiSdkHost {
+/// The neutral `ProtocolRuntime` port implemented once over the shared host and
+/// wired behind every wire adapter (AI SDK / AG-UI / A2A) — a twin of
+/// [`ManagedHost`]. All hold the same `Arc<SharedHost>`, so a turn started by one
+/// protocol is resumable and observable through the others on the same thread.
+pub struct ProtocolHost {
     host: Arc<SharedHost>,
 }
 
-impl AiSdkHost {
+impl ProtocolHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
         Self { host }
     }
 }
 
 #[async_trait::async_trait]
-impl AiSdkRuntime for AiSdkHost {
+impl ProtocolRuntime for ProtocolHost {
     async fn run_turn(
         &self,
         thread: &str,
@@ -640,11 +638,11 @@ impl AiSdkRuntime for AiSdkHost {
         &self,
         thread: &str,
         tool_use_id: &str,
-        resume: AiResume,
+        resume: PortResume,
     ) -> Result<StepOutcome, DriverError> {
         let resume = match resume {
-            AiResume::Confirm { allow, note } => HostResume::Confirm { allow, note },
-            AiResume::ClientResult { content, is_error } => {
+            PortResume::Confirm { allow, note } => HostResume::Confirm { allow, note },
+            PortResume::ClientResult { content, is_error } => {
                 HostResume::ClientResult { content, is_error }
             }
         };
@@ -656,184 +654,8 @@ impl AiSdkRuntime for AiSdkHost {
         Ok(to_step_outcome(result))
     }
 
-    async fn pending(&self, thread: &str) -> Option<AiPending> {
-        to_ai_pending(self.host.pending_tool(thread).await)
-    }
-
-    async fn history(&self, thread: &str) -> Vec<Message> {
-        self.host.committed_messages(thread).await
-    }
-
-    fn model(&self) -> String {
-        self.host.model()
-    }
-}
-
-// ── A2A adapter over the shared host ────────────────────────────────────────
-
-fn to_a2a_error(err: HostError) -> A2aErr {
-    match err.kind {
-        HostErrorKind::BadRequest => A2aErr::BadRequest(err.message),
-        HostErrorKind::Internal => A2aErr::Internal(err.message),
-    }
-}
-
-fn to_a2a_pending(pending: Option<PendingTool>) -> Option<A2aPending> {
-    pending.map(|p| A2aPending {
-        tool_use_id: p.tool_use_id,
-        name: p.name,
-        input: p.input,
-        client_executed: p.client_executed,
-    })
-}
-
-fn to_a2a_step(result: TurnResult) -> A2aStep {
-    A2aStep {
-        waiting: matches!(result.phase, Phase::Waiting),
-        exhausted: matches!(result.phase, Phase::Ended(EndCause::MaxSteps)),
-        new_messages: result.new_messages,
-        pending: to_a2a_pending(result.pending),
-    }
-}
-
-/// The A2A `A2aRuntime` port implemented over the shared host — a fourth twin of
-/// [`ManagedHost`] / [`AiSdkHost`] / [`AgUiHost`] over the same `Arc<SharedHost>`.
-pub struct A2aHost {
-    host: Arc<SharedHost>,
-}
-
-impl A2aHost {
-    pub fn new(host: Arc<SharedHost>) -> Self {
-        Self { host }
-    }
-}
-
-#[async_trait::async_trait]
-impl A2aRuntime for A2aHost {
-    async fn run_turn(
-        &self,
-        thread: &str,
-        _agent: Option<String>,
-        messages: Vec<Message>,
-    ) -> Result<A2aStep, A2aErr> {
-        let result = self
-            .host
-            .run_turn(None, thread, messages)
-            .await
-            .map_err(to_a2a_error)?;
-        Ok(to_a2a_step(result))
-    }
-
-    async fn resume(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        resume: A2aResume,
-    ) -> Result<A2aStep, A2aErr> {
-        let resume = match resume {
-            A2aResume::Confirm { allow, note } => HostResume::Confirm { allow, note },
-            A2aResume::ClientResult { content, is_error } => {
-                HostResume::ClientResult { content, is_error }
-            }
-        };
-        let result = self
-            .host
-            .resume(thread, tool_use_id, resume)
-            .await
-            .map_err(to_a2a_error)?;
-        Ok(to_a2a_step(result))
-    }
-
-    async fn pending(&self, thread: &str) -> Option<A2aPending> {
-        to_a2a_pending(self.host.pending_tool(thread).await)
-    }
-
-    async fn history(&self, thread: &str) -> Vec<Message> {
-        self.host.committed_messages(thread).await
-    }
-
-    fn model(&self) -> String {
-        self.host.model()
-    }
-}
-
-// ── AG-UI adapter over the shared host ──────────────────────────────────────
-
-fn to_ag_error(err: HostError) -> AgErr {
-    match err.kind {
-        HostErrorKind::BadRequest => AgErr::BadRequest(err.message),
-        HostErrorKind::Internal => AgErr::Internal(err.message),
-    }
-}
-
-fn to_ag_pending(pending: Option<PendingTool>) -> Option<AgPending> {
-    pending.map(|p| AgPending {
-        tool_use_id: p.tool_use_id,
-        name: p.name,
-        input: p.input,
-        client_executed: p.client_executed,
-    })
-}
-
-fn to_ag_step(result: TurnResult) -> AgStep {
-    AgStep {
-        waiting: matches!(result.phase, Phase::Waiting),
-        exhausted: matches!(result.phase, Phase::Ended(EndCause::MaxSteps)),
-        new_messages: result.new_messages,
-        pending: to_ag_pending(result.pending),
-    }
-}
-
-/// The AG-UI `AgUiRuntime` port implemented over the shared host — a third twin of
-/// [`ManagedHost`] / [`AiSdkHost`] over the same `Arc<SharedHost>`.
-pub struct AgUiHost {
-    host: Arc<SharedHost>,
-}
-
-impl AgUiHost {
-    pub fn new(host: Arc<SharedHost>) -> Self {
-        Self { host }
-    }
-}
-
-#[async_trait::async_trait]
-impl AgUiRuntime for AgUiHost {
-    async fn run_turn(
-        &self,
-        thread: &str,
-        _agent: Option<String>,
-        messages: Vec<Message>,
-    ) -> Result<AgStep, AgErr> {
-        let result = self
-            .host
-            .run_turn(None, thread, messages)
-            .await
-            .map_err(to_ag_error)?;
-        Ok(to_ag_step(result))
-    }
-
-    async fn resume(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        resume: AgResume,
-    ) -> Result<AgStep, AgErr> {
-        let resume = match resume {
-            AgResume::Confirm { allow, note } => HostResume::Confirm { allow, note },
-            AgResume::ClientResult { content, is_error } => {
-                HostResume::ClientResult { content, is_error }
-            }
-        };
-        let result = self
-            .host
-            .resume(thread, tool_use_id, resume)
-            .await
-            .map_err(to_ag_error)?;
-        Ok(to_ag_step(result))
-    }
-
-    async fn pending(&self, thread: &str) -> Option<AgPending> {
-        to_ag_pending(self.host.pending_tool(thread).await)
+    async fn pending(&self, thread: &str) -> Option<PortPending> {
+        to_port_pending(self.host.pending_tool(thread).await)
     }
 
     async fn history(&self, thread: &str) -> Vec<Message> {
@@ -853,9 +675,12 @@ impl AgUiRuntime for AgUiHost {
 /// protocols operate on the same threads.
 fn mount(host: Arc<SharedHost>) -> Router {
     let managed = router(Arc::new(ManagedState::new(ManagedHost::new(host.clone()))));
-    let ai_sdk = awaken_protocol_ai_sdk::router(Arc::new(AiSdkHost::new(host.clone())));
-    let ag_ui = awaken_protocol_ag_ui::router(Arc::new(AgUiHost::new(host.clone())));
-    let a2a = awaken_protocol_a2a::router(Arc::new(A2aHost::new(host.clone())));
+    // One neutral port impl behind the three wire adapters (each `router` takes
+    // `Arc<dyn ProtocolRuntime>`), so they share the host with no per-protocol twin.
+    let port: Arc<dyn ProtocolRuntime> = Arc::new(ProtocolHost::new(host.clone()));
+    let ai_sdk = awaken_protocol_ai_sdk::router(port.clone());
+    let ag_ui = awaken_protocol_ag_ui::router(port.clone());
+    let a2a = awaken_protocol_a2a::router(port.clone());
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / reap / dead-letter GC) over the same shared host.
     let durable_ops = crate::durable_ops::durable_ops_router(host.clone());

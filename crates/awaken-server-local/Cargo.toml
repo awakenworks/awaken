@@ -13,6 +13,7 @@ awaken-protocol-managed = { path = "../awaken-protocol-managed" }
 awaken-protocol-ai-sdk = { path = "../awaken-protocol-ai-sdk" }
 awaken-protocol-ag-ui = { path = "../awaken-protocol-ag-ui" }
 awaken-protocol-a2a = { path = "../awaken-protocol-a2a" }
+awaken-protocol-transport = { path = "../awaken-protocol-transport" }
 awaken-sandbox-local = { path = "../awaken-sandbox-local" }
 awaken-store-sqlite = { path = "../awaken-store-sqlite" }
 awaken-store-fs = { path = "../awaken-store-fs" }

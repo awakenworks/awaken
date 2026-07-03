@@ -1,4 +1,4 @@
-//! The axum router: AG-UI routes over an [`AgUiRuntime`]. Handlers decode the
+//! The axum router: AG-UI routes over a `ProtocolRuntime`. Handlers decode the
 //! `RunAgentInput`, drive one turn or resume through the port, and project the
 //! committed step into an AG-UI SSE event stream.
 
@@ -12,12 +12,13 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 
+use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+
 use crate::encoder::encode_step;
-use crate::port::{AgUiRuntime, DriverError, Pending, Resume, StepOutcome};
 use crate::request::{ToolResultInput, process};
 use crate::types::{AgUiEvent, RunAgentInput};
 
-type Runtime = Arc<dyn AgUiRuntime>;
+type Runtime = Arc<dyn ProtocolRuntime>;
 
 /// A JSON body extractor for the AG-UI routes. On a decode failure (malformed
 /// JSON, wrong field type, bad content-type) it returns a bare `RUN_ERROR` event

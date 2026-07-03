@@ -227,6 +227,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
     },
+    # Shared protocol transport seam: the neutral vocabulary every streaming /
+    # request-response adapter drives (`ProtocolRuntime` + its step/pending/resume
+    # value objects) plus the wire-agnostic `blocks_text` helper, below the wire-DTO
+    # layer. It names only the agent-domain contract (for `Message`/`ContentBlock`)
+    # and no wire type, so AG-UI, AI SDK, and A2A share one copy instead of three.
+    "awaken-protocol-transport": {
+        "awaken-agent-contract",
+        "async-trait",
+        "serde_json",
+        "thiserror",
+    },
     # Managed Agents protocol adapter: the anti-corruption boundary between the
     # public Anthropic wire and the neutral runtime. It owns the public DTOs and
     # the axum router, so it may name `axum`/`tokio-stream`; it depends only on the
@@ -251,6 +262,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # port, so it constructs no runtime.
     "awaken-protocol-ai-sdk": {
         "awaken-agent-contract",
+        "awaken-protocol-transport",
         "async-trait",
         "serde",
         "serde_json",
@@ -266,6 +278,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # `AgUiRuntime` port and constructs no runtime.
     "awaken-protocol-ag-ui": {
         "awaken-agent-contract",
+        "awaken-protocol-transport",
         "async-trait",
         "serde",
         "serde_json",
@@ -282,6 +295,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # no runtime.
     "awaken-protocol-a2a": {
         "awaken-agent-contract",
+        "awaken-protocol-transport",
         "async-trait",
         "serde",
         "serde_json",
@@ -403,6 +417,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-ai-sdk",
         "awaken-protocol-ag-ui",
         "awaken-protocol-a2a",
+        "awaken-protocol-transport",
         "awaken-provider-genai",
         "awaken-sandbox-local",
         "awaken-store-sqlite",
