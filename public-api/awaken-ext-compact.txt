@@ -1,0 +1,98 @@
+pub mod awaken_ext_compact
+pub mod awaken_ext_compact::agent
+pub const awaken_ext_compact::agent::COMPACT_AGENT_ID: &str
+pub const awaken_ext_compact::agent::DEFAULT_COMPACT_INSTRUCTIONS: &str
+pub const awaken_ext_compact::agent::SUMMARIZE_PROMPT: &str
+pub fn awaken_ext_compact::agent::default_compact_agent(&str, &str) -> awaken_runtime_contract::runnable::RunnableConfig
+pub mod awaken_ext_compact::config
+pub struct awaken_ext_compact::config::CompactConfig
+pub awaken_ext_compact::config::CompactConfig::keep_last: usize
+pub awaken_ext_compact::config::CompactConfig::threshold: usize
+impl core::clone::Clone for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::clone(&self) -> awaken_ext_compact::config::CompactConfig
+impl core::cmp::Eq for awaken_ext_compact::config::CompactConfig
+impl core::cmp::PartialEq for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::eq(&self, &awaken_ext_compact::config::CompactConfig) -> bool
+impl core::default::Default for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::default() -> Self
+impl core::fmt::Debug for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_compact::config::CompactConfig
+impl serde_core::ser::Serialize for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_compact::config::CompactConfig where awaken_ext_compact::config::CompactConfig: core::default::Default
+pub fn awaken_ext_compact::config::CompactConfig::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_compact::config::CompactConfig
+impl core::marker::Send for awaken_ext_compact::config::CompactConfig
+impl core::marker::Sync for awaken_ext_compact::config::CompactConfig
+impl core::marker::Unpin for awaken_ext_compact::config::CompactConfig
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_compact::config::CompactConfig
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::config_schema() -> serde_json::value::Value
+pub mod awaken_ext_compact::fold
+pub fn awaken_ext_compact::fold::fold_point(usize, usize, usize) -> core::option::Option<usize>
+pub mod awaken_ext_compact::plugin
+pub struct awaken_ext_compact::plugin::CompactPlugin
+impl awaken_ext_compact::plugin::CompactPlugin
+pub fn awaken_ext_compact::plugin::CompactPlugin::new(awaken_ext_compact::config::CompactConfig) -> Self
+pub fn awaken_ext_compact::plugin::CompactPlugin::with_summarizer(self, alloc::sync::Arc<dyn awaken_ext_compact::plugin::Summarizer>) -> Self
+impl awaken_runtime_contract::plugin::Plugin for awaken_ext_compact::plugin::CompactPlugin
+pub fn awaken_ext_compact::plugin::CompactPlugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
+pub fn awaken_ext_compact::plugin::CompactPlugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
+pub fn awaken_ext_compact::plugin::CompactPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::Contributions, awaken_runtime_contract::plugin::PluginConfigError>
+impl core::marker::Freeze for awaken_ext_compact::plugin::CompactPlugin
+impl core::marker::Send for awaken_ext_compact::plugin::CompactPlugin
+impl core::marker::Sync for awaken_ext_compact::plugin::CompactPlugin
+impl core::marker::Unpin for awaken_ext_compact::plugin::CompactPlugin
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_compact::plugin::CompactPlugin
+impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_compact::plugin::CompactPlugin
+pub const awaken_ext_compact::plugin::COMPACT_PLUGIN_ID: &str
+pub trait awaken_ext_compact::plugin::Summarizer: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_compact::plugin::Summarizer::summarize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 [awaken_agent_contract::agent::message::Message]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_compact::plugin::config_schema() -> serde_json::value::Value
+pub struct awaken_ext_compact::CompactConfig
+pub awaken_ext_compact::CompactConfig::keep_last: usize
+pub awaken_ext_compact::CompactConfig::threshold: usize
+impl core::clone::Clone for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::clone(&self) -> awaken_ext_compact::config::CompactConfig
+impl core::cmp::Eq for awaken_ext_compact::config::CompactConfig
+impl core::cmp::PartialEq for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::eq(&self, &awaken_ext_compact::config::CompactConfig) -> bool
+impl core::default::Default for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::default() -> Self
+impl core::fmt::Debug for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_ext_compact::config::CompactConfig
+impl serde_core::ser::Serialize for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_compact::config::CompactConfig where awaken_ext_compact::config::CompactConfig: core::default::Default
+pub fn awaken_ext_compact::config::CompactConfig::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_ext_compact::config::CompactConfig
+impl core::marker::Send for awaken_ext_compact::config::CompactConfig
+impl core::marker::Sync for awaken_ext_compact::config::CompactConfig
+impl core::marker::Unpin for awaken_ext_compact::config::CompactConfig
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_compact::config::CompactConfig
+impl core::panic::unwind_safe::UnwindSafe for awaken_ext_compact::config::CompactConfig
+pub struct awaken_ext_compact::CompactPlugin
+impl awaken_ext_compact::plugin::CompactPlugin
+pub fn awaken_ext_compact::plugin::CompactPlugin::new(awaken_ext_compact::config::CompactConfig) -> Self
+pub fn awaken_ext_compact::plugin::CompactPlugin::with_summarizer(self, alloc::sync::Arc<dyn awaken_ext_compact::plugin::Summarizer>) -> Self
+impl awaken_runtime_contract::plugin::Plugin for awaken_ext_compact::plugin::CompactPlugin
+pub fn awaken_ext_compact::plugin::CompactPlugin::manifest(&self) -> awaken_runtime_contract::plugin::PluginManifest
+pub fn awaken_ext_compact::plugin::CompactPlugin::resolve(&self) -> awaken_runtime_contract::plugin::Contributions
+pub fn awaken_ext_compact::plugin::CompactPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::Contributions, awaken_runtime_contract::plugin::PluginConfigError>
+impl core::marker::Freeze for awaken_ext_compact::plugin::CompactPlugin
+impl core::marker::Send for awaken_ext_compact::plugin::CompactPlugin
+impl core::marker::Sync for awaken_ext_compact::plugin::CompactPlugin
+impl core::marker::Unpin for awaken_ext_compact::plugin::CompactPlugin
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_compact::plugin::CompactPlugin
+impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_compact::plugin::CompactPlugin
+pub const awaken_ext_compact::COMPACT_AGENT_ID: &str
+pub const awaken_ext_compact::COMPACT_PLUGIN_ID: &str
+pub const awaken_ext_compact::DEFAULT_COMPACT_INSTRUCTIONS: &str
+pub const awaken_ext_compact::SUMMARIZE_PROMPT: &str
+pub trait awaken_ext_compact::Summarizer: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_compact::Summarizer::summarize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 [awaken_agent_contract::agent::message::Message]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_compact::compact_config_schema() -> serde_json::value::Value
+pub fn awaken_ext_compact::default_compact_agent(&str, &str) -> awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_ext_compact::fold_point(usize, usize, usize) -> core::option::Option<usize>
