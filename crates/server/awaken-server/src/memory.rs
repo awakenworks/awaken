@@ -26,6 +26,10 @@ use crate::subagent::run_configured_subrun;
 // The config pieces the host wires (registering the default extractor agent).
 pub use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 
+/// Message-id prefix for injected recall blocks. Shared so the host stamps it and
+/// extraction filters it (recall is context, not a conversation fact).
+pub const RECALL_MSG_PREFIX: &str = "mem-recall-";
+
 /// Triggers out-of-band memory extraction after a main turn, and reads memories
 /// back for recall. Owns no memory logic itself — it delegates to
 /// `awaken-ext-memory` and only orchestrates the sub-run.
@@ -63,7 +67,13 @@ impl MemoryExtraction {
         if self.catalog.resolve(MEMORY_AGENT_ID).is_none() {
             return;
         }
-        let mut seed = committed;
+        // Drop recalled-memory messages from the seed: they are injected context,
+        // not new conversation facts. Without this the extractor re-saves what it
+        // just recalled (a cross-thread self-copy loop).
+        let mut seed: Vec<Message> = committed
+            .into_iter()
+            .filter(|m| !m.id.0.starts_with(RECALL_MSG_PREFIX))
+            .collect();
         seed.push(Message {
             id: MessageId(format!("{thread}-mem-prompt")),
             role: Role::User,
@@ -183,5 +193,85 @@ mod tests {
         // The read side surfaces it through bounded recall.
         let block = extraction.recall_block().expect("recall block");
         assert!(block.contains("user likes rust"), "got: {block}");
+    }
+
+    /// An extractor that saves whatever non-prompt text it was seeded with, so the
+    /// test can see what reached it.
+    struct SeedEchoModel;
+
+    #[async_trait]
+    impl LlmExecutor for SeedEchoModel {
+        async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
+            let saved = request.messages.iter().any(|m| {
+                m.role == ChatRole::Tool
+                    && m.content.iter().any(|b| match b {
+                        awaken_agent_contract::agent::content::ContentBlock::ToolResult {
+                            content,
+                            ..
+                        } => crate::config::block_text(content).contains("saved memory"),
+                        _ => false,
+                    })
+            });
+            if saved {
+                return Ok(ChatResponse {
+                    output: AssistantOutput::text("done"),
+                    usage: None,
+                });
+            }
+            let seen: Vec<String> = request
+                .messages
+                .iter()
+                .filter(|m| m.role == ChatRole::User || m.role == ChatRole::System)
+                .map(|m| crate::config::block_text(&m.content))
+                .filter(|t| !t.contains("Extract durable memories"))
+                .collect();
+            Ok(ChatResponse {
+                output: AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: "w".into(),
+                    tool_id: "write_memory".into(),
+                    arguments: serde_json::json!({ "name": "seen", "content": seen.join("|") }),
+                }]),
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn extraction_seed_excludes_recalled_memory_messages() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sandbox_base = std::env::temp_dir().join(format!("awaken-mem2-sbx-{stamp}"));
+        let mem_root = std::env::temp_dir().join(format!("awaken-mem2-root-{stamp}"));
+        let catalog = Arc::new(
+            AgentCatalog::new()
+                .with_agent(default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS)),
+        );
+        let extraction = MemoryExtraction::new(
+            Arc::new(SeedEchoModel),
+            Arc::new(LocalSandboxProvider::new(&sandbox_base)),
+            catalog,
+            Arc::new(BackgroundRuns::new()),
+            &mem_root,
+        );
+
+        // A committed history with a recalled-memory system message + a real turn.
+        let recall = Message::text(
+            MessageId(format!("{RECALL_MSG_PREFIX}1")),
+            Role::System,
+            "RECALLED SECRET",
+        );
+        extraction
+            .trigger("t", vec![recall, user("please note this")])
+            .await;
+        assert!(extraction.drain(Duration::from_secs(10)).await);
+
+        let seen = std::fs::read_to_string(mem_root.join("seen.md")).expect("seen file");
+        assert!(seen.contains("please note this"), "real turn seen: {seen}");
+        assert!(
+            !seen.contains("RECALLED SECRET"),
+            "recalled content must not reach the extractor: {seen}"
+        );
     }
 }
