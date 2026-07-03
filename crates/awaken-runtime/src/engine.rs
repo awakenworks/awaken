@@ -444,7 +444,12 @@ async fn drive(
         )
         .await;
 
-        let request = build_chat_request(&resolved.spec, &transcript, &env.dynamic_descriptors());
+        let request = build_chat_request(
+            &resolved.spec,
+            &context.context_prelude,
+            &transcript,
+            &env.dynamic_descriptors(),
+        );
         // A transient inference failure retries with backoff; a permanent failure
         // (or exhausted retries) commits a typed terminal reason (G26).
         let response =
@@ -1148,18 +1153,22 @@ async fn execute_tool(
 /// config descriptors so the model sees both.
 pub(crate) fn build_chat_request(
     spec: &ResolvedSpec,
+    prelude: &[Message],
     transcript: &[Message],
     dynamic: &[ToolDescriptor],
 ) -> ChatRequest {
     // The agent's instructions lead the request as a system message, ahead of the
     // transcript. Empty instructions contribute no system message.
-    let mut messages = Vec::with_capacity(transcript.len() + 1);
+    let mut messages = Vec::with_capacity(transcript.len() + prelude.len() + 1);
     if !spec.instructions.is_empty() {
         messages.push(ChatMessage {
             role: ChatRole::System,
             content: vec![ContentBlock::text(spec.instructions.clone())],
         });
     }
+    // Request-only context (recalled memories, retrieved docs): after the
+    // instructions, before the conversation. Never committed — a view concern.
+    messages.extend(prelude.iter().map(to_chat_message));
     messages.extend(transcript.iter().map(to_chat_message));
     let messages = apply_context_policy(&spec.context_policy, messages);
     let tools = spec
@@ -1375,7 +1384,7 @@ mod tests {
 
     #[test]
     fn instructions_lead_the_request_as_a_system_message() {
-        let request = build_chat_request(&spec("be helpful"), &[user_message()], &[]);
+        let request = build_chat_request(&spec("be helpful"), &[], &[user_message()], &[]);
         assert_eq!(request.messages.len(), 2);
         assert!(matches!(request.messages[0].role, ChatRole::System));
         assert_eq!(
@@ -1387,7 +1396,7 @@ mod tests {
 
     #[test]
     fn empty_instructions_contribute_no_system_message() {
-        let request = build_chat_request(&spec(""), &[user_message()], &[]);
+        let request = build_chat_request(&spec(""), &[], &[user_message()], &[]);
         assert_eq!(request.messages.len(), 1);
         assert!(matches!(request.messages[0].role, ChatRole::User));
     }
@@ -1423,7 +1432,7 @@ mod tests {
     #[test]
     fn keep_all_sends_the_whole_transcript() {
         let transcript: Vec<Message> = (0..5).map(numbered).collect();
-        let request = build_chat_request(&spec_with(ContextPolicy::KeepAll), &transcript, &[]);
+        let request = build_chat_request(&spec_with(ContextPolicy::KeepAll), &[], &transcript, &[]);
         // 1 system + 5 users
         assert_eq!(request.messages.len(), 6);
     }
@@ -1433,6 +1442,7 @@ mod tests {
         let transcript: Vec<Message> = (0..5).map(numbered).collect();
         let request = build_chat_request(
             &spec_with(ContextPolicy::KeepLast { keep_last: 2 }),
+            &[],
             &transcript,
             &[],
         );
@@ -1446,6 +1456,7 @@ mod tests {
         let transcript: Vec<Message> = (0..3).map(numbered).collect();
         let request = build_chat_request(
             &spec_with(ContextPolicy::KeepLast { keep_last: 10 }),
+            &[],
             &transcript,
             &[],
         );
@@ -1457,10 +1468,34 @@ mod tests {
         let transcript: Vec<Message> = (0..3).map(numbered).collect();
         let request = build_chat_request(
             &spec_with(ContextPolicy::KeepLast { keep_last: 0 }),
+            &[],
             &transcript,
             &[],
         );
         assert_eq!(request.messages.len(), 1);
         assert!(matches!(request.messages[0].role, ChatRole::System));
+    }
+
+    #[test]
+    fn prelude_is_injected_after_instructions_before_the_transcript() {
+        let prelude = vec![Message::text(
+            MessageId("p1".to_string()),
+            Role::System,
+            "recalled context",
+        )];
+        let transcript = vec![user_message()];
+        let request = build_chat_request(&spec("be helpful"), &prelude, &transcript, &[]);
+        assert_eq!(request.messages.len(), 3);
+        assert!(matches!(request.messages[0].role, ChatRole::System));
+        assert_eq!(
+            request.messages[0].content,
+            vec![ContentBlock::text("be helpful")]
+        );
+        assert!(matches!(request.messages[1].role, ChatRole::System));
+        assert_eq!(
+            request.messages[1].content,
+            vec![ContentBlock::text("recalled context")]
+        );
+        assert!(matches!(request.messages[2].role, ChatRole::User));
     }
 }
