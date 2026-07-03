@@ -45,7 +45,9 @@ async fn parked_run_survives_a_restart_and_resumes_from_the_durable_store() {
     //    host — the run's history and waiting ticket are now only in the store.
     let pending_id = {
         let host = host_over(&dir);
-        host.run_turn(thread, vec![user("u1", "hi")]).await.unwrap();
+        host.run_turn(None, thread, vec![user("u1", "hi")])
+            .await
+            .unwrap();
         assert!(
             host.is_parked(thread).await,
             "the run should park on the client-executed tool"
@@ -111,7 +113,9 @@ async fn in_memory_host_does_not_recover_a_parked_run_across_a_rebuild() {
     {
         let host = SharedHost::new(Arc::new(CustomToolModel), "custom")
             .with_client_tools(client_tools.clone());
-        host.run_turn(thread, vec![user("u1", "hi")]).await.unwrap();
+        host.run_turn(None, thread, vec![user("u1", "hi")])
+            .await
+            .unwrap();
         assert!(host.is_parked(thread).await);
     }
 

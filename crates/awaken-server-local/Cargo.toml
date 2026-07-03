@@ -16,6 +16,7 @@ awaken-protocol-a2a = { path = "../awaken-protocol-a2a" }
 awaken-sandbox-local = { path = "../awaken-sandbox-local" }
 awaken-store-sqlite = { path = "../awaken-store-sqlite" }
 awaken-store-fs = { path = "../awaken-store-fs" }
+awaken-config-store = { path = "../awaken-config-store" }
 awaken-ext-goal = { path = "../awaken-ext-goal" }
 awaken-ext-state-machine = { path = "../awaken-ext-state-machine", features = ["schema"] }
 awaken-agent-contract.workspace = true
