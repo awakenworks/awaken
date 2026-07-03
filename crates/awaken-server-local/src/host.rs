@@ -26,6 +26,7 @@ use awaken_ext_goal::{
 };
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
+use awaken_run_ingress::{DurableRunIngress, MemoryDispatchStore, SqliteDispatchStore};
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::CancellationToken;
@@ -73,6 +74,15 @@ pub(crate) fn sanitize_thread(thread: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+/// Wall-clock milliseconds since the Unix epoch — the dispatch queue's lease and
+/// recovery clock (slice D). Falls back to `0` if the clock is before the epoch.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// A tool a run parked on: its id, model-visible name/input, and whether it is
@@ -181,6 +191,9 @@ pub(crate) struct SessionCtx {
     /// by default; a `DurableRunIngress` when durable dispatch is enabled (slice D).
     /// Both drive the same `runtime`/`commit`; only the delivery guarantees differ.
     ingress: Arc<dyn RunIngress>,
+    /// True when `ingress` is durable: a turn is submitted through the dispatch
+    /// queue (`submit_background`) rather than executed inline (slice D).
+    durable: bool,
     config: RunnableConfig,
     pub(crate) commit: Arc<HostCommit>,
     pub(crate) thread_id: ThreadId,
@@ -569,6 +582,53 @@ impl SharedHost {
         }
     }
 
+    /// Build a thread's run-delivery ingress. Default is direct in-process
+    /// execution (`DirectRunIngress`, slice C). With `AWAKEN_INGRESS=durable` the
+    /// turn is delivered through a `DurableRunIngress`: every accepted run is
+    /// persisted to a dispatch queue before it executes (so it survives a crash),
+    /// and on session (re)build any dispatch a prior process crashed on is
+    /// recovered (slice D). The durable ingress shares this thread's `runtime` and
+    /// `commit`, so execution and committed truth are identical to the direct path
+    /// (G6) — only the delivery guarantee differs. Returns the ingress plus the
+    /// flag that tells `run_turn` to submit through the durable (queued) path.
+    async fn build_ingress(
+        &self,
+        thread: &str,
+        runtime: Arc<Runtime>,
+        commit: Arc<HostCommit>,
+    ) -> Result<(Arc<dyn RunIngress>, bool), HostError> {
+        let durable = std::env::var("AWAKEN_INGRESS").is_ok_and(|value| value == "durable");
+        if !durable {
+            return Ok((Arc::new(DirectRunIngress::new(runtime)), false));
+        }
+        // A durable dispatch store: a SQLite queue under the store dir (survives a
+        // restart), or an in-memory queue when no store dir is configured.
+        let ingress: Arc<dyn RunIngress> = match &self.store_dir {
+            Some(dir) => {
+                std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
+                let path = dir.join(format!("{}-dispatch.db", sanitize_thread(thread)));
+                let store = Arc::new(
+                    SqliteDispatchStore::open(&path.to_string_lossy())
+                        .map_err(|e| HostError::internal(e.to_string()))?,
+                );
+                let ingress = DurableRunIngress::new(runtime, store, commit);
+                // Startup recovery: reclaim any dispatch a prior process crashed on
+                // mid-flight, driving it to completion against committed truth.
+                ingress
+                    .recover(now_ms())
+                    .await
+                    .map_err(|e| HostError::internal(e.to_string()))?;
+                Arc::new(ingress)
+            }
+            None => Arc::new(DurableRunIngress::new(
+                runtime,
+                Arc::new(MemoryDispatchStore::new()),
+                commit,
+            )),
+        };
+        Ok((ingress, true))
+    }
+
     async fn ctx_for(
         &self,
         thread: &str,
@@ -678,14 +738,17 @@ impl SharedHost {
             state.parked = Some(run_id);
         }
         let runtime = Arc::new(runtime);
-        // The foreground delivery seam (slice C): a turn's execution goes through
-        // `RunIngress::submit` rather than calling `runtime.start_turn` directly.
-        // Direct ingress runs inline on the same `runtime`, so behavior is identical;
-        // durable dispatch (slice D) swaps this without touching the turn path.
-        let ingress: Arc<dyn RunIngress> = Arc::new(DirectRunIngress::new(runtime.clone()));
+        // The foreground delivery seam (slice C/D): a turn's execution goes through
+        // `RunIngress` rather than calling `runtime.start_turn` directly. Direct
+        // ingress runs inline on the same `runtime`; durable ingress queues the run
+        // through a dispatch store first. Both share this thread's `runtime`/`commit`.
+        let (ingress, durable) = self
+            .build_ingress(thread, runtime.clone(), commit.clone())
+            .await?;
         let ctx = Arc::new(SessionCtx {
             runtime,
             ingress,
+            durable,
             config,
             commit,
             thread_id,
@@ -786,15 +849,40 @@ impl SharedHost {
         // Prepare the activation (install catalog + register snapshot + mint ids),
         // then deliver it through the ingress seam. Direct ingress executes inline,
         // so this is behavior-identical to the former `start_turn` call.
-        let (run_id, activation) = ctx
+        let (mut run_id, mut activation) = ctx
             .runtime
             .prepare(&ctx.config, thread.to_string(), messages)
             .map_err(|e| HostError::internal(e.to_string()))?;
-        let phase = ctx
-            .ingress
-            .submit(activation, ctx.context())
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        if ctx.durable {
+            // The durable path needs a run id that is unique across a restart: the
+            // runtime's in-process id counter resets to 1 on restart and would
+            // collide with an already-committed terminal run, which the dispatch
+            // worker's terminal-run guard then skips (never re-running a finished
+            // run) — silently dropping the turn. A wall-clock + sequence id cannot
+            // collide with a prior process's ids.
+            let uid = RunId(format!(
+                "run-{}-{}",
+                now_ms(),
+                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+            ));
+            activation.run_id = uid.clone();
+            run_id = uid;
+        }
+        // Durable ingress queues the run through the dispatch store and drives it
+        // via the worker (`submit_background`); direct ingress runs it inline
+        // (`submit`). Both drive to the same terminal/parked phase and commit
+        // through the same boundary, so `finish_step` is identical either way.
+        let phase = if ctx.durable {
+            ctx.ingress
+                .submit_background(activation)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?
+        } else {
+            ctx.ingress
+                .submit(activation, ctx.context())
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?
+        };
         let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
         drop(st);
         self.run_aux_after_step(&ctx, thread, &result.phase).await;
