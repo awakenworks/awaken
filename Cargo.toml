@@ -41,6 +41,7 @@ awaken-store-sqlite = { path = "crates/runtime/awaken-store-sqlite" }
 awaken-store-postgres = { path = "crates/runtime/awaken-store-postgres" }
 awaken-config-store = { path = "crates/runtime/awaken-config-store" }
 awaken-provisioning-contract = { path = "crates/runtime/awaken-provisioning-contract" }
+awaken-agent-channel = { path = "crates/runtime/awaken-agent-channel" }
 awaken-sandbox-local = { path = "crates/runtime/awaken-sandbox-local" }
 awaken-runtime-examples = { path = "crates/runtime/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/agents/awaken-run-ingress-contract" }
