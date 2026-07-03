@@ -295,6 +295,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-protocol-acp"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-channel",
+ "awaken-provisioning-contract",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-protocol-ag-ui"
 version = "1.0.0-dev"
 dependencies = [

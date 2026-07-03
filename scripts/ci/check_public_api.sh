@@ -43,7 +43,7 @@ crates=$(cargo metadata --no-deps --format-version 1 \
 # their surface is a product concern that evolves with each public wire, not a
 # stable neutral contract, so they are gated by their own tests and the e2e
 # harness rather than an API snapshot.
-excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-dispatch awaken-config-store awaken-protocol-managed awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-server"
+excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-dispatch awaken-config-store awaken-protocol-managed awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-protocol-acp awaken-server"
 
 fail=0
 for c in $crates; do
