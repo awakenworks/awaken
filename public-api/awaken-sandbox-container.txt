@@ -1,0 +1,142 @@
+pub mod awaken_sandbox_container
+pub enum awaken_sandbox_container::ContainerState
+pub awaken_sandbox_container::ContainerState::Gone
+pub awaken_sandbox_container::ContainerState::Running
+impl core::clone::Clone for awaken_sandbox_container::ContainerState
+pub fn awaken_sandbox_container::ContainerState::clone(&self) -> awaken_sandbox_container::ContainerState
+impl core::cmp::Eq for awaken_sandbox_container::ContainerState
+impl core::cmp::PartialEq for awaken_sandbox_container::ContainerState
+pub fn awaken_sandbox_container::ContainerState::eq(&self, &awaken_sandbox_container::ContainerState) -> bool
+impl core::fmt::Debug for awaken_sandbox_container::ContainerState
+pub fn awaken_sandbox_container::ContainerState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_sandbox_container::ContainerState
+impl core::marker::StructuralPartialEq for awaken_sandbox_container::ContainerState
+impl core::marker::Freeze for awaken_sandbox_container::ContainerState
+impl core::marker::Send for awaken_sandbox_container::ContainerState
+impl core::marker::Sync for awaken_sandbox_container::ContainerState
+impl core::marker::Unpin for awaken_sandbox_container::ContainerState
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::ContainerState
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::ContainerState
+pub enum awaken_sandbox_container::NetworkMode
+pub awaken_sandbox_container::NetworkMode::Allowlist(alloc::vec::Vec<alloc::string::String>)
+pub awaken_sandbox_container::NetworkMode::None
+pub awaken_sandbox_container::NetworkMode::Open
+impl core::clone::Clone for awaken_sandbox_container::NetworkMode
+pub fn awaken_sandbox_container::NetworkMode::clone(&self) -> awaken_sandbox_container::NetworkMode
+impl core::cmp::Eq for awaken_sandbox_container::NetworkMode
+impl core::cmp::PartialEq for awaken_sandbox_container::NetworkMode
+pub fn awaken_sandbox_container::NetworkMode::eq(&self, &awaken_sandbox_container::NetworkMode) -> bool
+impl core::fmt::Debug for awaken_sandbox_container::NetworkMode
+pub fn awaken_sandbox_container::NetworkMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_sandbox_container::NetworkMode
+impl core::marker::Freeze for awaken_sandbox_container::NetworkMode
+impl core::marker::Send for awaken_sandbox_container::NetworkMode
+impl core::marker::Sync for awaken_sandbox_container::NetworkMode
+impl core::marker::Unpin for awaken_sandbox_container::NetworkMode
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::NetworkMode
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::NetworkMode
+pub enum awaken_sandbox_container::RuntimeError
+pub awaken_sandbox_container::RuntimeError::Backend(alloc::string::String)
+pub awaken_sandbox_container::RuntimeError::NotFound(alloc::string::String)
+impl core::error::Error for awaken_sandbox_container::RuntimeError
+impl core::fmt::Debug for awaken_sandbox_container::RuntimeError
+pub fn awaken_sandbox_container::RuntimeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_sandbox_container::RuntimeError
+pub fn awaken_sandbox_container::RuntimeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_sandbox_container::RuntimeError
+impl core::marker::Send for awaken_sandbox_container::RuntimeError
+impl core::marker::Sync for awaken_sandbox_container::RuntimeError
+impl core::marker::Unpin for awaken_sandbox_container::RuntimeError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::RuntimeError
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::RuntimeError
+pub struct awaken_sandbox_container::BindPlan
+pub awaken_sandbox_container::BindPlan::mount_path: alloc::string::String
+pub awaken_sandbox_container::BindPlan::read_only: bool
+pub awaken_sandbox_container::BindPlan::source_ref: alloc::string::String
+impl core::clone::Clone for awaken_sandbox_container::BindPlan
+pub fn awaken_sandbox_container::BindPlan::clone(&self) -> awaken_sandbox_container::BindPlan
+impl core::cmp::Eq for awaken_sandbox_container::BindPlan
+impl core::cmp::PartialEq for awaken_sandbox_container::BindPlan
+pub fn awaken_sandbox_container::BindPlan::eq(&self, &awaken_sandbox_container::BindPlan) -> bool
+impl core::fmt::Debug for awaken_sandbox_container::BindPlan
+pub fn awaken_sandbox_container::BindPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_sandbox_container::BindPlan
+impl core::marker::Freeze for awaken_sandbox_container::BindPlan
+impl core::marker::Send for awaken_sandbox_container::BindPlan
+impl core::marker::Sync for awaken_sandbox_container::BindPlan
+impl core::marker::Unpin for awaken_sandbox_container::BindPlan
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::BindPlan
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::BindPlan
+pub struct awaken_sandbox_container::ContainerPlan
+pub awaken_sandbox_container::ContainerPlan::binds: alloc::vec::Vec<awaken_sandbox_container::BindPlan>
+pub awaken_sandbox_container::ContainerPlan::env: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub awaken_sandbox_container::ContainerPlan::image: alloc::string::String
+pub awaken_sandbox_container::ContainerPlan::limits: awaken_provisioning_contract::vocab::ResourceLimits
+pub awaken_sandbox_container::ContainerPlan::network: awaken_sandbox_container::NetworkMode
+pub awaken_sandbox_container::ContainerPlan::outputs_volume: alloc::string::String
+impl core::clone::Clone for awaken_sandbox_container::ContainerPlan
+pub fn awaken_sandbox_container::ContainerPlan::clone(&self) -> awaken_sandbox_container::ContainerPlan
+impl core::cmp::Eq for awaken_sandbox_container::ContainerPlan
+impl core::cmp::PartialEq for awaken_sandbox_container::ContainerPlan
+pub fn awaken_sandbox_container::ContainerPlan::eq(&self, &awaken_sandbox_container::ContainerPlan) -> bool
+impl core::fmt::Debug for awaken_sandbox_container::ContainerPlan
+pub fn awaken_sandbox_container::ContainerPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_sandbox_container::ContainerPlan
+impl core::marker::Freeze for awaken_sandbox_container::ContainerPlan
+impl core::marker::Send for awaken_sandbox_container::ContainerPlan
+impl core::marker::Sync for awaken_sandbox_container::ContainerPlan
+impl core::marker::Unpin for awaken_sandbox_container::ContainerPlan
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::ContainerPlan
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::ContainerPlan
+pub struct awaken_sandbox_container::ContainerProvider<R: awaken_sandbox_container::ContainerRuntime>
+impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_sandbox_container::ContainerProvider<R>
+pub fn awaken_sandbox_container::ContainerProvider<R>::new(alloc::sync::Arc<R>, impl core::convert::Into<alloc::string::String>) -> Self
+impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_provisioning_contract::sandbox::SandboxProvider for awaken_sandbox_container::ContainerProvider<R>
+pub fn awaken_sandbox_container::ContainerProvider<R>::adopt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::sandbox::SandboxHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_sandbox_container::ContainerProvider<R>::capabilities(&self) -> awaken_provisioning_contract::sandbox::SandboxCapabilities
+pub fn awaken_sandbox_container::ContainerProvider<R>::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::spec::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl<R> core::marker::Freeze for awaken_sandbox_container::ContainerProvider<R>
+impl<R> core::marker::Send for awaken_sandbox_container::ContainerProvider<R>
+impl<R> core::marker::Sync for awaken_sandbox_container::ContainerProvider<R>
+impl<R> core::marker::Unpin for awaken_sandbox_container::ContainerProvider<R>
+impl<R> core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::ContainerProvider<R> where R: core::panic::unwind_safe::RefUnwindSafe
+impl<R> core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::ContainerProvider<R> where R: core::panic::unwind_safe::RefUnwindSafe
+pub struct awaken_sandbox_container::PodPlan
+pub awaken_sandbox_container::PodPlan::binds: alloc::vec::Vec<awaken_sandbox_container::BindPlan>
+pub awaken_sandbox_container::PodPlan::command: alloc::vec::Vec<alloc::string::String>
+pub awaken_sandbox_container::PodPlan::env: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub awaken_sandbox_container::PodPlan::image: alloc::string::String
+pub awaken_sandbox_container::PodPlan::limits: awaken_provisioning_contract::vocab::ResourceLimits
+pub awaken_sandbox_container::PodPlan::name: alloc::string::String
+pub awaken_sandbox_container::PodPlan::network: awaken_sandbox_container::NetworkMode
+pub awaken_sandbox_container::PodPlan::outputs_volume: alloc::string::String
+pub awaken_sandbox_container::PodPlan::owner_uid: alloc::string::String
+pub awaken_sandbox_container::PodPlan::restart_never: bool
+impl core::clone::Clone for awaken_sandbox_container::PodPlan
+pub fn awaken_sandbox_container::PodPlan::clone(&self) -> awaken_sandbox_container::PodPlan
+impl core::cmp::Eq for awaken_sandbox_container::PodPlan
+impl core::cmp::PartialEq for awaken_sandbox_container::PodPlan
+pub fn awaken_sandbox_container::PodPlan::eq(&self, &awaken_sandbox_container::PodPlan) -> bool
+impl core::fmt::Debug for awaken_sandbox_container::PodPlan
+pub fn awaken_sandbox_container::PodPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_sandbox_container::PodPlan
+impl core::marker::Freeze for awaken_sandbox_container::PodPlan
+impl core::marker::Send for awaken_sandbox_container::PodPlan
+impl core::marker::Sync for awaken_sandbox_container::PodPlan
+impl core::marker::Unpin for awaken_sandbox_container::PodPlan
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_container::PodPlan
+impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_container::PodPlan
+pub trait awaken_sandbox_container::ContainerRuntime: core::marker::Send + core::marker::Sync
+pub fn awaken_sandbox_container::ContainerRuntime::artifacts<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_provisioning_contract::vocab::Artifact>, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::create<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_sandbox_container::ContainerPlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::exec<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_provisioning_contract::spec::Command) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::exec_poll<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_provisioning_contract::sandbox::ExitStatus>, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::exec_signal<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_provisioning_contract::sandbox::Signal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::exec_wait<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::sandbox::ExitStatus, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::inspect<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_container::ContainerState, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::read_artifact<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<u8>, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::remove<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::touch_lease<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_sandbox_container::container_capabilities() -> awaken_provisioning_contract::sandbox::SandboxCapabilities
+pub fn awaken_sandbox_container::container_plan(&awaken_provisioning_contract::spec::SandboxSpec, &str) -> awaken_sandbox_container::ContainerPlan
+pub fn awaken_sandbox_container::pod_plan(&awaken_provisioning_contract::spec::SandboxSpec, &awaken_provisioning_contract::spec::Command, &str, &str) -> awaken_sandbox_container::PodPlan

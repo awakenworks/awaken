@@ -44,6 +44,7 @@ awaken-config-store = { path = "crates/runtime/awaken-config-store" }
 awaken-provisioning-contract = { path = "crates/runtime/awaken-provisioning-contract" }
 awaken-agent-channel = { path = "crates/runtime/awaken-agent-channel" }
 awaken-sandbox-local = { path = "crates/runtime/awaken-sandbox-local" }
+awaken-sandbox-container = { path = "crates/runtime/awaken-sandbox-container" }
 awaken-runtime-examples = { path = "crates/runtime/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/agents/awaken-run-ingress-contract" }
 awaken-run-ingress = { path = "crates/agents/awaken-run-ingress" }
