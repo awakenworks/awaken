@@ -208,6 +208,7 @@ async fn g13_failed_commit_leaves_no_partial_state() {
             messages: vec![],
             state: vec![],
             events: vec![],
+            outbox: Vec::new(),
             waiting: None,
         })
         .await;

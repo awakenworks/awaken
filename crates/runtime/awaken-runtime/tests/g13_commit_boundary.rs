@@ -65,6 +65,7 @@ async fn g13_projection_visible_only_after_commit_returns_ok() {
             messages: vec![],
             state: vec![],
             events: vec![],
+            outbox: Vec::new(),
             waiting: None,
         })
         .await
@@ -89,6 +90,7 @@ async fn g13_failed_commit_leaves_no_partial_state() {
             messages: vec![],
             state: vec![],
             events: vec![],
+            outbox: Vec::new(),
             waiting: None,
         })
         .await;
@@ -115,6 +117,7 @@ fn g1_validate_rejects_empty_thread_id() {
         messages: vec![],
         state: vec![],
         events: vec![],
+        outbox: Vec::new(),
         waiting: None,
     };
     assert!(
@@ -135,6 +138,7 @@ fn g1_validate_rejects_empty_run_id() {
         messages: vec![],
         state: vec![],
         events: vec![],
+        outbox: Vec::new(),
         waiting: None,
     };
     assert!(
@@ -157,6 +161,7 @@ fn g1_validate_rejects_mismatched_waiting_ticket_run_id() {
         messages: vec![],
         state: vec![],
         events: vec![],
+        outbox: Vec::new(),
         waiting: Some(ticket("run-2", "thread-1")),
     };
     assert!(
@@ -177,6 +182,7 @@ fn g1_validate_accepts_consistent_waiting_ticket() {
         messages: vec![],
         state: vec![],
         events: vec![],
+        outbox: Vec::new(),
         waiting: Some(ticket("run-1", "thread-1")),
     };
     assert!(
