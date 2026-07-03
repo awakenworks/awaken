@@ -19,7 +19,7 @@ use awaken_ext_builtin_tools::MessageSender;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::tool::ToolError;
 
-use crate::dispatch::{MessageOutbox, PendingInput, RunDispatch};
+use crate::dispatch::{DispatchQueue, Outbox, PendingInput};
 
 /// Stages `send_message` deliveries into the durable outbox. Generic over the
 /// store so any backend (memory/Postgres/SQLite) can back the tool. Messages are
@@ -31,7 +31,7 @@ pub struct OutboxMessageSender<S> {
     seq: AtomicU64,
 }
 
-impl<S: RunDispatch + MessageOutbox> OutboxMessageSender<S> {
+impl<S: DispatchQueue + Outbox> OutboxMessageSender<S> {
     /// Build the adapter from the dispatch store (to resolve the target thread's
     /// parked run and stage) and the commit boundary's read port (for its ticket).
     pub fn new(store: Arc<S>, reader: Arc<dyn ThreadReader>) -> Self {
@@ -44,7 +44,7 @@ impl<S: RunDispatch + MessageOutbox> OutboxMessageSender<S> {
 }
 
 #[async_trait]
-impl<S: RunDispatch + MessageOutbox + 'static> MessageSender for OutboxMessageSender<S> {
+impl<S: DispatchQueue + Outbox + 'static> MessageSender for OutboxMessageSender<S> {
     async fn send(&self, target_thread: &str, content: &str) -> Result<(), ToolError> {
         let thread = ThreadId(target_thread.to_string());
         let n = self.seq.fetch_add(1, Ordering::SeqCst);

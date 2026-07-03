@@ -33,7 +33,7 @@ cut across them.
    │  ports: DispatchQueue · Inbox ·  │        │  port: ConfigRegistry        │
    │         Outbox                   │        │  (resolved input → kernel)   │
    │  G5 / G6 / G18                   │        │  awaken-config-store         │
-   │  awaken-run-ingress-contract     │        └──────────────────────────────┘
+   │  awaken-dispatch-contract     │        └──────────────────────────────┘
    └──────────────────────────────────┘
 
    awaken-store-{inmem, fs, postgres, sqlite}: shared adapters implementing the ports above
@@ -83,7 +83,7 @@ trait CheckpointReader {
 trait StreamSink { async fn send(&self, event: StreamEvent) -> Result<()>; }
 ```
 
-### Dispatch / run ingress — new `awaken-run-ingress-contract`
+### Dispatch / run ingress — new `awaken-dispatch-contract`
 
 Extracted from `awaken-dispatch` so backends can depend on the contract without
 the host crate (G2). The traits are the current ones, renamed and grouped:
@@ -146,7 +146,7 @@ conformance run is not done.
 
 ## Slices
 
-Per ADR-0039: **2.1** extract `awaken-run-ingress-contract`, define `CheckpointReader`,
+Per ADR-0039: **2.1** extract `awaken-dispatch-contract`, define `CheckpointReader`,
 extend `ThreadCommit`, apply the rename set (behavior-preserving) → **2.2**
 `awaken-store-inmem` + the cross-instance resume test → **2.3** `awaken-store-fs`
 (journal + recovery) → **2.4/2.5** postgres/sqlite full surface, read-from-tables →

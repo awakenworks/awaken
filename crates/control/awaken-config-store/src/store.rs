@@ -1,4 +1,4 @@
-//! The `ConfigStore` port and its persisted aggregates.
+//! The `ConfigRegistry` port and its persisted aggregates.
 
 use awaken_runtime_contract::catalog::RuntimeCatalogInstall;
 use awaken_runtime_contract::runnable::RunnableConfig;
@@ -64,7 +64,7 @@ impl StoredPublication {
 /// aggregate) and publications (the compiled artifact). Adapters live under the
 /// `config` table namespace, alongside the runtime's tables (ADR-0029).
 #[async_trait::async_trait]
-pub trait ConfigStore: Send + Sync {
+pub trait ConfigRegistry: Send + Sync {
     /// Upsert an agent config by id.
     async fn put_config(&self, config: &AgentConfig) -> Result<(), ConfigStoreError>;
 

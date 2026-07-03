@@ -14,8 +14,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchStatus, DispatchSummary, Lease,
-    MessageOutbox, PendingInbox, PendingInput, PendingRecord, RunDispatch, SubmitOptions,
+    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchStatus,
+    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SubmitOptions,
 };
 use crate::request::RunExecutionRequest;
 
@@ -179,7 +179,7 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
 }
 
 #[async_trait]
-impl RunDispatch for MemoryDispatchStore {
+impl DispatchQueue for MemoryDispatchStore {
     async fn enqueue_with(
         &self,
         request: RunExecutionRequest,
@@ -479,7 +479,7 @@ impl RunDispatch for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl PendingInbox for MemoryDispatchStore {
+impl Inbox for MemoryDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
         if state
@@ -550,7 +550,7 @@ impl PendingInbox for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl MessageOutbox for MemoryDispatchStore {
+impl Outbox for MemoryDispatchStore {
     async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
         if state

@@ -26,6 +26,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::WaitingTicket;
 use awaken_agent_contract::commit::coordinator::{Coordinator as CommitCoordinator, Error};
 use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::event::record::Record as EventRecord;
+use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use rusqlite::{Connection, TransactionBehavior, params};
@@ -51,6 +53,11 @@ struct Projection {
     sequence: u64,
     messages: Vec<(ThreadId, Message)>,
     run_records: HashMap<RunId, RunRecord>,
+    /// The latest committed run per thread, in commit order (for `latest_run`).
+    latest_by_thread: HashMap<ThreadId, RunRecord>,
+    /// Committed events in commit order (for `list_events`). A fact-derived cache
+    /// rebuilt from the durable event table on construction.
+    events: Vec<EventRecord>,
     waiting: HashMap<RunId, WaitingTicket>,
 }
 
@@ -202,14 +209,23 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         for message in commit.messages {
             projection.messages.push((thread_id.clone(), message));
         }
-        projection.run_records.insert(
-            run_id.clone(),
-            RunRecord {
-                id: run_id.clone(),
-                thread_id,
-                phase,
-            },
-        );
+        for (offset, draft) in commit.events.into_iter().enumerate() {
+            projection.events.push(EventRecord {
+                sequence: next * 1_000 + offset as u64,
+                run_id: run_id.clone(),
+                kind: draft.kind,
+                payload: draft.payload,
+            });
+        }
+        let record = RunRecord {
+            id: run_id.clone(),
+            thread_id: thread_id.clone(),
+            phase,
+        };
+        projection
+            .run_records
+            .insert(run_id.clone(), record.clone());
+        projection.latest_by_thread.insert(thread_id, record);
         if parked {
             projection
                 .waiting
@@ -238,6 +254,44 @@ impl ThreadReader for SqliteCommitCoordinator {
 
     fn waiting_ticket(&self, run_id: &RunId) -> Option<WaitingTicket> {
         self.waiting_for(run_id)
+    }
+}
+
+/// The merged read repository (ADR-0039 D1), served from the fact-derived
+/// projection that `hydrate` rebuilt from the durable tables (D4).
+impl CheckpointReader for SqliteCommitCoordinator {
+    fn run(&self, id: &RunId) -> Option<RunRecord> {
+        self.get(id)
+    }
+
+    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+        self.projection
+            .lock()
+            .ok()
+            .and_then(|p| p.latest_by_thread.get(thread_id).cloned())
+    }
+
+    fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
+        let after = from.unwrap_or(0);
+        let projection = match self.projection.lock() {
+            Ok(projection) => projection,
+            Err(_) => return Vec::new(),
+        };
+        projection
+            .events
+            .iter()
+            .filter(|event| event.sequence > after)
+            .filter(|event| match scope {
+                EventScope::Run(run_id) => &event.run_id == run_id,
+                EventScope::Thread(thread_id) => projection
+                    .run_records
+                    .get(&event.run_id)
+                    .map(|record| &record.thread_id == thread_id)
+                    .unwrap_or(false),
+            })
+            .take(limit)
+            .cloned()
+            .collect()
     }
 }
 
@@ -380,14 +434,43 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
     for row in rows {
         let (run_id, thread_id, phase) = row?;
         if let Ok(phase) = serde_json::from_str::<Phase>(&phase) {
-            projection.run_records.insert(
-                RunId(run_id.clone()),
-                RunRecord {
-                    id: RunId(run_id),
-                    thread_id: ThreadId(thread_id),
-                    phase,
-                },
-            );
+            let record = RunRecord {
+                id: RunId(run_id.clone()),
+                thread_id: ThreadId(thread_id.clone()),
+                phase,
+            };
+            projection.run_records.insert(RunId(run_id), record.clone());
+            // Sequence order → the last commit on a thread wins as its latest run.
+            projection
+                .latest_by_thread
+                .insert(ThreadId(thread_id), record);
+        }
+    }
+
+    // Rebuild the committed event cache from the durable event log, in order.
+    let mut stmt = conn.prepare(&format!(
+        "SELECT sequence, run_id, kind, payload FROM {NS}_event ORDER BY sequence"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (sequence, run_id, kind, payload) = row?;
+        if let (Ok(kind), Ok(payload)) = (
+            serde_json::from_str(&kind),
+            serde_json::from_str::<serde_json::Value>(&payload),
+        ) {
+            projection.events.push(EventRecord {
+                sequence: sequence as u64,
+                run_id: RunId(run_id),
+                kind,
+                payload,
+            });
         }
     }
 

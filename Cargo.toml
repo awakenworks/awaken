@@ -10,9 +10,13 @@ members = [
     "crates/control/awaken-config-store",
     "crates/devtools/awaken-runtime-examples",
     "crates/runtime/awaken-provider-genai",
+    "crates/runtime/awaken-store-inmem",
+    "crates/stores/awaken-store-fs",
+    "crates/stores/awaken-store-conformance",
     "crates/stores/awaken-store-schema",
     "crates/stores/awaken-store-postgres",
     "crates/stores/awaken-store-sqlite",
+    "crates/contract/awaken-dispatch-contract",
     "crates/server/awaken-dispatch",
     "crates/server/awaken-protocol-managed",
     "crates/server/awaken-protocol-ai-sdk",
@@ -38,6 +42,10 @@ awaken-agent-contract = { path = "crates/contract/awaken-agent-contract" }
 awaken-runtime-contract = { path = "crates/contract/awaken-runtime-contract" }
 awaken-tool-pattern = { path = "crates/runtime/awaken-tool-pattern" }
 awaken-ext-skills = { path = "crates/runtime/awaken-ext-skills" }
+awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
+awaken-store-fs = { path = "crates/stores/awaken-store-fs" }
+awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
+awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

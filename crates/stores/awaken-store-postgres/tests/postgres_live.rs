@@ -132,6 +132,7 @@ async fn commit_persists_facts_messages_and_serves_reads() {
             kind: EventKind::MessageCommitted,
             payload: serde_json::json!({"n": 1}),
         }],
+        outbox: Vec::new(),
         waiting: None,
     };
 
@@ -178,6 +179,7 @@ async fn fence_increments_monotonically() {
                 messages: vec![],
                 state: vec![],
                 events: vec![],
+                outbox: Vec::new(),
                 waiting: None,
             })
             .await
@@ -204,6 +206,7 @@ async fn waiting_ticket_parks_then_clears() {
             messages: vec![],
             state: vec![],
             events: vec![],
+            outbox: Vec::new(),
             waiting: Some(ticket("run-1", "thread-1")),
         })
         .await
@@ -217,6 +220,7 @@ async fn waiting_ticket_parks_then_clears() {
             messages: vec![],
             state: vec![],
             events: vec![],
+            outbox: Vec::new(),
             waiting: None,
         })
         .await
@@ -244,6 +248,7 @@ async fn connect_applies_migrations_and_serves_a_commit() {
             messages: vec![],
             state: vec![],
             events: vec![],
+            outbox: Vec::new(),
             waiting: None,
         })
         .await
@@ -273,6 +278,7 @@ async fn commit_maps_a_storage_failure_to_a_rejection() {
             messages: vec![],
             state: vec![],
             events: vec![],
+            outbox: Vec::new(),
             waiting: None,
         })
         .await
@@ -300,6 +306,7 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
                 messages: vec![message("m1", "persisted")],
                 state: vec![],
                 events: vec![],
+                outbox: Vec::new(),
                 waiting: Some(ticket("run-1", "thread-1")),
             })
             .await

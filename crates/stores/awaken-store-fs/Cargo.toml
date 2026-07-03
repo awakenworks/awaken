@@ -1,0 +1,18 @@
+[package]
+name = "awaken-store-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-store-inmem.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+awaken-store-conformance.workspace = true
+
+[lints]
+workspace = true

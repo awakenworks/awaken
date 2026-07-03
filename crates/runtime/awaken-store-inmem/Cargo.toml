@@ -1,0 +1,17 @@
+[package]
+name = "awaken-store-inmem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-agent-contract.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+serde_json.workspace = true
+awaken-store-conformance.workspace = true
+
+[lints]
+workspace = true

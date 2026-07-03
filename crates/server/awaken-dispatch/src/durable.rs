@@ -22,7 +22,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use crate::Error;
 use crate::capability::RunIngressCapabilities;
 use crate::clock::Clock;
-use crate::dispatch::{DispatchStore, DispatchSummary, PendingInput, SubmitOptions};
+use crate::dispatch::{Dispatch, DispatchSummary, PendingInput, SubmitOptions};
 use crate::request::RunExecutionRequest;
 use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
@@ -34,7 +34,7 @@ pub struct DurableRunIngress<S> {
     worker: Arc<DispatchWorker<S>>,
 }
 
-impl<S: DispatchStore + 'static> DurableRunIngress<S> {
+impl<S: Dispatch + 'static> DurableRunIngress<S> {
     /// Build durable ingress from a runtime, a dispatch store, and the durable
     /// commit boundary. The commit handle is the single source of truth shared by
     /// the runtime's writes and the worker's reads (G6 same-source wiring).
@@ -196,7 +196,7 @@ impl<S: DispatchStore + 'static> DurableRunIngress<S> {
 }
 
 #[async_trait]
-impl<S: DispatchStore + 'static> RunIngress for DurableRunIngress<S> {
+impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
     /// Foreground submit is additive over runtime control: it executes inline
     /// through the same `RunExecutor` a direct ingress uses (G6).
     async fn submit(

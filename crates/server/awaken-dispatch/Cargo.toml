@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
+awaken-dispatch-contract = { path = "../../contract/awaken-dispatch-contract" }
 awaken-runtime = { path = "../../runtime/awaken-runtime" }
 awaken-ext-builtin-tools = { path = "../../runtime/awaken-ext-builtin-tools" }
 async-trait.workspace = true
