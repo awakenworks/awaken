@@ -2,9 +2,11 @@
 //! prepare → create → spawn → artifacts, plus mounts, handle/adopt, and the
 //! process lifecycle. Trusted Workdir tier (not tool-transparent).
 
+use std::sync::Arc;
+
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
-use awaken_sandbox_local::LocalProvider;
+use awaken_sandbox_local::{FileStore, FsFileStore, LocalProvider};
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
@@ -244,4 +246,101 @@ async fn stronger_isolation_than_the_backend_offers_is_rejected() {
     let mut spec = spec("t-iso");
     spec.isolation = pc::IsolationClass::Namespace; // Workdir backend can't honor it
     assert!(LocalProvider::new(tmp.path()).create(&spec).await.is_err());
+}
+
+#[tokio::test]
+async fn runtime_attach_and_process_reattach_are_unsupported_locally() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sandbox = LocalProvider::new(tmp.path())
+        .create(&spec("t-unsup"))
+        .await
+        .unwrap();
+    let req = pc::MountRequirement {
+        mount_id: "late".into(),
+        source: pc::MountSource::Other(serde_json::json!({ "content": "x" })),
+        mount_path: "/workspace/late.txt".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: false,
+    };
+    assert!(sandbox.attach(req).await.is_err());
+    assert!(sandbox.process("proc-1").await.is_err());
+    assert!(sandbox.read_artifact("no-such-id").await.is_err());
+}
+
+#[tokio::test]
+async fn mount_resolves_from_a_content_addressed_file_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(FsFileStore::open(tmp.path().join("blobs")).unwrap());
+    let id = store.put(b"from-store").unwrap();
+
+    let provider = LocalProvider::new(tmp.path().join("envs")).with_file_store(store);
+    let mut spec = spec("t-fs");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "in".into(),
+        source: pc::MountSource::File {
+            file_id: id.clone(),
+            content_hash: Some(id.clone()), // content-addressed: id == hash
+        },
+        mount_path: "/workspace/in.txt".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    let sandbox = provider.create(&spec).await.unwrap();
+    assert_eq!(
+        sandbox.realized()[0].content_hash.as_deref(),
+        Some(id.as_str())
+    );
+
+    let proc = sandbox
+        .spawn(sh(r#"cat workspace/in.txt > "$AWAKEN_OUTPUTS_DIR/o""#))
+        .await
+        .unwrap();
+    proc.wait().await.unwrap();
+    let arts = sandbox.artifacts().await.unwrap();
+    assert_eq!(
+        sandbox.read_artifact(&arts[0].id).await.unwrap(),
+        b"from-store"
+    );
+}
+
+#[tokio::test]
+async fn declared_content_hash_mismatch_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path()).with_blob("f", b"real".to_vec());
+    let mut spec = spec("t-hash");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "in".into(),
+        source: pc::MountSource::File {
+            file_id: "f".into(),
+            content_hash: Some("0000000000000000".into()), // wrong
+        },
+        mount_path: "/workspace/in.txt".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    assert!(provider.create(&spec).await.is_err());
+}
+
+#[tokio::test]
+async fn all_or_nothing_reaps_the_env_on_a_failed_required_mount() {
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
+    let mut spec = spec("t-aon");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "missing".into(),
+        source: pc::MountSource::File {
+            file_id: "absent".into(),
+            content_hash: None,
+        },
+        mount_path: "/workspace/x".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    assert!(provider.create(&spec).await.is_err());
+    // No partial environment left behind.
+    assert!(!tmp.path().join("t-aon").exists());
 }

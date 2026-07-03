@@ -25,18 +25,68 @@ use serde_json::json;
 use tokio::process::{Child, Command as TokioCommand};
 use tokio::sync::Mutex as AsyncMutex;
 
+use std::sync::Arc;
+
+use crate::file_store::FileStore;
 use crate::{IsolatedRoot, content_fingerprint};
 
 fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
 }
 
+/// Resolve a mount's bytes: an in-memory seed map first, then an optional
+/// content-addressed [`FileStore`], then inline `Other({content})`.
+pub(crate) fn resolve_source(
+    source: &pc::MountSource,
+    blobs: &HashMap<String, Vec<u8>>,
+    store: &Option<Arc<dyn FileStore>>,
+) -> Option<Vec<u8>> {
+    let by_id = |id: &str| {
+        blobs
+            .get(id)
+            .cloned()
+            .or_else(|| store.as_ref().and_then(|s| s.get(id).ok().flatten()))
+    };
+    match source {
+        pc::MountSource::File { file_id, .. } => by_id(file_id),
+        pc::MountSource::Resource { resource_id, .. } => by_id(resource_id),
+        pc::MountSource::Other(v) => v
+            .get("content")
+            .and_then(|c| c.as_str())
+            .map(|s| s.as_bytes().to_vec()),
+        pc::MountSource::MemoryStore { .. } => None,
+    }
+}
+
+/// The declared content hash of a mount source, if any (verified fail-closed).
+pub(crate) fn declared_hash(source: &pc::MountSource) -> Option<&str> {
+    match source {
+        pc::MountSource::File { content_hash, .. } => content_hash.as_deref(),
+        pc::MountSource::Resource { content_hash, .. } => content_hash.as_deref(),
+        _ => None,
+    }
+}
+
+/// Verify resolved bytes against a declared hash; fail closed on mismatch.
+pub(crate) fn verify(source: &pc::MountSource, bytes: &[u8]) -> Result<(), pc::SandboxError> {
+    if let Some(expected) = declared_hash(source) {
+        let got = content_fingerprint(bytes);
+        if got != expected {
+            return Err(err(format!(
+                "mount content hash mismatch: declared {expected}, realized {got}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Realizes [`LocalSandbox`] environments as directories under a base path.
 pub struct LocalProvider {
     base: PathBuf,
-    /// In-memory blob resolver for `File`/`Resource` mounts (Slice-4 replaces this
-    /// with a real `FileStore`). Keyed by `file_id` / `resource_id`.
+    /// In-memory blob seed for `File`/`Resource` mounts (keyed by id).
     blobs: HashMap<String, Vec<u8>>,
+    /// Optional content-addressed store consulted after the seed map (Slice 4).
+    file_store: Option<Arc<dyn FileStore>>,
 }
 
 impl LocalProvider {
@@ -44,6 +94,7 @@ impl LocalProvider {
         Self {
             base: base.into(),
             blobs: HashMap::new(),
+            file_store: None,
         }
     }
 
@@ -51,6 +102,13 @@ impl LocalProvider {
     #[must_use]
     pub fn with_blob(mut self, id: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
         self.blobs.insert(id.into(), bytes.into());
+        self
+    }
+
+    /// Resolve `File`/`Resource` mounts from a content-addressed store.
+    #[must_use]
+    pub fn with_file_store(mut self, store: Arc<dyn FileStore>) -> Self {
+        self.file_store = Some(store);
         self
     }
 
@@ -67,27 +125,16 @@ impl LocalProvider {
         }
     }
 
-    fn resolve_blob(&self, source: &pc::MountSource) -> Option<Vec<u8>> {
-        match source {
-            pc::MountSource::File { file_id, .. } => self.blobs.get(file_id).cloned(),
-            pc::MountSource::Resource { resource_id, .. } => self.blobs.get(resource_id).cloned(),
-            pc::MountSource::Other(v) => v
-                .get("content")
-                .and_then(|c| c.as_str())
-                .map(|s| s.as_bytes().to_vec()),
-            pc::MountSource::MemoryStore { .. } => None,
-        }
-    }
-
     fn realize_mount(
         &self,
         root: &IsolatedRoot,
         req: &pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
         let host = root.resolve(&req.mount_path).map_err(err)?;
-        let bytes = self.resolve_blob(&req.source);
+        let bytes = resolve_source(&req.source, &self.blobs, &self.file_store);
         match bytes {
             Some(bytes) => {
+                verify(&req.source, &bytes)?; // fail closed on content-hash mismatch
                 if let Some(parent) = host.parent() {
                     std::fs::create_dir_all(parent).map_err(err)?;
                 }
@@ -158,10 +205,15 @@ impl pc::SandboxProvider for LocalProvider {
                 sandbox.base_env.push((var.name.clone(), value.clone()));
             }
         }
+        // All-or-nothing: a failed mount reaps the whole environment (no partial dir).
         for req in &spec.mounts {
-            sandbox
-                .realized
-                .push(self.realize_mount(&sandbox.root, req)?);
+            match self.realize_mount(&sandbox.root, req) {
+                Ok(m) => sandbox.realized.push(m),
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(sandbox.root.root());
+                    return Err(e);
+                }
+            }
         }
         Ok(Box::new(sandbox))
     }
