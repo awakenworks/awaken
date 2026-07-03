@@ -104,12 +104,14 @@ impl PhaseReaction {
 }
 
 /// A phase hook: behavior contributed by a plugin at one phase point. Async so a
-/// real hook can consult an external system. It stages state commands and, at
-/// `BeforeInference`, request-only context (e.g. recalled memories).
+/// real hook can consult an external system (e.g. run a selection sub-agent). It
+/// stages state commands and, at `BeforeInference`, request-only context (e.g.
+/// recalled memories). `conversation` is the transcript at this point, so a
+/// `BeforeInference` hook can select context relevant to the user's message.
 #[async_trait]
 pub trait PhaseHook: Send + Sync {
     fn point(&self) -> PhaseHookPoint;
-    async fn on_phase(&self, ctx: &PhaseContext) -> PhaseReaction;
+    async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> PhaseReaction;
 }
 
 /// What a run-end guard sees when the model/tool loop reaches a natural end (a
@@ -623,7 +625,7 @@ mod tests {
         fn point(&self) -> PhaseHookPoint {
             self.0
         }
-        async fn on_phase(&self, _ctx: &PhaseContext) -> PhaseReaction {
+        async fn on_phase(&self, _ctx: &PhaseContext, _conversation: &[Message]) -> PhaseReaction {
             PhaseReaction::default()
         }
     }
