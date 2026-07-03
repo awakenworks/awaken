@@ -106,7 +106,7 @@ impl Runtime {
     /// Install the config's catalog and register its snapshot (both idempotent),
     /// then build a fresh activation on `thread` — the shared prefix of `run` and
     /// `run_to_completion`. Registering the snapshot lets a resume resolve it by id.
-    fn prepare(
+    pub fn prepare(
         &self,
         config: &RunnableConfig,
         thread: String,

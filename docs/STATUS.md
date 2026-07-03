@@ -151,6 +151,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0037-managed-capability-advertisement-wire-alignment.md` | Decision record | Not required | n/a |
 | `adr/0038-managed-resource-injection-and-store-organization.md` | Decision record | Not required | n/a |
 | `adr/0039-runtime-persistence-port-convergence-and-store-naming.md` | Decision record | Not required | n/a |
+| `adr/0040-server-durable-ingress-integration.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
