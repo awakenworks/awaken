@@ -449,6 +449,18 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: temp dirs for the LocalProvider spawn/artifact tests.
         "tempfile",
     },
+    # Container/K8s provider (ADR-0041 Slice 5): realizes the neutral sandbox ports
+    # over a dependency-inverted ContainerRuntime port + pure plan renderers. The
+    # real bollard/kube clients are adapters behind that port (added under features
+    # in a distributed build); the neutral crate names none of them.
+    "awaken-sandbox-container": {
+        "awaken-provisioning-contract",
+        "async-trait",
+        "serde_json",
+        "thiserror",
+        # dev-only: async fake runtime drives the provider lifecycle in unit tests.
+        "tokio",
+    },
     # Single-machine assembly binary: the composition root that wires the kernel
     # (built-in tools + permission gate + model port) behind the managed adapter.
     # Like the examples crate it may name every adapter it composes; nothing
