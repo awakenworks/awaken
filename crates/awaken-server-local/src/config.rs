@@ -151,6 +151,7 @@ pub(crate) fn server_config(
     client_tools: &HashSet<String>,
     delegates: &HashSet<String>,
     plugin_ids: &[String],
+    plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
     skill_descriptors: &[ToolDescriptor],
     context_policy: ContextPolicy,
 ) -> RunnableConfig {
@@ -161,6 +162,7 @@ pub(crate) fn server_config(
         .tools(tools)
         .max_steps(20)
         .plugins(plugin_ids.iter().cloned())
+        .plugin_config(plugin_config.iter().map(|(k, v)| (k.clone(), v.clone())))
         .plugin_capabilities(platform_plugin_capabilities())
         .context_policy(context_policy)
         .build()
@@ -237,6 +239,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &["state_machine".to_string()],
+            &Default::default(),
             &[],
             ContextPolicy::KeepAll,
         );
@@ -254,6 +257,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &["state_machine".to_string()],
+            &Default::default(),
             &[],
             ContextPolicy::KeepAll,
         );

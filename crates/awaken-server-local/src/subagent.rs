@@ -97,6 +97,7 @@ pub(crate) async fn run_subagent(
         &HashSet::new(),
         &HashSet::new(),
         &[],
+        &Default::default(),
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
     );
