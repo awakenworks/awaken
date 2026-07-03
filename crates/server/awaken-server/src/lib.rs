@@ -948,6 +948,43 @@ pub fn build_statemachine_router() -> Router {
     mount(Arc::new(host))
 }
 
+/// A richer tool state machine (coverage): a per-key machine (`key`/`key_normalizer`)
+/// whose transitions gate on the tool *result* (`when`) rather than just its args —
+/// exercising the result matchers (status + content) and the key template. The
+/// driving model calls `glob` twice with the same pattern: the first advances
+/// `s0 -> s1` on a `success` result (its emit fires), the second advances `s1 -> s2`
+/// (terminal) on `any` result (a second emit). No violation — both calls advance.
+pub fn build_statemachine_rich_router() -> Router {
+    let machine = serde_json::json!({
+        "machines": [{
+            "name": "keyed",
+            "key": "${pattern}",
+            "key_normalizer": "lowercase",
+            "initial": "s0",
+            "terminal": ["s2"],
+            "transitions": [
+                {
+                    "on": "glob(pattern ~ \"*\")",
+                    "from": ["s0"],
+                    "to": "s1",
+                    "when": "success",
+                    "emit": { "target": "system", "content": "first glob succeeded", "cooldown_turns": 0 }
+                },
+                {
+                    "on": "glob(pattern ~ \"*\")",
+                    "from": ["s1"],
+                    "to": "s2",
+                    "when": { "status": "success", "content": "*" },
+                    "emit": { "target": "system", "content": "second glob advanced", "cooldown_turns": 0 }
+                }
+            ]
+        }]
+    });
+    let host = SharedHost::new(Arc::new(StateMachineModel), "statemachine-rich")
+        .with_state_machine(machine);
+    mount(Arc::new(host))
+}
+
 /// A router with the config data plane (`/v1/config/agents/*`) over an in-memory
 /// SQLite config store, plus the protocol adapters. A session for a *published*
 /// agent runs with that agent's installed config (slice A); the model echoes the
