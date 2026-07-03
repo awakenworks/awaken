@@ -21,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("custom") => awaken_server::build_custom_router(),
         Ok("delegate") => awaken_server::build_delegation_router(),
         Ok("statemachine") => awaken_server::build_statemachine_router(),
+        Ok("config") => awaken_server::build_config_router(),
         Ok("vision") => awaken_server::build_vision_router(),
         _ => awaken_server::build_echo_router(),
     };
