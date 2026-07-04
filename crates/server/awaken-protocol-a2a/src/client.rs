@@ -471,6 +471,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_403_maps_to_a_structured_challenge() {
+        let transport = CannedTransport {
+            status: 403,
+            body: "",
+            www_authenticate: Some("Bearer error=\"insufficient_scope\""),
+        };
+        let err = get_task(&transport, "t").await.expect_err("403 surfaces");
+        let ClientError::Unauthorized { what, challenge } = err else {
+            panic!("expected Unauthorized, got {err:?}");
+        };
+        assert_eq!(what, "tasks/get");
+        assert_eq!(challenge.status, 403);
+        assert!(
+            challenge
+                .www_authenticate
+                .as_deref()
+                .unwrap()
+                .contains("insufficient_scope")
+        );
+    }
+
+    #[tokio::test]
     async fn an_http_error_carries_the_envelope_message() {
         let transport = CannedTransport {
             status: 429,
@@ -511,6 +533,106 @@ mod tests {
         };
         let err = get_task(&transport, "t").await.expect_err("bad body");
         assert!(matches!(err, ClientError::Decode(_)));
+    }
+
+    #[test]
+    fn a_long_error_body_is_truncated_with_ellipsis() {
+        let message = envelope_message("x".repeat(300).as_bytes());
+        assert_eq!(message.chars().count(), 201, "200 chars plus the ellipsis");
+        assert!(message.ends_with('…'), "{message}");
+    }
+
+    #[tokio::test]
+    async fn agent_card_parses_the_card() {
+        let transport = MockTransport {
+            seen: Mutex::new(Vec::new()),
+            reply: r#"{"name":"assistant","description":"Awaken agent","version":"0.0.0","protocolVersion":"1.0","capabilities":{"streaming":false,"pushNotifications":false}}"#
+                .into(),
+        };
+        let card = agent_card(&transport).await.unwrap();
+        assert_eq!(card.name, "assistant");
+        assert_eq!(card.protocol_version, "1.0");
+        let seen = transport.seen.lock().unwrap();
+        assert_eq!(seen[0], ("GET".to_string(), AGENT_CARD_PATH.to_string()));
+    }
+
+    #[tokio::test]
+    async fn agent_card_bad_body_is_decode_error() {
+        let transport = CannedTransport {
+            status: 200,
+            body: "not a card",
+            www_authenticate: None,
+        };
+        let err = agent_card(&transport).await.expect_err("bad body");
+        assert!(matches!(err, ClientError::Decode(_)));
+    }
+
+    #[tokio::test]
+    async fn cancel_task_ignores_failures() {
+        // A 500 reply and a request that never completes both go unreported —
+        // cancel is best-effort.
+        let failing_status = CannedTransport {
+            status: 500,
+            body: "boom",
+            www_authenticate: None,
+        };
+        cancel_task(&failing_status, "t").await;
+
+        struct Down;
+        #[async_trait]
+        impl Transport for Down {
+            async fn request(
+                &self,
+                _: &str,
+                _: &str,
+                _: Option<Vec<u8>>,
+            ) -> Result<Response, String> {
+                Err("connection refused".to_string())
+            }
+        }
+        cancel_task(&Down, "t").await;
+    }
+
+    #[tokio::test]
+    async fn send_message_401_labels_message_send() {
+        let transport = CannedTransport {
+            status: 401,
+            body: "",
+            www_authenticate: None,
+        };
+        let err = send_message(&transport, None, "c", "m-1", "go")
+            .await
+            .expect_err("401 surfaces");
+        assert!(
+            matches!(
+                err,
+                ClientError::Unauthorized {
+                    what: "message:send",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_card_401_labels_agent_card() {
+        let transport = CannedTransport {
+            status: 401,
+            body: "",
+            www_authenticate: None,
+        };
+        let err = agent_card(&transport).await.expect_err("401 surfaces");
+        assert!(
+            matches!(
+                err,
+                ClientError::Unauthorized {
+                    what: "agent-card",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
     }
 
     // ---- HttpTransport auth mechanics against a local single-shot server ----
@@ -623,6 +745,53 @@ mod tests {
             ClientError::Unauthorized { challenge, .. }
                 if challenge.www_authenticate.as_deref() == Some("Bearer realm=\"a2a\"")
         ));
+    }
+
+    #[tokio::test]
+    async fn http_transport_refresher_declines_surfaces_challenge() {
+        let (url, _server) = serve(vec![unauthorized_response()]).await;
+        let refresher = Arc::new(StaticRefresher {
+            fresh: None,
+            seen: Mutex::new(Vec::new()),
+        });
+        let transport = HttpTransport::new(url)
+            .with_bearer("stale")
+            .with_refresher(Arc::clone(&refresher) as Arc<dyn CredentialRefresher>);
+        let err = get_task(&transport, "t").await.expect_err("401 surfaces");
+        assert!(matches!(
+            err,
+            ClientError::Unauthorized { challenge, .. }
+                if challenge.www_authenticate.as_deref() == Some("Bearer realm=\"a2a\"")
+        ));
+        assert_eq!(refresher.seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn http_transport_retry_still_401_surfaces() {
+        let second_401 =
+            "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=\"second\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string();
+        let (url, server) = serve(vec![unauthorized_response(), second_401]).await;
+        let refresher = Arc::new(StaticRefresher {
+            fresh: Some(Credential::Bearer("fresh".to_string())),
+            seen: Mutex::new(Vec::new()),
+        });
+        let transport = HttpTransport::new(url)
+            .with_bearer("stale")
+            .with_refresher(Arc::clone(&refresher) as Arc<dyn CredentialRefresher>);
+        let err = get_task(&transport, "t")
+            .await
+            .expect_err("retry 401 surfaces");
+        // The retry's own challenge surfaces, not the first one's.
+        assert!(matches!(
+            err,
+            ClientError::Unauthorized { challenge, .. }
+                if challenge.www_authenticate.as_deref() == Some("Bearer realm=\"second\"")
+        ));
+        let captured = server.await.unwrap();
+        assert!(captured[1].to_ascii_lowercase().contains("bearer fresh"));
+        let seen = refresher.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "exactly one refresh per request");
     }
 
     #[tokio::test]
