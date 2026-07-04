@@ -128,4 +128,43 @@ mod tests {
         attacker.sealed.lock().unwrap().insert(r.0.clone(), blob);
         assert!(matches!(attacker.get(&r).await, Err(CredentialError::Seal)));
     }
+
+    #[tokio::test]
+    async fn a_tampered_ciphertext_is_rejected() {
+        let store = SealedAeadSecretStore::with_key(&[3u8; 32]);
+        let r = SecretRef("cred:1".into());
+        store
+            .put(&r, RedactedString::new("sk-secret"))
+            .await
+            .unwrap();
+        // Flip one ciphertext byte (past the nonce) in the stored blob.
+        {
+            let mut map = store.sealed.lock().unwrap();
+            let blob = map.get_mut(&r.0).unwrap();
+            blob[NONCE_LEN] ^= 0x01;
+        }
+        assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    #[tokio::test]
+    async fn a_truncated_blob_is_a_seal_error() {
+        let store = SealedAeadSecretStore::with_key(&[4u8; 32]);
+        let r = SecretRef("cred:1".into());
+        // A blob shorter than the nonce cannot even be split, let alone opened.
+        store
+            .sealed
+            .lock()
+            .unwrap()
+            .insert(r.0.clone(), vec![0u8; NONCE_LEN - 1]);
+        assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    #[tokio::test]
+    async fn a_missing_ref_is_secret_not_found() {
+        let store = SealedAeadSecretStore::with_key(&[5u8; 32]);
+        assert!(matches!(
+            store.get(&SecretRef("cred:absent".into())).await,
+            Err(CredentialError::SecretNotFound(id)) if id == "cred:absent"
+        ));
+    }
 }
