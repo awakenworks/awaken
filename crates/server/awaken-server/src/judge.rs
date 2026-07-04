@@ -36,25 +36,6 @@ pub fn default_judge_agent(model_ref: &str, agent_id: &str, instructions: &str) 
         .build()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_judge_agent_carries_its_id_and_instructions() {
-        let cfg = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
-        assert_eq!(cfg.snapshot().root_agent_id.0, "judge");
-        assert!(
-            cfg.snapshot()
-                .resolved_spec
-                .instructions
-                .contains("strict evaluator")
-        );
-        // A judge is pure reasoning: no tools.
-        assert!(cfg.snapshot().resolved_spec.tool_descriptors.is_empty());
-    }
-}
-
 /// Runs a judge sub-agent through the kernel for a
 /// [`DelegateGrader`](awaken_ext_goal::DelegateGrader): a fresh rooted runtime
 /// over the same model, driven to completion; its last assistant line is the
@@ -89,5 +70,24 @@ impl DelegateRunner for KernelJudgeRunner {
         .await
         .map_err(DelegateError)?;
         Ok(DelegateReply { text: Some(text) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_judge_agent_carries_its_id_and_instructions() {
+        let cfg = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        assert_eq!(cfg.snapshot().root_agent_id.0, "judge");
+        assert!(
+            cfg.snapshot()
+                .resolved_spec
+                .instructions
+                .contains("strict evaluator")
+        );
+        // A judge is pure reasoning: no tools.
+        assert!(cfg.snapshot().resolved_spec.tool_descriptors.is_empty());
     }
 }

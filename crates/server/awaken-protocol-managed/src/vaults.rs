@@ -362,7 +362,7 @@ impl VaultState {
         store
             .credentials
             .iter()
-            .filter(|(_, c)| vault_ids.iter().any(|v| *v == c.vault_id))
+            .filter(|(_, c)| vault_ids.contains(&c.vault_id))
             .filter(|(_, c)| {
                 matches!(&c.auth, AuthRecord::McpOauth { mcp_server_url, .. } if mcp_server_url == url)
             })
