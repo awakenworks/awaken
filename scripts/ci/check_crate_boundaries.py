@@ -95,6 +95,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         "blake3",
         "tokio",
+        # feature `postgres`: bytea backend over sqlx.
+        "sqlx",
+        # feature `s3`: object-store backend (S3/MinIO/GCS/Azure) + its list stream.
+        "object_store",
+        "futures",
         # dev-only: temp dirs for the fs backend round-trip test.
         "tempfile",
     },

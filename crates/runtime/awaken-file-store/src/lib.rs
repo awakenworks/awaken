@@ -158,6 +158,14 @@ pub fn is_content_id(base: &Path, id: &str) -> bool {
     base.join(id).exists()
 }
 
+/// Postgres `bytea` backend (`postgres` feature).
+#[cfg(feature = "postgres")]
+pub mod postgres;
+
+/// Object-store backend — S3/MinIO/GCS/Azure (`s3` feature).
+#[cfg(feature = "s3")]
+pub mod s3;
+
 #[cfg(test)]
 mod tests {
     use super::*;

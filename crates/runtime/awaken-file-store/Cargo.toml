@@ -11,6 +11,18 @@ thiserror.workspace = true
 # so the same bytes get the same id on every backend (fs / postgres / s3).
 blake3 = "1"
 tokio = { workspace = true, features = ["fs", "io-util"] }
+# Network backends over the same trait. Optional: default build stays fs/in-mem only.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
+object_store = { version = "0.12", features = ["aws"], optional = true }
+futures = { version = "0.3", optional = true }
+
+[features]
+# Postgres bytea backend (idempotent INSERT ... ON CONFLICT). Compile-verified;
+# running needs a database.
+postgres = ["dep:sqlx"]
+# Object-store backend (S3/MinIO/GCS/Azure via `object_store`; key = content id).
+# Unit-tested against the in-memory object store; real S3 needs credentials.
+s3 = ["dep:object_store", "dep:futures"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs"] }
