@@ -45,6 +45,9 @@ async function req(base, method, uri, body) {
 }
 
 async function main() {
+  // An `env` credential materializes from a host env var; set one the spawned
+  // server inherits so the resolver can read it back (covers the Env branch).
+  process.env.AWAKEN_E2E_ENVKEY = 'sk-env-e2e-value'; // awaken-allow: secret
   try {
     await withServer('management', 38150, async (base) => {
       // --- author provider / endpoint / offering (path id is authoritative) ---
@@ -114,6 +117,86 @@ async function main() {
       assert.equal(r.json.base_url, 'https://api.anthropic.com/v1/');
       assert.equal(r.json.credential_present, true);
       pass('POST /v1/config/inference/resolve — resolver output matches ResolvedInferenceView contract');
+
+      // --- read-back: GET provider / endpoint / credential + list (validated) ---
+      r = await req(base, 'GET', '/v1/config/providers/anthropic');
+      assert.equal(r.status, 200);
+      checkContract('Provider', r.json);
+      assert.equal(r.json.slug, 'anthropic');
+
+      r = await req(base, 'GET', '/v1/config/endpoints/ep1');
+      assert.equal(r.status, 200);
+      checkContract('ProtocolEndpoint', r.json);
+      assert.equal(r.json.provider_id, 'anthropic');
+
+      r = await req(base, 'GET', `/v1/config/credentials/${credId}`);
+      assert.equal(r.status, 200);
+      checkContract('CredentialSource', r.json);
+      assert.ok(!JSON.stringify(r.json).includes('sk-admin-e2e'), 'GET credential is secret-free');
+
+      r = await req(base, 'GET', '/v1/config/credentials?workspace_id=ws');
+      assert.equal(r.status, 200);
+      assert.ok(Array.isArray(r.json) && r.json.some((c) => c.id === credId), 'list contains the credential');
+      r.json.forEach((c) => checkContract('CredentialSource', c));
+      pass('GET provider/endpoint/credential + list — all read-backs match the contract');
+
+      // --- error arms: 404s + a dangling-reference offering ---
+      r = await req(base, 'GET', '/v1/config/providers/no-such-provider');
+      assert.equal(r.status, 404);
+      assert.equal(r.json.code, 'not_found');
+
+      r = await req(base, 'GET', '/v1/config/endpoints/no-such-endpoint');
+      assert.equal(r.status, 404);
+
+      r = await req(base, 'GET', '/v1/config/credentials/cred_missing');
+      assert.equal(r.status, 404);
+      assert.equal(r.json.code, 'not_found');
+
+      // An offering that references an endpoint that doesn't exist fails closed.
+      r = await req(base, 'POST', '/v1/config/offerings', {
+        model_id: 'ghost', provider_id: 'anthropic',
+        protocol_endpoint_id: 'no-such-endpoint', flavor: 'anthropic_messages', upstream_model: null,
+      });
+      assert.ok(r.status === 404 || r.status === 422, `dangling offering rejected, got ${r.status}`);
+      pass('error arms: unknown provider/endpoint/credential -> 404; dangling offering -> 4xx');
+
+      // --- resolve with an Exact binding to a missing credential fails closed ---
+      r = await req(base, 'POST', '/v1/config/inference/resolve', {
+        workspace_id: 'ws',
+        model_id: 'claude-opus-4-8',
+        binding: { type: 'exact', credential_source_id: 'cred_missing' },
+      });
+      assert.equal(r.status, 404, JSON.stringify(r.json));
+      pass('resolve with a missing credential binding -> 404');
+
+      // --- an `env` credential materializes from the host environment ---
+      r = await req(base, 'POST', '/v1/config/credentials', {
+        workspace_id: 'ws', kind: 'env', provider_id: 'anthropic', env_key: 'AWAKEN_E2E_ENVKEY',
+      });
+      assert.equal(r.status, 201);
+      checkContract('CredentialSource', r.json);
+      assert.equal(r.json.kind, 'env');
+      const envCredId = r.json.id;
+      r = await req(base, 'POST', '/v1/config/inference/resolve', {
+        workspace_id: 'ws',
+        model_id: 'claude-opus-4-8',
+        binding: { type: 'exact', credential_source_id: envCredId },
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      checkContract('ResolvedInferenceView', r.json);
+      assert.equal(r.json.credential_present, true, 'env credential materialized from the host var');
+      pass('env-kind credential resolves by reading the host environment variable');
+
+      // --- resolve with a None binding returns a triple with no credential ---
+      r = await req(base, 'POST', '/v1/config/inference/resolve', {
+        workspace_id: 'ws',
+        model_id: 'claude-opus-4-8',
+        binding: { type: 'none' },
+      });
+      assert.equal(r.status, 200);
+      checkContract('ResolvedInferenceView', r.json);
+      assert.equal(r.json.credential_present, false);
+      pass('resolve with a None binding -> triple, credential_present=false');
 
       // --- a binding to an unknown model fails closed (404) ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {

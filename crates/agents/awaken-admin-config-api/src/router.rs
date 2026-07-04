@@ -300,6 +300,9 @@ struct EnterCredentialRequest {
     provider_id: Option<String>,
     #[serde(default)]
     env_key: Option<String>,
+    /// The secret to seal — required for `vault`, unused for `env` (which reads a
+    /// host variable at materialization), so it defaults to empty.
+    #[serde(default)]
     secret: String,
 }
 
