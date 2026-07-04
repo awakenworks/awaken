@@ -1,7 +1,9 @@
-//! The Managed vault/credential front door over HTTP: create a vault, enter an
-//! `environment_variable` credential (secret write-only), retrieve it secret-free,
-//! and confirm the same credential resolves an inference. Also covers the wire
-//! constraints (unknown vault 404, duplicate key rejected, unknown auth type 400).
+//! The Managed vault/credential front door over HTTP: create a vault, enter
+//! `environment_variable` / `static_bearer` / `mcp_oauth` credentials (secrets
+//! write-only), retrieve them secret-free, and confirm an env-var credential
+//! resolves an inference. Also covers the wire constraints (unknown vault 404,
+//! duplicate key rejected, unknown auth type 400) and the vault→MCP URL-binding
+//! seam (`mcp_credential_source_for_url`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -246,15 +248,26 @@ async fn wire_constraints_fail_closed() {
         "duplicate key must be rejected"
     );
 
-    // An unsupported auth type is a clean 400 (unknown-variant deserialize error).
+    // An unknown auth type is a clean 400 (unknown-variant deserialize error).
     let (s3, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({ "type": "basic_auth", "token": "x" })), // awaken-allow: secret
+    )
+    .await;
+    assert_eq!(s3, StatusCode::BAD_REQUEST);
+
+    // A known type with missing required fields 400s too (static_bearer needs
+    // `token` + `mcp_server_url`, not the old guessed field name).
+    let (s4, _) = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
         Some(json!({ "type": "static_bearer", "bearer_token": "x" })), // awaken-allow: secret
     )
     .await;
-    assert_eq!(s3, StatusCode::BAD_REQUEST);
+    assert_eq!(s4, StatusCode::BAD_REQUEST);
 }
 
 /// Create a vault named `display_name` and return its id.
@@ -413,5 +426,279 @@ async fn too_many_credentials_is_rejected() {
         s,
         StatusCode::BAD_REQUEST,
         "21st credential must be rejected"
+    );
+
+    // The cap spans all credential types, not just env-vars.
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "static_bearer",
+            "mcp_server_url": "https://mcp.example.com/sse",
+            "token": "brr" // awaken-allow: secret
+        })),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "a static_bearer must count against the same 20-cap"
+    );
+}
+
+/// Enter an mcp_oauth credential against `url` (optionally with a refresh object)
+/// and return the full response body.
+async fn create_mcp_oauth(h: &Harness, vault_id: &str, url: &str, refresh: Option<Value>) -> Value {
+    let mut body = json!({
+        "type": "mcp_oauth",
+        "mcp_server_url": url,
+        "access_token": "at-secret-token" // awaken-allow: secret
+    });
+    if let Some(r) = refresh {
+        body["refresh"] = r;
+    }
+    let (s, cred) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(body),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    cred
+}
+
+#[tokio::test]
+async fn static_bearer_credential_is_secret_free_and_round_trips() {
+    let h = harness();
+    let vault_id = create_vault(&h, "mcp").await;
+
+    let (s, cred) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "static_bearer",
+            "mcp_server_url": "https://mcp.example.com/sse",
+            "token": "brr-bearer-secret", // awaken-allow: secret
+            "display_name": "linear bearer"
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(cred["type"], "vault_credential");
+    assert_eq!(cred["auth"]["type"], "static_bearer");
+    assert_eq!(
+        cred["auth"]["mcp_server_url"],
+        "https://mcp.example.com/sse"
+    );
+    // The auth projection is URL-only per the SDK response shape: no token field
+    // at all, let alone the value.
+    let raw = serde_json::to_string(&cred).unwrap();
+    assert!(!raw.contains("brr-bearer-secret"));
+    assert!(!raw.contains("\"token\""));
+    let cred_id = cred["id"].as_str().unwrap().to_string();
+
+    // Retrieve round-trips the same secret-free projection.
+    let (s, got) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(got["auth"]["type"], "static_bearer");
+    assert_eq!(got["auth"]["mcp_server_url"], "https://mcp.example.com/sse");
+    assert_eq!(got["display_name"], "linear bearer");
+    assert!(
+        !serde_json::to_string(&got)
+            .unwrap()
+            .contains("brr-bearer-secret")
+    );
+
+    // The token is sealed in the domain: the row is secret-free but materializes.
+    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    let source = {
+        use awaken_credential_vault::repo::CredentialRepo;
+        h.credentials.get(&source_id).await.unwrap()
+    };
+    assert!(
+        !serde_json::to_string(&source)
+            .unwrap()
+            .contains("brr-bearer-secret")
+    );
+    let secret = awaken_credential_vault::materialize(&source, &*h.secrets)
+        .await
+        .unwrap();
+    assert_eq!(secret.expose_secret(), "brr-bearer-secret");
+
+    // No refresh token to report; no live probe yet, so status stays unknown.
+    let (s, validation) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(validation["has_refresh_token"], false);
+    assert_eq!(validation["status"], "unknown");
+}
+
+#[tokio::test]
+async fn mcp_oauth_credential_with_refresh_never_leaks_secrets() {
+    let h = harness();
+    let vault_id = create_vault(&h, "mcp").await;
+
+    let cred = create_mcp_oauth(
+        &h,
+        &vault_id,
+        "https://mcp.example.com/sse",
+        Some(json!({
+            "client_id": "cli_1",
+            "refresh_token": "rt-secret-token", // awaken-allow: secret
+            "token_endpoint": "https://auth.example.com/token",
+            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-secret" }, // awaken-allow: secret
+            "scope": "mcp:read"
+        })),
+    )
+    .await;
+    assert_eq!(cred["auth"]["type"], "mcp_oauth");
+    assert_eq!(
+        cred["auth"]["mcp_server_url"],
+        "https://mcp.example.com/sse"
+    );
+    // The refresh projection is configuration-only: scheme tag, no secrets.
+    assert_eq!(cred["auth"]["refresh"]["client_id"], "cli_1");
+    assert_eq!(
+        cred["auth"]["refresh"]["token_endpoint"],
+        "https://auth.example.com/token"
+    );
+    assert_eq!(
+        cred["auth"]["refresh"]["token_endpoint_auth"]["type"],
+        "client_secret_basic"
+    );
+    assert_eq!(cred["auth"]["refresh"]["scope"], "mcp:read");
+    // None of the three wire secrets appears anywhere in the raw body.
+    let raw = serde_json::to_string(&cred).unwrap();
+    assert!(!raw.contains("at-secret-token"));
+    assert!(!raw.contains("rt-secret-token"));
+    assert!(!raw.contains("cs-secret"));
+    let cred_id = cred["id"].as_str().unwrap().to_string();
+
+    // Retrieve is equally secret-free.
+    let (s, got) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let raw = serde_json::to_string(&got).unwrap();
+    assert!(!raw.contains("at-secret-token"));
+    assert!(!raw.contains("rt-secret-token"));
+    assert!(!raw.contains("cs-secret"));
+
+    // Validate reports the stored refresh-token fact; status stays unknown (no
+    // live probe in this slice) — and leaks nothing either.
+    let (s, validation) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(validation["has_refresh_token"], true);
+    assert_eq!(validation["status"], "unknown");
+    let raw = serde_json::to_string(&validation).unwrap();
+    assert!(!raw.contains("at-secret-token"));
+    assert!(!raw.contains("rt-secret-token"));
+}
+
+#[tokio::test]
+async fn mcp_oauth_credential_without_refresh_reports_no_refresh_token() {
+    let h = harness();
+    let vault_id = create_vault(&h, "mcp").await;
+
+    let cred = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/sse", None).await;
+    // No refresh object in -> no refresh projection out (omitted, not null-ish).
+    assert!(cred["auth"].get("refresh").is_none());
+    assert!(
+        !serde_json::to_string(&cred)
+            .unwrap()
+            .contains("at-secret-token")
+    );
+    let cred_id = cred["id"].as_str().unwrap().to_string();
+
+    let (s, validation) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(validation["has_refresh_token"], false);
+    assert_eq!(validation["status"], "unknown");
+}
+
+#[tokio::test]
+async fn mcp_credential_source_for_url_binds_by_vault_and_exact_url() {
+    let h = harness();
+    let vault_a = create_vault(&h, "a").await;
+    let vault_b = create_vault(&h, "b").await;
+    let url = "https://mcp.example.com/sse";
+
+    // Vault A holds an mcp_oauth credential for `url`, plus two decoys that must
+    // never match: an env-var credential and a static_bearer against the same URL.
+    let oauth = create_mcp_oauth(&h, &vault_a, url, None).await;
+    let oauth_id = oauth["id"].as_str().unwrap().to_string();
+    create_credential(&h, &vault_a, "K").await;
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_a}/credentials"),
+        Some(json!({
+            "type": "static_bearer",
+            "mcp_server_url": url,
+            "token": "brr" // awaken-allow: secret
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // The seam returns the oauth credential's domain source id, not a decoy's.
+    let expected = h.state.credential_source_id(&vault_a, &oauth_id).unwrap();
+    let got = h
+        .state
+        .mcp_credential_source_for_url(std::slice::from_ref(&vault_a), url)
+        .expect("mcp_oauth credential binds by URL");
+    assert_eq!(got, expected);
+
+    // Wrong vault, wrong url, or a session bound to no vaults -> no binding.
+    assert!(
+        h.state
+            .mcp_credential_source_for_url(std::slice::from_ref(&vault_b), url)
+            .is_none()
+    );
+    assert!(
+        h.state
+            .mcp_credential_source_for_url(
+                std::slice::from_ref(&vault_a),
+                "https://other.example.com/sse"
+            )
+            .is_none()
+    );
+    assert!(h.state.mcp_credential_source_for_url(&[], url).is_none());
+
+    // A vault list spanning both vaults still finds it (vault B contributes none).
+    let both = vec![vault_b, vault_a];
+    assert_eq!(
+        h.state.mcp_credential_source_for_url(&both, url),
+        Some(expected)
     );
 }

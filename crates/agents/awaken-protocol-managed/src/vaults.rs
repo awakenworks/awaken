@@ -2,10 +2,10 @@
 //!
 //! These are the public `/v1/vaults...` routes the official `@anthropic-ai/sdk`
 //! `beta.vaults.*` client calls. The DTOs mirror the SDK types exactly
-//! (`BetaManagedAgentsVault`, `BetaManagedAgentsCredential`, the
-//! `environment_variable` auth/create shapes, and `BetaManagedAgentsCredentialValidation`);
-//! the wire keeps Anthropic's snake_case tags (`vault` / `vault_credential` /
-//! `environment_variable`).
+//! (`BetaManagedAgentsVault`, `BetaManagedAgentsCredential`, the per-type
+//! auth/create shapes, and `BetaManagedAgentsCredentialValidation`); the wire
+//! keeps Anthropic's snake_case tags (`vault` / `vault_credential` /
+//! `environment_variable` / `static_bearer` / `mcp_oauth`).
 //!
 //! Storage is neutral: a credential's secret is sealed into the credential
 //! domain's [`SecretStore`](awaken_credential_vault::SecretStore) via the
@@ -14,18 +14,26 @@
 //! [`CredentialRepo`](awaken_credential_vault::repo::CredentialRepo), so a vault
 //! credential entered here is the same row the resolver binds a run to.
 //!
-//! Scope: the `environment_variable` credential type end to end. `static_bearer`
-//! and `mcp_oauth` create params are rejected as unknown variants (a clean 400)
-//! until Phase 3 fills them in; the MCP-OAuth validate route answers `unknown`
-//! for an env-var credential (no live probe yet).
+//! Scope (Phase 3): all three credential types — `environment_variable`,
+//! `static_bearer`, and `mcp_oauth`. Every wire secret (`secret_value`, `token`,
+//! `access_token`, `refresh_token`, `client_secret`) is write-only: sealed (or,
+//! for `client_secret`, consumed — see [`TokenEndpointAuthParams`]) on the way in,
+//! never present in any response. The MCP-OAuth validate route reports
+//! `has_refresh_token` truthfully but does not live-probe the server yet, so its
+//! `status` stays `unknown` for every credential type (never a false `valid`).
+//! [`VaultState::mcp_credential_source_for_url`] is the seam a session uses to
+//! bind an MCP server to a vault credential by URL.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
-use awaken_credential_vault::{CredentialSourceId, SecretStore};
-use awaken_managed_bridge::{WireEnvVarCreate, env_var_to_create_params};
+use awaken_credential_vault::{CredentialSourceId, SecretRef, SecretStore};
+use awaken_managed_bridge::{
+    WireEnvVarCreate, WireMcpOauthCreate, WireStaticBearerCreate, env_var_to_create_params,
+    mcp_oauth_to_create_params, static_bearer_to_create_params,
+};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -82,15 +90,82 @@ pub enum CredentialNetworking {
     Limited { allowed_hosts: Vec<String> },
 }
 
-/// The `auth` projection of a credential. Env-var is the only resolved shape for
-/// now (`BetaManagedAgentsEnvironmentVariableAuthResponse`); it never carries the
-/// secret value, only the variable name and its networking scope.
+/// The token-endpoint auth scheme as it arrives on the wire
+/// (`BetaManagedAgentsTokenEndpointAuth{None,Basic,Post}Param`). The
+/// `client_secret` is write-only and — since this slice performs no live refresh
+/// exchange — consumed and dropped here: it is never stored and never echoed. A
+/// future refresh-exchange slice must seal it like the other secrets.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TokenEndpointAuthParams {
+    None,
+    ClientSecretBasic { client_secret: String },
+    ClientSecretPost { client_secret: String },
+}
+
+/// The secret-free token-endpoint auth projection
+/// (`BetaManagedAgentsTokenEndpointAuth{None,Basic,Post}Response`): the scheme
+/// tag only — the SDK response types carry no `client_secret`.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TokenEndpointAuthResponse {
+    None,
+    ClientSecretBasic,
+    ClientSecretPost,
+}
+
+/// `BetaManagedAgentsMCPOAuthRefreshParams` — refresh configuration on create.
+/// `refresh_token` is write-only: sealed under its own `SecretRef` next to the
+/// credential row, never echoed back.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpOauthRefreshParams {
+    pub client_id: String,
+    /// Write-only: sealed into the `SecretStore`, never echoed back.
+    pub refresh_token: String,
+    pub token_endpoint: String,
+    /// The SDK requires this, but we tolerate its absence (defaults to `none`) —
+    /// nothing in this slice exchanges tokens, so nothing can misfire.
+    #[serde(default)]
+    pub token_endpoint_auth: Option<TokenEndpointAuthParams>,
+    #[serde(default)]
+    pub resource: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// `BetaManagedAgentsMCPOAuthRefreshResponse` — the secret-free refresh
+/// projection: configuration only, never the refresh token or client secret.
+#[derive(Debug, Clone, Serialize)]
+pub struct McpOauthRefreshResponse {
+    pub client_id: String,
+    pub token_endpoint: String,
+    pub token_endpoint_auth: TokenEndpointAuthResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+/// The `auth` projection of a credential, one variant per SDK `*AuthResponse`
+/// shape. None of them ever carries secret material: env-var projects the
+/// variable name + networking scope, `static_bearer` only the server URL, and
+/// `mcp_oauth` the server URL + secret-free refresh configuration.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CredentialAuth {
     EnvironmentVariable {
         secret_name: String,
         networking: CredentialNetworking,
+    },
+    StaticBearer {
+        mcp_server_url: String,
+    },
+    McpOauth {
+        mcp_server_url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expires_at: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        refresh: Option<McpOauthRefreshResponse>,
     },
 }
 
@@ -110,8 +185,9 @@ pub struct Credential {
     pub display_name: Option<String>,
 }
 
-/// Credential create params, discriminated by `type`. Only `environment_variable`
-/// is accepted today; other tags deserialize-fail into a clean `400`.
+/// Credential create params, discriminated by `type`, one variant per SDK
+/// `*CreateParams` shape. An unknown tag deserialize-fails into a clean `400`.
+/// All secret fields are write-only.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CredentialCreateParams {
@@ -120,6 +196,30 @@ pub enum CredentialCreateParams {
         /// Write-only: sealed into the `SecretStore`, never echoed back.
         secret_value: String,
         networking: CredentialNetworking,
+        #[serde(default)]
+        metadata: BTreeMap<String, String>,
+        #[serde(default)]
+        display_name: Option<String>,
+    },
+    /// `BetaManagedAgentsStaticBearerCreateParams`.
+    StaticBearer {
+        mcp_server_url: String,
+        /// Write-only: sealed into the `SecretStore`, never echoed back.
+        token: String,
+        #[serde(default)]
+        metadata: BTreeMap<String, String>,
+        #[serde(default)]
+        display_name: Option<String>,
+    },
+    /// `BetaManagedAgentsMCPOAuthCreateParams`.
+    McpOauth {
+        mcp_server_url: String,
+        /// Write-only: sealed into the `SecretStore`, never echoed back.
+        access_token: String,
+        #[serde(default)]
+        expires_at: Option<String>,
+        #[serde(default)]
+        refresh: Option<McpOauthRefreshParams>,
         #[serde(default)]
         metadata: BTreeMap<String, String>,
         #[serde(default)]
@@ -159,14 +259,43 @@ struct VaultRecord {
     metadata: BTreeMap<String, String>,
 }
 
+/// The kind-specific wire-only fields of a stored credential — everything the
+/// neutral domain row does not carry (names, networking, MCP server URL, refresh
+/// configuration). Secret-free by construction: it holds `SecretRef`s, never
+/// material.
+#[derive(Clone)]
+enum AuthRecord {
+    EnvironmentVariable {
+        secret_name: String,
+        networking: CredentialNetworking,
+    },
+    StaticBearer {
+        mcp_server_url: String,
+    },
+    McpOauth {
+        mcp_server_url: String,
+        expires_at: Option<String>,
+        refresh: Option<McpOauthRefreshRecord>,
+    },
+}
+
+/// Stored refresh configuration for an `mcp_oauth` credential: the secret-free
+/// projection plus the ref the sealed refresh token lives under (the future
+/// refresh-exchange slice reads it; this slice only reports its presence).
+#[derive(Clone)]
+struct McpOauthRefreshRecord {
+    projection: McpOauthRefreshResponse,
+    #[allow(dead_code)] // Read by the refresh-exchange slice; sealed-proof today.
+    refresh_token_ref: SecretRef,
+}
+
 /// A stored credential: its neutral domain row id plus the wire-only projection
-/// fields (networking / display name) the domain row does not carry.
+/// fields the domain row does not carry.
 #[derive(Clone)]
 struct CredentialRecord {
     vault_id: String,
     source_id: CredentialSourceId,
-    secret_name: String,
-    networking: CredentialNetworking,
+    auth: AuthRecord,
     metadata: BTreeMap<String, String>,
     display_name: Option<String>,
 }
@@ -216,6 +345,31 @@ impl VaultState {
             .map(|c| c.source_id.clone())
     }
 
+    /// The vault→MCP binding seam (SDK model: a credential binds to an MCP server
+    /// by `mcp_server_url`; a session binds to vaults by `vault_ids`). Scan the
+    /// given vaults for an `mcp_oauth` credential whose server URL equals `url`
+    /// (exact string match) and return its neutral domain source id — the
+    /// session-ingress slice hands that to the resolver, never the wire id.
+    /// Env-var and `static_bearer` credentials never match. On ties the lowest
+    /// wire id (earliest created) wins, so the pick is deterministic.
+    #[must_use]
+    pub fn mcp_credential_source_for_url(
+        &self,
+        vault_ids: &[String],
+        url: &str,
+    ) -> Option<CredentialSourceId> {
+        let store = self.inner.lock().unwrap();
+        store
+            .credentials
+            .iter()
+            .filter(|(_, c)| vault_ids.iter().any(|v| *v == c.vault_id))
+            .filter(|(_, c)| {
+                matches!(&c.auth, AuthRecord::McpOauth { mcp_server_url, .. } if mcp_server_url == url)
+            })
+            .min_by(|(a, _), (b, _)| a.cmp(b))
+            .map(|(_, c)| c.source_id.clone())
+    }
+
     fn project_vault(id: &str, record: &VaultRecord) -> Vault {
         Vault {
             id: id.to_string(),
@@ -229,13 +383,31 @@ impl VaultState {
     }
 
     fn project_credential(id: &str, record: &CredentialRecord) -> Credential {
+        let auth = match &record.auth {
+            AuthRecord::EnvironmentVariable {
+                secret_name,
+                networking,
+            } => CredentialAuth::EnvironmentVariable {
+                secret_name: secret_name.clone(),
+                networking: networking.clone(),
+            },
+            AuthRecord::StaticBearer { mcp_server_url } => CredentialAuth::StaticBearer {
+                mcp_server_url: mcp_server_url.clone(),
+            },
+            AuthRecord::McpOauth {
+                mcp_server_url,
+                expires_at,
+                refresh,
+            } => CredentialAuth::McpOauth {
+                mcp_server_url: mcp_server_url.clone(),
+                expires_at: expires_at.clone(),
+                refresh: refresh.as_ref().map(|r| r.projection.clone()),
+            },
+        };
         Credential {
             id: id.to_string(),
             archived_at: None,
-            auth: CredentialAuth::EnvironmentVariable {
-                secret_name: record.secret_name.clone(),
-                networking: record.networking.clone(),
-            },
+            auth,
             created_at: OBJECT_AT.to_string(),
             metadata: record.metadata.clone(),
             object_type: "vault_credential",
@@ -332,15 +504,10 @@ async fn create_credential(
     Path(vault_id): Path<String>,
     ManagedJson(params): ManagedJson<CredentialCreateParams>,
 ) -> Result<(StatusCode, Json<Credential>), WireError> {
-    let CredentialCreateParams::EnvironmentVariable {
-        secret_name,
-        secret_value,
-        networking,
-        metadata,
-        display_name,
-    } = params;
-
-    // Enforce the vault exists and the per-vault key/count constraints up front.
+    // Enforce the vault exists and the per-vault constraints up front. The 20-cap
+    // spans all credential types; the duplicate-name check only applies among
+    // env-var credentials (static_bearer / mcp_oauth have no secret_name to
+    // collide on — the SDK allows several credentials against one server).
     {
         let store = state.inner.lock().unwrap();
         if !store.vaults.contains_key(&vault_id) {
@@ -353,34 +520,149 @@ async fn create_credential(
         if in_vault.clone().count() >= MAX_CREDENTIALS_PER_VAULT {
             return Err(bad_request("vault credential limit reached (max 20)"));
         }
-        if in_vault.clone().any(|c| c.secret_name == secret_name) {
-            return Err(bad_request(format!(
-                "credential key `{secret_name}` already exists in this vault"
-            )));
+        if let CredentialCreateParams::EnvironmentVariable { secret_name, .. } = &params {
+            let dup = in_vault.clone().any(|c| {
+                matches!(&c.auth, AuthRecord::EnvironmentVariable { secret_name: existing, .. }
+                    if existing == secret_name)
+            });
+            if dup {
+                return Err(bad_request(format!(
+                    "credential key `{secret_name}` already exists in this vault"
+                )));
+            }
         }
     }
 
-    // Secret-in through the ACL: the raw value crosses into the domain here and is
-    // sealed by the SecretStore; the returned row is secret-free.
-    let create = env_var_to_create_params(
-        vault_id.clone(),
-        None,
-        WireEnvVarCreate {
-            secret_name: secret_name.clone(),
+    // Secret-in through the ACL: every raw secret crosses into the domain here and
+    // is sealed by the SecretStore; the returned row is secret-free, and only the
+    // kind-specific wire projection is kept on the record.
+    let enter = |create| enter_credential(create, &*state.secrets, &*state.credentials);
+    let (source, auth, metadata, display_name) = match params {
+        CredentialCreateParams::EnvironmentVariable {
+            secret_name,
             secret_value,
-        },
-    );
-    let source = enter_credential(create, &*state.secrets, &*state.credentials)
-        .await
-        .map_err(|e| bad_request(e.to_string()))?;
+            networking,
+            metadata,
+            display_name,
+        } => {
+            let create = env_var_to_create_params(
+                vault_id.clone(),
+                None,
+                WireEnvVarCreate {
+                    secret_name: secret_name.clone(),
+                    secret_value,
+                },
+            );
+            let source = enter(create)
+                .await
+                .map_err(|e| bad_request(e.to_string()))?;
+            let auth = AuthRecord::EnvironmentVariable {
+                secret_name,
+                networking,
+            };
+            (source, auth, metadata, display_name)
+        }
+        CredentialCreateParams::StaticBearer {
+            mcp_server_url,
+            token,
+            metadata,
+            display_name,
+        } => {
+            let create = static_bearer_to_create_params(
+                vault_id.clone(),
+                WireStaticBearerCreate {
+                    mcp_server_url: mcp_server_url.clone(),
+                    token,
+                },
+            );
+            let source = enter(create)
+                .await
+                .map_err(|e| bad_request(e.to_string()))?;
+            (
+                source,
+                AuthRecord::StaticBearer { mcp_server_url },
+                metadata,
+                display_name,
+            )
+        }
+        CredentialCreateParams::McpOauth {
+            mcp_server_url,
+            access_token,
+            expires_at,
+            refresh,
+            metadata,
+            display_name,
+        } => {
+            // Split the wire refresh object: the token goes to the bridge to be
+            // sealed; the rest is secret-free configuration for the projection
+            // (the client_secret inside token_endpoint_auth is dropped — see
+            // `TokenEndpointAuthParams`).
+            let (refresh_config, refresh_token) = match refresh {
+                Some(r) => {
+                    let projection = McpOauthRefreshResponse {
+                        client_id: r.client_id,
+                        token_endpoint: r.token_endpoint,
+                        token_endpoint_auth: match r.token_endpoint_auth {
+                            None | Some(TokenEndpointAuthParams::None) => {
+                                TokenEndpointAuthResponse::None
+                            }
+                            Some(TokenEndpointAuthParams::ClientSecretBasic { .. }) => {
+                                TokenEndpointAuthResponse::ClientSecretBasic
+                            }
+                            Some(TokenEndpointAuthParams::ClientSecretPost { .. }) => {
+                                TokenEndpointAuthResponse::ClientSecretPost
+                            }
+                        },
+                        resource: r.resource,
+                        scope: r.scope,
+                    };
+                    (Some(projection), Some(r.refresh_token))
+                }
+                None => (None, None),
+            };
+            let bridged = mcp_oauth_to_create_params(
+                vault_id.clone(),
+                WireMcpOauthCreate {
+                    mcp_server_url: mcp_server_url.clone(),
+                    access_token,
+                    refresh_token,
+                },
+            );
+            let source = enter(bridged.params)
+                .await
+                .map_err(|e| bad_request(e.to_string()))?;
+            // The refresh token is a second secret: sealed under a sibling ref of
+            // the row (the row's own material_ref holds the access token).
+            let refresh_record = match (refresh_config, bridged.refresh_secret) {
+                (Some(projection), Some(secret)) => {
+                    let r = SecretRef(format!("sec:refresh:{}", source.id.0));
+                    state
+                        .secrets
+                        .put(&r, secret)
+                        .await
+                        .map_err(|e| bad_request(e.to_string()))?;
+                    Some(McpOauthRefreshRecord {
+                        projection,
+                        refresh_token_ref: r,
+                    })
+                }
+                _ => None,
+            };
+            let auth = AuthRecord::McpOauth {
+                mcp_server_url,
+                expires_at,
+                refresh: refresh_record,
+            };
+            (source, auth, metadata, display_name)
+        }
+    };
 
     let n = state.cred_seq.fetch_add(1, Ordering::SeqCst);
     let id = format!("crd_{n:016}");
     let record = CredentialRecord {
         vault_id,
         source_id: source.id,
-        secret_name,
-        networking,
+        auth,
         metadata,
         display_name,
     };
@@ -412,11 +694,20 @@ async fn validate_credential(
         .get(&id)
         .filter(|c| c.vault_id == vault_id)
         .ok_or_else(|| not_found("credential"))?;
-    // MCP-OAuth live probing is Phase 3; an env-var credential has no upstream to
-    // probe, so its validation is `unknown` (never a false `valid`).
+    // No live MCP probe in this slice, so `status` stays `unknown` for every
+    // credential type (never a false `valid`). Only the refresh-token presence of
+    // an mcp_oauth credential is reported truthfully — it is a stored fact, not a
+    // probe result.
+    let has_refresh_token = matches!(
+        &record.auth,
+        AuthRecord::McpOauth {
+            refresh: Some(_),
+            ..
+        }
+    );
     Ok(Json(CredentialValidation {
         credential_id: id.clone(),
-        has_refresh_token: false,
+        has_refresh_token,
         mcp_probe: None,
         refresh: None,
         status: CredentialValidationStatus::Unknown,
