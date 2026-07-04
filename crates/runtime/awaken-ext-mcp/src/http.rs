@@ -776,6 +776,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_still_401_surfaces_the_second_challenge() {
+        let second_401 =
+            "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=\"second\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string();
+        let (url, server) = serve(vec![unauthorized_response(), second_401]).await;
+        let refresher = Arc::new(StaticRefresher {
+            fresh: Some(Credential::Bearer("fresh".to_string())),
+            seen: Mutex::new(Vec::new()),
+        });
+        let transport = HttpTransportBuilder::new(url)
+            .credential(Credential::Bearer("stale".to_string()))
+            .refresher(Arc::clone(&refresher) as Arc<dyn CredentialRefresher>)
+            .build();
+        let err = transport
+            .list_tools()
+            .await
+            .expect_err("retry 401 surfaces");
+        // The retry's own challenge surfaces, not the first one's.
+        let message = err.to_string();
+        assert!(message.contains("auth challenge: HTTP 401"), "{message}");
+        assert!(message.contains("Bearer realm=\"second\""), "{message}");
+
+        let captured = server.await.unwrap();
+        assert!(captured[1].to_ascii_lowercase().contains("bearer fresh"));
+        let seen = refresher.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "exactly one refresh per request");
+    }
+
+    #[tokio::test]
+    async fn forbidden_403_triggers_refresh() {
+        let forbidden =
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string();
+        let (url, server) = serve(vec![forbidden, ok_response(EMPTY_TOOLS)]).await;
+        let refresher = Arc::new(StaticRefresher {
+            fresh: Some(Credential::Bearer("fresh".to_string())),
+            seen: Mutex::new(Vec::new()),
+        });
+        let transport = HttpTransportBuilder::new(url)
+            .credential(Credential::Bearer("stale".to_string()))
+            .refresher(Arc::clone(&refresher) as Arc<dyn CredentialRefresher>)
+            .build();
+        transport.list_tools().await.expect("retry succeeds");
+
+        let captured = server.await.unwrap();
+        assert!(captured[0].to_ascii_lowercase().contains("bearer stale"));
+        assert!(captured[1].to_ascii_lowercase().contains("bearer fresh"));
+        let seen = refresher.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].status, 403);
+    }
+
+    #[tokio::test]
+    async fn a_bare_401_without_www_authenticate_surfaces() {
+        let bare_401 =
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string();
+        let (url, _server) = serve(vec![bare_401]).await;
+        let refresher = Arc::new(StaticRefresher {
+            fresh: None,
+            seen: Mutex::new(Vec::new()),
+        });
+        let transport = HttpTransportBuilder::new(url)
+            .refresher(Arc::clone(&refresher) as Arc<dyn CredentialRefresher>)
+            .build();
+        let err = transport.list_tools().await.expect_err("401 surfaces");
+        let message = err.to_string();
+        assert!(message.contains("auth challenge: HTTP 401"), "{message}");
+        assert!(!message.contains("WWW-Authenticate"), "{message}");
+        let seen = refresher.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].www_authenticate, None);
+    }
+
+    #[tokio::test]
+    async fn sse_listener_stops_when_refresh_declines() {
+        let (url, _server) = serve(vec![unauthorized_response()]).await;
+        let refresher = Arc::new(StaticRefresher {
+            fresh: None,
+            seen: Mutex::new(Vec::new()),
+        });
+        let transport = HttpTransportBuilder::new(url)
+            .refresher(Arc::clone(&refresher) as Arc<dyn CredentialRefresher>)
+            .build();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            listen(Arc::clone(&transport.shared)),
+        )
+        .await
+        .expect("listener stops instead of hammering the server");
+        let seen = refresher.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].status, 401);
+    }
+
+    #[tokio::test]
+    async fn sse_listener_reconnects_after_refresh() {
+        let sse = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n"
+            .to_string();
+        let (url, server) = serve(vec![unauthorized_response(), sse]).await;
+        let refresher = Arc::new(StaticRefresher {
+            fresh: Some(Credential::Bearer("fresh".to_string())),
+            seen: Mutex::new(Vec::new()),
+        });
+        let transport = HttpTransportBuilder::new(url)
+            .credential(Credential::Bearer("stale".to_string()))
+            .refresher(refresher as Arc<dyn CredentialRefresher>)
+            .build();
+        let mut rx = transport.subscribe_list_changed();
+        let listener = tokio::spawn(listen(Arc::clone(&transport.shared)));
+
+        let kind = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("listener reconnects and routes the notification")
+            .unwrap();
+        assert_eq!(kind, ListChangedKind::Tools);
+        listener.abort();
+
+        let captured = server.await.unwrap();
+        assert!(captured[0].to_ascii_lowercase().contains("bearer stale"));
+        assert!(captured[1].to_ascii_lowercase().contains("bearer fresh"));
+    }
+
+    #[tokio::test]
     async fn set_credential_rotates_the_auth_header() {
         let (url, server) = serve(vec![ok_response(EMPTY_TOOLS), ok_response(EMPTY_TOOLS)]).await;
         let transport = HttpTransportBuilder::new(url)
