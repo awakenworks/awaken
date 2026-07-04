@@ -11,7 +11,7 @@
 
 mod router;
 
-pub use router::{AdminState, admin_router};
+pub use router::{AdminState, ResolveRequest, ResolvedInferenceView, admin_router};
 
 /// The API surface version this crate serves.
 pub const API_VERSION: &str = "0";
