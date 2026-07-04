@@ -11,6 +11,7 @@
 //! imported. Its `CapabilityBound` is a namespace (`mcp__{server}__`) since the
 //! exact ids are not known at composition time.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_runtime_contract::plugin::{
@@ -21,9 +22,26 @@ use tokio::sync::broadcast;
 
 use crate::error::McpError;
 use crate::id_mapping::tool_namespace;
+use crate::sensitive::mark_sensitive;
 use crate::stdio::StdioTransport;
 use crate::tool::{McpRawTool, mcp_tool_descriptor};
 use crate::transport::{ListChangedKind, McpToolTransport};
+
+/// Host-declared sensitive fields, keyed by the tool's wire name: dotted
+/// property paths marked `x-sensitive` in the tool's schema at registry load
+/// (see [`crate::sensitive`]). Complements the server's own `writeOnly` /
+/// `format: "password"` markers.
+pub type SensitiveFields = HashMap<String, Vec<String>>;
+
+/// Mark host-declared sensitive paths on each tool's input schema, so the
+/// projected descriptors carry them (and redaction can key off them).
+fn apply_sensitive(tools: &mut [McpToolDefinition], sensitive: &SensitiveFields) {
+    for def in tools {
+        if let Some(paths) = sensitive.get(&def.name) {
+            mark_sensitive(&mut def.input_schema, paths);
+        }
+    }
+}
 
 /// The plugin id for a server.
 fn plugin_id(server_name: &str) -> String {
@@ -51,11 +69,24 @@ impl McpServer {
     pub async fn start(
         server_name: impl Into<String>,
         transport: Arc<dyn McpToolTransport>,
+        list_changed: broadcast::Receiver<ListChangedKind>,
+    ) -> Result<Self, McpError> {
+        Self::start_with_sensitive(server_name, transport, list_changed, SensitiveFields::new())
+            .await
+    }
+
+    /// [`start`](Self::start), with host-declared sensitive fields marked on
+    /// each tool's schema at every registry load (initial and on refresh).
+    pub async fn start_with_sensitive(
+        server_name: impl Into<String>,
+        transport: Arc<dyn McpToolTransport>,
         mut list_changed: broadcast::Receiver<ListChangedKind>,
+        sensitive: SensitiveFields,
     ) -> Result<Self, McpError> {
         let server_name = server_name.into();
         let namespace = tool_namespace(&server_name)?;
-        let tools = transport.list_tools().await?;
+        let mut tools = transport.list_tools().await?;
+        apply_sensitive(&mut tools, &sensitive);
         let registry = Arc::new(Mutex::new(McpRegistry { version: 1, tools }));
 
         let refresh_registry = Arc::clone(&registry);
@@ -63,8 +94,9 @@ impl McpServer {
         tokio::spawn(async move {
             while let Ok(kind) = list_changed.recv().await {
                 if kind == ListChangedKind::Tools
-                    && let Ok(tools) = refresh_transport.list_tools().await
+                    && let Ok(mut tools) = refresh_transport.list_tools().await
                 {
+                    apply_sensitive(&mut tools, &sensitive);
                     let mut registry = refresh_registry.lock().unwrap();
                     registry.tools = tools;
                     registry.version += 1;
@@ -193,7 +225,14 @@ mod tests {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             let name = if n == 0 { "alpha" } else { "beta" };
             Ok(vec![
-                serde_json::from_value(serde_json::json!({ "name": name })).unwrap(),
+                serde_json::from_value(serde_json::json!({
+                    "name": name,
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": { "token": { "type": "string" } },
+                    },
+                }))
+                .unwrap(),
             ])
         }
         async fn call_tool(
@@ -265,6 +304,56 @@ mod tests {
             server.plugin().resolve().dynamic_tools[0].descriptor.id,
             "mcp__srv__beta",
             "the refreshed tool set is projected"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_declared_sensitive_fields_mark_the_descriptor_across_refreshes() {
+        let transport = Arc::new(SwappingTransport {
+            calls: AtomicUsize::new(0),
+        });
+        let (tx, rx) = broadcast::channel(4);
+        // Both tool generations declare `token` sensitive by wire name.
+        let sensitive: SensitiveFields = [
+            ("alpha".to_string(), vec!["token".to_string()]),
+            ("beta".to_string(), vec!["token".to_string()]),
+        ]
+        .into_iter()
+        .collect();
+        let server = McpServer::start_with_sensitive("srv", transport, rx, sensitive)
+            .await
+            .expect("starts");
+
+        let descriptor = server.plugin().resolve().dynamic_tools[0]
+            .descriptor
+            .clone();
+        assert_eq!(
+            descriptor.parameters["properties"]["token"]["x-sensitive"],
+            true
+        );
+        // Redaction keys off the projected descriptor alone.
+        let redacted = crate::sensitive::redact_arguments(
+            &descriptor.parameters,
+            &serde_json::json!({ "token": "sk-live", "other": 1 }),
+        );
+        assert_eq!(redacted["token"], crate::sensitive::REDACTED);
+        assert_eq!(redacted["other"], 1);
+
+        // The refreshed tool set is marked too.
+        tx.send(ListChangedKind::Tools).expect("send");
+        for _ in 0..50 {
+            if server.version() == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let descriptor = server.plugin().resolve().dynamic_tools[0]
+            .descriptor
+            .clone();
+        assert_eq!(descriptor.id, "mcp__srv__beta");
+        assert_eq!(
+            descriptor.parameters["properties"]["token"]["x-sensitive"],
+            true
         );
     }
 }
