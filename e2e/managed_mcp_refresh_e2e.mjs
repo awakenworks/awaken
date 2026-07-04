@@ -10,8 +10,13 @@
 // connect with zero additional grants, and `mcpOAuthValidate` now live-probes
 // it `valid`. The invalid arm pins the fail-closed side: a wrong token with NO
 // refresh validates `invalid` (http_status 401) and fails the turn loudly with
-// the api_error envelope naming the challenge. Mirrors the in-process Rust
-// tests in crates/agents/awaken-server-local/tests/mcp_sessions.rs.
+// the api_error envelope naming the challenge. The confidential-client arm
+// enters an mcp_oauth credential whose refresh uses `client_secret_basic`: the
+// client_secret is sealed (never echoed by any route), and the grant carries
+// the RFC 6749 §2.3.1 `Authorization: Basic
+// base64(urlencode(client_id):urlencode(client_secret))` header with NO
+// client_id in the form body. Mirrors the in-process Rust tests in
+// crates/agents/awaken-server-local/tests/mcp_sessions.rs.
 //
 // Run: (from e2e/)  npm install && node managed_mcp_refresh_e2e.mjs
 
@@ -26,6 +31,19 @@ const REFRESH_TOKEN = 'rt-fixed-e2e'; // awaken-allow: secret
 const NEW_TOKEN = 'new-token'; // awaken-allow: secret
 const WRONG_TOKEN = 'wrong-token-e2e'; // awaken-allow: secret
 const CLIENT_ID = 'cli-e2e';
+
+// Confidential-client arm. The secret contains a space and an '&' so the test
+// pins that both halves are form-urlencoded BEFORE the base64 (RFC 6749 §2.3.1).
+const CONF_CLIENT_ID = 'cli-conf-e2e';
+const CONF_CLIENT_SECRET = 'conf s3cret&e2e'; // awaken-allow: secret
+const CONF_EXPIRED_TOKEN = 'conf-expired-e2e'; // awaken-allow: secret
+const CONF_REFRESH_TOKEN = 'rt-conf-e2e'; // awaken-allow: secret
+const CONF_NEW_TOKEN = 'conf-new-token'; // awaken-allow: secret
+// The exact §2.3.1 wire: 'cli-conf-e2e' is identity under form-urlencoding and
+// 'conf s3cret&e2e' encodes to 'conf+s3cret%26e2e' (the pair is hardcoded, so
+// this pins the encoding rather than mirroring the server).
+const CONF_BASIC_HEADER =
+  `Basic ${Buffer.from('cli-conf-e2e:conf+s3cret%26e2e').toString('base64')}`;
 
 async function listEvents(client, sessionId) {
   const events = [];
@@ -70,6 +88,14 @@ async function main() {
   // Fixture B: a plain static-bearer instance whose accepted token the invalid
   // arm's credential does NOT hold (and no refresh escape hatch).
   const fixtureB = await startCalcFixture('calc-b-accepted-token'); // awaken-allow: secret
+  // Fixture C: the confidential-client arm — expired initial token, and the
+  // /token grant must authenticate with the §2.3.1 Basic header.
+  const fixtureC = await startCalcFixture(CONF_EXPIRED_TOKEN, {
+    expiredInitial: true,
+    refreshToken: CONF_REFRESH_TOKEN,
+    issueToken: CONF_NEW_TOKEN,
+    clientAuth: { method: 'basic', clientId: CONF_CLIENT_ID, clientSecret: CONF_CLIENT_SECRET },
+  });
   try {
     await withServer('management', 38192, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
@@ -222,9 +248,79 @@ async function main() {
       );
       assert.equal(fixtureB.grants.length, 0, 'no refresh config -> no grant was ever attempted');
       pass('turn against the wrong-token credential fails with api_error naming `auth challenge: HTTP 401`');
+
+      // --- (e) confidential client: client_secret_basic refresh ---
+      const vault3 = await client.beta.vaults.create({ display_name: 'MCP confidential vault', betas: BETAS });
+      const confCred = await client.beta.vaults.credentials.create(vault3.id, {
+        type: 'mcp_oauth',
+        mcp_server_url: fixtureC.url,
+        access_token: CONF_EXPIRED_TOKEN,
+        refresh: {
+          client_id: CONF_CLIENT_ID,
+          refresh_token: CONF_REFRESH_TOKEN,
+          token_endpoint: fixtureC.tokenUrl,
+          token_endpoint_auth: { type: 'client_secret_basic', client_secret: CONF_CLIENT_SECRET },
+        },
+        betas: BETAS,
+      });
+      assert.deepEqual(
+        confCred.auth.refresh.token_endpoint_auth,
+        { type: 'client_secret_basic' },
+        'the auth projection is tag-only',
+      );
+      assert.ok(
+        !JSON.stringify(confCred).includes(CONF_CLIENT_SECRET),
+        'the client_secret must not be echoed on create',
+      );
+      pass('credentials.create(mcp_oauth + client_secret_basic refresh) -> secret-free, tag-only auth');
+
+      // The expired token still converses: the grant authenticated with the
+      // Basic header and the fresh token carried the tool call.
+      const session4 = await client.beta.sessions.create({
+        agent: 'assistant',
+        mcp_servers: [{ name: 'calc', type: 'url', url: fixtureC.url }],
+        vault_ids: [vault3.id],
+        betas: BETAS,
+      });
+      await sendMessage(client, session4.id, 'add 19 23');
+      assertAddTurn(await listEvents(client, session4.id), 42);
+      pass('confidential arm: add 19 23 -> result 42 despite the expired initial token');
+
+      // Exactly one grant, carrying the EXACT §2.3.1 Basic wire — and the
+      // client_id/client_secret stay OUT of the form body.
+      assert.equal(fixtureC.grants.length, 1, `one challenge, one grant — got ${fixtureC.grants.length}`);
+      const confGrant = fixtureC.grants[0];
+      assert.equal(confGrant.authorization, CONF_BASIC_HEADER, confGrant.body);
+      const confForm = new URLSearchParams(confGrant.body);
+      assert.equal(confForm.get('grant_type'), 'refresh_token', confGrant.body);
+      assert.equal(confForm.get('refresh_token'), CONF_REFRESH_TOKEN, confGrant.body);
+      assert.ok(!confForm.has('client_id'), `client_id must stay out of the form: ${confGrant.body}`);
+      assert.ok(!confForm.has('client_secret'), `client_secret must stay out of the form: ${confGrant.body}`);
+      const confToolCalls = fixtureC.calls.filter((c) => c.method === 'tools/call');
+      assert.equal(confToolCalls.length, 1);
+      assert.equal(confToolCalls[0].authorization, `Bearer ${CONF_NEW_TOKEN}`);
+      pass(`exactly one grant carrying \`Authorization: ${CONF_BASIC_HEADER}\`, no client_id/client_secret in the form`);
+
+      // The client_secret never appears in ANY HTTP response body from the
+      // server: raw fetches of credential retrieve + validate, no SDK shaping.
+      const rawRetrieve = await fetch(`${baseUrl}/v1/vaults/${vault3.id}/credentials/${confCred.id}`);
+      assert.equal(rawRetrieve.status, 200);
+      const rawRetrieveBody = await rawRetrieve.text();
+      assert.ok(!rawRetrieveBody.includes(CONF_CLIENT_SECRET), rawRetrieveBody);
+      assert.ok(!rawRetrieveBody.includes(CONF_REFRESH_TOKEN), rawRetrieveBody);
+      const rawValidate = await fetch(
+        `${baseUrl}/v1/vaults/${vault3.id}/credentials/${confCred.id}/mcp_oauth_validate`,
+        { method: 'POST' },
+      );
+      assert.equal(rawValidate.status, 200);
+      const rawValidateBody = await rawValidate.text();
+      assert.ok(!rawValidateBody.includes(CONF_CLIENT_SECRET), rawValidateBody);
+      assert.ok(!rawValidateBody.includes(CONF_NEW_TOKEN), rawValidateBody);
+      assert.equal(JSON.parse(rawValidateBody).status, 'valid', 'the resealed token live-probes valid');
+      pass('client_secret absent from raw credential retrieve + validate bodies; validate -> valid');
     });
 
-    console.log('E2E PASS: mcp_oauth refresh exchange, reseal persistence, and live validate round-trip through the official @anthropic-ai/sdk.');
+    console.log('E2E PASS: mcp_oauth refresh exchange (public + confidential client), reseal persistence, and live validate round-trip through the official @anthropic-ai/sdk.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);
@@ -232,6 +328,7 @@ async function main() {
   } finally {
     await fixtureA.close();
     await fixtureB.close();
+    await fixtureC.close();
   }
 }
 
