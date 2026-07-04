@@ -772,6 +772,7 @@ dependencies = [
  "awaken-store-sqlite",
  "axum",
  "http-body-util",
+ "reqwest 0.11.27",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
