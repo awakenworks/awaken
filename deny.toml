@@ -90,6 +90,7 @@ wrappers = [
     "awaken-sandbox-local",
     "awaken-protocol-mcp",
     "awaken-server-local",
+    "awaken-config-resolver",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
 
