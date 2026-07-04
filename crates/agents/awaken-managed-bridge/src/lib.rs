@@ -4,8 +4,11 @@
 //! tags (`environment_variable`/`static_bearer`/`mcp_oauth`); the domain keeps
 //! neutral names. This crate is the only place the two vocabularies meet.
 //!
-//! P0/P1 scope: the `environment_variable` credential mapping both ways
-//! (secret-in create params ← wire; secret-free projection → wire).
+//! Scope: the `environment_variable`, `static_bearer`, and `mcp_oauth` credential
+//! mappings (secret-in create params ← wire; secret-free projection → wire). Every
+//! wire secret (`secret_value` / `token` / `access_token` / `refresh_token`)
+//! crosses into a `RedactedString` here and is sealed by the domain's
+//! `SecretStore`; nothing this crate returns carries plaintext on a row.
 
 #![forbid(unsafe_code)]
 
@@ -88,6 +91,77 @@ pub fn env_var_to_create_params(
     }
 }
 
+/// The `static_bearer` create params as they arrive on the Managed wire
+/// (`BetaManagedAgentsStaticBearerCreateParams`). `token` is write-only and never
+/// echoed back — the ACL consumes it into the domain. The `mcp_server_url` stays
+/// on the wire-side record (the neutral domain row does not model MCP bindings).
+pub struct WireStaticBearerCreate {
+    pub mcp_server_url: String,
+    pub token: String,
+}
+
+/// Map a wire `static_bearer` credential into secret-in domain create params.
+/// The bearer token crosses into a `RedactedString` here and is sealed by the
+/// `SecretStore` in `create_source`; it is never placed on the domain row.
+#[must_use]
+pub fn static_bearer_to_create_params(
+    workspace_id: impl Into<String>,
+    wire: WireStaticBearerCreate,
+) -> CredentialCreateParams {
+    CredentialCreateParams {
+        workspace_id: workspace_id.into(),
+        kind: CredentialKind::Vault,
+        provider_id: None,
+        // No env-var name: a bearer credential is bound to its MCP server by URL
+        // (kept on the wire record), not injected into a process environment.
+        env_key: None,
+        secret: Some(RedactedString::new(wire.token)),
+    }
+}
+
+/// The `mcp_oauth` create params as they arrive on the Managed wire
+/// (`BetaManagedAgentsMCPOAuthCreateParams`), reduced to the secret axis the
+/// domain cares about. `access_token` and `refresh_token` are write-only.
+pub struct WireMcpOauthCreate {
+    pub mcp_server_url: String,
+    pub access_token: String,
+    /// The refresh token from the wire `refresh` object, if one was supplied.
+    pub refresh_token: Option<String>,
+}
+
+/// An `mcp_oauth` credential mapped for the domain: the access token rides the
+/// row's create params (sealed as its `material_ref`); the refresh token — a
+/// *second* secret — comes back as a sealed-ready `RedactedString` for the caller
+/// to put under its own `SecretRef` next to the row. Consumer: the vault surface's
+/// create handler in `awaken-protocol-managed`.
+pub struct McpOauthDomainCreate {
+    pub params: CredentialCreateParams,
+    /// Present iff the wire supplied a refresh token; never placed on the row.
+    pub refresh_secret: Option<RedactedString>,
+}
+
+/// Map a wire `mcp_oauth` credential into secret-in domain create params. Both
+/// tokens cross into `RedactedString`s here; the domain row stays secret-free
+/// (the access token sealed as `material_ref`, the refresh token sealed by the
+/// caller under a sibling ref).
+#[must_use]
+pub fn mcp_oauth_to_create_params(
+    workspace_id: impl Into<String>,
+    wire: WireMcpOauthCreate,
+) -> McpOauthDomainCreate {
+    McpOauthDomainCreate {
+        params: CredentialCreateParams {
+            workspace_id: workspace_id.into(),
+            kind: CredentialKind::Vault,
+            provider_id: None,
+            // As with `static_bearer`: URL-bound, not env-injected.
+            env_key: None,
+            secret: Some(RedactedString::new(wire.access_token)),
+        },
+        refresh_secret: wire.refresh_token.map(RedactedString::new),
+    }
+}
+
 /// The secret-free wire projection of a credential (`ManagedCredential` shape):
 /// id + type + the resolved auth kind. Never carries secret material.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -144,6 +218,68 @@ mod tests {
             materialize(&source, &store).await.unwrap().expose_secret(),
             "sk-from-the-wire"
         );
+    }
+
+    #[tokio::test]
+    async fn wire_static_bearer_seals_the_token_off_the_row() {
+        let store = InMemorySecretStore::new();
+        let params = static_bearer_to_create_params(
+            "vlt_1",
+            WireStaticBearerCreate {
+                mcp_server_url: "https://mcp.example.com/sse".into(),
+                token: "brr-from-the-wire".into(), // awaken-allow: secret
+            },
+        );
+        let source = create_source(params, &store).await.unwrap();
+
+        // The row is secret-free and env-key-free (URL-bound, not env-injected)…
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(!json.contains("brr-from-the-wire"));
+        assert!(source.env_key.is_none());
+        // …but the token materializes back at the seam.
+        assert_eq!(
+            materialize(&source, &store).await.unwrap().expose_secret(),
+            "brr-from-the-wire"
+        );
+    }
+
+    #[tokio::test]
+    async fn wire_mcp_oauth_splits_access_and_refresh_secrets() {
+        let store = InMemorySecretStore::new();
+        let bridged = mcp_oauth_to_create_params(
+            "vlt_1",
+            WireMcpOauthCreate {
+                mcp_server_url: "https://mcp.example.com/sse".into(),
+                access_token: "at-from-the-wire".into(), // awaken-allow: secret
+                refresh_token: Some("rt-from-the-wire".into()),
+            },
+        );
+        // The refresh token is a second secret, handed back sealed-ready.
+        assert_eq!(
+            bridged.refresh_secret.as_ref().unwrap().expose_secret(),
+            "rt-from-the-wire"
+        );
+        let source = create_source(bridged.params, &store).await.unwrap();
+        assert!(
+            !serde_json::to_string(&source)
+                .unwrap()
+                .contains("at-from-the-wire")
+        );
+        assert_eq!(
+            materialize(&source, &store).await.unwrap().expose_secret(),
+            "at-from-the-wire"
+        );
+
+        // Without a wire refresh object there is no second secret.
+        let bridged = mcp_oauth_to_create_params(
+            "vlt_1",
+            WireMcpOauthCreate {
+                mcp_server_url: "https://mcp.example.com/sse".into(),
+                access_token: "at2".into(),
+                refresh_token: None,
+            },
+        );
+        assert!(bridged.refresh_secret.is_none());
     }
 
     #[test]
