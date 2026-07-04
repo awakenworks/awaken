@@ -12,6 +12,14 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "time", "sync", "macros"] }
+# Official ACP codec (Anthropic SDK). Optional: enable to project real
+# `SessionUpdate`s through the neutral AgentEvent ACL. Default off.
+agent-client-protocol = { version = "0.10.4", optional = true }
+
+[features]
+# Substitute the official agent-client-protocol codec for the newline-JSON
+# stand-in (same projection + RunEventSink downstream).
+real-acp = ["dep:agent-client-protocol"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "time", "sync"] }
