@@ -15,9 +15,11 @@ pub mod dto;
 pub mod project;
 mod router;
 mod state;
+pub mod vaults;
 
 pub use router::router;
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
     OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StateError, TurnOutcome,
 };
+pub use vaults::{VaultState, vault_router};

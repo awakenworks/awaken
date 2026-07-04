@@ -22,11 +22,12 @@ use crate::dto::{
 use crate::state::{ManagedState, RunErrorKind, StateError};
 
 /// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
-/// (malformed JSON, missing/mistyped field, wrong content-type) it returns the
-/// Anthropic error envelope (`invalid_request_error`) instead of axum's default
-/// plain-text rejection, so the SDK parses the failure like any other API error.
-/// Using it only in this router keeps the behavior confined to the managed surface.
-struct ManagedJson<T>(T);
+/// (malformed JSON, missing/mistyped field, wrong content-type, or an unknown
+/// tagged-union variant) it returns the Anthropic error envelope
+/// (`invalid_request_error`, HTTP 400) instead of axum's default plain-text/422
+/// rejection, so the SDK parses the failure like any other API error. Shared with
+/// the vault routes so the whole managed surface answers bad bodies identically.
+pub(crate) struct ManagedJson<T>(pub(crate) T);
 
 #[async_trait::async_trait]
 impl<S, T> FromRequest<S> for ManagedJson<T>
