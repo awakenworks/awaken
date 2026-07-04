@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("statemachine") => awaken_server::build_statemachine_router(),
         Ok("statemachine-rich") => awaken_server::build_statemachine_rich_router(),
         Ok("config") => awaken_server::build_config_router(),
+        Ok("management") => awaken_server::build_management_router(),
         Ok("schedule") => awaken_server::build_schedule_router(),
         Ok("skills") => awaken_server::build_skills_router(),
         Ok("delegate-remote") => awaken_server::build_remote_delegation_router(),
