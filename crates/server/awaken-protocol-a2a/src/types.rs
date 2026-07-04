@@ -631,4 +631,76 @@ mod tests {
         let reserialized = serde_json::to_value(&parsed.security_schemes).unwrap();
         assert_eq!(reserialized, json["securitySchemes"]);
     }
+
+    #[test]
+    fn api_key_query_and_cookie_locations_roundtrip() {
+        for (location, token) in [
+            (ApiKeyLocation::Query, "query"),
+            (ApiKeyLocation::Cookie, "cookie"),
+        ] {
+            let json = json!({ "type": "apiKey", "name": "key", "in": token });
+            let parsed: SecurityScheme = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(
+                parsed,
+                SecurityScheme::ApiKey {
+                    description: None,
+                    name: "key".into(),
+                    location,
+                }
+            );
+            assert_eq!(serde_json::to_value(&parsed).unwrap(), json);
+        }
+    }
+
+    #[test]
+    fn implicit_and_password_flows_roundtrip() {
+        let json = json!({
+            "type": "oauth2",
+            "flows": {
+                "implicit": {
+                    "authorizationUrl": "https://auth.example.com/authorize",
+                    "scopes": { "tasks:read": "Read tasks" }
+                },
+                "password": {
+                    "tokenUrl": "https://auth.example.com/token",
+                    "scopes": {}
+                }
+            }
+        });
+        let parsed: SecurityScheme = serde_json::from_value(json.clone()).unwrap();
+        let SecurityScheme::OAuth2 { flows, .. } = &parsed else {
+            panic!("parses as OAuth2");
+        };
+        let implicit = flows.implicit.as_ref().unwrap();
+        assert_eq!(
+            implicit.authorization_url,
+            "https://auth.example.com/authorize"
+        );
+        assert_eq!(implicit.scopes["tasks:read"], "Read tasks");
+        let password = flows.password.as_ref().unwrap();
+        assert_eq!(password.token_url, "https://auth.example.com/token");
+        assert!(password.scopes.is_empty());
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), json);
+    }
+
+    #[test]
+    fn http_basic_without_bearer_format_roundtrips() {
+        let json = json!({ "type": "http", "scheme": "basic" });
+        let parsed: SecurityScheme = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            parsed,
+            SecurityScheme::Http {
+                description: None,
+                scheme: "basic".into(),
+                bearer_format: None,
+            }
+        );
+        // `bearerFormat` stays absent on the wire, not null.
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), json);
+    }
+
+    #[test]
+    fn unknown_security_scheme_type_is_rejected() {
+        assert!(serde_json::from_value::<SecurityScheme>(json!({ "type": "digest" })).is_err());
+    }
 }
