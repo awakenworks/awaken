@@ -1,4 +1,23 @@
 pub mod awaken_provider_genai
+pub enum awaken_provider_genai::CredentialProbe
+pub awaken_provider_genai::CredentialProbe::Invalid
+pub awaken_provider_genai::CredentialProbe::Unknown
+pub awaken_provider_genai::CredentialProbe::Valid
+impl core::clone::Clone for awaken_provider_genai::CredentialProbe
+pub fn awaken_provider_genai::CredentialProbe::clone(&self) -> awaken_provider_genai::CredentialProbe
+impl core::cmp::Eq for awaken_provider_genai::CredentialProbe
+impl core::cmp::PartialEq for awaken_provider_genai::CredentialProbe
+pub fn awaken_provider_genai::CredentialProbe::eq(&self, &awaken_provider_genai::CredentialProbe) -> bool
+impl core::fmt::Debug for awaken_provider_genai::CredentialProbe
+pub fn awaken_provider_genai::CredentialProbe::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_provider_genai::CredentialProbe
+impl core::marker::StructuralPartialEq for awaken_provider_genai::CredentialProbe
+impl core::marker::Freeze for awaken_provider_genai::CredentialProbe
+impl core::marker::Send for awaken_provider_genai::CredentialProbe
+impl core::marker::Sync for awaken_provider_genai::CredentialProbe
+impl core::marker::Unpin for awaken_provider_genai::CredentialProbe
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_provider_genai::CredentialProbe
+impl core::panic::unwind_safe::UnwindSafe for awaken_provider_genai::CredentialProbe
 pub struct awaken_provider_genai::GenaiExecutor
 impl awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::GenaiExecutor::anthropic_compatible(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
@@ -21,4 +40,5 @@ pub fn awaken_provider_genai::from_genai_response(genai::chat::chat_response::Ch
 pub fn awaken_provider_genai::from_genai_tool_call(&genai::chat::tool::tool_call::ToolCall) -> awaken_runtime_contract::llm::ToolCall
 pub fn awaken_provider_genai::map_assistant_output(&genai::chat::message_content::MessageContent) -> awaken_runtime_contract::llm::AssistantOutput
 pub fn awaken_provider_genai::map_usage(&genai::chat::usage::Usage) -> awaken_runtime_contract::llm::TokenUsage
+pub async fn awaken_provider_genai::probe_credential(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, &str) -> awaken_provider_genai::CredentialProbe
 pub fn awaken_provider_genai::to_genai_request(&awaken_runtime_contract::llm::ChatRequest) -> genai::chat::chat_request::ChatRequest

@@ -755,6 +755,27 @@ pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> 
     mount(Arc::new(SharedHost::new(llm, model_ref)))
 }
 
+/// A server backed by a **live** Anthropic-compatible model, configured from the
+/// environment: `ANTHROPIC_API_KEY` (or `KIMI_API_KEY`), `ANTHROPIC_BASE_URL` (or
+/// `KIMI_BASE_URL`), `ANTHROPIC_MODEL` (or `KIMI_MODEL`). This is the same
+/// `RedactedString` → `GenaiExecutor` seam the resolver's `executor_from_resolved`
+/// uses (verified equivalent by `tests/resolved_run.rs`), exposed as a server mode
+/// so the TypeScript e2e can drive a real turn through the managed / ai-sdk / a2a
+/// adapters. Panics if no API key is set, so a misconfigured run fails loudly.
+pub fn build_real_router() -> Router {
+    let key = std::env::var("ANTHROPIC_API_KEY")
+        .or_else(|_| std::env::var("KIMI_API_KEY"))
+        .expect("set ANTHROPIC_API_KEY or KIMI_API_KEY for AWAKEN_MODEL_MODE=real");
+    let base = std::env::var("ANTHROPIC_BASE_URL")
+        .or_else(|_| std::env::var("KIMI_BASE_URL"))
+        .unwrap_or_else(|_| "https://api.anthropic.com/v1/".to_string());
+    let model = std::env::var("ANTHROPIC_MODEL")
+        .or_else(|_| std::env::var("KIMI_MODEL"))
+        .unwrap_or_else(|_| "claude-3-5-haiku-latest".to_string());
+    let executor = GenaiExecutor::anthropic_compatible(base, key);
+    build_router(Arc::new(executor), model)
+}
+
 /// Build the server router offering `skills` on every thread (ADR-0036): the whole
 /// set is fronted by the single `Skill` tool, whose catalog lists them and whose
 /// invocation returns the activated skill's instructions.

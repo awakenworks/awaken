@@ -222,6 +222,71 @@ pub fn classify_error(message: &str) -> Error {
     }
 }
 
+/// The outcome of a live credential probe (ADR-0043 `CredentialValidation`),
+/// aligned with the Managed wire's `valid`/`invalid`/`unknown` statuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialProbe {
+    /// The credential authenticated and the model answered.
+    Valid,
+    /// The provider rejected the credential (auth/permission failure).
+    Invalid,
+    /// Inconclusive — a transient/network failure or a non-auth error, so the
+    /// credential is neither confirmed nor refuted (never a false `Valid`).
+    Unknown,
+}
+
+/// Live-probe an Anthropic-compatible LLM credential by making a minimal, one-token
+/// request against `base_url` with `api_key` for `model`. A success is `Valid`; a
+/// clear authentication/permission rejection is `Invalid`; anything else (rate
+/// limit, 5xx, network, bad-model) is `Unknown` — fail-safe, so a flaky endpoint
+/// never marks a good key invalid. The secret is used only for this call and never
+/// returned.
+pub async fn probe_credential(
+    base_url: impl Into<String>,
+    api_key: impl Into<String>,
+    model: &str,
+) -> CredentialProbe {
+    use awaken_runtime_contract::resolved::ModelBinding;
+
+    let executor = GenaiExecutor::anthropic_compatible(base_url, api_key)
+        .with_timeout(Duration::from_secs(30));
+    let request = ChatRequest {
+        model_binding: ModelBinding {
+            provider_instance_ref: "probe".into(),
+            model_ref: model.to_string(),
+            backend_ref: "genai".into(),
+        },
+        messages: vec![awaken_runtime_contract::llm::ChatMessage {
+            role: ChatRole::User,
+            content: vec![ContentBlock::text("ping")],
+        }],
+        tools: Vec::new(),
+    };
+    match executor.infer(request).await {
+        Ok(_) => CredentialProbe::Valid,
+        Err(error) => {
+            let message = error.to_string().to_lowercase();
+            const AUTH: &[&str] = &[
+                "401",
+                "403",
+                "unauthorized",
+                "invalid api key",
+                "invalid_api_key",
+                "invalid x-api-key",
+                "authentication",
+                "authentication_error",
+                "permission",
+                "forbidden",
+            ];
+            if AUTH.iter().any(|needle| message.contains(needle)) {
+                CredentialProbe::Invalid
+            } else {
+                CredentialProbe::Unknown
+            }
+        }
+    }
+}
+
 /// Map the neutral request onto a `genai::ChatRequest`.
 pub fn to_genai_request(request: &ChatRequest) -> GenaiChatRequest {
     let mut messages: Vec<ChatMessage> = Vec::with_capacity(request.messages.len());
