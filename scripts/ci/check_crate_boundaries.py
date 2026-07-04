@@ -42,6 +42,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
         "schemars",
+        # feature `sealed-aead`: AEAD encryption-at-rest for the secret store.
+        "chacha20poly1305",
         "tokio",
         "awaken-scoped-migration",
     },
