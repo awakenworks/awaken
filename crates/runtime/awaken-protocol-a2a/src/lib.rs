@@ -19,6 +19,7 @@ pub mod request;
 pub mod router;
 pub mod types;
 
+pub use awaken_credential::{AuthChallenge, Credential, CredentialRefresher};
 pub use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
 pub use client::{ClientError, HttpTransport, Response, Transport};
 pub use router::{agent_card, router};
