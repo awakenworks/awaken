@@ -6,18 +6,20 @@
 //! the tool call's own id so a `user.tool_confirmation` can reference it.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
+use awaken_credential_vault::CredentialSourceId;
 
 use crate::dto::{
     ConfirmResult, CreateSessionRequest, Event, EventReceipt, InboundEvent, ListEventsResponse,
     OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent, StopReason,
 };
 use crate::project::{self, project_messages, project_turn};
+use crate::vaults::VaultState;
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
 /// clock port; the wire only needs a valid RFC 3339 value here.
@@ -98,6 +100,25 @@ pub struct OutcomeReport {
     pub iterations: Vec<OutcomeIteration>,
 }
 
+/// What a new session provisions on its thread before the first turn (ADR-0043
+/// Phase 3): the agent it runs and the MCP servers it connects to, each already
+/// bound to a vault credential's neutral domain id (or none). Consumed by the
+/// server's `ManagedHost` through [`SessionRuntime::prepare_session`].
+pub struct SessionInit {
+    pub agent_id: String,
+    pub mcp_servers: Vec<McpServerBinding>,
+}
+
+/// One session MCP server, bound at creation: the wire name/url plus the vault
+/// credential the URL matched (`None` when no vault credential matches — the
+/// host then connects unauthenticated and the server decides). Consumed by
+/// `ManagedHost::prepare_session` in the server assembly.
+pub struct McpServerBinding {
+    pub name: String,
+    pub url: String,
+    pub credential_source_id: Option<CredentialSourceId>,
+}
+
 /// The runtime seam the adapter drives (DDD port). Implemented by the server over
 /// the kernel; the adapter never constructs a runtime.
 #[async_trait]
@@ -132,6 +153,15 @@ pub trait SessionRuntime: Send + Sync {
         content: &str,
         is_error: bool,
     ) -> Result<TurnOutcome, RunError>;
+
+    /// Provision `thread` for a new session BEFORE its record exists (ADR-0043
+    /// Phase 3): the host materializes the init's MCP credential bindings and
+    /// stages the servers for the thread's first turn. A failure fails the
+    /// create (fail closed). The default is a no-op, so every host without MCP
+    /// wiring is unaffected.
+    async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
+        Ok(())
+    }
 
     /// The committed transcript for `thread`, in commit order. Used to rehydrate a
     /// session whose in-memory record was lost (e.g. after a process restart) from
@@ -214,6 +244,10 @@ struct SessionRecord {
 /// The adapter's in-memory session store plus the runtime port.
 pub struct ManagedState {
     runtime: Box<dyn SessionRuntime>,
+    /// The vault surface, when the server mounts one (ADR-0043 Phase 3): a
+    /// session's `mcp_servers` are bound to vault credentials through it at
+    /// creation. `None` means every binding resolves to no credential.
+    vaults: Option<Arc<VaultState>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
     session_seq: AtomicU64,
     event_seq: AtomicU64,
@@ -232,10 +266,21 @@ impl ManagedState {
     pub fn new(runtime: impl SessionRuntime + 'static) -> Self {
         Self {
             runtime: Box::new(runtime),
+            vaults: None,
             sessions: Mutex::new(HashMap::new()),
             session_seq: AtomicU64::new(0),
             event_seq: AtomicU64::new(0),
         }
+    }
+
+    /// Wire the vault surface, so `POST /v1/sessions` binds each requested MCP
+    /// server to a vault credential by URL (ADR-0043 Phase 3). Share the same
+    /// `VaultState` with [`crate::vault_router`], or the sessions and the vault
+    /// routes see different credentials.
+    #[must_use]
+    pub fn with_vaults(mut self, vaults: Arc<VaultState>) -> Self {
+        self.vaults = Some(vaults);
+        self
     }
 
     fn next_event_id(&self) -> String {
@@ -243,9 +288,43 @@ impl ManagedState {
     }
 
     /// `POST /v1/sessions`.
-    pub fn create_session(&self, req: CreateSessionRequest) -> Session {
+    ///
+    /// MCP binding (ADR-0043 Phase 3): each requested server is bound to a vault
+    /// credential by exact `mcp_server_url` match across the request's
+    /// `vault_ids`, then the runtime provisions the thread via
+    /// [`SessionRuntime::prepare_session`] BEFORE the record is inserted — a
+    /// failed preparation fails the create (fail closed; the router maps the
+    /// `RunError` to the error envelope). A `vault_id` that names no existing
+    /// vault simply contributes no binding (the vault surface exposes no
+    /// existence lookup to this state), so an unknown vault id yields
+    /// `credential_source_id: None` rather than an error — the MCP server then
+    /// rejects the unauthenticated connection and the failure surfaces loudly at
+    /// the first turn.
+    pub async fn create_session(&self, req: CreateSessionRequest) -> Result<Session, StateError> {
         let id = format!("sesn_{}", self.session_seq.fetch_add(1, Ordering::SeqCst));
         let agent_id = req.agent.id().to_string();
+        let bindings = req
+            .mcp_servers
+            .iter()
+            .map(|server| McpServerBinding {
+                name: server.name.clone(),
+                url: server.url.clone(),
+                credential_source_id: self
+                    .vaults
+                    .as_ref()
+                    .and_then(|v| v.mcp_credential_source_for_url(&req.vault_ids, &server.url)),
+            })
+            .collect();
+        self.runtime
+            .prepare_session(
+                &id,
+                SessionInit {
+                    agent_id: agent_id.clone(),
+                    mcp_servers: bindings,
+                },
+            )
+            .await
+            .map_err(StateError::Run)?;
         // Enumerate the runtime's provisioned surface so the agent object reports what
         // the run can actually do (built-in toolset, custom tools, skills, delegates),
         // not an empty set. The wire shaping lives in `project`; the host supplies
@@ -261,8 +340,12 @@ impl ManagedState {
                 model: self.runtime.model(),
                 name: agent_id.clone(),
                 tools: project::agent_tools(&caps),
-                // MCP is not wired into the host yet, so nothing is advertised here.
-                mcp_servers: Vec::new(),
+                // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
+                mcp_servers: req
+                    .mcp_servers
+                    .iter()
+                    .map(|s| serde_json::to_value(s).expect("mcp server wire serializes"))
+                    .collect(),
                 skills: project::agent_skills(&caps),
                 multiagent: project::agent_multiagent(&caps),
             },
@@ -287,12 +370,13 @@ impl ManagedState {
                 events: Vec::new(),
             },
         );
-        session
+        Ok(session)
     }
 
     /// A session object reconstructed for a rehydrated (post-restart) session. It
     /// reuses the runtime's advertised surface; environment/title/metadata default
-    /// because the original create request is no longer available.
+    /// because the original create request is no longer available (its MCP servers
+    /// among them, so `mcp_servers` reads empty after a restart).
     fn rehydrated_session(&self, id: &str) -> Session {
         let caps = self.runtime.capabilities();
         let agent_id = "assistant".to_string();

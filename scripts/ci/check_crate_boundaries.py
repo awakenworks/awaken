@@ -631,6 +631,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-skills",
         "awaken-ext-memory",
         "awaken-ext-compact",
+        # MCP client extension (ADR-0043 Phase 3): a managed session's configured
+        # MCP servers are connected per thread and their tools registered.
+        "awaken-ext-mcp",
         "async-trait",
         "serde_json",
         "thiserror",
