@@ -478,12 +478,18 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # AgentChannel (network duplex) to the process-as-container agent.
         "awaken-agent-channel",
         "async-trait",
+        "serde",
         "serde_json",
         "thiserror",
         # feature `connection`: awaken-connection establishes the remote AgentChannel
-        # (TCP dial + reverse dial); tokio provides the net stack. Both optional.
+        # (TCP dial + reverse dial with plan-layer TLS/token); tokio provides the net
+        # stack. Both optional.
         "awaken-connection",
         "tokio",
+        # Plan-layer TLS (ring backend) + SHA-256 cert fingerprint for the
+        # secure reverse-dial rendezvous (feature `connection`).
+        "tokio-rustls",
+        "sha2",
         # feature `docker`: real Docker backend over the Engine API (SDK, not CLI).
         "bollard",
         "futures-util",
