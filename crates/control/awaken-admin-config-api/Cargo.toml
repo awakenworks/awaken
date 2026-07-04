@@ -15,6 +15,7 @@ awaken-config-resolver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 axum.workspace = true
+async-trait.workspace = true
 schemars = { version = "1", optional = true }
 
 [dev-dependencies]
@@ -26,7 +27,12 @@ http-body-util = "0.1"
 default = []
 # Emit JSON Schema for the admin config DTOs (drives TS-contract generation,
 # ADR-0043). Enables the domains' own `schema` features.
-schema = ["dep:schemars", "awaken-model-catalog/schema", "awaken-credential-vault/schema"]
+schema = [
+    "dep:schemars",
+    "awaken-model-catalog/schema",
+    "awaken-credential-vault/schema",
+    "awaken-config-resolver/schema",
+]
 
 [[example]]
 name = "export_schemas"

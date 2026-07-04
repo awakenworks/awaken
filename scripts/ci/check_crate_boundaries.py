@@ -59,21 +59,22 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: E2E test drives the runtime provider adapter + managed ACL.
         "awaken-provider-genai",
         "awaken-managed-bridge",
+        "schemars",
     },
     "awaken-admin-config-api": {
         "awaken-model-catalog",
         "awaken-credential-vault",
         "awaken-agent-contract",
         "awaken-api-contract",
+        "awaken-config-resolver",
         "serde",
         "serde_json",
         "axum",
+        "async-trait",
         "schemars",
         "tokio",
         "tower",
         "http-body-util",
-        # dev-only: E2E test resolves the created config and drives the seam.
-        "awaken-config-resolver",
     },
     "awaken-managed-bridge": {
         "awaken-agent-contract",

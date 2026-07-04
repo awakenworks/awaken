@@ -1041,6 +1041,30 @@ pub fn build_config_router() -> Router {
 /// over one shared set of in-memory stores. A credential entered through either
 /// surface lands in the same store the resolver reads, so the whole
 /// author → resolve chain is served by one binary alongside the session adapters.
+/// The live credential-validation probe port (ADR-0043), backed by provider-genai.
+/// This is the only place the model SDK is named for validation — the admin CRUD
+/// crate depends on the `CredentialProbe` trait, not on genai.
+struct GenaiProbe;
+
+#[async_trait::async_trait]
+impl awaken_admin_config_api::CredentialProbe for GenaiProbe {
+    async fn probe(
+        &self,
+        base_url: &str,
+        secret: &awaken_agent_contract::RedactedString,
+        model: &str,
+    ) -> awaken_admin_config_api::ProbeStatus {
+        use awaken_admin_config_api::ProbeStatus;
+        use awaken_provider_genai::CredentialProbe;
+        match awaken_provider_genai::probe_credential(base_url, secret.expose_secret(), model).await
+        {
+            CredentialProbe::Valid => ProbeStatus::Valid,
+            CredentialProbe::Invalid => ProbeStatus::Invalid,
+            CredentialProbe::Unknown => ProbeStatus::Unknown,
+        }
+    }
+}
+
 pub fn build_management_router() -> Router {
     let catalog = Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
@@ -1050,6 +1074,10 @@ pub fn build_management_router() -> Router {
         catalog,
         credentials: credentials.clone(),
         secrets: secrets.clone(),
+        profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+        // The live credential probe is backed by provider-genai here — the only
+        // place the model SDK is named; the admin CRUD crate stays SDK-free.
+        probe: Some(Arc::new(GenaiProbe)),
     });
     let vaults = awaken_protocol_managed::vault_router(Arc::new(
         awaken_protocol_managed::VaultState::new(secrets, credentials),

@@ -79,8 +79,13 @@ impl CatalogRepo for InMemoryCatalogRepo {
             ));
         }
         cat.offerings.push(offering);
-        // Re-validate the whole catalog on each mutation (fail-closed).
-        cat.validate()?;
+        // Re-validate the whole catalog on each mutation (fail-closed); roll back
+        // the just-added offering if it breaks an invariant, so a rejected write
+        // leaves no trace (else a bad offering would poison later snapshots).
+        if let Err(err) = cat.validate() {
+            cat.offerings.pop();
+            return Err(err.into());
+        }
         Ok(())
     }
 

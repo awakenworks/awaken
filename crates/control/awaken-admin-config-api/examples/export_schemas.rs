@@ -33,11 +33,6 @@ fn main() {
     add!("CredentialKind", awaken_credential_vault::CredentialKind);
     add!("CredentialStatus", awaken_credential_vault::CredentialStatus);
     // Credential pools (the `OneOfCredentialPool` binding's members).
-    add!("CredentialPool", awaken_credential_vault::CredentialPool);
-    add!(
-        "CredentialPoolMember",
-        awaken_credential_vault::CredentialPoolMember
-    );
     add!("CredentialPoolId", awaken_credential_vault::CredentialPoolId);
     add!("CredentialPool", awaken_credential_vault::CredentialPool);
     add!(
@@ -45,10 +40,18 @@ fn main() {
         awaken_credential_vault::CredentialPoolMember
     );
 
+    // Authored inference profile (the `inference-profiles` CRUD aggregate).
+    add!("InferenceProfile", awaken_config_resolver::InferenceProfile);
+
     // Resolver output (the admin `inference/resolve` dry-run result, secret-free).
     add!(
         "ResolvedInferenceView",
         awaken_admin_config_api::ResolvedInferenceView
+    );
+    // Live credential-probe result (the `credentials/:id/validate` route).
+    add!(
+        "CredentialValidation",
+        awaken_admin_config_api::CredentialValidation
     );
 
     let root = json!({
