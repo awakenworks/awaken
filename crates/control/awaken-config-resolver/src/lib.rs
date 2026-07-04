@@ -202,7 +202,8 @@ async fn resolve_credential(
                 let Some(source) = sources.get(member.credential_source_id.0.as_str()) else {
                     continue;
                 };
-                if let Ok(secret) = awaken_credential_vault::materialize(source, secret_store).await {
+                if let Ok(secret) = awaken_credential_vault::materialize(source, secret_store).await
+                {
                     return Ok(Some(secret));
                 }
             }

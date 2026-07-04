@@ -28,12 +28,24 @@ fn main() {
     add!("ProviderCatalog", awaken_model_catalog::ProviderCatalog);
 
     // Credential domain (secret-free projections only).
-    add!("CredentialSource", awaken_credential_vault::CredentialSource);
-    add!("CredentialBinding", awaken_credential_vault::CredentialBinding);
+    add!(
+        "CredentialSource",
+        awaken_credential_vault::CredentialSource
+    );
+    add!(
+        "CredentialBinding",
+        awaken_credential_vault::CredentialBinding
+    );
     add!("CredentialKind", awaken_credential_vault::CredentialKind);
-    add!("CredentialStatus", awaken_credential_vault::CredentialStatus);
+    add!(
+        "CredentialStatus",
+        awaken_credential_vault::CredentialStatus
+    );
     // Credential pools (the `OneOfCredentialPool` binding's members).
-    add!("CredentialPoolId", awaken_credential_vault::CredentialPoolId);
+    add!(
+        "CredentialPoolId",
+        awaken_credential_vault::CredentialPoolId
+    );
     add!("CredentialPool", awaken_credential_vault::CredentialPool);
     add!(
         "CredentialPoolMember",
