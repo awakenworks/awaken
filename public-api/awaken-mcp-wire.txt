@@ -1,0 +1,190 @@
+pub mod awaken_mcp_wire
+pub mod awaken_mcp_wire::jsonrpc
+pub struct awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcNotifier::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), model_context_protocol::transport::McpTransportError>
+impl core::clone::Clone for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcNotifier::clone(&self) -> awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::marker::Freeze for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::marker::Send for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::marker::Sync for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::marker::Unpin for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+pub struct awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl awaken_mcp_wire::jsonrpc::JsonRpcPeer
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::closed(&self)
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::is_alive(&self) -> bool
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::new<R, W>(R, W, core::option::Option<alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>>) -> (Self, tokio::sync::mpsc::bounded::Receiver<awaken_mcp_wire::jsonrpc::ServerNotification>) where R: tokio::io::async_read::AsyncRead + core::marker::Unpin + core::marker::Send + 'static, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notifier(&self) -> awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), model_context_protocol::transport::McpTransportError>
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::request(&self, &str, serde_json::value::Value, core::time::Duration) -> core::result::Result<serde_json::value::Value, model_context_protocol::transport::McpTransportError>
+impl !core::marker::Freeze for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl core::marker::Send for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl core::marker::Sync for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl core::marker::Unpin for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl !core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+pub struct awaken_mcp_wire::jsonrpc::ServerNotification
+pub awaken_mcp_wire::jsonrpc::ServerNotification::method: alloc::string::String
+pub awaken_mcp_wire::jsonrpc::ServerNotification::params: serde_json::value::Value
+impl core::clone::Clone for awaken_mcp_wire::jsonrpc::ServerNotification
+pub fn awaken_mcp_wire::jsonrpc::ServerNotification::clone(&self) -> awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::fmt::Debug for awaken_mcp_wire::jsonrpc::ServerNotification
+pub fn awaken_mcp_wire::jsonrpc::ServerNotification::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::marker::Send for awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::marker::Sync for awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::marker::Unpin for awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::jsonrpc::ServerNotification
+pub struct awaken_mcp_wire::jsonrpc::ServerRequestError
+pub awaken_mcp_wire::jsonrpc::ServerRequestError::code: i64
+pub awaken_mcp_wire::jsonrpc::ServerRequestError::message: alloc::string::String
+impl awaken_mcp_wire::jsonrpc::ServerRequestError
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::internal(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::invalid_params(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::method_not_found(&str) -> Self
+impl core::clone::Clone for awaken_mcp_wire::jsonrpc::ServerRequestError
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::clone(&self) -> awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::fmt::Debug for awaken_mcp_wire::jsonrpc::ServerRequestError
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::marker::Send for awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::marker::Sync for awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::marker::Unpin for awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::jsonrpc::ServerRequestError
+pub trait awaken_mcp_wire::jsonrpc::ServerRequestHandler: core::marker::Send + core::marker::Sync
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestHandler::handle<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub mod awaken_mcp_wire::progress
+pub struct awaken_mcp_wire::progress::McpProgressUpdate
+pub awaken_mcp_wire::progress::McpProgressUpdate::message: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::progress::McpProgressUpdate::progress: f64
+pub awaken_mcp_wire::progress::McpProgressUpdate::total: core::option::Option<f64>
+impl core::clone::Clone for awaken_mcp_wire::progress::McpProgressUpdate
+pub fn awaken_mcp_wire::progress::McpProgressUpdate::clone(&self) -> awaken_mcp_wire::progress::McpProgressUpdate
+impl core::cmp::PartialEq for awaken_mcp_wire::progress::McpProgressUpdate
+pub fn awaken_mcp_wire::progress::McpProgressUpdate::eq(&self, &awaken_mcp_wire::progress::McpProgressUpdate) -> bool
+impl core::fmt::Debug for awaken_mcp_wire::progress::McpProgressUpdate
+pub fn awaken_mcp_wire::progress::McpProgressUpdate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::marker::Freeze for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::marker::Send for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::marker::Sync for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::marker::Unpin for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::progress::McpProgressUpdate
+pub struct awaken_mcp_wire::progress::ProgressEmitGate
+impl core::default::Default for awaken_mcp_wire::progress::ProgressEmitGate
+pub fn awaken_mcp_wire::progress::ProgressEmitGate::default() -> awaken_mcp_wire::progress::ProgressEmitGate
+impl core::marker::Freeze for awaken_mcp_wire::progress::ProgressEmitGate
+impl core::marker::Send for awaken_mcp_wire::progress::ProgressEmitGate
+impl core::marker::Sync for awaken_mcp_wire::progress::ProgressEmitGate
+impl core::marker::Unpin for awaken_mcp_wire::progress::ProgressEmitGate
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::progress::ProgressEmitGate
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::progress::ProgressEmitGate
+pub const awaken_mcp_wire::progress::MCP_PROGRESS_MIN_DELTA: f64
+pub const awaken_mcp_wire::progress::MCP_PROGRESS_MIN_INTERVAL: core::time::Duration
+pub fn awaken_mcp_wire::progress::normalize_progress(&awaken_mcp_wire::progress::McpProgressUpdate) -> core::option::Option<f64>
+pub fn awaken_mcp_wire::progress::should_emit_progress(&mut awaken_mcp_wire::progress::ProgressEmitGate, f64, core::option::Option<&str>) -> bool
+pub mod awaken_mcp_wire::sse
+pub struct awaken_mcp_wire::sse::SseParser
+impl awaken_mcp_wire::sse::SseParser
+pub fn awaken_mcp_wire::sse::SseParser::new() -> Self
+pub fn awaken_mcp_wire::sse::SseParser::push(&mut self, &str) -> alloc::vec::Vec<alloc::string::String>
+impl core::default::Default for awaken_mcp_wire::sse::SseParser
+pub fn awaken_mcp_wire::sse::SseParser::default() -> awaken_mcp_wire::sse::SseParser
+impl core::marker::Freeze for awaken_mcp_wire::sse::SseParser
+impl core::marker::Send for awaken_mcp_wire::sse::SseParser
+impl core::marker::Sync for awaken_mcp_wire::sse::SseParser
+impl core::marker::Unpin for awaken_mcp_wire::sse::SseParser
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::sse::SseParser
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::sse::SseParser
+pub struct awaken_mcp_wire::JsonRpcNotifier
+impl awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcNotifier::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), model_context_protocol::transport::McpTransportError>
+impl core::clone::Clone for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcNotifier::clone(&self) -> awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::marker::Freeze for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::marker::Send for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::marker::Sync for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::marker::Unpin for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+pub struct awaken_mcp_wire::JsonRpcPeer
+impl awaken_mcp_wire::jsonrpc::JsonRpcPeer
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::closed(&self)
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::is_alive(&self) -> bool
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::new<R, W>(R, W, core::option::Option<alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>>) -> (Self, tokio::sync::mpsc::bounded::Receiver<awaken_mcp_wire::jsonrpc::ServerNotification>) where R: tokio::io::async_read::AsyncRead + core::marker::Unpin + core::marker::Send + 'static, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static
+pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notifier(&self) -> awaken_mcp_wire::jsonrpc::JsonRpcNotifier
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), model_context_protocol::transport::McpTransportError>
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::request(&self, &str, serde_json::value::Value, core::time::Duration) -> core::result::Result<serde_json::value::Value, model_context_protocol::transport::McpTransportError>
+impl !core::marker::Freeze for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl core::marker::Send for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl core::marker::Sync for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl core::marker::Unpin for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+impl !core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::jsonrpc::JsonRpcPeer
+pub struct awaken_mcp_wire::McpProgressUpdate
+pub awaken_mcp_wire::McpProgressUpdate::message: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::McpProgressUpdate::progress: f64
+pub awaken_mcp_wire::McpProgressUpdate::total: core::option::Option<f64>
+impl core::clone::Clone for awaken_mcp_wire::progress::McpProgressUpdate
+pub fn awaken_mcp_wire::progress::McpProgressUpdate::clone(&self) -> awaken_mcp_wire::progress::McpProgressUpdate
+impl core::cmp::PartialEq for awaken_mcp_wire::progress::McpProgressUpdate
+pub fn awaken_mcp_wire::progress::McpProgressUpdate::eq(&self, &awaken_mcp_wire::progress::McpProgressUpdate) -> bool
+impl core::fmt::Debug for awaken_mcp_wire::progress::McpProgressUpdate
+pub fn awaken_mcp_wire::progress::McpProgressUpdate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::marker::Freeze for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::marker::Send for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::marker::Sync for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::marker::Unpin for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::progress::McpProgressUpdate
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::progress::McpProgressUpdate
+pub struct awaken_mcp_wire::ServerNotification
+pub awaken_mcp_wire::ServerNotification::method: alloc::string::String
+pub awaken_mcp_wire::ServerNotification::params: serde_json::value::Value
+impl core::clone::Clone for awaken_mcp_wire::jsonrpc::ServerNotification
+pub fn awaken_mcp_wire::jsonrpc::ServerNotification::clone(&self) -> awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::fmt::Debug for awaken_mcp_wire::jsonrpc::ServerNotification
+pub fn awaken_mcp_wire::jsonrpc::ServerNotification::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::marker::Send for awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::marker::Sync for awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::marker::Unpin for awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::jsonrpc::ServerNotification
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::jsonrpc::ServerNotification
+pub struct awaken_mcp_wire::ServerRequestError
+pub awaken_mcp_wire::ServerRequestError::code: i64
+pub awaken_mcp_wire::ServerRequestError::message: alloc::string::String
+impl awaken_mcp_wire::jsonrpc::ServerRequestError
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::internal(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::invalid_params(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::method_not_found(&str) -> Self
+impl core::clone::Clone for awaken_mcp_wire::jsonrpc::ServerRequestError
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::clone(&self) -> awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::fmt::Debug for awaken_mcp_wire::jsonrpc::ServerRequestError
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::marker::Send for awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::marker::Sync for awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::marker::Unpin for awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::jsonrpc::ServerRequestError
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::jsonrpc::ServerRequestError
+pub struct awaken_mcp_wire::SseParser
+impl awaken_mcp_wire::sse::SseParser
+pub fn awaken_mcp_wire::sse::SseParser::new() -> Self
+pub fn awaken_mcp_wire::sse::SseParser::push(&mut self, &str) -> alloc::vec::Vec<alloc::string::String>
+impl core::default::Default for awaken_mcp_wire::sse::SseParser
+pub fn awaken_mcp_wire::sse::SseParser::default() -> awaken_mcp_wire::sse::SseParser
+impl core::marker::Freeze for awaken_mcp_wire::sse::SseParser
+impl core::marker::Send for awaken_mcp_wire::sse::SseParser
+impl core::marker::Sync for awaken_mcp_wire::sse::SseParser
+impl core::marker::Unpin for awaken_mcp_wire::sse::SseParser
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_mcp_wire::sse::SseParser
+impl core::panic::unwind_safe::UnwindSafe for awaken_mcp_wire::sse::SseParser
+pub trait awaken_mcp_wire::ServerRequestHandler: core::marker::Send + core::marker::Sync
+pub fn awaken_mcp_wire::ServerRequestHandler::handle<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_mcp_wire::normalize_progress(&awaken_mcp_wire::progress::McpProgressUpdate) -> core::option::Option<f64>

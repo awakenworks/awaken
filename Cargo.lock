@@ -285,6 +285,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "awaken-credential",
+ "awaken-mcp-wire",
  "awaken-runtime-contract",
  "futures",
  "model-context-protocol",
@@ -362,6 +363,17 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "awaken-mcp-wire"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "model-context-protocol",
+ "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -444,6 +456,24 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+]
+
+[[package]]
+name = "awaken-protocol-mcp"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-ext-mcp",
+ "awaken-mcp-wire",
+ "awaken-runtime-contract",
+ "axum",
+ "model-context-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "uuid",
 ]
 
 [[package]]
@@ -4648,6 +4678,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -347,6 +347,26 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
         "http-body-util",
     },
+    # MCP protocol adapter (server side): exposes an explicit export set of
+    # runtime tools (`RawTool` + `ToolDescriptor`) to external MCP clients over
+    # stdio and Streamable HTTP — the egress mirror of the awaken-ext-mcp client
+    # (ingress). Speaks the wire through awaken-mcp-wire and the `mcp` SDK's
+    # types; guards calls with the contract's `ToolGateHook`. awaken-ext-mcp is
+    # dev-only: the e2e tests drive this server with our own client.
+    "awaken-protocol-mcp": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-mcp-wire",
+        "awaken-ext-mcp",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "tokio",
+        "tokio-stream",
+        "axum",
+        "uuid",
+        "mcp",
+    },
     # A2A protocol adapter: the anti-corruption boundary between the A2A HTTP+JSON
     # `message:send` wire and the neutral runtime. Request/response (returns a
     # `Task`), so it needs no streaming; drives an `A2aRuntime` port and constructs
@@ -398,6 +418,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-contract",
         "tokio",
     },
+    # Shared MCP wire layer: the direction-neutral JSON-RPC peer, SSE parser,
+    # and progress vocabulary spoken by both the MCP client (awaken-ext-mcp) and
+    # the MCP server (awaken-protocol-mcp). A leaf like awaken-credential: it
+    # names the `mcp` SDK for wire types only, never a runtime or store type.
+    "awaken-mcp-wire": {
+        "async-trait",
+        "serde_json",
+        "tokio",
+        "tokio-util",
+        "mcp",
+    },
     # MCP client extension: connects to external Model Context Protocol servers
     # and exposes their tools as runtime `RawTool`s. Like the other extensions it
     # depends only on the runtime contract; as an adapter to an external wire
@@ -408,6 +439,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # are dev-only, for the end-to-end tool-call test (composition root in tests).
     "awaken-ext-mcp": {
         "awaken-credential",
+        "awaken-mcp-wire",
         "awaken-runtime-contract",
         "awaken-agent-contract",
         "awaken-runtime",
