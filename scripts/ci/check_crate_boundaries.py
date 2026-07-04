@@ -18,6 +18,11 @@ CRATES = REPO_ROOT / "crates"
 # provider adapter so G2/G10 hold.
 ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio"},
+    # Host-side credential vocabulary (Credential / AuthChallenge /
+    # CredentialRefresher) shared by the outbound wire clients (awaken-ext-mcp,
+    # awaken-protocol-a2a). A leaf like the contracts: names no wire, store, or
+    # runtime type, so clients depend on it without pulling anything upward.
+    "awaken-credential": {"async-trait"},
     "awaken-runtime-contract": {
         "awaken-agent-contract",
         "serde",
@@ -348,6 +353,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # no runtime.
     "awaken-protocol-a2a": {
         "awaken-agent-contract",
+        "awaken-credential",
         "awaken-protocol-transport",
         "async-trait",
         "serde",
@@ -401,6 +407,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # ports, not an `awaken-runtime` dependency. `awaken-runtime`/`awaken-agent-contract`
     # are dev-only, for the end-to-end tool-call test (composition root in tests).
     "awaken-ext-mcp": {
+        "awaken-credential",
         "awaken-runtime-contract",
         "awaken-agent-contract",
         "awaken-runtime",
