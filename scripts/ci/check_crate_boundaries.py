@@ -288,6 +288,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
         "tokio",
+        # feature `real-acp`: the official ACP codec, projected through the same ACL.
+        "agent-client-protocol",
     },
     # AI SDK v6 protocol adapter: the anti-corruption boundary between the Vercel
     # AI SDK UI Message Stream wire and the neutral runtime. Like the managed
