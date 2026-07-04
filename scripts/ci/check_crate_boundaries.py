@@ -455,6 +455,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # in a distributed build); the neutral crate names none of them.
     "awaken-sandbox-container": {
         "awaken-provisioning-contract",
+        # The container tier is tool-transparent: it hands the ACP bridge an
+        # AgentChannel (network duplex) to the process-as-container agent.
+        "awaken-agent-channel",
         "async-trait",
         "serde_json",
         "thiserror",

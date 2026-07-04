@@ -480,6 +480,7 @@ name = "awaken-sandbox-container"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-agent-channel",
  "awaken-provisioning-contract",
  "serde_json",
  "thiserror 2.0.18",
