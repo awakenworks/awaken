@@ -110,6 +110,8 @@ fn container_plan_maps_command_image_env_binds_network_and_outputs() {
         NetworkMode::Allowlist(vec!["api.anthropic.com".into()])
     );
     assert_eq!(plan.limits.cpu_millis, Some(2000));
+    // lease_ttl_secs is propagated from the spec.
+    assert_eq!(plan.lease_ttl_secs, Some(60));
 }
 
 #[test]

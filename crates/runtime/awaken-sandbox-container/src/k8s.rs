@@ -6,23 +6,28 @@
 //! agent, `restartPolicy: Never`), **native GC** (an `ownerReference` reaps orphans),
 //! and the stdio channel reached by a **network dial** to the pod's ClusterIP Service.
 //!
-//! Four correctness gaps closed from the initial stub:
-//! - `open_channel` now creates a ClusterIP Service per Pod and dials its assigned
-//!   cluster IP (instead of using a construction-time fixed address).
-//! - `pod()` now maps `ContainerPlan::limits` onto `resources.requests/limits` so
-//!   the kubelet enforces the declared CPU/memory bounds.
-//! - `create()` creates a `NetworkPolicy` for `Allowlist` / `None` egress modes
-//!   (the default-deny baseline; FQDN granularity requires a CNI FQDN extension).
-//! - `wait()` now watches the Pod to completion instead of a single read, and both
-//!   `wait()` and `poll()` return the real container exit code.
+//! ## Lease owner and cascade GC
+//!
+//! [`K8sRuntime::connect_with_managed_lease`] creates a `coordination.k8s.io/v1`
+//! `Lease` object in the target namespace and sets it as the `ownerReference` on
+//! every Pod, Service, and NetworkPolicy this runtime creates. When the Lease is
+//! deleted (by an external lease controller, or by the control plane on clean
+//! shutdown), the Kubernetes garbage collector cascades and deletes all owned
+//! resources automatically — no bespoke reaper needed.
+//!
+//! [`ContainerRuntime::touch_lease`] patches the `spec.renewTime` field on the
+//! managed Lease so external tooling can observe that the control plane is still
+//! alive and decide whether to delete the Lease (triggering cascade GC).
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, AgentTransport};
 use awaken_provisioning_contract as pc;
 use futures_util::StreamExt as _;
+use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::api::core::v1::{
     Container, EnvVar, Pod, PodSpec, ResourceRequirements, Service, ServicePort, ServiceSpec,
 };
@@ -30,7 +35,7 @@ use k8s_openapi::api::networking::v1::{NetworkPolicy as K8sNetworkPolicy, Networ
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
-use kube::api::{DeleteParams, ListParams, PostParams, WatchParams};
+use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams, WatchParams};
 use kube::{Api, Client};
 
 use crate::net::TcpAgentTransport;
@@ -114,20 +119,69 @@ fn build_resource_requirements(limits: &pc::ResourceLimits) -> ResourceRequireme
     }
 }
 
+/// Format the current UTC time as a MicroTime-compatible RFC 3339 string
+/// (`"YYYY-MM-DDTHH:MM:SS.ffffffZ"`) without pulling in the `chrono` crate.
+///
+/// Used to patch `spec.renewTime` on the managed Coordination Lease via a merge
+/// patch — the K8s API accepts the string directly in JSON.
+fn utc_micro_time_str() -> String {
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+    let micros = dur.subsec_micros();
+
+    let sec = (secs % 60) as u32;
+    let min = ((secs / 60) % 60) as u32;
+    let hour = ((secs / 3600) % 24) as u32;
+    let days = secs / 86400;
+    let (y, mo, d) = days_to_ymd(days);
+    format!("{y:04}-{mo:02}-{d:02}T{hour:02}:{min:02}:{sec:02}.{micros:06}Z")
+}
+
+/// Proleptic Gregorian calendar: convert days since Unix epoch (1970-01-01) to
+/// (year, month, day).  Uses the Hinnant algorithm; valid for all dates ≥ epoch.
+fn days_to_ymd(days: u64) -> (u32, u32, u32) {
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as u32, m as u32, d as u32)
+}
+
 /// A Kubernetes-backed [`ContainerRuntime`].
 ///
 /// `agent_port` is the TCP port the agent process listens on inside the Pod.
 /// A ClusterIP Service is created for each Pod at [`ContainerRuntime::create`] time;
 /// [`ContainerRuntime::open_channel`] looks up the assigned cluster IP and dials it.
+///
+/// Use [`K8sRuntime::connect_with_managed_lease`] to have the runtime create and
+/// own a `coordination.k8s.io/v1` `Lease` object that serves as the GC owner for
+/// all Pods, Services, and NetworkPolicies it creates.  [`touch_lease`] patches the
+/// Lease's `renewTime` field; external tooling that monitors `renewTime` can delete
+/// a stale Lease to trigger cascade GC of all owned resources.
 pub struct K8sRuntime {
     client: Client,
     namespace: String,
     agent_port: u16,
     owner: Option<OwnerReference>,
+    /// Name of the Coordination Lease we created; `None` when the owner was
+    /// set externally via [`K8sRuntime::with_owner`].
+    managed_lease_name: Option<String>,
 }
 
 impl K8sRuntime {
     /// Connect via in-cluster ServiceAccount or the ambient kubeconfig.
+    ///
+    /// No GC owner is set; call [`K8sRuntime::with_owner`] afterwards if you have
+    /// an existing owner, or use [`K8sRuntime::connect_with_managed_lease`] to let
+    /// the runtime create and manage its own Coordination Lease.
     pub async fn connect(
         namespace: impl Into<String>,
         agent_port: u16,
@@ -141,10 +195,73 @@ impl K8sRuntime {
             namespace: namespace.into(),
             agent_port,
             owner: None,
+            managed_lease_name: None,
+        })
+    }
+
+    /// Connect and create a `coordination.k8s.io/v1` Lease named `lease_name` in
+    /// `namespace`.  The Lease is set as the `ownerReference` on every Pod, Service,
+    /// and NetworkPolicy this runtime creates; deleting the Lease triggers cascade GC.
+    ///
+    /// `holder` identifies the control plane instance (e.g. a pod name or host:pid).
+    /// `lease_ttl_secs` is written into `spec.leaseDurationSeconds` for external
+    /// tooling that monitors Lease staleness.
+    pub async fn connect_with_managed_lease(
+        namespace: impl Into<String>,
+        agent_port: u16,
+        lease_name: impl Into<String>,
+        lease_ttl_secs: i32,
+        holder: impl Into<String>,
+    ) -> Result<Self, RuntimeError> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = Client::try_default().await.map_err(backend)?;
+        let ns = namespace.into();
+        let lname = lease_name.into();
+
+        let lease = Lease {
+            metadata: ObjectMeta {
+                name: Some(lname.clone()),
+                namespace: Some(ns.clone()),
+                ..Default::default()
+            },
+            spec: Some(LeaseSpec {
+                holder_identity: Some(holder.into()),
+                lease_duration_seconds: Some(lease_ttl_secs),
+                ..Default::default()
+            }),
+        };
+        let leases: Api<Lease> = Api::namespaced(client.clone(), &ns);
+        let created = leases
+            .create(&PostParams::default(), &lease)
+            .await
+            .map_err(backend)?;
+
+        let uid = created
+            .metadata
+            .uid
+            .ok_or_else(|| backend("created lease has no uid"))?;
+        let owner = OwnerReference {
+            api_version: "coordination.k8s.io/v1".to_string(),
+            kind: "Lease".to_string(),
+            name: lname.clone(),
+            uid,
+            block_owner_deletion: Some(true),
+            controller: Some(false),
+        };
+
+        Ok(Self {
+            client,
+            namespace: ns,
+            agent_port,
+            owner: Some(owner),
+            managed_lease_name: Some(lname),
         })
     }
 
     /// Set the GC owner (e.g. a Lease/ConfigMap) whose deletion reaps orphan Pods.
+    ///
+    /// Use this when adopting an existing owner across a restart; for fresh runtimes
+    /// prefer [`K8sRuntime::connect_with_managed_lease`].
     #[must_use]
     pub fn with_owner(mut self, owner: OwnerReference) -> Self {
         self.owner = Some(owner);
@@ -160,6 +277,10 @@ impl K8sRuntime {
     }
 
     fn network_policies(&self) -> Api<K8sNetworkPolicy> {
+        Api::namespaced(self.client.clone(), &self.namespace)
+    }
+
+    fn leases(&self) -> Api<Lease> {
         Api::namespaced(self.client.clone(), &self.namespace)
     }
 
@@ -431,9 +552,26 @@ impl ContainerRuntime for K8sRuntime {
         ))
     }
 
+    /// Patch `spec.renewTime` on the managed Coordination Lease.
+    ///
+    /// External tooling (e.g. a lease-controller sidecar) can monitor `renewTime`
+    /// and delete a stale Lease, which triggers cascade GC of all owned Pods,
+    /// Services, and NetworkPolicies via their `ownerReference`.
+    ///
+    /// When no managed Lease was created (owner was set externally via
+    /// [`K8sRuntime::with_owner`]), this is a no-op — the caller owns the lifecycle.
     async fn touch_lease(&self, _container_id: &str) -> Result<(), RuntimeError> {
-        // Native GC via ownerReference; no bespoke reaper touch needed here.
-        Ok(())
+        let Some(ref lease_name) = self.managed_lease_name else {
+            return Ok(());
+        };
+        let patch = serde_json::json!({
+            "spec": { "renewTime": utc_micro_time_str() }
+        });
+        self.leases()
+            .patch(lease_name, &PatchParams::default(), &Patch::Merge(patch))
+            .await
+            .map(|_| ())
+            .map_err(backend)
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
@@ -559,5 +697,32 @@ mod tests {
     fn app_label_uses_pod_name() {
         let labels = app_label("awaken-run-1");
         assert_eq!(labels.get("app").unwrap(), "awaken-run-1");
+    }
+
+    #[test]
+    fn utc_micro_time_str_produces_rfc3339_with_microseconds() {
+        let ts = utc_micro_time_str();
+        // Must be exactly 33 chars: "2026-07-04T16:00:00.000000Z"
+        assert_eq!(ts.len(), 27, "unexpected timestamp length: {ts}");
+        assert!(ts.ends_with('Z'), "must end with Z: {ts}");
+        assert!(ts.contains('T'), "must contain T separator: {ts}");
+        // The microseconds field must be 6 digits.
+        let micros_part = ts.split('.').nth(1).and_then(|s| s.strip_suffix('Z'));
+        assert_eq!(
+            micros_part.map(|s| s.len()),
+            Some(6),
+            "microseconds must be 6 digits: {ts}"
+        );
+    }
+
+    #[test]
+    fn days_to_ymd_unix_epoch_is_1970_01_01() {
+        assert_eq!(days_to_ymd(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn days_to_ymd_known_date_2026_07_04() {
+        // 2026-07-04 is 20638 days after 1970-01-01.
+        assert_eq!(days_to_ymd(20638), (2026, 7, 4));
     }
 }

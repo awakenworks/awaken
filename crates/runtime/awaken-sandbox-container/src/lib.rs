@@ -71,6 +71,9 @@ pub struct ContainerPlan {
     pub outputs_volume: String,
     pub network: NetworkMode,
     pub limits: pc::ResourceLimits,
+    /// Dead-man's-switch TTL in seconds, stamped as a label so the reaper can
+    /// identify and GC orphaned containers whose control plane has gone away.
+    pub lease_ttl_secs: Option<u64>,
 }
 
 fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {
@@ -154,6 +157,7 @@ pub fn container_plan(
         outputs_volume: spec.outputs_path.clone(),
         network: network_of(&spec.network),
         limits: spec.limits.clone(),
+        lease_ttl_secs: spec.lease_ttl_secs,
     }
 }
 

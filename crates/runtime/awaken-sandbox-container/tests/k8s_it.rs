@@ -19,6 +19,7 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
         outputs_volume: "/mnt/session/outputs".into(),
         network: NetworkMode::Open,
         limits: pc::ResourceLimits::default(),
+        lease_ttl_secs: None,
     }
 }
 
