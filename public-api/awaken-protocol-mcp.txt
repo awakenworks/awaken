@@ -1,0 +1,243 @@
+pub mod awaken_protocol_mcp
+pub mod awaken_protocol_mcp::export
+pub enum awaken_protocol_mcp::export::ToolExec
+pub awaken_protocol_mcp::export::ToolExec::Plain(alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>)
+pub awaken_protocol_mcp::export::ToolExec::WithProgress(alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>)
+impl core::clone::Clone for awaken_protocol_mcp::export::ToolExec
+pub fn awaken_protocol_mcp::export::ToolExec::clone(&self) -> awaken_protocol_mcp::export::ToolExec
+impl core::marker::Freeze for awaken_protocol_mcp::export::ToolExec
+impl core::marker::Send for awaken_protocol_mcp::export::ToolExec
+impl core::marker::Sync for awaken_protocol_mcp::export::ToolExec
+impl core::marker::Unpin for awaken_protocol_mcp::export::ToolExec
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::ToolExec
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::ToolExec
+pub struct awaken_protocol_mcp::export::McpExportedTool
+pub awaken_protocol_mcp::export::McpExportedTool::descriptor: awaken_runtime_contract::resolved::ToolDescriptor
+pub awaken_protocol_mcp::export::McpExportedTool::exec: awaken_protocol_mcp::export::ToolExec
+impl awaken_protocol_mcp::export::McpExportedTool
+pub fn awaken_protocol_mcp::export::McpExportedTool::plain(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> Self
+pub fn awaken_protocol_mcp::export::McpExportedTool::with_progress(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>) -> Self
+impl core::clone::Clone for awaken_protocol_mcp::export::McpExportedTool
+pub fn awaken_protocol_mcp::export::McpExportedTool::clone(&self) -> awaken_protocol_mcp::export::McpExportedTool
+impl core::convert::From<awaken_runtime_contract::plugin::DynamicTool> for awaken_protocol_mcp::export::McpExportedTool
+pub fn awaken_protocol_mcp::export::McpExportedTool::from(awaken_runtime_contract::plugin::DynamicTool) -> Self
+impl core::marker::Freeze for awaken_protocol_mcp::export::McpExportedTool
+impl core::marker::Send for awaken_protocol_mcp::export::McpExportedTool
+impl core::marker::Sync for awaken_protocol_mcp::export::McpExportedTool
+impl core::marker::Unpin for awaken_protocol_mcp::export::McpExportedTool
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::McpExportedTool
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::McpExportedTool
+pub struct awaken_protocol_mcp::export::SharedExports
+impl awaken_protocol_mcp::export::SharedExports
+pub fn awaken_protocol_mcp::export::SharedExports::new(alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>) -> Self
+pub fn awaken_protocol_mcp::export::SharedExports::replace(&self, alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>)
+impl awaken_protocol_mcp::export::ToolExportSource for awaken_protocol_mcp::export::SharedExports
+pub fn awaken_protocol_mcp::export::SharedExports::changes(&self) -> core::option::Option<tokio::sync::watch::Receiver<u64>>
+pub fn awaken_protocol_mcp::export::SharedExports::tools(&self) -> alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>
+pub fn awaken_protocol_mcp::export::SharedExports::version(&self) -> u64
+impl !core::marker::Freeze for awaken_protocol_mcp::export::SharedExports
+impl core::marker::Send for awaken_protocol_mcp::export::SharedExports
+impl core::marker::Sync for awaken_protocol_mcp::export::SharedExports
+impl core::marker::Unpin for awaken_protocol_mcp::export::SharedExports
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::SharedExports
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::SharedExports
+pub struct awaken_protocol_mcp::export::StaticExports
+impl awaken_protocol_mcp::export::StaticExports
+pub fn awaken_protocol_mcp::export::StaticExports::new(alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>) -> Self
+impl awaken_protocol_mcp::export::ToolExportSource for awaken_protocol_mcp::export::StaticExports
+pub fn awaken_protocol_mcp::export::StaticExports::changes(&self) -> core::option::Option<tokio::sync::watch::Receiver<u64>>
+pub fn awaken_protocol_mcp::export::StaticExports::tools(&self) -> alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>
+pub fn awaken_protocol_mcp::export::StaticExports::version(&self) -> u64
+impl core::marker::Freeze for awaken_protocol_mcp::export::StaticExports
+impl core::marker::Send for awaken_protocol_mcp::export::StaticExports
+impl core::marker::Sync for awaken_protocol_mcp::export::StaticExports
+impl core::marker::Unpin for awaken_protocol_mcp::export::StaticExports
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::StaticExports
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::StaticExports
+pub trait awaken_protocol_mcp::export::ProgressRawTool: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_mcp::export::ProgressRawTool::id(&self) -> &str
+pub fn awaken_protocol_mcp::export::ProgressRawTool::invoke_with_progress<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_protocol_mcp::export::ToolExportSource: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_mcp::export::ToolExportSource::changes(&self) -> core::option::Option<tokio::sync::watch::Receiver<u64>>
+pub fn awaken_protocol_mcp::export::ToolExportSource::tools(&self) -> alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>
+pub fn awaken_protocol_mcp::export::ToolExportSource::version(&self) -> u64
+impl awaken_protocol_mcp::export::ToolExportSource for awaken_protocol_mcp::export::SharedExports
+pub fn awaken_protocol_mcp::export::SharedExports::changes(&self) -> core::option::Option<tokio::sync::watch::Receiver<u64>>
+pub fn awaken_protocol_mcp::export::SharedExports::tools(&self) -> alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>
+pub fn awaken_protocol_mcp::export::SharedExports::version(&self) -> u64
+impl awaken_protocol_mcp::export::ToolExportSource for awaken_protocol_mcp::export::StaticExports
+pub fn awaken_protocol_mcp::export::StaticExports::changes(&self) -> core::option::Option<tokio::sync::watch::Receiver<u64>>
+pub fn awaken_protocol_mcp::export::StaticExports::tools(&self) -> alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>
+pub fn awaken_protocol_mcp::export::StaticExports::version(&self) -> u64
+pub mod awaken_protocol_mcp::http
+pub struct awaken_protocol_mcp::http::McpHttpConfig
+pub awaken_protocol_mcp::http::McpHttpConfig::bearer_token: core::option::Option<alloc::string::String>
+pub awaken_protocol_mcp::http::McpHttpConfig::path: alloc::string::String
+impl core::default::Default for awaken_protocol_mcp::http::McpHttpConfig
+pub fn awaken_protocol_mcp::http::McpHttpConfig::default() -> Self
+impl core::marker::Freeze for awaken_protocol_mcp::http::McpHttpConfig
+impl core::marker::Send for awaken_protocol_mcp::http::McpHttpConfig
+impl core::marker::Sync for awaken_protocol_mcp::http::McpHttpConfig
+impl core::marker::Unpin for awaken_protocol_mcp::http::McpHttpConfig
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::http::McpHttpConfig
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::http::McpHttpConfig
+pub fn awaken_protocol_mcp::http::router(alloc::sync::Arc<awaken_protocol_mcp::service::McpToolService>, awaken_protocol_mcp::http::McpHttpConfig) -> axum::routing::Router
+pub mod awaken_protocol_mcp::service
+pub struct awaken_protocol_mcp::service::McpToolService
+impl awaken_protocol_mcp::service::McpToolService
+pub async fn awaken_protocol_mcp::service::McpToolService::handle(&self, &str, serde_json::value::Value, alloc::sync::Arc<dyn awaken_protocol_mcp::service::NotifySink>) -> core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>
+pub fn awaken_protocol_mcp::service::McpToolService::handle_notification(&self, &str, &serde_json::value::Value)
+pub fn awaken_protocol_mcp::service::McpToolService::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_protocol_mcp::export::ToolExportSource>) -> Self
+pub fn awaken_protocol_mcp::service::McpToolService::source(&self) -> &alloc::sync::Arc<dyn awaken_protocol_mcp::export::ToolExportSource>
+pub fn awaken_protocol_mcp::service::McpToolService::with_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
+impl !core::marker::Freeze for awaken_protocol_mcp::service::McpToolService
+impl core::marker::Send for awaken_protocol_mcp::service::McpToolService
+impl core::marker::Sync for awaken_protocol_mcp::service::McpToolService
+impl core::marker::Unpin for awaken_protocol_mcp::service::McpToolService
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::service::McpToolService
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::service::McpToolService
+pub struct awaken_protocol_mcp::service::NullSink
+impl awaken_protocol_mcp::service::NotifySink for awaken_protocol_mcp::service::NullSink
+pub fn awaken_protocol_mcp::service::NullSink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::marker::Freeze for awaken_protocol_mcp::service::NullSink
+impl core::marker::Send for awaken_protocol_mcp::service::NullSink
+impl core::marker::Sync for awaken_protocol_mcp::service::NullSink
+impl core::marker::Unpin for awaken_protocol_mcp::service::NullSink
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::service::NullSink
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::service::NullSink
+pub trait awaken_protocol_mcp::service::NotifySink: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_mcp::service::NotifySink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_protocol_mcp::service::NotifySink for awaken_protocol_mcp::service::NullSink
+pub fn awaken_protocol_mcp::service::NullSink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub mod awaken_protocol_mcp::stdio
+pub struct awaken_protocol_mcp::stdio::McpStdioServer
+impl awaken_protocol_mcp::stdio::McpStdioServer
+pub async fn awaken_protocol_mcp::stdio::McpStdioServer::closed(&self)
+pub fn awaken_protocol_mcp::stdio::McpStdioServer::is_alive(&self) -> bool
+pub fn awaken_protocol_mcp::stdio::McpStdioServer::serve<R, W>(alloc::sync::Arc<awaken_protocol_mcp::service::McpToolService>, R, W) -> Self where R: tokio::io::async_read::AsyncRead + core::marker::Unpin + core::marker::Send + 'static, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static
+pub fn awaken_protocol_mcp::stdio::McpStdioServer::serve_stdio(alloc::sync::Arc<awaken_protocol_mcp::service::McpToolService>) -> Self
+impl core::marker::Freeze for awaken_protocol_mcp::stdio::McpStdioServer
+impl core::marker::Send for awaken_protocol_mcp::stdio::McpStdioServer
+impl core::marker::Sync for awaken_protocol_mcp::stdio::McpStdioServer
+impl core::marker::Unpin for awaken_protocol_mcp::stdio::McpStdioServer
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::stdio::McpStdioServer
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::stdio::McpStdioServer
+pub enum awaken_protocol_mcp::ToolExec
+pub awaken_protocol_mcp::ToolExec::Plain(alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>)
+pub awaken_protocol_mcp::ToolExec::WithProgress(alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>)
+impl core::clone::Clone for awaken_protocol_mcp::export::ToolExec
+pub fn awaken_protocol_mcp::export::ToolExec::clone(&self) -> awaken_protocol_mcp::export::ToolExec
+impl core::marker::Freeze for awaken_protocol_mcp::export::ToolExec
+impl core::marker::Send for awaken_protocol_mcp::export::ToolExec
+impl core::marker::Sync for awaken_protocol_mcp::export::ToolExec
+impl core::marker::Unpin for awaken_protocol_mcp::export::ToolExec
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::ToolExec
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::ToolExec
+pub struct awaken_protocol_mcp::McpExportedTool
+pub awaken_protocol_mcp::McpExportedTool::descriptor: awaken_runtime_contract::resolved::ToolDescriptor
+pub awaken_protocol_mcp::McpExportedTool::exec: awaken_protocol_mcp::export::ToolExec
+impl awaken_protocol_mcp::export::McpExportedTool
+pub fn awaken_protocol_mcp::export::McpExportedTool::plain(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> Self
+pub fn awaken_protocol_mcp::export::McpExportedTool::with_progress(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>) -> Self
+impl core::clone::Clone for awaken_protocol_mcp::export::McpExportedTool
+pub fn awaken_protocol_mcp::export::McpExportedTool::clone(&self) -> awaken_protocol_mcp::export::McpExportedTool
+impl core::convert::From<awaken_runtime_contract::plugin::DynamicTool> for awaken_protocol_mcp::export::McpExportedTool
+pub fn awaken_protocol_mcp::export::McpExportedTool::from(awaken_runtime_contract::plugin::DynamicTool) -> Self
+impl core::marker::Freeze for awaken_protocol_mcp::export::McpExportedTool
+impl core::marker::Send for awaken_protocol_mcp::export::McpExportedTool
+impl core::marker::Sync for awaken_protocol_mcp::export::McpExportedTool
+impl core::marker::Unpin for awaken_protocol_mcp::export::McpExportedTool
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::McpExportedTool
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::McpExportedTool
+pub struct awaken_protocol_mcp::McpHttpConfig
+pub awaken_protocol_mcp::McpHttpConfig::bearer_token: core::option::Option<alloc::string::String>
+pub awaken_protocol_mcp::McpHttpConfig::path: alloc::string::String
+impl core::default::Default for awaken_protocol_mcp::http::McpHttpConfig
+pub fn awaken_protocol_mcp::http::McpHttpConfig::default() -> Self
+impl core::marker::Freeze for awaken_protocol_mcp::http::McpHttpConfig
+impl core::marker::Send for awaken_protocol_mcp::http::McpHttpConfig
+impl core::marker::Sync for awaken_protocol_mcp::http::McpHttpConfig
+impl core::marker::Unpin for awaken_protocol_mcp::http::McpHttpConfig
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::http::McpHttpConfig
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::http::McpHttpConfig
+pub struct awaken_protocol_mcp::McpStdioServer
+impl awaken_protocol_mcp::stdio::McpStdioServer
+pub async fn awaken_protocol_mcp::stdio::McpStdioServer::closed(&self)
+pub fn awaken_protocol_mcp::stdio::McpStdioServer::is_alive(&self) -> bool
+pub fn awaken_protocol_mcp::stdio::McpStdioServer::serve<R, W>(alloc::sync::Arc<awaken_protocol_mcp::service::McpToolService>, R, W) -> Self where R: tokio::io::async_read::AsyncRead + core::marker::Unpin + core::marker::Send + 'static, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static
+pub fn awaken_protocol_mcp::stdio::McpStdioServer::serve_stdio(alloc::sync::Arc<awaken_protocol_mcp::service::McpToolService>) -> Self
+impl core::marker::Freeze for awaken_protocol_mcp::stdio::McpStdioServer
+impl core::marker::Send for awaken_protocol_mcp::stdio::McpStdioServer
+impl core::marker::Sync for awaken_protocol_mcp::stdio::McpStdioServer
+impl core::marker::Unpin for awaken_protocol_mcp::stdio::McpStdioServer
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::stdio::McpStdioServer
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::stdio::McpStdioServer
+pub struct awaken_protocol_mcp::McpToolService
+impl awaken_protocol_mcp::service::McpToolService
+pub async fn awaken_protocol_mcp::service::McpToolService::handle(&self, &str, serde_json::value::Value, alloc::sync::Arc<dyn awaken_protocol_mcp::service::NotifySink>) -> core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>
+pub fn awaken_protocol_mcp::service::McpToolService::handle_notification(&self, &str, &serde_json::value::Value)
+pub fn awaken_protocol_mcp::service::McpToolService::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_protocol_mcp::export::ToolExportSource>) -> Self
+pub fn awaken_protocol_mcp::service::McpToolService::source(&self) -> &alloc::sync::Arc<dyn awaken_protocol_mcp::export::ToolExportSource>
+pub fn awaken_protocol_mcp::service::McpToolService::with_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
+impl !core::marker::Freeze for awaken_protocol_mcp::service::McpToolService
+impl core::marker::Send for awaken_protocol_mcp::service::McpToolService
+impl core::marker::Sync for awaken_protocol_mcp::service::McpToolService
+impl core::marker::Unpin for awaken_protocol_mcp::service::McpToolService
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::service::McpToolService
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::service::McpToolService
+pub struct awaken_protocol_mcp::NullSink
+impl awaken_protocol_mcp::service::NotifySink for awaken_protocol_mcp::service::NullSink
+pub fn awaken_protocol_mcp::service::NullSink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::marker::Freeze for awaken_protocol_mcp::service::NullSink
+impl core::marker::Send for awaken_protocol_mcp::service::NullSink
+impl core::marker::Sync for awaken_protocol_mcp::service::NullSink
+impl core::marker::Unpin for awaken_protocol_mcp::service::NullSink
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::service::NullSink
+impl core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::service::NullSink
+pub struct awaken_protocol_mcp::SharedExports
+impl awaken_protocol_mcp::export::SharedExports
+pub fn awaken_protocol_mcp::export::SharedExports::new(alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>) -> Self
+pub fn awaken_protocol_mcp::export::SharedExports::replace(&self, alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>)
+impl awaken_protocol_mcp::export::ToolExportSource for awaken_protocol_mcp::export::SharedExports
+pub fn awaken_protocol_mcp::export::SharedExports::changes(&self) -> core::option::Option<tokio::sync::watch::Receiver<u64>>
+pub fn awaken_protocol_mcp::export::SharedExports::tools(&self) -> alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>
+pub fn awaken_protocol_mcp::export::SharedExports::version(&self) -> u64
+impl !core::marker::Freeze for awaken_protocol_mcp::export::SharedExports
+impl core::marker::Send for awaken_protocol_mcp::export::SharedExports
+impl core::marker::Sync for awaken_protocol_mcp::export::SharedExports
+impl core::marker::Unpin for awaken_protocol_mcp::export::SharedExports
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::SharedExports
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::SharedExports
+pub struct awaken_protocol_mcp::StaticExports
+impl awaken_protocol_mcp::export::StaticExports
+pub fn awaken_protocol_mcp::export::StaticExports::new(alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>) -> Self
+impl awaken_protocol_mcp::export::ToolExportSource for awaken_protocol_mcp::export::StaticExports
+pub fn awaken_protocol_mcp::export::StaticExports::changes(&self) -> core::option::Option<tokio::sync::watch::Receiver<u64>>
+pub fn awaken_protocol_mcp::export::StaticExports::tools(&self) -> alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>
+pub fn awaken_protocol_mcp::export::StaticExports::version(&self) -> u64
+impl core::marker::Freeze for awaken_protocol_mcp::export::StaticExports
+impl core::marker::Send for awaken_protocol_mcp::export::StaticExports
+impl core::marker::Sync for awaken_protocol_mcp::export::StaticExports
+impl core::marker::Unpin for awaken_protocol_mcp::export::StaticExports
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_protocol_mcp::export::StaticExports
+impl !core::panic::unwind_safe::UnwindSafe for awaken_protocol_mcp::export::StaticExports
+pub trait awaken_protocol_mcp::NotifySink: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_mcp::NotifySink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_protocol_mcp::service::NotifySink for awaken_protocol_mcp::service::NullSink
+pub fn awaken_protocol_mcp::service::NullSink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_protocol_mcp::ProgressRawTool: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_mcp::ProgressRawTool::id(&self) -> &str
+pub fn awaken_protocol_mcp::ProgressRawTool::invoke_with_progress<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_protocol_mcp::ToolExportSource: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_mcp::ToolExportSource::changes(&self) -> core::option::Option<tokio::sync::watch::Receiver<u64>>
+pub fn awaken_protocol_mcp::ToolExportSource::tools(&self) -> alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>
+pub fn awaken_protocol_mcp::ToolExportSource::version(&self) -> u64
+impl awaken_protocol_mcp::export::ToolExportSource for awaken_protocol_mcp::export::SharedExports
+pub fn awaken_protocol_mcp::export::SharedExports::changes(&self) -> core::option::Option<tokio::sync::watch::Receiver<u64>>
+pub fn awaken_protocol_mcp::export::SharedExports::tools(&self) -> alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>
+pub fn awaken_protocol_mcp::export::SharedExports::version(&self) -> u64
+impl awaken_protocol_mcp::export::ToolExportSource for awaken_protocol_mcp::export::StaticExports
+pub fn awaken_protocol_mcp::export::StaticExports::changes(&self) -> core::option::Option<tokio::sync::watch::Receiver<u64>>
+pub fn awaken_protocol_mcp::export::StaticExports::tools(&self) -> alloc::vec::Vec<awaken_protocol_mcp::export::McpExportedTool>
+pub fn awaken_protocol_mcp::export::StaticExports::version(&self) -> u64
+pub fn awaken_protocol_mcp::router(alloc::sync::Arc<awaken_protocol_mcp::service::McpToolService>, awaken_protocol_mcp::http::McpHttpConfig) -> axum::routing::Router

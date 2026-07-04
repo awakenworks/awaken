@@ -23,18 +23,20 @@ pub mod credential;
 pub mod error;
 pub mod http;
 pub mod id_mapping;
-pub mod jsonrpc;
 pub mod manager;
 pub mod plugin;
-pub mod progress;
 mod router;
 pub mod sampling;
 pub mod sensitive;
-pub mod sse;
 pub mod stdio;
 pub mod tool;
 pub mod transport;
 pub mod types;
+
+// The direction-neutral wire layer (JSON-RPC peer, SSE parser, progress
+// vocabulary) is shared with the MCP server crate via `awaken-mcp-wire`;
+// re-exported here so client-side paths (`awaken_ext_mcp::jsonrpc`, …) hold.
+pub use awaken_mcp_wire::{jsonrpc, progress, sse};
 
 pub use client::{McpConnection, connect_tools};
 pub use config::{McpServerConnectionConfig, TransportTypeId};

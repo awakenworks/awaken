@@ -7,15 +7,23 @@
 //!
 //! - **response** (`id`, no `method`) resolves the matching pending request;
 //! - **notification** (`method`, no `id`) is forwarded to a channel;
-//! - **server request** (`id` + `method`) is dispatched to a handler and its
+//! - **peer request** (`id` + `method`) is dispatched to a handler and its
 //!   reply written back.
+//!
+//! The peer is symmetric, so it serves both directions: the MCP *client*
+//! (`awaken-ext-mcp`) drives a spawned server through it, and the MCP *server*
+//! (`awaken-protocol-mcp`) serves a connected client over stdio with the same
+//! demux — there, the "server" in [`ServerNotification`]/[`ServerRequestHandler`]
+//! reads as "the other side". Incoming requests are handled on their own task,
+//! so a long-running handler (a slow `tools/call`) never blocks the read loop
+//! or the notifications interleaved with it.
 //!
 //! It is generic over the byte stream, so the demux logic is tested with an
 //! in-memory duplex rather than a real subprocess.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -23,23 +31,26 @@ use mcp::transport::McpTransportError;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
-/// A server-initiated notification: a `method` with `params` and no id.
+/// A notification initiated by the other side: a `method` with `params` and no
+/// id.
 #[derive(Debug, Clone)]
 pub struct ServerNotification {
     pub method: String,
     pub params: Value,
 }
 
-/// Handles a server->client request (e.g. `sampling/createMessage`,
-/// `roots/list`). Returns the JSON `result` to reply with, or an error mapped to
-/// a JSON-RPC error reply.
+/// Handles a request initiated by the other side (for a client:
+/// `sampling/createMessage`, `roots/list`; for a server: every client request).
+/// Returns the JSON `result` to reply with, or an error mapped to a JSON-RPC
+/// error reply.
 #[async_trait]
 pub trait ServerRequestHandler: Send + Sync {
     async fn handle(&self, method: &str, params: Value) -> Result<Value, ServerRequestError>;
 }
 
-/// A server->client request failed; becomes a JSON-RPC error reply.
+/// A peer request failed; becomes a JSON-RPC error reply.
 #[derive(Debug, Clone)]
 pub struct ServerRequestError {
     pub code: i64,
@@ -54,22 +65,61 @@ impl ServerRequestError {
             message: format!("method not found: {method}"),
         }
     }
+
+    /// The JSON-RPC "invalid params" error (-32602).
+    pub fn invalid_params(message: impl Into<String>) -> Self {
+        Self {
+            code: -32602,
+            message: message.into(),
+        }
+    }
+
+    /// The JSON-RPC "internal error" (-32603).
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self {
+            code: -32603,
+            message: message.into(),
+        }
+    }
 }
 
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, McpTransportError>>>>>;
 
 /// A JSON-RPC peer over a byte stream: sends requests/notifications and demuxes
-/// incoming responses, notifications, and server requests.
+/// incoming responses, notifications, and peer requests.
 pub struct JsonRpcPeer {
     write_tx: mpsc::Sender<String>,
     pending: Pending,
     next_id: AtomicI64,
-    alive: Arc<AtomicBool>,
+    closed: CancellationToken,
+}
+
+/// A cheap handle for sending notifications through a peer's write queue —
+/// what a request handler holds so it can emit `notifications/progress` while
+/// its call runs (the handler cannot hold the peer itself: the peer is built
+/// *around* the handler).
+#[derive(Clone)]
+pub struct JsonRpcNotifier {
+    write_tx: mpsc::Sender<String>,
+}
+
+impl JsonRpcNotifier {
+    /// Send a notification (no id, no reply expected).
+    pub async fn notify(&self, method: &str, params: Value) -> Result<(), McpTransportError> {
+        let line = format!(
+            "{}\n",
+            json!({ "jsonrpc": "2.0", "method": method, "params": params })
+        );
+        self.write_tx
+            .send(line)
+            .await
+            .map_err(|_| McpTransportError::ConnectionClosed)
+    }
 }
 
 impl JsonRpcPeer {
-    /// Drive `reader`/`writer`. Server notifications are forwarded to the
-    /// returned receiver; server requests go to `request_handler` (or are
+    /// Drive `reader`/`writer`. Peer notifications are forwarded to the
+    /// returned receiver; peer requests go to `request_handler` (or are
     /// rejected with method-not-found if it is `None`).
     pub fn new<R, W>(
         reader: R,
@@ -83,16 +133,16 @@ impl JsonRpcPeer {
         let (write_tx, mut write_rx) = mpsc::channel::<String>(256);
         let (notif_tx, notif_rx) = mpsc::channel::<ServerNotification>(256);
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        let alive = Arc::new(AtomicBool::new(true));
+        let closed = CancellationToken::new();
 
         // Writer task: drain queued lines to the stream.
-        let alive_w = Arc::clone(&alive);
+        let closed_w = closed.clone();
         tokio::spawn(async move {
             let mut writer = writer;
             while let Some(line) = write_rx.recv().await {
                 if writer.write_all(line.as_bytes()).await.is_err() || writer.flush().await.is_err()
                 {
-                    alive_w.store(false, Ordering::SeqCst);
+                    closed_w.cancel();
                     break;
                 }
             }
@@ -100,7 +150,7 @@ impl JsonRpcPeer {
 
         // Reader task: classify each line and dispatch.
         let pending_r = Arc::clone(&pending);
-        let alive_r = Arc::clone(&alive);
+        let closed_r = closed.clone();
         let write_tx_r = write_tx.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(reader).lines();
@@ -116,7 +166,7 @@ impl JsonRpcPeer {
                         dispatch(value, &pending_r, &notif_tx, &request_handler, &write_tx_r).await;
                     }
                     _ => {
-                        alive_r.store(false, Ordering::SeqCst);
+                        closed_r.cancel();
                         break;
                     }
                 }
@@ -131,7 +181,7 @@ impl JsonRpcPeer {
                 write_tx,
                 pending,
                 next_id: AtomicI64::new(1),
-                alive,
+                closed,
             },
             notif_rx,
         )
@@ -139,7 +189,20 @@ impl JsonRpcPeer {
 
     /// Whether the underlying stream is still open.
     pub fn is_alive(&self) -> bool {
-        self.alive.load(Ordering::SeqCst)
+        !self.closed.is_cancelled()
+    }
+
+    /// Resolve when the underlying stream closes (either half). A stdio server
+    /// awaits this to exit when its client disconnects.
+    pub async fn closed(&self) {
+        self.closed.cancelled().await;
+    }
+
+    /// A cheap cloneable handle for sending notifications through this peer.
+    pub fn notifier(&self) -> JsonRpcNotifier {
+        JsonRpcNotifier {
+            write_tx: self.write_tx.clone(),
+        }
     }
 
     /// Send a request and await its response, up to `timeout`.
@@ -175,14 +238,7 @@ impl JsonRpcPeer {
 
     /// Send a notification (no id, no reply expected).
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), McpTransportError> {
-        let line = format!(
-            "{}\n",
-            json!({ "jsonrpc": "2.0", "method": method, "params": params })
-        );
-        self.write_tx
-            .send(line)
-            .await
-            .map_err(|_| McpTransportError::ConnectionClosed)
+        self.notifier().notify(method, params).await
     }
 }
 
@@ -198,27 +254,32 @@ async fn dispatch(
     let id = value.get("id").filter(|v| !v.is_null()).cloned();
 
     match (method, id) {
-        // Server -> client request: dispatch and reply.
+        // Peer request: dispatch on its own task (a slow handler must not stall
+        // the read loop) and reply through the write queue.
         (Some(method), Some(id)) => {
             let method = method.to_string();
             let params = value.get("params").cloned().unwrap_or(Value::Null);
-            let reply = match request_handler {
-                Some(handler) => match handler.handle(&method, params).await {
-                    Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                    Err(err) => json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "error": { "code": err.code, "message": err.message },
-                    }),
-                },
-                None => {
-                    let err = ServerRequestError::method_not_found(&method);
-                    json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "error": { "code": err.code, "message": err.message },
-                    })
-                }
-            };
-            let _ = write_tx.send(format!("{reply}\n")).await;
+            let handler = request_handler.clone();
+            let write_tx = write_tx.clone();
+            tokio::spawn(async move {
+                let reply = match handler {
+                    Some(handler) => match handler.handle(&method, params).await {
+                        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                        Err(err) => json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": err.code, "message": err.message },
+                        }),
+                    },
+                    None => {
+                        let err = ServerRequestError::method_not_found(&method);
+                        json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": err.code, "message": err.message },
+                        })
+                    }
+                };
+                let _ = write_tx.send(format!("{reply}\n")).await;
+            });
         }
         // Notification: forward to the channel.
         (Some(method), None) => {
@@ -356,5 +417,71 @@ mod tests {
             .await
             .expect_err("times out");
         assert!(matches!(err, McpTransportError::Timeout(_)));
+    }
+
+    /// A handler that blocks until told to finish, then replies — used to prove
+    /// the read loop keeps dispatching while a request is being handled.
+    struct SlowHandler {
+        release: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+    #[async_trait]
+    impl ServerRequestHandler for SlowHandler {
+        async fn handle(&self, _method: &str, _params: Value) -> Result<Value, ServerRequestError> {
+            let rx = self.release.lock().await.take().expect("one slow call");
+            let _ = rx.await;
+            Ok(json!({ "slow": true }))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slow_request_does_not_block_the_read_loop() {
+        let (release_tx, release_rx) = oneshot::channel();
+        let (_peer, mut notif_rx, mut server_r, mut server_w) =
+            wired(Some(Arc::new(SlowHandler {
+                release: Mutex::new(Some(release_rx)),
+            })));
+        // A request that will park in the handler...
+        let slow = format!(
+            "{}\n",
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {} })
+        );
+        server_w.write_all(slow.as_bytes()).await.unwrap();
+        // ...must not stop a subsequent notification from being read and routed.
+        let notif = format!(
+            "{}\n",
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized", "params": {} })
+        );
+        server_w.write_all(notif.as_bytes()).await.unwrap();
+        let seen = notif_rx.recv().await.expect("notification while call runs");
+        assert_eq!(seen.method, "notifications/initialized");
+        // Release the handler; its reply arrives.
+        release_tx.send(()).unwrap();
+        let reply = read_line(&mut server_r).await;
+        assert_eq!(reply["result"]["slow"], true);
+    }
+
+    #[tokio::test]
+    async fn closed_resolves_when_the_stream_ends() {
+        let (peer, _notif, _server_r, server_w) = wired(None);
+        assert!(peer.is_alive());
+        drop(server_w);
+        drop(_server_r);
+        tokio::time::timeout(Duration::from_secs(5), peer.closed())
+            .await
+            .expect("closed resolves");
+        assert!(!peer.is_alive());
+    }
+
+    #[tokio::test]
+    async fn notifier_writes_through_the_peer() {
+        let (peer, _notif, mut server_r, _server_w) = wired(None);
+        let notifier = peer.notifier();
+        notifier
+            .notify("notifications/progress", json!({ "progress": 1 }))
+            .await
+            .expect("sends");
+        let seen = read_line(&mut server_r).await;
+        assert_eq!(seen["method"], "notifications/progress");
+        assert!(seen.get("id").is_none());
     }
 }
