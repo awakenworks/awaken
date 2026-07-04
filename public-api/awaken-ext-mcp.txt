@@ -1,4 +1,7 @@
 pub mod awaken_ext_mcp
+pub use awaken_ext_mcp::AuthChallenge
+pub use awaken_ext_mcp::Credential
+pub use awaken_ext_mcp::CredentialRefresher
 pub use awaken_ext_mcp::McpServerConnectionConfig
 pub use awaken_ext_mcp::TransportTypeId
 pub mod awaken_ext_mcp::client
@@ -17,30 +20,9 @@ pub mod awaken_ext_mcp::config
 pub use awaken_ext_mcp::config::McpServerConnectionConfig
 pub use awaken_ext_mcp::config::TransportTypeId
 pub mod awaken_ext_mcp::credential
-pub enum awaken_ext_mcp::credential::Credential
-pub awaken_ext_mcp::credential::Credential::Bearer(alloc::string::String)
-pub awaken_ext_mcp::credential::Credential::Header
-pub awaken_ext_mcp::credential::Credential::Header::name: alloc::string::String
-pub awaken_ext_mcp::credential::Credential::Header::value: alloc::string::String
-pub awaken_ext_mcp::credential::Credential::None
-impl awaken_ext_mcp::credential::Credential
-pub fn awaken_ext_mcp::credential::Credential::header(&self) -> core::option::Option<(alloc::string::String, alloc::string::String)>
-impl core::clone::Clone for awaken_ext_mcp::credential::Credential
-pub fn awaken_ext_mcp::credential::Credential::clone(&self) -> awaken_ext_mcp::credential::Credential
-impl core::cmp::Eq for awaken_ext_mcp::credential::Credential
-impl core::cmp::PartialEq for awaken_ext_mcp::credential::Credential
-pub fn awaken_ext_mcp::credential::Credential::eq(&self, &awaken_ext_mcp::credential::Credential) -> bool
-impl core::default::Default for awaken_ext_mcp::credential::Credential
-pub fn awaken_ext_mcp::credential::Credential::default() -> awaken_ext_mcp::credential::Credential
-impl core::fmt::Debug for awaken_ext_mcp::credential::Credential
-pub fn awaken_ext_mcp::credential::Credential::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::credential::Credential
-impl core::marker::Freeze for awaken_ext_mcp::credential::Credential
-impl core::marker::Send for awaken_ext_mcp::credential::Credential
-impl core::marker::Sync for awaken_ext_mcp::credential::Credential
-impl core::marker::Unpin for awaken_ext_mcp::credential::Credential
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::credential::Credential
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::credential::Credential
+pub use awaken_ext_mcp::credential::AuthChallenge
+pub use awaken_ext_mcp::credential::Credential
+pub use awaken_ext_mcp::credential::CredentialRefresher
 pub mod awaken_ext_mcp::error
 pub enum awaken_ext_mcp::error::McpError
 pub awaken_ext_mcp::error::McpError::DuplicateServerName(alloc::string::String)
@@ -73,9 +55,10 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::error::McpError
 pub mod awaken_ext_mcp::http
 pub struct awaken_ext_mcp::http::HttpTransport
 impl awaken_ext_mcp::http::HttpTransport
-pub async fn awaken_ext_mcp::http::HttpTransport::connect(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::credential::Credential) -> core::result::Result<Self, model_context_protocol::transport::McpTransportError>
-pub async fn awaken_ext_mcp::http::HttpTransport::connect_streaming(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::credential::Credential, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>>) -> core::result::Result<Self, model_context_protocol::transport::McpTransportError>
-pub fn awaken_ext_mcp::http::HttpTransport::new(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::credential::Credential) -> Self
+pub async fn awaken_ext_mcp::http::HttpTransport::connect(impl core::convert::Into<alloc::string::String>, awaken_credential::Credential) -> core::result::Result<Self, model_context_protocol::transport::McpTransportError>
+pub async fn awaken_ext_mcp::http::HttpTransport::connect_streaming(impl core::convert::Into<alloc::string::String>, awaken_credential::Credential, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>>) -> core::result::Result<Self, model_context_protocol::transport::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransport::new(impl core::convert::Into<alloc::string::String>, awaken_credential::Credential) -> Self
+pub fn awaken_ext_mcp::http::HttpTransport::set_credential(&self, awaken_credential::Credential)
 pub fn awaken_ext_mcp::http::HttpTransport::subscribe_list_changed(&self) -> tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>
 pub fn awaken_ext_mcp::http::HttpTransport::subscribe_resource_updated(&self) -> tokio::sync::broadcast::Receiver<alloc::string::String>
 impl awaken_ext_mcp::transport::McpToolTransport for awaken_ext_mcp::http::HttpTransport
@@ -95,6 +78,22 @@ impl core::marker::Sync for awaken_ext_mcp::http::HttpTransport
 impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransport
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransport
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransport
+pub struct awaken_ext_mcp::http::HttpTransportBuilder
+impl awaken_ext_mcp::http::HttpTransportBuilder
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::build(self) -> awaken_ext_mcp::http::HttpTransport
+pub async fn awaken_ext_mcp::http::HttpTransportBuilder::connect(self) -> core::result::Result<awaken_ext_mcp::http::HttpTransport, model_context_protocol::transport::McpTransportError>
+pub async fn awaken_ext_mcp::http::HttpTransportBuilder::connect_streaming(self) -> core::result::Result<awaken_ext_mcp::http::HttpTransport, model_context_protocol::transport::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::credential(self, awaken_credential::Credential) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::header(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::refresher(self, alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::sampling(self, alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
+impl core::marker::Freeze for awaken_ext_mcp::http::HttpTransportBuilder
+impl core::marker::Send for awaken_ext_mcp::http::HttpTransportBuilder
+impl core::marker::Sync for awaken_ext_mcp::http::HttpTransportBuilder
+impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransportBuilder
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
+impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
 pub mod awaken_ext_mcp::id_mapping
 pub fn awaken_ext_mcp::id_mapping::to_tool_id(&str, &str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::id_mapping::tool_namespace(&str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
@@ -199,6 +198,7 @@ pub fn awaken_ext_mcp::plugin::McpServer::is_alive(&self) -> bool
 pub fn awaken_ext_mcp::plugin::McpServer::name(&self) -> &str
 pub fn awaken_ext_mcp::plugin::McpServer::plugin(&self) -> awaken_ext_mcp::plugin::McpPlugin
 pub async fn awaken_ext_mcp::plugin::McpServer::start(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub async fn awaken_ext_mcp::plugin::McpServer::start_with_sensitive(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>, awaken_ext_mcp::plugin::SensitiveFields) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::plugin::McpServer::version(&self) -> u64
 impl core::marker::Freeze for awaken_ext_mcp::plugin::McpServer
 impl core::marker::Send for awaken_ext_mcp::plugin::McpServer
@@ -206,6 +206,7 @@ impl core::marker::Sync for awaken_ext_mcp::plugin::McpServer
 impl core::marker::Unpin for awaken_ext_mcp::plugin::McpServer
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::plugin::McpServer
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::plugin::McpServer
+pub type awaken_ext_mcp::plugin::SensitiveFields = std::collections::hash::map::HashMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>
 pub mod awaken_ext_mcp::progress
 pub struct awaken_ext_mcp::progress::McpProgressUpdate
 pub awaken_ext_mcp::progress::McpProgressUpdate::message: core::option::Option<alloc::string::String>
@@ -321,6 +322,11 @@ pub trait awaken_ext_mcp::sampling::SamplingHandler: core::marker::Send + core::
 pub fn awaken_ext_mcp::sampling::SamplingHandler::create_message<'life0, 'async_trait>(&'life0 self, awaken_ext_mcp::sampling::SamplingRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::sampling::SamplingResponse, awaken_ext_mcp::sampling::SamplingError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_mcp::sampling::build_sampling_result(&awaken_ext_mcp::sampling::SamplingResponse) -> serde_json::value::Value
 pub fn awaken_ext_mcp::sampling::parse_sampling_request(&serde_json::value::Value) -> awaken_ext_mcp::sampling::SamplingRequest
+pub mod awaken_ext_mcp::sensitive
+pub const awaken_ext_mcp::sensitive::REDACTED: &str
+pub fn awaken_ext_mcp::sensitive::mark_sensitive<S: core::convert::AsRef<str>>(&mut serde_json::value::Value, &[S])
+pub fn awaken_ext_mcp::sensitive::redact_arguments(&serde_json::value::Value, &serde_json::value::Value) -> serde_json::value::Value
+pub fn awaken_ext_mcp::sensitive::sensitive_paths(&serde_json::value::Value) -> alloc::vec::Vec<alloc::string::String>
 pub mod awaken_ext_mcp::sse
 pub struct awaken_ext_mcp::sse::SseParser
 impl awaken_ext_mcp::sse::SseParser
@@ -533,30 +539,6 @@ impl core::marker::Sync for awaken_ext_mcp::types::McpResourceDefinition
 impl core::marker::Unpin for awaken_ext_mcp::types::McpResourceDefinition
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::types::McpResourceDefinition
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::types::McpResourceDefinition
-pub enum awaken_ext_mcp::Credential
-pub awaken_ext_mcp::Credential::Bearer(alloc::string::String)
-pub awaken_ext_mcp::Credential::Header
-pub awaken_ext_mcp::Credential::Header::name: alloc::string::String
-pub awaken_ext_mcp::Credential::Header::value: alloc::string::String
-pub awaken_ext_mcp::Credential::None
-impl awaken_ext_mcp::credential::Credential
-pub fn awaken_ext_mcp::credential::Credential::header(&self) -> core::option::Option<(alloc::string::String, alloc::string::String)>
-impl core::clone::Clone for awaken_ext_mcp::credential::Credential
-pub fn awaken_ext_mcp::credential::Credential::clone(&self) -> awaken_ext_mcp::credential::Credential
-impl core::cmp::Eq for awaken_ext_mcp::credential::Credential
-impl core::cmp::PartialEq for awaken_ext_mcp::credential::Credential
-pub fn awaken_ext_mcp::credential::Credential::eq(&self, &awaken_ext_mcp::credential::Credential) -> bool
-impl core::default::Default for awaken_ext_mcp::credential::Credential
-pub fn awaken_ext_mcp::credential::Credential::default() -> awaken_ext_mcp::credential::Credential
-impl core::fmt::Debug for awaken_ext_mcp::credential::Credential
-pub fn awaken_ext_mcp::credential::Credential::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for awaken_ext_mcp::credential::Credential
-impl core::marker::Freeze for awaken_ext_mcp::credential::Credential
-impl core::marker::Send for awaken_ext_mcp::credential::Credential
-impl core::marker::Sync for awaken_ext_mcp::credential::Credential
-impl core::marker::Unpin for awaken_ext_mcp::credential::Credential
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::credential::Credential
-impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::credential::Credential
 pub enum awaken_ext_mcp::ListChangedKind
 pub awaken_ext_mcp::ListChangedKind::Prompts
 pub awaken_ext_mcp::ListChangedKind::Resources
@@ -606,9 +588,10 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::error::McpError
 impl core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::error::McpError
 pub struct awaken_ext_mcp::HttpTransport
 impl awaken_ext_mcp::http::HttpTransport
-pub async fn awaken_ext_mcp::http::HttpTransport::connect(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::credential::Credential) -> core::result::Result<Self, model_context_protocol::transport::McpTransportError>
-pub async fn awaken_ext_mcp::http::HttpTransport::connect_streaming(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::credential::Credential, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>>) -> core::result::Result<Self, model_context_protocol::transport::McpTransportError>
-pub fn awaken_ext_mcp::http::HttpTransport::new(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::credential::Credential) -> Self
+pub async fn awaken_ext_mcp::http::HttpTransport::connect(impl core::convert::Into<alloc::string::String>, awaken_credential::Credential) -> core::result::Result<Self, model_context_protocol::transport::McpTransportError>
+pub async fn awaken_ext_mcp::http::HttpTransport::connect_streaming(impl core::convert::Into<alloc::string::String>, awaken_credential::Credential, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>>) -> core::result::Result<Self, model_context_protocol::transport::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransport::new(impl core::convert::Into<alloc::string::String>, awaken_credential::Credential) -> Self
+pub fn awaken_ext_mcp::http::HttpTransport::set_credential(&self, awaken_credential::Credential)
 pub fn awaken_ext_mcp::http::HttpTransport::subscribe_list_changed(&self) -> tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>
 pub fn awaken_ext_mcp::http::HttpTransport::subscribe_resource_updated(&self) -> tokio::sync::broadcast::Receiver<alloc::string::String>
 impl awaken_ext_mcp::transport::McpToolTransport for awaken_ext_mcp::http::HttpTransport
@@ -628,6 +611,22 @@ impl core::marker::Sync for awaken_ext_mcp::http::HttpTransport
 impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransport
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransport
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransport
+pub struct awaken_ext_mcp::HttpTransportBuilder
+impl awaken_ext_mcp::http::HttpTransportBuilder
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::build(self) -> awaken_ext_mcp::http::HttpTransport
+pub async fn awaken_ext_mcp::http::HttpTransportBuilder::connect(self) -> core::result::Result<awaken_ext_mcp::http::HttpTransport, model_context_protocol::transport::McpTransportError>
+pub async fn awaken_ext_mcp::http::HttpTransportBuilder::connect_streaming(self) -> core::result::Result<awaken_ext_mcp::http::HttpTransport, model_context_protocol::transport::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::credential(self, awaken_credential::Credential) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::header(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::refresher(self, alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::sampling(self, alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
+impl core::marker::Freeze for awaken_ext_mcp::http::HttpTransportBuilder
+impl core::marker::Send for awaken_ext_mcp::http::HttpTransportBuilder
+impl core::marker::Sync for awaken_ext_mcp::http::HttpTransportBuilder
+impl core::marker::Unpin for awaken_ext_mcp::http::HttpTransportBuilder
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
+impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::http::HttpTransportBuilder
 pub struct awaken_ext_mcp::McpConnection
 pub awaken_ext_mcp::McpConnection::descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_ext_mcp::McpConnection::server_name: alloc::string::String
@@ -813,6 +812,7 @@ pub fn awaken_ext_mcp::plugin::McpServer::is_alive(&self) -> bool
 pub fn awaken_ext_mcp::plugin::McpServer::name(&self) -> &str
 pub fn awaken_ext_mcp::plugin::McpServer::plugin(&self) -> awaken_ext_mcp::plugin::McpPlugin
 pub async fn awaken_ext_mcp::plugin::McpServer::start(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub async fn awaken_ext_mcp::plugin::McpServer::start_with_sensitive(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>, awaken_ext_mcp::plugin::SensitiveFields) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::plugin::McpServer::version(&self) -> u64
 impl core::marker::Freeze for awaken_ext_mcp::plugin::McpServer
 impl core::marker::Send for awaken_ext_mcp::plugin::McpServer
@@ -931,6 +931,7 @@ impl core::marker::Unpin for awaken_ext_mcp::stdio::StdioTransport
 impl !core::panic::unwind_safe::RefUnwindSafe for awaken_ext_mcp::stdio::StdioTransport
 impl !core::panic::unwind_safe::UnwindSafe for awaken_ext_mcp::stdio::StdioTransport
 pub const awaken_ext_mcp::DEFAULT_TIMEOUT: core::time::Duration
+pub const awaken_ext_mcp::REDACTED: &str
 pub trait awaken_ext_mcp::McpToolTransport: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_mcp::McpToolTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<model_context_protocol::protocol::CallToolResult, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_ext_mcp::McpToolTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_ext_mcp::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<model_context_protocol::protocol::CallToolResult, model_context_protocol::transport::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -961,7 +962,11 @@ pub fn awaken_ext_mcp::stdio::StdioTransport::read_resource<'life0, 'life1, 'asy
 pub trait awaken_ext_mcp::SamplingHandler: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_mcp::SamplingHandler::create_message<'life0, 'async_trait>(&'life0 self, awaken_ext_mcp::sampling::SamplingRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::sampling::SamplingResponse, awaken_ext_mcp::sampling::SamplingError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub async fn awaken_ext_mcp::connect_tools(&str, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<awaken_ext_mcp::client::McpConnection, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::mark_sensitive<S: core::convert::AsRef<str>>(&mut serde_json::value::Value, &[S])
 pub fn awaken_ext_mcp::mcp_tool_descriptor(&str, &model_context_protocol::protocol::McpToolDefinition) -> core::result::Result<awaken_runtime_contract::resolved::ToolDescriptor, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::normalize_progress(&awaken_ext_mcp::progress::McpProgressUpdate) -> core::option::Option<f64>
+pub fn awaken_ext_mcp::redact_arguments(&serde_json::value::Value, &serde_json::value::Value) -> serde_json::value::Value
+pub fn awaken_ext_mcp::sensitive_paths(&serde_json::value::Value) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_ext_mcp::to_tool_id(&str, &str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::tool_namespace(&str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
+pub type awaken_ext_mcp::SensitiveFields = std::collections::hash::map::HashMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>

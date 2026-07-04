@@ -235,6 +235,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-credential"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+]
+
+[[package]]
 name = "awaken-ext-builtin-tools"
 version = "1.0.0-dev"
 dependencies = [
@@ -277,6 +284,7 @@ name = "awaken-ext-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "awaken-credential",
  "awaken-runtime-contract",
  "futures",
  "model-context-protocol",
@@ -362,6 +370,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential",
  "awaken-protocol-transport",
  "axum",
  "http-body-util",
