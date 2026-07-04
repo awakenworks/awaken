@@ -12,6 +12,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod schema;
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 

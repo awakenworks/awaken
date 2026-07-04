@@ -27,7 +27,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-credential": {"async-trait"},
     # Management plane (ADR-0043), agents bucket — orthogonal to execution; the
     # runtime never depends on these (I4 / D6/D9, enforced by check_bucket_direction).
-    "awaken-model-catalog": {"serde", "thiserror", "schemars"},
+    "awaken-model-catalog": {"serde", "thiserror", "schemars", "awaken-scoped-migration"},
     "awaken-credential-vault": {
         "awaken-agent-contract",
         "async-trait",
@@ -36,6 +36,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         "schemars",
         "tokio",
+        "awaken-scoped-migration",
     },
     "awaken-config-resolver": {
         "awaken-agent-contract",

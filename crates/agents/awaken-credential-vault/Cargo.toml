@@ -10,6 +10,7 @@ async-trait.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 schemars = { version = "1", optional = true }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
 serde_json.workspace = true
