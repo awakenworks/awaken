@@ -24,6 +24,11 @@ awaken-run-ingress = { workspace = true }
 # model executor from it — the runtime never sees the credential binding (D6/D9).
 awaken-config-resolver = { workspace = true }
 awaken-provider-genai = { workspace = true }
+# The management-plane HTTP surfaces this binary mounts: admin config CRUD and the
+# Managed vault/credential front door, over shared in-memory stores.
+awaken-admin-config-api = { workspace = true }
+awaken-model-catalog = { workspace = true }
+awaken-credential-vault = { workspace = true }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-agent-contract.workspace = true
@@ -43,8 +48,4 @@ axum = "0.7"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-# Management-plane E2E: build a catalog + credential through the production APIs,
-# resolve, and drive a run through the resolved executor (gated live call).
-awaken-model-catalog = { workspace = true }
-awaken-credential-vault = { workspace = true }
 awaken-agent-contract = { workspace = true }

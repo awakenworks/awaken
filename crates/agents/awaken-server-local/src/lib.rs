@@ -884,6 +884,30 @@ pub fn build_config_router() -> Router {
     mount(Arc::new(host)).merge(config_plane::config_router(service))
 }
 
+/// A server that also mounts the **management plane** (ADR-0043): the self-hosted
+/// admin config CRUD (`/v1/config/providers|endpoints|offerings|credentials`) and
+/// the Anthropic-compatible Managed vault/credential front door (`/v1/vaults...`),
+/// over one shared set of in-memory stores. A credential entered through either
+/// surface lands in the same store the resolver reads, so the whole
+/// author → resolve chain is served by one binary alongside the session adapters.
+pub fn build_management_router() -> Router {
+    let catalog = Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new());
+    let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+    let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+
+    let admin = awaken_admin_config_api::admin_router(awaken_admin_config_api::AdminState {
+        catalog,
+        credentials: credentials.clone(),
+        secrets: secrets.clone(),
+    });
+    let vaults = awaken_protocol_managed::vault_router(Arc::new(
+        awaken_protocol_managed::VaultState::new(secrets, credentials),
+    ));
+
+    let host = SharedHost::new(Arc::new(EchoModel), "management");
+    mount(Arc::new(host)).merge(admin).merge(vaults)
+}
+
 /// A tool gate that defers every tool call as a committed `ScheduledAction`
 /// (ADR-0020, slice E): instead of running inline or parking for a human, the call
 /// is scheduled, keyed by its call id, and the durable dispatch worker performs it

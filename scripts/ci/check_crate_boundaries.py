@@ -615,6 +615,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-config-store",
         "awaken-run-ingress",
         "awaken-config-resolver",
+        "awaken-admin-config-api",
         "awaken-model-catalog",
         "awaken-credential-vault",
         "awaken-ext-goal",
