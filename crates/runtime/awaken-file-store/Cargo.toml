@@ -1,0 +1,17 @@
+[package]
+name = "awaken-file-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+# Content id = a stable, collision-resistant hash (not the old 64-bit DefaultHasher),
+# so the same bytes get the same id on every backend (fs / postgres / s3).
+blake3 = "1"
+tokio = { workspace = true, features = ["fs", "io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs"] }
+tempfile = "3"

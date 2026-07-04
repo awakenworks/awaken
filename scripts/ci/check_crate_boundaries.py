@@ -86,6 +86,18 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: a fake exercises the async ports in unit tests.
         "tokio",
     },
+    # Content-addressed blob store (ADR-0041): the neutral file-store trait +
+    # `content_id` (BLAKE3) + local backends (fs/in-mem). Network backends
+    # (postgres/s3) are separate crates over the same trait. A leaf — names no
+    # provider, runtime, or host-path type.
+    "awaken-file-store": {
+        "async-trait",
+        "thiserror",
+        "blake3",
+        "tokio",
+        # dev-only: temp dirs for the fs backend round-trip test.
+        "tempfile",
+    },
     # Agent-transport seam (ADR-0041 amendment): the segregated `AgentChannel`
     # duplex + `AgentTransport` capability port, kept off `ProcessHandle` (ISP).
     # A leaf over tokio's async IO traits; names no provider, protocol, or host
