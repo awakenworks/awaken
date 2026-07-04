@@ -21,6 +21,8 @@ futures-util = { version = "0.3", optional = true }
 # Real Kubernetes backend (kube-apiserver via the SDK, not kubectl). Optional.
 kube = { version = "1", default-features = false, features = ["client", "rustls-tls"], optional = true }
 k8s-openapi = { version = "0.25", features = ["v1_30"], optional = true }
+# kube's rustls client needs a process-level CryptoProvider selected explicitly.
+rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
 
 [features]
 # Real remote transport (TCP dial + reverse-dial pairing) producing an AgentChannel.
@@ -31,7 +33,7 @@ connection = ["dep:awaken-connection", "dep:tokio", "tokio/net", "tokio/io-util"
 docker = ["dep:bollard", "dep:futures-util", "connection"]
 # Real Kubernetes ContainerRuntime (kube). Process-as-container Pod + native-GC.
 # Compile-verified; running needs a cluster.
-k8s = ["dep:kube", "dep:k8s-openapi", "connection"]
+k8s = ["dep:kube", "dep:k8s-openapi", "dep:rustls", "connection"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time"] }
