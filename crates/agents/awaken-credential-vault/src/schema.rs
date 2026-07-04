@@ -9,7 +9,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 /// Namespaced bundle id — the split/merge unit for the credential domain.
 pub const BUNDLE_ID: &str = "awaken.credential";
 
-const SPECS: [(i64, &str, &str); 2] = [
+const SPECS: [(i64, &str, &str); 3] = [
     (
         1,
         "credential sources: the secret-free row (kind + refs, never material)",
@@ -24,7 +24,16 @@ const SPECS: [(i64, &str, &str); 2] = [
         "sealed secrets: ciphertext keyed by secret ref (sealed-AEAD backend, P1)",
         "CREATE TABLE {prefix}_secret (\
             secret_ref TEXT PRIMARY KEY, \
-            sealed {bytea} NOT NULL, \
+            sealed {blob} NOT NULL, \
+            created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
+    (
+        3,
+        "credential pools: secret-free failover groupings of sources",
+        "CREATE TABLE {prefix}_pool (\
+            id TEXT PRIMARY KEY, \
+            workspace_id TEXT NOT NULL, \
+            data {json} NOT NULL, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
     ),
 ];

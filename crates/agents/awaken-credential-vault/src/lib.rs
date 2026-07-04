@@ -18,11 +18,15 @@ pub mod repo;
 pub mod schema;
 #[cfg(feature = "sealed-aead")]
 pub mod sealed;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 
 #[cfg(feature = "oauth-command")]
 pub use oauth::{CommandTokenSource, TokenSource};
 #[cfg(feature = "sealed-aead")]
 pub use sealed::SealedAeadSecretStore;
+#[cfg(feature = "sqlite")]
+pub use sqlite::{SqliteCredentialRepo, SqliteSealedBlobStore};
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -188,6 +192,56 @@ pub enum CredentialError {
     Seal,
     #[error("oauth token refresh failed: {0}")]
     OAuth(String),
+    /// A durable-backend failure (I/O, serde, poisoned lock) surfaced by a
+    /// persistent [`repo::CredentialRepo`] / [`SealedBlobStore`] adapter.
+    #[error("credential storage: {0}")]
+    Storage(String),
+}
+
+/// Persistence of opaque sealed blobs (`nonce ‖ ciphertext`), keyed by
+/// [`SecretRef`] — the seam that makes the AEAD layer engine-agnostic. The
+/// sealing `sealed::SealedAeadSecretStore` writes through this port;
+/// `sqlite::SqliteSealedBlobStore` persists the same blobs durably. A blob is
+/// ciphertext to everyone but the AEAD layer holding the key.
+#[async_trait::async_trait]
+pub trait SealedBlobStore: Send + Sync {
+    async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError>;
+    async fn get_blob(&self, r: &SecretRef) -> Result<Vec<u8>, CredentialError>;
+}
+
+/// In-memory [`SealedBlobStore`] — the default behind
+/// `SealedAeadSecretStore::with_key` (dev / tests; a process restart forgets
+/// the blobs).
+#[derive(Default)]
+pub struct InMemorySealedBlobStore {
+    blobs: Mutex<HashMap<String, Vec<u8>>>,
+}
+
+impl InMemorySealedBlobStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait::async_trait]
+impl SealedBlobStore for InMemorySealedBlobStore {
+    async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError> {
+        self.blobs
+            .lock()
+            .expect("sealed blob mutex")
+            .insert(r.0.clone(), blob);
+        Ok(())
+    }
+
+    async fn get_blob(&self, r: &SecretRef) -> Result<Vec<u8>, CredentialError> {
+        self.blobs
+            .lock()
+            .expect("sealed blob mutex")
+            .get(&r.0)
+            .cloned()
+            .ok_or_else(|| CredentialError::SecretNotFound(r.0.clone()))
+    }
 }
 
 /// In-memory [`SecretStore`] (dev / tests). Real backends encrypt at rest.
