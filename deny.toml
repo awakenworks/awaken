@@ -65,6 +65,7 @@ wrappers = [
     "awaken-credential-vault",
     "awaken-config-resolver",
     "awaken-managed-bridge",
+    "awaken-admin-config-api",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
 
