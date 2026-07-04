@@ -776,6 +776,34 @@ pub fn build_real_router() -> Router {
     build_router(Arc::new(executor), model)
 }
 
+/// A server backed by **Gemini on Vertex AI**, authenticated by an OAuth2 Bearer
+/// token (ADR-0043 Phase 3 multi-flavor + OAuth). The token is refreshed through
+/// the credential domain's OAuth helper: `GEMINI_ACCESS_TOKEN` if set, else
+/// `gcloud auth print-access-token` (which holds the long-lived Google grant).
+/// Config from the environment: `GEMINI_PROJECT` (required), `GEMINI_LOCATION`
+/// (default `global`), `GEMINI_MODEL` (default `gemini-2.5-flash`). Exposed as a
+/// server mode so the TypeScript e2e can drive a real Gemini turn — proving the
+/// OAuth + Gemini path through the managed / ai-sdk adapters.
+pub async fn build_real_gemini_router() -> Router {
+    use awaken_credential_vault::{CommandTokenSource, TokenSource};
+
+    let project = std::env::var("GEMINI_PROJECT")
+        .expect("set GEMINI_PROJECT for AWAKEN_MODEL_MODE=real-gemini");
+    let location = std::env::var("GEMINI_LOCATION").unwrap_or_else(|_| "global".to_string());
+    let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
+    let token = match std::env::var("GEMINI_ACCESS_TOKEN") {
+        Ok(token) if !token.is_empty() => token,
+        _ => CommandTokenSource::gcloud()
+            .access_token()
+            .await
+            .expect("refresh a Google OAuth2 token via gcloud")
+            .expose_secret()
+            .to_string(),
+    };
+    let executor = GenaiExecutor::vertex_gemini(project, location, token);
+    build_router(Arc::new(executor), model)
+}
+
 /// Build the server router offering `skills` on every thread (ADR-0036): the whole
 /// set is fronted by the single `Skill` tool, whose catalog lists them and whose
 /// invocation returns the activated skill's instructions.

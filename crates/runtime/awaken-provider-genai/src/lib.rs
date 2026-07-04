@@ -83,6 +83,49 @@ impl GenaiExecutor {
             .build();
         Self::with_client(client)
     }
+
+    /// An executor for **Gemini on Vertex AI**, authenticated by a Google OAuth2
+    /// **Bearer token** (e.g. from `gcloud auth print-access-token`, or an ADC /
+    /// service-account token). Unlike `anthropic_compatible`, this speaks Gemini's
+    /// native `generateContent` wire; genai's Vertex adapter constructs the
+    /// `.../projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`
+    /// URL. `location` is a region (`us-central1`) or `global`. The model name still
+    /// comes from the request's `ModelBinding` (G22). The OAuth token is short-lived
+    /// — build a fresh executor after each refresh.
+    pub fn vertex_gemini(
+        project: impl Into<String>,
+        location: impl Into<String>,
+        oauth_token: impl Into<String>,
+    ) -> Self {
+        use genai::adapter::AdapterKind;
+        use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
+        use genai::{ModelIden, ServiceTarget};
+
+        let project = project.into();
+        let location = location.into();
+        let token = oauth_token.into();
+        let base_url = if location == "global" {
+            format!("https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/")
+        } else {
+            format!(
+                "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/"
+            )
+        };
+        let resolver = ServiceTargetResolver::from_resolver_fn(
+            move |mut target: ServiceTarget| -> std::result::Result<ServiceTarget, genai::resolver::Error> {
+                // Force the Vertex adapter + project/location endpoint + Bearer OAuth
+                // token, keeping the caller-selected Gemini model name.
+                target.endpoint = Endpoint::from_owned(base_url.clone());
+                target.auth = AuthData::from_single(token.clone());
+                target.model = ModelIden::new(AdapterKind::Vertex, target.model.model_name.clone());
+                Ok(target)
+            },
+        );
+        let client = Client::builder()
+            .with_service_target_resolver(resolver)
+            .build();
+        Self::with_client(client)
+    }
 }
 
 #[async_trait]
