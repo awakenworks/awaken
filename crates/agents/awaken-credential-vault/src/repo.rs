@@ -7,22 +7,28 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::{
-    CredentialCreateParams, CredentialError, CredentialSource, CredentialSourceId, SecretStore,
-    create_source,
+    CredentialCreateParams, CredentialError, CredentialPool, CredentialPoolId, CredentialSource,
+    CredentialSourceId, SecretStore, create_source,
 };
 
-/// The credential-source store port. Secret-free rows only.
+/// The credential-source store port. Secret-free rows only. Pools are stored here
+/// too (they are secret-free groupings of sources the resolver fails over across).
 #[async_trait::async_trait]
 pub trait CredentialRepo: Send + Sync {
     async fn put(&self, source: CredentialSource) -> Result<(), CredentialError>;
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError>;
     async fn list(&self, workspace_id: &str) -> Result<Vec<CredentialSource>, CredentialError>;
+
+    async fn put_pool(&self, pool: CredentialPool) -> Result<(), CredentialError>;
+    async fn get_pool(&self, id: &CredentialPoolId) -> Result<CredentialPool, CredentialError>;
+    async fn list_pools(&self, workspace_id: &str) -> Result<Vec<CredentialPool>, CredentialError>;
 }
 
 /// In-memory [`CredentialRepo`] (dev / tests / single-machine default).
 #[derive(Default)]
 pub struct InMemoryCredentialRepo {
     rows: Mutex<HashMap<String, CredentialSource>>,
+    pools: Mutex<HashMap<String, CredentialPool>>,
 }
 
 impl InMemoryCredentialRepo {
@@ -58,6 +64,34 @@ impl CredentialRepo for InMemoryCredentialRepo {
             .expect("cred rows")
             .values()
             .filter(|s| s.workspace_id == workspace_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn put_pool(&self, pool: CredentialPool) -> Result<(), CredentialError> {
+        self.pools
+            .lock()
+            .expect("cred pools")
+            .insert(pool.id.0.clone(), pool);
+        Ok(())
+    }
+
+    async fn get_pool(&self, id: &CredentialPoolId) -> Result<CredentialPool, CredentialError> {
+        self.pools
+            .lock()
+            .expect("cred pools")
+            .get(&id.0)
+            .cloned()
+            .ok_or_else(|| CredentialError::PoolNotFound(id.0.clone()))
+    }
+
+    async fn list_pools(&self, workspace_id: &str) -> Result<Vec<CredentialPool>, CredentialError> {
+        Ok(self
+            .pools
+            .lock()
+            .expect("cred pools")
+            .values()
+            .filter(|p| p.workspace_id == workspace_id)
             .cloned()
             .collect())
     }
