@@ -339,4 +339,76 @@ mod tests {
             Err(CredentialError::NotActive(_))
         ));
     }
+
+    fn bare_source(kind: CredentialKind) -> CredentialSource {
+        CredentialSource {
+            id: CredentialSourceId("cred:ws1:test".into()),
+            workspace_id: "ws1".into(),
+            kind,
+            provider_id: None,
+            env_key: None,
+            material_ref: None,
+            status: CredentialStatus::Active,
+            version: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_vault_source_without_material_ref_fails_closed() {
+        let store = InMemorySecretStore::new();
+        let source = bare_source(CredentialKind::Vault);
+        assert!(matches!(
+            materialize(&source, &store).await,
+            Err(CredentialError::MissingMaterialRef(id)) if id == source.id.0
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_env_source_without_env_key_fails_closed() {
+        let store = InMemorySecretStore::new();
+        let source = bare_source(CredentialKind::Env);
+        assert!(matches!(
+            materialize(&source, &store).await,
+            Err(CredentialError::MissingEnv(id)) if id == source.id.0
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_unset_env_var_is_missing_env() {
+        let store = InMemorySecretStore::new();
+        let mut source = bare_source(CredentialKind::Env);
+        // A name no test or host would ever set; reading it is side-effect free.
+        source.env_key = Some("AWAKEN_CREDENTIAL_VAULT_TEST_UNSET_VAR_7F3A".into());
+        assert!(matches!(
+            materialize(&source, &store).await,
+            Err(CredentialError::MissingEnv(id)) if id == source.id.0
+        ));
+    }
+
+    #[test]
+    fn selection_order_skips_disabled_and_is_stable() {
+        let member = |id: &str, ordinal: u32, enabled: bool| CredentialPoolMember {
+            credential_source_id: CredentialSourceId(id.into()),
+            ordinal,
+            enabled,
+            selection_weight: 0,
+        };
+        let pool = CredentialPool {
+            id: CredentialPoolId("pool:1".into()),
+            workspace_id: "ws1".into(),
+            members: vec![
+                member("cred:d", 2, true),
+                member("cred:b", 1, true),
+                member("cred:c", 1, true),
+                member("cred:a", 0, false),
+            ],
+        };
+        let order: Vec<&str> = pool
+            .selection_order()
+            .iter()
+            .map(|m| m.credential_source_id.0.as_str())
+            .collect();
+        // The disabled ordinal-0 member is skipped; the ordinal-1 tie breaks by id.
+        assert_eq!(order, ["cred:b", "cred:c", "cred:d"]);
+    }
 }
