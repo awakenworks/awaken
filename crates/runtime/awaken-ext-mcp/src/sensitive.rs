@@ -172,6 +172,22 @@ mod tests {
     }
 
     #[test]
+    fn an_explicit_x_sensitive_marker_from_the_server_is_recognized() {
+        // A server may ship the extension itself, not just writeOnly/password.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "secret": { "type": "string", "x-sensitive": true },
+                "plain": { "type": "string" }
+            }
+        });
+        assert_eq!(sensitive_paths(&schema), vec!["secret".to_string()]);
+        let redacted = redact_arguments(&schema, &json!({ "secret": "sk-live", "plain": "p" }));
+        assert_eq!(redacted["secret"], REDACTED);
+        assert_eq!(redacted["plain"], "p");
+    }
+
+    #[test]
     fn mark_sensitive_injects_the_extension_at_nested_paths() {
         let mut schema = schema();
         mark_sensitive(&mut schema, &["auth.api_key", "keys.value"]);
