@@ -40,14 +40,15 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     "awaken-config-resolver": {
         "awaken-agent-contract",
+        "awaken-runtime-contract",
         "awaken-model-catalog",
         "awaken-credential-vault",
         "serde",
         "thiserror",
         "tokio",
+        "serde_json",
         # dev-only: P0 full-chain test drives the runtime provider adapter.
         "awaken-provider-genai",
-        "awaken-runtime-contract",
     },
     "awaken-admin-config-api": {"awaken-model-catalog", "awaken-credential-vault"},
     "awaken-managed-bridge": {"awaken-credential-vault", "awaken-model-catalog"},

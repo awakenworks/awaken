@@ -123,6 +123,38 @@ pub async fn resolve_inference(
     })
 }
 
+/// The complete run input the resolver hands the run loop. Two parts travel
+/// together but are **not** merged: the [`ExecutableAgentSnapshot`] is
+/// serializable and secret-free (it can be persisted/replayed), while
+/// [`ResolvedInference`] carries the non-serializable `RedactedString` (it exists
+/// only in memory, for this run). This is the D6/D9-correct reading of "the
+/// snapshot carries the resolved credential" — the secret never enters the
+/// persisted snapshot.
+pub struct RunInput {
+    pub snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot,
+    pub inference: ResolvedInference,
+}
+
+/// Orchestrate a run: take a compiled (agent-config) snapshot, read its selected
+/// model from `resolved_spec.model_binding`, resolve the inference triple +
+/// materialize the credential against the catalog/credential stores, and bundle
+/// both into a [`RunInput`]. The model is **never re-picked** here (G22): the
+/// snapshot's `model_ref` is authoritative.
+pub async fn resolve_run(
+    snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot,
+    catalog: &ProviderCatalog,
+    binding: &CredentialBinding,
+    sources: &dyn SourceLookup,
+    secret_store: &dyn SecretStore,
+) -> Result<RunInput, ResolveError> {
+    let model_id = snapshot.resolved_spec.model_binding.model_ref.clone();
+    let inference = resolve_inference(catalog, &model_id, binding, sources, secret_store).await?;
+    Ok(RunInput {
+        snapshot,
+        inference,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +258,71 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, ResolveError::ModelUnresolved(_)));
+    }
+
+    #[tokio::test]
+    async fn run_input_snapshot_is_secret_free_while_credential_rides_alongside() {
+        use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+        use awaken_runtime_contract::snapshot::{
+            AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+        };
+
+        let store = InMemorySecretStore::new();
+        let source = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("sk-topsecret")),
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+        let mut sources = HashMap::new();
+        sources.insert(source.id.0.clone(), source.clone());
+
+        let snapshot = ExecutableAgentSnapshot {
+            id: ExecutableAgentSnapshotId("snap1".into()),
+            root_agent_id: AgentId("agent1".into()),
+            resolved_spec: ResolvedSpec {
+                catalog_fingerprint: CatalogFingerprint("fp".into()),
+                instructions: String::new(),
+                max_steps: 8,
+                model_binding: ModelBinding {
+                    provider_instance_ref: "anthropic".into(),
+                    model_ref: "claude-opus-4-8".into(),
+                    backend_ref: "genai".into(),
+                },
+                tool_descriptors: Vec::new(),
+                plugin_ids: Vec::new(),
+                plugin_config: Default::default(),
+                context_policy: Default::default(),
+            },
+            fingerprint: CatalogFingerprint("fp".into()),
+        };
+
+        let run = resolve_run(
+            snapshot,
+            &catalog(),
+            &CredentialBinding::Exact {
+                credential_source_id: CredentialSourceId(source.id.0.clone()),
+            },
+            &sources,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        // The persisted snapshot serializes with NO plaintext secret (D6/D9).
+        let json = serde_json::to_string(&run.snapshot).unwrap();
+        assert!(!json.contains("sk-topsecret"));
+        // The credential rides in the non-serialized inference half, at the seam.
+        assert_eq!(
+            run.inference.credential.unwrap().expose_secret(),
+            "sk-topsecret"
+        );
+        assert_eq!(run.inference.triple.model_id, "claude-opus-4-8");
     }
 }
