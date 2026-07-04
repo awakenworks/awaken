@@ -187,6 +187,69 @@ async function main() {
       assert.equal(r.json.credential_present, true, 'env credential materialized from the host var');
       pass('env-kind credential resolves by reading the host environment variable');
 
+      // --- credential pool + failover resolve ---------------------------------
+      // Member A is an env credential bound to an UNSET var -> materialize fails.
+      r = await req(base, 'POST', '/v1/config/credentials', {
+        workspace_id: 'ws', kind: 'env', provider_id: 'anthropic', env_key: 'AWAKEN_E2E_UNSET_VAR',
+      });
+      assert.equal(r.status, 201);
+      const badCredId = r.json.id;
+
+      // Author a pool: A (ordinal 0, will fail) then the good vault credential B.
+      r = await req(base, 'PUT', '/v1/config/credential-pools/pool1', {
+        id: 'pool1', workspace_id: 'ws',
+        members: [
+          { credential_source_id: badCredId, ordinal: 0, enabled: true, selection_weight: 0 },
+          { credential_source_id: credId, ordinal: 1, enabled: true, selection_weight: 0 },
+        ],
+      });
+      assert.equal(r.status, 200);
+      checkContract('CredentialPool', r.json);
+
+      r = await req(base, 'GET', '/v1/config/credential-pools/pool1');
+      assert.equal(r.status, 200);
+      checkContract('CredentialPool', r.json);
+      assert.equal(r.json.members.length, 2);
+      pass('PUT/GET credential-pool match the generated CredentialPool contract');
+
+      // Resolve the pool binding: A (ordinal 0) fails to materialize -> fail over to B.
+      r = await req(base, 'POST', '/v1/config/inference/resolve', {
+        workspace_id: 'ws', model_id: 'claude-opus-4-8',
+        binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool1' },
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      checkContract('ResolvedInferenceView', r.json);
+      assert.equal(r.json.credential_present, true, 'failover reached a materializable member');
+      pass('pool resolve fails over past an unmaterializable member -> credential_present=true');
+
+      // A pool whose only member fails to materialize -> exhausted (409).
+      r = await req(base, 'PUT', '/v1/config/credential-pools/pool_bad', {
+        id: 'pool_bad', workspace_id: 'ws',
+        members: [{ credential_source_id: badCredId, ordinal: 0, enabled: true, selection_weight: 0 }],
+      });
+      assert.equal(r.status, 200);
+      r = await req(base, 'POST', '/v1/config/inference/resolve', {
+        workspace_id: 'ws', model_id: 'claude-opus-4-8',
+        binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool_bad' },
+      });
+      assert.equal(r.status, 409);
+      assert.equal(r.json.code, 'pool_exhausted');
+      pass('pool with no materializable member -> 409 pool_exhausted');
+
+      // A binding to a pool that does not exist -> missing (404).
+      r = await req(base, 'POST', '/v1/config/inference/resolve', {
+        workspace_id: 'ws', model_id: 'claude-opus-4-8',
+        binding: { type: 'one_of_credential_pool', credential_pool_id: 'pool_missing' },
+      });
+      assert.equal(r.status, 404);
+      assert.equal(r.json.code, 'not_found');
+      pass('binding to an unknown pool -> 404 not_found');
+
+      // GET a missing pool -> 404.
+      r = await req(base, 'GET', '/v1/config/credential-pools/pool_missing');
+      assert.equal(r.status, 404);
+      pass('GET unknown credential-pool -> 404');
+
       // --- resolve with a None binding returns a triple with no credential ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
