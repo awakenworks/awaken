@@ -646,6 +646,43 @@
       ],
       "title": "ProviderCatalog",
       "type": "object"
+    },
+    "ResolvedInferenceView": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The **secret-free** result of a resolve (ADR-0043): the execution triple + the\nadapter/endpoint it binds to, and whether a credential resolved — never the\nsecret itself. This is what an operator's \"test binding\" call sees.",
+      "properties": {
+        "adapter_kind": {
+          "type": "string"
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential_present": {
+          "description": "Whether a credential was materialized (never the value).",
+          "type": "boolean"
+        },
+        "model_id": {
+          "type": "string"
+        },
+        "protocol_endpoint_id": {
+          "type": "string"
+        },
+        "provider_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_id",
+        "provider_id",
+        "protocol_endpoint_id",
+        "adapter_kind",
+        "credential_present"
+      ],
+      "title": "ResolvedInferenceView",
+      "type": "object"
     }
   },
   "version": "0"

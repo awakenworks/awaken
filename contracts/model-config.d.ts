@@ -245,3 +245,21 @@ export interface Provider {
     version: number;
     [property: string]: any;
 }
+
+/**
+ * The **secret-free** result of a resolve (ADR-0043): the execution triple + the
+ * adapter/endpoint it binds to, and whether a credential resolved — never the
+ * secret itself. This is what an operator's "test binding" call sees.
+ */
+export interface ResolvedInferenceView {
+    adapter_kind: string;
+    base_url?:    null | string;
+    /**
+     * Whether a credential was materialized (never the value).
+     */
+    credential_present:   boolean;
+    model_id:             string;
+    protocol_endpoint_id: string;
+    provider_id:          string;
+    [property: string]: any;
+}
