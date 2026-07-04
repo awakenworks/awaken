@@ -139,9 +139,9 @@ async fn claim_priority_ordering() {
         .unwrap();
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].priority(), 10);
-    let token = claimed[0].claim_token().clone().unwrap();
+    let token = claimed[0].claim_token().unwrap();
     store
-        .ack(&claimed[0].dispatch_id(), &token, 1100)
+        .ack(claimed[0].dispatch_id(), token, 1100)
         .await
         .unwrap();
 
@@ -151,9 +151,9 @@ async fn claim_priority_ordering() {
         .unwrap();
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].priority(), 128);
-    let token = claimed[0].claim_token().clone().unwrap();
+    let token = claimed[0].claim_token().unwrap();
     store
-        .ack(&claimed[0].dispatch_id(), &token, 1300)
+        .ack(claimed[0].dispatch_id(), token, 1300)
         .await
         .unwrap();
 
@@ -515,7 +515,7 @@ async fn purge_terminal() {
         .unwrap();
     let token = claimed[0].claim_token().unwrap().to_string();
     store
-        .ack(&claimed[0].dispatch_id(), &token, 1500)
+        .ack(claimed[0].dispatch_id(), &token, 1500)
         .await
         .unwrap();
 
@@ -548,7 +548,7 @@ async fn purge_terminal_drops_state_only_for_fully_drained_threads() {
         .unwrap();
     let token = claimed[0].claim_token().unwrap().to_string();
     store
-        .ack(&claimed[0].dispatch_id(), &token, 1500)
+        .ack(claimed[0].dispatch_id(), &token, 1500)
         .await
         .unwrap();
 
@@ -611,7 +611,7 @@ async fn purge_terminal_with_no_remaining_dispatches_clears_all_state() {
             .unwrap();
         let token = claimed[0].claim_token().unwrap().to_string();
         store
-            .ack(&claimed[0].dispatch_id(), &token, 1500)
+            .ack(claimed[0].dispatch_id(), &token, 1500)
             .await
             .unwrap();
     }
@@ -717,10 +717,10 @@ async fn claim_resumes_after_ack() {
     let claimed = store.claim("m-1", "c-1", 30_000, 1000, 1).await.unwrap();
     assert_eq!(claimed.len(), 1);
     let claimed_id = claimed[0].dispatch_id().clone();
-    let claimed_token = claimed[0].claim_token().clone().unwrap();
+    let claimed_token = claimed[0].claim_token().unwrap();
 
     // Ack the claimed dispatch → Acked.
-    store.ack(&claimed_id, &claimed_token, 2000).await.unwrap();
+    store.ack(&claimed_id, claimed_token, 2000).await.unwrap();
 
     // Now claim should succeed for the other dispatch.
     let claimed2 = store.claim("m-1", "c-1", 30_000, 2000, 1).await.unwrap();

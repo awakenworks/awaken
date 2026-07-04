@@ -371,18 +371,6 @@ pub(super) fn checked_i64_to_u64(field: &str, value: i64) -> Result<u64, Version
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn i64_to_u64_rejects_negative_values() {
-        let error = checked_i64_to_u64("field", -1).expect_err("negative values must fail");
-        assert!(matches!(error, VersionedRegistryError::Serialization(_)));
-        assert!(error.to_string().contains("negative value -1"));
-    }
-}
-
 pub(super) fn from_storage_error(error: StorageError) -> VersionedRegistryError {
     match error {
         StorageError::Serialization(message) => VersionedRegistryError::Serialization(message),
@@ -400,4 +388,16 @@ pub(super) fn resource_name(kind: &str, id: &str) -> String {
 
 pub(super) fn version_name(kind: &str, id: &str, version: u64) -> String {
     format!("{kind}/{id}@{version}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn i64_to_u64_rejects_negative_values() {
+        let error = checked_i64_to_u64("field", -1).expect_err("negative values must fail");
+        assert!(matches!(error, VersionedRegistryError::Serialization(_)));
+        assert!(error.to_string().contains("negative value -1"));
+    }
 }
