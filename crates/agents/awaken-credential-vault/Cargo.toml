@@ -13,16 +13,20 @@ schemars = { version = "1", optional = true }
 # Encryption-at-rest adapter (feature `sealed-aead`): AEAD-seal secrets so a disk
 # or DB dump is inert without the separately-held key (ADR-0043).
 chacha20poly1305 = { version = "0.10", optional = true }
+# Feature `oauth-command`: refresh OAuth access tokens by running a helper
+# (e.g. `gcloud auth print-access-token`) — needs tokio's process API.
+tokio = { workspace = true, optional = true, features = ["process"] }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process"] }
 
 [features]
 default = []
 schema = ["dep:schemars"]
 sealed-aead = ["dep:chacha20poly1305"]
+oauth-command = ["dep:tokio"]
 
 [lints]
 workspace = true

@@ -28,7 +28,8 @@ awaken-provider-genai = { workspace = true }
 # Managed vault/credential front door, over shared in-memory stores.
 awaken-admin-config-api = { workspace = true }
 awaken-model-catalog = { workspace = true }
-awaken-credential-vault = { workspace = true }
+# `oauth-command`: refresh a Google OAuth2 token (gcloud) for the `real-gemini` mode.
+awaken-credential-vault = { workspace = true, features = ["oauth-command"] }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-agent-contract.workspace = true
