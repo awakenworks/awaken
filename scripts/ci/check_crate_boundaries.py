@@ -44,6 +44,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "thiserror",
         "tokio",
+        # dev-only: P0 full-chain test drives the runtime provider adapter.
+        "awaken-provider-genai",
+        "awaken-runtime-contract",
     },
     "awaken-admin-config-api": {"awaken-model-catalog", "awaken-credential-vault"},
     "awaken-managed-bridge": {"awaken-credential-vault", "awaken-model-catalog"},
@@ -834,6 +837,27 @@ def check_bucket_direction() -> list[str]:
     return errors
 
 
+def check_runtime_is_secret_resolution_free() -> list[str]:
+    """D6/D9 (ADR-0043): the runtime and its extensions receive an already-resolved
+    secret value (`RedactedString`) only — never a handle, a resolver, or a vault
+    ref. So the secret-*lifecycle* vocabulary must not appear anywhere under
+    crates/runtime/. `RedactedString` itself is fine (it is the resolved value)."""
+    banned = ("SecretHandle", "SecretResolver", "SecretStore", "CredentialBinding", "SecretRef")
+    errors: list[str] = []
+    runtime_dir = CRATES / "runtime"
+    if not runtime_dir.exists():
+        return errors
+    for path in runtime_dir.glob("**/*.rs"):
+        text = path.read_text(encoding="utf-8")
+        for token in banned:
+            if token in text:
+                errors.append(
+                    f"{path.relative_to(REPO_ROOT)}: runtime must be secret-resolution-free "
+                    f"(D6/D9): found `{token}` — resolution lives in the host, not the runtime"
+                )
+    return errors
+
+
 def main() -> int:
     errors = (
         check_dependencies()
@@ -841,6 +865,7 @@ def main() -> int:
         + check_builtin_tool_ownership()
         + check_tests_are_not_arch_owners()
         + check_bucket_direction()
+        + check_runtime_is_secret_resolution_free()
     )
     if errors:
         for error in errors:
