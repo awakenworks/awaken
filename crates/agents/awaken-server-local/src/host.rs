@@ -20,10 +20,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::agent::waiting::{WaitingReason, WaitingTicket};
 use awaken_agent_contract::store::thread_reader::ThreadReader;
-use awaken_ext_goal::{
-    DelegateError, DelegateGrader, DelegateReply, DelegateRequest, DelegateRunner, GoalPlugin,
-    GoalSpec, Grader, KeywordGrader,
-};
+use awaken_ext_goal::{DelegateGrader, GoalPlugin, GoalSpec, Grader, KeywordGrader};
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
 use awaken_run_ingress::{
@@ -48,7 +45,7 @@ use awaken_ext_compact::{CompactConfig, CompactPlugin, Summarizer};
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
 use crate::compact::AgentSummarizer;
-use crate::config::{build_runtime, server_config, server_gate};
+use crate::config::{build_runtime, server_config};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::judge::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
@@ -86,6 +83,8 @@ fn now_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+pub use crate::mcp::PreparedMcpServer;
 
 /// A tool a run parked on: its id, model-visible name/input, and whether it is
 /// client-executed (the caller runs it and returns a result) or a built-in tool
@@ -246,41 +245,7 @@ fn detail_str(detail: &serde_json::Value, key: &str) -> String {
         .to_string()
 }
 
-/// Runs a judge sub-agent through the kernel for a [`DelegateGrader`]: a fresh
-/// rooted runtime over the same model, driven to completion; its last assistant
-/// line is the judge's reply. The judge sees only its prompt (a fresh window), so
-/// its verdict is not biased by the doer's working state.
-struct KernelJudgeRunner {
-    llm: Arc<dyn LlmExecutor>,
-    provider: LocalSandboxProvider,
-    /// The judge is resolved by id from here, so its model/instructions/window are
-    /// configured per-agent rather than hard-coded (like memory and compact).
-    catalog: Arc<AgentCatalog>,
-    seq: AtomicU64,
-}
-
-#[async_trait::async_trait]
-impl DelegateRunner for KernelJudgeRunner {
-    async fn run(&self, request: DelegateRequest) -> Result<DelegateReply, DelegateError> {
-        let n = self.seq.fetch_add(1, Ordering::SeqCst);
-        // The judge sees only its prompt (a fresh window); its cancellation is the
-        // parent run's, so cancelling the outcome cancels the judge too.
-        let name = format!("{}-judge-{n}", request.agent_id);
-        let text = crate::subagent::run_configured_subrun(
-            &self.catalog,
-            &self.provider,
-            self.llm.clone(),
-            &request.agent_id,
-            &name,
-            request.prompt,
-            Vec::new(),
-            request.cancellation,
-        )
-        .await
-        .map_err(DelegateError)?;
-        Ok(DelegateReply { text: Some(text) })
-    }
-}
+use crate::judge::KernelJudgeRunner;
 
 /// The protocol-neutral, thread-keyed session substrate shared by every adapter.
 pub struct SharedHost {
@@ -322,6 +287,10 @@ pub struct SharedHost {
     /// runtime config is the installed (published) config for its agent, if any,
     /// else the built-in default (slice A).
     pub(crate) config_service: Option<Arc<crate::config_plane::ConfigService>>,
+    /// Per-thread MCP servers staged by a session's `prepare_session` (ADR-0043
+    /// Phase 3), consumed when the thread's context is first built. Keyed by
+    /// thread id; a thread with no entry connects to no MCP server.
+    thread_mcp: std::sync::Mutex<HashMap<String, Vec<PreparedMcpServer>>>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch
@@ -364,6 +333,7 @@ impl SharedHost {
             compact_config: None,
             compact_summarizer: None,
             config_service: None,
+            thread_mcp: std::sync::Mutex::new(HashMap::new()),
             gate_override: None,
             dispatch_daemon: std::env::var("AWAKEN_DISPATCH_DAEMON").is_ok_and(|v| v == "1"),
         }
@@ -542,6 +512,18 @@ impl SharedHost {
         self
     }
 
+    /// Stage MCP servers for `thread`, to be connected when the thread's context
+    /// is first built (its first turn) — the Managed session-create path calls
+    /// this from `prepare_session`, so the credential is materialized before the
+    /// session exists but the network connect happens lazily (ADR-0043 Phase 3).
+    /// Re-registering replaces the thread's staged set.
+    pub fn register_thread_mcp(&self, thread: &str, servers: Vec<PreparedMcpServer>) {
+        self.thread_mcp
+            .lock()
+            .expect("thread mcp mutex poisoned")
+            .insert(thread.to_string(), servers);
+    }
+
     /// The model id echoed by adapters in their session/agent objects.
     pub fn model(&self) -> String {
         self.model_ref.clone()
@@ -683,7 +665,34 @@ impl SharedHost {
         );
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread).await?);
+        // This thread's staged MCP servers (ADR-0043 Phase 3), registered by the
+        // managed adapter's `prepare_session` before the first turn; the wire
+        // composition (connect + discover, fail closed) lives in `crate::mcp`.
+        // Read, not removed, so a retry re-attempts (and re-fails) the connect.
+        let staged_mcp: Vec<PreparedMcpServer> = self
+            .thread_mcp
+            .lock()
+            .expect("thread mcp mutex poisoned")
+            .get(thread)
+            .cloned()
+            .unwrap_or_default();
+        let mcp = crate::mcp::connect_staged(&staged_mcp).await?;
+        // MCP tools are pre-authorized on this thread's gate: the session creator
+        // explicitly configured the server (with its credential), which is the
+        // authorization decision — the ask-gate keeps covering the built-in
+        // mutation tools. `server_gate_allowing(&[])` is the plain server gate,
+        // so threads without MCP keep the exact default policy.
+        let base_gate = crate::config::server_gate_allowing(&mcp.tool_ids);
         let mut runtime = build_runtime(self.llm.clone(), &env);
+        if !mcp.tool_ids.is_empty() {
+            runtime = runtime.with_gate(base_gate.clone());
+        }
+        // Register the discovered MCP tools; their descriptors join the advertised
+        // config below so the model sees them.
+        for tool in mcp.tools {
+            runtime = runtime.with_tool(tool);
+        }
+        let mcp_descriptors = mcp.descriptors;
         // A gate override (slice E) replaces the default authorization gate — e.g.
         // a scheduling gate that defers tool calls as `ScheduledAction`s so the
         // durable worker performs them out of band (ADR-0020).
@@ -707,7 +716,9 @@ impl SharedHost {
             self.llm.clone(),
             &self.model_ref,
             thread,
-            server_gate(),
+            // The MCP-aware base gate, so a skill-wrapped gate keeps the thread's
+            // pre-authorized MCP tools (identical to `server_gate()` without MCP).
+            base_gate.clone(),
             sub_base("skill-fork"),
         ) {
             runtime = runtime
@@ -753,6 +764,10 @@ impl SharedHost {
             .as_ref()
             .zip(agent)
             .and_then(|(svc, agent)| svc.installed(agent));
+        // Everything dynamically provisioned on this thread that the config must
+        // advertise: the skill tools plus the discovered MCP tools.
+        let mut dynamic_descriptors = skill_descriptors;
+        dynamic_descriptors.extend(mcp_descriptors);
         let config = installed.unwrap_or_else(|| {
             server_config(
                 &self.model_ref,
@@ -760,7 +775,7 @@ impl SharedHost {
                 &self.delegates,
                 &plugin_ids,
                 &self.plugin_config,
-                &skill_descriptors,
+                &dynamic_descriptors,
                 context_policy,
             )
         });

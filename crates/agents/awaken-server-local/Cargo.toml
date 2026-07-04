@@ -40,6 +40,9 @@ awaken-ext-memory = { workspace = true }
 awaken-ext-compact = { workspace = true }
 awaken-ext-permission = { workspace = true }
 awaken-ext-skills = { workspace = true }
+# MCP client (ADR-0043 Phase 3): a managed session's configured MCP servers are
+# connected per thread and their tools registered on the runtime.
+awaken-ext-mcp = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

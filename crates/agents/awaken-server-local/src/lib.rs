@@ -21,6 +21,7 @@ mod durable_ops;
 mod host;
 mod hub;
 mod judge;
+mod mcp;
 mod memory;
 mod skills;
 mod store;
@@ -309,6 +310,68 @@ impl LlmExecutor for CustomToolModel {
     }
 }
 
+/// A deterministic model for the MCP e2e (ADR-0043 Phase 3), following the
+/// `CustomToolModel` idiom. `add <a> <b>` emits a call to the namespaced MCP tool
+/// `mcp__calc__add` — the fixture contract: the session registers the mock MCP
+/// server under the name `calc` and the server offers a tool `add`, which
+/// `awaken_ext_mcp::to_tool_id("calc", "add")` maps to exactly this id (the e2e
+/// fixture must mirror that naming). A tool result is echoed as
+/// `result: <text>`; anything else echoes like `EchoModel`, so the existing
+/// echo-based expectations on the management server keep holding. Stateless.
+pub struct McpToolModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for McpToolModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        // A tool result came back: report it (`result: <text>`), ending the turn.
+        if let Some(last) = request.messages.last()
+            && last.role == ChatRole::Tool
+        {
+            let result: String = last
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolResult { content, .. } => Some(block_text(content)),
+                    _ => None,
+                })
+                .collect();
+            return Ok(ChatResponse {
+                output: AssistantOutput::text(format!("result: {result}")),
+                usage: None,
+            });
+        }
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        // `add <a> <b>` (two integers) → call the MCP calculator.
+        let parts: Vec<&str> = last_user.split_whitespace().collect();
+        if let ["add", a, b] = parts.as_slice()
+            && let (Ok(a), Ok(b)) = (a.parse::<i64>(), b.parse::<i64>())
+        {
+            return Ok(ChatResponse {
+                output: AssistantOutput::from_tool_calls(vec![ToolCall {
+                    // Unique per step so multi-turn tool-use events keep distinct ids.
+                    call_id: format!("mcp-{}", request.messages.len()),
+                    tool_id: "mcp__calc__add".into(),
+                    arguments: serde_json::json!({ "a": a, "b": b }),
+                }]),
+                usage: None,
+            });
+        }
+        Ok(ChatResponse {
+            output: AssistantOutput::text(format!("Echo: {last_user}")),
+            usage: None,
+        })
+    }
+}
+
 /// A deterministic model for the delegation e2e. When it holds `agent_run` it
 /// delegates (to `researcher`, or to `ghost` if the user asks for it) and then
 /// reports the delegate's result; without `agent_run` it answers plainly, so the
@@ -427,15 +490,101 @@ fn to_turn_outcome(result: TurnResult) -> TurnOutcome {
 }
 
 /// The Managed Agents `SessionRuntime` port implemented over the shared host.
-/// Holds only an `Arc<SharedHost>`, so it composes with any other adapter bound
+/// Holds only an `Arc<SharedHost>` (plus, on the management server, the MCP
+/// stores `prepare_session` reads), so it composes with any other adapter bound
 /// to the same host.
 pub struct ManagedHost {
     host: Arc<SharedHost>,
+    mcp: Option<ManagedMcp>,
+}
+
+/// The session-ingress MCP wiring (ADR-0043 Phase 3): the stores
+/// `prepare_session` reads to materialize a binding's vault credential and the
+/// management plane's agent↔MCP config. Present only via [`ManagedHost::with_mcp`].
+struct ManagedMcp {
+    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    mcp_store: Arc<dyn awaken_admin_config_api::McpStore>,
 }
 
 impl ManagedHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
-        Self { host }
+        Self { host, mcp: None }
+    }
+
+    /// Wire the MCP stores so `prepare_session` materializes a session's MCP
+    /// credential bindings and merges the management plane's agent↔MCP config
+    /// (ADR-0043 Phase 3). Hosts built without this keep the trait's no-op
+    /// `prepare_session`, so no other server mode changes behavior.
+    #[must_use]
+    pub fn with_mcp(
+        mut self,
+        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+        mcp_store: Arc<dyn awaken_admin_config_api::McpStore>,
+    ) -> Self {
+        self.mcp = Some(ManagedMcp {
+            credentials,
+            secrets,
+            mcp_store,
+        });
+        self
+    }
+}
+
+/// A resolver credential lookup prefetched from the repo, scoped to exactly the
+/// sources and pools the given MCP server defs' bindings name. The admin resolve
+/// route builds its lookup by listing a workspace; the managed session ingress
+/// has no workspace parameter on the wire, so it prefetches per binding instead —
+/// same lookup shape, same fail-closed outcome (a missing source stays absent and
+/// `resolve_mcp_servers` errors on it).
+#[derive(Default)]
+struct PrefetchedSourceLookup {
+    sources: std::collections::HashMap<String, awaken_credential_vault::CredentialSource>,
+    pools: std::collections::HashMap<String, awaken_credential_vault::CredentialPool>,
+}
+
+impl awaken_config_resolver::SourceLookup for PrefetchedSourceLookup {
+    fn get(&self, id: &str) -> Option<&awaken_credential_vault::CredentialSource> {
+        self.sources.get(id)
+    }
+    fn get_pool(&self, id: &str) -> Option<&awaken_credential_vault::CredentialPool> {
+        self.pools.get(id)
+    }
+}
+
+impl PrefetchedSourceLookup {
+    /// Fetch every source/pool the defs' bindings reference. A row the repo does
+    /// not hold is simply not inserted; resolution then fails closed on it.
+    async fn for_defs(
+        defs: &[awaken_config_resolver::McpServerDef],
+        repo: &dyn awaken_credential_vault::repo::CredentialRepo,
+    ) -> Self {
+        use awaken_credential_vault::CredentialBinding;
+        let mut lookup = Self::default();
+        for def in defs {
+            match &def.credential_binding {
+                CredentialBinding::None => {}
+                CredentialBinding::Exact {
+                    credential_source_id,
+                } => {
+                    if let Ok(row) = repo.get(credential_source_id).await {
+                        lookup.sources.insert(row.id.0.clone(), row);
+                    }
+                }
+                CredentialBinding::OneOfCredentialPool { credential_pool_id } => {
+                    if let Ok(pool) = repo.get_pool(credential_pool_id).await {
+                        for member in &pool.members {
+                            if let Ok(row) = repo.get(&member.credential_source_id).await {
+                                lookup.sources.insert(row.id.0.clone(), row);
+                            }
+                        }
+                        lookup.pools.insert(pool.id.0.clone(), pool);
+                    }
+                }
+            }
+        }
+        lookup
     }
 }
 
@@ -534,6 +683,93 @@ impl SessionRuntime for ManagedHost {
                 })
                 .collect(),
         })
+    }
+
+    /// Provision a new session's MCP servers on its thread (ADR-0043 Phase 3),
+    /// BEFORE the session record exists — a failure fails the create.
+    ///
+    /// 1. Each binding's vault credential is materialized to a bearer (a binding
+    ///    without a credential stays bearer-less); a missing/broken credential
+    ///    row is the caller's fault (`bad_request`, fail closed).
+    /// 2. Management-plane merge: the agent's authored [`AgentMcpConfig`]
+    ///    (admin `/v1/config/agents/{id}/mcp`), resolved through
+    ///    `resolve_mcp_servers`, is appended AFTER the session-inline servers;
+    ///    on a duplicate URL the session-inline server wins. A management-plane
+    ///    config that cannot resolve is the deployment's fault (`internal`,
+    ///    fail closed — the admin routes validated it at write time).
+    /// 3. The prepared set is staged on the shared host; the thread's first turn
+    ///    connects them (`SharedHost::register_thread_mcp` → `ctx_for`).
+    ///
+    /// Hosts built without [`ManagedHost::with_mcp`] keep the trait's no-op.
+    ///
+    /// [`AgentMcpConfig`]: awaken_config_resolver::AgentMcpConfig
+    async fn prepare_session(
+        &self,
+        thread: &str,
+        init: awaken_protocol_managed::SessionInit,
+    ) -> Result<(), RunError> {
+        let Some(mcp) = &self.mcp else {
+            return Ok(());
+        };
+        let mut prepared: Vec<crate::host::PreparedMcpServer> =
+            Vec::with_capacity(init.mcp_servers.len());
+        for binding in &init.mcp_servers {
+            let bearer = match &binding.credential_source_id {
+                Some(source_id) => {
+                    let row = mcp.credentials.get(source_id).await.map_err(|e| {
+                        RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
+                    })?;
+                    Some(
+                        awaken_credential_vault::materialize(&row, &*mcp.secrets)
+                            .await
+                            .map_err(|e| {
+                                RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
+                            })?,
+                    )
+                }
+                None => None,
+            };
+            prepared.push(crate::host::PreparedMcpServer {
+                name: binding.name.clone(),
+                url: binding.url.clone(),
+                bearer,
+            });
+        }
+        if let Some(config) = mcp.mcp_store.get_agent_config(&init.agent_id) {
+            let mut defs = Vec::with_capacity(config.mcp_server_ids.len());
+            for server_id in &config.mcp_server_ids {
+                defs.push(mcp.mcp_store.get_server(&server_id.0).ok_or_else(|| {
+                    RunError::internal(format!(
+                        "agent `{}` references unknown mcp server `{}`",
+                        init.agent_id, server_id.0
+                    ))
+                })?);
+            }
+            let lookup = PrefetchedSourceLookup::for_defs(&defs, &*mcp.credentials).await;
+            let resolved =
+                awaken_config_resolver::resolve_mcp_servers(&defs, &lookup, &*mcp.secrets)
+                    .await
+                    .map_err(|e| {
+                        RunError::internal(format!(
+                            "agent `{}` mcp config did not resolve: {e}",
+                            init.agent_id
+                        ))
+                    })?;
+            for server in resolved {
+                // Session-inline wins on a duplicate URL: the caller's explicit
+                // request (and its vault binding) overrides the authored default.
+                if prepared.iter().any(|p| p.url == server.url) {
+                    continue;
+                }
+                prepared.push(crate::host::PreparedMcpServer {
+                    name: server.name,
+                    url: server.url,
+                    bearer: server.credential,
+                });
+            }
+        }
+        self.host.register_thread_mcp(thread, prepared);
+        Ok(())
     }
 
     /// Committed transcript from durable truth, so the adapter can rehydrate a
@@ -676,7 +912,17 @@ impl ProtocolRuntime for ProtocolHost {
 /// `/v1/ai-sdk...`, `/v1/ag-ui...`) and drive the same `host`, so all three
 /// protocols operate on the same threads.
 fn mount(host: Arc<SharedHost>) -> Router {
-    let managed = router(Arc::new(ManagedState::new(ManagedHost::new(host.clone()))));
+    mount_with_managed(
+        host.clone(),
+        Arc::new(ManagedState::new(ManagedHost::new(host))),
+    )
+}
+
+/// [`mount`], with a caller-assembled Managed state: the management server passes
+/// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase
+/// 3); every other mode goes through [`mount`], whose state is the plain host.
+fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -> Router {
+    let managed = router(managed_state);
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn ProtocolRuntime>`), so they share the host with no per-protocol twin.
     let port: Arc<dyn ProtocolRuntime> = Arc::new(ProtocolHost::new(host.clone()));
@@ -1069,22 +1315,39 @@ pub fn build_management_router() -> Router {
     let catalog = Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    // ONE MCP store across the admin router and the ManagedHost, and ONE
+    // credential repo + secret store across admin, vaults, and sessions: a
+    // credential or MCP config entered through any surface is the same row a
+    // session's prepare reads (ADR-0043 Phase 3).
+    let mcp_store = Arc::new(awaken_admin_config_api::InMemoryMcpStore::new());
 
     let admin = awaken_admin_config_api::admin_router(awaken_admin_config_api::AdminState {
         catalog,
         credentials: credentials.clone(),
         secrets: secrets.clone(),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+        mcp: mcp_store.clone(),
         // The live credential probe is backed by provider-genai here — the only
         // place the model SDK is named; the admin CRUD crate stays SDK-free.
         probe: Some(Arc::new(GenaiProbe)),
     });
-    let vaults = awaken_protocol_managed::vault_router(Arc::new(
-        awaken_protocol_managed::VaultState::new(secrets, credentials),
+    let vault_state = Arc::new(awaken_protocol_managed::VaultState::new(
+        secrets.clone(),
+        credentials.clone(),
     ));
+    let vaults = awaken_protocol_managed::vault_router(vault_state.clone());
 
-    let host = SharedHost::new(Arc::new(EchoModel), "management");
-    mount(Arc::new(host)).merge(admin).merge(vaults)
+    // The MCP-driving deterministic model, so an e2e can hold a real multi-turn
+    // conversation through ext-mcp (`add a b` → mcp__calc__add → `result: …`);
+    // non-`add` turns still echo, preserving the prior expectations.
+    let host = Arc::new(SharedHost::new(Arc::new(McpToolModel), "management"));
+    let managed_state = Arc::new(
+        ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
+            .with_vaults(vault_state),
+    );
+    mount_with_managed(host, managed_state)
+        .merge(admin)
+        .merge(vaults)
 }
 
 /// A tool gate that defers every tool call as a committed `ScheduledAction`

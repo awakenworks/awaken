@@ -7,8 +7,16 @@
 //! are configured per-agent rather than hard-coded — the same "just an agent"
 //! substrate, now covering evaluation too.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use awaken_ext_goal::{DelegateError, DelegateReply, DelegateRequest, DelegateRunner};
+use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::runnable::RunnableConfig;
+use awaken_sandbox_local::LocalSandboxProvider;
+
+use crate::agent_catalog::AgentCatalog;
 
 /// Default judge instructions. The outcome loop supplies the goal, rubric, and
 /// deliverable in the prompt; the judge returns a JSON verdict the grader parses.
@@ -44,5 +52,42 @@ mod tests {
         );
         // A judge is pure reasoning: no tools.
         assert!(cfg.snapshot().resolved_spec.tool_descriptors.is_empty());
+    }
+}
+
+/// Runs a judge sub-agent through the kernel for a
+/// [`DelegateGrader`](awaken_ext_goal::DelegateGrader): a fresh rooted runtime
+/// over the same model, driven to completion; its last assistant line is the
+/// judge's reply. The judge sees only its prompt (a fresh window), so its
+/// verdict is not biased by the doer's working state.
+pub(crate) struct KernelJudgeRunner {
+    pub(crate) llm: Arc<dyn LlmExecutor>,
+    pub(crate) provider: LocalSandboxProvider,
+    /// The judge is resolved by id from here, so its model/instructions/window are
+    /// configured per-agent rather than hard-coded (like memory and compact).
+    pub(crate) catalog: Arc<AgentCatalog>,
+    pub(crate) seq: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl DelegateRunner for KernelJudgeRunner {
+    async fn run(&self, request: DelegateRequest) -> Result<DelegateReply, DelegateError> {
+        let n = self.seq.fetch_add(1, Ordering::SeqCst);
+        // The judge sees only its prompt (a fresh window); its cancellation is the
+        // parent run's, so cancelling the outcome cancels the judge too.
+        let name = format!("{}-judge-{n}", request.agent_id);
+        let text = crate::subagent::run_configured_subrun(
+            &self.catalog,
+            &self.provider,
+            self.llm.clone(),
+            &request.agent_id,
+            &name,
+            request.prompt,
+            Vec::new(),
+            request.cancellation,
+        )
+        .await
+        .map_err(DelegateError)?;
+        Ok(DelegateReply { text: Some(text) })
     }
 }
