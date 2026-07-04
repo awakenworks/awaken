@@ -6,6 +6,7 @@ use tempfile::TempDir;
 
 use crate::docker::DockerMountMaterializer;
 use crate::k8s::{K8sMount, K8sMountMaterializer, K8sMountSource};
+use crate::output::OutputCollector;
 use crate::{
     LocalSandboxProvider, Mount, MountAccess, NamespaceSandboxProvider, SandboxProvider, Source,
 };
@@ -459,4 +460,206 @@ async fn k8s_mixed_mounts() {
     // blob: emptyDir + cfgvol = 2 vols; secret: 1 vol; cm: 1 vol → total 4
     assert_eq!(spec.volumes.len(), 4);
     assert_eq!(spec.volume_mounts.len(), 3, "one VolumeMount per K8sMount");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Unit: OutputCollector — collect_dir
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn output_collect_dir_single_file() {
+    let dir = TempDir::new().unwrap();
+    let s = store(&dir);
+    let out_dir = dir.path().join("output");
+    std::fs::create_dir(&out_dir).unwrap();
+    std::fs::write(out_dir.join("result.txt"), b"hello output").unwrap();
+
+    let collector = OutputCollector::new(Arc::clone(&s));
+    let artifacts = collector.collect_dir(&out_dir).await.unwrap();
+
+    assert_eq!(artifacts.len(), 1);
+    let a = &artifacts[0];
+    assert_eq!(a.name, "result.txt");
+    assert_eq!(a.id.len(), 64);
+
+    let content = collector.read_artifact(&a.id).await.unwrap();
+    assert_eq!(content.as_ref(), b"hello output");
+}
+
+#[tokio::test]
+async fn output_collect_dir_nested() {
+    let dir = TempDir::new().unwrap();
+    let s = store(&dir);
+    let out_dir = dir.path().join("output");
+    std::fs::create_dir_all(out_dir.join("sub")).unwrap();
+    std::fs::write(out_dir.join("a.txt"), b"a").unwrap();
+    std::fs::write(out_dir.join("sub/b.txt"), b"b").unwrap();
+
+    let collector = OutputCollector::new(Arc::clone(&s));
+    let mut artifacts = collector.collect_dir(&out_dir).await.unwrap();
+    artifacts.sort_by(|x, y| x.name.cmp(&y.name));
+
+    assert_eq!(artifacts.len(), 2);
+    assert_eq!(artifacts[0].name, "a.txt");
+    assert_eq!(artifacts[1].name, "sub/b.txt");
+
+    let ca = collector.read_artifact(&artifacts[0].id).await.unwrap();
+    assert_eq!(ca.as_ref(), b"a");
+    let cb = collector.read_artifact(&artifacts[1].id).await.unwrap();
+    assert_eq!(cb.as_ref(), b"b");
+}
+
+#[tokio::test]
+async fn output_collect_dir_empty() {
+    let dir = TempDir::new().unwrap();
+    let s = store(&dir);
+    let out_dir = dir.path().join("output");
+    std::fs::create_dir(&out_dir).unwrap();
+
+    let collector = OutputCollector::new(s);
+    let artifacts = collector.collect_dir(&out_dir).await.unwrap();
+    assert!(
+        artifacts.is_empty(),
+        "empty directory should yield no artifacts"
+    );
+}
+
+#[tokio::test]
+async fn output_collect_dir_content_hash_consistent() {
+    let dir = TempDir::new().unwrap();
+    let s = store(&dir);
+    let out_dir = dir.path().join("output");
+    std::fs::create_dir(&out_dir).unwrap();
+    let content = b"deterministic content";
+    std::fs::write(out_dir.join("file.bin"), content).unwrap();
+
+    let collector = OutputCollector::new(Arc::clone(&s));
+    let a1 = collector.collect_dir(&out_dir).await.unwrap();
+    let a2 = collector.collect_dir(&out_dir).await.unwrap();
+
+    assert_eq!(a1[0].id, a2[0].id, "same content must yield same id");
+    let retrieved = collector.read_artifact(&a1[0].id).await.unwrap();
+    assert_eq!(retrieved.as_ref(), content);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Unit: OutputCollector — collect_tar (Docker tar fallback)
+// ──────────────────────────────────────────────────────────────────────────────
+
+fn make_tar(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut ar = tar::Builder::new(&mut buf);
+        for (name, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            ar.append_data(&mut header, name, std::io::Cursor::new(data))
+                .unwrap();
+        }
+        ar.finish().unwrap();
+    }
+    buf
+}
+
+#[tokio::test]
+async fn output_collect_tar_single_entry() {
+    let dir = TempDir::new().unwrap();
+    let s = store(&dir);
+    let tar_data = make_tar(&[("output/result.json", b"{\"answer\":42}")]);
+
+    let collector = OutputCollector::new(Arc::clone(&s));
+    let artifacts = collector.collect_tar(&tar_data).await.unwrap();
+
+    assert_eq!(artifacts.len(), 1);
+    let a = &artifacts[0];
+    assert_eq!(a.name, "output/result.json");
+
+    let content = collector.read_artifact(&a.id).await.unwrap();
+    assert_eq!(content.as_ref(), b"{\"answer\":42}");
+}
+
+#[tokio::test]
+async fn output_collect_tar_multiple_entries() {
+    let dir = TempDir::new().unwrap();
+    let s = store(&dir);
+    let tar_data = make_tar(&[("a.txt", b"aaa"), ("sub/b.bin", b"\x00\x01\x02")]);
+
+    let collector = OutputCollector::new(Arc::clone(&s));
+    let mut artifacts = collector.collect_tar(&tar_data).await.unwrap();
+    artifacts.sort_by(|x, y| x.name.cmp(&y.name));
+
+    assert_eq!(artifacts.len(), 2);
+    assert_eq!(artifacts[0].name, "a.txt");
+    assert_eq!(artifacts[1].name, "sub/b.bin");
+
+    let ca = collector.read_artifact(&artifacts[0].id).await.unwrap();
+    assert_eq!(ca.as_ref(), b"aaa");
+    let cb = collector.read_artifact(&artifacts[1].id).await.unwrap();
+    assert_eq!(cb.as_ref(), b"\x00\x01\x02");
+}
+
+#[tokio::test]
+async fn output_collect_tar_leading_dot_slash_stripped() {
+    let dir = TempDir::new().unwrap();
+    let s = store(&dir);
+    // Docker `docker cp` often produces tar entries prefixed with ./
+    let tar_data = make_tar(&[("./result.txt", b"docker cp output")]);
+
+    let collector = OutputCollector::new(s);
+    let artifacts = collector.collect_tar(&tar_data).await.unwrap();
+
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(
+        artifacts[0].name, "result.txt",
+        "leading ./ must be stripped from tar entry names"
+    );
+}
+
+#[tokio::test]
+async fn output_collect_tar_empty_archive() {
+    let dir = TempDir::new().unwrap();
+    let s = store(&dir);
+    let tar_data = make_tar(&[]);
+
+    let collector = OutputCollector::new(s);
+    let artifacts = collector.collect_tar(&tar_data).await.unwrap();
+    assert!(artifacts.is_empty());
+}
+
+#[tokio::test]
+async fn output_collect_tar_hash_matches_dir_hash() {
+    let dir = TempDir::new().unwrap();
+    let s = store(&dir);
+    let content = b"same bytes either way";
+
+    // Collect from directory
+    let out_dir = dir.path().join("output");
+    std::fs::create_dir(&out_dir).unwrap();
+    std::fs::write(out_dir.join("file.txt"), content).unwrap();
+    let collector = OutputCollector::new(Arc::clone(&s));
+    let dir_artifacts = collector.collect_dir(&out_dir).await.unwrap();
+
+    // Collect from tar with same content
+    let tar_data = make_tar(&[("file.txt", content)]);
+    let tar_artifacts = collector.collect_tar(&tar_data).await.unwrap();
+
+    assert_eq!(
+        dir_artifacts[0].id, tar_artifacts[0].id,
+        "same content ingested via dir or tar must produce the same content id"
+    );
+}
+
+#[tokio::test]
+async fn output_read_artifact_not_found_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let s = store(&dir);
+    let collector = OutputCollector::new(s);
+    let bad_id = "a".repeat(64);
+    let err = collector.read_artifact(&bad_id).await.unwrap_err();
+    assert!(
+        matches!(err, crate::SandboxError::FileStore(_)),
+        "missing id must return FileStore error, got: {err}"
+    );
 }

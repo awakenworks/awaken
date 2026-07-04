@@ -14,4 +14,7 @@ pub enum SandboxError {
 
     #[error("mount target path escapes sandbox: {path}")]
     PathEscape { path: std::path::PathBuf },
+
+    #[error("tar archive error: {0}")]
+    Tar(String),
 }

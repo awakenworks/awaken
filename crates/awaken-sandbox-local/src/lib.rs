@@ -4,6 +4,7 @@
 
 mod error;
 mod mount;
+mod output;
 mod provider;
 mod sandbox;
 mod source;
@@ -20,6 +21,7 @@ pub use k8s::{
     K8sVolume, K8sVolumeMount,
 };
 pub use mount::{Mount, MountAccess};
+pub use output::{Artifact, OutputCollector};
 pub use provider::{LocalSandboxProvider, NamespaceSandboxProvider, SandboxProvider};
 pub use sandbox::Sandbox;
 pub use source::Source;
