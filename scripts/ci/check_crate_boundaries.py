@@ -69,6 +69,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-model-catalog",
         "serde",
         "serde_json",
+        "thiserror",
         "tokio",
     },
     "awaken-runtime-contract": {
