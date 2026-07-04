@@ -12,11 +12,19 @@
 //! [`router`](crate::router)/[`ServerRequestHandler`] demux the stdio transport
 //! uses, so remote Streamable HTTP servers get full parity.
 //!
-//! A [`Credential`] adds an opaque auth header; the server's session id is
-//! echoed on subsequent requests.
+//! A [`Credential`] adds an opaque auth header and arbitrary custom headers
+//! ride along on every request ([`HttpTransportBuilder::header`]); the server's
+//! session id is echoed on subsequent requests.
+//!
+//! Auth failures (401/403) are handled managed-agents style: the credential is
+//! rotatable in place ([`set_credential`](HttpTransport::set_credential)), and
+//! a host-registered [`CredentialRefresher`] is consulted once per failed
+//! request — on success the request is retried with the fresh credential, on
+//! failure the challenge (including `WWW-Authenticate`) surfaces as a
+//! [`McpTransportError::ServerError`] prefixed with `auth challenge:`.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -28,7 +36,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::credential::Credential;
+use crate::credential::{AuthChallenge, Credential, CredentialRefresher};
 use crate::jsonrpc::{ServerNotification, ServerRequestError, ServerRequestHandler};
 use crate::progress::McpProgressUpdate;
 use crate::router::{NotificationSinks, route};
@@ -45,7 +53,13 @@ const SESSION_HEADER: &str = "Mcp-Session-Id";
 struct HttpShared {
     client: reqwest::Client,
     url: String,
-    credential: Credential,
+    /// Rotatable: `set_credential` and a successful refresh replace it in
+    /// place, so in-flight retries and the SSE listener pick up the new value.
+    credential: RwLock<Credential>,
+    /// Custom headers sent on every request, alongside the credential header.
+    headers: Vec<(String, String)>,
+    /// Host hook consulted once per 401/403 before the failure is surfaced.
+    refresher: Option<Arc<dyn CredentialRefresher>>,
     timeout: Duration,
     session_id: Mutex<Option<String>>,
     sinks: Arc<NotificationSinks>,
@@ -53,21 +67,43 @@ struct HttpShared {
 }
 
 impl HttpShared {
-    /// Build a POST with auth + session headers applied.
-    fn post_builder(&self, body: &Value) -> reqwest::RequestBuilder {
-        let mut request = self
-            .client
-            .post(&self.url)
-            .timeout(self.timeout)
-            .header("Accept", "application/json, text/event-stream")
-            .json(body);
-        if let Some((name, value)) = self.credential.header() {
+    /// Custom headers + credential header + session header, on any request.
+    fn apply_headers(&self, mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        for (name, value) in &self.headers {
+            request = request.header(name, value);
+        }
+        if let Some((name, value)) = self.credential.read().unwrap().header() {
             request = request.header(name, value);
         }
         if let Some(session) = self.session_id.lock().unwrap().clone() {
             request = request.header(SESSION_HEADER, session);
         }
         request
+    }
+
+    /// Build a POST with all headers applied.
+    fn post_builder(&self, body: &Value) -> reqwest::RequestBuilder {
+        self.apply_headers(
+            self.client
+                .post(&self.url)
+                .timeout(self.timeout)
+                .header("Accept", "application/json, text/event-stream")
+                .json(body),
+        )
+    }
+
+    /// Ask the host refresher for a fresh credential; store it on success.
+    async fn try_refresh(&self, challenge: &AuthChallenge) -> bool {
+        let Some(refresher) = &self.refresher else {
+            return false;
+        };
+        match refresher.refresh(challenge).await {
+            Some(fresh) => {
+                *self.credential.write().unwrap() = fresh;
+                true
+            }
+            None => false,
+        }
     }
 
     fn capture_session(&self, response: &reqwest::Response) {
@@ -128,11 +164,27 @@ impl HttpShared {
     /// Notifications and server requests seen in an SSE response are routed as
     /// they arrive, so a call's progress streams live.
     async fn request(self: &Arc<Self>, body: &Value, id: i64) -> Result<Value, McpTransportError> {
-        let response = self
+        let mut response = self
             .post_builder(body)
             .send()
             .await
             .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
+        // Auth failure: consult the host refresher once, retry with the fresh
+        // credential; otherwise surface the challenge (incl. WWW-Authenticate).
+        if is_auth_failure(response.status()) {
+            let challenge = challenge_from(&response);
+            if !self.try_refresh(&challenge).await {
+                return Err(unauthorized_error(&challenge));
+            }
+            response = self
+                .post_builder(body)
+                .send()
+                .await
+                .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
+            if is_auth_failure(response.status()) {
+                return Err(unauthorized_error(&challenge_from(&response)));
+            }
+        }
         self.capture_session(&response);
         let status = response.status();
         let is_sse = response
@@ -181,6 +233,111 @@ impl HttpShared {
     }
 }
 
+fn is_auth_failure(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
+}
+
+fn challenge_from(response: &reqwest::Response) -> AuthChallenge {
+    AuthChallenge {
+        status: response.status().as_u16(),
+        www_authenticate: response
+            .headers()
+            .get(reqwest::header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+    }
+}
+
+fn unauthorized_error(challenge: &AuthChallenge) -> McpTransportError {
+    McpTransportError::ServerError(format!("auth challenge: {challenge}"))
+}
+
+/// Assembles an [`HttpTransport`]: URL plus optional credential, custom
+/// headers, host [`CredentialRefresher`], and sampling handler.
+pub struct HttpTransportBuilder {
+    url: String,
+    credential: Credential,
+    headers: Vec<(String, String)>,
+    refresher: Option<Arc<dyn CredentialRefresher>>,
+    sampling: Option<Arc<dyn crate::sampling::SamplingHandler>>,
+}
+
+impl HttpTransportBuilder {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            credential: Credential::None,
+            headers: Vec::new(),
+            refresher: None,
+            sampling: None,
+        }
+    }
+
+    /// Authenticate with `credential` (also rotatable later via
+    /// [`HttpTransport::set_credential`]).
+    pub fn credential(mut self, credential: Credential) -> Self {
+        self.credential = credential;
+        self
+    }
+
+    /// Add a custom header sent on every request (repeatable).
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((name.into(), value.into()));
+        self
+    }
+
+    /// Register the host hook consulted on 401/403.
+    pub fn refresher(mut self, refresher: Arc<dyn CredentialRefresher>) -> Self {
+        self.refresher = Some(refresher);
+        self
+    }
+
+    /// Handle server-initiated `sampling/createMessage` (streaming mode only).
+    pub fn sampling(mut self, sampling: Arc<dyn crate::sampling::SamplingHandler>) -> Self {
+        self.sampling = Some(sampling);
+        self
+    }
+
+    /// Build without the MCP handshake, for callers that defer `initialize`.
+    pub fn build(self) -> HttpTransport {
+        let handler = self.sampling.map(|s| {
+            Arc::new(crate::sampling::SamplingBridge::new(s)) as Arc<dyn ServerRequestHandler>
+        });
+        HttpTransport {
+            shared: Arc::new(HttpShared {
+                client: reqwest::Client::new(),
+                url: self.url,
+                credential: RwLock::new(self.credential),
+                headers: self.headers,
+                refresher: self.refresher,
+                timeout: crate::stdio::DEFAULT_TIMEOUT,
+                session_id: Mutex::new(None),
+                sinks: Arc::new(NotificationSinks::new()),
+                request_handler: handler,
+            }),
+            next_id: AtomicI64::new(1),
+            next_progress_token: AtomicI64::new(1),
+            listener: Mutex::new(None),
+        }
+    }
+
+    /// Connect (handshake only), for simple request/response use.
+    pub async fn connect(self) -> Result<HttpTransport, McpTransportError> {
+        let transport = self.build();
+        transport.initialize().await?;
+        Ok(transport)
+    }
+
+    /// Connect and start the background GET SSE listener, so server->client
+    /// streams (list_changed, resources/updated, sampling) are delivered.
+    pub async fn connect_streaming(self) -> Result<HttpTransport, McpTransportError> {
+        let transport = self.build();
+        transport.initialize().await?;
+        transport.spawn_listener();
+        Ok(transport)
+    }
+}
+
 /// An HTTP MCP server connection presented as an [`McpToolTransport`].
 pub struct HttpTransport {
     shared: Arc<HttpShared>,
@@ -200,29 +357,11 @@ impl Drop for HttpTransport {
 
 impl HttpTransport {
     /// Build a transport for `url`, authenticating with `credential`.
+    /// For custom headers or a refresher, use [`HttpTransportBuilder`].
     pub fn new(url: impl Into<String>, credential: Credential) -> Self {
-        Self::with_handler(url, credential, None)
-    }
-
-    fn with_handler(
-        url: impl Into<String>,
-        credential: Credential,
-        request_handler: Option<Arc<dyn ServerRequestHandler>>,
-    ) -> Self {
-        Self {
-            shared: Arc::new(HttpShared {
-                client: reqwest::Client::new(),
-                url: url.into(),
-                credential,
-                timeout: crate::stdio::DEFAULT_TIMEOUT,
-                session_id: Mutex::new(None),
-                sinks: Arc::new(NotificationSinks::new()),
-                request_handler,
-            }),
-            next_id: AtomicI64::new(1),
-            next_progress_token: AtomicI64::new(1),
-            listener: Mutex::new(None),
-        }
+        HttpTransportBuilder::new(url)
+            .credential(credential)
+            .build()
     }
 
     /// Connect (handshake only), for simple request/response use.
@@ -230,9 +369,10 @@ impl HttpTransport {
         url: impl Into<String>,
         credential: Credential,
     ) -> Result<Self, McpTransportError> {
-        let transport = Self::new(url, credential);
-        transport.initialize().await?;
-        Ok(transport)
+        HttpTransportBuilder::new(url)
+            .credential(credential)
+            .connect()
+            .await
     }
 
     /// Connect and start the background GET SSE listener, so server->client
@@ -242,13 +382,17 @@ impl HttpTransport {
         credential: Credential,
         sampling: Option<Arc<dyn crate::sampling::SamplingHandler>>,
     ) -> Result<Self, McpTransportError> {
-        let handler = sampling.map(|s| {
-            Arc::new(crate::sampling::SamplingBridge::new(s)) as Arc<dyn ServerRequestHandler>
-        });
-        let transport = Self::with_handler(url, credential, handler);
-        transport.initialize().await?;
-        transport.spawn_listener();
-        Ok(transport)
+        let mut builder = HttpTransportBuilder::new(url).credential(credential);
+        if let Some(sampling) = sampling {
+            builder = builder.sampling(sampling);
+        }
+        builder.connect_streaming().await
+    }
+
+    /// Replace the credential used from the next request on — the host calls
+    /// this when its vault rotates a token outside the 401 path.
+    pub fn set_credential(&self, credential: Credential) {
+        *self.shared.credential.write().unwrap() = credential;
     }
 
     fn spawn_listener(&self) {
@@ -295,16 +439,12 @@ impl HttpTransport {
 /// server->client message. Runs until the task is aborted (on transport drop).
 async fn listen(shared: Arc<HttpShared>) {
     loop {
-        let mut request = shared
-            .client
-            .get(&shared.url)
-            .header("Accept", "text/event-stream");
-        if let Some((name, value)) = shared.credential.header() {
-            request = request.header(name, value);
-        }
-        if let Some(session) = shared.session_id.lock().unwrap().clone() {
-            request = request.header(SESSION_HEADER, session);
-        }
+        let request = shared.apply_headers(
+            shared
+                .client
+                .get(&shared.url)
+                .header("Accept", "text/event-stream"),
+        );
         match request.send().await {
             Ok(response) if response.status().is_success() => {
                 let mut stream = response.bytes_stream();
@@ -316,6 +456,13 @@ async fn listen(shared: Arc<HttpShared>) {
                             shared.dispatch_incoming(value).await;
                         }
                     }
+                }
+            }
+            // Auth failure: reconnect only if the host refresher produces a
+            // fresh credential; otherwise stop rather than hammer the server.
+            Ok(response) if is_auth_failure(response.status()) => {
+                if !shared.try_refresh(&challenge_from(&response)).await {
+                    return;
                 }
             }
             // A server without a standalone GET stream (405/404) — stop listening.
@@ -487,15 +634,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_routes_a_notification_to_the_sinks() {
-        let shared = Arc::new(HttpShared {
-            client: reqwest::Client::new(),
-            url: "http://unused".to_string(),
-            credential: Credential::None,
-            timeout: Duration::from_secs(1),
-            session_id: Mutex::new(None),
-            sinks: Arc::new(NotificationSinks::new()),
-            request_handler: None,
-        });
+        let shared = Arc::clone(&HttpTransportBuilder::new("http://unused").build().shared);
         let mut rx = shared.sinks.list_changed.subscribe();
         shared
             .dispatch_incoming(json!({
@@ -503,5 +642,158 @@ mod tests {
             }))
             .await;
         assert_eq!(rx.recv().await.unwrap(), ListChangedKind::Tools);
+    }
+
+    // ---- auth mechanics against a local single-shot HTTP server ----
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const EMPTY_TOOLS: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+
+    fn ok_response(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn unauthorized_response() -> String {
+        "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=\"mcp\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_string()
+    }
+
+    /// Serve one canned response per accepted connection; returns the base URL
+    /// and a handle resolving to the raw request bytes each connection sent.
+    async fn serve(responses: Vec<String>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            let mut captured = Vec::new();
+            for response in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                // Read until the blank line; these requests have small bodies
+                // that arrive in the same segments.
+                loop {
+                    let n = socket.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buf[..n]);
+                    if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                captured.push(String::from_utf8_lossy(&request).to_string());
+                socket.write_all(response.as_bytes()).await.unwrap();
+                socket.shutdown().await.ok();
+            }
+            captured
+        });
+        (url, handle)
+    }
+
+    struct StaticRefresher {
+        fresh: Option<Credential>,
+        seen: Mutex<Vec<AuthChallenge>>,
+    }
+
+    #[async_trait]
+    impl CredentialRefresher for StaticRefresher {
+        async fn refresh(&self, challenge: &AuthChallenge) -> Option<Credential> {
+            self.seen.lock().unwrap().push(challenge.clone());
+            self.fresh.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_headers_and_credential_ride_on_every_request() {
+        let (url, server) = serve(vec![ok_response(EMPTY_TOOLS)]).await;
+        let transport = HttpTransportBuilder::new(url)
+            .credential(Credential::Bearer("tok".to_string()))
+            .header("X-Org-Id", "org-42")
+            .build();
+        transport.list_tools().await.expect("tools/list succeeds");
+        let captured = server.await.unwrap();
+        let request = captured[0].to_ascii_lowercase();
+        assert!(request.contains("authorization: bearer tok"), "{request}");
+        assert!(request.contains("x-org-id: org-42"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn refreshes_and_retries_once_on_401() {
+        let (url, server) = serve(vec![unauthorized_response(), ok_response(EMPTY_TOOLS)]).await;
+        let refresher = Arc::new(StaticRefresher {
+            fresh: Some(Credential::Bearer("fresh".to_string())),
+            seen: Mutex::new(Vec::new()),
+        });
+        let transport = HttpTransportBuilder::new(url)
+            .credential(Credential::Bearer("stale".to_string()))
+            .refresher(Arc::clone(&refresher) as Arc<dyn CredentialRefresher>)
+            .build();
+        transport.list_tools().await.expect("retry succeeds");
+
+        let captured = server.await.unwrap();
+        assert!(captured[0].to_ascii_lowercase().contains("bearer stale"));
+        assert!(captured[1].to_ascii_lowercase().contains("bearer fresh"));
+        let seen = refresher.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].status, 401);
+        assert_eq!(
+            seen[0].www_authenticate.as_deref(),
+            Some("Bearer realm=\"mcp\"")
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_failure_without_refresher_surfaces_the_challenge() {
+        let (url, _server) = serve(vec![unauthorized_response()]).await;
+        let transport = HttpTransportBuilder::new(url).build();
+        let err = transport.list_tools().await.expect_err("401 surfaces");
+        let McpTransportError::ServerError(message) = err else {
+            panic!("expected ServerError, got {err:?}");
+        };
+        assert!(message.starts_with("auth challenge: HTTP 401"), "{message}");
+        assert!(message.contains("Bearer realm=\"mcp\""), "{message}");
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_surfaces_the_challenge() {
+        let (url, _server) = serve(vec![unauthorized_response()]).await;
+        let refresher = Arc::new(StaticRefresher {
+            fresh: None,
+            seen: Mutex::new(Vec::new()),
+        });
+        let transport = HttpTransportBuilder::new(url)
+            .refresher(refresher as Arc<dyn CredentialRefresher>)
+            .build();
+        let err = transport.list_tools().await.expect_err("401 surfaces");
+        assert!(
+            err.to_string().contains("auth challenge: HTTP 401"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_credential_rotates_the_auth_header() {
+        let (url, server) = serve(vec![ok_response(EMPTY_TOOLS), ok_response(EMPTY_TOOLS)]).await;
+        let transport = HttpTransportBuilder::new(url)
+            .credential(Credential::Bearer("first".to_string()))
+            .build();
+        transport.list_tools().await.expect("first call");
+        transport.set_credential(Credential::Header {
+            name: "X-Api-Key".to_string(),
+            value: "second".to_string(),
+        });
+        transport.list_tools().await.expect("second call");
+
+        let captured = server.await.unwrap();
+        assert!(captured[0].to_ascii_lowercase().contains("bearer first"));
+        assert!(
+            captured[1]
+                .to_ascii_lowercase()
+                .contains("x-api-key: second")
+        );
     }
 }
