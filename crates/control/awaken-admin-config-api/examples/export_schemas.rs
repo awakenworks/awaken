@@ -55,10 +55,21 @@ fn main() {
     // Authored inference profile (the `inference-profiles` CRUD aggregate).
     add!("InferenceProfile", awaken_config_resolver::InferenceProfile);
 
+    // MCP server definitions + agent↔MCP binding (the `mcp-servers` /
+    // `agents/:id/mcp` CRUD aggregates, ADR-0043 Phase 3).
+    add!("McpServerId", awaken_config_resolver::McpServerId);
+    add!("McpServerDef", awaken_config_resolver::McpServerDef);
+    add!("AgentMcpConfig", awaken_config_resolver::AgentMcpConfig);
+
     // Resolver output (the admin `inference/resolve` dry-run result, secret-free).
     add!(
         "ResolvedInferenceView",
         awaken_admin_config_api::ResolvedInferenceView
+    );
+    // Resolver output (the admin `agents/:id/mcp/resolve` dry-run result, secret-free).
+    add!(
+        "ResolvedMcpServerView",
+        awaken_admin_config_api::ResolvedMcpServerView
     );
     // Live credential-probe result (the `credentials/:id/validate` route).
     add!(

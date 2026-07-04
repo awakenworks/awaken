@@ -14,8 +14,8 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
-    InferenceProfile, ResolveError, ResolvedInference, SourceLookup, resolve_inference,
-    resolve_profile,
+    AgentMcpConfig, InferenceProfile, McpServerDef, McpServerId, ResolveError, ResolvedInference,
+    SourceLookup, resolve_inference, resolve_mcp_servers, resolve_profile,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -40,6 +40,9 @@ pub struct AdminState {
     pub secrets: Arc<dyn SecretStore>,
     /// Authored [`InferenceProfile`]s, keyed by id (the resolver reads these).
     pub profiles: Arc<dyn InferenceProfileStore>,
+    /// Authored [`McpServerDef`]s + per-agent [`AgentMcpConfig`] bindings
+    /// (ADR-0043 Phase 3; the resolver materializes these at run bind time).
+    pub mcp: Arc<dyn McpStore>,
     /// Optional live credential validator. When wired (server-local injects a
     /// provider-genai probe), `POST /credentials/:id/validate` performs a real probe;
     /// otherwise it reports `unknown` (the model SDK never enters this CRUD crate —
@@ -71,6 +74,67 @@ impl InferenceProfileStore for InMemoryProfileStore {
     }
     fn get(&self, id: &str) -> Option<InferenceProfile> {
         self.0.lock().expect("profiles").get(id).cloned()
+    }
+}
+
+/// A store for authored [`McpServerDef`]s (by server id) and per-agent
+/// [`AgentMcpConfig`] bindings (by agent id) — the admin-plane MCP aggregates.
+/// Sync + in-memory by default; a durable backend can implement the same port.
+pub trait McpStore: Send + Sync {
+    fn put_server(&self, def: McpServerDef);
+    fn get_server(&self, id: &str) -> Option<McpServerDef>;
+    fn list_servers(&self) -> Vec<McpServerDef>;
+    fn put_agent_config(&self, config: AgentMcpConfig);
+    fn get_agent_config(&self, agent_id: &str) -> Option<AgentMcpConfig>;
+}
+
+/// The default in-memory [`McpStore`].
+#[derive(Default)]
+pub struct InMemoryMcpStore {
+    servers: std::sync::Mutex<HashMap<String, McpServerDef>>,
+    agents: std::sync::Mutex<HashMap<String, AgentMcpConfig>>,
+}
+
+impl InMemoryMcpStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl McpStore for InMemoryMcpStore {
+    fn put_server(&self, def: McpServerDef) {
+        self.servers
+            .lock()
+            .expect("mcp servers")
+            .insert(def.id.0.clone(), def);
+    }
+    fn get_server(&self, id: &str) -> Option<McpServerDef> {
+        self.servers.lock().expect("mcp servers").get(id).cloned()
+    }
+    fn list_servers(&self) -> Vec<McpServerDef> {
+        let mut servers: Vec<McpServerDef> = self
+            .servers
+            .lock()
+            .expect("mcp servers")
+            .values()
+            .cloned()
+            .collect();
+        servers.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+        servers
+    }
+    fn put_agent_config(&self, config: AgentMcpConfig) {
+        self.agents
+            .lock()
+            .expect("agent mcp configs")
+            .insert(config.agent_id.clone(), config);
+    }
+    fn get_agent_config(&self, agent_id: &str) -> Option<AgentMcpConfig> {
+        self.agents
+            .lock()
+            .expect("agent mcp configs")
+            .get(agent_id)
+            .cloned()
     }
 }
 
@@ -133,6 +197,19 @@ pub fn admin_router(state: AdminState) -> Router {
             post(resolve_profile_route),
         )
         .route("/v1/config/inference/resolve", post(resolve_route))
+        .route("/v1/config/mcp-servers", get(list_mcp_servers))
+        .route(
+            "/v1/config/mcp-servers/:id",
+            put(put_mcp_server).get(get_mcp_server),
+        )
+        .route(
+            "/v1/config/agents/:agent_id/mcp",
+            put(put_agent_mcp).get(get_agent_mcp),
+        )
+        .route(
+            "/v1/config/agents/:agent_id/mcp/resolve",
+            post(resolve_agent_mcp),
+        )
         .with_state(state)
 }
 
@@ -490,6 +567,166 @@ fn profile_missing(id: &str, rid: &str) -> Problem {
         "not_found",
         "Profile not found",
         format!("no inference profile `{id}`"),
+        rid,
+    ))
+}
+
+/// Author an MCP server definition. The path id is authoritative, and the
+/// credential binding is validated fail-closed on write: an `Exact` binding
+/// referencing an unknown credential source (or a pool binding referencing an
+/// unknown pool) is a 404, so a def that can never resolve is never stored.
+async fn put_mcp_server(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(mut def): Json<McpServerDef>,
+) -> Result<Json<McpServerDef>, Problem> {
+    let rid = req_id(&headers);
+    def.id = McpServerId(id);
+    match &def.credential_binding {
+        CredentialBinding::None => {}
+        CredentialBinding::Exact {
+            credential_source_id,
+        } => {
+            state
+                .credentials
+                .get(credential_source_id)
+                .await
+                .map_err(|e| cred_problem(&e, &rid))?;
+        }
+        CredentialBinding::OneOfCredentialPool { credential_pool_id } => {
+            state
+                .credentials
+                .get_pool(credential_pool_id)
+                .await
+                .map_err(|e| cred_problem(&e, &rid))?;
+        }
+    }
+    state.mcp.put_server(def.clone());
+    Ok(Json(def))
+}
+
+async fn get_mcp_server(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<McpServerDef>, Problem> {
+    state
+        .mcp
+        .get_server(&id)
+        .map(Json)
+        .ok_or_else(|| mcp_server_missing(&id, &req_id(&headers)))
+}
+
+async fn list_mcp_servers(State(state): State<AdminState>) -> Json<Vec<McpServerDef>> {
+    Json(state.mcp.list_servers())
+}
+
+/// Bind which MCP servers an agent uses. The path agent id is authoritative, and
+/// every referenced server id must already be authored (fail-closed: a binding to
+/// an unknown server is a 404, never a dangling reference).
+async fn put_agent_mcp(
+    State(state): State<AdminState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    Json(mut config): Json<AgentMcpConfig>,
+) -> Result<Json<AgentMcpConfig>, Problem> {
+    let rid = req_id(&headers);
+    config.agent_id = agent_id;
+    for server_id in &config.mcp_server_ids {
+        if state.mcp.get_server(&server_id.0).is_none() {
+            return Err(mcp_server_missing(&server_id.0, &rid));
+        }
+    }
+    state.mcp.put_agent_config(config.clone());
+    Ok(Json(config))
+}
+
+async fn get_agent_mcp(
+    State(state): State<AdminState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<AgentMcpConfig>, Problem> {
+    state
+        .mcp
+        .get_agent_config(&agent_id)
+        .map(Json)
+        .ok_or_else(|| agent_mcp_missing(&agent_id, &req_id(&headers)))
+}
+
+#[derive(serde::Deserialize)]
+struct ResolveAgentMcpRequest {
+    workspace_id: String,
+}
+
+/// The **secret-free** projection of a resolved MCP server (ADR-0043): what the
+/// agent's binding materializes to, and whether a credential resolved — never the
+/// secret itself. This is what an operator's "test binding" call sees.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ResolvedMcpServerView {
+    name: String,
+    url: String,
+    /// Whether a credential was materialized (never the value).
+    credential_present: bool,
+}
+
+/// Dry-run an agent's MCP binding through the resolver: load the agent's
+/// [`AgentMcpConfig`], collect the referenced [`McpServerDef`]s, and materialize
+/// each credential binding against the workspace's sources/pools — the same
+/// `resolve_mcp_servers` path a run uses — returning the secret-free views.
+async fn resolve_agent_mcp(
+    State(state): State<AdminState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ResolveAgentMcpRequest>,
+) -> Result<Json<Vec<ResolvedMcpServerView>>, Problem> {
+    let rid = req_id(&headers);
+    let config = state
+        .mcp
+        .get_agent_config(&agent_id)
+        .ok_or_else(|| agent_mcp_missing(&agent_id, &rid))?;
+    let mut defs = Vec::with_capacity(config.mcp_server_ids.len());
+    for server_id in &config.mcp_server_ids {
+        defs.push(
+            state
+                .mcp
+                .get_server(&server_id.0)
+                .ok_or_else(|| mcp_server_missing(&server_id.0, &rid))?,
+        );
+    }
+    let lookup = workspace_lookup(&state, &request.workspace_id, &rid).await?;
+    let resolved = resolve_mcp_servers(&defs, &lookup, &*state.secrets)
+        .await
+        .map_err(|e| resolve_problem(&e, &rid))?;
+    Ok(Json(
+        resolved
+            .into_iter()
+            .map(|s| ResolvedMcpServerView {
+                name: s.name,
+                url: s.url,
+                credential_present: s.credential.is_some(),
+            })
+            .collect(),
+    ))
+}
+
+fn mcp_server_missing(id: &str, rid: &str) -> Problem {
+    Problem(ApiError::new(
+        404,
+        "not_found",
+        "MCP server not found",
+        format!("no mcp server `{id}`"),
+        rid,
+    ))
+}
+
+fn agent_mcp_missing(agent_id: &str, rid: &str) -> Problem {
+    Problem(ApiError::new(
+        404,
+        "not_found",
+        "Agent MCP config not found",
+        format!("no mcp config for agent `{agent_id}`"),
         rid,
     ))
 }
