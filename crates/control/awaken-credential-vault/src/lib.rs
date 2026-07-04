@@ -12,11 +12,15 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "oauth-command")]
+pub mod oauth;
 pub mod repo;
 pub mod schema;
 #[cfg(feature = "sealed-aead")]
 pub mod sealed;
 
+#[cfg(feature = "oauth-command")]
+pub use oauth::{CommandTokenSource, TokenSource};
 #[cfg(feature = "sealed-aead")]
 pub use sealed::SealedAeadSecretStore;
 
@@ -180,6 +184,8 @@ pub enum CredentialError {
     MissingEnv(String),
     #[error("secret seal/open failed (wrong key or corrupt ciphertext)")]
     Seal,
+    #[error("oauth token refresh failed: {0}")]
+    OAuth(String),
 }
 
 /// In-memory [`SecretStore`] (dev / tests). Real backends encrypt at rest.
