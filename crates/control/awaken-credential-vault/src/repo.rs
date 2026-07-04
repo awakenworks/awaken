@@ -144,4 +144,39 @@ mod tests {
         assert_eq!(repo.list("ws").await.unwrap().len(), 1);
         assert_eq!(repo.list("other").await.unwrap().len(), 0);
     }
+
+    #[tokio::test]
+    async fn pools_round_trip_and_list_scopes_by_workspace() {
+        let repo = InMemoryCredentialRepo::new();
+        let pool = |id: &str, ws: &str| CredentialPool {
+            id: CredentialPoolId(id.into()),
+            workspace_id: ws.into(),
+            members: Vec::new(),
+        };
+        repo.put_pool(pool("pool:a", "ws")).await.unwrap();
+        repo.put_pool(pool("pool:b", "ws")).await.unwrap();
+        repo.put_pool(pool("pool:c", "other")).await.unwrap();
+
+        let got = repo
+            .get_pool(&CredentialPoolId("pool:a".into()))
+            .await
+            .unwrap();
+        assert_eq!(got.workspace_id, "ws");
+        assert_eq!(repo.list_pools("ws").await.unwrap().len(), 2);
+        assert_eq!(repo.list_pools("other").await.unwrap().len(), 1);
+        assert_eq!(repo.list_pools("empty").await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_missing_source_or_pool_is_not_found() {
+        let repo = InMemoryCredentialRepo::new();
+        assert!(matches!(
+            repo.get(&CredentialSourceId("cred:absent".into())).await,
+            Err(CredentialError::SourceNotFound(id)) if id == "cred:absent"
+        ));
+        assert!(matches!(
+            repo.get_pool(&CredentialPoolId("pool:absent".into())).await,
+            Err(CredentialError::PoolNotFound(id)) if id == "pool:absent"
+        ));
+    }
 }

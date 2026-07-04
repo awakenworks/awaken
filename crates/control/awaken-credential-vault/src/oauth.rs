@@ -98,4 +98,24 @@ mod tests {
             Err(CredentialError::OAuth(_))
         ));
     }
+
+    #[tokio::test]
+    async fn an_empty_token_is_rejected() {
+        // A helper that "succeeds" but emits only whitespace refreshed nothing.
+        let source = CommandTokenSource::new("printf", ["  \\n\\t  "]);
+        assert!(matches!(
+            source.access_token().await,
+            Err(CredentialError::OAuth(msg)) if msg == "refresh returned an empty token"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_missing_program_is_a_spawn_error() {
+        let source =
+            CommandTokenSource::new("awaken-no-such-oauth-helper-7f3a", Vec::<String>::new());
+        assert!(matches!(
+            source.access_token().await,
+            Err(CredentialError::OAuth(msg)) if msg.starts_with("spawn `")
+        ));
+    }
 }
