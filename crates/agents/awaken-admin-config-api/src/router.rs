@@ -13,11 +13,11 @@ use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
-use awaken_config_resolver::{ResolveError, resolve_inference};
+use awaken_config_resolver::{ResolveError, SourceLookup, resolve_inference};
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
-    CredentialBinding, CredentialCreateParams, CredentialError, CredentialKind, CredentialSource,
-    CredentialSourceId, SecretStore,
+    CredentialBinding, CredentialCreateParams, CredentialError, CredentialKind, CredentialPool,
+    CredentialPoolId, CredentialSource, CredentialSourceId, SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId};
@@ -56,6 +56,10 @@ pub fn admin_router(state: AdminState) -> Router {
             post(post_credential).get(list_credentials),
         )
         .route("/v1/config/credentials/:id", get(get_credential))
+        .route(
+            "/v1/config/credential-pools/:id",
+            put(put_pool).get(get_pool),
+        )
         .route("/v1/config/inference/resolve", post(resolve_route))
         .with_state(state)
 }
@@ -101,9 +105,9 @@ fn repo_problem(error: &RepoError, rid: &str) -> Problem {
 
 fn cred_problem(error: &CredentialError, rid: &str) -> Problem {
     let (status, code) = match error {
-        CredentialError::SourceNotFound(_) | CredentialError::SecretNotFound(_) => {
-            (404, "not_found")
-        }
+        CredentialError::SourceNotFound(_)
+        | CredentialError::SecretNotFound(_)
+        | CredentialError::PoolNotFound(_) => (404, "not_found"),
         CredentialError::NoCredential => (422, "no_credential"),
         CredentialError::NotActive(_) => (409, "credential_inactive"),
         _ => (422, "credential_invalid"),
@@ -202,6 +206,52 @@ async fn get_catalog(
         .map_err(|e| repo_problem(&e, &req_id(&headers)))
 }
 
+async fn put_pool(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(mut pool): Json<CredentialPool>,
+) -> Result<Json<CredentialPool>, Problem> {
+    // The path id is authoritative.
+    pool.id = CredentialPoolId(id);
+    state
+        .credentials
+        .put_pool(pool.clone())
+        .await
+        .map_err(|e| cred_problem(&e, &req_id(&headers)))?;
+    Ok(Json(pool))
+}
+
+async fn get_pool(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<CredentialPool>, Problem> {
+    state
+        .credentials
+        .get_pool(&CredentialPoolId(id))
+        .await
+        .map(Json)
+        .map_err(|e| cred_problem(&e, &req_id(&headers)))
+}
+
+/// A resolver lookup backed by a workspace snapshot: the credential sources **and**
+/// pools the resolver may bind to. `get_pool` is what makes the `OneOfCredentialPool`
+/// binding (with failover) resolvable over the admin API.
+struct WorkspaceLookup {
+    sources: HashMap<String, CredentialSource>,
+    pools: HashMap<String, CredentialPool>,
+}
+
+impl SourceLookup for WorkspaceLookup {
+    fn get(&self, id: &str) -> Option<&CredentialSource> {
+        self.sources.get(id)
+    }
+    fn get_pool(&self, id: &str) -> Option<&CredentialPool> {
+        self.pools.get(id)
+    }
+}
+
 fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
     let (status, code) = match error {
         ResolveError::ModelUnresolved(_) => (404, "model_unresolved"),
@@ -259,21 +309,32 @@ async fn resolve_route(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    // Snapshot the workspace's credential sources into a lookup for the resolver.
-    let sources_list = state
+    // Snapshot the workspace's credential sources + pools into a lookup for the
+    // resolver (pools carry the failover members).
+    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    for source in state
         .credentials
         .list(&request.workspace_id)
         .await
-        .map_err(|e| cred_problem(&e, &rid))?;
-    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
-    for source in sources_list {
+        .map_err(|e| cred_problem(&e, &rid))?
+    {
         sources.insert(source.id.0.clone(), source);
     }
+    let mut pools: HashMap<String, CredentialPool> = HashMap::new();
+    for pool in state
+        .credentials
+        .list_pools(&request.workspace_id)
+        .await
+        .map_err(|e| cred_problem(&e, &rid))?
+    {
+        pools.insert(pool.id.0.clone(), pool);
+    }
+    let lookup = WorkspaceLookup { sources, pools };
     let resolved = resolve_inference(
         &catalog,
         &request.model_id,
         &request.binding,
-        &sources,
+        &lookup,
         &*state.secrets,
     )
     .await
