@@ -154,6 +154,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0040-server-durable-ingress-integration.md` | Decision record | Not required | n/a |
 | `adr/0041-sandbox-execution-environment-provider.md` | Decision record | Required | self |
 | `adr/0042-public-api-tenancy-authz-and-front-door-consistency.md` | Decision record | Not required | n/a |
+| `adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
