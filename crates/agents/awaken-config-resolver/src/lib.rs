@@ -63,7 +63,7 @@ pub enum ResolveError {
 /// by id for the `OneOfCredentialPool` binding. `get_pool` defaults to `None`, so a
 /// flat `HashMap<String, CredentialSource>` still satisfies the trait for the
 /// `Exact`/`None` bindings without knowing about pools.
-pub trait SourceLookup {
+pub trait SourceLookup: Send + Sync {
     fn get(&self, id: &str) -> Option<&CredentialSource>;
     fn get_pool(&self, _id: &str) -> Option<&awaken_credential_vault::CredentialPool> {
         None

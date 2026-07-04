@@ -804,6 +804,108 @@ pub async fn build_real_gemini_router() -> Router {
     build_router(Arc::new(executor), model)
 }
 
+/// A live-model server whose executor is built **through the resolver**
+/// (ADR-0043): it authors an in-memory catalog + enters a credential from the
+/// environment, then `resolve_inference` + `executor_from_resolved` produce the
+/// host executor — the same config → resolve → run path a managed run takes, rather
+/// than constructing the provider directly (as `build_real_router` does). Exposed
+/// so a session e2e exercises the resolver end to end against a real model. Env:
+/// `ANTHROPIC_API_KEY`/`KIMI_API_KEY` (+ `*_BASE_URL`, `*_MODEL`).
+pub async fn build_resolved_real_router() -> Router {
+    use std::collections::HashMap;
+
+    use awaken_agent_contract::RedactedString;
+    use awaken_config_resolver::resolve_inference;
+    use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
+    use awaken_credential_vault::{
+        CredentialBinding, CredentialCreateParams, CredentialKind, CredentialSource,
+        CredentialSourceId, InMemorySecretStore,
+    };
+    use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
+    use awaken_model_catalog::{
+        ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    };
+
+    let key = std::env::var("ANTHROPIC_API_KEY")
+        .or_else(|_| std::env::var("KIMI_API_KEY"))
+        .expect("set ANTHROPIC_API_KEY or KIMI_API_KEY for AWAKEN_MODEL_MODE=real-resolved");
+    let base = std::env::var("ANTHROPIC_BASE_URL")
+        .or_else(|_| std::env::var("KIMI_BASE_URL"))
+        .unwrap_or_else(|_| "https://api.anthropic.com/v1/".to_string());
+    let model = std::env::var("ANTHROPIC_MODEL")
+        .or_else(|_| std::env::var("KIMI_MODEL"))
+        .unwrap_or_else(|_| "claude-3-5-haiku-latest".to_string());
+
+    // Author the catalog: one provider + endpoint + offering for `model`.
+    let catalog_repo = InMemoryCatalogRepo::new();
+    catalog_repo
+        .put_provider(Provider {
+            id: ProviderId::new("anthropic"),
+            slug: "anthropic".into(),
+            display_name: "Anthropic".into(),
+            version: 1,
+        })
+        .await
+        .expect("put provider");
+    catalog_repo
+        .put_endpoint(ProtocolEndpoint {
+            id: ProtocolEndpointId::new("ep1"),
+            provider_id: ProviderId::new("anthropic"),
+            flavor: ModelApiCompat::AnthropicMessages,
+            base_url: Some(base),
+            timeout_secs: 300,
+            display_name: "prod".into(),
+            version: 1,
+        })
+        .await
+        .expect("put endpoint");
+    catalog_repo
+        .put_offering(Offering {
+            model_id: model.clone(),
+            provider_id: ProviderId::new("anthropic"),
+            protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
+            flavor: ModelApiCompat::AnthropicMessages,
+            upstream_model: None,
+        })
+        .await
+        .expect("put offering");
+
+    // Enter the credential (secret-in), then resolve the inference against the
+    // authored catalog and build the executor from the resolved value.
+    let secrets = InMemorySecretStore::new();
+    let cred_repo = InMemoryCredentialRepo::new();
+    let source = enter_credential(
+        CredentialCreateParams {
+            workspace_id: "ws".into(),
+            kind: CredentialKind::Vault,
+            provider_id: Some("anthropic".into()),
+            env_key: Some("ANTHROPIC_API_KEY".into()),
+            secret: Some(RedactedString::new(key)),
+        },
+        &secrets,
+        &cred_repo,
+    )
+    .await
+    .expect("enter credential");
+    let catalog = catalog_repo.snapshot().await.expect("catalog snapshot");
+    let row = cred_repo.get(&source.id).await.expect("credential row");
+    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    sources.insert(row.id.0.clone(), row);
+    let inference = resolve_inference(
+        &catalog,
+        &model,
+        &CredentialBinding::Exact {
+            credential_source_id: CredentialSourceId(source.id.0.clone()),
+        },
+        &sources,
+        &secrets,
+    )
+    .await
+    .expect("resolve inference");
+    let executor = executor_from_resolved(&inference).expect("build executor from resolved");
+    build_router(executor, inference.triple.model_id.clone())
+}
+
 /// Build the server router offering `skills` on every thread (ADR-0036): the whole
 /// set is fronted by the single `Skill` tool, whose catalog lists them and whose
 /// invocation returns the activated skill's instructions.
