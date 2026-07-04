@@ -54,8 +54,11 @@ pub(crate) fn latest_assistant_text(messages: &[Message]) -> String {
 const AUTO_ALLOWED_HAND_TOOLS: [&str; 3] = ["read", "glob", "grep"];
 
 /// read/glob/grep allowed, mutations asked (ADR-0030). With `approval_mode:
-/// human_approval` an asked tool parks for a confirmation.
-fn server_policy() -> RulePermissionPolicy {
+/// human_approval` an asked tool parks for a confirmation. `extra_allowed` adds
+/// per-thread pre-authorized tool ids (the connected MCP tools, ADR-0043 Phase 3:
+/// configuring the server — with its credential — was the authorization
+/// decision); empty means exactly the base policy.
+fn server_policy(extra_allowed: &[String]) -> RulePermissionPolicy {
     let allow = |name: &str| {
         PermissionRule::new(
             ToolCallPattern::parse(name).expect("static pattern"),
@@ -71,6 +74,7 @@ fn server_policy() -> RulePermissionPolicy {
     rules.push(allow("agent_run"));
     rules.push(allow("list_skills"));
     rules.push(allow("Skill"));
+    rules.extend(extra_allowed.iter().map(|id| allow(id)));
     RulePermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::Ask,
         mode: Mode::Default,
@@ -125,20 +129,21 @@ fn delegation_descriptor() -> ToolDescriptor {
 }
 
 /// The advertised tool descriptors for a thread: hand tools, client-executed tools,
-/// the offered skill tools (`list_skills`/`Skill`, ADR-0036), and `agent_run` when a
-/// delegate roster is set. The single source for both the run config and a managed
+/// the dynamically provisioned per-thread tools (the skill tools of ADR-0036 and a
+/// session's connected MCP tools, ADR-0043 Phase 3 — renamed from
+/// `skill_descriptors` when MCP joined the flow), and `agent_run` when a delegate
+/// roster is set. The single source for both the run config and a managed
 /// session's advertised capability surface, so the two never drift.
 pub(crate) fn advertised_tools(
     client_tools: &HashSet<String>,
     delegates: &HashSet<String>,
-    skill_descriptors: &[ToolDescriptor],
+    dynamic_descriptors: &[ToolDescriptor],
 ) -> Vec<ToolDescriptor> {
     let mut tools = hand_tool_descriptors();
     tools.extend(client_tools.iter().map(|id| client_tool_descriptor(id)));
-    // The `Skill` / `list_skills` descriptors (ADR-0036), when skills are offered:
-    // catalog-free, and the runtime registers the matching RawTools. Never a
-    // per-skill tool.
-    tools.extend(skill_descriptors.iter().cloned());
+    // The `Skill` / `list_skills` descriptors (ADR-0036) and the MCP tool
+    // descriptors: catalog-free, and the runtime registers the matching RawTools.
+    tools.extend(dynamic_descriptors.iter().cloned());
     if !delegates.is_empty() {
         tools.push(delegation_descriptor());
     }
@@ -152,10 +157,10 @@ pub(crate) fn server_config(
     delegates: &HashSet<String>,
     plugin_ids: &[String],
     plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
-    skill_descriptors: &[ToolDescriptor],
+    dynamic_descriptors: &[ToolDescriptor],
     context_policy: ContextPolicy,
 ) -> RunnableConfig {
-    let tools = advertised_tools(client_tools, delegates, skill_descriptors);
+    let tools = advertised_tools(client_tools, delegates, dynamic_descriptors);
     RunnableConfig::builder("assistant")
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
@@ -195,7 +200,15 @@ pub(crate) fn platform_plugin_capabilities() -> Vec<PluginCapability> {
 /// composition-root helper so a caller can wrap it (e.g. to observe file paths for
 /// conditional skills) and re-inject it.
 pub(crate) fn server_gate() -> Arc<dyn awaken_runtime_contract::permission::ToolGateHook> {
-    Arc::new(PermissionGate::new(Arc::new(server_policy())))
+    server_gate_allowing(&[])
+}
+
+/// The base gate with extra pre-authorized tool ids (a thread's connected MCP
+/// tools, ADR-0043 Phase 3). With an empty slice this IS `server_gate()`.
+pub(crate) fn server_gate_allowing(
+    extra_allowed: &[String],
+) -> Arc<dyn awaken_runtime_contract::permission::ToolGateHook> {
+    Arc::new(PermissionGate::new(Arc::new(server_policy(extra_allowed))))
 }
 
 /// A per-thread runtime whose hand tools come from `env` (placement-agnostic). No

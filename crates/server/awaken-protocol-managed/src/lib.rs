@@ -19,7 +19,8 @@ pub mod vaults;
 
 pub use router::router;
 pub use state::{
-    AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
-    OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StateError, TurnOutcome,
+    AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, McpServerBinding,
+    OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind, SessionInit, SessionRuntime,
+    StateError, TurnOutcome,
 };
 pub use vaults::{VaultState, vault_router};
