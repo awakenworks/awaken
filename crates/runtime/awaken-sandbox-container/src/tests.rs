@@ -1,7 +1,8 @@
 //! Slice 5 coverage: pure planners (container/pod) and the provider lifecycle over
-//! an in-memory fake [`ContainerRuntime`] — no daemon required.
+//! an in-memory fake [`ContainerRuntime`] — process-as-container, no daemon required.
 
 use super::*;
+use awaken_agent_channel::AgentTransport;
 use awaken_provisioning_contract::SandboxProvider;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -61,7 +62,8 @@ fn spec(scope: &str) -> pc::SandboxSpec {
             disk_bytes: None,
         },
         lease_ttl_secs: Some(60),
-        extra: None,
+        // Process-as-container: the agent is the container's main command.
+        extra: Some(serde_json::json!({ "command": ["claude", "--acp"] })),
     }
 }
 
@@ -76,8 +78,24 @@ fn container_capabilities_are_the_strongest_tier() {
 }
 
 #[test]
-fn container_plan_maps_image_env_binds_network_and_outputs() {
-    let plan = container_plan(&spec("s1"), "ghcr.io/awaken/agent:latest");
+fn command_of_reads_the_agent_argv_or_defaults_empty() {
+    assert_eq!(
+        command_of(&spec("s")),
+        vec!["claude".to_string(), "--acp".to_string()]
+    );
+    let mut bare = spec("s");
+    bare.extra = None;
+    assert!(command_of(&bare).is_empty());
+}
+
+#[test]
+fn container_plan_maps_command_image_env_binds_network_and_outputs() {
+    let cmd = command_of(&spec("s1"));
+    let plan = container_plan(&spec("s1"), "ghcr.io/awaken/agent:latest", &cmd);
+    assert_eq!(
+        plan.command,
+        vec!["claude".to_string(), "--acp".to_string()]
+    );
     assert_eq!(plan.image, "ghcr.io/awaken/agent:latest");
     // Only inline env is planned; the secret ref is resolved at the runtime edge.
     assert_eq!(plan.env, vec![("TZ".into(), "UTC".into())]);
@@ -99,11 +117,11 @@ fn container_plan_honors_an_image_override_and_network_variants() {
     let mut s = spec("s2");
     s.extra = Some(serde_json::json!({ "image": "custom:1" }));
     s.network = pc::NetworkPolicy::None;
-    assert_eq!(container_plan(&s, "def").image, "custom:1");
-    assert_eq!(container_plan(&s, "def").network, NetworkMode::None);
+    assert_eq!(container_plan(&s, "def", &[]).image, "custom:1");
+    assert_eq!(container_plan(&s, "def", &[]).network, NetworkMode::None);
 
     s.network = pc::NetworkPolicy::Unrestricted;
-    assert_eq!(container_plan(&s, "def").network, NetworkMode::Open);
+    assert_eq!(container_plan(&s, "def", &[]).network, NetworkMode::Open);
 }
 
 #[test]
@@ -158,9 +176,9 @@ fn pod_plan_is_process_as_container_with_native_gc() {
 #[derive(Default)]
 struct FakeState {
     alive: HashMap<String, bool>,
-    execs: HashMap<String, pc::ExitStatus>,
+    created_command: HashMap<String, Vec<String>>,
+    exits: HashMap<String, pc::ExitStatus>,
     signals: Vec<(String, pc::Signal)>,
-    next: u64,
     lease_touches: u32,
     artifacts: Vec<pc::Artifact>,
     blobs: HashMap<String, Vec<u8>>,
@@ -190,14 +208,33 @@ impl FakeRuntime {
 
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
-    async fn create(&self, id: &str, _plan: &ContainerPlan) -> Result<String, RuntimeError> {
+    async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
         let mut st = self.st.lock().unwrap();
         if st.fail_create {
             return Err(RuntimeError::Backend("image pull failed".into()));
         }
         let cid = format!("cid-{id}");
         st.alive.insert(cid.clone(), true);
+        st.created_command.insert(cid.clone(), plan.command.clone());
+        st.exits.insert(
+            cid.clone(),
+            pc::ExitStatus {
+                code: Some(0),
+                signaled: false,
+            },
+        );
         Ok(cid)
+    }
+    async fn open_channel(
+        &self,
+        container_id: &str,
+    ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
+        if !self.st.lock().unwrap().alive.contains_key(container_id) {
+            return Err(RuntimeError::NotFound(container_id.into()));
+        }
+        // Stand-in for a bollard attach / network dial: a usable duplex end.
+        let (ours, _peer) = tokio::io::duplex(64);
+        Ok(Box::new(ours))
     }
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {
         match self.st.lock().unwrap().alive.get(container_id) {
@@ -206,49 +243,19 @@ impl ContainerRuntime for FakeRuntime {
             None => Err(RuntimeError::NotFound(container_id.into())),
         }
     }
-    async fn exec(
-        &self,
-        _container_id: &str,
-        _command: &pc::Command,
-    ) -> Result<String, RuntimeError> {
-        let mut st = self.st.lock().unwrap();
-        st.next += 1;
-        let pid = format!("p{}", st.next);
-        st.execs.insert(
-            pid.clone(),
-            pc::ExitStatus {
-                code: Some(0),
-                signaled: false,
-            },
-        );
-        Ok(pid)
-    }
-    async fn exec_poll(
-        &self,
-        _container_id: &str,
-        process_id: &str,
-    ) -> Result<Option<pc::ExitStatus>, RuntimeError> {
-        Ok(self.st.lock().unwrap().execs.get(process_id).cloned())
-    }
-    async fn exec_wait(
-        &self,
-        _container_id: &str,
-        process_id: &str,
-    ) -> Result<pc::ExitStatus, RuntimeError> {
+    async fn wait(&self, container_id: &str) -> Result<pc::ExitStatus, RuntimeError> {
         self.st
             .lock()
             .unwrap()
-            .execs
-            .get(process_id)
+            .exits
+            .get(container_id)
             .cloned()
-            .ok_or_else(|| RuntimeError::NotFound(process_id.into()))
+            .ok_or_else(|| RuntimeError::NotFound(container_id.into()))
     }
-    async fn exec_signal(
-        &self,
-        container_id: &str,
-        _process_id: &str,
-        signal: pc::Signal,
-    ) -> Result<(), RuntimeError> {
+    async fn poll(&self, container_id: &str) -> Result<Option<pc::ExitStatus>, RuntimeError> {
+        Ok(self.st.lock().unwrap().exits.get(container_id).cloned())
+    }
+    async fn signal(&self, container_id: &str, signal: pc::Signal) -> Result<(), RuntimeError> {
         self.st
             .lock()
             .unwrap()
@@ -291,7 +298,7 @@ fn provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
 }
 
 #[tokio::test]
-async fn full_lifecycle_create_spawn_artifacts_lease_dispose() {
+async fn full_lifecycle_create_channel_process_artifacts_lease_dispose() {
     let rt =
         Arc::new(FakeRuntime::default().with_artifact("a1", "/mnt/session/outputs/o.txt", b"hi"));
     let p = provider(rt.clone());
@@ -301,16 +308,27 @@ async fn full_lifecycle_create_spawn_artifacts_lease_dispose() {
     assert_eq!(sandbox.id(), "run-1");
     assert_eq!(sandbox.realized().len(), 2);
     assert_eq!(sandbox.realized()[0].realization, pc::Realization::Bind);
+    // Process-as-container: create launched the agent argv as the main command.
+    assert_eq!(
+        rt.st
+            .lock()
+            .unwrap()
+            .created_command
+            .get("cid-run-1")
+            .unwrap(),
+        &vec!["claude".to_string(), "--acp".to_string()]
+    );
 
-    // spawn → wait → poll
-    let proc = sandbox.spawn(pc::Command::new(["claude"])).await.unwrap();
+    // spawn returns a handle to the main process; wait/poll/signal act on it.
+    let proc = sandbox.spawn(pc::Command::new(["ignored"])).await.unwrap();
+    assert_eq!(proc.id(), "cid-run-1");
     assert_eq!(proc.wait().await.unwrap().code, Some(0));
     assert!(proc.poll().await.unwrap().is_some());
-    proc.signal(pc::Signal::Int).await.unwrap();
+    proc.signal(pc::Signal::Term).await.unwrap();
+    assert_eq!(rt.st.lock().unwrap().signals.len(), 1);
 
     // artifacts out-of-band
-    let arts = sandbox.artifacts().await.unwrap();
-    assert_eq!(arts.len(), 1);
+    assert_eq!(sandbox.artifacts().await.unwrap().len(), 1);
     assert_eq!(sandbox.read_artifact("a1").await.unwrap(), b"hi");
     assert!(sandbox.read_artifact("nope").await.is_err());
 
@@ -329,6 +347,25 @@ async fn full_lifecycle_create_spawn_artifacts_lease_dispose() {
 }
 
 #[tokio::test]
+async fn open_channel_is_the_agent_transport_capability() {
+    let rt = Arc::new(FakeRuntime::default());
+    let sandbox = ContainerSandbox {
+        runtime: rt.clone(),
+        id: "run-x".into(),
+        container_id: "cid-x".into(),
+        outputs_path: "/mnt/session/outputs".into(),
+        realized: Vec::new(),
+    };
+    rt.st.lock().unwrap().alive.insert("cid-x".into(), true);
+    // Drive it through the neutral AgentTransport port.
+    let transport: &dyn AgentTransport = &sandbox;
+    assert!(transport.open_channel().await.is_ok());
+    // A gone container fails closed.
+    rt.st.lock().unwrap().alive.remove("cid-x");
+    assert!(sandbox.open_channel().await.is_err());
+}
+
+#[tokio::test]
 async fn handle_round_trips_and_adopt_reconnects() {
     let rt = Arc::new(FakeRuntime::default());
     let p = provider(rt.clone());
@@ -340,9 +377,9 @@ async fn handle_round_trips_and_adopt_reconnects() {
     let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
     let adopted = p.adopt(&recovered).await.unwrap();
     assert_eq!(adopted.id(), "run-2");
-    // reconnect a process by id + attach fails closed on this tier
-    let proc = adopted.process("p-old").await.unwrap();
-    assert_eq!(proc.id(), "p-old");
+    let proc = adopted.process("main").await.unwrap();
+    assert_eq!(proc.id(), "cid-run-2");
+    // late attach fails closed on this tier
     assert!(adopted.attach(spec("x").mounts.remove(0)).await.is_err());
 }
 
@@ -354,12 +391,18 @@ async fn adopt_without_container_id_fails_closed() {
 }
 
 #[tokio::test]
-async fn create_fails_closed_on_bad_spec_and_backend_error() {
-    // Non-absolute outputs → prepare_environment rejects before the runtime.
+async fn create_fails_closed_on_bad_spec_missing_command_and_backend_error() {
     let p = provider(Arc::new(FakeRuntime::default()));
+
+    // Non-absolute outputs → prepare_environment rejects before the runtime.
     let mut bad = spec("run-4");
     bad.outputs_path = "relative/outputs".into();
     assert!(p.create(&bad).await.is_err());
+
+    // Missing process-as-container command → fail closed.
+    let mut no_cmd = spec("run-4b");
+    no_cmd.extra = None;
+    assert!(p.create(&no_cmd).await.is_err());
 
     // Backend create failure propagates.
     let rt = Arc::new(FakeRuntime {

@@ -15,6 +15,7 @@
 //!   retrieved without streaming through the control plane.
 
 use async_trait::async_trait;
+use awaken_agent_channel::{AgentChannel, AgentTransport, ChannelError};
 use awaken_provisioning_contract as pc;
 use std::sync::Arc;
 
@@ -61,6 +62,9 @@ pub struct BindPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerPlan {
     pub image: String,
+    /// The agent process — the container's main command (process-as-container, NOT
+    /// exec-into-idle). Fixed at create, like a Pod's container command.
+    pub command: Vec<String>,
     pub env: Vec<(String, String)>,
     pub binds: Vec<BindPlan>,
     /// Out-of-band outputs volume mount path (artifacts leave via the volume).
@@ -107,6 +111,23 @@ fn mount_ref(source: &pc::MountSource) -> String {
     }
 }
 
+/// The agent command for a process-as-container tier, read from `spec.extra.command`
+/// (a JSON array of strings). The container/pod runs this as its main process; an
+/// empty command is a caller error the provider rejects fail-closed.
+#[must_use]
+pub fn command_of(spec: &pc::SandboxSpec) -> Vec<String> {
+    spec.extra
+        .as_ref()
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn inline_env(spec: &pc::SandboxSpec) -> Vec<(String, String)> {
     spec.env
         .iter()
@@ -118,11 +139,16 @@ fn inline_env(spec: &pc::SandboxSpec) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Render a [`ContainerPlan`] from a spec (Docker path). Pure.
+/// Render a [`ContainerPlan`] from a spec + the agent command (Docker path). Pure.
 #[must_use]
-pub fn container_plan(spec: &pc::SandboxSpec, default_image: &str) -> ContainerPlan {
+pub fn container_plan(
+    spec: &pc::SandboxSpec,
+    default_image: &str,
+    command: &[String],
+) -> ContainerPlan {
     ContainerPlan {
         image: image_of(spec, default_image),
+        command: command.to_vec(),
         env: inline_env(spec),
         binds: binds_of(spec),
         outputs_volume: spec.outputs_path.clone(),
@@ -197,26 +223,20 @@ pub enum ContainerState {
 /// type beyond the value objects it must move.
 #[async_trait]
 pub trait ContainerRuntime: Send + Sync {
+    /// Create + start the container/pod running `plan.command` as its main process.
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError>;
+    /// Open a duplex channel to the running agent — bollard container attach for
+    /// Docker, a network dial (TCP / reverse-dial via `awaken-connection`) for a
+    /// firewalled Pod. This replaces exec-into-idle: the agent *is* the container.
+    async fn open_channel(&self, container_id: &str)
+    -> Result<Box<dyn AgentChannel>, RuntimeError>;
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError>;
-    async fn exec(&self, container_id: &str, command: &pc::Command)
-    -> Result<String, RuntimeError>;
-    async fn exec_poll(
-        &self,
-        container_id: &str,
-        process_id: &str,
-    ) -> Result<Option<pc::ExitStatus>, RuntimeError>;
-    async fn exec_wait(
-        &self,
-        container_id: &str,
-        process_id: &str,
-    ) -> Result<pc::ExitStatus, RuntimeError>;
-    async fn exec_signal(
-        &self,
-        container_id: &str,
-        process_id: &str,
-        signal: pc::Signal,
-    ) -> Result<(), RuntimeError>;
+    /// Wait for the container's main process (the agent) to exit.
+    async fn wait(&self, container_id: &str) -> Result<pc::ExitStatus, RuntimeError>;
+    /// Poll the main process; `None` while it is still running.
+    async fn poll(&self, container_id: &str) -> Result<Option<pc::ExitStatus>, RuntimeError>;
+    /// Signal (reap) the container's main process.
+    async fn signal(&self, container_id: &str, signal: pc::Signal) -> Result<(), RuntimeError>;
     async fn artifacts(&self, container_id: &str) -> Result<Vec<pc::Artifact>, RuntimeError>;
     async fn read_artifact(
         &self,
@@ -262,7 +282,15 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         pc::prepare_environment(spec, &container_capabilities())
             .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
 
-        let plan = container_plan(spec, &self.default_image);
+        // Process-as-container: the agent command is provisioned at create, not
+        // exec'd into an idle container later.
+        let command = command_of(spec);
+        if command.is_empty() {
+            return Err(err(RuntimeError::Backend(
+                "container tier requires spec.extra.command (process-as-container)".into(),
+            )));
+        }
+        let plan = container_plan(spec, &self.default_image, &command);
         let container_id = self.runtime.create(&spec.scope, &plan).await.map_err(err)?;
         let realized = plan
             .binds
@@ -323,34 +351,41 @@ struct ContainerSandbox<R: ContainerRuntime> {
     realized: Vec<pc::RealizedMount>,
 }
 
+/// A handle over the container's main process (the agent). On this tier the process
+/// lifecycle *is* the container lifecycle — wait/poll/signal act on the container.
 struct ContainerProcess<R: ContainerRuntime> {
     runtime: Arc<R>,
     container_id: String,
-    process_id: String,
 }
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> pc::ProcessHandle for ContainerProcess<R> {
     fn id(&self) -> &str {
-        &self.process_id
+        &self.container_id
     }
     async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-        self.runtime
-            .exec_wait(&self.container_id, &self.process_id)
-            .await
-            .map_err(err)
+        self.runtime.wait(&self.container_id).await.map_err(err)
     }
     async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
-        self.runtime
-            .exec_poll(&self.container_id, &self.process_id)
-            .await
-            .map_err(err)
+        self.runtime.poll(&self.container_id).await.map_err(err)
     }
     async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
         self.runtime
-            .exec_signal(&self.container_id, &self.process_id, signal)
+            .signal(&self.container_id, signal)
             .await
             .map_err(err)
+    }
+}
+
+/// The tool-transparent capability: the container sandbox hands the ACP bridge a
+/// duplex channel to its process-as-container agent (the same seam local uses).
+#[async_trait]
+impl<R: ContainerRuntime + 'static> AgentTransport for ContainerSandbox<R> {
+    async fn open_channel(&self) -> Result<Box<dyn AgentChannel>, ChannelError> {
+        self.runtime
+            .open_channel(&self.container_id)
+            .await
+            .map_err(|e| ChannelError::Setup(e.to_string()))
     }
 }
 
@@ -371,17 +406,14 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
 
     async fn spawn(
         &self,
-        command: pc::Command,
+        _command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        let process_id = self
-            .runtime
-            .exec(&self.container_id, &command)
-            .await
-            .map_err(err)?;
+        // Process-as-container: the agent was launched as the container's main
+        // process at `create`. `spawn` returns a handle to it (the command is
+        // provisioned, not re-launched); drive its stdio via `AgentTransport`.
         Ok(Box::new(ContainerProcess {
             runtime: self.runtime.clone(),
             container_id: self.container_id.clone(),
-            process_id,
         }))
     }
 
@@ -416,12 +448,12 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
 
     async fn process(
         &self,
-        process_id: &str,
+        _process_id: &str,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+        // One process per container tier: reconnect to the main agent process.
         Ok(Box::new(ContainerProcess {
             runtime: self.runtime.clone(),
             container_id: self.container_id.clone(),
-            process_id: process_id.to_string(),
         }))
     }
 
