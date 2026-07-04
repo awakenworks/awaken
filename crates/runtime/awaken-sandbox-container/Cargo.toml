@@ -33,7 +33,7 @@ connection = ["dep:awaken-connection", "dep:tokio", "tokio/net", "tokio/io-util"
 docker = ["dep:bollard", "dep:futures-util", "connection"]
 # Real Kubernetes ContainerRuntime (kube). Process-as-container Pod + native-GC.
 # Compile-verified; running needs a cluster.
-k8s = ["dep:kube", "dep:k8s-openapi", "dep:rustls", "connection"]
+k8s = ["dep:kube", "dep:k8s-openapi", "dep:rustls", "dep:futures-util", "connection"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time"] }

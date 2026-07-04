@@ -24,8 +24,7 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
 
 #[tokio::test]
 async fn k8s_pod_lifecycle_against_a_real_cluster() {
-    let addr = "127.0.0.1:8080".parse().unwrap();
-    let Ok(rt) = K8sRuntime::connect("default", addr).await else {
+    let Ok(rt) = K8sRuntime::connect("default", 8080).await else {
         eprintln!("skipping: no kube client (no in-cluster SA / kubeconfig)");
         return;
     };
