@@ -18,16 +18,22 @@
 //! `static_bearer`, and `mcp_oauth`. Every wire secret (`secret_value`, `token`,
 //! `access_token`, `refresh_token`, `client_secret`) is write-only: sealed (or,
 //! for `client_secret`, consumed — see [`TokenEndpointAuthParams`]) on the way in,
-//! never present in any response. The MCP-OAuth validate route reports
-//! `has_refresh_token` truthfully but does not live-probe the server yet, so its
-//! `status` stays `unknown` for every credential type (never a false `valid`).
+//! never present in any response. The MCP-OAuth validate route live-probes the
+//! MCP server when the composition root wires an [`McpProbe`]
+//! ([`VaultState::with_probe`]): the credential's access token is materialized
+//! here and the port receives the resolved secret, never a vault ref. Without a
+//! probe — and always for `environment_variable` / `static_bearer`, which have no
+//! MCP handshake to probe — `status` stays `unknown` (never a false `valid`).
 //! [`VaultState::mcp_credential_source_for_url`] is the seam a session uses to
-//! bind an MCP server to a vault credential by URL.
+//! bind an MCP server to a vault credential by URL, and
+//! [`VaultState::mcp_refresh_for_source`] exposes that credential's stored
+//! refresh configuration for the session's transport-level token refresh.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{CredentialSourceId, SecretRef, SecretStore};
 use awaken_managed_bridge::{
@@ -92,9 +98,13 @@ pub enum CredentialNetworking {
 
 /// The token-endpoint auth scheme as it arrives on the wire
 /// (`BetaManagedAgentsTokenEndpointAuth{None,Basic,Post}Param`). The
-/// `client_secret` is write-only and — since this slice performs no live refresh
-/// exchange — consumed and dropped here: it is never stored and never echoed. A
-/// future refresh-exchange slice must seal it like the other secrets.
+/// `client_secret` is write-only and consumed-and-dropped BY DESIGN: it is never
+/// stored and never echoed. Consequently only the public-client refresh grant
+/// (`token_endpoint_auth: none`) is supported — a credential entered with a
+/// confidential-client scheme (`client_secret_basic` / `client_secret_post`)
+/// keeps its secret-free projection but is never offered for refresh
+/// ([`VaultState::mcp_refresh_for_source`] returns `None` for it), because the
+/// exchange could not authenticate without the dropped secret.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TokenEndpointAuthParams {
@@ -227,6 +237,45 @@ pub enum CredentialCreateParams {
     },
 }
 
+/// The stored refresh configuration of an `mcp_oauth` credential, exposed for a
+/// session's transport-level token refresh (consumer: `ManagedState::create_session`
+/// → [`crate::McpServerBinding`], which the server's `ManagedHost::prepare_session`
+/// turns into a live refresher on the MCP transport). Secret-free by construction:
+/// it carries the sealed refresh token's [`SecretRef`], never material. Only
+/// public-client refresh (`token_endpoint_auth: none`) is ever exposed — the
+/// `client_secret` of a confidential-client scheme was consumed at create (see
+/// [`TokenEndpointAuthParams`]), so such a credential yields no binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpRefreshBinding {
+    pub token_endpoint: String,
+    pub client_id: String,
+    /// The ref the sealed refresh token lives under (`sec:refresh:{source_id}`).
+    pub refresh_token_ref: SecretRef,
+    pub scope: Option<String>,
+    pub resource: Option<String>,
+}
+
+/// The status a live MCP probe reports for an `mcp_oauth` credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpProbeStatus {
+    /// Connect + MCP `initialize` handshake succeeded with the bearer.
+    Valid,
+    /// The server refused the bearer with an auth challenge (401/403).
+    Invalid { http_status: u16 },
+    /// No verdict: unreachable, protocol error, or otherwise inconclusive.
+    Unknown,
+}
+
+/// A port that live-probes an MCP server with an already-materialized bearer.
+/// The implementation (server-local, backed by `awaken-ext-mcp`) is the only
+/// place the MCP client is named — this crate stays wire-client-free. The
+/// signature takes the resolved secret, never a vault ref: materialization
+/// happens on this side of the port.
+#[async_trait::async_trait]
+pub trait McpProbe: Send + Sync {
+    async fn probe(&self, mcp_server_url: &str, bearer: &RedactedString) -> McpProbeStatus;
+}
+
 /// `BetaManagedAgentsCredentialValidationStatus`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -280,12 +329,11 @@ enum AuthRecord {
 }
 
 /// Stored refresh configuration for an `mcp_oauth` credential: the secret-free
-/// projection plus the ref the sealed refresh token lives under (the future
-/// refresh-exchange slice reads it; this slice only reports its presence).
+/// projection plus the ref the sealed refresh token lives under, which
+/// [`VaultState::mcp_refresh_for_source`] hands to the session's refresher.
 #[derive(Clone)]
 struct McpOauthRefreshRecord {
     projection: McpOauthRefreshResponse,
-    #[allow(dead_code)] // Read by the refresh-exchange slice; sealed-proof today.
     refresh_token_ref: SecretRef,
 }
 
@@ -311,6 +359,10 @@ struct Store {
 pub struct VaultState {
     secrets: Arc<dyn SecretStore>,
     credentials: Arc<dyn CredentialRepo>,
+    /// The live MCP probe the validate route consults for `mcp_oauth`
+    /// credentials, when the composition root wires one. `None` keeps every
+    /// validation `unknown` (never a false `valid`).
+    probe: Option<Arc<dyn McpProbe>>,
     inner: std::sync::Mutex<Store>,
     vault_seq: AtomicU64,
     cred_seq: AtomicU64,
@@ -322,10 +374,20 @@ impl VaultState {
         Self {
             secrets,
             credentials,
+            probe: None,
             inner: std::sync::Mutex::new(Store::default()),
             vault_seq: AtomicU64::new(0),
             cred_seq: AtomicU64::new(0),
         }
+    }
+
+    /// Wire the live MCP probe, so `POST .../mcp_oauth_validate` reports a real
+    /// `valid`/`invalid` verdict for an `mcp_oauth` credential instead of
+    /// `unknown`.
+    #[must_use]
+    pub fn with_probe(mut self, probe: Arc<dyn McpProbe>) -> Self {
+        self.probe = Some(probe);
+        self
     }
 
     /// The neutral credential-domain row id for a wire credential id, if it lives
@@ -368,6 +430,45 @@ impl VaultState {
             })
             .min_by(|(a, _), (b, _)| a.cmp(b))
             .map(|(_, c)| c.source_id.clone())
+    }
+
+    /// The stored refresh configuration of the `mcp_oauth` credential backing
+    /// `source_id`, if it is refreshable. This is the second half of the
+    /// vault→MCP binding seam (consumer: `ManagedState::create_session`, which
+    /// carries it on [`crate::McpServerBinding`] next to the source id): the
+    /// server's session build turns it into a transport-level refresher. `None`
+    /// for env-var / `static_bearer` credentials, for an `mcp_oauth` credential
+    /// entered without a refresh object, and for a confidential-client scheme
+    /// (its `client_secret` was consumed at create — see
+    /// [`TokenEndpointAuthParams`] — so only public-client refresh is possible).
+    #[must_use]
+    pub fn mcp_refresh_for_source(
+        &self,
+        source_id: &CredentialSourceId,
+    ) -> Option<McpRefreshBinding> {
+        let store = self.inner.lock().unwrap();
+        store
+            .credentials
+            .values()
+            .filter(|c| &c.source_id == source_id)
+            .find_map(|c| match &c.auth {
+                AuthRecord::McpOauth {
+                    refresh: Some(r), ..
+                } if matches!(
+                    r.projection.token_endpoint_auth,
+                    TokenEndpointAuthResponse::None
+                ) =>
+                {
+                    Some(McpRefreshBinding {
+                        token_endpoint: r.projection.token_endpoint.clone(),
+                        client_id: r.projection.client_id.clone(),
+                        refresh_token_ref: r.refresh_token_ref.clone(),
+                        scope: r.projection.scope.clone(),
+                        resource: r.projection.resource.clone(),
+                    })
+                }
+                _ => None,
+            })
     }
 
     fn project_vault(id: &str, record: &VaultRecord) -> Vault {
@@ -688,31 +789,62 @@ async fn validate_credential(
     State(state): State<Arc<VaultState>>,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<CredentialValidation>, WireError> {
-    let store = state.inner.lock().unwrap();
-    let record = store
-        .credentials
-        .get(&id)
-        .filter(|c| c.vault_id == vault_id)
-        .ok_or_else(|| not_found("credential"))?;
-    // No live MCP probe in this slice, so `status` stays `unknown` for every
-    // credential type (never a false `valid`). Only the refresh-token presence of
-    // an mcp_oauth credential is reported truthfully — it is a stored fact, not a
-    // probe result.
-    let has_refresh_token = matches!(
-        &record.auth,
-        AuthRecord::McpOauth {
-            refresh: Some(_),
-            ..
+    // Snapshot the record under the lock; the live probe (if any) awaits after.
+    let (source_id, mcp_server_url, has_refresh_token) = {
+        let store = state.inner.lock().unwrap();
+        let record = store
+            .credentials
+            .get(&id)
+            .filter(|c| c.vault_id == vault_id)
+            .ok_or_else(|| not_found("credential"))?;
+        let (url, has_refresh) = match &record.auth {
+            AuthRecord::McpOauth {
+                mcp_server_url,
+                refresh,
+                ..
+            } => (Some(mcp_server_url.clone()), refresh.is_some()),
+            _ => (None, false),
+        };
+        (record.source_id.clone(), url, has_refresh)
+    };
+    // Live probe: only an `mcp_oauth` credential (it names an MCP server to
+    // handshake with) and only when the composition root wired an `McpProbe`.
+    // The access token is materialized HERE and the port receives the resolved
+    // secret — never a vault ref (its signature enforces that). Any gap — no
+    // probe, env-var/static_bearer, a broken row, an inconclusive probe — keeps
+    // `status` `unknown`: never a false verdict. The `mcp_probe` detail is
+    // secret-free by construction (a handshake flag or an HTTP status).
+    let mut status = CredentialValidationStatus::Unknown;
+    let mut mcp_probe = None;
+    if let (Some(probe), Some(url)) = (&state.probe, &mcp_server_url) {
+        let bearer = match state.credentials.get(&source_id).await {
+            Ok(row) => awaken_credential_vault::materialize(&row, &*state.secrets)
+                .await
+                .ok(),
+            Err(_) => None,
+        };
+        if let Some(bearer) = bearer {
+            match probe.probe(url, &bearer).await {
+                McpProbeStatus::Valid => {
+                    status = CredentialValidationStatus::Valid;
+                    mcp_probe = Some(serde_json::json!({ "handshake": "ok" }));
+                }
+                McpProbeStatus::Invalid { http_status } => {
+                    status = CredentialValidationStatus::Invalid;
+                    mcp_probe = Some(serde_json::json!({ "http_status": http_status }));
+                }
+                McpProbeStatus::Unknown => {}
+            }
         }
-    );
+    }
     Ok(Json(CredentialValidation {
-        credential_id: id.clone(),
+        credential_id: id,
         has_refresh_token,
-        mcp_probe: None,
+        mcp_probe,
         refresh: None,
-        status: CredentialValidationStatus::Unknown,
+        status,
         object_type: "vault_credential_validation",
         validated_at: OBJECT_AT.to_string(),
-        vault_id: record.vault_id.clone(),
+        vault_id,
     }))
 }
