@@ -256,3 +256,162 @@ async fn wire_constraints_fail_closed() {
     .await;
     assert_eq!(s3, StatusCode::BAD_REQUEST);
 }
+
+/// Create a vault named `display_name` and return its id.
+async fn create_vault(h: &Harness, display_name: &str) -> String {
+    let (s, vault) = call(
+        &h.app,
+        "POST",
+        "/v1/vaults",
+        Some(json!({ "display_name": display_name })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    vault["id"].as_str().unwrap().to_string()
+}
+
+/// Enter an env-var credential named `secret_name` and return its id.
+async fn create_credential(h: &Harness, vault_id: &str, secret_name: &str) -> String {
+    let (s, cred) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "environment_variable",
+            "secret_name": secret_name,
+            "secret_value": "sk-v", // awaken-allow: secret
+            "networking": { "type": "unrestricted" }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    cred["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn delete_vault_cascades_credentials() {
+    let h = harness();
+    let vault_id = create_vault(&h, "doomed").await;
+    let cred_id = create_credential(&h, &vault_id, "K").await;
+
+    let (s, deleted) = call(&h.app, "DELETE", &format!("/v1/vaults/{vault_id}"), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(deleted["type"], "vault_deleted");
+    assert_eq!(deleted["id"], vault_id);
+
+    // The vault and its credential bookkeeping are gone.
+    let (s, _) = call(&h.app, "GET", &format!("/v1/vaults/{vault_id}"), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert!(h.state.credential_source_id(&vault_id, &cred_id).is_none());
+
+    // Deleting an unknown vault is a 404, not an idempotent 200.
+    let (s, _) = call(&h.app, "DELETE", "/v1/vaults/vlt_missing", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn retrieve_vault_unknown_is_404() {
+    let h = harness();
+    let (s, _) = call(&h.app, "GET", "/v1/vaults/vlt_missing", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn retrieve_credential_wrong_vault_is_404() {
+    let h = harness();
+    let vault_a = create_vault(&h, "a").await;
+    let vault_b = create_vault(&h, "b").await;
+    let cred_id = create_credential(&h, &vault_a, "K").await;
+
+    // The credential exists, but not under vault B — the path scope must hold.
+    let (s, _) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/vaults/{vault_b}/credentials/{cred_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_b}/credentials/{cred_id}/mcp_oauth_validate"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // An outright unknown credential 404s under its own vault too.
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_a}/credentials/crd_missing/mcp_oauth_validate"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn create_vault_rejects_bad_display_name() {
+    let h = harness();
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        "/v1/vaults",
+        Some(json!({ "display_name": "" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "empty display_name");
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        "/v1/vaults",
+        Some(json!({ "display_name": "x".repeat(256) })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "over-long display_name");
+    // The 255-char boundary itself is accepted.
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        "/v1/vaults",
+        Some(json!({ "display_name": "x".repeat(255) })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn too_many_credentials_is_rejected() {
+    let h = harness();
+    let vault_id = create_vault(&h, "full").await;
+    for i in 0..20 {
+        create_credential(&h, &vault_id, &format!("KEY_{i}")).await;
+    }
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "environment_variable",
+            "secret_name": "KEY_20",
+            "secret_value": "sk-v", // awaken-allow: secret
+            "networking": { "type": "unrestricted" }
+        })),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "21st credential must be rejected"
+    );
+}
