@@ -51,7 +51,14 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-provider-genai",
     },
     "awaken-admin-config-api": {"awaken-model-catalog", "awaken-credential-vault"},
-    "awaken-managed-bridge": {"awaken-credential-vault", "awaken-model-catalog"},
+    "awaken-managed-bridge": {
+        "awaken-agent-contract",
+        "awaken-credential-vault",
+        "awaken-model-catalog",
+        "serde",
+        "serde_json",
+        "tokio",
+    },
     "awaken-runtime-contract": {
         "awaken-agent-contract",
         "serde",
