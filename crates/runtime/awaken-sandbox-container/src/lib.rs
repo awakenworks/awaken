@@ -481,5 +481,10 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
     }
 }
 
+/// Remote-tier transport over `awaken-connection` (TCP dial + reverse dial). Gated
+/// behind the `connection` feature so the default build pulls no network stack.
+#[cfg(feature = "connection")]
+pub mod net;
+
 #[cfg(test)]
 mod tests;
