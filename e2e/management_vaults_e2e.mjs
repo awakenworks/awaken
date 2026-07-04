@@ -69,6 +69,19 @@ async function main() {
       const back = await client.beta.vaults.retrieve(vault.id, { betas: BETAS });
       assert.equal(back.id, vault.id);
       pass('beta.vaults.retrieve -> BetaManagedAgentsVault');
+
+      // Delete the vault; a subsequent retrieve must 404.
+      const deleted = await client.beta.vaults.delete(vault.id, { betas: BETAS });
+      assert.equal(deleted.type, 'vault_deleted');
+      assert.equal(deleted.id, vault.id);
+      await assert.rejects(
+        () => client.beta.vaults.retrieve(vault.id, { betas: BETAS }),
+        (err) => {
+          assert.equal(err.status, 404);
+          return true;
+        },
+      );
+      pass('beta.vaults.delete -> BetaManagedAgentsDeletedVault; retrieve 404s after');
     });
 
     console.log('E2E PASS: management vault/credential surface round-trips through the official @anthropic-ai/sdk.');
