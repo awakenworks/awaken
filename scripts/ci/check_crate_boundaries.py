@@ -17,12 +17,36 @@ CRATES = REPO_ROOT / "crates"
 # is deliberately NOT in this set for any neutral crate; it lives only in the
 # provider adapter so G2/G10 hold.
 ALLOWED_DEPS: dict[str, set[str]] = {
-    "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio"},
+    # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
+    # primitive, not a model/provider SDK.
+    "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize"},
     # Host-side credential vocabulary (Credential / AuthChallenge /
     # CredentialRefresher) shared by the outbound wire clients (awaken-ext-mcp,
     # awaken-protocol-a2a). A leaf like the contracts: names no wire, store, or
     # runtime type, so clients depend on it without pulling anything upward.
     "awaken-credential": {"async-trait"},
+    # Management plane (ADR-0043), agents bucket — orthogonal to execution; the
+    # runtime never depends on these (I4 / D6/D9, enforced by check_bucket_direction).
+    "awaken-model-catalog": {"serde", "thiserror", "schemars"},
+    "awaken-credential-vault": {
+        "awaken-agent-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "schemars",
+        "tokio",
+    },
+    "awaken-config-resolver": {
+        "awaken-agent-contract",
+        "awaken-model-catalog",
+        "awaken-credential-vault",
+        "serde",
+        "thiserror",
+        "tokio",
+    },
+    "awaken-admin-config-api": {"awaken-model-catalog", "awaken-credential-vault"},
+    "awaken-managed-bridge": {"awaken-credential-vault", "awaken-model-catalog"},
     "awaken-runtime-contract": {
         "awaken-agent-contract",
         "serde",
