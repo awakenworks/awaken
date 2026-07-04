@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-credential.workspace = true
 awaken-protocol-transport.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,6 +19,6 @@ axum = "0.7"
 ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

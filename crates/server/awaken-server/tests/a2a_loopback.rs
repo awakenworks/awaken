@@ -53,10 +53,7 @@ impl Transport for RouterTransport {
             .await
             .map_err(|e| e.to_string())?
             .to_bytes();
-        Ok(Response {
-            status,
-            body: bytes.to_vec(),
-        })
+        Ok(Response::new(status, bytes.to_vec()))
     }
 }
 
@@ -203,10 +200,7 @@ async fn a_working_task_is_polled_to_completion() {
                 r#"{"task":{"id":"task-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"polled answer"}]}}}}"#
                     .to_string()
             };
-            Ok(Response {
-                status: 200,
-                body: json.into_bytes(),
-            })
+            Ok(Response::new(200, json.into_bytes()))
         }
     }
 
@@ -259,18 +253,12 @@ async fn a_parent_interrupt_cancels_the_remote_task() {
         ) -> Result<Response, String> {
             if path.ends_with(":cancel") {
                 self.cancelled.store(true, Ordering::SeqCst);
-                return Ok(Response {
-                    status: 200,
-                    body: b"{}".to_vec(),
-                });
+                return Ok(Response::new(200, b"{}".to_vec()));
             }
             if method == "GET" {
                 self.polled.notify_one();
             }
-            Ok(Response {
-                status: 200,
-                body: WORKING.as_bytes().to_vec(),
-            })
+            Ok(Response::new(200, WORKING.as_bytes().to_vec()))
         }
     }
 
@@ -336,10 +324,7 @@ async fn a_remote_input_required_parks_the_parent_then_resumes() {
             } else {
                 r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"final answer"}]}}}}"#
             };
-            Ok(Response {
-                status: 200,
-                body: json.as_bytes().to_vec(),
-            })
+            Ok(Response::new(200, json.as_bytes().to_vec()))
         }
     }
 
@@ -419,10 +404,7 @@ async fn remote_artifacts_are_included_in_the_reply() {
             _body: Option<Vec<u8>>,
         ) -> Result<Response, String> {
             let json = r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"summary"}]}},"artifacts":[{"parts":[{"text":"the report body"}]}]}}"#;
-            Ok(Response {
-                status: 200,
-                body: json.as_bytes().to_vec(),
-            })
+            Ok(Response::new(200, json.as_bytes().to_vec()))
         }
     }
 
