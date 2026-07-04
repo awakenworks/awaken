@@ -461,7 +461,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "serde_json",
         "thiserror",
-        # dev-only: async fake runtime drives the provider lifecycle in unit tests.
+        # feature `connection`: awaken-connection establishes the remote AgentChannel
+        # (TCP dial + reverse dial); tokio provides the net stack. Both optional.
+        "awaken-connection",
         "tokio",
     },
     # Single-machine assembly binary: the composition root that wires the kernel
