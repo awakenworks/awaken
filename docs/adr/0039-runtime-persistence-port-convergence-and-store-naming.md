@@ -56,6 +56,16 @@ used where a real client needs a subset, not a goal.
 
 ### D2: `Store` names only a mutable keyed store; every other port names its authority
 
+> **Amended 2026-07-04 — the `Store`-suffix *ban* is dropped.** `Store` is a
+> generic, well-understood persistence word; forbidding it as a type suffix was
+> false precision and blocked natural names (e.g. `SecretStore`). D2 is retained
+> only as a **preference**: when a port has a sharper role word (commit, queue,
+> checkpoint, delivery), prefer that word because it reveals intent — but a plain
+> `*Store` for a genuine keyed/persistence port is allowed and is not a defect.
+> The specific rename decisions D2 drove (`CommitCoordinator`, `CheckpointReader`,
+> `DispatchQueue`, `Inbox`/`Outbox`, `ConfigRegistry`) stand as implemented; this
+> amendment removes only the blanket prohibition, not those names.
+
 `Store` is a container word with no intent. It is reserved for the one shape that
 genuinely *is* a store — a mutable, keyed put/get collection. Under this rule:
 

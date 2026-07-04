@@ -738,6 +738,43 @@ A development-ready slice for this flow should prove:
 Each item needs a test, conformance case, or dependency check before the slice is
 implementation-ready.
 
+## Credential Resolution: routing graph → resolved secret
+
+The management/host layer resolves the full routing graph (oversight-next model)
+and materializes the secret **before** building the snapshot; the runtime sees only
+an already-resolved `RedactedString` (or nothing, for host-native / proxy).
+Resolution happens at compile/dispatch time, so the runtime is unaware of pool vs
+single source, endpoint intersection, or env vs vault vs proxy (see
+[ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md),
+[credentials-and-vaults](credentials-and-vaults.md),
+[model-provider-backend-binding](model-provider-backend-binding.md)).
+
+```text
+host / integration layer (owns the seam; NOT awaken-runtime-contract)
+  awaken-management-contract: model_ref + InferenceProfile + CredentialBinding
+        |  reconcile_model_ref -> ResolvedModel{ model_id, flavor }
+        |  resolve_inference   -> InferenceTriple{ model_id, identity_id, provider_id, flavor }
+        |    CredentialBinding::Exact         -> one credential
+        |    (pool member)                    -> policy picks a candidate
+        |    Offering(model) ∩ flavor         -> the ProtocolEndpoint
+        v  selected credential -> MaterializedCredential
+  SecretInput{ Literal(RedactedString) | Handle }  -> SecretResolver.resolve -> RedactedString
+        |  materialized HERE, before the snapshot
+        v  compiled into the ExecutableAgentSnapshot / RunnableConfig
+runtime (already resolved; no resolver, no handle)
+  provider config carries a RedactedString (or nothing: host-native / proxy)
+        |
+        v  at the injection seam only (never persisted; zeroized on drop)
+LlmExecutor / subprocess env / egress proxy
+```
+
+The `SecretResolver` lives in the **host**, wired at the composition root; the
+runtime never resolves. Pool selection, tier failover, the endpoint intersection,
+and handle resolution are all upstream of the snapshot. An unresolvable credential
+fails closed. Lazy/rotating resolution (re-fetch mid-run) is a **provider-adapter**
+concern with its own injected credential source — not a runtime-contract type
+(D6/D9). See [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md).
+
 ## Guardrails
 
 G1, G2, G3, G4, G5, G6, G8, G9, G10, G13, G14, G28, and G29 in
