@@ -15,10 +15,11 @@ thiserror.workspace = true
 [dev-dependencies]
 tokio.workspace = true
 serde_json.workspace = true
-# P0 full-chain acceptance: resolve → provider injection seam (real model call is
-# env-gated). Runtime crates — allowed (agents → runtime); the runtime never
-# depends back (I4 / D6/D9).
+# P0/E2E acceptance: full chain through the production APIs (admin repos →
+# credential entry → managed model-decode → resolve → provider seam). Real model
+# call is env-gated.
 awaken-provider-genai.workspace = true
+awaken-managed-bridge.workspace = true
 
 [lints]
 workspace = true
