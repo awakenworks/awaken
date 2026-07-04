@@ -14,7 +14,7 @@ use awaken_agent_channel::{AgentChannel, AgentTransport};
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{Container, EnvVar, Pod, PodSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
-use kube::api::{DeleteParams, PostParams};
+use kube::api::{DeleteParams, ListParams, PostParams};
 use kube::{Api, Client};
 
 use crate::net::TcpAgentTransport;
@@ -39,6 +39,9 @@ impl K8sRuntime {
         namespace: impl Into<String>,
         agent_addr: SocketAddr,
     ) -> Result<Self, RuntimeError> {
+        // kube's rustls client needs a process-level CryptoProvider; install ring
+        // once (idempotent — a prior install by the host is fine).
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let client = Client::try_default().await.map_err(backend)?;
         Ok(Self {
             client,
@@ -57,6 +60,15 @@ impl K8sRuntime {
 
     fn pods(&self) -> Api<Pod> {
         Api::namespaced(self.client.clone(), &self.namespace)
+    }
+
+    /// Probe the apiserver (for tests / health checks): `Ok` iff it responds.
+    pub async fn ping(&self) -> Result<(), RuntimeError> {
+        self.pods()
+            .list(&ListParams::default().limit(1))
+            .await
+            .map(|_| ())
+            .map_err(backend)
     }
 
     fn pod(&self, id: &str, plan: &ContainerPlan) -> Pod {
