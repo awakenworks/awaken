@@ -62,6 +62,8 @@ wrappers = [
     "awaken-protocol-a2a",
     "awaken-protocol-mcp",
     "awaken-server-local",
+    "awaken-credential-vault",
+    "awaken-config-resolver",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
 

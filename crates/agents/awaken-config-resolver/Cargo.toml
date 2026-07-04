@@ -1,15 +1,15 @@
 [package]
-name = "awaken-agent-contract"
+name = "awaken-config-resolver"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-async-trait.workspace = true
+awaken-agent-contract.workspace = true
+awaken-model-catalog.workspace = true
+awaken-credential-vault.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
-zeroize = "1"
 
 [dev-dependencies]
 tokio.workspace = true

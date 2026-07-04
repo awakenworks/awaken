@@ -37,6 +37,12 @@ awaken-protocol-ag-ui = { path = "crates/runtime/awaken-protocol-ag-ui" }
 awaken-protocol-ai-sdk = { path = "crates/runtime/awaken-protocol-ai-sdk" }
 awaken-protocol-managed = { path = "crates/agents/awaken-protocol-managed" }
 awaken-protocol-acp = { path = "crates/agents/awaken-protocol-acp" }
+# Management plane (ADR-0043 decomposition) — agents bucket, orthogonal to execution.
+awaken-model-catalog = { path = "crates/agents/awaken-model-catalog" }
+awaken-credential-vault = { path = "crates/agents/awaken-credential-vault" }
+awaken-config-resolver = { path = "crates/agents/awaken-config-resolver" }
+awaken-admin-config-api = { path = "crates/agents/awaken-admin-config-api" }
+awaken-managed-bridge = { path = "crates/agents/awaken-managed-bridge" }
 awaken-store-conformance = { path = "crates/runtime/awaken-store-conformance" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
 awaken-store-fs = { path = "crates/runtime/awaken-store-fs" }
