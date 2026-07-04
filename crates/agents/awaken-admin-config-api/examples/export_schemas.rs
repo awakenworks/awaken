@@ -33,11 +33,6 @@ fn main() {
     add!("CredentialKind", awaken_credential_vault::CredentialKind);
     add!("CredentialStatus", awaken_credential_vault::CredentialStatus);
     // Credential pools (the `OneOfCredentialPool` binding's members).
-    add!("CredentialPool", awaken_credential_vault::CredentialPool);
-    add!(
-        "CredentialPoolMember",
-        awaken_credential_vault::CredentialPoolMember
-    );
     add!("CredentialPoolId", awaken_credential_vault::CredentialPoolId);
     add!("CredentialPool", awaken_credential_vault::CredentialPool);
     add!(
