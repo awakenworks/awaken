@@ -101,6 +101,8 @@ adapters**. The neutral seam is realized as the crate
 | `AgentChannel` | Boundary port (capability) | hand a consumer one duplex to a spawned agent process; only `tool_transparent` tiers implement it | `awaken-connection` Channel, `ProcessId` | raw stdio on the neutral data contract; protocol semantics (G3) | a non-transparent tier forced to expose a stream it cannot back | ISP: a segregated port, never `ProcessHandle::streams`; `tool_transparent` + object-safety test |
 | `RunEventSink` (binding seam) | Boundary port | the sole crate permitted to depend on runtime-core; commit projected neutral events (seq + lease nonce) | `StepOutcome`, event sequence | ACP vocabulary; provider mechanism; commit truth beyond append (G13) | agents-plane tangled directly into runtime-core | `check_crate_boundaries.py` (only this crate → runtime); monotonic-seq test |
 | `MountSource::Secret` | Value object (declared) | a file-materialized credential with `MountLifetime` + optional write-back | `MountAccess`, `MountLifetime` | inline secret bytes crossing the seam (reference only, G3) | an agent auth file left unrefreshed or leaked upward | admission (secret-ref only); write-back-plan test |
+| `FileStore` + backends (`FsFileStore`, `PgFileStore`, `S3FileStore`) | Boundary port + Adapters | content-addressed blob by BLAKE3 `content_id` (computed in `awaken-file-store` core — identical on every backend); immutable/deduplicating `put`/`get`/`list`/`delete`; fs uses atomic temp-file + rename; pg uses `ON CONFLICT DO NOTHING`; s3 uses `object_store` with content id as object key | `blake3`, optional `sqlx` (postgres) / `object_store` (s3) | inline secret bytes (mounts carry refs, not bytes, G3); backend-specific key formats leaking upward | backend outage blocks mount realization; content-hash mismatch fails verification | `content_id_is_blake3_and_stable`; `same_bytes_same_id_across_backends`; per-backend round-trip tests |
+| `TcpAgentTransport` + `bind_reverse` | Transport adapters (remote tier) | direct TCP dial to a published agent port (`TcpAgentTransport`); reverse dial for a firewalled Pod that dials out to a host rendezvous (`bind_reverse`) — both back the neutral `AgentTransport` seam | `AgentTransport`, `TcpStream`, `awaken-connection` `Channel` | protocol semantics; Docker/K8s API calls (those live in the provider, not the transport) | dial to dead or unpublished port fails closed with `ChannelError::Setup` | `direct_dial_to_a_dead_port_fails_closed`; `bind_reverse_resolves_the_ephemeral_port_and_pairs` |
 
 ## Guardrails
 
@@ -225,3 +227,58 @@ place accordingly.
 - Process-as-container complicates multi-`spawn` per sandbox; accepted because the
   common case is one agent per environment and it buys native
   restart/observability/GC.
+
+## Amendment (2026-07-04): Slice 4 FileStore + Slice 5 Container Realizations
+
+Slices 4 and 5 are now landed. This amendment records the concrete mechanism
+decisions; the Role Catalog above is extended with `FileStore` backends and the
+remote-tier transport adapters.
+
+**Slice 4 (FileStore) — landed:**
+
+- `content_id` is the BLAKE3 hex digest computed inside `awaken-file-store` core
+  regardless of backend. Identical bytes yield the same id on every backend;
+  mount verification and cross-backend migration are "compare by id".
+- Three backends ship behind Cargo features: `FsFileStore` (default — atomic
+  temp-file + rename; crash-safe), `PgFileStore` (`postgres` feature — `bytea`
+  column, idempotent `INSERT … ON CONFLICT DO NOTHING`), `S3FileStore` (`s3`
+  feature — `object_store`; object key = content id, naturally immutable).
+  All implement the same `FileStore` trait; the `put` return value is identical
+  across all three for the same input bytes.
+
+**Slice 5 (Docker) — landed:**
+
+- `DockerRuntime` uses the `bollard` SDK over the Docker Engine HTTP API — never
+  the `docker` CLI. The agent is the container's main `cmd`
+  (process-as-container); there is no `docker exec` path.
+- The agent's stdio port is published to an **ephemeral `127.0.0.1` host port**
+  via `PortBinding { host_ip: "127.0.0.1", host_port: "" }`. `open_channel()`
+  discovers the bound port through `inspect_container` and then dials it with
+  `TcpAgentTransport` — this is the decided transport mechanism.
+- `touch_lease` is a no-op: Docker has no native TTL or ownerReference; a
+  lightweight label-watching reaper external to the provider handles orphan
+  containers.
+- `read_artifact` falls back to the Engine API tar-stream; `artifacts()` returns
+  empty and a deployment configures the outputs volume independently.
+
+**Slice 5 (K8s) — landed:**
+
+- `K8sRuntime` uses the `kube` SDK over the kube-apiserver — never `kubectl`.
+  Pods use `restartPolicy: Never` (process-as-container; a finished agent Pod is
+  reaped, not restarted). `ownerReferences` attach the Pod to a lifecycle owner
+  so the platform GC reaps orphans — no custom reaper.
+- `open_channel()` dials a **pre-configured `agent_addr: SocketAddr`** passed to
+  `K8sRuntime::connect()`. The K8s backend does not create or auto-discover a
+  Service. **Service discovery gap (explicit):** the caller must supply the
+  correct Service endpoint at construction time. A production deployment is
+  responsible for this address (e.g. a per-run Service, headless Service with
+  stable DNS, or a controller that injects the addr). This gap is stated here and
+  is not silently deferred.
+- K8s signals map to Pod deletion: `Signal::Kill` → `grace_period=0` (immediate);
+  others → default graceful deletion. There is no per-process signal API.
+- `read_artifact` returns an error directing callers to the PVC-backed outputs
+  path; artifact retrieval is entirely out-of-band.
+- **rustls `CryptoProvider`:** `kube` compiled with `rustls-tls` requires a
+  process-level `CryptoProvider`. `K8sRuntime::connect()` installs
+  `rustls::crypto::ring::default_provider()` once (idempotent — a prior install
+  by the host process is silently accepted).
