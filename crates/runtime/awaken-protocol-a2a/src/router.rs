@@ -233,6 +233,11 @@ pub fn agent_card(model: &str) -> AgentCard {
             name: "Chat".to_string(),
             tags: vec!["chat".to_string()],
         }],
+        // No schemes by default: auth is the composition root's choice. A host
+        // that puts auth in front of the router declares it here on the card.
+        security_schemes: Default::default(),
+        security: Vec::new(),
+        supports_authenticated_extended_card: None,
     }
 }
 
