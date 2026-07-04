@@ -635,6 +635,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # MCP servers are connected per thread and their tools registered.
         "awaken-ext-mcp",
         "async-trait",
+        # OAuth refresh-token exchange (ADR-0043): the VaultRefresher POSTs the
+        # RFC 6749 refresh grant — the same HTTP client ext-mcp's transport uses.
+        "reqwest",
         "serde_json",
         "thiserror",
         "tokio",

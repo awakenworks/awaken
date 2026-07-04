@@ -44,6 +44,10 @@ awaken-ext-skills = { workspace = true }
 # connected per thread and their tools registered on the runtime.
 awaken-ext-mcp = { workspace = true }
 async-trait.workspace = true
+# OAuth refresh-token exchange (ADR-0043): `VaultRefresher` POSTs the RFC 6749
+# refresh grant to the credential's token endpoint. Same client + feature set as
+# awaken-ext-mcp's own transport, so no second HTTP stack enters the tree.
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }

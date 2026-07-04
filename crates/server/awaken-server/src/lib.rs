@@ -53,6 +53,10 @@ use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
 
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
+// The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
+// prepared configuration, and the live MCP credential probe — exposed so an
+// integration test (and another composition root) can drive them directly.
+pub use crate::mcp::{ExtMcpProbe, PreparedMcpRefresh, VaultRefresher};
 // Skill authoring inputs (ADR-0036): a composition root supplies these to
 // `build_router_with_skills` / `SharedHost::with_skills`. The whole set is fronted
 // by the single `Skill` tool.
@@ -714,25 +718,41 @@ impl SessionRuntime for ManagedHost {
         let mut prepared: Vec<crate::host::PreparedMcpServer> =
             Vec::with_capacity(init.mcp_servers.len());
         for binding in &init.mcp_servers {
-            let bearer = match &binding.credential_source_id {
+            let (bearer, refresh) = match &binding.credential_source_id {
                 Some(source_id) => {
                     let row = mcp.credentials.get(source_id).await.map_err(|e| {
                         RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
                     })?;
-                    Some(
-                        awaken_credential_vault::materialize(&row, &*mcp.secrets)
-                            .await
-                            .map_err(|e| {
-                                RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
-                            })?,
-                    )
+                    let bearer = awaken_credential_vault::materialize(&row, &*mcp.secrets)
+                        .await
+                        .map_err(|e| {
+                            RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
+                        })?;
+                    // The binding's refresh configuration becomes a live
+                    // refresher on the transport: it needs the row's
+                    // material_ref to reseal the fresh access token (a vault
+                    // row always has one; anything else cannot refresh).
+                    let refresh = match (&binding.refresh, &row.material_ref) {
+                        (Some(r), Some(access_token_ref)) => Some(crate::mcp::PreparedMcpRefresh {
+                            token_endpoint: r.token_endpoint.clone(),
+                            client_id: r.client_id.clone(),
+                            scope: r.scope.clone(),
+                            resource: r.resource.clone(),
+                            refresh_token_ref: r.refresh_token_ref.clone(),
+                            access_token_ref: access_token_ref.clone(),
+                            secrets: mcp.secrets.clone(),
+                        }),
+                        _ => None,
+                    };
+                    (Some(bearer), refresh)
                 }
-                None => None,
+                None => (None, None),
             };
             prepared.push(crate::host::PreparedMcpServer {
                 name: binding.name.clone(),
                 url: binding.url.clone(),
                 bearer,
+                refresh,
             });
         }
         if let Some(config) = mcp.mcp_store.get_agent_config(&init.agent_id) {
@@ -765,6 +785,9 @@ impl SessionRuntime for ManagedHost {
                     name: server.name,
                     url: server.url,
                     bearer: server.credential,
+                    // Management-plane servers resolve through the admin
+                    // credential model, which has no OAuth refresh object.
+                    refresh: None,
                 });
             }
         }
@@ -1331,10 +1354,13 @@ pub fn build_management_router() -> Router {
         // place the model SDK is named; the admin CRUD crate stays SDK-free.
         probe: Some(Arc::new(GenaiProbe)),
     });
-    let vault_state = Arc::new(awaken_protocol_managed::VaultState::new(
-        secrets.clone(),
-        credentials.clone(),
-    ));
+    let vault_state = Arc::new(
+        awaken_protocol_managed::VaultState::new(secrets.clone(), credentials.clone())
+            // The live MCP probe is backed by ext-mcp here — the only place the
+            // MCP client is named for validation; the adapter crate stays
+            // wire-client-free (mirrors the GenaiProbe pattern above).
+            .with_probe(Arc::new(crate::mcp::ExtMcpProbe)),
+    );
     let vaults = awaken_protocol_managed::vault_router(vault_state.clone());
 
     // The MCP-driving deterministic model, so an e2e can hold a real multi-turn
