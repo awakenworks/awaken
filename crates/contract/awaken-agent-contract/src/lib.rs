@@ -5,6 +5,7 @@ pub mod commit;
 pub mod event;
 pub mod fact;
 pub mod project;
+pub mod secret;
 pub mod store;
 pub mod stream;
 
@@ -15,6 +16,7 @@ pub use agent::thread::Id as ThreadId;
 pub use commit::coordinator::Coordinator as CommitCoordinator;
 pub use commit::staged::{OutboxIntent, ThreadCommit};
 pub use event::record::Record as EventRecord;
+pub use secret::RedactedString;
 pub use store::checkpoint::{CheckpointReader, EventScope};
 pub use stream::event::Event as StreamEvent;
 pub use stream::sink::Sink as StreamSink;
