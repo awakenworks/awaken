@@ -288,6 +288,122 @@
       "title": "CredentialStatus",
       "type": "string"
     },
+    "CredentialValidation": {
+      "$defs": {
+        "ProbeStatus": {
+          "description": "The result of a live credential probe (secret-free), aligned with the Managed\nwire's `valid` / `invalid` / `unknown` statuses.",
+          "enum": [
+            "valid",
+            "invalid",
+            "unknown"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The secret-free result of a live credential probe.",
+      "properties": {
+        "adapter_kind": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ProbeStatus"
+        }
+      },
+      "required": [
+        "status",
+        "adapter_kind"
+      ],
+      "title": "CredentialValidation",
+      "type": "object"
+    },
+    "InferenceProfile": {
+      "$defs": {
+        "CredentialBinding": {
+          "description": "The \"which credential\" axis (oversight-next / awaken-management-contract).",
+          "oneOf": [
+            {
+              "description": "No credential is needed.",
+              "properties": {
+                "type": {
+                  "const": "none",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Use exactly one source.",
+              "properties": {
+                "credential_source_id": {
+                  "$ref": "#/$defs/CredentialSourceId"
+                },
+                "type": {
+                  "const": "exact",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "credential_source_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Use one eligible member of a pool; the resolver selects by policy and may\nfail over to the next member if the chosen one cannot be materialized.",
+              "properties": {
+                "credential_pool_id": {
+                  "$ref": "#/$defs/CredentialPoolId"
+                },
+                "type": {
+                  "const": "one_of_credential_pool",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "credential_pool_id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "CredentialPoolId": {
+          "description": "A credential pool identifier.",
+          "type": "string"
+        },
+        "CredentialSourceId": {
+          "description": "Stable id of a [`CredentialSource`].",
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "An authored \"how to run this model\" unit (ADR-0043 `InferenceProfile` /\noversight-next `ProviderIdentity`): it names the model, the credential binding\n(vault-backed, never inline), and any endpoints the operator has toggled off.\nThe resolver reads it — it is never flowed into the runtime.",
+      "properties": {
+        "credential_binding": {
+          "$ref": "#/$defs/CredentialBinding"
+        },
+        "disabled_endpoint_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "model_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_id",
+        "credential_binding"
+      ],
+      "title": "InferenceProfile",
+      "type": "object"
+    },
     "ModelApiCompat": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;\nthe credential/model bindings are resolved against this flavor (ADR-0043).",

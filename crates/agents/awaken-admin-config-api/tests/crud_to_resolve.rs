@@ -36,6 +36,8 @@ fn harness() -> Harness {
         catalog: catalog.clone(),
         credentials: credentials.clone(),
         secrets: secrets.clone(),
+        profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+        probe: None,
     });
     Harness {
         app,

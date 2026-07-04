@@ -11,6 +11,13 @@ awaken-model-catalog.workspace = true
 awaken-credential-vault.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+schemars = { version = "1", optional = true }
+
+[features]
+default = []
+# Emit JSON Schema for the authored DTOs (e.g. `InferenceProfile`) so the admin
+# API can include them in the generated TS contract.
+schema = ["dep:schemars", "awaken-credential-vault/schema"]
 
 [dev-dependencies]
 tokio.workspace = true
