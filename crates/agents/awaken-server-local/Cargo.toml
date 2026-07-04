@@ -25,11 +25,14 @@ awaken-run-ingress = { workspace = true }
 awaken-config-resolver = { workspace = true }
 awaken-provider-genai = { workspace = true }
 # The management-plane HTTP surfaces this binary mounts: admin config CRUD and the
-# Managed vault/credential front door, over shared in-memory stores.
-awaken-admin-config-api = { workspace = true }
-awaken-model-catalog = { workspace = true }
+# Managed vault/credential front door, over shared stores — in-memory by default,
+# SQLite-backed when AWAKEN_MGMT_DIR selects durable persistence (`sqlite` features).
+awaken-admin-config-api = { workspace = true, features = ["sqlite"] }
+awaken-model-catalog = { workspace = true, features = ["sqlite"] }
 # `oauth-command`: refresh a Google OAuth2 token (gcloud) for the `real-gemini` mode.
-awaken-credential-vault = { workspace = true, features = ["oauth-command"] }
+# `sqlite` + `sealed-aead`: the durable management plane persists secret-free rows in
+# SQLite and secrets only as AEAD-sealed blobs under AWAKEN_MGMT_SEAL_KEY.
+awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead"] }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-agent-contract.workspace = true
@@ -62,3 +65,5 @@ axum = "0.7"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
+# Restart-persistence test: a management router rebuilt over the same tempdir.
+tempfile = "3"

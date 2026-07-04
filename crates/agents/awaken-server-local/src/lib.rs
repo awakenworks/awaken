@@ -1305,12 +1305,6 @@ pub fn build_config_router() -> Router {
     mount(Arc::new(host)).merge(config_plane::config_router(service))
 }
 
-/// A server that also mounts the **management plane** (ADR-0043): the self-hosted
-/// admin config CRUD (`/v1/config/providers|endpoints|offerings|credentials`) and
-/// the Anthropic-compatible Managed vault/credential front door (`/v1/vaults...`),
-/// over one shared set of in-memory stores. A credential entered through either
-/// surface lands in the same store the resolver reads, so the whole
-/// author → resolve chain is served by one binary alongside the session adapters.
 /// The live credential-validation probe port (ADR-0043), backed by provider-genai.
 /// This is the only place the model SDK is named for validation — the admin CRUD
 /// crate depends on the `CredentialProbe` trait, not on genai.
@@ -1335,21 +1329,159 @@ impl awaken_admin_config_api::CredentialProbe for GenaiProbe {
     }
 }
 
+/// The store set the management plane runs over — one instance of each port,
+/// shared by the admin router, the vault front door, and session prepare.
+struct ManagementStores {
+    catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
+    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>,
+    mcp: Arc<dyn awaken_admin_config_api::McpStore>,
+}
+
+/// Ephemeral management stores: everything in process memory (dev / e2e default).
+fn in_memory_management_stores() -> ManagementStores {
+    ManagementStores {
+        catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
+        credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+        secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+        mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
+    }
+}
+
+/// Durable management stores under `dir` (created if absent), ADR-0043
+/// sqlite-repos: one SQLite file per domain bundle —
+///
+/// - `catalog.db`   — the `awaken.catalog` bundle (providers/endpoints/offerings)
+/// - `credential.db` — the `awaken.credential` bundle: the secret-free
+///   source/pool rows (`SqliteCredentialRepo`) **and** the AEAD-sealed secret
+///   blobs (`SqliteSealedBlobStore` under `SealedAeadSecretStore::over`, sealed
+///   with `key`). The two adapters share the one file safely: both run the same
+///   `credential` migration bundle, and the scoped-migration ledger makes the
+///   second run a no-op; admin-plane writes are short single statements, so two
+///   connections on one file do not contend in practice.
+/// - `admin.db`     — the `awaken.admin` bundle (profiles / MCP defs / agent↔MCP)
+///
+/// Panics on open/migrate failure: the binary's mode selection has no error
+/// channel (matching e.g. `build_config_router`), and a management server that
+/// silently fell back to ephemeral stores would be worse than one that refuses
+/// to start.
+fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> ManagementStores {
+    std::fs::create_dir_all(dir).expect("create AWAKEN_MGMT_DIR");
+    let db = |name: &str| dir.join(name).to_string_lossy().into_owned();
+    let catalog = awaken_model_catalog::sqlite::SqliteCatalogRepo::open(&db("catalog.db"))
+        .expect("open catalog.db under AWAKEN_MGMT_DIR");
+    let credentials = awaken_credential_vault::SqliteCredentialRepo::open(&db("credential.db"))
+        .expect("open credential.db under AWAKEN_MGMT_DIR");
+    let blobs = awaken_credential_vault::SqliteSealedBlobStore::open(&db("credential.db"))
+        .expect("open credential.db sealed-blob store under AWAKEN_MGMT_DIR");
+    let admin = Arc::new(
+        awaken_admin_config_api::SqliteAdminStore::open(&db("admin.db"))
+            .expect("open admin.db under AWAKEN_MGMT_DIR"),
+    );
+    ManagementStores {
+        catalog: Arc::new(catalog),
+        credentials: Arc::new(credentials),
+        // The only durable secret path is sealed: `nonce ‖ ciphertext` under the
+        // operator-held key — plaintext never reaches the disk.
+        secrets: Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
+            key,
+            Arc::new(blobs),
+        )),
+        profiles: admin.clone(),
+        mcp: admin,
+    }
+}
+
+/// Parse `AWAKEN_MGMT_SEAL_KEY`: exactly 64 hex characters (a 32-byte AEAD key).
+fn parse_seal_key(hex: &str) -> Result<[u8; 32], String> {
+    let hex = hex.trim();
+    if hex.len() != 64 || !hex.is_ascii() {
+        return Err(format!(
+            "expected 64 hex characters (a 32-byte key), got {} characters",
+            hex.len()
+        ));
+    }
+    let mut key = [0u8; 32];
+    for (i, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+            .map_err(|_| format!("not hex at position {}", 2 * i))?;
+    }
+    Ok(key)
+}
+
+/// The AEAD key for the durable management plane, from `AWAKEN_MGMT_SEAL_KEY`
+/// (64 hex characters = 32 bytes). Fails loudly when unset or malformed: a
+/// durable store sealed under an ephemeral random key would look healthy until
+/// the first restart, then every persisted secret would be unopenable.
+fn mgmt_seal_key_from_env() -> [u8; 32] {
+    let hex = std::env::var("AWAKEN_MGMT_SEAL_KEY").unwrap_or_else(|_| {
+        panic!(
+            "AWAKEN_MGMT_DIR is set but AWAKEN_MGMT_SEAL_KEY is not. A durable \
+             management store needs a stable AEAD key (64 hex characters = 32 bytes); \
+             sealing under an ephemeral key would brick every restart."
+        )
+    });
+    parse_seal_key(&hex).unwrap_or_else(|reason| {
+        panic!("AWAKEN_MGMT_SEAL_KEY is malformed: {reason}. Provide 64 hex characters (a 32-byte key).")
+    })
+}
+
+/// Serve the management plane (admin + vaults + sessions) with **persistence
+/// selected from the environment** (mirrors `AWAKEN_STORE` / `AWAKEN_INGRESS`):
+///
+/// - `AWAKEN_MGMT_DIR` unset — in-memory stores, exactly the previous behavior.
+/// - `AWAKEN_MGMT_DIR=<dir>` — SQLite-backed stores under `<dir>`
+///   (`catalog.db` / `credential.db` / `admin.db`), with secrets AEAD-sealed
+///   under `AWAKEN_MGMT_SEAL_KEY` (**required** then: 64 hex characters = a
+///   32-byte key; unset or malformed panics rather than sealing under a key
+///   that cannot survive a restart).
+///
+/// What persists across a restart is the authored **domain** state: the catalog,
+/// the secret-free credential/pool rows plus their sealed secrets, and the
+/// admin aggregates (inference profiles, MCP server defs, agent↔MCP bindings).
+/// The Managed **wire** bookkeeping stays host-ephemeral by design: vault ids /
+/// vault-credential wire objects (`VaultState`), sessions, and thread state are
+/// rebuilt fresh per process (session durability has its own axis,
+/// `AWAKEN_STORAGE_DIR`). After a restart a vault wire GET 404s while the
+/// domain row it entered is still there for the resolver.
 pub fn build_management_router() -> Router {
-    let catalog = Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new());
-    let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    match std::env::var("AWAKEN_MGMT_DIR") {
+        Ok(dir) => {
+            let key = mgmt_seal_key_from_env();
+            build_durable_management_router(std::path::Path::new(&dir), &key)
+        }
+        Err(_) => management_router_over(in_memory_management_stores()),
+    }
+}
+
+/// [`build_management_router`] with explicit persistence inputs (no environment
+/// read): the durable management plane over `dir`, sealing secrets under `key`.
+/// Exposed so a restart test can rebuild a router over one directory across
+/// simulated process lifetimes without racing on process-global env vars.
+pub fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
+    management_router_over(durable_management_stores(dir, key))
+}
+
+/// Mount the management plane over an explicit store set.
+fn management_router_over(stores: ManagementStores) -> Router {
+    let ManagementStores {
+        catalog,
+        credentials,
+        secrets,
+        profiles,
+        mcp: mcp_store,
+    } = stores;
     // ONE MCP store across the admin router and the ManagedHost, and ONE
     // credential repo + secret store across admin, vaults, and sessions: a
     // credential or MCP config entered through any surface is the same row a
     // session's prepare reads (ADR-0043 Phase 3).
-    let mcp_store = Arc::new(awaken_admin_config_api::InMemoryMcpStore::new());
-
     let admin = awaken_admin_config_api::admin_router(awaken_admin_config_api::AdminState {
         catalog,
         credentials: credentials.clone(),
         secrets: secrets.clone(),
-        profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+        profiles,
         mcp: mcp_store.clone(),
         // The live credential probe is backed by provider-genai here — the only
         // place the model SDK is named; the admin CRUD crate stays SDK-free.
