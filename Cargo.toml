@@ -22,6 +22,7 @@ awaken-tool-pattern = { path = "crates/runtime/awaken-tool-pattern" }
 awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai" }
 awaken-ext-permission = { path = "crates/runtime/awaken-ext-permission" }
 awaken-credential = { path = "crates/runtime/awaken-credential" }
+awaken-mcp-wire = { path = "crates/runtime/awaken-mcp-wire" }
 awaken-ext-mcp = { path = "crates/runtime/awaken-ext-mcp" }
 awaken-ext-skills = { path = "crates/runtime/awaken-ext-skills" }
 awaken-ext-goal = { path = "crates/runtime/awaken-ext-goal" }
@@ -31,6 +32,7 @@ awaken-ext-memory = { path = "crates/runtime/awaken-ext-memory" }
 awaken-ext-builtin-tools = { path = "crates/runtime/awaken-ext-builtin-tools" }
 awaken-protocol-transport = { path = "crates/runtime/awaken-protocol-transport" }
 awaken-protocol-a2a = { path = "crates/runtime/awaken-protocol-a2a" }
+awaken-protocol-mcp = { path = "crates/runtime/awaken-protocol-mcp" }
 awaken-protocol-ag-ui = { path = "crates/runtime/awaken-protocol-ag-ui" }
 awaken-protocol-ai-sdk = { path = "crates/runtime/awaken-protocol-ai-sdk" }
 awaken-protocol-managed = { path = "crates/agents/awaken-protocol-managed" }
