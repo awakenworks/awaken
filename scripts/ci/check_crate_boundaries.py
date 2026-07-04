@@ -465,6 +465,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # (TCP dial + reverse dial); tokio provides the net stack. Both optional.
         "awaken-connection",
         "tokio",
+        # feature `docker`: real Docker backend over the Engine API (SDK, not CLI).
+        "bollard",
+        "futures-util",
+        # feature `k8s`: real Kubernetes backend over the apiserver (SDK, not kubectl).
+        "kube",
+        "k8s-openapi",
     },
     # Single-machine assembly binary: the composition root that wires the kernel
     # (built-in tools + permission gate + model port) behind the managed adapter.
