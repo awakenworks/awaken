@@ -19,7 +19,7 @@ use crate::dto::{
     OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent, StopReason,
 };
 use crate::project::{self, project_messages, project_turn};
-use crate::vaults::VaultState;
+use crate::vaults::{McpRefreshBinding, VaultState};
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
 /// clock port; the wire only needs a valid RFC 3339 value here.
@@ -117,6 +117,12 @@ pub struct McpServerBinding {
     pub name: String,
     pub url: String,
     pub credential_source_id: Option<CredentialSourceId>,
+    /// The matched credential's stored refresh configuration
+    /// ([`VaultState::mcp_refresh_for_source`]), so the host can register a
+    /// transport-level refresher next to the bearer. `None` when the credential
+    /// is not refreshable (no refresh object, or a confidential-client scheme
+    /// whose secret was consumed at create).
+    pub refresh: Option<McpRefreshBinding>,
 }
 
 /// The runtime seam the adapter drives (DDD port). Implemented by the server over
@@ -306,13 +312,24 @@ impl ManagedState {
         let bindings = req
             .mcp_servers
             .iter()
-            .map(|server| McpServerBinding {
-                name: server.name.clone(),
-                url: server.url.clone(),
-                credential_source_id: self
+            .map(|server| {
+                let credential_source_id = self
                     .vaults
                     .as_ref()
-                    .and_then(|v| v.mcp_credential_source_for_url(&req.vault_ids, &server.url)),
+                    .and_then(|v| v.mcp_credential_source_for_url(&req.vault_ids, &server.url));
+                // The matched credential's stored refresh configuration rides
+                // along, so the host can keep the connection alive past the
+                // access token's expiry (public-client refresh only).
+                let refresh = match (&self.vaults, &credential_source_id) {
+                    (Some(v), Some(source_id)) => v.mcp_refresh_for_source(source_id),
+                    _ => None,
+                };
+                McpServerBinding {
+                    name: server.name.clone(),
+                    url: server.url.clone(),
+                    credential_source_id,
+                    refresh,
+                }
             })
             .collect();
         self.runtime
