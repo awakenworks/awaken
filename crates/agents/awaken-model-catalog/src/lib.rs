@@ -14,6 +14,11 @@
 
 pub mod repo;
 pub mod schema;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteCatalogRepo;
 
 use std::collections::BTreeMap;
 
@@ -143,6 +148,14 @@ pub enum CatalogError {
         offering: ModelApiCompat,
         endpoint: ModelApiCompat,
     },
+    /// Not an invariant: a durable-backend failure (I/O, serde, poisoned lock)
+    /// surfaced by a persistent [`repo::CatalogRepo`] such as the sqlite one. It
+    /// lives here rather than on [`repo::RepoError`] so downstream exhaustive
+    /// matches on `RepoError` (admin config API) stay valid; it reaches callers
+    /// as `RepoError::Invariant(CatalogError::Storage(_))` and is still
+    /// fail-closed. [`ProviderCatalog::validate`] never returns it.
+    #[error("catalog storage: {0}")]
+    Storage(String),
 }
 
 impl ProviderCatalog {
