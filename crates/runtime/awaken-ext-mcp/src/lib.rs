@@ -29,6 +29,7 @@ pub mod plugin;
 pub mod progress;
 mod router;
 pub mod sampling;
+pub mod sensitive;
 pub mod sse;
 pub mod stdio;
 pub mod tool;
@@ -37,16 +38,17 @@ pub mod types;
 
 pub use client::{McpConnection, connect_tools};
 pub use config::{McpServerConnectionConfig, TransportTypeId};
-pub use credential::Credential;
+pub use credential::{AuthChallenge, Credential, CredentialRefresher};
 pub use error::McpError;
-pub use http::HttpTransport;
+pub use http::{HttpTransport, HttpTransportBuilder};
 pub use id_mapping::{to_tool_id, tool_namespace};
 pub use manager::{McpManager, ServerStatus};
-pub use plugin::{McpPlugin, McpServer};
+pub use plugin::{McpPlugin, McpServer, SensitiveFields};
 pub use progress::{McpProgressUpdate, normalize_progress};
 pub use sampling::{
     SamplingError, SamplingHandler, SamplingMessage, SamplingRequest, SamplingResponse,
 };
+pub use sensitive::{REDACTED, mark_sensitive, redact_arguments, sensitive_paths};
 pub use stdio::{DEFAULT_TIMEOUT, StdioTransport};
 pub use tool::{McpRawTool, mcp_tool_descriptor};
 pub use transport::{ListChangedKind, McpToolTransport};
