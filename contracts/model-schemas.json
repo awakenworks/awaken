@@ -3,6 +3,10 @@
   "schemas": {
     "CredentialBinding": {
       "$defs": {
+        "CredentialPoolId": {
+          "description": "A credential pool identifier.",
+          "type": "string"
+        },
         "CredentialSourceId": {
           "description": "Stable id of a [`CredentialSource`].",
           "type": "string"
@@ -40,6 +44,23 @@
             "credential_source_id"
           ],
           "type": "object"
+        },
+        {
+          "description": "Use one eligible member of a pool; the resolver selects by policy and may\nfail over to the next member if the chosen one cannot be materialized.",
+          "properties": {
+            "credential_pool_id": {
+              "$ref": "#/$defs/CredentialPoolId"
+            },
+            "type": {
+              "const": "one_of_credential_pool",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "credential_pool_id"
+          ],
+          "type": "object"
         }
       ],
       "title": "CredentialBinding"
@@ -60,6 +81,111 @@
         }
       ],
       "title": "CredentialKind"
+    },
+    "CredentialPool": {
+      "$defs": {
+        "CredentialPoolId": {
+          "description": "A credential pool identifier.",
+          "type": "string"
+        },
+        "CredentialPoolMember": {
+          "description": "One source's membership in a pool. `ordinal` is the default selection order\n(ascending); a disabled member is skipped. `selection_weight` is reserved for a\nfuture weighted policy and does not affect the default ordinal order.",
+          "properties": {
+            "credential_source_id": {
+              "$ref": "#/$defs/CredentialSourceId"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "ordinal": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "selection_weight": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "credential_source_id",
+            "ordinal",
+            "enabled"
+          ],
+          "type": "object"
+        },
+        "CredentialSourceId": {
+          "description": "Stable id of a [`CredentialSource`].",
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A pool of interchangeable credential sources for one provider principal\n(oversight-next account grouping). The resolver picks one eligible member per\nrun; members are tried in policy order so a disabled/exhausted member fails\nover to the next rather than failing the run (fail-closed only when none work).",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/CredentialPoolId"
+        },
+        "members": {
+          "items": {
+            "$ref": "#/$defs/CredentialPoolMember"
+          },
+          "type": "array"
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "workspace_id",
+        "members"
+      ],
+      "title": "CredentialPool",
+      "type": "object"
+    },
+    "CredentialPoolId": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A credential pool identifier.",
+      "title": "CredentialPoolId",
+      "type": "string"
+    },
+    "CredentialPoolMember": {
+      "$defs": {
+        "CredentialSourceId": {
+          "description": "Stable id of a [`CredentialSource`].",
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "One source's membership in a pool. `ordinal` is the default selection order\n(ascending); a disabled member is skipped. `selection_weight` is reserved for a\nfuture weighted policy and does not affect the default ordinal order.",
+      "properties": {
+        "credential_source_id": {
+          "$ref": "#/$defs/CredentialSourceId"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "ordinal": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "selection_weight": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "credential_source_id",
+        "ordinal",
+        "enabled"
+      ],
+      "title": "CredentialPoolMember",
+      "type": "object"
     },
     "CredentialSource": {
       "$defs": {
