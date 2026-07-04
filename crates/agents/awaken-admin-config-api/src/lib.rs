@@ -12,8 +12,9 @@
 mod router;
 
 pub use router::{
-    AdminState, CredentialProbe, CredentialValidation, InMemoryProfileStore, InferenceProfileStore,
-    ProbeStatus, ResolveRequest, ResolvedInferenceView, admin_router,
+    AdminState, CredentialProbe, CredentialValidation, InMemoryMcpStore, InMemoryProfileStore,
+    InferenceProfileStore, McpStore, ProbeStatus, ResolveRequest, ResolvedInferenceView,
+    ResolvedMcpServerView, admin_router,
 };
 
 /// The API surface version this crate serves.

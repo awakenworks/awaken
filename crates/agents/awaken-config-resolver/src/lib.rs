@@ -212,6 +212,71 @@ async fn resolve_credential(
     }
 }
 
+/// A management-plane MCP server identifier.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct McpServerId(pub String);
+
+/// An authored MCP server definition (ADR-0043 Phase 3): where the server lives
+/// and which credential authenticates to it. The binding is the same vault-backed
+/// [`CredentialBinding`] inference uses (never an inline secret), so
+/// `OneOfCredentialPool` failover applies to MCP credentials for free. The
+/// resolver reads it — it is never flowed into the runtime.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct McpServerDef {
+    pub id: McpServerId,
+    pub display_name: String,
+    pub url: String,
+    pub credential_binding: CredentialBinding,
+    pub version: i64,
+}
+
+/// Which MCP servers an agent uses — the management-plane agent↔MCP binding
+/// (ADR-0043 Phase 3). References [`McpServerDef`]s by id; the resolver
+/// materializes the referenced defs into [`ResolvedMcpServer`]s at run bind time.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AgentMcpConfig {
+    pub agent_id: String,
+    pub mcp_server_ids: Vec<McpServerId>,
+    pub version: i64,
+}
+
+/// The injection-ready MCP server the resolver hands the runtime: the display
+/// name, the URL, and an already-materialized credential (or `None` for an
+/// unauthenticated server). The runtime sees only this — never a binding, a ref,
+/// or the stores (D6/D9); secret-free rows never cross after this point.
+#[derive(Debug)]
+pub struct ResolvedMcpServer {
+    pub name: String,
+    pub url: String,
+    pub credential: Option<RedactedString>,
+}
+
+/// Resolve authored [`McpServerDef`]s into injection-ready [`ResolvedMcpServer`]s
+/// by materializing each def's credential binding — the same
+/// [`resolve_credential`] path inference uses, so a pool binding fails over
+/// member-by-member. Fail-closed: a def whose `Exact` source is missing or
+/// cannot be materialized (or whose pool is missing/exhausted) is an error, never
+/// a silently unauthenticated server; a `None` binding yields `credential: None`.
+pub async fn resolve_mcp_servers(
+    defs: &[McpServerDef],
+    sources: &dyn SourceLookup,
+    secret_store: &dyn SecretStore,
+) -> Result<Vec<ResolvedMcpServer>, ResolveError> {
+    let mut resolved = Vec::with_capacity(defs.len());
+    for def in defs {
+        let credential = resolve_credential(&def.credential_binding, sources, secret_store).await?;
+        resolved.push(ResolvedMcpServer {
+            name: def.display_name.clone(),
+            url: def.url.clone(),
+            credential,
+        });
+    }
+    Ok(resolved)
+}
+
 /// The complete run input the resolver hands the run loop. Two parts travel
 /// together but are **not** merged: the [`ExecutableAgentSnapshot`] is
 /// serializable and secret-free (it can be persisted/replayed), while
