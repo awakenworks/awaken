@@ -8,5 +8,19 @@ license.workspace = true
 awaken-model-catalog.workspace = true
 awaken-credential-vault.workspace = true
 
+[dev-dependencies]
+schemars = "1"
+serde_json.workspace = true
+
+[features]
+default = []
+# Emit JSON Schema for the admin config DTOs (drives TS-contract generation,
+# ADR-0043). Enables the domains' own `schema` features.
+schema = ["awaken-model-catalog/schema", "awaken-credential-vault/schema"]
+
+[[example]]
+name = "export_schemas"
+required-features = ["schema"]
+
 [lints]
 workspace = true
