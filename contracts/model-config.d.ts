@@ -110,6 +110,51 @@ export type CredentialKind = "vault" | "env";
 export type CredentialStatus = "active" | "disabled" | "archived";
 
 /**
+ * The secret-free result of a live credential probe.
+ */
+export interface CredentialValidation {
+    adapter_kind: string;
+    status:       Status;
+    [property: string]: any;
+}
+
+/**
+ * The result of a live credential probe (secret-free), aligned with the Managed
+ * wire's `valid` / `invalid` / `unknown` statuses.
+ */
+export type Status = "valid" | "invalid" | "unknown";
+
+/**
+ * An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
+ * oversight-next `ProviderIdentity`): it names the model, the credential binding
+ * (vault-backed, never inline), and any endpoints the operator has toggled off.
+ * The resolver reads it — it is never flowed into the runtime.
+ */
+export interface InferenceProfile {
+    credential_binding:     CredentialBindingObject;
+    disabled_endpoint_ids?: string[];
+    model_id:               string;
+    [property: string]: any;
+}
+
+/**
+ * The "which credential" axis (oversight-next / awaken-management-contract).
+ *
+ * No credential is needed.
+ *
+ * Use exactly one source.
+ *
+ * Use one eligible member of a pool; the resolver selects by policy and may
+ * fail over to the next member if the chosen one cannot be materialized.
+ */
+export interface CredentialBindingObject {
+    type:                  Type;
+    credential_source_id?: string;
+    credential_pool_id?:   string;
+    [property: string]: any;
+}
+
+/**
  * A model reachable on a protocol surface. `model_id` references the catalog's
  * `ModelSpec` (the intrinsic model attributes, owned by `awaken-agent-contract`).
  */
