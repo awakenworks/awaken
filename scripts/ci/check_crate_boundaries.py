@@ -50,7 +50,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: P0 full-chain test drives the runtime provider adapter.
         "awaken-provider-genai",
     },
-    "awaken-admin-config-api": {"awaken-model-catalog", "awaken-credential-vault"},
+    "awaken-admin-config-api": {
+        "awaken-model-catalog",
+        "awaken-credential-vault",
+        "schemars",
+        "serde_json",
+    },
     "awaken-managed-bridge": {
         "awaken-agent-contract",
         "awaken-credential-vault",
