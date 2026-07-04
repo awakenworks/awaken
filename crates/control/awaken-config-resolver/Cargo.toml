@@ -13,6 +13,11 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+# P0 full-chain acceptance: resolve → provider injection seam (real model call is
+# env-gated). Runtime crates — allowed (agents → runtime); the runtime never
+# depends back (I4 / D6/D9).
+awaken-provider-genai.workspace = true
+awaken-runtime-contract.workspace = true
 
 [lints]
 workspace = true
