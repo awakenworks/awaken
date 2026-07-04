@@ -7,8 +7,12 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+async-trait.workspace = true
 schemars = { version = "1", optional = true }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres", "sqlite"] }
+
+[dev-dependencies]
+tokio.workspace = true
 
 [features]
 default = []
