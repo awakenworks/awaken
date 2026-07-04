@@ -88,8 +88,15 @@ fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
 async fn create_session(
     State(state): State<Arc<ManagedState>>,
     ManagedJson(req): ManagedJson<CreateSessionRequest>,
-) -> Json<Session> {
-    Json(state.create_session(req))
+) -> Result<Json<Session>, (StatusCode, Json<ErrorResponse>)> {
+    // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
+    // RunError to the envelope exactly like a turn's failure, so a failed create
+    // is loud rather than a half-provisioned session.
+    state
+        .create_session(req)
+        .await
+        .map(Json)
+        .map_err(error_response)
 }
 
 async fn retrieve_session(

@@ -73,6 +73,35 @@ pub struct CreateSessionRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub metadata: std::collections::BTreeMap<String, String>,
+    /// MCP servers this session connects to (ADR-0043 Phase 3). Bound to vault
+    /// credentials via `vault_ids` at session creation.
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerWire>,
+    /// Vaults whose credentials the session may use (matched to `mcp_servers`
+    /// by exact `mcp_server_url`).
+    #[serde(default)]
+    pub vault_ids: Vec<String>,
+}
+
+/// One MCP server on the wire (`BetaManagedAgentsMCPServerURLDefinition` /
+/// `BetaManagedAgentsURLMCPServerParams`): `{ name, type: "url", url }`. The
+/// SDK's `type: "url"` tag is tolerated (and ignored) on input — there is only
+/// one variant — and always re-serialized on output.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServerWire {
+    pub name: String,
+    pub url: String,
+}
+
+impl Serialize for McpServerWire {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("McpServerWire", 3)?;
+        s.serialize_field("name", &self.name)?;
+        s.serialize_field("type", "url")?;
+        s.serialize_field("url", &self.url)?;
+        s.end()
+    }
 }
 
 /// The agent object echoed inside a session response.
