@@ -15,6 +15,53 @@ use awaken_credential_vault::{CredentialCreateParams, CredentialKind, Credential
 /// The Managed Agents beta wire header this bridge targets.
 pub const MANAGED_BETA: &str = "managed-agents-2026-04-01";
 
+/// A resolved model reference decoded from a Managed agent definition (ADR-0043
+/// "model-extension resolution"). The public wire keeps a bare Anthropic-compatible
+/// `model` string; any binding detail rides in `metadata.awaken`. The resolver
+/// consumes this — the Managed API references a model, never inlines provider config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRef {
+    /// The catalog model id the resolver looks up.
+    pub model_id: String,
+    /// An explicit credential-binding hint from `metadata.awaken`, if the operator
+    /// pinned one; `None` means "resolve by default binding".
+    pub credential_source_id: Option<String>,
+}
+
+/// Errors decoding the model axis (fail-closed — A-G12 analogue).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ModelAxisError {
+    #[error("managed agent has no `model` and no metadata.awaken model axis (fail closed)")]
+    NoModel,
+}
+
+/// Decode the Managed agent's `model` field + optional `metadata.awaken` object
+/// into a [`ModelRef`] for the resolver. The `metadata.awaken.model` axis may carry
+/// `{ "id": "...", "credential_source_id": "..." }` to override/extend the bare
+/// string. Fail-closed when neither yields a model id.
+pub fn decode_model_axis(
+    model: Option<&str>,
+    metadata_awaken: Option<&serde_json::Value>,
+) -> Result<ModelRef, ModelAxisError> {
+    let axis = metadata_awaken.and_then(|m| m.get("model"));
+    // The axis id (if present) takes precedence over the bare wire `model` string.
+    let model_id = axis
+        .and_then(|a| a.get("id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| model.map(str::to_string))
+        .filter(|s| !s.is_empty())
+        .ok_or(ModelAxisError::NoModel)?;
+    let credential_source_id = axis
+        .and_then(|a| a.get("credential_source_id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Ok(ModelRef {
+        model_id,
+        credential_source_id,
+    })
+}
+
 /// The `environment_variable` create params as they arrive on the Managed wire
 /// (`BetaManagedAgentsEnvironmentVariableCreateParams`). `secret_value` is
 /// write-only and never echoed back — the ACL consumes it into the domain.
@@ -97,5 +144,34 @@ mod tests {
             materialize(&source, &store).await.unwrap().expose_secret(),
             "sk-from-the-wire"
         );
+    }
+
+    #[test]
+    fn bare_model_string_decodes_to_model_ref() {
+        let r = decode_model_axis(Some("claude-opus-4-8"), None).unwrap();
+        assert_eq!(r.model_id, "claude-opus-4-8");
+        assert!(r.credential_source_id.is_none());
+    }
+
+    #[test]
+    fn metadata_awaken_axis_overrides_and_pins_credential() {
+        let meta = serde_json::json!({
+            "model": { "id": "glm-4.6", "credential_source_id": "cred:ws:7" }
+        });
+        let r = decode_model_axis(Some("claude-opus-4-8"), Some(&meta)).unwrap();
+        assert_eq!(r.model_id, "glm-4.6"); // axis id wins over the bare wire string
+        assert_eq!(r.credential_source_id.as_deref(), Some("cred:ws:7"));
+    }
+
+    #[test]
+    fn no_model_anywhere_fails_closed() {
+        assert!(matches!(
+            decode_model_axis(None, None),
+            Err(ModelAxisError::NoModel)
+        ));
+        assert!(matches!(
+            decode_model_axis(Some(""), None),
+            Err(ModelAxisError::NoModel)
+        ));
     }
 }
