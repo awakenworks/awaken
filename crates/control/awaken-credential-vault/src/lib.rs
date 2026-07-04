@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod repo;
 pub mod schema;
 
 use std::collections::HashMap;
