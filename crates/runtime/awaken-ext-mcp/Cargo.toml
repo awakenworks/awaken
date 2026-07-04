@@ -17,7 +17,7 @@ futures = "0.3"
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }
 
 [lints]
 workspace = true
