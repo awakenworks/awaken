@@ -19,9 +19,10 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{SecretRef, SecretStore};
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
-use awaken_protocol_managed::{McpProbe, McpProbeStatus};
+use awaken_protocol_managed::{McpProbe, McpProbeStatus, TokenEndpointAuthBinding};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::RawTool;
+use base64::Engine as _;
 
 use crate::host::HostError;
 
@@ -44,13 +45,18 @@ pub struct PreparedMcpServer {
 }
 
 /// The refresh half of a prepared MCP server (an `mcp_oauth` vault credential
-/// entered with a public-client refresh object): everything [`VaultRefresher`]
-/// needs to run the `refresh_token` grant and reseal the results. Carries
-/// [`SecretRef`]s plus the [`SecretStore`] handle — never secret material.
+/// entered with a refresh object — public or confidential client): everything
+/// [`VaultRefresher`] needs to run the `refresh_token` grant and reseal the
+/// results. Carries [`SecretRef`]s plus the [`SecretStore`] handle — never
+/// secret material.
 #[derive(Clone)]
 pub struct PreparedMcpRefresh {
     pub token_endpoint: String,
     pub client_id: String,
+    /// How the grant authenticates at the token endpoint: `none` (public
+    /// client), or a confidential scheme carrying the sealed client secret's
+    /// ref ([`VaultRefresher`] reads it per exchange).
+    pub token_endpoint_auth: TokenEndpointAuthBinding,
     pub scope: Option<String>,
     pub resource: Option<String>,
     /// Where the sealed refresh token lives (read per exchange; rewritten when
@@ -64,17 +70,38 @@ pub struct PreparedMcpRefresh {
 
 /// The host-side [`CredentialRefresher`] of the managed vault design (ADR-0043):
 /// consulted by the ext-mcp HTTP transport once per auth challenge. It performs
-/// a public-client RFC 6749 `refresh_token` grant against the credential's
-/// stored token endpoint — `POST` form-encoded
-/// `grant_type=refresh_token&refresh_token=…&client_id=…` (+`scope`/`resource`
-/// when configured) — then reseals the new access token under the credential
-/// row's `material_ref` and any rotated `refresh_token` under the refresh ref,
-/// and hands the transport the fresh bearer to retry with. ANY failure (network,
-/// non-2xx, malformed JSON, a reseal error) returns `None`, so the transport
-/// surfaces the original challenge — fail closed, never a panic.
+/// an RFC 6749 `refresh_token` grant against the credential's stored token
+/// endpoint — `POST` form-encoded `grant_type=refresh_token&refresh_token=…`
+/// (+`scope`/`resource` when configured), with client authentication per the
+/// stored [`TokenEndpointAuthBinding`]:
+/// - `none` (public client): `client_id=…` in the form body;
+/// - `client_secret_basic`: `Authorization: Basic
+///   base64(urlencode(client_id):urlencode(client_secret))` (RFC 6749 §2.3.1),
+///   and the `client_id` stays OUT of the form body;
+/// - `client_secret_post`: `client_id=…&client_secret=…` in the form body.
+///
+/// The confidential-client secret is read from the vault at refresh time; a
+/// missing/unreadable sealed secret refuses the exchange (`None`). On success it
+/// reseals the new access token under the credential row's `material_ref` and
+/// any rotated `refresh_token` under the refresh ref, then hands the transport
+/// the fresh bearer to retry with. ANY failure (network, non-2xx, malformed
+/// JSON, a reseal error) returns `None`, so the transport surfaces the original
+/// challenge — fail closed, never a panic.
 pub struct VaultRefresher {
     refresh: PreparedMcpRefresh,
     http: reqwest::Client,
+}
+
+/// The RFC 6749 §2.3.1 `client_secret_basic` header value:
+/// `Basic base64(urlencode(client_id):urlencode(client_secret))` — both halves
+/// form-urlencoded BEFORE the base64, as the RFC requires.
+fn basic_client_auth(client_id: &str, client_secret: &str) -> String {
+    let enc = |s: &str| form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+    let pair = format!("{}:{}", enc(client_id), enc(client_secret));
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(pair)
+    )
 }
 
 impl VaultRefresher {
@@ -92,24 +119,46 @@ impl CredentialRefresher for VaultRefresher {
     async fn refresh(&self, _challenge: &AuthChallenge) -> Option<Credential> {
         let r = &self.refresh;
         let refresh_token = r.secrets.get(&r.refresh_token_ref).await.ok()?;
+        // A confidential scheme's sealed client secret is read HERE, per
+        // exchange; missing/unreadable → None (fail closed: the transport
+        // surfaces the original challenge).
+        let client_secret = match &r.token_endpoint_auth {
+            TokenEndpointAuthBinding::ClientSecretBasic { secret_ref }
+            | TokenEndpointAuthBinding::ClientSecretPost { secret_ref } => {
+                Some(r.secrets.get(secret_ref).await.ok()?)
+            }
+            TokenEndpointAuthBinding::None => None,
+        };
         let mut form: Vec<(&str, &str)> = vec![
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token.expose_secret()),
-            ("client_id", r.client_id.as_str()),
         ];
+        let mut request = self.http.post(&r.token_endpoint);
+        match &r.token_endpoint_auth {
+            // Public client: the bare client_id rides in the form body.
+            TokenEndpointAuthBinding::None => form.push(("client_id", r.client_id.as_str())),
+            // RFC 6749 §2.3.1: HTTP Basic with the form-urlencoded credential
+            // pair; the client_id is OMITTED from the form body.
+            TokenEndpointAuthBinding::ClientSecretBasic { .. } => {
+                request = request.header(
+                    reqwest::header::AUTHORIZATION,
+                    basic_client_auth(&r.client_id, client_secret.as_ref()?.expose_secret()),
+                );
+            }
+            // RFC 6749 §2.3.1 form alternative: client_id + client_secret in
+            // the body.
+            TokenEndpointAuthBinding::ClientSecretPost { .. } => {
+                form.push(("client_id", r.client_id.as_str()));
+                form.push(("client_secret", client_secret.as_ref()?.expose_secret()));
+            }
+        }
         if let Some(scope) = &r.scope {
             form.push(("scope", scope.as_str()));
         }
         if let Some(resource) = &r.resource {
             form.push(("resource", resource.as_str()));
         }
-        let response = self
-            .http
-            .post(&r.token_endpoint)
-            .form(&form)
-            .send()
-            .await
-            .ok()?;
+        let response = request.form(&form).send().await.ok()?;
         if !response.status().is_success() {
             return None;
         }

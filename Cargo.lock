@@ -771,6 +771,8 @@ dependencies = [
  "awaken-store-fs",
  "awaken-store-sqlite",
  "axum",
+ "base64 0.22.1",
+ "form_urlencoded",
  "http-body-util",
  "reqwest 0.11.27",
  "serde_json",
