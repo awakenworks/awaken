@@ -6,18 +6,26 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 async-trait.workspace = true
 schemars = { version = "1", optional = true }
+# Feature `sqlite`: embedded durable CatalogRepo backend over the crate's own
+# `catalog` migration scope (ADR-0043).
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+tokio = { workspace = true, optional = true }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
 tokio.workspace = true
+tempfile = "3"
 
 [features]
 default = []
 # TS-contract generation (ADR-0043): derive JsonSchema on wire DTOs.
 schema = ["dep:schemars"]
+# SQLite-backed CatalogRepo (`sqlite::SqliteCatalogRepo`), ADR-0043 sqlite-repos.
+sqlite = ["dep:rusqlite", "dep:serde_json", "dep:tokio"]
 
 [lints]
 workspace = true
