@@ -6,18 +6,20 @@
 //! seam (`mcp_credential_source_for_url`).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::resolve_inference;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_credential_vault::{
-    CredentialBinding, CredentialSource, CredentialSourceId, InMemorySecretStore,
+    CredentialBinding, CredentialSource, CredentialSourceId, InMemorySecretStore, SecretRef,
 };
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::repo::InMemoryCatalogRepo;
 use awaken_model_catalog::{
     ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
+use awaken_protocol_managed::{McpProbe, McpProbeStatus};
 use awaken_protocol_managed::{VaultState, vault_router};
 use axum::Router;
 use axum::body::Body;
@@ -37,6 +39,48 @@ fn harness() -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
     let state = Arc::new(VaultState::new(secrets.clone(), credentials.clone()));
+    let app = vault_router(state.clone());
+    Harness {
+        app,
+        state,
+        secrets,
+        credentials,
+    }
+}
+
+/// A fake live probe: answers a canned status and records every `(url, bearer)`
+/// it is handed — the bearer arrives as the already-materialized secret (the
+/// port signature takes a `RedactedString`, so a vault ref cannot cross it).
+struct FakeProbe {
+    status: McpProbeStatus,
+    seen: Mutex<Vec<(String, String)>>,
+}
+
+impl FakeProbe {
+    fn new(status: McpProbeStatus) -> Arc<Self> {
+        Arc::new(Self {
+            status,
+            seen: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl McpProbe for FakeProbe {
+    async fn probe(&self, mcp_server_url: &str, bearer: &RedactedString) -> McpProbeStatus {
+        self.seen.lock().unwrap().push((
+            mcp_server_url.to_string(),
+            bearer.expose_secret().to_string(),
+        ));
+        self.status
+    }
+}
+
+/// A harness whose vault surface wires the given live probe.
+fn harness_with_probe(probe: Arc<FakeProbe>) -> Harness {
+    let secrets = Arc::new(InMemorySecretStore::new());
+    let credentials = Arc::new(InMemoryCredentialRepo::new());
+    let state = Arc::new(VaultState::new(secrets.clone(), credentials.clone()).with_probe(probe));
     let app = vault_router(state.clone());
     Harness {
         app,
@@ -701,4 +745,189 @@ async fn mcp_credential_source_for_url_binds_by_vault_and_exact_url() {
         h.state.mcp_credential_source_for_url(&both, url),
         Some(expected)
     );
+}
+
+#[tokio::test]
+async fn validate_with_probe_reports_valid_and_the_probe_sees_the_materialized_token() {
+    let probe = FakeProbe::new(McpProbeStatus::Valid);
+    let h = harness_with_probe(probe.clone());
+    let vault_id = create_vault(&h, "mcp").await;
+    let url = "https://mcp.example.com/sse";
+    let cred = create_mcp_oauth(&h, &vault_id, url, None).await;
+    let cred_id = cred["id"].as_str().unwrap().to_string();
+
+    let (s, validation) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(validation["status"], "valid");
+    assert_eq!(validation["mcp_probe"], json!({ "handshake": "ok" }));
+    // The probe was handed the server URL and the MATERIALIZED access token —
+    // the resolved secret, never a `sec:` vault ref.
+    let seen = probe.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0, url);
+    assert_eq!(seen[0].1, "at-secret-token");
+    // The validation body itself stays secret-free.
+    assert!(
+        !serde_json::to_string(&validation)
+            .unwrap()
+            .contains("at-secret-token")
+    );
+}
+
+#[tokio::test]
+async fn validate_with_probe_reports_invalid_with_the_http_status() {
+    let probe = FakeProbe::new(McpProbeStatus::Invalid { http_status: 401 });
+    let h = harness_with_probe(probe);
+    let vault_id = create_vault(&h, "mcp").await;
+    let cred = create_mcp_oauth(&h, &vault_id, "https://mcp.example.com/sse", None).await;
+    let cred_id = cred["id"].as_str().unwrap().to_string();
+
+    let (s, validation) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(validation["status"], "invalid");
+    assert_eq!(validation["mcp_probe"], json!({ "http_status": 401 }));
+}
+
+#[tokio::test]
+async fn validate_never_probes_env_var_or_static_bearer_credentials() {
+    // Even with a probe wired and answering Valid, only `mcp_oauth` is probed:
+    // env-var / static_bearer have no MCP handshake, so they stay `unknown`.
+    let probe = FakeProbe::new(McpProbeStatus::Valid);
+    let h = harness_with_probe(probe.clone());
+    let vault_id = create_vault(&h, "mixed").await;
+    let env_id = create_credential(&h, &vault_id, "K").await;
+    let (s, bearer) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "static_bearer",
+            "mcp_server_url": "https://mcp.example.com/sse",
+            "token": "brr" // awaken-allow: secret
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let bearer_id = bearer["id"].as_str().unwrap().to_string();
+
+    for cred_id in [env_id, bearer_id] {
+        let (s, validation) = call(
+            &h.app,
+            "POST",
+            &format!("/v1/vaults/{vault_id}/credentials/{cred_id}/mcp_oauth_validate"),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(validation["status"], "unknown");
+        assert_eq!(validation["mcp_probe"], Value::Null);
+    }
+    assert!(
+        probe.seen.lock().unwrap().is_empty(),
+        "the probe must never run for env-var / static_bearer credentials"
+    );
+}
+
+#[tokio::test]
+async fn mcp_refresh_for_source_exposes_only_public_client_refresh() {
+    let h = harness();
+    let vault_id = create_vault(&h, "mcp").await;
+    let url = "https://mcp.example.com/sse";
+
+    // A public-client refresh (`token_endpoint_auth: none`) is exposed in full.
+    let refreshable = create_mcp_oauth(
+        &h,
+        &vault_id,
+        url,
+        Some(json!({
+            "client_id": "cli_pub",
+            "refresh_token": "rt-secret-token", // awaken-allow: secret
+            "token_endpoint": "https://auth.example.com/token",
+            "token_endpoint_auth": { "type": "none" },
+            "scope": "mcp:read",
+            "resource": "https://mcp.example.com"
+        })),
+    )
+    .await;
+    let refreshable_id = refreshable["id"].as_str().unwrap().to_string();
+    let source_id = h
+        .state
+        .credential_source_id(&vault_id, &refreshable_id)
+        .unwrap();
+    let binding = h
+        .state
+        .mcp_refresh_for_source(&source_id)
+        .expect("a public-client refresh is exposed");
+    assert_eq!(binding.token_endpoint, "https://auth.example.com/token");
+    assert_eq!(binding.client_id, "cli_pub");
+    assert_eq!(binding.scope.as_deref(), Some("mcp:read"));
+    assert_eq!(binding.resource.as_deref(), Some("https://mcp.example.com"));
+    // The refresh token itself stays sealed: the binding carries only its ref.
+    assert_eq!(
+        binding.refresh_token_ref,
+        SecretRef(format!("sec:refresh:{}", source_id.0))
+    );
+
+    // An mcp_oauth credential entered WITHOUT a refresh object yields none.
+    let plain = create_mcp_oauth(&h, &vault_id, url, None).await;
+    let plain_id = plain["id"].as_str().unwrap().to_string();
+    let plain_source = h.state.credential_source_id(&vault_id, &plain_id).unwrap();
+    assert!(h.state.mcp_refresh_for_source(&plain_source).is_none());
+
+    // A confidential-client scheme yields none: its client_secret was consumed
+    // at create, so the exchange could never authenticate.
+    let confidential = create_mcp_oauth(
+        &h,
+        &vault_id,
+        url,
+        Some(json!({
+            "client_id": "cli_conf",
+            "refresh_token": "rt-secret-token", // awaken-allow: secret
+            "token_endpoint": "https://auth.example.com/token",
+            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs" } // awaken-allow: secret
+        })),
+    )
+    .await;
+    let confidential_id = confidential["id"].as_str().unwrap().to_string();
+    let confidential_source = h
+        .state
+        .credential_source_id(&vault_id, &confidential_id)
+        .unwrap();
+    assert!(
+        h.state
+            .mcp_refresh_for_source(&confidential_source)
+            .is_none()
+    );
+
+    // Env-var and static_bearer rows never carry a refresh configuration.
+    let env_id = create_credential(&h, &vault_id, "K").await;
+    let env_source = h.state.credential_source_id(&vault_id, &env_id).unwrap();
+    assert!(h.state.mcp_refresh_for_source(&env_source).is_none());
+    let (s, bearer) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "static_bearer",
+            "mcp_server_url": url,
+            "token": "brr" // awaken-allow: secret
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let bearer_id = bearer["id"].as_str().unwrap().to_string();
+    let bearer_source = h.state.credential_source_id(&vault_id, &bearer_id).unwrap();
+    assert!(h.state.mcp_refresh_for_source(&bearer_source).is_none());
 }

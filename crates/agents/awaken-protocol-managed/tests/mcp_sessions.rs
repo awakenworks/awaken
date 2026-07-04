@@ -189,6 +189,73 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
         init.mcp_servers[0].credential_source_id.as_ref(),
         Some(&expected)
     );
+    // The credential was entered without a refresh object, so the binding
+    // carries no refresh configuration.
+    assert!(init.mcp_servers[0].refresh.is_none());
+}
+
+#[tokio::test]
+async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
+    let h = harness(None);
+    let (s, vault) = call(
+        &h.app,
+        "POST",
+        "/v1/vaults",
+        Some(json!({ "display_name": "mcp" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let vault_id = vault["id"].as_str().unwrap().to_string();
+    let (s, cred) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "mcp_oauth",
+            "mcp_server_url": MCP_URL,
+            "access_token": "at-secret-token", // awaken-allow: secret
+            "refresh": {
+                "client_id": "cli_pub",
+                "refresh_token": "rt-secret-token", // awaken-allow: secret
+                "token_endpoint": "https://auth.example.com/token",
+                "token_endpoint_auth": { "type": "none" },
+                "scope": "mcp:read"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let cred_id = cred["id"].as_str().unwrap().to_string();
+
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "calc-agent",
+            "mcp_servers": [{ "name": "calc", "type": "url", "url": MCP_URL }],
+            "vault_ids": [vault_id.clone()],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // The binding carries the stored refresh configuration next to the source
+    // id — the sealed refresh token's ref, never the token itself.
+    let captured = h.captured.lock().unwrap();
+    let refresh = captured[0].mcp_servers[0]
+        .refresh
+        .as_ref()
+        .expect("a refreshable credential's binding carries its refresh config");
+    assert_eq!(refresh.token_endpoint, "https://auth.example.com/token");
+    assert_eq!(refresh.client_id, "cli_pub");
+    assert_eq!(refresh.scope.as_deref(), Some("mcp:read"));
+    assert_eq!(refresh.resource, None);
+    let source_id = h.vaults.credential_source_id(&vault_id, &cred_id).unwrap();
+    assert_eq!(
+        refresh.refresh_token_ref.0,
+        format!("sec:refresh:{}", source_id.0)
+    );
 }
 
 #[tokio::test]
