@@ -85,7 +85,57 @@ pub enum CredentialBinding {
     Exact {
         credential_source_id: CredentialSourceId,
     },
-    // OneOfCredentialPool { credential_pool_id } — P1.
+    /// Use one eligible member of a pool; the resolver selects by policy and may
+    /// fail over to the next member if the chosen one cannot be materialized.
+    OneOfCredentialPool {
+        credential_pool_id: CredentialPoolId,
+    },
+}
+
+/// A credential pool identifier.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CredentialPoolId(pub String);
+
+/// A pool of interchangeable credential sources for one provider principal
+/// (oversight-next account grouping). The resolver picks one eligible member per
+/// run; members are tried in policy order so a disabled/exhausted member fails
+/// over to the next rather than failing the run (fail-closed only when none work).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CredentialPool {
+    pub id: CredentialPoolId,
+    pub workspace_id: String,
+    pub members: Vec<CredentialPoolMember>,
+}
+
+/// One source's membership in a pool. `ordinal` is the default selection order
+/// (ascending); a disabled member is skipped. `selection_weight` is reserved for a
+/// future weighted policy and does not affect the default ordinal order.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CredentialPoolMember {
+    pub credential_source_id: CredentialSourceId,
+    pub ordinal: u32,
+    pub enabled: bool,
+    #[serde(default)]
+    pub selection_weight: u32,
+}
+
+impl CredentialPool {
+    /// The enabled members in selection order (ascending ordinal, then stable by
+    /// source id). This is the order the resolver tries for failover.
+    #[must_use]
+    pub fn selection_order(&self) -> Vec<&CredentialPoolMember> {
+        let mut members: Vec<&CredentialPoolMember> =
+            self.members.iter().filter(|m| m.enabled).collect();
+        members.sort_by(|a, b| {
+            a.ordinal
+                .cmp(&b.ordinal)
+                .then_with(|| a.credential_source_id.0.cmp(&b.credential_source_id.0))
+        });
+        members
+    }
 }
 
 /// Parameters to create a credential, **carrying the secret** (write-only, only at
