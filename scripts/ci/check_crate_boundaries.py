@@ -638,6 +638,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # OAuth refresh-token exchange (ADR-0043): the VaultRefresher POSTs the
         # RFC 6749 refresh grant — the same HTTP client ext-mcp's transport uses.
         "reqwest",
+        # Confidential-client refresh: the §2.3.1 Basic header is
+        # base64(urlencode(id):urlencode(secret)); both crates are already in
+        # the tree transitively.
+        "base64",
+        "form_urlencoded",
         "serde_json",
         "thiserror",
         "tokio",

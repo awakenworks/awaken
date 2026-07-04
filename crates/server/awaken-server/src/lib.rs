@@ -736,6 +736,7 @@ impl SessionRuntime for ManagedHost {
                         (Some(r), Some(access_token_ref)) => Some(crate::mcp::PreparedMcpRefresh {
                             token_endpoint: r.token_endpoint.clone(),
                             client_id: r.client_id.clone(),
+                            token_endpoint_auth: r.token_endpoint_auth.clone(),
                             scope: r.scope.clone(),
                             resource: r.resource.clone(),
                             refresh_token_ref: r.refresh_token_ref.clone(),

@@ -48,6 +48,11 @@ async-trait.workspace = true
 # refresh grant to the credential's token endpoint. Same client + feature set as
 # awaken-ext-mcp's own transport, so no second HTTP stack enters the tree.
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+# Confidential-client refresh (RFC 6749 §2.3.1): the VaultRefresher's
+# `client_secret_basic` header is `Basic base64(urlencode(id):urlencode(secret))`.
+# Both crates are already in the tree transitively (via reqwest/url).
+base64 = "0.22"
+form_urlencoded = "1"
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
