@@ -1,0 +1,12 @@
+[package]
+name = "awaken-admin-config-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-model-catalog.workspace = true
+awaken-credential-vault.workspace = true
+
+[lints]
+workspace = true

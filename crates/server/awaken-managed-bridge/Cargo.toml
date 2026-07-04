@@ -1,0 +1,12 @@
+[package]
+name = "awaken-managed-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-credential-vault.workspace = true
+awaken-model-catalog.workspace = true
+
+[lints]
+workspace = true

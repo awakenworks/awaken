@@ -1,0 +1,18 @@
+[package]
+name = "awaken-model-catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+schemars = { version = "1", optional = true }
+
+[features]
+default = []
+# TS-contract generation (ADR-0043): derive JsonSchema on wire DTOs.
+schema = ["dep:schemars"]
+
+[lints]
+workspace = true

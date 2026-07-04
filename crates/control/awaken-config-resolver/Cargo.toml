@@ -1,0 +1,18 @@
+[package]
+name = "awaken-config-resolver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-model-catalog.workspace = true
+awaken-credential-vault.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true
