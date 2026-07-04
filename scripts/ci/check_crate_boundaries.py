@@ -29,11 +29,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # runtime never depends on these (I4 / D6/D9, enforced by check_bucket_direction).
     "awaken-model-catalog": {
         "serde",
+        "serde_json",
         "thiserror",
         "async-trait",
         "schemars",
         "awaken-scoped-migration",
         "tokio",
+        # feature `sqlite`: embedded durable CatalogRepo backend over the crate's
+        # own `catalog` migration scope (ADR-0043 sqlite-repos).
+        "rusqlite",
+        # dev-only: reopen-from-file persistence tests.
+        "tempfile",
     },
     "awaken-credential-vault": {
         "awaken-agent-contract",
@@ -46,6 +52,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "chacha20poly1305",
         "tokio",
         "awaken-scoped-migration",
+        # feature `sqlite`: embedded durable CredentialRepo + SealedBlobStore
+        # backends over the crate's own `credential` migration scope (ADR-0043
+        # sqlite-repos); the durable secret path stays sealed-only.
+        "rusqlite",
+        # dev-only: reopen-from-file persistence tests.
+        "tempfile",
     },
     "awaken-config-resolver": {
         "awaken-agent-contract",

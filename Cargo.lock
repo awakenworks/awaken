@@ -306,9 +306,11 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-scoped-migration",
  "chacha20poly1305",
+ "rusqlite",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -467,8 +469,11 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-scoped-migration",
+ "rusqlite",
  "schemars 1.2.1",
  "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]
