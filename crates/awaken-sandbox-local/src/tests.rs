@@ -1,15 +1,67 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use awaken_file_store::FileStore;
 use base64::Engine as _;
+use bytes::Bytes;
 use tempfile::TempDir;
 
+use crate::broker::SecretBroker;
 use crate::docker::DockerMountMaterializer;
+use crate::env::{EgressReplacer, EnvValue, EnvVar, EnvVisibility, egress_placeholder};
 use crate::k8s::{K8sMount, K8sMountMaterializer, K8sMountSource};
+use crate::mount::{MountLifetime, MountSource};
 use crate::output::OutputCollector;
 use crate::{
-    LocalSandboxProvider, Mount, MountAccess, NamespaceSandboxProvider, SandboxProvider, Source,
+    LocalSandboxProvider, Mount, MountAccess, NamespaceSandboxProvider, SandboxError,
+    SandboxProvider, Source,
 };
+
+// ── Stub broker for tests ─────────────────────────────────────────────────────
+
+/// A test-only broker backed by an in-memory map.
+struct MapBroker {
+    secrets: HashMap<String, Bytes>,
+    written_back: Mutex<HashMap<String, Bytes>>,
+}
+
+impl MapBroker {
+    fn new(secrets: impl IntoIterator<Item = (&'static str, &'static [u8])>) -> Arc<Self> {
+        Arc::new(Self {
+            secrets: secrets
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), Bytes::from_static(v)))
+                .collect(),
+            written_back: Mutex::default(),
+        })
+    }
+
+    fn get_writeback(&self, reference: &str) -> Option<Bytes> {
+        self.written_back.lock().unwrap().get(reference).cloned()
+    }
+}
+
+#[async_trait]
+impl SecretBroker for MapBroker {
+    async fn resolve(&self, reference: &str) -> Result<Bytes, SandboxError> {
+        self.secrets
+            .get(reference)
+            .cloned()
+            .ok_or_else(|| SandboxError::Broker {
+                reference: reference.to_owned(),
+                message: "not found".into(),
+            })
+    }
+
+    async fn write_back(&self, reference: &str, bytes: Bytes) -> Result<(), SandboxError> {
+        self.written_back
+            .lock()
+            .unwrap()
+            .insert(reference.to_owned(), bytes);
+        Ok(())
+    }
+}
 
 fn store(dir: &TempDir) -> Arc<FileStore> {
     Arc::new(FileStore::new(dir.path().join("store")))
@@ -662,4 +714,225 @@ async fn output_read_artifact_not_found_returns_error() {
         matches!(err, crate::SandboxError::FileStore(_)),
         "missing id must return FileStore error, got: {err}"
     );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Unit: MountSource::Secret — broker materialization
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn secret_mount_materializes_broker_bytes_into_sandbox() {
+    let dir = TempDir::new().unwrap();
+    let broker = MapBroker::new([("provider://anthropic/key", b"sk-supersecret" as &[u8])]);
+    let provider = LocalSandboxProvider::new(store(&dir))
+        .with_broker(Arc::clone(&broker) as Arc<dyn SecretBroker>);
+
+    let mount = Mount::secret("provider://anthropic/key", "creds/key.txt");
+    let sandbox = provider.create_sandbox(&[mount]).await.unwrap();
+
+    let content = std::fs::read(sandbox.join("creds/key.txt")).unwrap();
+    assert_eq!(content, b"sk-supersecret");
+}
+
+#[tokio::test]
+async fn secret_mount_source_is_identified_correctly() {
+    let m = Mount::secret("ref://k", "f.txt");
+    assert!(matches!(m.source, MountSource::Secret { .. }));
+    assert!(
+        !m.is_secret_writeback(),
+        "read-only per-run is not a writeback"
+    );
+
+    let wb = Mount::secret("ref://k", "f.txt")
+        .with_access(MountAccess::ReadWrite)
+        .with_lifetime(MountLifetime::Durable);
+    assert!(wb.is_secret_writeback());
+}
+
+#[tokio::test]
+async fn secret_mount_without_broker_returns_no_broker_error() {
+    let dir = TempDir::new().unwrap();
+    let provider = LocalSandboxProvider::new(store(&dir)); // no broker
+
+    let mount = Mount::secret("ref://key", "cred.txt");
+    let err = provider.create_sandbox(&[mount]).await.unwrap_err();
+    assert!(
+        matches!(err, SandboxError::NoBroker),
+        "expected NoBroker, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn secret_mount_unknown_reference_returns_broker_error() {
+    let dir = TempDir::new().unwrap();
+    let broker = MapBroker::new([]); // empty
+    let provider = LocalSandboxProvider::new(store(&dir))
+        .with_broker(Arc::clone(&broker) as Arc<dyn SecretBroker>);
+
+    let mount = Mount::secret("ref://unknown", "cred.txt");
+    let err = provider.create_sandbox(&[mount]).await.unwrap_err();
+    assert!(
+        matches!(err, SandboxError::Broker { .. }),
+        "expected Broker error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn docker_materializer_rejects_unresolved_secret_source() {
+    let dir = TempDir::new().unwrap();
+    let s = Arc::new(FileStore::new(dir.path().join("store")));
+    let staging = dir.path().join("staging");
+    let materializer = DockerMountMaterializer::new(Arc::clone(&s), &staging);
+
+    let mount = Mount::secret("ref://key", "/container/cred.txt");
+    let err = materializer.materialize_one(&mount).await.unwrap_err();
+    assert!(
+        matches!(err, SandboxError::UnresolvedSecret { .. }),
+        "expected UnresolvedSecret, got: {err}"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Unit: auth-file write-back
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn durable_writable_secret_is_written_back_after_run() {
+    let dir = TempDir::new().unwrap();
+    let initial = b"initial-token";
+    let broker = MapBroker::new([("provider://oauth/token", initial as &[u8])]);
+    let provider = LocalSandboxProvider::new(store(&dir))
+        .with_broker(Arc::clone(&broker) as Arc<dyn SecretBroker>);
+
+    let mounts = vec![
+        Mount::secret("provider://oauth/token", "auth.json")
+            .with_access(MountAccess::ReadWrite)
+            .with_lifetime(MountLifetime::Durable),
+    ];
+
+    let sandbox = provider.create_sandbox(&mounts).await.unwrap();
+
+    // Simulate the agent refreshing its auth file.
+    std::fs::write(sandbox.join("auth.json"), b"refreshed-token").unwrap();
+
+    provider
+        .collect_writebacks(&sandbox, &mounts)
+        .await
+        .unwrap();
+
+    let written = broker.get_writeback("provider://oauth/token").unwrap();
+    assert_eq!(written.as_ref(), b"refreshed-token");
+}
+
+#[tokio::test]
+async fn readonly_secret_is_not_written_back() {
+    let dir = TempDir::new().unwrap();
+    let broker = MapBroker::new([("ref://key", b"secret" as &[u8])]);
+    let provider = LocalSandboxProvider::new(store(&dir))
+        .with_broker(Arc::clone(&broker) as Arc<dyn SecretBroker>);
+
+    let mounts = vec![
+        // ReadOnly — no writeback even though the file changes.
+        Mount::secret("ref://key", "cred.txt").with_lifetime(MountLifetime::Durable),
+    ];
+    let sandbox = provider.create_sandbox(&mounts).await.unwrap();
+    std::fs::write(sandbox.join("cred.txt"), b"modified").unwrap();
+
+    provider
+        .collect_writebacks(&sandbox, &mounts)
+        .await
+        .unwrap();
+
+    assert!(
+        broker.get_writeback("ref://key").is_none(),
+        "read-only mount must not trigger write-back"
+    );
+}
+
+#[tokio::test]
+async fn per_run_secret_is_not_written_back() {
+    let dir = TempDir::new().unwrap();
+    let broker = MapBroker::new([("ref://key", b"secret" as &[u8])]);
+    let provider = LocalSandboxProvider::new(store(&dir))
+        .with_broker(Arc::clone(&broker) as Arc<dyn SecretBroker>);
+
+    let mounts = vec![
+        // ReadWrite but PerRun — no writeback.
+        Mount::secret("ref://key", "cred.txt").with_access(MountAccess::ReadWrite),
+    ];
+    let sandbox = provider.create_sandbox(&mounts).await.unwrap();
+    std::fs::write(sandbox.join("cred.txt"), b"modified").unwrap();
+
+    provider
+        .collect_writebacks(&sandbox, &mounts)
+        .await
+        .unwrap();
+
+    assert!(
+        broker.get_writeback("ref://key").is_none(),
+        "per-run mount must not trigger write-back"
+    );
+}
+
+#[tokio::test]
+async fn collect_writebacks_is_noop_without_broker() {
+    let dir = TempDir::new().unwrap();
+    let provider = LocalSandboxProvider::new(store(&dir)); // no broker
+
+    let s = Arc::new(FileStore::new(dir.path().join("store")));
+    let id = s.put(b"data").await.unwrap();
+    let mounts = vec![Mount::new(id, "file.txt")];
+    let sandbox = provider.create_sandbox(&mounts).await.unwrap();
+
+    // Should not panic or error even though there's no broker.
+    provider
+        .collect_writebacks(&sandbox, &mounts)
+        .await
+        .unwrap();
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Unit: EnvVar build — EgressOnly substitution
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn egress_only_env_var_gets_placeholder_and_replacer() {
+    // Simulate the provider building env + replacer from EnvVar declarations.
+    let reference = "provider://anthropic/key";
+    let secret_bytes = Bytes::from_static(b"sk-supersecret");
+
+    let var = EnvVar::secret_egress_only("ANTHROPIC_API_KEY", reference);
+    assert_eq!(var.visibility, EnvVisibility::EgressOnly);
+
+    // Build placeholder for the env var.
+    let placeholder = egress_placeholder(reference);
+    assert!(!placeholder.is_empty());
+
+    // Build the replacer.
+    let replacer = EgressReplacer::builder()
+        .add(placeholder.as_bytes(), secret_bytes.clone())
+        .build();
+
+    // The outgoing header value uses the placeholder.
+    let header = format!("Bearer {placeholder}");
+    let substituted = replacer.replace_in_str(&header);
+    assert_eq!(substituted, "Bearer sk-supersecret");
+}
+
+#[tokio::test]
+async fn process_visibility_env_var_is_a_direct_value() {
+    let var = EnvVar::secret_process("API_KEY", "ref://key");
+    assert_eq!(var.visibility, EnvVisibility::Process);
+    assert!(matches!(var.value, EnvValue::Secret { reference } if reference == "ref://key"));
+}
+
+#[tokio::test]
+async fn egress_replacer_does_not_modify_non_matching_data() {
+    let placeholder = egress_placeholder("ref://key");
+    let replacer = EgressReplacer::builder()
+        .add(placeholder.as_bytes(), Bytes::from_static(b"secret"))
+        .build();
+
+    let data = b"Authorization: Bearer ordinary-token";
+    assert_eq!(replacer.replace_in_bytes(data), data);
 }

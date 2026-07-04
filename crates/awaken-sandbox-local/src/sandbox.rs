@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 ///
 /// The directory is removed when the `Sandbox` is dropped unless
 /// [`Sandbox::into_path`] is called first.
+#[derive(Debug)]
 pub struct Sandbox {
     dir: tempfile::TempDir,
 }

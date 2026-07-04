@@ -4,8 +4,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_file_store::{ContentId, FileStore};
 
+use crate::broker::SecretBroker;
 use crate::error::SandboxError;
-use crate::mount::Mount;
+use crate::mount::{Mount, MountSource};
 use crate::sandbox::Sandbox;
 use crate::source::Source;
 
@@ -45,11 +46,31 @@ async fn ingest_source(store: &FileStore, source: &Source) -> Result<ContentId, 
     Ok(store.put(&data).await?)
 }
 
+/// Resolve the content id for a mount, fetching secret bytes from the broker
+/// if the source is `MountSource::Secret`.
+async fn resolve_content_id(
+    store: &FileStore,
+    broker: Option<&dyn SecretBroker>,
+    mount: &Mount,
+) -> Result<ContentId, SandboxError> {
+    match &mount.source {
+        MountSource::FileStore { content_id } => Ok(content_id.clone()),
+        MountSource::Secret { reference } => {
+            let broker = broker.ok_or(SandboxError::NoBroker)?;
+            let bytes = broker.resolve(reference).await?;
+            Ok(store.put(&bytes).await?)
+        }
+    }
+}
+
 async fn materialize_mount(
     store: &FileStore,
+    broker: Option<&dyn SecretBroker>,
     sandbox_root: &Path,
     mount: &Mount,
 ) -> Result<(), SandboxError> {
+    let content_id = resolve_content_id(store, broker, mount).await?;
+
     // Reject paths that escape the sandbox root.
     let target = sandbox_root.join(&mount.target);
     let canonical_root = sandbox_root.canonicalize()?;
@@ -76,7 +97,7 @@ async fn materialize_mount(
     if let Some(parent) = target.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let blob = store.get(&mount.content_id).await?;
+    let blob = store.get(&content_id).await?;
     tokio::fs::write(&target, blob).await?;
     Ok(())
 }
@@ -89,13 +110,64 @@ async fn materialize_mount(
 ///
 /// Each call to [`create_sandbox`][SandboxProvider::create_sandbox] creates a
 /// fresh [`tempfile::TempDir`] and materializes the requested mounts into it.
+///
+/// Attach a [`SecretBroker`] via [`with_broker`][Self::with_broker] to enable
+/// `MountSource::Secret` resolution and post-run write-back.
 pub struct LocalSandboxProvider {
     store: Arc<FileStore>,
+    broker: Option<Arc<dyn SecretBroker>>,
 }
 
 impl LocalSandboxProvider {
     pub fn new(store: Arc<FileStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            broker: None,
+        }
+    }
+
+    /// Attach a secret broker, enabling `MountSource::Secret` materialization
+    /// and post-run write-back for durable, writable secret mounts.
+    pub fn with_broker(mut self, broker: Arc<dyn SecretBroker>) -> Self {
+        self.broker = Some(broker);
+        self
+    }
+
+    /// Write back the (possibly refreshed) content of every durable, writable
+    /// secret mount to the broker after a run completes.
+    ///
+    /// For each `mount` that returns `true` for [`Mount::is_secret_writeback`]:
+    /// - reads the file at `sandbox.join(mount.target)`,
+    /// - calls [`SecretBroker::write_back`] with the current bytes.
+    ///
+    /// Skipped silently if the file no longer exists (agent did not touch it).
+    /// No-op when no broker is configured.
+    pub async fn collect_writebacks(
+        &self,
+        sandbox: &Sandbox,
+        mounts: &[Mount],
+    ) -> Result<(), SandboxError> {
+        let broker = match &self.broker {
+            Some(b) => b.as_ref(),
+            None => return Ok(()),
+        };
+        for mount in mounts {
+            if !mount.is_secret_writeback() {
+                continue;
+            }
+            let MountSource::Secret { reference } = &mount.source else {
+                continue;
+            };
+            let abs = sandbox.join(&mount.target);
+            if !abs.exists() {
+                continue;
+            }
+            let data = tokio::fs::read(&abs).await?;
+            broker
+                .write_back(reference, bytes::Bytes::from(data))
+                .await?;
+        }
+        Ok(())
     }
 }
 
@@ -106,7 +178,7 @@ impl SandboxProvider for LocalSandboxProvider {
     }
 
     async fn realize_mount(&self, sandbox: &Sandbox, mount: &Mount) -> Result<(), SandboxError> {
-        materialize_mount(&self.store, sandbox.path(), mount).await
+        materialize_mount(&self.store, self.broker.as_deref(), sandbox.path(), mount).await
     }
 
     async fn create_sandbox(&self, mounts: &[Mount]) -> Result<Sandbox, SandboxError> {
@@ -129,8 +201,12 @@ impl SandboxProvider for LocalSandboxProvider {
 /// `<namespace_root>/<namespace>/`. This provides lightweight directory-level
 /// isolation between tenants or runs without requiring OS-level namespace
 /// features.
+///
+/// Attach a [`SecretBroker`] via [`with_broker`][Self::with_broker] to enable
+/// `MountSource::Secret` resolution and post-run write-back.
 pub struct NamespaceSandboxProvider {
     store: Arc<FileStore>,
+    broker: Option<Arc<dyn SecretBroker>>,
     namespace: String,
     namespace_root: std::path::PathBuf,
 }
@@ -146,9 +222,48 @@ impl NamespaceSandboxProvider {
     ) -> Self {
         Self {
             store,
+            broker: None,
             namespace: namespace.into(),
             namespace_root: namespace_root.into(),
         }
+    }
+
+    /// Attach a secret broker, enabling `MountSource::Secret` materialization
+    /// and post-run write-back for durable, writable secret mounts.
+    pub fn with_broker(mut self, broker: Arc<dyn SecretBroker>) -> Self {
+        self.broker = Some(broker);
+        self
+    }
+
+    /// Write back durable, writable secret mounts after a run.
+    ///
+    /// See [`LocalSandboxProvider::collect_writebacks`] for semantics.
+    pub async fn collect_writebacks(
+        &self,
+        sandbox: &Sandbox,
+        mounts: &[Mount],
+    ) -> Result<(), SandboxError> {
+        let broker = match &self.broker {
+            Some(b) => b.as_ref(),
+            None => return Ok(()),
+        };
+        for mount in mounts {
+            if !mount.is_secret_writeback() {
+                continue;
+            }
+            let MountSource::Secret { reference } = &mount.source else {
+                continue;
+            };
+            let abs = sandbox.join(&mount.target);
+            if !abs.exists() {
+                continue;
+            }
+            let data = tokio::fs::read(&abs).await?;
+            broker
+                .write_back(reference, bytes::Bytes::from(data))
+                .await?;
+        }
+        Ok(())
     }
 
     async fn sandbox_parent(&self) -> Result<std::path::PathBuf, SandboxError> {
@@ -165,7 +280,7 @@ impl SandboxProvider for NamespaceSandboxProvider {
     }
 
     async fn realize_mount(&self, sandbox: &Sandbox, mount: &Mount) -> Result<(), SandboxError> {
-        materialize_mount(&self.store, sandbox.path(), mount).await
+        materialize_mount(&self.store, self.broker.as_deref(), sandbox.path(), mount).await
     }
 
     async fn create_sandbox(&self, mounts: &[Mount]) -> Result<Sandbox, SandboxError> {

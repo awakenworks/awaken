@@ -17,4 +17,13 @@ pub enum SandboxError {
 
     #[error("tar archive error: {0}")]
     Tar(String),
+
+    #[error("no secret broker configured — attach one with `with_broker`")]
+    NoBroker,
+
+    #[error("secret broker error for `{reference}`: {message}")]
+    Broker { reference: String, message: String },
+
+    #[error("secret mount `{reference}` must be resolved before use with this materializer")]
+    UnresolvedSecret { reference: String },
 }

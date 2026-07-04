@@ -4,7 +4,7 @@ use std::sync::Arc;
 use awaken_file_store::FileStore;
 
 use crate::error::SandboxError;
-use crate::mount::{Mount, MountAccess};
+use crate::mount::{Mount, MountAccess, MountSource};
 
 /// A materialized bind mount descriptor for use with Docker `HostConfig.Binds`.
 #[derive(Debug, Clone)]
@@ -67,15 +67,24 @@ impl DockerMountMaterializer {
     }
 
     /// Materialize a single [`Mount`] and return its [`DockerBind`].
+    ///
+    /// Only `FileStore` sources are supported; `Secret` sources must be
+    /// resolved by the provider before Docker materialization.
     pub async fn materialize_one(&self, mount: &Mount) -> Result<DockerBind, SandboxError> {
-        let blob = self.store.get(&mount.content_id).await?;
+        let content_id = match &mount.source {
+            MountSource::FileStore { content_id } => content_id,
+            MountSource::Secret { reference } => {
+                return Err(SandboxError::UnresolvedSecret {
+                    reference: reference.clone(),
+                });
+            }
+        };
+
+        let blob = self.store.get(content_id).await?;
 
         // Staging path mirrors the file-store layout so the same blob is
         // de-duplicated across containers sharing the same staging root.
-        let staged = self
-            .staging_root
-            .join(&mount.content_id[..2])
-            .join(&mount.content_id);
+        let staged = self.staging_root.join(&content_id[..2]).join(content_id);
 
         if !staged.exists() {
             if let Some(parent) = staged.parent() {
