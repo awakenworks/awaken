@@ -597,7 +597,10 @@ version = "0.6.1-dev"
 dependencies = [
  "async-trait",
  "awaken-file-store",
+ "base64 0.22.1",
  "bytes",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

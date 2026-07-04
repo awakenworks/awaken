@@ -10,8 +10,16 @@ mod source;
 #[cfg(test)]
 mod tests;
 
+pub mod docker;
+pub mod k8s;
+
+pub use docker::{DockerBind, DockerMountMaterializer};
 pub use error::SandboxError;
-pub use mount::Mount;
+pub use k8s::{
+    K8sConfigMap, K8sInitContainer, K8sMount, K8sMountMaterializer, K8sMountSource, K8sMountSpec,
+    K8sVolume, K8sVolumeMount,
+};
+pub use mount::{Mount, MountAccess};
 pub use provider::{LocalSandboxProvider, NamespaceSandboxProvider, SandboxProvider};
 pub use sandbox::Sandbox;
 pub use source::Source;
