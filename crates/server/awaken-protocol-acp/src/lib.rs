@@ -31,6 +31,35 @@ pub enum TerminationReason {
     Refusal,
     /// The agent reported an error.
     Error,
+    /// The turn exceeded its hard wall-clock deadline and was reaped.
+    TimedOut,
+}
+
+/// A mid-turn control message injected by the owner (ADR-0052 shape). Delivered
+/// over a channel the supervisor races against the turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Injection {
+    /// Cancel the turn now and reap the agent.
+    Interrupt,
+}
+
+/// How the supervisor bounds and reaps a turn.
+#[derive(Debug, Clone, Copy)]
+pub struct SupervisePolicy {
+    /// Hard wall-clock ceiling for a turn (oversight's per-turn deadline). `None`
+    /// disables the cap.
+    pub turn_deadline: Option<std::time::Duration>,
+    /// Grace between `SIGTERM` and the escalated `SIGKILL` when reaping.
+    pub reap_grace: std::time::Duration,
+}
+
+impl Default for SupervisePolicy {
+    fn default() -> Self {
+        Self {
+            turn_deadline: None,
+            reap_grace: std::time::Duration::from_secs(5),
+        }
+    }
 }
 
 /// A neutral, projected agent event. ACP `session/update` variants collapse onto
@@ -149,32 +178,64 @@ impl AcpBridge {
     }
 }
 
-/// The supervisor: a consumer policy over the process/channel primitives. It runs
-/// a turn and, if `cancel` fires first, signals the process and reports
-/// [`TerminationReason::Cancelled`] — the session-runner shape, over `signal`.
+/// The supervisor: a consumer policy over the process/channel primitives — the
+/// session-runner shape. It drives a turn, bounds it with a hard deadline, honors
+/// mid-turn interrupts, and reaps the agent `SIGTERM`→(grace)→`SIGKILL` on exit.
 pub struct Supervisor;
 
 impl Supervisor {
-    /// Drive a turn, racing it against `cancel`. On cancel, deliver `SIGTERM` to the
-    /// agent process and return `Cancelled`; otherwise return the agent's outcome.
+    /// Reap the agent: `SIGTERM`, wait up to `grace` for it to exit, else escalate
+    /// to `SIGKILL`. Returns `true` if the kill escalation was needed. (Process-group
+    /// semantics live in the provider; this is the neutral signal ladder.)
+    pub async fn reap(
+        process: &dyn pc::ProcessHandle,
+        grace: std::time::Duration,
+    ) -> Result<bool, AcpError> {
+        let io = |e: pc::SandboxError| AcpError::Io(e.to_string());
+        process.signal(pc::Signal::Term).await.map_err(io)?;
+        const STEPS: u32 = 5;
+        let step = grace / STEPS;
+        for _ in 0..STEPS {
+            if process.poll().await.map_err(io)?.is_some() {
+                return Ok(false);
+            }
+            tokio::time::sleep(step).await;
+        }
+        process.signal(pc::Signal::Kill).await.map_err(io)?;
+        Ok(true)
+    }
+
+    /// Drive a turn, racing it against `cancel`, mid-turn `injections`, and the
+    /// policy's turn deadline. Any of the three reaps the agent and maps the reason.
     pub async fn supervise(
         channel: &mut dyn AgentChannel,
         process: &dyn pc::ProcessHandle,
         prompt: &str,
         sink: &mut dyn RunEventSink,
         cancel: impl std::future::Future<Output = ()>,
+        injections: &mut tokio::sync::mpsc::Receiver<Injection>,
+        policy: SupervisePolicy,
     ) -> Result<TerminationReason, AcpError> {
+        let deadline = async {
+            match policy.turn_deadline {
+                Some(d) => tokio::time::sleep(d).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             biased;
             outcome = AcpBridge::run_turn(channel, prompt, sink) => outcome,
-            () = cancel => {
-                // Reap the whole process on cancel (process-group semantics live in
-                // the provider); indeterminate in-flight effects are the sink's to mark.
-                process
-                    .signal(pc::Signal::Term)
-                    .await
-                    .map_err(|e| AcpError::Io(e.to_string()))?;
+            Some(Injection::Interrupt) = injections.recv() => {
+                Self::reap(process, policy.reap_grace).await?;
                 Ok(TerminationReason::Cancelled)
+            }
+            () = cancel => {
+                Self::reap(process, policy.reap_grace).await?;
+                Ok(TerminationReason::Cancelled)
+            }
+            () = deadline => {
+                Self::reap(process, policy.reap_grace).await?;
+                Ok(TerminationReason::TimedOut)
             }
         }
     }
@@ -340,6 +401,21 @@ mod tests {
 
     struct FakeProcess {
         signalled: Arc<Mutex<Vec<pc::Signal>>>,
+        /// When true, `poll` reports an exit once any signal has been delivered.
+        exits_after_signal: bool,
+    }
+
+    impl FakeProcess {
+        fn new(exits_after_signal: bool) -> (Self, Arc<Mutex<Vec<pc::Signal>>>) {
+            let signalled = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    signalled: signalled.clone(),
+                    exits_after_signal,
+                },
+                signalled,
+            )
+        }
     }
 
     #[async_trait]
@@ -354,7 +430,13 @@ mod tests {
             })
         }
         async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
-            Ok(None)
+            let signalled = !self.signalled.lock().unwrap().is_empty();
+            Ok(
+                (self.exits_after_signal && signalled).then_some(pc::ExitStatus {
+                    code: None,
+                    signaled: true,
+                }),
+            )
         }
         async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
             self.signalled.lock().unwrap().push(signal);
@@ -362,58 +444,149 @@ mod tests {
         }
     }
 
+    fn fast_policy() -> SupervisePolicy {
+        SupervisePolicy {
+            turn_deadline: None,
+            reap_grace: std::time::Duration::from_millis(20),
+        }
+    }
+
     #[tokio::test]
-    async fn supervisor_reaps_the_process_on_cancel() {
+    async fn reap_escalates_to_kill_when_the_agent_ignores_term() {
+        let (process, signalled) = FakeProcess::new(false); // never exits on its own
+        let killed = Supervisor::reap(&process, std::time::Duration::from_millis(20))
+            .await
+            .unwrap();
+        assert!(killed, "an unresponsive agent must be escalated to SIGKILL");
+        assert_eq!(
+            signalled.lock().unwrap().as_slice(),
+            &[pc::Signal::Term, pc::Signal::Kill]
+        );
+    }
+
+    #[tokio::test]
+    async fn reap_stops_at_term_when_the_agent_exits() {
+        let (process, signalled) = FakeProcess::new(true); // exits right after SIGTERM
+        let killed = Supervisor::reap(&process, std::time::Duration::from_millis(50))
+            .await
+            .unwrap();
+        assert!(!killed);
+        assert_eq!(signalled.lock().unwrap().as_slice(), &[pc::Signal::Term]);
+    }
+
+    #[tokio::test]
+    async fn supervisor_reaps_the_agent_on_cancel() {
         let (mut ours, theirs) = combined();
-        // Agent emits a message then hangs — the turn never ends on its own.
         let agent = tokio::spawn(fake_agent(
             theirs,
             vec![r#"{"type":"message","text":"thinking"}"#.into()],
             true,
         ));
-        let signalled = Arc::new(Mutex::new(Vec::new()));
-        let process = FakeProcess {
-            signalled: signalled.clone(),
-        };
+        let (process, signalled) = FakeProcess::new(true);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(4);
         let mut sink = RecordingSink::default();
 
-        // A time-based cancel fires mid-turn (the agent has emitted then hung).
         let reason = Supervisor::supervise(
             ours.as_mut(),
             &process,
             "go",
             &mut sink,
-            tokio::time::sleep(std::time::Duration::from_millis(50)),
+            tokio::time::sleep(std::time::Duration::from_millis(30)),
+            &mut rx,
+            fast_policy(),
         )
         .await
         .unwrap();
 
         assert_eq!(reason, TerminationReason::Cancelled);
-        assert_eq!(signalled.lock().unwrap().as_slice(), &[pc::Signal::Term]);
-        // At least the pre-cancel message was committed.
-        assert!(!sink.events.is_empty());
+        assert_eq!(signalled.lock().unwrap()[0], pc::Signal::Term);
+        assert!(
+            !sink.events.is_empty(),
+            "the pre-cancel message was committed"
+        );
         agent.abort();
     }
 
     #[tokio::test]
-    async fn supervisor_returns_agent_outcome_when_no_cancel() {
+    async fn supervisor_times_out_on_the_turn_deadline() {
         let (mut ours, theirs) = combined();
         let agent = tokio::spawn(fake_agent(
             theirs,
-            vec![r#"{"type":"turn_end","reason":"natural_end"}"#.into()],
-            false,
+            vec![r#"{"type":"message","text":"slow"}"#.into()],
+            true,
         ));
-        let process = FakeProcess {
-            signalled: Arc::new(Mutex::new(Vec::new())),
-        };
+        let (process, signalled) = FakeProcess::new(true);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(4);
         let mut sink = RecordingSink::default();
-        // Cancel that never fires within the turn.
+        let policy = SupervisePolicy {
+            turn_deadline: Some(std::time::Duration::from_millis(30)),
+            reap_grace: std::time::Duration::from_millis(20),
+        };
+
         let reason = Supervisor::supervise(
             ours.as_mut(),
             &process,
             "go",
             &mut sink,
             std::future::pending::<()>(),
+            &mut rx,
+            policy,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reason, TerminationReason::TimedOut);
+        assert_eq!(signalled.lock().unwrap()[0], pc::Signal::Term);
+        agent.abort();
+    }
+
+    #[tokio::test]
+    async fn supervisor_honors_a_mid_turn_interrupt_injection() {
+        let (mut ours, theirs) = combined();
+        let agent = tokio::spawn(fake_agent(
+            theirs,
+            vec![r#"{"type":"message","text":"busy"}"#.into()],
+            true,
+        ));
+        let (process, signalled) = FakeProcess::new(true);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tx.send(Injection::Interrupt).await.unwrap();
+        let mut sink = RecordingSink::default();
+
+        let reason = Supervisor::supervise(
+            ours.as_mut(),
+            &process,
+            "go",
+            &mut sink,
+            std::future::pending::<()>(),
+            &mut rx,
+            fast_policy(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reason, TerminationReason::Cancelled);
+        assert!(!signalled.lock().unwrap().is_empty());
+        agent.abort();
+    }
+
+    #[tokio::test]
+    async fn supervisor_returns_agent_outcome_when_nothing_interrupts() {
+        let (mut ours, theirs) = combined();
+        let agent = tokio::spawn(fake_agent(
+            theirs,
+            vec![r#"{"type":"turn_end","reason":"natural_end"}"#.into()],
+            false,
+        ));
+        let (process, _sig) = FakeProcess::new(false);
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut sink = RecordingSink::default();
+        let reason = Supervisor::supervise(
+            ours.as_mut(),
+            &process,
+            "go",
+            &mut sink,
+            std::future::pending::<()>(),
+            &mut rx,
+            SupervisePolicy::default(),
         )
         .await
         .unwrap();
