@@ -473,6 +473,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # feature `k8s`: real Kubernetes backend over the apiserver (SDK, not kubectl).
         "kube",
         "k8s-openapi",
+        # kube's rustls client needs a CryptoProvider (ring) installed explicitly.
+        "rustls",
     },
     # Single-machine assembly binary: the composition root that wires the kernel
     # (built-in tools + permission gate + model port) behind the managed adapter.

@@ -2,10 +2,11 @@
 //!
 //! Implements [`ContainerRuntime`] over **bollard** — the Docker Engine HTTP API
 //! via the SDK, never the `docker` CLI. Faithful to awaken-next's `DockerHandWorker`:
-//! the agent runs as the container's main command (process-as-container) and the
-//! stdio channel is a **network dial to the published port** (via [`crate::net`]),
-//! not `docker exec`. Compile-verified here; running requires a Docker daemon.
+//! the agent runs as the container's main command (process-as-container); its stdio
+//! port is **published** and reached by a **network dial** (via [`crate::net`]), not
+//! `docker exec`. Validated against a real daemon in `tests/docker_it.rs`.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
@@ -16,7 +17,7 @@ use bollard::container::{
     Config, CreateContainerOptions, DownloadFromContainerOptions, KillContainerOptions,
     RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
 };
-use bollard::models::HostConfig;
+use bollard::models::{HostConfig, PortBinding};
 use futures_util::StreamExt;
 
 use crate::net::TcpAgentTransport;
@@ -34,26 +35,36 @@ fn signal_name(signal: pc::Signal) -> &'static str {
     }
 }
 
-/// A Docker-backed [`ContainerRuntime`]. `agent_addr` is where the published agent
-/// port is reachable (the runtime dials it for the [`AgentChannel`]).
+/// A Docker-backed [`ContainerRuntime`]. `agent_port` is the container-internal TCP
+/// port the agent listens on; it is published to an ephemeral host port that
+/// [`ContainerRuntime::open_channel`] discovers (via inspect) and dials.
 pub struct DockerRuntime {
     docker: Docker,
-    agent_addr: SocketAddr,
+    agent_port: u16,
 }
 
 impl DockerRuntime {
     /// Connect using the local defaults (unix socket / named pipe / env).
-    pub fn connect_local(agent_addr: SocketAddr) -> Result<Self, RuntimeError> {
+    pub fn connect_local(agent_port: u16) -> Result<Self, RuntimeError> {
         let docker = Docker::connect_with_local_defaults().map_err(backend)?;
-        Ok(Self { docker, agent_addr })
+        Ok(Self { docker, agent_port })
     }
 
-    /// Wrap an already-built client (e.g. a remote endpoint).
-    pub fn with_client(docker: Docker, agent_addr: SocketAddr) -> Self {
-        Self { docker, agent_addr }
+    /// Wrap an already-built client.
+    pub fn with_client(docker: Docker, agent_port: u16) -> Self {
+        Self { docker, agent_port }
     }
 
-    fn host_config(plan: &ContainerPlan) -> HostConfig {
+    /// Probe the daemon (for tests / health checks): `Ok` iff it responds.
+    pub async fn ping(&self) -> Result<(), RuntimeError> {
+        self.docker.version().await.map(|_| ()).map_err(backend)
+    }
+
+    fn port_key(&self) -> String {
+        format!("{}/tcp", self.agent_port)
+    }
+
+    fn host_config(&self, plan: &ContainerPlan) -> HostConfig {
         let binds: Vec<String> = plan
             .binds
             .iter()
@@ -62,13 +73,42 @@ impl DockerRuntime {
                 format!("{}:{}{ro}", b.source_ref, b.mount_path)
             })
             .collect();
+        // Publish the agent port to an ephemeral 127.0.0.1 host port.
+        let mut port_bindings = HashMap::new();
+        port_bindings.insert(
+            self.port_key(),
+            Some(vec![PortBinding {
+                host_ip: Some("127.0.0.1".to_string()),
+                host_port: Some(String::new()),
+            }]),
+        );
         HostConfig {
             binds: (!binds.is_empty()).then_some(binds),
+            port_bindings: Some(port_bindings),
             memory: plan.limits.memory_bytes.map(|m| m as i64),
             nano_cpus: plan.limits.cpu_millis.map(|c| i64::from(c) * 1_000_000),
             pids_limit: plan.limits.pids.map(i64::from),
             ..Default::default()
         }
+    }
+
+    /// Discover the ephemeral host address the agent port was published to.
+    async fn agent_addr(&self, container_id: &str) -> Result<SocketAddr, RuntimeError> {
+        let info = self
+            .docker
+            .inspect_container(container_id, None)
+            .await
+            .map_err(backend)?;
+        let host_port = info
+            .network_settings
+            .and_then(|n| n.ports)
+            .and_then(|ports| ports.get(&self.port_key()).cloned().flatten())
+            .and_then(|bindings| bindings.into_iter().next())
+            .and_then(|b| b.host_port)
+            .ok_or_else(|| backend("agent port is not published yet"))?;
+        format!("127.0.0.1:{host_port}")
+            .parse()
+            .map_err(|e| backend(format!("bad published addr: {e}")))
     }
 }
 
@@ -76,12 +116,15 @@ impl DockerRuntime {
 impl ContainerRuntime for DockerRuntime {
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
         let env: Vec<String> = plan.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let mut exposed_ports = HashMap::new();
+        exposed_ports.insert(self.port_key(), HashMap::new());
         let config = Config {
             image: Some(plan.image.clone()),
             // Process-as-container: the agent argv IS the container command.
             cmd: Some(plan.command.clone()),
             env: Some(env),
-            host_config: Some(Self::host_config(plan)),
+            exposed_ports: Some(exposed_ports),
+            host_config: Some(self.host_config(plan)),
             ..Default::default()
         };
         let created = self
@@ -104,11 +147,12 @@ impl ContainerRuntime for DockerRuntime {
 
     async fn open_channel(
         &self,
-        _container_id: &str,
+        container_id: &str,
     ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
         // The agent is the container's main process; reach its stdio over the
         // published port (awaken-next dials, it does not `docker exec`).
-        TcpAgentTransport::new(self.agent_addr)
+        let addr = self.agent_addr(container_id).await?;
+        TcpAgentTransport::new(addr)
             .open_channel()
             .await
             .map_err(backend)
