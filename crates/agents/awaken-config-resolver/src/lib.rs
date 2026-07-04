@@ -51,14 +51,23 @@ pub enum ResolveError {
     EndpointMissing(String),
     #[error("credential source `{0}` not provided")]
     SourceMissing(String),
+    #[error("credential pool `{0}` not provided")]
+    PoolMissing(String),
+    #[error("credential pool `{0}` has no member that could be materialized (fail closed)")]
+    PoolExhausted(String),
     #[error(transparent)]
     Credential(#[from] CredentialError),
 }
 
-/// A source lookup the assembly provides (id → source). In P1 this becomes a pool
-/// selection; in P0 it is a flat map.
+/// A credential lookup the assembly provides: individual sources by id, and pools
+/// by id for the `OneOfCredentialPool` binding. `get_pool` defaults to `None`, so a
+/// flat `HashMap<String, CredentialSource>` still satisfies the trait for the
+/// `Exact`/`None` bindings without knowing about pools.
 pub trait SourceLookup {
     fn get(&self, id: &str) -> Option<&CredentialSource>;
+    fn get_pool(&self, _id: &str) -> Option<&awaken_credential_vault::CredentialPool> {
+        None
+    }
 }
 
 impl SourceLookup for std::collections::HashMap<String, CredentialSource> {
@@ -71,8 +80,9 @@ impl SourceLookup for std::collections::HashMap<String, CredentialSource> {
 /// [`ResolvedInference`]. This is `reconcile_model_ref` + `resolve_inference` +
 /// credential `materialize`, composed (ADR-0043).
 ///
-/// P0: picks the first offering for `model_id` (`Offering(model) ∩ flavor` with a
-/// single endpoint), the `Exact` binding, and materializes its source.
+/// Picks the first offering for `model_id` (`Offering(model) ∩ flavor`), the given
+/// binding, and materializes its credential. Endpoint selection honors no toggles;
+/// use [`resolve_profile`] to skip endpoints an operator disabled.
 pub async fn resolve_inference(
     catalog: &ProviderCatalog,
     model_id: &str,
@@ -80,11 +90,25 @@ pub async fn resolve_inference(
     sources: &dyn SourceLookup,
     secret_store: &dyn SecretStore,
 ) -> Result<ResolvedInference, ResolveError> {
-    // reconcile_model_ref + resolve_inference (Derive: first offering for the model).
+    resolve_inference_toggled(catalog, model_id, &[], binding, sources, secret_store).await
+}
+
+/// The core resolution, with an operator's disabled-endpoint toggle applied: an
+/// offering whose endpoint id is in `disabled_endpoints` is skipped, so a
+/// `(credential × interface)` an operator turned off is never selected.
+async fn resolve_inference_toggled(
+    catalog: &ProviderCatalog,
+    model_id: &str,
+    disabled_endpoints: &[String],
+    binding: &CredentialBinding,
+    sources: &dyn SourceLookup,
+    secret_store: &dyn SecretStore,
+) -> Result<ResolvedInference, ResolveError> {
+    // reconcile_model_ref + resolve_inference (Derive: first enabled offering).
     let offering = catalog
         .offerings
         .iter()
-        .find(|o| o.model_id == model_id)
+        .find(|o| o.model_id == model_id && !disabled_endpoints.contains(&o.protocol_endpoint_id.0))
         .ok_or_else(|| ResolveError::ModelUnresolved(model_id.to_string()))?;
 
     let endpoint = catalog
@@ -103,17 +127,7 @@ pub async fn resolve_inference(
     };
 
     // Credential materialization (secret only exists from here to the seam).
-    let credential = match binding {
-        CredentialBinding::None => None,
-        CredentialBinding::Exact {
-            credential_source_id,
-        } => {
-            let source = sources
-                .get(credential_source_id.0.as_str())
-                .ok_or_else(|| ResolveError::SourceMissing(credential_source_id.0.clone()))?;
-            Some(awaken_credential_vault::materialize(source, secret_store).await?)
-        }
-    };
+    let credential = resolve_credential(binding, sources, secret_store).await?;
 
     Ok(ResolvedInference {
         triple,
@@ -121,6 +135,79 @@ pub async fn resolve_inference(
         base_url: endpoint.base_url.clone(),
         credential,
     })
+}
+
+/// An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
+/// oversight-next `ProviderIdentity`): it names the model, the credential binding
+/// (vault-backed, never inline), and any endpoints the operator has toggled off.
+/// The resolver reads it — it is never flowed into the runtime.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InferenceProfile {
+    pub model_id: String,
+    pub credential_binding: CredentialBinding,
+    #[serde(default)]
+    pub disabled_endpoint_ids: Vec<String>,
+}
+
+/// Resolve an [`InferenceProfile`] into a [`ResolvedInference`]: the same core
+/// resolution, but selecting only endpoints the profile has not disabled and using
+/// the profile's credential binding (which may be a pool with failover).
+pub async fn resolve_profile(
+    catalog: &ProviderCatalog,
+    profile: &InferenceProfile,
+    sources: &dyn SourceLookup,
+    secret_store: &dyn SecretStore,
+) -> Result<ResolvedInference, ResolveError> {
+    resolve_inference_toggled(
+        catalog,
+        &profile.model_id,
+        &profile.disabled_endpoint_ids,
+        &profile.credential_binding,
+        sources,
+        secret_store,
+    )
+    .await
+}
+
+/// Materialize the credential a binding selects. `None` yields no secret; `Exact`
+/// materializes one named source; `OneOfCredentialPool` walks the pool's selection
+/// order and returns the first member that materializes — a disabled or unusable
+/// member fails over to the next. Fail-closed: an empty/all-bad pool is an error,
+/// never a silent unauthenticated run.
+async fn resolve_credential(
+    binding: &CredentialBinding,
+    sources: &dyn SourceLookup,
+    secret_store: &dyn SecretStore,
+) -> Result<Option<RedactedString>, ResolveError> {
+    match binding {
+        CredentialBinding::None => Ok(None),
+        CredentialBinding::Exact {
+            credential_source_id,
+        } => {
+            let source = sources
+                .get(credential_source_id.0.as_str())
+                .ok_or_else(|| ResolveError::SourceMissing(credential_source_id.0.clone()))?;
+            Ok(Some(
+                awaken_credential_vault::materialize(source, secret_store).await?,
+            ))
+        }
+        CredentialBinding::OneOfCredentialPool { credential_pool_id } => {
+            let pool = sources
+                .get_pool(credential_pool_id.0.as_str())
+                .ok_or_else(|| ResolveError::PoolMissing(credential_pool_id.0.clone()))?;
+            // Try members in selection order; skip a member whose source is absent
+            // or fails to materialize, so one bad key does not fail the run.
+            for member in pool.selection_order() {
+                let Some(source) = sources.get(member.credential_source_id.0.as_str()) else {
+                    continue;
+                };
+                if let Ok(secret) = awaken_credential_vault::materialize(source, secret_store).await {
+                    return Ok(Some(secret));
+                }
+            }
+            Err(ResolveError::PoolExhausted(credential_pool_id.0.clone()))
+        }
+    }
 }
 
 /// The complete run input the resolver hands the run loop. Two parts travel
