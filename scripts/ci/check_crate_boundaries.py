@@ -81,12 +81,23 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-config-resolver",
         "serde",
         "serde_json",
+        "thiserror",
         "axum",
         "async-trait",
         "schemars",
         "tokio",
         "tower",
         "http-body-util",
+        # The admin plane's own aggregates (profiles / MCP defs / agent bindings)
+        # get a migration scope of their own (`awaken.admin`), like the
+        # catalog/credential domains.
+        "awaken-scoped-migration",
+        # feature `sqlite`: embedded durable InferenceProfileStore + McpStore
+        # backend over the crate's own `admin` migration scope (ADR-0043
+        # sqlite-repos).
+        "rusqlite",
+        # dev-only: reopen-from-file persistence tests.
+        "tempfile",
     },
     "awaken-managed-bridge": {
         "awaken-agent-contract",
@@ -661,6 +672,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "axum",
         "tower",
         "http-body-util",
+        # dev-only: the restart-persistence test rebuilds the durable management
+        # router over one tempdir across simulated process lifetimes.
+        "tempfile",
     },
 }
 
