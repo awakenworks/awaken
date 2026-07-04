@@ -23,4 +23,6 @@ pub use state::{
     OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind, SessionInit, SessionRuntime,
     StateError, TurnOutcome,
 };
-pub use vaults::{McpProbe, McpProbeStatus, McpRefreshBinding, VaultState, vault_router};
+pub use vaults::{
+    McpProbe, McpProbeStatus, McpRefreshBinding, TokenEndpointAuthBinding, VaultState, vault_router,
+};
