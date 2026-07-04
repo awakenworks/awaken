@@ -142,6 +142,7 @@ async fn resolve_inference_toggled(
 /// (vault-backed, never inline), and any endpoints the operator has toggled off.
 /// The resolver reads it — it is never flowed into the runtime.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct InferenceProfile {
     pub model_id: String,
     pub credential_binding: CredentialBinding,

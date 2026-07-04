@@ -13,11 +13,14 @@ use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
-use awaken_config_resolver::{ResolveError, SourceLookup, resolve_inference};
+use awaken_config_resolver::{
+    InferenceProfile, ResolveError, ResolvedInference, SourceLookup, resolve_inference,
+    resolve_profile,
+};
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
     CredentialBinding, CredentialCreateParams, CredentialError, CredentialKind, CredentialPool,
-    CredentialPoolId, CredentialSource, CredentialSourceId, SecretStore,
+    CredentialPoolId, CredentialSource, CredentialSourceId, CredentialStatus, SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId};
@@ -35,6 +38,59 @@ pub struct AdminState {
     pub catalog: Arc<dyn CatalogRepo>,
     pub credentials: Arc<dyn CredentialRepo>,
     pub secrets: Arc<dyn SecretStore>,
+    /// Authored [`InferenceProfile`]s, keyed by id (the resolver reads these).
+    pub profiles: Arc<dyn InferenceProfileStore>,
+    /// Optional live credential validator. When wired (server-local injects a
+    /// provider-genai probe), `POST /credentials/:id/validate` performs a real probe;
+    /// otherwise it reports `unknown` (the model SDK never enters this CRUD crate —
+    /// it arrives behind this port).
+    pub probe: Option<Arc<dyn CredentialProbe>>,
+}
+
+/// A store for authored [`InferenceProfile`]s (an admin-plane aggregate). Sync +
+/// in-memory by default; a durable backend can implement the same port.
+pub trait InferenceProfileStore: Send + Sync {
+    fn put(&self, id: String, profile: InferenceProfile);
+    fn get(&self, id: &str) -> Option<InferenceProfile>;
+}
+
+/// The default in-memory [`InferenceProfileStore`].
+#[derive(Default)]
+pub struct InMemoryProfileStore(std::sync::Mutex<HashMap<String, InferenceProfile>>);
+
+impl InMemoryProfileStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl InferenceProfileStore for InMemoryProfileStore {
+    fn put(&self, id: String, profile: InferenceProfile) {
+        self.0.lock().expect("profiles").insert(id, profile);
+    }
+    fn get(&self, id: &str) -> Option<InferenceProfile> {
+        self.0.lock().expect("profiles").get(id).cloned()
+    }
+}
+
+/// The result of a live credential probe (secret-free), aligned with the Managed
+/// wire's `valid` / `invalid` / `unknown` statuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeStatus {
+    Valid,
+    Invalid,
+    Unknown,
+}
+
+/// A port that live-probes a resolved credential against its provider endpoint. The
+/// implementation (server-local, backed by provider-genai) is the only place the
+/// model SDK is named — the CRUD crate stays SDK-free.
+#[async_trait::async_trait]
+pub trait CredentialProbe: Send + Sync {
+    async fn probe(&self, base_url: &str, secret: &RedactedString, model: &str) -> ProbeStatus;
 }
 
 /// Author the model catalog and enter credentials. The resolver consumes the same
@@ -59,6 +115,22 @@ pub fn admin_router(state: AdminState) -> Router {
         .route(
             "/v1/config/credential-pools/:id",
             put(put_pool).get(get_pool),
+        )
+        .route(
+            "/v1/config/credentials/:id/archive",
+            post(archive_credential),
+        )
+        .route(
+            "/v1/config/credentials/:id/validate",
+            post(validate_credential),
+        )
+        .route(
+            "/v1/config/inference-profiles/:id",
+            put(put_profile).get(get_profile),
+        )
+        .route(
+            "/v1/config/inference-profiles/:id/resolve",
+            post(resolve_profile_route),
         )
         .route("/v1/config/inference/resolve", post(resolve_route))
         .with_state(state)
@@ -309,27 +381,7 @@ async fn resolve_route(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    // Snapshot the workspace's credential sources + pools into a lookup for the
-    // resolver (pools carry the failover members).
-    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
-    for source in state
-        .credentials
-        .list(&request.workspace_id)
-        .await
-        .map_err(|e| cred_problem(&e, &rid))?
-    {
-        sources.insert(source.id.0.clone(), source);
-    }
-    let mut pools: HashMap<String, CredentialPool> = HashMap::new();
-    for pool in state
-        .credentials
-        .list_pools(&request.workspace_id)
-        .await
-        .map_err(|e| cred_problem(&e, &rid))?
-    {
-        pools.insert(pool.id.0.clone(), pool);
-    }
-    let lookup = WorkspaceLookup { sources, pools };
+    let lookup = workspace_lookup(&state, &request.workspace_id, &rid).await?;
     let resolved = resolve_inference(
         &catalog,
         &request.model_id,
@@ -339,13 +391,189 @@ async fn resolve_route(
     )
     .await
     .map_err(|e| resolve_problem(&e, &rid))?;
-    Ok(Json(ResolvedInferenceView {
+    Ok(Json(view_of(resolved)))
+}
+
+/// The secret-free projection of a [`ResolvedInference`].
+fn view_of(resolved: ResolvedInference) -> ResolvedInferenceView {
+    ResolvedInferenceView {
         model_id: resolved.triple.model_id,
         provider_id: resolved.triple.provider_id,
         protocol_endpoint_id: resolved.triple.protocol_endpoint_id,
         adapter_kind: resolved.adapter_kind.to_string(),
         base_url: resolved.base_url,
         credential_present: resolved.credential.is_some(),
+    }
+}
+
+/// Snapshot a workspace's credential sources + pools into a resolver lookup.
+async fn workspace_lookup(
+    state: &AdminState,
+    workspace_id: &str,
+    rid: &str,
+) -> Result<WorkspaceLookup, Problem> {
+    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    for source in state
+        .credentials
+        .list(workspace_id)
+        .await
+        .map_err(|e| cred_problem(&e, rid))?
+    {
+        sources.insert(source.id.0.clone(), source);
+    }
+    let mut pools: HashMap<String, CredentialPool> = HashMap::new();
+    for pool in state
+        .credentials
+        .list_pools(workspace_id)
+        .await
+        .map_err(|e| cred_problem(&e, rid))?
+    {
+        pools.insert(pool.id.0.clone(), pool);
+    }
+    Ok(WorkspaceLookup { sources, pools })
+}
+
+async fn put_profile(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    Json(profile): Json<InferenceProfile>,
+) -> Result<Json<InferenceProfile>, Problem> {
+    state.profiles.put(id, profile.clone());
+    Ok(Json(profile))
+}
+
+async fn get_profile(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<InferenceProfile>, Problem> {
+    state
+        .profiles
+        .get(&id)
+        .map(Json)
+        .ok_or_else(|| profile_missing(&id, &req_id(&headers)))
+}
+
+#[derive(serde::Deserialize)]
+struct ResolveProfileRequest {
+    workspace_id: String,
+}
+
+/// Resolve an authored profile: the same resolution as `inference/resolve`, but the
+/// model + binding + disabled endpoints come from the stored [`InferenceProfile`].
+async fn resolve_profile_route(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ResolveProfileRequest>,
+) -> Result<Json<ResolvedInferenceView>, Problem> {
+    let rid = req_id(&headers);
+    let profile = state
+        .profiles
+        .get(&id)
+        .ok_or_else(|| profile_missing(&id, &rid))?;
+    let catalog = state
+        .catalog
+        .snapshot()
+        .await
+        .map_err(|e| repo_problem(&e, &rid))?;
+    let lookup = workspace_lookup(&state, &request.workspace_id, &rid).await?;
+    let resolved = resolve_profile(&catalog, &profile, &lookup, &*state.secrets)
+        .await
+        .map_err(|e| resolve_problem(&e, &rid))?;
+    Ok(Json(view_of(resolved)))
+}
+
+fn profile_missing(id: &str, rid: &str) -> Problem {
+    Problem(ApiError::new(
+        404,
+        "not_found",
+        "Profile not found",
+        format!("no inference profile `{id}`"),
+        rid,
+    ))
+}
+
+/// Disable a credential (soft archive): a disabled source fails closed at
+/// materialization, so a leaked/rotated key can be pulled without deleting the row.
+async fn archive_credential(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<CredentialSource>, Problem> {
+    let rid = req_id(&headers);
+    let mut source = state
+        .credentials
+        .get(&CredentialSourceId(id))
+        .await
+        .map_err(|e| cred_problem(&e, &rid))?;
+    source.status = CredentialStatus::Disabled;
+    source.version += 1;
+    state
+        .credentials
+        .put(source.clone())
+        .await
+        .map_err(|e| cred_problem(&e, &rid))?;
+    Ok(Json(source))
+}
+
+#[derive(serde::Deserialize)]
+struct ValidateRequest {
+    workspace_id: String,
+    model_id: String,
+}
+
+/// The secret-free result of a live credential probe.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CredentialValidation {
+    pub status: ProbeStatus,
+    pub adapter_kind: String,
+}
+
+/// Live-validate a credential: resolve it (Exact binding) to get the endpoint +
+/// materialized secret, then probe the provider through the injected port. Reports
+/// `unknown` when no probe is wired or the adapter is one the probe can't reach.
+async fn validate_credential(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<ValidateRequest>,
+) -> Result<Json<CredentialValidation>, Problem> {
+    let rid = req_id(&headers);
+    let catalog = state
+        .catalog
+        .snapshot()
+        .await
+        .map_err(|e| repo_problem(&e, &rid))?;
+    let lookup = workspace_lookup(&state, &request.workspace_id, &rid).await?;
+    let resolved = resolve_inference(
+        &catalog,
+        &request.model_id,
+        &CredentialBinding::Exact {
+            credential_source_id: CredentialSourceId(id),
+        },
+        &lookup,
+        &*state.secrets,
+    )
+    .await
+    .map_err(|e| resolve_problem(&e, &rid))?;
+
+    let status = match (&state.probe, resolved.adapter_kind, &resolved.credential) {
+        (Some(probe), "anthropic", Some(secret)) => {
+            probe
+                .probe(
+                    resolved.base_url.as_deref().unwrap_or_default(),
+                    secret,
+                    &request.model_id,
+                )
+                .await
+        }
+        _ => ProbeStatus::Unknown,
+    };
+    Ok(Json(CredentialValidation {
+        status,
+        adapter_kind: resolved.adapter_kind.to_string(),
     }))
 }
 
