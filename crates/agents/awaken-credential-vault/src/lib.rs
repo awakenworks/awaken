@@ -14,6 +14,11 @@
 
 pub mod repo;
 pub mod schema;
+#[cfg(feature = "sealed-aead")]
+pub mod sealed;
+
+#[cfg(feature = "sealed-aead")]
+pub use sealed::SealedAeadSecretStore;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -173,6 +178,8 @@ pub enum CredentialError {
     MissingMaterialRef(String),
     #[error("env source `{0}` has no env_key / value")]
     MissingEnv(String),
+    #[error("secret seal/open failed (wrong key or corrupt ciphertext)")]
+    Seal,
 }
 
 /// In-memory [`SecretStore`] (dev / tests). Real backends encrypt at rest.
