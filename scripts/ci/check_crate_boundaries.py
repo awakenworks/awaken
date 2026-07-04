@@ -54,8 +54,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         "tokio",
         "serde_json",
-        # dev-only: P0 full-chain test drives the runtime provider adapter.
+        # dev-only: E2E test drives the runtime provider adapter + managed ACL.
         "awaken-provider-genai",
+        "awaken-managed-bridge",
     },
     "awaken-admin-config-api": {
         "awaken-model-catalog",
