@@ -8,13 +8,16 @@
 //! speak RFC-9457 problem details ([`ApiError`]); a credential's secret is
 //! write-only (secret-in) and never echoed on a response (secret-free-out).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
+use awaken_config_resolver::{ResolveError, resolve_inference};
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
-    CredentialCreateParams, CredentialError, CredentialKind, CredentialSourceId, SecretStore,
+    CredentialBinding, CredentialCreateParams, CredentialError, CredentialKind, CredentialSource,
+    CredentialSourceId, SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId};
@@ -53,6 +56,7 @@ pub fn admin_router(state: AdminState) -> Router {
             post(post_credential).get(list_credentials),
         )
         .route("/v1/config/credentials/:id", get(get_credential))
+        .route("/v1/config/inference/resolve", post(resolve_route))
         .with_state(state)
 }
 
@@ -196,6 +200,92 @@ async fn get_catalog(
         .await
         .map(Json)
         .map_err(|e| repo_problem(&e, &req_id(&headers)))
+}
+
+fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
+    let (status, code) = match error {
+        ResolveError::ModelUnresolved(_) => (404, "model_unresolved"),
+        ResolveError::EndpointMissing(_) => (422, "endpoint_missing"),
+        ResolveError::SourceMissing(_) | ResolveError::PoolMissing(_) => (404, "not_found"),
+        ResolveError::PoolExhausted(_) => (409, "pool_exhausted"),
+        ResolveError::Credential(_) => (422, "credential_invalid"),
+    };
+    Problem(ApiError::new(
+        status,
+        code,
+        "Resolution error",
+        error.to_string(),
+        rid,
+    ))
+}
+
+/// A dry-run resolve request: bind `model_id` (+ credential `binding`) against the
+/// authored catalog. The workspace scopes which credential sources are visible.
+#[derive(serde::Deserialize)]
+pub struct ResolveRequest {
+    workspace_id: String,
+    model_id: String,
+    binding: CredentialBinding,
+}
+
+/// The **secret-free** result of a resolve (ADR-0043): the execution triple + the
+/// adapter/endpoint it binds to, and whether a credential resolved — never the
+/// secret itself. This is what an operator's "test binding" call sees.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ResolvedInferenceView {
+    model_id: String,
+    provider_id: String,
+    protocol_endpoint_id: String,
+    adapter_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_url: Option<String>,
+    /// Whether a credential was materialized (never the value).
+    credential_present: bool,
+}
+
+/// Dry-run a binding through the resolver against the authored catalog, returning
+/// the secret-free resolved triple. This exercises the same `resolve_inference`
+/// path a run uses, so an operator can validate a provider/endpoint/model +
+/// credential wiring before creating an agent.
+async fn resolve_route(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Json(request): Json<ResolveRequest>,
+) -> Result<Json<ResolvedInferenceView>, Problem> {
+    let rid = req_id(&headers);
+    let catalog = state
+        .catalog
+        .snapshot()
+        .await
+        .map_err(|e| repo_problem(&e, &rid))?;
+    // Snapshot the workspace's credential sources into a lookup for the resolver.
+    let sources_list = state
+        .credentials
+        .list(&request.workspace_id)
+        .await
+        .map_err(|e| cred_problem(&e, &rid))?;
+    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
+    for source in sources_list {
+        sources.insert(source.id.0.clone(), source);
+    }
+    let resolved = resolve_inference(
+        &catalog,
+        &request.model_id,
+        &request.binding,
+        &sources,
+        &*state.secrets,
+    )
+    .await
+    .map_err(|e| resolve_problem(&e, &rid))?;
+    Ok(Json(ResolvedInferenceView {
+        model_id: resolved.triple.model_id,
+        provider_id: resolved.triple.provider_id,
+        protocol_endpoint_id: resolved.triple.protocol_endpoint_id,
+        adapter_kind: resolved.adapter_kind.to_string(),
+        base_url: resolved.base_url,
+        credential_present: resolved.credential.is_some(),
+    }))
 }
 
 /// The credential-entry wire body. `secret` is write-only: it is sealed into the
