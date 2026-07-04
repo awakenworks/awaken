@@ -250,6 +250,75 @@ async function main() {
       assert.equal(r.status, 404);
       pass('GET unknown credential-pool -> 404');
 
+      // --- catalog invariant: an offering whose flavor mismatches its endpoint ---
+      r = await req(base, 'POST', '/v1/config/offerings', {
+        model_id: 'mismatch', provider_id: 'anthropic',
+        protocol_endpoint_id: 'ep1', flavor: 'open_ai_chat', upstream_model: null,
+      });
+      assert.equal(r.status, 422, JSON.stringify(r.json));
+      assert.equal(r.json.code, 'catalog_invariant');
+      pass('offering flavor mismatch -> 422 catalog_invariant');
+
+      // --- InferenceProfile CRUD + resolve (incl. disabled-endpoint toggle) --------
+      // A second endpoint + offering for the same model, so a profile can steer away
+      // from ep1 by disabling it.
+      await req(base, 'PUT', '/v1/config/endpoints/ep2', {
+        id: 'ep2', provider_id: 'anthropic', flavor: 'anthropic_messages',
+        base_url: 'https://ep2.example/v1/', timeout_secs: 300, display_name: 'backup', version: 1,
+      });
+      await req(base, 'POST', '/v1/config/offerings', {
+        model_id: 'claude-opus-4-8', provider_id: 'anthropic',
+        protocol_endpoint_id: 'ep2', flavor: 'anthropic_messages', upstream_model: null,
+      });
+
+      r = await req(base, 'PUT', '/v1/config/inference-profiles/prof1', {
+        model_id: 'claude-opus-4-8',
+        credential_binding: { type: 'exact', credential_source_id: credId },
+        disabled_endpoint_ids: [],
+      });
+      assert.equal(r.status, 200);
+      checkContract('InferenceProfile', r.json);
+
+      r = await req(base, 'GET', '/v1/config/inference-profiles/prof1');
+      assert.equal(r.status, 200);
+      checkContract('InferenceProfile', r.json);
+      pass('PUT/GET inference-profile match the generated InferenceProfile contract');
+
+      r = await req(base, 'POST', '/v1/config/inference-profiles/prof1/resolve', { workspace_id: 'ws' });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      checkContract('ResolvedInferenceView', r.json);
+      assert.equal(r.json.base_url, 'https://api.anthropic.com/v1/');
+      assert.equal(r.json.credential_present, true);
+      pass('resolve-by-profile picks the first offering (ep1)');
+
+      // A profile that disables ep1 steers resolution to ep2.
+      await req(base, 'PUT', '/v1/config/inference-profiles/prof2', {
+        model_id: 'claude-opus-4-8',
+        credential_binding: { type: 'none' },
+        disabled_endpoint_ids: ['ep1'],
+      });
+      r = await req(base, 'POST', '/v1/config/inference-profiles/prof2/resolve', { workspace_id: 'ws' });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      assert.equal(r.json.base_url, 'https://ep2.example/v1/', 'disabled ep1 -> resolves to ep2');
+      pass('resolve-by-profile honors disabled_endpoint_ids (fails over to ep2)');
+
+      r = await req(base, 'POST', '/v1/config/inference-profiles/nope/resolve', { workspace_id: 'ws' });
+      assert.equal(r.status, 404);
+      pass('resolve of an unknown profile -> 404');
+
+      // --- archive a credential -> it fails closed at resolution -------------------
+      r = await req(base, 'POST', `/v1/config/credentials/${credId}/archive`, {});
+      assert.equal(r.status, 200);
+      checkContract('CredentialSource', r.json);
+      assert.equal(r.json.status, 'disabled');
+      r = await req(base, 'POST', '/v1/config/inference/resolve', {
+        workspace_id: 'ws', model_id: 'claude-opus-4-8',
+        binding: { type: 'exact', credential_source_id: credId },
+      });
+      assert.equal(r.status, 422, JSON.stringify(r.json));
+      assert.equal(r.json.code, 'credential_invalid');
+      pass('archived credential -> resolve fails closed (422 credential_invalid)');
+
       // --- resolve with a None binding returns a triple with no credential ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
