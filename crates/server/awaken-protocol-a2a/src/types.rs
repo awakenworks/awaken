@@ -6,6 +6,8 @@
 //! envelopes, and a JSON error envelope. Richer A2A surface (artifacts, push
 //! notifications, streaming) is intentionally omitted until a slice needs it.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// A2A message role. The wire tokens are the A2A JSON spellings (`user`/`agent`);
@@ -255,6 +257,136 @@ pub struct AgentCard {
     pub default_output_modes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<AgentSkill>,
+    /// Named security schemes a client may use to authenticate (A2A
+    /// `securitySchemes`, OpenAPI 3 style). Declaration only — enforcement is
+    /// the host's transport layer.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub security_schemes: BTreeMap<String, SecurityScheme>,
+    /// Accepted requirement combinations (A2A `security`): OR across the list,
+    /// AND within one map; values are the scopes required of that scheme.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub security: Vec<BTreeMap<String, Vec<String>>>,
+    /// Whether `agent/getAuthenticatedExtendedCard` serves a richer card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_authenticated_extended_card: Option<bool>,
+}
+
+/// One way a client can authenticate, per the A2A spec's OpenAPI 3–derived
+/// security schemes. The `type` field is the wire discriminator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type")]
+pub enum SecurityScheme {
+    /// A static key in a header, query parameter, or cookie.
+    #[serde(rename = "apiKey", rename_all = "camelCase")]
+    ApiKey {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// The header/query/cookie parameter name carrying the key.
+        name: String,
+        #[serde(rename = "in")]
+        location: ApiKeyLocation,
+    },
+    /// An RFC 7235 HTTP authentication scheme (`bearer`, `basic`, ...).
+    #[serde(rename = "http", rename_all = "camelCase")]
+    Http {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        scheme: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bearer_format: Option<String>,
+    },
+    /// OAuth 2.0, with one entry per supported flow.
+    #[serde(rename = "oauth2", rename_all = "camelCase")]
+    OAuth2 {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        flows: Box<OAuthFlows>,
+        /// RFC 8414 authorization-server metadata URL.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oauth2_metadata_url: Option<String>,
+    },
+    /// OpenID Connect discovery.
+    #[serde(rename = "openIdConnect", rename_all = "camelCase")]
+    OpenIdConnect {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        open_id_connect_url: String,
+    },
+    /// Mutual TLS: authentication is the client certificate itself.
+    #[serde(rename = "mutualTLS")]
+    MutualTls {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+}
+
+/// Where an `apiKey` credential is carried.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKeyLocation {
+    Query,
+    Header,
+    Cookie,
+}
+
+/// The OAuth 2.0 flows a scheme supports (each optional, at least one set).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthFlows {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_code: Option<AuthorizationCodeFlow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_credentials: Option<ClientCredentialsFlow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit: Option<ImplicitFlow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<PasswordFlow>,
+}
+
+/// Authorization-code flow (with PKCE, per the A2A spec's guidance).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizationCodeFlow {
+    pub authorization_url: String,
+    pub token_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_url: Option<String>,
+    /// Scope name → human description. Required on the wire (may be empty).
+    #[serde(default)]
+    pub scopes: BTreeMap<String, String>,
+}
+
+/// Client-credentials (machine-to-machine) flow.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientCredentialsFlow {
+    pub token_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_url: Option<String>,
+    #[serde(default)]
+    pub scopes: BTreeMap<String, String>,
+}
+
+/// Implicit flow (legacy browser clients).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImplicitFlow {
+    pub authorization_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_url: Option<String>,
+    #[serde(default)]
+    pub scopes: BTreeMap<String, String>,
+}
+
+/// Resource-owner password flow (legacy).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordFlow {
+    pub token_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_url: Option<String>,
+    #[serde(default)]
+    pub scopes: BTreeMap<String, String>,
 }
 
 /// Feature flags advertised in the card. Streaming/push are not implemented in
@@ -391,11 +523,112 @@ mod tests {
                 name: "Chat".into(),
                 tags: vec!["chat".into()],
             }],
+            security_schemes: BTreeMap::new(),
+            security: Vec::new(),
+            supports_authenticated_extended_card: None,
         };
         let value = serde_json::to_value(&card).unwrap();
         assert_eq!(value["protocolVersion"], "1.0");
         assert_eq!(value["capabilities"]["streaming"], false);
+        // A card without security config omits the fields entirely (and a
+        // pre-security card parses back — the fields default).
+        assert!(value.get("securitySchemes").is_none());
+        assert!(value.get("security").is_none());
         let parsed: AgentCard = serde_json::from_value(value).unwrap();
         assert_eq!(parsed, card);
+    }
+
+    /// A spec-shaped card with every scheme type round-trips with the exact
+    /// A2A wire spellings (`apiKey`/`in`, `bearerFormat`, `authorizationCode`,
+    /// `openIdConnectUrl`, `mutualTLS`, `supportsAuthenticatedExtendedCard`).
+    #[test]
+    fn security_schemes_use_the_a2a_wire_spellings() {
+        let json = json!({
+            "securitySchemes": {
+                "api": { "type": "apiKey", "name": "X-Api-Key", "in": "header" },
+                "bearer": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" },
+                "oauth": {
+                    "type": "oauth2",
+                    "oauth2MetadataUrl": "https://auth.example.com/.well-known/oauth-authorization-server",
+                    "flows": {
+                        "authorizationCode": {
+                            "authorizationUrl": "https://auth.example.com/authorize",
+                            "tokenUrl": "https://auth.example.com/token",
+                            "refreshUrl": "https://auth.example.com/token",
+                            "scopes": { "tasks:read": "Read tasks" }
+                        },
+                        "clientCredentials": {
+                            "tokenUrl": "https://auth.example.com/token",
+                            "scopes": {}
+                        }
+                    }
+                },
+                "oidc": {
+                    "type": "openIdConnect",
+                    "openIdConnectUrl": "https://auth.example.com/.well-known/openid-configuration"
+                },
+                "mtls": { "type": "mutualTLS", "description": "client certificate" }
+            },
+            "security": [ { "oauth": ["tasks:read"] }, { "api": [] } ],
+            "supportsAuthenticatedExtendedCard": true
+        });
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SecuritySlice {
+            security_schemes: BTreeMap<String, SecurityScheme>,
+            security: Vec<BTreeMap<String, Vec<String>>>,
+            supports_authenticated_extended_card: Option<bool>,
+        }
+        let parsed: SecuritySlice = serde_json::from_value(json.clone()).unwrap();
+
+        assert_eq!(
+            parsed.security_schemes["api"],
+            SecurityScheme::ApiKey {
+                description: None,
+                name: "X-Api-Key".into(),
+                location: ApiKeyLocation::Header,
+            }
+        );
+        assert!(matches!(
+            &parsed.security_schemes["bearer"],
+            SecurityScheme::Http { scheme, bearer_format: Some(f), .. }
+                if scheme == "bearer" && f == "JWT"
+        ));
+        let SecurityScheme::OAuth2 {
+            flows,
+            oauth2_metadata_url,
+            ..
+        } = &parsed.security_schemes["oauth"]
+        else {
+            panic!("oauth scheme parses as OAuth2");
+        };
+        assert!(
+            oauth2_metadata_url
+                .as_deref()
+                .unwrap()
+                .contains("well-known")
+        );
+        let code = flows.authorization_code.as_ref().unwrap();
+        assert_eq!(code.token_url, "https://auth.example.com/token");
+        assert_eq!(code.scopes["tasks:read"], "Read tasks");
+        assert!(flows.client_credentials.is_some());
+        assert!(matches!(
+            &parsed.security_schemes["oidc"],
+            SecurityScheme::OpenIdConnect { open_id_connect_url, .. }
+                if open_id_connect_url.contains("openid-configuration")
+        ));
+        assert!(matches!(
+            &parsed.security_schemes["mtls"],
+            SecurityScheme::MutualTls {
+                description: Some(_)
+            }
+        ));
+        assert_eq!(parsed.security[0]["oauth"], vec!["tasks:read".to_string()]);
+        assert_eq!(parsed.supports_authenticated_extended_card, Some(true));
+
+        // Serializing back reproduces the spec spellings byte-for-byte.
+        let reserialized = serde_json::to_value(&parsed.security_schemes).unwrap();
+        assert_eq!(reserialized, json["securitySchemes"]);
     }
 }

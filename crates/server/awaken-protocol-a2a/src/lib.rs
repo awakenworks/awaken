@@ -22,4 +22,8 @@ pub mod types;
 pub use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
 pub use client::{ClientError, HttpTransport, Response, Transport};
 pub use router::{agent_card, router};
-pub use types::{AgentCard, Artifact, SendMessageRequest, SendMessageResponse, Task, TaskState};
+pub use types::{
+    AgentCard, ApiKeyLocation, Artifact, AuthorizationCodeFlow, ClientCredentialsFlow,
+    ImplicitFlow, OAuthFlows, PasswordFlow, SecurityScheme, SendMessageRequest,
+    SendMessageResponse, Task, TaskState,
+};
