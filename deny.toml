@@ -60,6 +60,7 @@ wrappers = [
     "awaken-protocol-ai-sdk",
     "awaken-protocol-ag-ui",
     "awaken-protocol-a2a",
+    "awaken-protocol-mcp",
     "awaken-server-local",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
@@ -85,6 +86,7 @@ wrappers = [
     "awaken-run-ingress-contract",
     "awaken-run-ingress",
     "awaken-sandbox-local",
+    "awaken-protocol-mcp",
     "awaken-server-local",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
