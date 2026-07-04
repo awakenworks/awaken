@@ -347,6 +347,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # it constructs no runtime. It is a product adapter, not a neutral crate.
     "awaken-protocol-managed": {
         "awaken-agent-contract",
+        # Managed vault/credential front door (ADR-0043): the credential domain +
+        # the ACL that maps the Anthropic wire ⇄ the neutral credential model.
+        "awaken-credential-vault",
+        "awaken-managed-bridge",
         "async-trait",
         "serde",
         "serde_json",
@@ -356,6 +360,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio-stream",
         "tower",
         "http-body-util",
+        # dev-only: vault E2E resolves the entered credential through the resolver.
+        "awaken-config-resolver",
+        "awaken-model-catalog",
     },
     # ACP bridge + supervisor (ADR-0041 Slice 3): the anti-corruption boundary
     # between an opaque agent's protocol stream and the neutral runtime. It drives
