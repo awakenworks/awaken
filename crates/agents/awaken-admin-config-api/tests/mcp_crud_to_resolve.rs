@@ -1,0 +1,227 @@
+//! The MCP management chain end-to-end over HTTP (ADR-0043 Phase 3): enter a
+//! credential, author an MCP server definition bound to it, bind an agent to that
+//! server, then dry-run the agent's binding through the resolver — the response
+//! reports `credential_present` and never carries the secret. Also proves the
+//! fail-closed write validation (dangling credential / server / agent → 404).
+
+use std::sync::Arc;
+
+use awaken_admin_config_api::{AdminState, admin_router};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+fn harness() -> Router {
+    admin_router(AdminState {
+        catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
+        credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+        secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+        mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
+        probe: None,
+    })
+}
+
+async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    let body = match body {
+        Some(v) => {
+            builder = builder.header("content-type", "application/json");
+            Body::from(serde_json::to_vec(&v).unwrap())
+        }
+        None => Body::empty(),
+    };
+    let resp = app
+        .clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, value)
+}
+
+/// Enter a vault credential over HTTP and return its id.
+async fn enter_credential(app: &Router, secret: &str) -> String {
+    let (s, cred) = call(
+        app,
+        "POST",
+        "/v1/config/credentials",
+        Some(json!({
+            "workspace_id": "ws",
+            "kind": "vault",
+            "provider_id": null,
+            "env_key": null,
+            "secret": secret
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    cred["id"].as_str().expect("credential id").to_string()
+}
+
+#[tokio::test]
+async fn author_credential_mcp_server_and_agent_binding_then_resolve_secret_free() {
+    let app = harness();
+    let cred_id = enter_credential(&app, "sk-mcp-wire-secret").await;
+
+    // Author an MCP server bound to the credential (path id authoritative).
+    let (s, server) = call(
+        &app,
+        "PUT",
+        "/v1/config/mcp-servers/jira",
+        Some(json!({
+            "id": "ignored-by-path",
+            "display_name": "Jira",
+            "url": "https://jira.example/mcp",
+            "credential_binding": { "type": "exact", "credential_source_id": cred_id },
+            "version": 1
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(server["id"], "jira");
+
+    // And an unauthenticated one (binding None).
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/v1/config/mcp-servers/docs",
+        Some(json!({
+            "id": "docs",
+            "display_name": "Docs",
+            "url": "https://docs.example/mcp",
+            "credential_binding": { "type": "none" },
+            "version": 1
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // GET round-trips the def; the binding is a reference, never a secret.
+    let (s, got) = call(&app, "GET", "/v1/config/mcp-servers/jira", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(got["display_name"], "Jira");
+    assert_eq!(got["credential_binding"]["type"], "exact");
+
+    // List returns both, ordered by id.
+    let (s, listed) = call(&app, "GET", "/v1/config/mcp-servers", None).await;
+    assert_eq!(s, StatusCode::OK);
+    let ids: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["docs", "jira"]);
+
+    // Bind the agent to both servers (path agent id authoritative).
+    let (s, binding) = call(
+        &app,
+        "PUT",
+        "/v1/config/agents/agent1/mcp",
+        Some(json!({
+            "agent_id": "ignored-by-path",
+            "mcp_server_ids": ["jira", "docs"],
+            "version": 1
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(binding["agent_id"], "agent1");
+
+    let (s, got) = call(&app, "GET", "/v1/config/agents/agent1/mcp", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(got["mcp_server_ids"], json!(["jira", "docs"]));
+
+    // Resolve the agent's binding: credential_present, but NEVER the secret.
+    let (s, resolved) = call(
+        &app,
+        "POST",
+        "/v1/config/agents/agent1/mcp/resolve",
+        Some(json!({ "workspace_id": "ws" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        resolved,
+        json!([
+            { "name": "Jira", "url": "https://jira.example/mcp", "credential_present": true },
+            { "name": "Docs", "url": "https://docs.example/mcp", "credential_present": false }
+        ])
+    );
+    let body_text = serde_json::to_string(&resolved).unwrap();
+    assert!(
+        !body_text.contains("sk-mcp-wire-secret"),
+        "secret leaked: {body_text}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_server_with_unknown_credential_source_is_rejected() {
+    let app = harness();
+    let (s, err) = call(
+        &app,
+        "PUT",
+        "/v1/config/mcp-servers/jira",
+        Some(json!({
+            "id": "jira",
+            "display_name": "Jira",
+            "url": "https://jira.example/mcp",
+            "credential_binding": { "type": "exact", "credential_source_id": "ghost-cred" },
+            "version": 1
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(err["code"], "not_found");
+
+    // The invalid def was never stored (fail-closed write).
+    let (s, _) = call(&app, "GET", "/v1/config/mcp-servers/jira", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn agent_binding_to_unknown_mcp_server_is_rejected() {
+    let app = harness();
+    let (s, err) = call(
+        &app,
+        "PUT",
+        "/v1/config/agents/agent1/mcp",
+        Some(json!({
+            "agent_id": "agent1",
+            "mcp_server_ids": ["ghost-server"],
+            "version": 1
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(err["code"], "not_found");
+
+    // The dangling binding was never stored (fail-closed write).
+    let (s, _) = call(&app, "GET", "/v1/config/agents/agent1/mcp", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn resolving_an_unbound_agent_is_problem_json_404() {
+    let app = harness();
+    let (s, err) = call(
+        &app,
+        "POST",
+        "/v1/config/agents/nobody/mcp/resolve",
+        Some(json!({ "workspace_id": "ws" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(err["code"], "not_found");
+    assert_eq!(err["status"], 404);
+}
