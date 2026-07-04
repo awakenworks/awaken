@@ -15,17 +15,22 @@
 // the refresh token in the response), otherwise it refuses with
 // 400 `invalid_grant`. With `expiredInitial: true` the constructor token is
 // NEVER accepted — every bearer 401s until a grant is made, after which only
-// the issued token is accepted.
+// the issued token is accepted. With `clientAuth` the grant must also
+// authenticate the client (401 `invalid_client` otherwise): method 'basic'
+// requires the RFC 6749 §2.3.1 `Authorization: Basic
+// base64(urlencode(client_id):urlencode(client_secret))` header AND rejects a
+// form-body client_id; method 'post' requires `client_secret=<...>` in the
+// form body.
 
 import http from 'node:http';
 
 /// Start the fixture; resolves to
 ///   { url, tokenUrl, calls, grants, tokenRequests, unauthorized, close() }.
 /// `calls` is [{ method, authorization }] for every AUTHORIZED JSON-RPC POST;
-/// `grants` is [{ body, contentType }] for every POST /token grant attempt;
-/// `tokenRequests` maps a presented bearer token → its JSON-RPC POST count
-/// (authorized or not, `/token` excluded); `unauthorized` counts requests
-/// rejected for a missing/wrong bearer.
+/// `grants` is [{ body, contentType, authorization }] for every POST /token
+/// grant attempt; `tokenRequests` maps a presented bearer token → its JSON-RPC
+/// POST count (authorized or not, `/token` excluded); `unauthorized` counts
+/// requests rejected for a missing/wrong bearer.
 ///
 /// Options (all optional — the default is the original static-bearer fixture):
 ///   expiredInitial  when true, `token` is never accepted; only tokens issued
@@ -35,13 +40,41 @@ import http from 'node:http';
 ///   issueToken      the access token a successful grant issues ('new-token').
 ///   rotateRefreshTo when set, a successful grant also returns this rotated
 ///                   `refresh_token` in its response body.
+///   clientAuth      { method: 'basic'|'post', clientSecret, clientId? } —
+///                   the client authentication a grant must present, verified
+///                   before the refresh token: 'basic' = the §2.3.1 Basic
+///                   header (decoded + form-urldecoded halves must match, and
+///                   the form body must NOT carry a client_id); 'post' =
+///                   `client_secret` in the form body. Wrong/missing → 401
+///                   `invalid_client`.
 export function startCalcFixture(token, options = {}) {
   const {
     expiredInitial = false,
     refreshToken = null,
     issueToken = 'new-token', // awaken-allow: secret
     rotateRefreshTo = null,
+    clientAuth = null,
   } = options;
+
+  // Undo application/x-www-form-urlencoded encoding ('+' is a space).
+  const formUrldecode = (s) => decodeURIComponent(s.replace(/\+/g, '%20'));
+
+  /// Whether a /token grant presented the configured client authentication.
+  function clientAuthenticated(rawBody, authorization) {
+    if (clientAuth === null) return true;
+    const form = new URLSearchParams(rawBody);
+    if (clientAuth.method === 'basic') {
+      if (!authorization?.startsWith('Basic ') || form.has('client_id')) return false;
+      const pair = Buffer.from(authorization.slice('Basic '.length), 'base64').toString('utf8');
+      const colon = pair.indexOf(':');
+      if (colon < 0) return false;
+      const id = formUrldecode(pair.slice(0, colon));
+      const secret = formUrldecode(pair.slice(colon + 1));
+      return secret === clientAuth.clientSecret &&
+        (clientAuth.clientId == null || id === clientAuth.clientId);
+    }
+    return form.get('client_secret') === clientAuth.clientSecret;
+  }
 
   const calls = [];
   const grants = [];
@@ -60,7 +93,15 @@ export function startCalcFixture(token, options = {}) {
       let raw = '';
       req.on('data', (chunk) => { raw += chunk; });
       req.on('end', () => {
-        grants.push({ body: raw, contentType: req.headers['content-type'] ?? '' });
+        const authorization = req.headers.authorization ?? null;
+        grants.push({ body: raw, contentType: req.headers['content-type'] ?? '', authorization });
+        // Client authentication first (RFC 6749 §2.3): a client that cannot
+        // authenticate never gets a token, whatever its refresh token says.
+        if (!clientAuthenticated(raw, authorization)) {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_client' }));
+          return;
+        }
         const form = new URLSearchParams(raw);
         const honored =
           refreshToken !== null &&
