@@ -75,6 +75,11 @@ fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
             "not_found_error",
             "session not found".to_string(),
         ),
+        // A create naming a nonexistent vault fails closed; the message names
+        // the offending vault id (the Display impl carries it).
+        err @ StateError::VaultNotFound(_) => {
+            (StatusCode::NOT_FOUND, "not_found_error", err.to_string())
+        }
         StateError::Run(e) => match e.kind {
             RunErrorKind::BadRequest => {
                 (StatusCode::BAD_REQUEST, "invalid_request_error", e.message)

@@ -120,8 +120,7 @@ pub struct McpServerBinding {
     /// The matched credential's stored refresh configuration
     /// ([`VaultState::mcp_refresh_for_source`]), so the host can register a
     /// transport-level refresher next to the bearer. `None` when the credential
-    /// is not refreshable (no refresh object, or a confidential-client scheme
-    /// whose secret was consumed at create).
+    /// is not refreshable (entered without a refresh object).
     pub refresh: Option<McpRefreshBinding>,
 }
 
@@ -264,6 +263,10 @@ pub struct ManagedState {
 pub enum StateError {
     #[error("session not found")]
     NotFound,
+    /// A session create named a vault that does not exist (`vault_ids`); the
+    /// router maps it to the standard 404 envelope naming the vault id.
+    #[error("vault `{0}` not found")]
+    VaultNotFound(String),
     #[error(transparent)]
     Run(#[from] RunError),
 }
@@ -300,13 +303,18 @@ impl ManagedState {
     /// `vault_ids`, then the runtime provisions the thread via
     /// [`SessionRuntime::prepare_session`] BEFORE the record is inserted — a
     /// failed preparation fails the create (fail closed; the router maps the
-    /// `RunError` to the error envelope). A `vault_id` that names no existing
-    /// vault simply contributes no binding (the vault surface exposes no
-    /// existence lookup to this state), so an unknown vault id yields
-    /// `credential_source_id: None` rather than an error — the MCP server then
-    /// rejects the unauthenticated connection and the failure surfaces loudly at
-    /// the first turn.
+    /// `RunError` to the error envelope). A `vault_ids` entry that names no
+    /// existing vault fails the create closed too ([`VaultState::has_vault`]):
+    /// a 404 naming the vault id, BEFORE anything is provisioned — never a
+    /// silent no-binding whose 401 only surfaces at the first turn. (Without a
+    /// wired vault surface there is nothing to validate against and every
+    /// binding resolves to no credential, as before.)
     pub async fn create_session(&self, req: CreateSessionRequest) -> Result<Session, StateError> {
+        if let Some(vaults) = &self.vaults
+            && let Some(unknown) = req.vault_ids.iter().find(|v| !vaults.has_vault(v))
+        {
+            return Err(StateError::VaultNotFound(unknown.clone()));
+        }
         let id = format!("sesn_{}", self.session_seq.fetch_add(1, Ordering::SeqCst));
         let agent_id = req.agent.id().to_string();
         let bindings = req
@@ -319,7 +327,7 @@ impl ManagedState {
                     .and_then(|v| v.mcp_credential_source_for_url(&req.vault_ids, &server.url));
                 // The matched credential's stored refresh configuration rides
                 // along, so the host can keep the connection alive past the
-                // access token's expiry (public-client refresh only).
+                // access token's expiry.
                 let refresh = match (&self.vaults, &credential_source_id) {
                     (Some(v), Some(source_id)) => v.mcp_refresh_for_source(source_id),
                     _ => None,
