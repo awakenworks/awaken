@@ -53,6 +53,7 @@ pub struct BackendControl {
     pub cancellation_token: Option<CancellationToken>,
     pub decision_rx: Option<mpsc::UnboundedReceiver<Vec<(String, ToolCallResume)>>>,
     pub pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
+    pub pause_flag: Option<Arc<crate::inbox::PauseFlag>>,
 }
 
 /// Root execution request shared by local and remote root execution.

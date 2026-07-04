@@ -51,6 +51,7 @@ pub(crate) struct RunHandle {
     live_forwarder_token: CancellationToken,
     decision_tx: mpsc::UnboundedSender<DecisionBatch>,
     inbox_tx: Option<InboxSender>,
+    pause_flag: Option<Arc<crate::inbox::PauseFlag>>,
 }
 
 impl RunHandle {
@@ -101,6 +102,24 @@ impl RunHandle {
             return false;
         }
         inbox_tx.try_send(crate::inbox::pending_boundary_wake_payload())
+    }
+
+    /// Pause the running loop at the next step boundary.
+    pub(crate) fn pause(&self) {
+        if let Some(ref flag) = self.pause_flag {
+            flag.pause();
+        }
+    }
+
+    /// Resume a paused loop.
+    pub(crate) fn resume(&self) {
+        if let Some(ref flag) = self.pause_flag {
+            flag.resume();
+        }
+    }
+
+    pub(crate) fn pause_flag(&self) -> Option<Arc<crate::inbox::PauseFlag>> {
+        self.pause_flag.clone()
     }
 }
 
@@ -424,7 +443,9 @@ impl AgentRuntime {
         CancellationToken,
         mpsc::UnboundedReceiver<DecisionBatch>,
     ) {
-        self.create_run_channels_with_inbox(run_id, None, None)
+        let (handle, token, rx, _pause_flag) =
+            self.create_run_channels_with_inbox(run_id, None, None);
+        (handle, token, rx)
     }
 
     pub(crate) fn create_run_channels_with_inbox(
@@ -436,10 +457,12 @@ impl AgentRuntime {
         RunHandle,
         CancellationToken,
         mpsc::UnboundedReceiver<DecisionBatch>,
+        Option<Arc<crate::inbox::PauseFlag>>,
     ) {
         let token = CancellationToken::new();
         let live_forwarder_token = CancellationToken::new();
         let (tx, rx) = mpsc::unbounded();
+        let pause_flag = inbox_tx.as_ref().map(|_| crate::inbox::PauseFlag::new());
 
         let handle = RunHandle {
             run_id,
@@ -448,9 +471,10 @@ impl AgentRuntime {
             live_forwarder_token,
             decision_tx: tx,
             inbox_tx,
+            pause_flag: pause_flag.clone(),
         };
 
-        (handle, token, rx)
+        (handle, token, rx, pause_flag)
     }
 
     /// Register an active run. Returns error if thread already has one.
@@ -472,6 +496,7 @@ impl AgentRuntime {
                 handle.cancellation_token.clone(),
                 handle.live_forwarder_token.clone(),
                 handle.decision_tx.clone(),
+                handle.pause_flag.clone(),
             )
         });
         if !self.active_runs.register(&run_id, thread_id, handle) {
@@ -479,7 +504,9 @@ impl AgentRuntime {
                 thread_id: thread_id.to_string(),
             });
         }
-        if let Some((source, inbox_tx, token, forwarder_token, decision_tx)) = forwarder_inputs {
+        if let Some((source, inbox_tx, token, forwarder_token, decision_tx, pause_flag)) =
+            forwarder_inputs
+        {
             let thread_id = thread_id.to_string();
             let mut target = LiveRunTarget::new(thread_id.clone(), run_id.clone());
             if let Some(dispatch_id) = dispatch_id {
@@ -493,6 +520,7 @@ impl AgentRuntime {
                     token,
                     forwarder_token,
                     decision_tx,
+                    pause_flag,
                 )
                 .await;
             });
@@ -530,6 +558,7 @@ async fn run_live_forwarder(
     cancellation_token: CancellationToken,
     live_forwarder_token: CancellationToken,
     decision_tx: mpsc::UnboundedSender<DecisionBatch>,
+    pause_flag: Option<Arc<crate::inbox::PauseFlag>>,
 ) {
     let mut stream = match source.open_live_channel_for(&target).await {
         Ok(s) => s,
@@ -610,6 +639,18 @@ async fn run_live_forwarder(
                 } else {
                     drop(receipt);
                 }
+            }
+            LiveRunCommand::Pause => {
+                if let Some(ref flag) = pause_flag {
+                    flag.pause();
+                }
+                receipt.ack();
+            }
+            LiveRunCommand::Resume => {
+                if let Some(ref flag) = pause_flag {
+                    flag.resume();
+                }
+                receipt.ack();
             }
             _ => {
                 // `LiveRunCommand` is `#[non_exhaustive]`. A variant this

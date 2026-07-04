@@ -38,6 +38,10 @@ pub enum LiveRunCommand {
     Cancel,
     /// Deliver tool-call resume decisions to the run.
     Decision(Vec<(String, ToolCallResume)>),
+    /// Suspend the run at the next step boundary until a `Resume` arrives.
+    Pause,
+    /// Lift a prior `Pause`, allowing the run to continue from where it stopped.
+    Resume,
 }
 
 /// Exact live-run target for cross-node ephemeral control.

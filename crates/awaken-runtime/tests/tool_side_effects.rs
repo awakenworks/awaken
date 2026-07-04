@@ -296,6 +296,7 @@ async fn tool_state_mutation_applied_after_execution() {
         inbox: None,
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -346,6 +347,7 @@ async fn tool_scheduled_action_executed() {
         inbox: None,
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -434,6 +436,7 @@ async fn tool_empty_command_has_no_side_effects() {
         inbox: None,
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -494,6 +497,7 @@ async fn parallel_tool_commands_merge() {
         inbox: None,
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await

@@ -239,6 +239,35 @@ impl acp::Agent for AcpAgent {
         }
         Ok(())
     }
+
+    async fn ext_notification(&self, args: acp::ExtNotification) -> acp::Result<()> {
+        match args.method.as_ref() {
+            "session/pause" | "session/resume" => {
+                let params: serde_json::Value =
+                    serde_json::from_str(args.params.get()).unwrap_or(serde_json::Value::Null);
+                let session_id = params
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let thread_id = {
+                    let guard = self.sessions.lock().await;
+                    session_id
+                        .as_deref()
+                        .and_then(|sid| guard.get(sid))
+                        .map(|state| state.thread_id.clone())
+                };
+                if let Some(thread_id) = thread_id {
+                    if args.method.as_ref() == "session/pause" {
+                        self.runtime.pause_by_thread(&thread_id);
+                    } else {
+                        self.runtime.resume_by_thread(&thread_id);
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 fn build_initialize_response(request: InitializeRequest) -> InitializeResponse {

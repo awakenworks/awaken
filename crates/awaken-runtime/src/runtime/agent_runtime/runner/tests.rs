@@ -1424,6 +1424,7 @@ fn build_backend_control_honors_backend_capabilities() {
         CancellationToken::new(),
         rx,
         None,
+        None,
     );
     assert!(local.cancellation_token.is_some());
     assert!(local.decision_rx.is_some());
@@ -1433,6 +1434,7 @@ fn build_backend_control_honors_backend_capabilities() {
         &BackendProfile::remote_stateless_text(),
         CancellationToken::new(),
         rx,
+        None,
         None,
     );
     assert!(remote.cancellation_token.is_none());

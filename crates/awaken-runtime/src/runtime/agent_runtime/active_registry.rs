@@ -158,6 +158,7 @@ mod tests {
             live_forwarder_token: CancellationToken::new(),
             decision_tx: tx,
             inbox_tx: None,
+            pause_flag: None,
         }
     }
 
@@ -266,6 +267,7 @@ mod tests {
             live_forwarder_token: CancellationToken::new(),
             decision_tx: tx,
             inbox_tx: None,
+            pause_flag: None,
         };
         assert!(reg.register("r1", "t1", handle));
         assert!(!cloned.is_cancelled());

@@ -281,6 +281,7 @@ async fn agent_with_running_task_enters_awaiting_tasks() {
         inbox: None,
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -334,6 +335,7 @@ async fn agent_without_tasks_completes_normally() {
         inbox: None,
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -398,6 +400,7 @@ async fn task_event_injected_into_conversation() {
         inbox: Some(inbox_rx),
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -970,6 +973,7 @@ async fn sub_agent_waits_for_bg_task_completion_before_returning() {
         inbox: Some(inbox_receiver),
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -1140,6 +1144,7 @@ async fn run_finish_signals_awaiting_tasks_in_result() {
         inbox: None,
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -1195,6 +1200,7 @@ async fn run_finish_normal_end_no_awaiting_flag() {
         inbox: None,
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -1339,6 +1345,7 @@ async fn run_finish_cancelled_has_done_status() {
         inbox: None,
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await
@@ -1417,6 +1424,7 @@ async fn run_finish_suspended_has_waiting_status() {
         inbox: None,
         is_continuation: false,
         initial_state_seed: None,
+        pause_flag: None,
         commit: CommitWiring::default(),
     })
     .await

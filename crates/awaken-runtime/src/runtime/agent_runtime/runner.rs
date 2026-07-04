@@ -384,17 +384,19 @@ impl AgentRuntime {
             compaction,
         } = prepared_execution;
         let run_created_at = now_ms();
-        let (handle, cancellation_token, raw_decision_rx) = self.create_run_channels_with_inbox(
-            run_id.clone(),
-            run_identity.trace.dispatch_id.clone(),
-            live_inbox_sender,
-        );
+        let (handle, cancellation_token, raw_decision_rx, pause_flag) = self
+            .create_run_channels_with_inbox(
+                run_id.clone(),
+                run_identity.trace.dispatch_id.clone(),
+                live_inbox_sender,
+            );
         let runtime_cancellation_token = cancellation_token.clone();
         let backend_control = build_backend_control(
             &capabilities,
             cancellation_token,
             raw_decision_rx,
             control.pending_boundary,
+            pause_flag,
         );
         // Wrap the resolver so every `ResolvedAgent` it produces during this
         // run carries the per-run compaction manager + summarizer when the
@@ -1018,6 +1020,7 @@ fn build_backend_control(
     cancellation_token: CancellationToken,
     raw_decision_rx: mpsc::UnboundedReceiver<DecisionBatch>,
     pending_boundary: Option<Arc<dyn PendingBoundaryHandler>>,
+    pause_flag: Option<Arc<crate::inbox::PauseFlag>>,
 ) -> BackendControl {
     let decisions_live = matches!(
         capabilities.decisions,
@@ -1032,6 +1035,7 @@ fn build_backend_control(
             .then_some(cancellation_token),
         decision_rx: decisions_live.then_some(raw_decision_rx),
         pending_boundary,
+        pause_flag,
     }
 }
 

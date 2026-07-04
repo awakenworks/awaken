@@ -305,6 +305,7 @@ async fn main() {
         is_continuation: false,
         commit: CommitWiring::default(),
         initial_state_seed: None,
+        pause_flag: None,
     })
     .await
     .expect("agent loop failed");

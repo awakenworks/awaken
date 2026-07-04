@@ -199,6 +199,7 @@ async fn observability_captures_single_inference_e2e() {
         is_continuation: false,
         commit: CommitWiring::default(),
         initial_state_seed: None,
+        pause_flag: None,
     })
     .await
     .unwrap();
@@ -294,6 +295,7 @@ async fn observability_captures_tool_execution_e2e() {
         is_continuation: false,
         commit: CommitWiring::default(),
         initial_state_seed: None,
+        pause_flag: None,
     })
     .await
     .unwrap();
@@ -356,6 +358,7 @@ async fn observability_captures_inference_error_e2e() {
         is_continuation: false,
         commit: CommitWiring::default(),
         initial_state_seed: None,
+        pause_flag: None,
     })
     .await;
 
@@ -467,6 +470,7 @@ async fn observability_stats_aggregation_e2e() {
         is_continuation: false,
         commit: CommitWiring::default(),
         initial_state_seed: None,
+        pause_flag: None,
     })
     .await
     .unwrap();

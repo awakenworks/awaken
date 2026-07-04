@@ -263,6 +263,9 @@ pub struct AgentLoopParams<'a> {
     /// state. Restored with `UnknownKeyPolicy::Error` — every key in the
     /// seed must be registered in the agent's plugin set.
     pub initial_state_seed: Option<awaken_runtime_contract::state::PersistedState>,
+    /// Cooperative pause flag. When set and paused, the loop suspends at each
+    /// step boundary until resumed or cancelled.
+    pub pause_flag: Option<std::sync::Arc<crate::inbox::PauseFlag>>,
 }
 
 /// Build an execution environment for the agent loop.

@@ -216,6 +216,7 @@ impl LocalBackend {
                 inbox: request.inbox,
                 is_continuation: request.is_continuation,
                 initial_state_seed: None,
+                pause_flag: request.control.pause_flag,
             },
             thread_ctx,
             request.control.pending_boundary,
@@ -378,6 +379,7 @@ impl LocalBackend {
             inbox: Some(inbox_receiver),
             is_continuation: false,
             initial_state_seed: request.state_seed,
+            pause_flag: None,
         })
         .await
         .map_err(ExecutionBackendError::Loop)?;

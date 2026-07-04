@@ -121,6 +121,7 @@ pub(super) async fn run_agent_loop_impl(
         mut inbox,
         is_continuation,
         initial_state_seed,
+        pause_flag,
     } = params;
 
     let store = runtime.store();
@@ -223,6 +224,18 @@ pub(super) async fn run_agent_loop_impl(
     let termination = 'run_loop: loop {
         steps += 1;
         tracing::info!(step = steps, "step_start");
+
+        // Cooperative pause: block at step boundary until resumed or cancelled.
+        if let Some(ref flag) = pause_flag {
+            flag.wait_for_resume(cancellation_token.as_ref()).await;
+        }
+        // Exit immediately if cancelled (including cancellation during pause wait).
+        if cancellation_token
+            .as_ref()
+            .map_or(false, |t| t.is_cancelled())
+        {
+            break 'run_loop TerminationReason::Cancelled;
+        }
 
         // Handoff: check ActiveAgentKey for agent switch
         #[cfg(feature = "handoff")]

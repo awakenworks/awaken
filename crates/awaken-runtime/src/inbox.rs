@@ -8,6 +8,7 @@
 //! react — for example by enqueuing a wake dispatch for continuation.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use awaken_runtime_contract::contract::message::{Message, Visibility};
 use futures::channel::mpsc;
@@ -208,6 +209,62 @@ pub fn try_inbox_payload_messages(
 /// historical inbox behavior.
 pub fn inbox_payload_messages(json: &serde_json::Value) -> Vec<Message> {
     try_inbox_payload_messages(json).unwrap_or_else(|_| vec![inbox_event_message(json)])
+}
+
+// ── PauseFlag ──────────────────────────────────────────────────────────────
+
+/// Cooperative pause/resume flag for an active agent loop.
+///
+/// The live-command forwarder sets `paused` when a `Pause` command arrives.
+/// The loop checks the flag at each step boundary and waits until `Resume`
+/// clears it. Cancellation always takes priority over a pause wait.
+pub struct PauseFlag {
+    paused: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl PauseFlag {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            paused: AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        })
+    }
+
+    /// Mark the run as paused. The loop will block at its next step boundary.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+    }
+
+    /// Lift the pause and wake the waiting loop.
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
+    }
+
+    /// Wait until the pause is lifted or the cancellation token is cancelled.
+    ///
+    /// Returns immediately when not paused.
+    pub async fn wait_for_resume(&self, cancel: Option<&crate::cancellation::CancellationToken>) {
+        loop {
+            if !self.is_paused() {
+                return;
+            }
+            if let Some(token) = cancel {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => return,
+                    _ = self.notify.notified() => {},
+                }
+            } else {
+                self.notify.notified().await;
+            }
+        }
+    }
 }
 
 /// Create a new `(InboxSender, InboxReceiver)` pair.

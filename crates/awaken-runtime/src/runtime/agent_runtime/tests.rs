@@ -225,7 +225,7 @@ mod live_forwarder {
         let rt = make_runtime()
             .with_live_control_source(Arc::new(MailboxLiveControlSource::new(store.clone())));
         let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
-        let (handle, _token, _rx) =
+        let (handle, _token, _rx, _pf) =
             rt.create_run_channels_with_inbox("run-1".into(), None, Some(inbox_tx));
         rt.register_run("thread-1", handle).unwrap();
         settle().await;
@@ -258,7 +258,7 @@ mod live_forwarder {
         let rt = make_runtime()
             .with_live_control_source(Arc::new(MailboxLiveControlSource::new(store.clone())));
         let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
-        let (handle, _token, _rx) =
+        let (handle, _token, _rx, _pf) =
             rt.create_run_channels_with_inbox("run-wake".into(), None, Some(inbox_tx));
         rt.register_run("thread-wake", handle).unwrap();
         settle().await;
@@ -349,7 +349,7 @@ mod live_forwarder {
         let detached_store = InMemoryMailboxStore::new();
         let rt = make_runtime(); // no store
         let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
-        let (handle, token, _rx) =
+        let (handle, token, _rx, _pf) =
             rt.create_run_channels_with_inbox("run-1".into(), None, Some(inbox_tx));
         rt.register_run("thread-1", handle).unwrap();
         settle().await;
@@ -375,9 +375,9 @@ mod live_forwarder {
 
         let (tx_a, mut rx_a) = crate::inbox::inbox_channel();
         let (tx_b, mut rx_b) = crate::inbox::inbox_channel();
-        let (h_a, _tok_a, _dec_a) =
+        let (h_a, _tok_a, _dec_a, _pf_a) =
             rt.create_run_channels_with_inbox("run-a".into(), None, Some(tx_a));
-        let (h_b, _tok_b, _dec_b) =
+        let (h_b, _tok_b, _dec_b, _pf_b) =
             rt.create_run_channels_with_inbox("run-b".into(), None, Some(tx_b));
         rt.register_run("thread-a", h_a).unwrap();
         rt.register_run("thread-b", h_b).unwrap();
@@ -443,7 +443,7 @@ mod live_forwarder {
         let rt = make_runtime()
             .with_live_control_source(Arc::new(MailboxLiveControlSource::new(store.clone())));
         let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
-        let (handle, token, _rx) =
+        let (handle, token, _rx, _pf) =
             rt.create_run_channels_with_inbox("run-1".into(), None, Some(inbox_tx));
         rt.register_run("thread-1", handle).unwrap();
         settle().await;

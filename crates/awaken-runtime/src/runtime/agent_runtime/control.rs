@@ -113,6 +113,28 @@ impl AgentRuntime {
         }
     }
 
+    /// Pause an active run by thread ID at its next step boundary.
+    /// Returns `true` when the pause was applied to a live run.
+    pub fn pause_by_thread(&self, thread_id: &str) -> bool {
+        if let Some(handle) = self.active_runs.get_by_thread_id(thread_id) {
+            handle.pause();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Resume a previously paused run by thread ID.
+    /// Returns `true` when the resume was applied to a live run.
+    pub fn resume_by_thread(&self, thread_id: &str) -> bool {
+        if let Some(handle) = self.active_runs.get_by_thread_id(thread_id) {
+            handle.resume();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Wake an active run by run ID or thread ID so it consumes durable pending
     /// messages at the next step boundary.
     pub fn wake_pending_boundary(&self, id: &str) -> bool {
@@ -352,7 +374,7 @@ mod tests {
     fn send_messages_by_run_id_delivers_to_inbox() {
         let rt = make_runtime();
         let (inbox_tx, mut inbox_rx) = crate::inbox::inbox_channel();
-        let (handle, _token, _rx) =
+        let (handle, _token, _rx, _pf) =
             rt.create_run_channels_with_inbox("r1".into(), None, Some(inbox_tx));
         rt.register_run("t1", handle).unwrap();
 
@@ -378,7 +400,7 @@ mod tests {
         let rt = make_runtime();
         let (inbox_tx, inbox_rx) = crate::inbox::inbox_channel();
         drop(inbox_rx);
-        let (handle, _token, _rx) =
+        let (handle, _token, _rx, _pf) =
             rt.create_run_channels_with_inbox("r1".into(), None, Some(inbox_tx));
         rt.register_run("t1", handle).unwrap();
 

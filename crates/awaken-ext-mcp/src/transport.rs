@@ -92,7 +92,7 @@ pub(crate) fn negotiate_protocol_version(
 }
 
 #[cfg(unix)]
-use nix::sys::signal::{Signal, kill};
+use nix::sys::signal::{Signal, killpg};
 #[cfg(unix)]
 use nix::unistd::Pid;
 
@@ -852,6 +852,8 @@ impl ProgressAwareStdioTransport {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
         for (key, value) in &config.env {
             cmd.env(key, value);
         }
@@ -2775,11 +2777,12 @@ async fn terminate_child(child: &mut Child) -> Result<(), McpTransportError> {
 
 #[cfg(unix)]
 fn send_signal(pid: u32, signal: Signal) -> Result<(), McpTransportError> {
-    match kill(Pid::from_raw(pid as i32), signal) {
+    // Send to the process group (pid == pgid when process_group(0) was called at spawn).
+    match killpg(Pid::from_raw(pid as i32), signal) {
         Ok(()) => Ok(()),
         Err(nix::errno::Errno::ESRCH) => Ok(()),
         Err(err) => Err(McpTransportError::TransportError(format!(
-            "failed to send signal {:?} to pid {}: {}",
+            "failed to send signal {:?} to process group {}: {}",
             signal, pid, err
         ))),
     }
