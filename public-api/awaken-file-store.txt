@@ -1,0 +1,60 @@
+pub mod awaken_file_store
+pub struct awaken_file_store::FileStoreError(pub alloc::string::String)
+impl core::error::Error for awaken_file_store::FileStoreError
+impl core::fmt::Debug for awaken_file_store::FileStoreError
+pub fn awaken_file_store::FileStoreError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_file_store::FileStoreError
+pub fn awaken_file_store::FileStoreError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for awaken_file_store::FileStoreError
+impl core::marker::Send for awaken_file_store::FileStoreError
+impl core::marker::Sync for awaken_file_store::FileStoreError
+impl core::marker::Unpin for awaken_file_store::FileStoreError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_file_store::FileStoreError
+impl core::panic::unwind_safe::UnwindSafe for awaken_file_store::FileStoreError
+pub struct awaken_file_store::FsFileStore
+impl awaken_file_store::FsFileStore
+pub async fn awaken_file_store::FsFileStore::open(impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<Self, awaken_file_store::FileStoreError>
+impl awaken_file_store::FileStore for awaken_file_store::FsFileStore
+pub fn awaken_file_store::FsFileStore::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::FsFileStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::FsFileStore::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_file_store::FsFileStore::put<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 [u8]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::marker::Freeze for awaken_file_store::FsFileStore
+impl core::marker::Send for awaken_file_store::FsFileStore
+impl core::marker::Sync for awaken_file_store::FsFileStore
+impl core::marker::Unpin for awaken_file_store::FsFileStore
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_file_store::FsFileStore
+impl core::panic::unwind_safe::UnwindSafe for awaken_file_store::FsFileStore
+pub struct awaken_file_store::InMemoryFileStore
+impl awaken_file_store::InMemoryFileStore
+pub fn awaken_file_store::InMemoryFileStore::new() -> Self
+impl awaken_file_store::FileStore for awaken_file_store::InMemoryFileStore
+pub fn awaken_file_store::InMemoryFileStore::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::InMemoryFileStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::InMemoryFileStore::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_file_store::InMemoryFileStore::put<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 [u8]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl core::default::Default for awaken_file_store::InMemoryFileStore
+pub fn awaken_file_store::InMemoryFileStore::default() -> awaken_file_store::InMemoryFileStore
+impl !core::marker::Freeze for awaken_file_store::InMemoryFileStore
+impl core::marker::Send for awaken_file_store::InMemoryFileStore
+impl core::marker::Sync for awaken_file_store::InMemoryFileStore
+impl core::marker::Unpin for awaken_file_store::InMemoryFileStore
+impl !core::panic::unwind_safe::RefUnwindSafe for awaken_file_store::InMemoryFileStore
+impl core::panic::unwind_safe::UnwindSafe for awaken_file_store::InMemoryFileStore
+pub trait awaken_file_store::FileStore: core::marker::Send + core::marker::Sync
+pub fn awaken_file_store::FileStore::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::FileStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::FileStore::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_file_store::FileStore::put<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 [u8]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_file_store::FileStore for awaken_file_store::FsFileStore
+pub fn awaken_file_store::FsFileStore::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::FsFileStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::FsFileStore::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_file_store::FsFileStore::put<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 [u8]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_file_store::FileStore for awaken_file_store::InMemoryFileStore
+pub fn awaken_file_store::InMemoryFileStore::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::InMemoryFileStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::InMemoryFileStore::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_file_store::InMemoryFileStore::put<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 [u8]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_file_store::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_file_store::content_id(&[u8]) -> alloc::string::String
+pub fn awaken_file_store::is_content_id(&std::path::Path, &str) -> bool
