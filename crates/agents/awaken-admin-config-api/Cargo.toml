@@ -14,17 +14,25 @@ awaken-api-contract.workspace = true
 awaken-config-resolver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 axum.workspace = true
 async-trait.workspace = true
 schemars = { version = "1", optional = true }
+# Feature `sqlite`: embedded durable InferenceProfileStore + McpStore backend
+# over the crate's own `admin` migration scope (ADR-0043 sqlite-repos).
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+tempfile = "3"
 
 [features]
 default = []
+# SQLite-backed admin stores (`sqlite::SqliteAdminStore`), ADR-0043 sqlite-repos.
+sqlite = ["dep:rusqlite"]
 # Emit JSON Schema for the admin config DTOs (drives TS-contract generation,
 # ADR-0043). Enables the domains' own `schema` features.
 schema = [

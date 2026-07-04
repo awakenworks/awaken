@@ -10,6 +10,12 @@
 #![forbid(unsafe_code)]
 
 mod router;
+pub mod schema;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteAdminStore;
 
 pub use router::{
     AdminState, CredentialProbe, CredentialValidation, InMemoryMcpStore, InMemoryProfileStore,
