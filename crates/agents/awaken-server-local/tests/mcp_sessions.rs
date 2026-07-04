@@ -22,16 +22,21 @@
 //! The OAuth-mode mock ([`mock_oauth_calc_mcp`]) additionally pins the token
 //! endpoint contract for the refresh-exchange fixture: `POST {base}/token`,
 //! `application/x-www-form-urlencoded`, body
-//! `grant_type=refresh_token&refresh_token=…&client_id=…[&scope=…][&resource=…]`
-//! → `200 {"access_token": "…", "refresh_token"?: "…"}` (any non-2xx = grant
-//! refused, the original 401 challenge surfaces).
+//! `grant_type=refresh_token&refresh_token=…[&scope=…][&resource=…]` →
+//! `200 {"access_token": "…", "refresh_token"?: "…"}` (any non-2xx = grant
+//! refused, the original 401 challenge surfaces). Client authentication per
+//! the credential's `token_endpoint_auth` ([`MockClientAuth`]): `none` puts a
+//! bare `client_id=…` in the form; `client_secret_basic` sends the RFC 6749
+//! §2.3.1 `Authorization: Basic base64(urlencode(id):urlencode(secret))`
+//! header and OMITS `client_id` from the form; `client_secret_post` puts
+//! `client_id=…&client_secret=…` in the form.
 
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
-use awaken_protocol_managed::{McpProbe, McpProbeStatus};
+use awaken_protocol_managed::{McpProbe, McpProbeStatus, TokenEndpointAuthBinding};
 use awaken_server_local::{
     ExtMcpProbe, PreparedMcpRefresh, VaultRefresher, build_management_router,
 };
@@ -109,6 +114,16 @@ async fn mock_calc_mcp() -> String {
     format!("http://{addr}/")
 }
 
+/// The client authentication the mock token endpoint requires, per scenario.
+/// `None` on [`OauthMock::client_auth`] = a public client (no check).
+enum MockClientAuth {
+    /// Require EXACTLY this `Authorization` header value (the RFC 6749 §2.3.1
+    /// Basic wire) AND reject any `client_id` in the form body.
+    Basic { header: String },
+    /// Require `client_secret=<this>` in the form body.
+    Post { client_secret: String },
+}
+
 /// The OAuth-mode mock's shared state: which bearers the MCP endpoint accepts
 /// (a token issued by the token endpoint becomes valid), what the token
 /// endpoint answers, and everything both endpoints observed.
@@ -118,8 +133,13 @@ struct OauthMock {
     valid_tokens: Vec<String>,
     /// The token endpoint's issue body; `None` = 400 `invalid_grant`.
     token_response: Option<Value>,
+    /// The client authentication a grant must present; wrong/missing → 401
+    /// `invalid_client` and no token is issued.
+    client_auth: Option<MockClientAuth>,
     /// Raw form bodies the token endpoint received, one per grant attempt.
     grants: Vec<String>,
+    /// The `Authorization` header of each grant attempt, aligned with `grants`.
+    grant_authorizations: Vec<Option<String>>,
     /// `(method, authorization header)` of every JSON-RPC request, in order.
     requests: Vec<(String, String)>,
 }
@@ -155,12 +175,41 @@ async fn oauth_rpc(
     calc_rpc_result(&body)
 }
 
-/// The mock token endpoint: records the raw form-encoded grant and either
-/// issues the configured response (whose `access_token` becomes a valid bearer)
-/// or refuses with `400 invalid_grant`.
-async fn oauth_token(State(mock): State<Arc<Mutex<OauthMock>>>, body: String) -> Response {
+/// The mock token endpoint: records the raw form-encoded grant (and its
+/// `Authorization` header), enforces the scenario's client authentication
+/// ([`MockClientAuth`]), and either issues the configured response (whose
+/// `access_token` becomes a valid bearer) or refuses — `401 invalid_client`
+/// for bad client auth, `400 invalid_grant` when no response is configured.
+async fn oauth_token(
+    State(mock): State<Arc<Mutex<OauthMock>>>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let authorization = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     let mut m = mock.lock().unwrap();
-    m.grants.push(body);
+    m.grants.push(body.clone());
+    m.grant_authorizations.push(authorization.clone());
+    if let Some(auth) = &m.client_auth {
+        let authenticated = match auth {
+            MockClientAuth::Basic { header } => {
+                // The exact §2.3.1 header, and NO client_id in the form body.
+                authorization.as_deref() == Some(header.as_str()) && !body.contains("client_id=")
+            }
+            MockClientAuth::Post { client_secret } => {
+                body.contains(&format!("client_secret={client_secret}"))
+            }
+        };
+        if !authenticated {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "invalid_client" })),
+            )
+                .into_response();
+        }
+    }
     match m.token_response.clone() {
         Some(issued) => {
             if let Some(token) = issued["access_token"].as_str() {
@@ -442,9 +491,15 @@ async fn missing_vault_credential_fails_the_first_turn_loudly() {
 }
 
 /// Create a vault holding an `mcp_oauth` credential for `url` with the given
-/// (possibly expired) access token and a public-client refresh configuration
-/// pointing at the mock's `{url}token` endpoint; returns the vault id.
-async fn vault_with_refreshable_credential(app: &Router, url: &str, access_token: &str) -> String {
+/// (possibly expired) access token and a `cli-1` refresh configuration (client
+/// auth per `token_endpoint_auth`) pointing at the mock's `{url}token`
+/// endpoint; returns the vault id.
+async fn vault_with_refreshable_credential(
+    app: &Router,
+    url: &str,
+    access_token: &str,
+    token_endpoint_auth: Value,
+) -> String {
     let (s, vault) = call(
         app,
         "POST",
@@ -466,7 +521,7 @@ async fn vault_with_refreshable_credential(app: &Router, url: &str, access_token
                 "client_id": "cli-1",
                 "refresh_token": "rt-fixed", // awaken-allow: secret
                 "token_endpoint": format!("{url}token"),
-                "token_endpoint_auth": { "type": "none" },
+                "token_endpoint_auth": token_endpoint_auth,
                 "scope": "tools"
             }
         })),
@@ -503,7 +558,9 @@ async fn expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed() {
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
     let app = build_management_router();
-    let vault_id = vault_with_refreshable_credential(&app, &url, "expired-token").await;
+    let vault_id =
+        vault_with_refreshable_credential(&app, &url, "expired-token", json!({ "type": "none" }))
+            .await;
     let id = create_mcp_session(&app, &vault_id, &url).await;
 
     // The turn still succeeds: the refresher exchanged the token mid-connect.
@@ -579,7 +636,9 @@ async fn refused_refresh_exchange_fails_the_turn_with_the_challenge() {
     let mock = Arc::new(Mutex::new(OauthMock::default()));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
     let app = build_management_router();
-    let vault_id = vault_with_refreshable_credential(&app, &url, "expired-token").await;
+    let vault_id =
+        vault_with_refreshable_credential(&app, &url, "expired-token", json!({ "type": "none" }))
+            .await;
     let id = create_mcp_session(&app, &vault_id, &url).await;
 
     // Fail closed: the refresher returned None, so ext-mcp surfaces the original
@@ -592,6 +651,198 @@ async fn refused_refresh_exchange_fails_the_turn_with_the_challenge() {
     assert!(message.contains("auth challenge: HTTP 401"), "{message}");
     let m = mock.lock().unwrap();
     assert_eq!(m.grants.len(), 1, "the exchange was attempted exactly once");
+}
+
+// The confidential-client secret used across the basic-auth scenarios. It
+// form-urlencodes to `s3cret+with+spaces%26`, so the tests pin that the pair is
+// urlencoded BEFORE the base64 (RFC 6749 §2.3.1).
+const BASIC_CLIENT_SECRET: &str = "s3cret with spaces&"; // awaken-allow: secret
+
+/// The exact `Authorization` value the refresher must send for `cli-1` +
+/// [`BASIC_CLIENT_SECRET`]: the encoded pair is hardcoded, so this pins the
+/// urlencode-then-base64 wire rather than mirroring the implementation.
+fn expected_basic_header() -> String {
+    use base64::Engine as _;
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("cli-1:s3cret+with+spaces%26")
+    )
+}
+
+#[tokio::test]
+async fn expired_token_turn_succeeds_with_client_secret_basic_refresh() {
+    // The mock requires the exact §2.3.1 Basic header and REJECTS any
+    // client_id in the form body.
+    let mock = Arc::new(Mutex::new(OauthMock {
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow: secret
+        client_auth: Some(MockClientAuth::Basic {
+            header: expected_basic_header(),
+        }),
+        ..OauthMock::default()
+    }));
+    let url = mock_oauth_calc_mcp(mock.clone()).await;
+    let app = build_management_router();
+    let vault_id = vault_with_refreshable_credential(
+        &app,
+        &url,
+        "expired-token",
+        json!({ "type": "client_secret_basic", "client_secret": BASIC_CLIENT_SECRET }),
+    )
+    .await;
+    let id = create_mcp_session(&app, &vault_id, &url).await;
+
+    // The turn still succeeds: the grant authenticated with the Basic header.
+    let (s, _) = send_user_message(&app, &id, "add 2 3").await;
+    assert_eq!(s, StatusCode::OK);
+    let events = list_events(&app, &id).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "agent.tool_result" && e["content"][0]["text"] == "5"),
+        "the tool result is 5 despite the expired token: {events:?}"
+    );
+
+    let m = mock.lock().unwrap();
+    assert_eq!(m.grants.len(), 1, "one challenge, one grant");
+    let grant = &m.grants[0];
+    assert!(grant.contains("grant_type=refresh_token"), "{grant}");
+    assert!(grant.contains("refresh_token=rt-fixed"), "{grant}");
+    // §2.3.1: the credentials ride in the header, and NEITHER client_id nor
+    // client_secret appears in the form body.
+    assert!(!grant.contains("client_id="), "{grant}");
+    assert!(!grant.contains("client_secret="), "{grant}");
+    assert_eq!(
+        m.grant_authorizations[0].as_deref(),
+        Some(expected_basic_header().as_str()),
+        "the exact Basic wire"
+    );
+}
+
+#[tokio::test]
+async fn expired_token_turn_succeeds_with_client_secret_post_refresh() {
+    let mock = Arc::new(Mutex::new(OauthMock {
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow: secret
+        client_auth: Some(MockClientAuth::Post {
+            client_secret: "cs-post-secret".to_string(), // awaken-allow: secret
+        }),
+        ..OauthMock::default()
+    }));
+    let url = mock_oauth_calc_mcp(mock.clone()).await;
+    let app = build_management_router();
+    let vault_id = vault_with_refreshable_credential(
+        &app,
+        &url,
+        "expired-token",
+        json!({ "type": "client_secret_post", "client_secret": "cs-post-secret" }), // awaken-allow: secret
+    )
+    .await;
+    let id = create_mcp_session(&app, &vault_id, &url).await;
+
+    let (s, _) = send_user_message(&app, &id, "add 40 2").await;
+    assert_eq!(s, StatusCode::OK);
+    let events = list_events(&app, &id).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "agent.tool_result" && e["content"][0]["text"] == "42"),
+        "the tool result is 42 despite the expired token: {events:?}"
+    );
+
+    let m = mock.lock().unwrap();
+    assert_eq!(m.grants.len(), 1, "one challenge, one grant");
+    let grant = &m.grants[0];
+    // `client_secret_post`: client_id AND client_secret in the form body, no
+    // Authorization header.
+    assert!(grant.contains("client_id=cli-1"), "{grant}");
+    assert!(grant.contains("client_secret=cs-post-secret"), "{grant}");
+    assert_eq!(m.grant_authorizations[0], None, "no Basic header for post");
+}
+
+#[tokio::test]
+async fn wrong_client_secret_refuses_the_grant_and_surfaces_the_challenge() {
+    // The mock demands the right Basic creds; the credential was entered with
+    // a DIFFERENT secret, so the exchange is refused and the original 401
+    // challenge fails the turn loudly.
+    let mock = Arc::new(Mutex::new(OauthMock {
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow: secret
+        client_auth: Some(MockClientAuth::Basic {
+            header: expected_basic_header(),
+        }),
+        ..OauthMock::default()
+    }));
+    let url = mock_oauth_calc_mcp(mock.clone()).await;
+    let app = build_management_router();
+    let vault_id = vault_with_refreshable_credential(
+        &app,
+        &url,
+        "expired-token",
+        json!({ "type": "client_secret_basic", "client_secret": "not-the-secret" }), // awaken-allow: secret
+    )
+    .await;
+    let id = create_mcp_session(&app, &vault_id, &url).await;
+
+    let (s, body) = send_user_message(&app, &id, "add 2 3").await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["error"]["type"], "api_error");
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("mcp server `calc`"), "{message}");
+    assert!(message.contains("auth challenge: HTTP 401"), "{message}");
+    let m = mock.lock().unwrap();
+    assert_eq!(m.grants.len(), 1, "the exchange was attempted exactly once");
+}
+
+#[tokio::test]
+async fn vault_refresher_fails_closed_when_the_client_secret_is_missing() {
+    // A confidential binding whose sealed client secret is GONE from the store:
+    // the exchange is never attempted (fail closed), nothing is resealed.
+    let mock = Arc::new(Mutex::new(OauthMock {
+        token_response: Some(json!({ "access_token": "new-token" })), // awaken-allow: secret
+        ..OauthMock::default()
+    }));
+    let url = mock_oauth_calc_mcp(mock.clone()).await;
+    let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
+    let access_ref = SecretRef("sec:cred:1".to_string());
+    let refresh_ref = SecretRef("sec:refresh:cred:1".to_string());
+    secrets
+        .put(
+            &access_ref,
+            RedactedString::new("expired-token".to_string()),
+        )
+        .await
+        .unwrap();
+    secrets
+        .put(&refresh_ref, RedactedString::new("rt-fixed".to_string()))
+        .await
+        .unwrap();
+
+    let refresher = VaultRefresher::new(PreparedMcpRefresh {
+        token_endpoint: format!("{url}token"),
+        client_id: "cli-1".to_string(),
+        token_endpoint_auth: TokenEndpointAuthBinding::ClientSecretBasic {
+            secret_ref: SecretRef("sec:client:missing".to_string()),
+        },
+        scope: None,
+        resource: None,
+        refresh_token_ref: refresh_ref.clone(),
+        access_token_ref: access_ref.clone(),
+        secrets: secrets.clone(),
+    });
+    let fresh = refresher
+        .refresh(&AuthChallenge {
+            status: 401,
+            www_authenticate: None,
+        })
+        .await;
+    assert_eq!(fresh, None, "a missing client secret refuses the exchange");
+    assert!(
+        mock.lock().unwrap().grants.is_empty(),
+        "the token endpoint was never contacted"
+    );
+    assert_eq!(
+        secrets.get(&access_ref).await.unwrap().expose_secret(),
+        "expired-token",
+        "nothing was resealed"
+    );
 }
 
 #[tokio::test]
@@ -622,6 +873,7 @@ async fn vault_refresher_reseals_the_access_token_and_a_rotated_refresh_token() 
     let refresher = VaultRefresher::new(PreparedMcpRefresh {
         token_endpoint: format!("{url}token"),
         client_id: "cli-1".to_string(),
+        token_endpoint_auth: TokenEndpointAuthBinding::None,
         scope: None,
         resource: Some("https://mcp.example.com".to_string()),
         refresh_token_ref: refresh_ref.clone(),
@@ -682,6 +934,7 @@ async fn vault_refresher_fails_closed_and_reseals_nothing_on_a_rejected_grant() 
     let refresher = VaultRefresher::new(PreparedMcpRefresh {
         token_endpoint: format!("{url}token"),
         client_id: "cli-1".to_string(),
+        token_endpoint_auth: TokenEndpointAuthBinding::None,
         scope: None,
         resource: None,
         refresh_token_ref: refresh_ref.clone(),
