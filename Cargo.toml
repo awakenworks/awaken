@@ -42,6 +42,9 @@ awaken-model-catalog = { path = "crates/agents/awaken-model-catalog" }
 awaken-credential-vault = { path = "crates/agents/awaken-credential-vault" }
 awaken-config-resolver = { path = "crates/agents/awaken-config-resolver" }
 awaken-admin-config-api = { path = "crates/agents/awaken-admin-config-api" }
+# Foundation contract half (ADR-0043): RFC-9457 ApiError, pagination, and the
+# allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
+awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de" }
 awaken-managed-bridge = { path = "crates/agents/awaken-managed-bridge" }
 awaken-store-conformance = { path = "crates/runtime/awaken-store-conformance" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
@@ -66,6 +69,7 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 tokio-util = "0.7"
 genai = "0.6.0-beta.17"
+axum = "0.7"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
