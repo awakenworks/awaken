@@ -276,14 +276,13 @@ async fn session_without_mcp_servers_echoes_empty_and_prepares_an_empty_init() {
     assert!(captured[0].mcp_servers.is_empty());
 }
 
-/// Pins the documented-lenient path: the vault surface exposes no existence
-/// lookup, so a `vault_id` naming no vault contributes NO binding (the MCP
-/// server then rejects the unauthenticated connect at the first turn) rather
-/// than failing the create.
+/// Fail closed at create: a `vault_ids` entry naming no vault 404s with the
+/// standard envelope naming the vault id — no session record is left behind
+/// and the runtime is never asked to provision anything.
 #[tokio::test]
-async fn unknown_vault_id_yields_no_binding_not_an_error() {
+async fn unknown_vault_id_fails_the_create_with_404_and_provisions_nothing() {
     let h = harness(None);
-    let (s, session) = call(
+    let (s, body) = call(
         &h.app,
         "POST",
         "/v1/sessions",
@@ -294,10 +293,47 @@ async fn unknown_vault_id_yields_no_binding_not_an_error() {
         })),
     )
     .await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(session["agent"]["mcp_servers"].as_array().unwrap().len(), 1);
-    let captured = h.captured.lock().unwrap();
-    assert!(captured[0].mcp_servers[0].credential_source_id.is_none());
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "not_found_error");
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("vlt_missing"),
+        "the envelope names the offending vault id: {message}"
+    );
+    assert!(
+        h.captured.lock().unwrap().is_empty(),
+        "prepare_session must never run for a refused create"
+    );
+    let (s, _) = call(&h.app, "GET", "/v1/sessions/sesn_0", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "no session record was created");
+}
+
+/// A create mixing one real vault with one bogus id fails closed too — every
+/// named vault must exist, not just some.
+#[tokio::test]
+async fn known_plus_unknown_vault_id_still_fails_the_create() {
+    let h = harness(None);
+    let (vault_id, _) = vault_with_mcp_oauth(&h).await;
+    let (s, body) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "calc-agent",
+            "mcp_servers": [{ "name": "calc", "type": "url", "url": MCP_URL }],
+            "vault_ids": [vault_id, "vlt_bogus"],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("vlt_bogus")
+    );
+    assert!(h.captured.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

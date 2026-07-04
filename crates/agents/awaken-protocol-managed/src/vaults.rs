@@ -16,8 +16,9 @@
 //!
 //! Scope (Phase 3): all three credential types — `environment_variable`,
 //! `static_bearer`, and `mcp_oauth`. Every wire secret (`secret_value`, `token`,
-//! `access_token`, `refresh_token`, `client_secret`) is write-only: sealed (or,
-//! for `client_secret`, consumed — see [`TokenEndpointAuthParams`]) on the way in,
+//! `access_token`, `refresh_token`, `client_secret`) is write-only: sealed into
+//! the `SecretStore` on the way in (a confidential-client `client_secret` under
+//! its own `sec:client:{source_id}` ref — see [`TokenEndpointAuthParams`]),
 //! never present in any response. The MCP-OAuth validate route live-probes the
 //! MCP server when the composition root wires an [`McpProbe`]
 //! ([`VaultState::with_probe`]): the credential's access token is materialized
@@ -98,13 +99,14 @@ pub enum CredentialNetworking {
 
 /// The token-endpoint auth scheme as it arrives on the wire
 /// (`BetaManagedAgentsTokenEndpointAuth{None,Basic,Post}Param`). The
-/// `client_secret` is write-only and consumed-and-dropped BY DESIGN: it is never
-/// stored and never echoed. Consequently only the public-client refresh grant
-/// (`token_endpoint_auth: none`) is supported — a credential entered with a
-/// confidential-client scheme (`client_secret_basic` / `client_secret_post`)
-/// keeps its secret-free projection but is never offered for refresh
-/// ([`VaultState::mcp_refresh_for_source`] returns `None` for it), because the
-/// exchange could not authenticate without the dropped secret.
+/// `client_secret` is write-only: for a confidential-client scheme
+/// (`client_secret_basic` / `client_secret_post`) it is sealed into the
+/// `SecretStore` under the deterministic `sec:client:{source_id}` ref — a
+/// sibling of the refresh token's `sec:refresh:{source_id}` — so the session's
+/// refresher can authenticate the `refresh_token` grant later. It is never
+/// echoed: every response projection stays tag-only
+/// ([`TokenEndpointAuthResponse`]), and [`VaultState::mcp_refresh_for_source`]
+/// hands out only the sealed ref ([`TokenEndpointAuthBinding`]), never material.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TokenEndpointAuthParams {
@@ -241,18 +243,32 @@ pub enum CredentialCreateParams {
 /// session's transport-level token refresh (consumer: `ManagedState::create_session`
 /// → [`crate::McpServerBinding`], which the server's `ManagedHost::prepare_session`
 /// turns into a live refresher on the MCP transport). Secret-free by construction:
-/// it carries the sealed refresh token's [`SecretRef`], never material. Only
-/// public-client refresh (`token_endpoint_auth: none`) is ever exposed — the
-/// `client_secret` of a confidential-client scheme was consumed at create (see
-/// [`TokenEndpointAuthParams`]), so such a credential yields no binding.
+/// it carries the sealed refresh token's [`SecretRef`] (and, for a
+/// confidential-client scheme, the sealed client secret's ref via
+/// [`TokenEndpointAuthBinding`]), never material.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpRefreshBinding {
     pub token_endpoint: String,
     pub client_id: String,
     /// The ref the sealed refresh token lives under (`sec:refresh:{source_id}`).
     pub refresh_token_ref: SecretRef,
+    /// How the refresher must authenticate the grant at the token endpoint.
+    pub token_endpoint_auth: TokenEndpointAuthBinding,
     pub scope: Option<String>,
     pub resource: Option<String>,
+}
+
+/// The client-authentication method of a refresh grant, as the session's
+/// refresher must apply it (consumer: the server's `VaultRefresher` grant
+/// construction — RFC 6749 §2.3.1 `Basic` header for `client_secret_basic`,
+/// `client_secret` form field for `client_secret_post`). A confidential scheme
+/// carries the sealed client secret's ref (`sec:client:{source_id}`), never
+/// material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenEndpointAuthBinding {
+    None,
+    ClientSecretBasic { secret_ref: SecretRef },
+    ClientSecretPost { secret_ref: SecretRef },
 }
 
 /// The status a live MCP probe reports for an `mcp_oauth` credential.
@@ -329,12 +345,14 @@ enum AuthRecord {
 }
 
 /// Stored refresh configuration for an `mcp_oauth` credential: the secret-free
-/// projection plus the ref the sealed refresh token lives under, which
+/// projection plus the refs the sealed refresh token (and, for a confidential
+/// client, the sealed client secret) live under, which
 /// [`VaultState::mcp_refresh_for_source`] hands to the session's refresher.
 #[derive(Clone)]
 struct McpOauthRefreshRecord {
     projection: McpOauthRefreshResponse,
     refresh_token_ref: SecretRef,
+    token_endpoint_auth: TokenEndpointAuthBinding,
 }
 
 /// A stored credential: its neutral domain row id plus the wire-only projection
@@ -390,6 +408,15 @@ impl VaultState {
         self
     }
 
+    /// Whether `id` names an existing vault. Consumer: `ManagedState::create_session`,
+    /// which fails a create closed (404, naming the vault id) when a
+    /// `vault_ids` entry names no vault — instead of silently binding nothing
+    /// and only surfacing a 401 at the first turn.
+    #[must_use]
+    pub fn has_vault(&self, id: &str) -> bool {
+        self.inner.lock().unwrap().vaults.contains_key(id)
+    }
+
     /// The neutral credential-domain row id for a wire credential id, if it lives
     /// in `vault_id`. This is the seam a session uses to bind a vault credential to
     /// a run: the resolver takes this `CredentialSourceId`, never the wire id.
@@ -436,11 +463,13 @@ impl VaultState {
     /// `source_id`, if it is refreshable. This is the second half of the
     /// vault→MCP binding seam (consumer: `ManagedState::create_session`, which
     /// carries it on [`crate::McpServerBinding`] next to the source id): the
-    /// server's session build turns it into a transport-level refresher. `None`
-    /// for env-var / `static_bearer` credentials, for an `mcp_oauth` credential
-    /// entered without a refresh object, and for a confidential-client scheme
-    /// (its `client_secret` was consumed at create — see
-    /// [`TokenEndpointAuthParams`] — so only public-client refresh is possible).
+    /// server's session build turns it into a transport-level refresher. Both
+    /// public (`token_endpoint_auth: none`) and confidential
+    /// (`client_secret_basic` / `client_secret_post`) clients are exposed — a
+    /// confidential scheme's binding carries its sealed client secret's ref
+    /// ([`TokenEndpointAuthBinding`]). `None` for env-var / `static_bearer`
+    /// credentials and for an `mcp_oauth` credential entered without a refresh
+    /// object.
     #[must_use]
     pub fn mcp_refresh_for_source(
         &self,
@@ -454,19 +483,14 @@ impl VaultState {
             .find_map(|c| match &c.auth {
                 AuthRecord::McpOauth {
                     refresh: Some(r), ..
-                } if matches!(
-                    r.projection.token_endpoint_auth,
-                    TokenEndpointAuthResponse::None
-                ) =>
-                {
-                    Some(McpRefreshBinding {
-                        token_endpoint: r.projection.token_endpoint.clone(),
-                        client_id: r.projection.client_id.clone(),
-                        refresh_token_ref: r.refresh_token_ref.clone(),
-                        scope: r.projection.scope.clone(),
-                        resource: r.projection.resource.clone(),
-                    })
-                }
+                } => Some(McpRefreshBinding {
+                    token_endpoint: r.projection.token_endpoint.clone(),
+                    client_id: r.projection.client_id.clone(),
+                    refresh_token_ref: r.refresh_token_ref.clone(),
+                    token_endpoint_auth: r.token_endpoint_auth.clone(),
+                    scope: r.projection.scope.clone(),
+                    resource: r.projection.resource.clone(),
+                }),
                 _ => None,
             })
     }
@@ -694,32 +718,36 @@ async fn create_credential(
             metadata,
             display_name,
         } => {
-            // Split the wire refresh object: the token goes to the bridge to be
-            // sealed; the rest is secret-free configuration for the projection
-            // (the client_secret inside token_endpoint_auth is dropped — see
+            // Split the wire refresh object: the refresh token goes to the
+            // bridge to be sealed and a confidential-client `client_secret` is
+            // sealed below under `sec:client:{source_id}`; the rest is
+            // secret-free configuration for the projection (see
             // `TokenEndpointAuthParams`).
-            let (refresh_config, refresh_token) = match refresh {
+            let (refresh_config, refresh_token, client_secret) = match refresh {
                 Some(r) => {
+                    let (auth_tag, client_secret) = match r.token_endpoint_auth {
+                        None | Some(TokenEndpointAuthParams::None) => {
+                            (TokenEndpointAuthResponse::None, Option::None)
+                        }
+                        Some(TokenEndpointAuthParams::ClientSecretBasic { client_secret }) => (
+                            TokenEndpointAuthResponse::ClientSecretBasic,
+                            Some(client_secret),
+                        ),
+                        Some(TokenEndpointAuthParams::ClientSecretPost { client_secret }) => (
+                            TokenEndpointAuthResponse::ClientSecretPost,
+                            Some(client_secret),
+                        ),
+                    };
                     let projection = McpOauthRefreshResponse {
                         client_id: r.client_id,
                         token_endpoint: r.token_endpoint,
-                        token_endpoint_auth: match r.token_endpoint_auth {
-                            None | Some(TokenEndpointAuthParams::None) => {
-                                TokenEndpointAuthResponse::None
-                            }
-                            Some(TokenEndpointAuthParams::ClientSecretBasic { .. }) => {
-                                TokenEndpointAuthResponse::ClientSecretBasic
-                            }
-                            Some(TokenEndpointAuthParams::ClientSecretPost { .. }) => {
-                                TokenEndpointAuthResponse::ClientSecretPost
-                            }
-                        },
+                        token_endpoint_auth: auth_tag,
                         resource: r.resource,
                         scope: r.scope,
                     };
-                    (Some(projection), Some(r.refresh_token))
+                    (Some(projection), Some(r.refresh_token), client_secret)
                 }
-                None => (None, None),
+                None => (None, None, None),
             };
             let bridged = mcp_oauth_to_create_params(
                 vault_id.clone(),
@@ -733,7 +761,10 @@ async fn create_credential(
                 .await
                 .map_err(|e| bad_request(e.to_string()))?;
             // The refresh token is a second secret: sealed under a sibling ref of
-            // the row (the row's own material_ref holds the access token).
+            // the row (the row's own material_ref holds the access token). A
+            // confidential-client `client_secret` is a third, sealed under its
+            // own deterministic sibling ref so the refresh grant can
+            // authenticate later.
             let refresh_record = match (refresh_config, bridged.refresh_secret) {
                 (Some(projection), Some(secret)) => {
                     let r = SecretRef(format!("sec:refresh:{}", source.id.0));
@@ -742,9 +773,32 @@ async fn create_credential(
                         .put(&r, secret)
                         .await
                         .map_err(|e| bad_request(e.to_string()))?;
+                    let token_endpoint_auth = match (projection.token_endpoint_auth, client_secret)
+                    {
+                        (TokenEndpointAuthResponse::ClientSecretBasic, Some(cs)) => {
+                            let secret_ref = SecretRef(format!("sec:client:{}", source.id.0));
+                            state
+                                .secrets
+                                .put(&secret_ref, RedactedString::new(cs))
+                                .await
+                                .map_err(|e| bad_request(e.to_string()))?;
+                            TokenEndpointAuthBinding::ClientSecretBasic { secret_ref }
+                        }
+                        (TokenEndpointAuthResponse::ClientSecretPost, Some(cs)) => {
+                            let secret_ref = SecretRef(format!("sec:client:{}", source.id.0));
+                            state
+                                .secrets
+                                .put(&secret_ref, RedactedString::new(cs))
+                                .await
+                                .map_err(|e| bad_request(e.to_string()))?;
+                            TokenEndpointAuthBinding::ClientSecretPost { secret_ref }
+                        }
+                        _ => TokenEndpointAuthBinding::None,
+                    };
                     Some(McpOauthRefreshRecord {
                         projection,
                         refresh_token_ref: r,
+                        token_endpoint_auth,
                     })
                 }
                 _ => None,

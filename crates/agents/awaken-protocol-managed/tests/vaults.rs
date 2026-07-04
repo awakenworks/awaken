@@ -13,13 +13,14 @@ use awaken_config_resolver::resolve_inference;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_credential_vault::{
     CredentialBinding, CredentialSource, CredentialSourceId, InMemorySecretStore, SecretRef,
+    SecretStore,
 };
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::repo::InMemoryCatalogRepo;
 use awaken_model_catalog::{
     ModelApiCompat, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
-use awaken_protocol_managed::{McpProbe, McpProbeStatus};
+use awaken_protocol_managed::{McpProbe, McpProbeStatus, TokenEndpointAuthBinding};
 use awaken_protocol_managed::{VaultState, vault_router};
 use axum::Router;
 use axum::body::Body;
@@ -661,6 +662,18 @@ async fn mcp_oauth_credential_with_refresh_never_leaks_secrets() {
     let raw = serde_json::to_string(&validation).unwrap();
     assert!(!raw.contains("at-secret-token"));
     assert!(!raw.contains("rt-secret-token"));
+    assert!(!raw.contains("cs-secret"));
+
+    // The client secret was SEALED (not dropped): it materializes back through
+    // the store under the deterministic `sec:client:{source_id}` ref, so the
+    // confidential-client refresh grant can authenticate later.
+    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    let sealed = h
+        .secrets
+        .get(&SecretRef(format!("sec:client:{}", source_id.0)))
+        .await
+        .expect("the client secret is sealed under sec:client:{source_id}");
+    assert_eq!(sealed.expose_secret(), "cs-secret");
 }
 
 #[tokio::test]
@@ -841,7 +854,7 @@ async fn validate_never_probes_env_var_or_static_bearer_credentials() {
 }
 
 #[tokio::test]
-async fn mcp_refresh_for_source_exposes_only_public_client_refresh() {
+async fn mcp_refresh_for_source_exposes_public_and_confidential_refresh() {
     let h = harness();
     let vault_id = create_vault(&h, "mcp").await;
     let url = "https://mcp.example.com/sse";
@@ -874,6 +887,7 @@ async fn mcp_refresh_for_source_exposes_only_public_client_refresh() {
     assert_eq!(binding.client_id, "cli_pub");
     assert_eq!(binding.scope.as_deref(), Some("mcp:read"));
     assert_eq!(binding.resource.as_deref(), Some("https://mcp.example.com"));
+    assert_eq!(binding.token_endpoint_auth, TokenEndpointAuthBinding::None);
     // The refresh token itself stays sealed: the binding carries only its ref.
     assert_eq!(
         binding.refresh_token_ref,
@@ -886,30 +900,41 @@ async fn mcp_refresh_for_source_exposes_only_public_client_refresh() {
     let plain_source = h.state.credential_source_id(&vault_id, &plain_id).unwrap();
     assert!(h.state.mcp_refresh_for_source(&plain_source).is_none());
 
-    // A confidential-client scheme yields none: its client_secret was consumed
-    // at create, so the exchange could never authenticate.
-    let confidential = create_mcp_oauth(
-        &h,
-        &vault_id,
-        url,
-        Some(json!({
-            "client_id": "cli_conf",
-            "refresh_token": "rt-secret-token", // awaken-allow: secret
-            "token_endpoint": "https://auth.example.com/token",
-            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs" } // awaken-allow: secret
-        })),
-    )
-    .await;
-    let confidential_id = confidential["id"].as_str().unwrap().to_string();
-    let confidential_source = h
-        .state
-        .credential_source_id(&vault_id, &confidential_id)
-        .unwrap();
-    assert!(
-        h.state
+    // A confidential-client scheme is exposed too: its client_secret was sealed
+    // at create, so the binding carries the sealed ref for the grant's client
+    // authentication (basic → the Basic header, post → the form field).
+    for auth_type in ["client_secret_basic", "client_secret_post"] {
+        let confidential = create_mcp_oauth(
+            &h,
+            &vault_id,
+            url,
+            Some(json!({
+                "client_id": "cli_conf",
+                "refresh_token": "rt-secret-token", // awaken-allow: secret
+                "token_endpoint": "https://auth.example.com/token",
+                "token_endpoint_auth": { "type": auth_type, "client_secret": "cs" } // awaken-allow: secret
+            })),
+        )
+        .await;
+        let confidential_id = confidential["id"].as_str().unwrap().to_string();
+        let confidential_source = h
+            .state
+            .credential_source_id(&vault_id, &confidential_id)
+            .unwrap();
+        let binding = h
+            .state
             .mcp_refresh_for_source(&confidential_source)
-            .is_none()
-    );
+            .expect("a confidential-client refresh is exposed");
+        assert_eq!(binding.client_id, "cli_conf");
+        // The auth binding carries the sealed client secret's ref — the
+        // deterministic `sec:client:{source_id}` shape, never material.
+        let secret_ref = SecretRef(format!("sec:client:{}", confidential_source.0));
+        let expected = match auth_type {
+            "client_secret_basic" => TokenEndpointAuthBinding::ClientSecretBasic { secret_ref },
+            _ => TokenEndpointAuthBinding::ClientSecretPost { secret_ref },
+        };
+        assert_eq!(binding.token_endpoint_auth, expected, "{auth_type}");
+    }
 
     // Env-var and static_bearer rows never carry a refresh configuration.
     let env_id = create_credential(&h, &vault_id, "K").await;
