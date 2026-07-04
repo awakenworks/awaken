@@ -486,5 +486,15 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
 #[cfg(feature = "connection")]
 pub mod net;
 
+/// Real Docker backend (bollard). Gated behind the `docker` feature; compile-verified
+/// here, running requires a Docker daemon.
+#[cfg(feature = "docker")]
+pub mod docker;
+
+/// Real Kubernetes backend (kube). Gated behind the `k8s` feature; compile-verified
+/// here, running requires a cluster.
+#[cfg(feature = "k8s")]
+pub mod k8s;
+
 #[cfg(test)]
 mod tests;

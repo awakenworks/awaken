@@ -15,11 +15,23 @@ thiserror.workspace = true
 # the default build stays dependency-light and daemon-free.
 awaken-connection = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", optional = true }
 tokio = { workspace = true, optional = true }
+# Real Docker backend (Docker Engine API via the SDK, not the CLI). Optional.
+bollard = { version = "0.18", optional = true }
+futures-util = { version = "0.3", optional = true }
+# Real Kubernetes backend (kube-apiserver via the SDK, not kubectl). Optional.
+kube = { version = "1", default-features = false, features = ["client", "rustls-tls"], optional = true }
+k8s-openapi = { version = "0.25", features = ["v1_30"], optional = true }
 
 [features]
 # Real remote transport (TCP dial + reverse-dial pairing) producing an AgentChannel.
 # Enable to build/test the network path; default off.
 connection = ["dep:awaken-connection", "dep:tokio", "tokio/net", "tokio/io-util"]
+# Real Docker ContainerRuntime (bollard). Dials the published agent port via the
+# `connection` transport. Compile-verified; running needs a Docker daemon.
+docker = ["dep:bollard", "dep:futures-util", "connection"]
+# Real Kubernetes ContainerRuntime (kube). Process-as-container Pod + native-GC.
+# Compile-verified; running needs a cluster.
+k8s = ["dep:kube", "dep:k8s-openapi", "connection"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net"] }
