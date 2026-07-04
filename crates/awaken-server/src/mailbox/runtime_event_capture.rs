@@ -128,8 +128,8 @@ impl Mailbox {
     ) -> Arc<dyn EventSink> {
         self.wrap_reconnectable_runtime_event_sink(
             inner,
-            &dispatch.thread_id(),
-            &dispatch.run_id(),
+            dispatch.thread_id(),
+            dispatch.run_id(),
             correlation_id,
             resumed,
             event_buffer,

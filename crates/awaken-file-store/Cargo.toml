@@ -1,0 +1,23 @@
+[package]
+name = "awaken-file-store"
+version.workspace = true
+edition.workspace = true
+description = "Async BLAKE3 content-addressable file store for Awaken sandboxes"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["artificial-intelligence", "filesystem"]
+
+[dependencies]
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util"] }
+blake3 = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

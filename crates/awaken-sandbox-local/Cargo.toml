@@ -1,0 +1,25 @@
+[package]
+name = "awaken-sandbox-local"
+version.workspace = true
+edition.workspace = true
+description = "Local and namespace sandbox providers for Awaken agent execution"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["artificial-intelligence", "filesystem"]
+
+[dependencies]
+awaken-file-store = { version = "0.6.1-dev", path = "../awaken-file-store" }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util"] }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

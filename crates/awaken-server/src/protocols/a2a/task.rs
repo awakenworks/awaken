@@ -95,7 +95,7 @@ pub(super) async fn cancel_task(
     let mut cancelled = false;
     for dispatch in queued_dispatches {
         cancelled |= mailbox
-            .cancel(&dispatch.dispatch_id())
+            .cancel(dispatch.dispatch_id())
             .await
             .map_err(|e| A2aError::Internal(e.to_string()))?;
     }

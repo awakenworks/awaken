@@ -352,49 +352,6 @@ impl PostgresStore {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn committed_seq_to_u64_rejects_negative_values() {
-        let error = committed_seq_to_u64(-1).expect_err("negative seq must fail");
-        assert!(matches!(error, StorageError::Serialization(_)));
-        assert!(error.to_string().contains("-1"));
-    }
-
-    #[test]
-    fn committed_message_decode_rejects_missing_message_id() {
-        let mut message = Message::user("missing id");
-        message.id = None;
-
-        let error = PostgresStore::decode_committed_message("thread-1", 1, message)
-            .expect_err("missing id must fail");
-
-        assert!(matches!(error, StorageError::Validation(_)));
-    }
-
-    #[test]
-    fn committed_message_records_must_be_continuous() {
-        let first = MessageRecord::from_message(
-            "thread-1",
-            1,
-            Message::user("one").with_id("msg-1".to_string()),
-        );
-        let third = MessageRecord::from_message(
-            "thread-1",
-            3,
-            Message::user("three").with_id("msg-3".to_string()),
-        );
-
-        let error = validate_committed_message_records("thread-1", &[first, third])
-            .expect_err("gap must fail");
-
-        assert!(matches!(error, StorageError::Serialization(_)));
-        assert!(error.to_string().contains("continuous"));
-    }
-}
-
 // ── ThreadStore ─────────────────────────────────────────────────────
 
 #[async_trait]
@@ -818,5 +775,48 @@ impl ThreadStore for PostgresStore {
         tx.commit()
             .await
             .map_err(|e| StorageError::Io(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn committed_seq_to_u64_rejects_negative_values() {
+        let error = committed_seq_to_u64(-1).expect_err("negative seq must fail");
+        assert!(matches!(error, StorageError::Serialization(_)));
+        assert!(error.to_string().contains("-1"));
+    }
+
+    #[test]
+    fn committed_message_decode_rejects_missing_message_id() {
+        let mut message = Message::user("missing id");
+        message.id = None;
+
+        let error = PostgresStore::decode_committed_message("thread-1", 1, message)
+            .expect_err("missing id must fail");
+
+        assert!(matches!(error, StorageError::Validation(_)));
+    }
+
+    #[test]
+    fn committed_message_records_must_be_continuous() {
+        let first = MessageRecord::from_message(
+            "thread-1",
+            1,
+            Message::user("one").with_id("msg-1".to_string()),
+        );
+        let third = MessageRecord::from_message(
+            "thread-1",
+            3,
+            Message::user("three").with_id("msg-3".to_string()),
+        );
+
+        let error = validate_committed_message_records("thread-1", &[first, third])
+            .expect_err("gap must fail");
+
+        assert!(matches!(error, StorageError::Serialization(_)));
+        assert!(error.to_string().contains("continuous"));
     }
 }
