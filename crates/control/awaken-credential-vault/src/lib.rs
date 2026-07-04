@@ -174,6 +174,8 @@ pub enum CredentialError {
     SecretNotFound(String),
     #[error("credential source `{0}` not found")]
     SourceNotFound(String),
+    #[error("credential pool `{0}` not found")]
+    PoolNotFound(String),
     #[error("binding resolves to no credential")]
     NoCredential,
     #[error("credential source `{0}` is not active")]
