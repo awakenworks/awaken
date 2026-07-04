@@ -19,6 +19,11 @@ awaken-store-sqlite = { workspace = true }
 awaken-store-fs = { workspace = true }
 awaken-config-store = { workspace = true }
 awaken-run-ingress = { workspace = true }
+# Management plane (ADR-0043): the composition root resolves a run's inference
+# (adapter_kind + base_url + already-resolved credential) and builds the host's
+# model executor from it — the runtime never sees the credential binding (D6/D9).
+awaken-config-resolver = { workspace = true }
+awaken-provider-genai = { workspace = true }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-agent-contract.workspace = true
@@ -38,7 +43,8 @@ axum = "0.7"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-# Real-model integration test only (gated, `--ignored`): drive an adapter over a
-# live Anthropic-compatible endpoint through the genai provider.
-awaken-provider-genai = { workspace = true }
+# Management-plane E2E: build a catalog + credential through the production APIs,
+# resolve, and drive a run through the resolved executor (gated live call).
+awaken-model-catalog = { workspace = true }
+awaken-credential-vault = { workspace = true }
 awaken-agent-contract = { workspace = true }

@@ -32,6 +32,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Phase};
+use awaken_config_resolver::ResolvedInference;
 use awaken_protocol_managed::dto::StopReason;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
@@ -40,6 +41,7 @@ use awaken_protocol_managed::{
 use awaken_protocol_transport::{
     DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume, StepOutcome,
 };
+use awaken_provider_genai::GenaiExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
@@ -689,6 +691,63 @@ fn mount(host: Arc<SharedHost>) -> Router {
         .merge(ag_ui)
         .merge(a2a)
         .merge(durable_ops)
+}
+
+/// The composition seam refuses to build an executor from an incomplete or
+/// unservable [`ResolvedInference`] (ADR-0043, fail-closed).
+#[derive(Debug, thiserror::Error)]
+pub enum ResolvedExecutorError {
+    #[error("resolved inference has no base_url for adapter `{0}`")]
+    MissingBaseUrl(&'static str),
+    #[error("resolved inference carries no credential (unauthenticated run refused)")]
+    MissingCredential,
+    #[error("no provider executor in this build serves adapter `{0}`")]
+    UnsupportedAdapter(String),
+}
+
+/// Build the run-loop's model executor from a management-plane [`ResolvedInference`]
+/// (ADR-0043). The resolver already produced the execution triple's adapter kind,
+/// endpoint base URL, and the *resolved* credential value; this composition seam is
+/// the only place that turns that into the concrete provider executor the host
+/// drives. The runtime never sees the credential binding — only the already-resolved
+/// [`RedactedString`](awaken_agent_contract::RedactedString) crosses in here (D6/D9),
+/// and it is exposed exactly once to construct the client. Fail-closed on a missing
+/// base URL/credential or an adapter this build cannot serve.
+pub fn executor_from_resolved(
+    inference: &ResolvedInference,
+) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
+    match inference.adapter_kind {
+        // The genai provider speaks the Anthropic Messages wire (native + the many
+        // Anthropic-compatible gateways). Its base URL and key come from the catalog
+        // endpoint and the resolved credential, never inlined by the Managed wire.
+        "anthropic" => {
+            let base_url = inference
+                .base_url
+                .clone()
+                .ok_or(ResolvedExecutorError::MissingBaseUrl("anthropic"))?;
+            let credential = inference
+                .credential
+                .as_ref()
+                .ok_or(ResolvedExecutorError::MissingCredential)?;
+            Ok(Arc::new(GenaiExecutor::anthropic_compatible(
+                base_url,
+                credential.expose_secret(),
+            )))
+        }
+        other => Err(ResolvedExecutorError::UnsupportedAdapter(other.to_string())),
+    }
+}
+
+/// Build the full server router for a resolved run: turn the [`ResolvedInference`]
+/// into the host's model executor and mount the protocol adapters over it. The
+/// router's model ref is the resolved triple's model id, so a run started here calls
+/// the exact model the management plane bound. This is the composition-root end of
+/// the config → resolve → run chain (ADR-0043).
+pub fn build_resolved_router(
+    inference: &ResolvedInference,
+) -> Result<Router, ResolvedExecutorError> {
+    let executor = executor_from_resolved(inference)?;
+    Ok(build_router(executor, inference.triple.model_id.clone()))
 }
 
 /// Build the server router backed by the kernel with the given model.
