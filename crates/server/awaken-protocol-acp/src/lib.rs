@@ -19,6 +19,11 @@ use awaken_provisioning_contract as pc;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+/// Official ACP codec projection (`real-acp` feature): the same ACL over the real
+/// `agent-client-protocol` `SessionUpdate`/`StopReason` types.
+#[cfg(feature = "real-acp")]
+pub mod real_acp;
+
 /// Why a turn ended — projected from the agent's terminal frame or the supervisor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
