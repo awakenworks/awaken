@@ -11,6 +11,8 @@
 
 #[cfg(feature = "postgres")]
 pub mod postgres;
+#[cfg(feature = "schema")]
+pub mod openapi;
 mod router;
 pub mod schema;
 #[cfg(feature = "sqlite")]
@@ -30,8 +32,9 @@ pub use awaken_config_resolver::{
     ResourceStore,
 };
 pub use router::{
-    AdminState, CredentialProbe, CredentialValidation, ProbeStatus, ResolveRequest,
-    ResolvedInferenceView, ResolvedMcpServerView, admin_router,
+    AdminState, CredentialProbe, CredentialValidation, EnterCredentialRequest, ProbeStatus,
+    ResolveAgentMcpRequest, ResolveProfileRequest, ResolveRequest, ResolvedInferenceView,
+    ResolvedMcpServerView, ValidateCredentialRequest, admin_router,
 };
 
 /// The API surface version this crate serves.

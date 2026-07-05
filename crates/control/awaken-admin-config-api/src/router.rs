@@ -369,6 +369,7 @@ fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
 /// A dry-run resolve request: bind `model_id` (+ credential `binding`) against the
 /// authored catalog. The workspace scopes which credential sources are visible.
 #[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ResolveRequest {
     workspace_id: String,
     model_id: String,
@@ -617,8 +618,10 @@ async fn get_profile(
         .ok_or_else(|| profile_missing(&id, &req_id(&headers)))
 }
 
+/// Resolve an authored profile within a workspace's credential scope.
 #[derive(serde::Deserialize)]
-struct ResolveProfileRequest {
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ResolveProfileRequest {
     workspace_id: String,
 }
 
@@ -774,8 +777,10 @@ fn agent_resource_missing(agent_id: &str, rid: &str) -> Problem {
     ))
 }
 
+/// Resolve an agent's MCP binding within a workspace's credential scope.
 #[derive(serde::Deserialize)]
-struct ResolveAgentMcpRequest {
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ResolveAgentMcpRequest {
     workspace_id: String,
 }
 
@@ -874,8 +879,10 @@ async fn archive_credential(
     Ok(Json(source))
 }
 
+/// Live-validate a credential against a model's resolved provider endpoint.
 #[derive(serde::Deserialize)]
-struct ValidateRequest {
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ValidateCredentialRequest {
     workspace_id: String,
     model_id: String,
 }
@@ -895,7 +902,7 @@ async fn validate_credential(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    Json(request): Json<ValidateRequest>,
+    Json(request): Json<ValidateCredentialRequest>,
 ) -> Result<Json<CredentialValidation>, Problem> {
     let rid = req_id(&headers);
     let catalog = state
@@ -939,7 +946,8 @@ async fn validate_credential(
 /// secret-free). `RedactedString` is intentionally not `Deserialize`, so the raw
 /// secret crosses the wire exactly once, here.
 #[derive(serde::Deserialize)]
-struct EnterCredentialRequest {
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct EnterCredentialRequest {
     workspace_id: String,
     kind: CredentialKind,
     #[serde(default)]

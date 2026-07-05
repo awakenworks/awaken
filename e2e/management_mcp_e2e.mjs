@@ -21,7 +21,7 @@ import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONTRACT = JSON.parse(
-  fs.readFileSync(path.join(REPO_ROOT, 'contracts', 'model-schemas.json'), 'utf8'),
+  fs.readFileSync(path.join(REPO_ROOT, 'contracts', 'model-schemas.generated.json'), 'utf8'),
 );
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 const validators = Object.fromEntries(
