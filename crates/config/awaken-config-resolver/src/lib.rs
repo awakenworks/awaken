@@ -318,8 +318,10 @@ pub fn resource_binding_prompt(binding: &ResourceBinding) -> String {
         ),
         ResourceKind::File => format!("A file is mounted {access} at `{path}`."),
         ResourceKind::MemoryStore => format!(
-            "A persistent memory store is mounted {access} at `{path}`; read it for \
-             prior context and write notes there to persist across sessions."
+            "A persistent memory store is mounted {access} as the single file `{path}`. \
+             Read that exact file for prior context. To remember something, write it \
+             back to that same file at `{path}` (overwrite it) — do not create any other \
+             file. Its contents persist across sessions."
         ),
         ResourceKind::GithubRepository => format!(
             "A git repository is checked out at `{path}` ({access}); use git there to \
