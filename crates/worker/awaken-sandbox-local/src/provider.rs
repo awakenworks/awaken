@@ -178,6 +178,17 @@ impl LocalProvider {
         req: &pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
         let host = root.resolve(&req.mount_path).map_err(err)?;
+        // A memory_store is a genuine keyed store (ADR-0038), not a byte blob. This
+        // Workdir provider has no memory backend wired, so realizing it would either
+        // silently produce an empty placeholder file (misleading the agent into
+        // thinking it has a store) or fake it. Fail loud instead — a real backend
+        // realizes it, not a File copy.
+        if matches!(req.source, pc::MountSource::MemoryStore { .. }) {
+            return Err(err(format!(
+                "mount {:?}: memory_store is not realizable on this provider (no memory backend wired)",
+                req.mount_id
+            )));
+        }
         let bytes = resolve_source(&req.source, &self.blobs, &self.file_store).await;
         match bytes {
             Some(bytes) => {
