@@ -240,3 +240,46 @@ async fn dispatch_routes_by_runtime_adapter() {
 
     assert_eq!(*hits.lock().unwrap(), vec!["native", "acp"]);
 }
+
+// ── R7: ACP mid-switch relaunches the CLI per turn ───────────────────────────
+
+#[tokio::test]
+async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingSource(Arc<AtomicUsize>);
+    #[async_trait]
+    impl AgentChannelSource for CountingSource {
+        async fn open(&self, _a: &RunActivation) -> std::result::Result<AgentSession, OpenError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let (ours, mut theirs) = tokio::io::duplex(4096);
+            tokio::spawn(async move {
+                let mut p = String::new();
+                let mut r = BufReader::new(&mut theirs);
+                let _ = r.read_line(&mut p).await;
+                let _ = theirs
+                    .write_all(b"{\"type\":\"turn_end\",\"reason\":\"natural_end\"}\n")
+                    .await;
+                let _ = theirs.flush().await;
+            });
+            Ok(AgentSession {
+                channel: Box::new(ours),
+                process: Arc::new(FakeProcess),
+            })
+        }
+    }
+
+    let opens = Arc::new(AtomicUsize::new(0));
+    let exec = AcpRunExecutor::new(Arc::new(CountingSource(opens.clone())));
+    assert_eq!(exec.model_switch(), ModelSwitch::Relaunch);
+
+    // Two turns → two launches: an ACP thread relaunches its CLI each turn, which
+    // is how a re-staged model takes effect (R7).
+    exec.execute(activation(), RuntimeRunContext::new())
+        .await
+        .unwrap();
+    exec.execute(activation(), RuntimeRunContext::new())
+        .await
+        .unwrap();
+    assert_eq!(opens.load(Ordering::SeqCst), 2);
+}
