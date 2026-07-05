@@ -187,6 +187,15 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
+    /// True when durable truth already exists for `thread`. Session-id minting
+    /// consults this to skip ids a previous process persisted; implementations
+    /// MUST answer without materializing any per-thread state (no context
+    /// build, no cache entry) — probing must be free of side effects. The
+    /// default reports nothing, so an ephemeral host mints densely from 0.
+    async fn owns_thread(&self, _thread: &str) -> bool {
+        false
+    }
+
     /// The committed transcript for `thread`, in commit order. Used to rehydrate a
     /// session whose in-memory record was lost (e.g. after a process restart) from
     /// durable truth: a non-empty result means the thread exists in the store. The
@@ -338,7 +347,18 @@ impl ManagedState {
         {
             return Err(StateError::VaultNotFound(unknown.clone()));
         }
-        let id = format!("sesn_{}", self.session_seq.fetch_add(1, Ordering::SeqCst));
+        // Mint an id no durable thread already owns: a fresh process restarts
+        // the sequence at 0, but the store dir may hold committed truth from a
+        // previous process (ADR-0039). Adopting such a thread would graft the
+        // old transcript onto a NEW session, so skip forward instead — the
+        // rehydration path (`ensure_session`) remains the only way to reattach
+        // to an existing thread, and it is keyed by the caller's explicit id.
+        let id = loop {
+            let candidate = format!("sesn_{}", self.session_seq.fetch_add(1, Ordering::SeqCst));
+            if !self.runtime.owns_thread(&candidate).await {
+                break candidate;
+            }
+        };
         let agent_id = req.agent.id().to_string();
         let bindings = req
             .mcp_servers

@@ -122,3 +122,29 @@ impl RunStore for HostCommit {
         }
     }
 }
+
+/// A filesystem-safe database filename stem for a thread id (durable store).
+pub(crate) fn sanitize_thread(thread: &str) -> String {
+    thread
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+/// True when the durable store under `store_dir` already holds `thread`,
+/// WITHOUT opening it: mirrors the commit-boundary layout exactly (fs backend
+/// keys a per-thread directory, default SQLite a per-thread db file; no store
+/// dir = nothing durable). Session-id minting probes through this so a
+/// candidate id is never materialized as a side effect (a prematurely built
+/// session context would lack the session's agent config and MCP tools).
+pub(crate) fn durable_thread_exists(store_dir: Option<&std::path::Path>, thread: &str) -> bool {
+    let Some(dir) = store_dir else {
+        return false;
+    };
+    let fs_backend = std::env::var("AWAKEN_STORE").is_ok_and(|value| value == "fs");
+    if fs_backend {
+        dir.join(sanitize_thread(thread)).exists()
+    } else {
+        dir.join(format!("{}.db", sanitize_thread(thread))).exists()
+    }
+}

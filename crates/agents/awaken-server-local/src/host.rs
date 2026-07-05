@@ -67,13 +67,7 @@ fn sub_base(kind: &str) -> PathBuf {
     std::env::temp_dir().join("awaken-server-local").join(name)
 }
 
-/// A filesystem-safe database filename stem for a thread id (durable store).
-pub(crate) fn sanitize_thread(thread: &str) -> String {
-    thread
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
-}
+pub(crate) use crate::store::sanitize_thread;
 
 /// Wall-clock milliseconds since the Unix epoch — the dispatch queue's lease and
 /// recovery clock (slice D). Falls back to `0` if the clock is before the epoch.
@@ -864,6 +858,13 @@ impl SharedHost {
     /// thread is hydrated from its store on demand — a fresh process reads a
     /// parked thread's committed transcript even before any session touches it
     /// (ADR-0039), enabling post-restart session rehydration.
+    /// True when the durable store already holds `thread` — WITHOUT building a
+    /// session context (the layout probe lives with the commit boundary in
+    /// [`crate::store`]).
+    pub fn has_durable_thread(&self, thread: &str) -> bool {
+        crate::store::durable_thread_exists(self.store_dir.as_deref(), thread)
+    }
+
     pub async fn committed_messages(&self, thread: &str) -> Vec<Message> {
         match self.ctx_for(thread, None).await {
             Ok(ctx) => ctx.commit.committed_messages(&ctx.thread_id),
