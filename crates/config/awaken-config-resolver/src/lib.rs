@@ -333,6 +333,20 @@ pub fn resource_binding_prompt(binding: &ResourceBinding) -> String {
     }
 }
 
+/// The ordered prompt fragments for an agent's bound resources — the bridge from the
+/// [`AgentResourceConfig`] aggregate to the config-store's `compile_with_resource_prompts`
+/// (which appends them to the agent's effective system prompt, ADR-0038 A3a). One
+/// fragment per binding, in binding order; empty when the agent binds no resources
+/// (so compilation stays byte-identical to an unbound agent).
+#[must_use]
+pub fn resource_prompts_for(config: &AgentResourceConfig) -> Vec<String> {
+    config
+        .resources
+        .iter()
+        .map(resource_binding_prompt)
+        .collect()
+}
+
 /// A management-plane project identifier. It doubles as the project's ingress
 /// address segment (`/projects/{id}/…` or a per-project domain label), so it is
 /// constrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.
@@ -499,6 +513,34 @@ mod tests {
             ))
             .contains("/mnt/skills/xlsx")
         );
+    }
+
+    #[test]
+    fn resource_prompts_for_maps_each_binding_in_order() {
+        // Empty bindings → empty fragments (unbound agent compiles byte-identically).
+        let empty = AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![],
+            version: 1,
+        };
+        assert!(resource_prompts_for(&empty).is_empty());
+
+        let cfg = AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![
+                binding(ResourceKind::File, "/w/a.csv", ResourceAccess::ReadOnly),
+                binding(
+                    ResourceKind::Outputs,
+                    "/mnt/session/outputs",
+                    ResourceAccess::ReadWrite,
+                ),
+            ],
+            version: 1,
+        };
+        let prompts = resource_prompts_for(&cfg);
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[0].contains("/w/a.csv"));
+        assert!(prompts[1].contains("/mnt/session/outputs"));
     }
     use awaken_model_catalog::{
         Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
