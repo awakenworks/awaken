@@ -12,8 +12,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use awaken_admin_config_api::ResourceStore;
 use awaken_config_store::{
-    AgentConfig, ConfigRegistry, RunnableConfig, StoredPublication, compile,
+    AgentConfig, ConfigRegistry, RunnableConfig, StoredPublication, compile_with_resource_prompts,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use axum::extract::{Path, State};
@@ -32,6 +33,10 @@ pub struct ConfigService {
     /// The installed catalog: agent id → compiled runnable config, hot-swapped on
     /// publish. A run resolves its agent here (awaken-next `set_registry_snapshot`).
     installed: Mutex<HashMap<String, RunnableConfig>>,
+    /// Per-agent resource bindings (ADR-0038). When wired, the agent's bound-resource
+    /// prompt fragments are appended to its effective system prompt at compile (A3a).
+    /// `None` → compilation is byte-identical to an unbound agent.
+    resources: Option<Arc<dyn ResourceStore>>,
 }
 
 impl ConfigService {
@@ -40,12 +45,32 @@ impl ConfigService {
             registry,
             tools,
             installed: Mutex::new(HashMap::new()),
+            resources: None,
         }
+    }
+
+    /// Wire the per-agent resource-binding store so compiled configs carry their
+    /// bound-resource prompts (ADR-0038 A3a). The same store instance is shared with
+    /// the admin router's `AdminState.resources`, so an authored binding is visible here.
+    #[must_use]
+    pub fn with_resources(mut self, resources: Arc<dyn ResourceStore>) -> Self {
+        self.resources = Some(resources);
+        self
+    }
+
+    /// The agent's bound-resource prompt fragments (ADR-0038 A3a). Empty when no
+    /// resource store is wired or the agent binds none, so compilation is unchanged.
+    fn resource_prompts(&self, agent_id: &str) -> Vec<String> {
+        self.resources
+            .as_ref()
+            .and_then(|store| store.get_agent_resource(agent_id))
+            .map(|cfg| awaken_config_resolver::resource_prompts_for(&cfg))
+            .unwrap_or_default()
     }
 
     /// Validate a config by compiling it (a dry run of publish); no store write.
     pub fn validate(&self, config: &AgentConfig) -> Result<(), String> {
-        compile(config, &self.tools)
+        compile_with_resource_prompts(config, &self.tools, &self.resource_prompts(&config.id))
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
@@ -67,7 +92,9 @@ impl ConfigService {
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("no config stored for agent `{id}`"))?;
-        let runnable = compile(&config, &self.tools).map_err(|e| e.to_string())?;
+        let runnable =
+            compile_with_resource_prompts(&config, &self.tools, &self.resource_prompts(id))
+                .map_err(|e| e.to_string())?;
         let publication = StoredPublication::published(runnable.clone(), id);
         self.registry
             .put_publication(&publication)
@@ -138,5 +165,73 @@ async fn publish(
             })),
         ),
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+    }
+}
+
+#[cfg(test)]
+mod resource_prompt_tests {
+    use super::*;
+    use awaken_config_resolver::{
+        AgentResourceConfig, ResourceAccess, ResourceBinding, ResourceKind,
+    };
+    use awaken_config_store::SqliteConfigStore;
+    use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding};
+
+    fn agent_config(id: &str) -> AgentConfig {
+        AgentConfig {
+            id: id.to_string(),
+            instructions: "be helpful".to_string(),
+            max_steps: 8,
+            model_binding: ModelBinding::new("p", "m", "b"),
+            tool_ids: vec![],
+            plugin_ids: vec![],
+            plugin_config: Default::default(),
+            context_policy: ContextPolicy::KeepAll,
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_injects_bound_resource_prompts_into_the_compiled_instructions() {
+        // Author a resource binding for agent-1 in the shared store (ADR-0038 A3a).
+        let resources = Arc::new(awaken_admin_config_api::InMemoryResourceStore::new());
+        resources.put_agent_resource(AgentResourceConfig {
+            agent_id: "agent-1".into(),
+            resources: vec![ResourceBinding {
+                kind: ResourceKind::MemoryStore,
+                resource_id: "memstore-7".into(),
+                mount_path: "/mnt/memory/prefs".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: Some("user preferences".into()),
+            }],
+            version: 1,
+        });
+
+        let registry = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let service = ConfigService::new(registry, vec![]).with_resources(resources);
+
+        service.put(&agent_config("agent-1")).await.unwrap();
+        service.publish("agent-1").await.unwrap();
+
+        // The compiled (installed) config's system prompt carries the base plus the
+        // bound memory store's fragment + its per-binding instructions.
+        let installed = service.installed("agent-1").unwrap();
+        let instructions = &installed.snapshot().resolved_spec.instructions;
+        assert!(instructions.starts_with("be helpful"));
+        assert!(instructions.contains("/mnt/memory/prefs"));
+        assert!(instructions.contains("user preferences"));
+    }
+
+    #[tokio::test]
+    async fn no_resource_store_compiles_byte_identically() {
+        // Without a wired resource store, instructions are the base verbatim.
+        let registry = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let service = ConfigService::new(registry, vec![]);
+        service.put(&agent_config("agent-2")).await.unwrap();
+        service.publish("agent-2").await.unwrap();
+        let installed = service.installed("agent-2").unwrap();
+        assert_eq!(
+            installed.snapshot().resolved_spec.instructions,
+            "be helpful"
+        );
     }
 }
