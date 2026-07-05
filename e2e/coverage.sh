@@ -13,9 +13,11 @@
 #   * overall      — every crate linked into the server binary.
 #   * e2e-surface  — the surface the HTTP e2e is designed to exercise (server,
 #                    protocols, config, runtime-core, ingress). Excludes runtime
-#                    EXTENSIONS (memory/compact/mcp/tool-pattern/…) and the
-#                    ACP/sandbox execution substrate, which are covered by their
-#                    own Rust unit/integration tests, not this HTTP e2e.
+#                    EXTENSIONS (memory/compact/mcp/tool-pattern/…), the ACP/sandbox
+#                    execution substrate, and the multi-backend content-addressed
+#                    store (awaken-file-store: the e2e only drives its in-memory
+#                    backend; Fs/Pg/S3 have their own Rust unit tests) — all covered
+#                    by their own Rust unit/integration tests, not this HTTP e2e.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -59,5 +61,5 @@ echo
 echo "[coverage] overall (all linked crates):"
 cargo llvm-cov report --summary-only 2>/dev/null | tail -1
 echo "[coverage] e2e-surface (server + protocols + config + runtime-core + ingress):"
-EXC='(awaken-ext-memory|awaken-ext-compact|awaken-ext-mcp|awaken-ext-goal|awaken-ext-skills|awaken-ext-state-machine|awaken-ext-builtin-tools|awaken-ext-permission|awaken-tool-pattern|awaken-mcp-wire|awaken-sandbox-local|awaken-provisioning-contract|awaken-agent-channel|awaken-store-fs|awaken-store-inmem|awaken-credential|awaken-store-schema)/'
+EXC='(awaken-ext-memory|awaken-ext-compact|awaken-ext-mcp|awaken-ext-goal|awaken-ext-skills|awaken-ext-state-machine|awaken-ext-builtin-tools|awaken-ext-permission|awaken-tool-pattern|awaken-mcp-wire|awaken-sandbox-local|awaken-provisioning-contract|awaken-agent-channel|awaken-store-fs|awaken-store-inmem|awaken-credential|awaken-store-schema|awaken-file-store)/'
 cargo llvm-cov report --summary-only --ignore-filename-regex "$EXC" 2>/dev/null | tail -1
