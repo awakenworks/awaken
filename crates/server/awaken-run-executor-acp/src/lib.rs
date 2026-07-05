@@ -58,10 +58,36 @@ pub trait AgentChannelSource: Send + Sync {
 #[error("agent channel open failed: {0}")]
 pub struct OpenError(pub String);
 
+/// How a backend handles a mid-conversation model switch (R7). Reported so the
+/// host can gate an override fail-closed against a backend that cannot honor it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSwitch {
+    /// Native: each turn resolves its own executor; switching is free (O(1)).
+    FreePerTurn,
+    /// ACP CLI: a live session is a process, so switching relaunches it with the
+    /// new env. Correct but not free — a fresh channel per turn.
+    Relaunch,
+    /// The backend cannot switch mid-conversation; a per-turn override must fail.
+    Unsupported,
+}
+
 /// Drives an external ACP agent as a [`RunExecutor`].
+///
+/// Each [`execute`](RunExecutor::execute) opens a fresh channel via the source, so
+/// an ACP thread relaunches its CLI every turn — which is exactly how a model
+/// switch takes effect (R7): the host re-stages the model, evicts the context, and
+/// the next turn's launch carries the new env. Reported as [`ModelSwitch::Relaunch`].
 pub struct AcpRunExecutor {
     source: Arc<dyn AgentChannelSource>,
     policy: SupervisePolicy,
+}
+
+impl AcpRunExecutor {
+    /// This backend's mid-switch capability (R7): an ACP CLI relaunches.
+    #[must_use]
+    pub fn model_switch(&self) -> ModelSwitch {
+        ModelSwitch::Relaunch
+    }
 }
 
 impl AcpRunExecutor {
