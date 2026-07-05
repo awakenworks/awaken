@@ -12,7 +12,7 @@ awaken-agent-channel.workspace = true
 awaken-protocol-acp.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "macros", "time"] }
+tokio = { workspace = true, features = ["sync", "macros", "time", "process", "io-util"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "time", "sync"] }

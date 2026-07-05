@@ -310,5 +310,8 @@ impl RunExecutor for DispatchRunExecutor {
     }
 }
 
+mod subprocess;
+pub use subprocess::{AcpLaunch, SubprocessChannelSource};
+
 #[cfg(test)]
 mod tests;
