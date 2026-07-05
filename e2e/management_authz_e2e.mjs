@@ -169,6 +169,21 @@ async function main() {
     assert.equal(r.status, 200, 'the successor token keeps working');
     pass('bootstrap token revoked over HTTP: old 401s, minted successor still passes');
 
+    // An expiring token: valid before its expiry, refused after (the expired
+    // arm of authentication — distinct from revocation).
+    const soon = new Date(Date.now() + 2000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    r = await req(base, 'POST', '/v1/config/iam/tokens', {
+      workspace_id: 'wrkspc_default', role: 'workspace_admin', expires_at: soon,
+    }, opToken);
+    assert.equal(r.status, 201, `short-lived mint: ${JSON.stringify(r.json)}`);
+    const shortLived = r.json.token;
+    r = await req(base, 'GET', '/v1/config/catalog', undefined, shortLived);
+    assert.equal(r.status, 200, 'short-lived token works before expiry');
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    r = await req(base, 'GET', '/v1/config/catalog', undefined, shortLived);
+    assert.equal(r.status, 401, 'expired token is refused');
+    pass('expiring token: 200 before expiry, 401 after');
+
     // ---- second restart: rotation and mint both persisted -----------------
     await stopServer(server);
     server = null;
@@ -182,7 +197,8 @@ async function main() {
     assert.ok(r.json.providers && r.json.providers.openai, 'new-token-authored provider persisted');
     pass('second restart: revocation + minted token persisted (iam.sqlite rows)');
 
-    console.log('management_authz_e2e: all checks passed');
+    
+console.log('management_authz_e2e: all checks passed');
   } finally {
     if (server) await stopServer(server);
     fs.rmSync(dir, { recursive: true, force: true });

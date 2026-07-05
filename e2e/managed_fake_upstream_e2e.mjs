@@ -63,6 +63,23 @@ async function main() {
         'turn 2 reply came from the wire',
       );
       pass('real mode over the fake upstream: multi-turn via GenaiExecutor on the wire');
+
+      // --- a tool round-trip through the wire: tool_use -> glob -> final text
+      const toolSession = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+      await client.beta.sessions.events.send(toolSession.id, {
+        betas: BETAS,
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'use-tool:glob' }] }],
+      });
+      const toolEvents = await listEvents(client, toolSession.id);
+      assert.ok(
+        toolEvents.some((e) => e.type === 'agent.tool_use' && e.name === 'glob'),
+        `the wire-driven tool call ran: ${JSON.stringify(toolEvents.map((e) => e.type))}`,
+      );
+      assert.ok(
+        toolEvents.some((e) => e.type === 'agent.tool_result'),
+        'the tool result went back through the wire',
+      );
+      pass('tool_use round-trip: upstream tool call -> glob -> tool_result -> final text');
     });
     assert.ok(upstream.requests.length >= 2, 'the upstream served the chat turns');
     assert.equal(upstream.unauthorized, 0, 'the key rode every chat request');
