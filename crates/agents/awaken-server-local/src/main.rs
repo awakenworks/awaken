@@ -33,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("vision") => awaken_server_local::build_vision_router(),
         Ok("model-route") => awaken_server_local::build_model_route_router(),
         Ok("acp") => awaken_server_local::build_acp_router(),
+        Ok("memory") => awaken_server_local::build_memory_router(),
         _ => awaken_server_local::build_echo_router(),
     };
     let listener = tokio::net::TcpListener::bind(&addr).await?;
