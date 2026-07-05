@@ -32,19 +32,24 @@ async fn list_files(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let data: Vec<_> = match q.get("scope_id").cloned() {
-        Some(session) => host
-            .session_artifacts(&session)
-            .await
-            .into_iter()
-            .map(|(id, path)| {
-                json!({
-                    "id": id,
-                    "type": "file",
-                    "filename": path,
-                    "downloadable": true,
+        Some(session) => {
+            // The session's reverse channel: harvest any read-write memory mounts back
+            // into their stores (ADR-0038 MemoryStore write-back) before listing the
+            // output artifacts, so a poll here also persists the session's memory edits.
+            host.harvest_thread_memory(&session).await;
+            host.session_artifacts(&session)
+                .await
+                .into_iter()
+                .map(|(id, path)| {
+                    json!({
+                        "id": id,
+                        "type": "file",
+                        "filename": path,
+                        "downloadable": true,
+                    })
                 })
-            })
-            .collect(),
+                .collect()
+        }
         None => Vec::new(),
     };
     Json(json!({ "data": data, "has_more": false }))

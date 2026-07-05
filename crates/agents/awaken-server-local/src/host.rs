@@ -305,6 +305,12 @@ pub struct SharedHost {
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. In-memory by default (one server process).
     pub(crate) file_store: Arc<dyn FileStore>,
+    /// Mutable, id-keyed memory stores (ADR-0038 MemoryStore family): unlike the
+    /// content-addressed `file_store`, a memory store keeps a stable id whose bytes a
+    /// session mounts read-write and the host harvests back after a turn. Persists
+    /// across sessions so memory written in one is visible in the next. In-memory by
+    /// default (one server process).
+    pub(crate) memory_stores: std::sync::Mutex<HashMap<String, Vec<u8>>>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch
@@ -352,6 +358,7 @@ impl SharedHost {
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
             thread_resources: std::sync::Mutex::new(HashMap::new()),
             file_store: Arc::new(InMemoryFileStore::new()),
+            memory_stores: std::sync::Mutex::new(HashMap::new()),
             gate_override: None,
             dispatch_daemon: std::env::var("AWAKEN_DISPATCH_DAEMON").is_ok_and(|v| v == "1"),
         }

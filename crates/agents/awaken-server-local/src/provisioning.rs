@@ -18,6 +18,10 @@ use crate::host::SharedHost;
 pub(crate) struct StagedResources {
     pub mounts: Vec<Mount>,
     pub prompts: Vec<String>,
+    /// The `(memory_store_id, logical_path)` of each read-write memory mount, so
+    /// `harvest_thread_memory` can read the realized file back into the store after a
+    /// turn (ADR-0038 MemoryStore write-back). Empty for file/repo mounts.
+    pub memory_mounts: Vec<(String, String)>,
 }
 
 impl SharedHost {
@@ -56,6 +60,63 @@ impl SharedHost {
     /// The content-addressed blob store (Files API, file-resource mounts, artifacts).
     pub fn file_store(&self) -> Arc<dyn FileStore> {
         self.file_store.clone()
+    }
+
+    /// Create a new, empty memory store and return its stable id (ADR-0038 MemoryStore).
+    /// Unlike a blob id, this id is mutable: a session mounts it read-write and the host
+    /// harvests the write back under the same id.
+    pub fn create_memory_store(&self) -> String {
+        let id = format!(
+            "memstore_{}",
+            crate::host::BASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        self.memory_stores
+            .lock()
+            .unwrap()
+            .insert(id.clone(), Vec::new());
+        id
+    }
+
+    /// The current bytes of a memory store; `None` if the id is unknown.
+    pub fn memory_get(&self, id: &str) -> Option<Vec<u8>> {
+        self.memory_stores.lock().unwrap().get(id).cloned()
+    }
+
+    /// Harvest a thread's read-write memory mounts back into their stores (ADR-0038):
+    /// read each realized `.mnt/<logical>` file and persist it under the store id, so a
+    /// memory write in this session is visible to the next one that mounts the same id.
+    /// The reverse channel behind memory persistence; a no-op for a thread with no
+    /// memory mounts or no live environment.
+    pub async fn harvest_thread_memory(&self, thread: &str) {
+        let (env, mounts) = {
+            let sessions = self.sessions.lock().await;
+            let env = sessions.get(thread).map(|ctx| ctx.env.clone());
+            let mounts = self
+                .thread_resources
+                .lock()
+                .unwrap()
+                .get(thread)
+                .map(|s| s.memory_mounts.clone())
+                .unwrap_or_default();
+            (env, mounts)
+        };
+        let Some(env) = env else {
+            return;
+        };
+        if mounts.is_empty() {
+            return;
+        }
+        // Realized memory mounts live under `.mnt/<logical>`; `list_files(".mnt")` keys
+        // each by its path relative to `.mnt/`, i.e. exactly the mount's logical path.
+        let realized = env.list_files(".mnt");
+        for (store_id, logical) in mounts {
+            if let Some((_, bytes)) = realized.iter().find(|(path, _)| *path == logical) {
+                self.memory_stores
+                    .lock()
+                    .unwrap()
+                    .insert(store_id, bytes.clone());
+            }
+        }
     }
 
     /// Collect a session's output artifacts (ADR-0038): the files the agent wrote
@@ -104,5 +165,36 @@ impl SharedHost {
     /// The delegate agent ids (advertised as the agent's `multiagent` roster).
     pub fn delegate_ids(&self) -> Vec<String> {
         self.delegates.iter().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod memory_store_tests {
+    use super::*;
+    use crate::host::SharedHost;
+    use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
+
+    struct NoLlm;
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
+        async fn infer(
+            &self,
+            _request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            unreachable!("the memory-store map never calls the model")
+        }
+    }
+
+    #[test]
+    fn create_mints_unique_ids_readable_via_get() {
+        let host = SharedHost::new(Arc::new(NoLlm), "test");
+        let a = host.create_memory_store();
+        let b = host.create_memory_store();
+        assert_ne!(a, b, "each memory store gets a distinct id");
+        // A freshly created store exists and is empty; an unknown id is absent — the
+        // distinction `prepare_session` relies on to reject a dangling memory binding.
+        assert_eq!(host.memory_get(&a), Some(Vec::new()));
+        assert_eq!(host.memory_get(&b), Some(Vec::new()));
+        assert_eq!(host.memory_get("memstore_does_not_exist"), None);
     }
 }
