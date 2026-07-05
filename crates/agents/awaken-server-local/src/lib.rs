@@ -607,6 +607,7 @@ struct ManagedMcp {
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     mcp_store: Arc<dyn awaken_admin_config_api::McpStore>,
+    projects: Arc<dyn awaken_admin_config_api::ProjectStore>,
 }
 
 impl ManagedHost {
@@ -624,11 +625,13 @@ impl ManagedHost {
         credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
         secrets: Arc<dyn awaken_credential_vault::SecretStore>,
         mcp_store: Arc<dyn awaken_admin_config_api::McpStore>,
+        projects: Arc<dyn awaken_admin_config_api::ProjectStore>,
     ) -> Self {
         self.mcp = Some(ManagedMcp {
             credentials,
             secrets,
             mcp_store,
+            projects,
         });
         self
     }
@@ -872,9 +875,29 @@ impl SessionRuntime for ManagedHost {
                 refresh,
             });
         }
-        if let Some(config) = mcp.mcp_store.get_agent_config(&init.agent_id) {
-            let mut defs = Vec::with_capacity(config.mcp_server_ids.len());
-            for server_id in &config.mcp_server_ids {
+        // Consumption-side selection: a session that arrived through
+        // `/projects/{id}` uses that project's agent binding when authored;
+        // otherwise (or on the bare surface) the workspace-level binding
+        // applies — so bare-path behavior is byte-identical to before
+        // projects existed, and two projects can give the same agent id
+        // different tool surfaces.
+        let authored = init
+            .project_id
+            .as_ref()
+            .and_then(|project| {
+                mcp.projects
+                    .get_project_agent(project, &init.agent_id)
+                    .map(|c| c.mcp_server_ids)
+            })
+            .or_else(|| {
+                mcp.mcp_store
+                    .get_agent_config(&init.agent_id)
+                    .map(|c| c.mcp_server_ids)
+            });
+        if let Some(mcp_server_ids) = authored {
+            let config_ids = mcp_server_ids;
+            let mut defs = Vec::with_capacity(config_ids.len());
+            for server_id in &config_ids {
                 defs.push(mcp.mcp_store.get_server(&server_id.0).ok_or_else(|| {
                     RunError::internal(format!(
                         "agent `{}` references unknown mcp server `{}`",
@@ -1453,6 +1476,7 @@ struct ManagementStores {
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>,
     mcp: Arc<dyn awaken_admin_config_api::McpStore>,
+    projects: Arc<dyn awaken_admin_config_api::ProjectStore>,
 }
 
 /// Ephemeral management stores: everything in process memory (dev / e2e default).
@@ -1463,6 +1487,7 @@ fn in_memory_management_stores() -> ManagementStores {
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
+        projects: Arc::new(awaken_admin_config_api::InMemoryProjectStore::new()),
     }
 }
 
@@ -1506,7 +1531,8 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
             Arc::new(blobs),
         )),
         profiles: admin.clone(),
-        mcp: admin,
+        mcp: admin.clone(),
+        projects: admin,
     }
 }
 
@@ -1633,6 +1659,7 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         secrets,
         profiles,
         mcp: mcp_store,
+        projects,
     } = stores;
     // ONE MCP store across the admin router and the ManagedHost, and ONE
     // credential repo + secret store across admin, vaults, and sessions: a
@@ -1644,6 +1671,7 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         secrets: secrets.clone(),
         profiles,
         mcp: mcp_store.clone(),
+        projects: projects.clone(),
         // The live credential probe is backed by provider-genai here — the only
         // place the model SDK is named; the admin CRUD crate stays SDK-free.
         probe: Some(Arc::new(GenaiProbe)),
@@ -1677,10 +1705,82 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // non-`add` turns still echo, preserving the prior expectations.
     let host = Arc::new(SharedHost::new(Arc::new(McpToolModel), "management"));
     let managed_state = Arc::new(
-        ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
-            .with_vaults(vault_state),
+        ManagedState::new(ManagedHost::new(host.clone()).with_mcp(
+            credentials,
+            secrets,
+            mcp_store,
+            projects.clone(),
+        ))
+        .with_vaults(vault_state),
     );
-    mount_with_managed(host, managed_state).merge(mgmt)
+    // The project ingress (ADR-0042 amendment): the SAME session surface
+    // reachable under `/projects/{id}` — the stock SDK reaches it by baseURL
+    // alone, no wire change. Implemented as a prefix-stripping proxy rather
+    // than `nest` so the inner handlers' `Path<…>` extractors see exactly the
+    // params they declare (a nest path param would leak into every route).
+    // The proxy 404s an unauthored project and stamps the ProjectScope
+    // extension `create_session` consumes.
+    let project_sessions = Router::new().route(
+        "/projects/:project_id/*rest",
+        axum::routing::any(project_ingress).with_state((
+            projects,
+            awaken_protocol_managed::router(managed_state.clone()),
+        )),
+    );
+    mount_with_managed(host, managed_state)
+        .merge(mgmt)
+        .merge(project_sessions)
+}
+
+/// Resolve the `/projects/{id}` ingress segment against the authored projects:
+/// 404 (managed envelope) when unauthored; otherwise strip the prefix, stamp
+/// [`awaken_protocol_managed::ProjectScope`] into the request extensions, and
+/// forward to the shared session router — the same handlers as the bare
+/// surface, so wire behavior is identical. The segment is ADDRESSING only —
+/// authority still flows from the API key (ADR-0042 amendment); the sessions
+/// surface keeps its own authz axis (P1 does not gate it).
+async fn project_ingress(
+    axum::extract::State((projects, sessions)): axum::extract::State<(
+        Arc<dyn awaken_admin_config_api::ProjectStore>,
+        Router,
+    )>,
+    axum::extract::Path((project_id, rest)): axum::extract::Path<(String, String)>,
+    mut request: axum::extract::Request,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    use tower::ServiceExt;
+    if projects.get_project(&project_id).is_none() {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(awaken_protocol_managed::dto::ErrorResponse::new(
+                "not_found_error",
+                format!("project `{project_id}` not found"),
+            )),
+        )
+            .into_response();
+    }
+    // Rebuild the request against the bare path the inner router serves (keep
+    // method/headers/body/query, drop the OUTER router's routing extensions —
+    // stale `UrlParams` would otherwise stack onto the inner match and break
+    // the inner handlers' `Path<…>` extractors).
+    let stripped = match request.uri().query() {
+        Some(query) => format!("/{rest}?{query}"),
+        None => format!("/{rest}"),
+    };
+    let (parts, body) = request.into_parts();
+    let mut forwarded = axum::extract::Request::builder()
+        .method(parts.method)
+        .uri(stripped)
+        .body(body)
+        .expect("a stripped project path re-parses as a URI");
+    *forwarded.headers_mut() = parts.headers;
+    forwarded
+        .extensions_mut()
+        .insert(awaken_protocol_managed::ProjectScope(project_id));
+    match sessions.oneshot(forwarded).await {
+        Ok(response) => response,
+        Err(err) => match err {},
+    }
 }
 
 /// A tool gate that defers every tool call as a committed `ScheduledAction`
