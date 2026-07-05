@@ -270,6 +270,124 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::execution
 pub trait awaken_runtime_contract::execution::RunExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::execution::RunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::Phase>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub type awaken_runtime_contract::execution::Result<T> = core::result::Result<T, awaken_runtime_contract::execution::Error>
+pub mod awaken_runtime_contract::live_inbox
+pub enum awaken_runtime_contract::live_inbox::EditError
+pub awaken_runtime_contract::live_inbox::EditError::Closed
+pub awaken_runtime_contract::live_inbox::EditError::StaleOrder
+pub awaken_runtime_contract::live_inbox::EditError::UnknownMessage
+impl core::cmp::Eq for awaken_runtime_contract::live_inbox::EditError
+impl core::cmp::PartialEq for awaken_runtime_contract::live_inbox::EditError
+pub fn awaken_runtime_contract::live_inbox::EditError::eq(&self, &awaken_runtime_contract::live_inbox::EditError) -> bool
+impl core::error::Error for awaken_runtime_contract::live_inbox::EditError
+impl core::fmt::Debug for awaken_runtime_contract::live_inbox::EditError
+pub fn awaken_runtime_contract::live_inbox::EditError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for awaken_runtime_contract::live_inbox::EditError
+pub fn awaken_runtime_contract::live_inbox::EditError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::live_inbox::EditError
+impl core::marker::Freeze for awaken_runtime_contract::live_inbox::EditError
+impl core::marker::Send for awaken_runtime_contract::live_inbox::EditError
+impl core::marker::Sync for awaken_runtime_contract::live_inbox::EditError
+impl core::marker::Unpin for awaken_runtime_contract::live_inbox::EditError
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::EditError
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::EditError
+pub enum awaken_runtime_contract::live_inbox::Offer
+pub awaken_runtime_contract::live_inbox::Offer::Accepted(awaken_runtime_contract::live_inbox::LiveInboxMessageId)
+pub awaken_runtime_contract::live_inbox::Offer::Closed
+impl core::clone::Clone for awaken_runtime_contract::live_inbox::Offer
+pub fn awaken_runtime_contract::live_inbox::Offer::clone(&self) -> awaken_runtime_contract::live_inbox::Offer
+impl core::cmp::Eq for awaken_runtime_contract::live_inbox::Offer
+impl core::cmp::PartialEq for awaken_runtime_contract::live_inbox::Offer
+pub fn awaken_runtime_contract::live_inbox::Offer::eq(&self, &awaken_runtime_contract::live_inbox::Offer) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::live_inbox::Offer
+pub fn awaken_runtime_contract::live_inbox::Offer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_runtime_contract::live_inbox::Offer
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::live_inbox::Offer
+impl core::marker::Freeze for awaken_runtime_contract::live_inbox::Offer
+impl core::marker::Send for awaken_runtime_contract::live_inbox::Offer
+impl core::marker::Sync for awaken_runtime_contract::live_inbox::Offer
+impl core::marker::Unpin for awaken_runtime_contract::live_inbox::Offer
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::Offer
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::Offer
+pub enum awaken_runtime_contract::live_inbox::WaitOutcome
+pub awaken_runtime_contract::live_inbox::WaitOutcome::Cancelled
+pub awaken_runtime_contract::live_inbox::WaitOutcome::Changed(u64)
+impl core::clone::Clone for awaken_runtime_contract::live_inbox::WaitOutcome
+pub fn awaken_runtime_contract::live_inbox::WaitOutcome::clone(&self) -> awaken_runtime_contract::live_inbox::WaitOutcome
+impl core::cmp::Eq for awaken_runtime_contract::live_inbox::WaitOutcome
+impl core::cmp::PartialEq for awaken_runtime_contract::live_inbox::WaitOutcome
+pub fn awaken_runtime_contract::live_inbox::WaitOutcome::eq(&self, &awaken_runtime_contract::live_inbox::WaitOutcome) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::live_inbox::WaitOutcome
+pub fn awaken_runtime_contract::live_inbox::WaitOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for awaken_runtime_contract::live_inbox::WaitOutcome
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::live_inbox::WaitOutcome
+impl core::marker::Freeze for awaken_runtime_contract::live_inbox::WaitOutcome
+impl core::marker::Send for awaken_runtime_contract::live_inbox::WaitOutcome
+impl core::marker::Sync for awaken_runtime_contract::live_inbox::WaitOutcome
+impl core::marker::Unpin for awaken_runtime_contract::live_inbox::WaitOutcome
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::WaitOutcome
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::WaitOutcome
+pub struct awaken_runtime_contract::live_inbox::LiveInbox
+impl awaken_runtime_contract::live_inbox::LiveInbox
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::close(&self) -> alloc::vec::Vec<awaken_runtime_contract::live_inbox::LiveInboxMessage>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::drain_at_boundary(&self) -> alloc::vec::Vec<awaken_runtime_contract::live_inbox::LiveInboxMessage>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::is_closed(&self) -> bool
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::list(&self) -> alloc::vec::Vec<awaken_runtime_contract::live_inbox::LiveInboxMessage>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::new() -> Self
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::offer(&self, awaken_agent_contract::agent::message::Message) -> awaken_runtime_contract::live_inbox::Offer
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::remove(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId) -> core::result::Result<awaken_agent_contract::agent::message::Message, awaken_runtime_contract::live_inbox::EditError>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::reorder(&self, &[awaken_runtime_contract::live_inbox::LiveInboxMessageId]) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::replace(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId, awaken_agent_contract::agent::message::Message) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::version(&self) -> u64
+pub async fn awaken_runtime_contract::live_inbox::LiveInbox::wait_for_change(&self, u64, &tokio_util::sync::cancellation_token::CancellationToken) -> awaken_runtime_contract::live_inbox::WaitOutcome
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::wake(&self)
+impl core::clone::Clone for awaken_runtime_contract::live_inbox::LiveInbox
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::clone(&self) -> awaken_runtime_contract::live_inbox::LiveInbox
+impl core::default::Default for awaken_runtime_contract::live_inbox::LiveInbox
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::default() -> awaken_runtime_contract::live_inbox::LiveInbox
+impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInbox
+pub struct awaken_runtime_contract::live_inbox::LiveInboxMessage
+pub awaken_runtime_contract::live_inbox::LiveInboxMessage::id: awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub awaken_runtime_contract::live_inbox::LiveInboxMessage::message: awaken_agent_contract::agent::message::Message
+impl core::clone::Clone for awaken_runtime_contract::live_inbox::LiveInboxMessage
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessage::clone(&self) -> awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::cmp::PartialEq for awaken_runtime_contract::live_inbox::LiveInboxMessage
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessage::eq(&self, &awaken_runtime_contract::live_inbox::LiveInboxMessage) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::live_inbox::LiveInboxMessage
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessage
+pub struct awaken_runtime_contract::live_inbox::LiveInboxMessageId(pub u64)
+impl core::clone::Clone for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::clone(&self) -> awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::cmp::Eq for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::cmp::PartialEq for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::eq(&self, &awaken_runtime_contract::live_inbox::LiveInboxMessageId) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl serde_core::ser::Serialize for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 pub mod awaken_runtime_contract::llm
 pub enum awaken_runtime_contract::llm::ChatRole
 pub awaken_runtime_contract::llm::ChatRole::Assistant
@@ -1228,6 +1346,7 @@ pub mod awaken_runtime_contract::runtime_context
 pub struct awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
@@ -1235,6 +1354,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_cancelled
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new() -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation(self, tokio_util::sync::cancellation_token::CancellationToken) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::runtime_context::RuntimeRunContext
@@ -1728,6 +1848,68 @@ impl core::marker::Sync for awaken_runtime_contract::snapshot::ExecutableAgentSn
 impl core::marker::Unpin for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
+pub struct awaken_runtime_contract::LiveInbox
+impl awaken_runtime_contract::live_inbox::LiveInbox
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::close(&self) -> alloc::vec::Vec<awaken_runtime_contract::live_inbox::LiveInboxMessage>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::drain_at_boundary(&self) -> alloc::vec::Vec<awaken_runtime_contract::live_inbox::LiveInboxMessage>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::is_closed(&self) -> bool
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::list(&self) -> alloc::vec::Vec<awaken_runtime_contract::live_inbox::LiveInboxMessage>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::new() -> Self
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::offer(&self, awaken_agent_contract::agent::message::Message) -> awaken_runtime_contract::live_inbox::Offer
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::remove(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId) -> core::result::Result<awaken_agent_contract::agent::message::Message, awaken_runtime_contract::live_inbox::EditError>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::reorder(&self, &[awaken_runtime_contract::live_inbox::LiveInboxMessageId]) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::replace(&self, awaken_runtime_contract::live_inbox::LiveInboxMessageId, awaken_agent_contract::agent::message::Message) -> core::result::Result<(), awaken_runtime_contract::live_inbox::EditError>
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::version(&self) -> u64
+pub async fn awaken_runtime_contract::live_inbox::LiveInbox::wait_for_change(&self, u64, &tokio_util::sync::cancellation_token::CancellationToken) -> awaken_runtime_contract::live_inbox::WaitOutcome
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::wake(&self)
+impl core::clone::Clone for awaken_runtime_contract::live_inbox::LiveInbox
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::clone(&self) -> awaken_runtime_contract::live_inbox::LiveInbox
+impl core::default::Default for awaken_runtime_contract::live_inbox::LiveInbox
+pub fn awaken_runtime_contract::live_inbox::LiveInbox::default() -> awaken_runtime_contract::live_inbox::LiveInbox
+impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInbox
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInbox
+pub struct awaken_runtime_contract::LiveInboxMessage
+pub awaken_runtime_contract::LiveInboxMessage::id: awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub awaken_runtime_contract::LiveInboxMessage::message: awaken_agent_contract::agent::message::Message
+impl core::clone::Clone for awaken_runtime_contract::live_inbox::LiveInboxMessage
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessage::clone(&self) -> awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::cmp::PartialEq for awaken_runtime_contract::live_inbox::LiveInboxMessage
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessage::eq(&self, &awaken_runtime_contract::live_inbox::LiveInboxMessage) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::live_inbox::LiveInboxMessage
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessage
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessage
+pub struct awaken_runtime_contract::LiveInboxMessageId(pub u64)
+impl core::clone::Clone for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::clone(&self) -> awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::cmp::Eq for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::cmp::PartialEq for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::eq(&self, &awaken_runtime_contract::live_inbox::LiveInboxMessageId) -> bool
+impl core::fmt::Debug for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::marker::StructuralPartialEq for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl serde_core::ser::Serialize for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+pub fn awaken_runtime_contract::live_inbox::LiveInboxMessageId::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::marker::Send for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::marker::Sync for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::marker::Unpin for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::panic::unwind_safe::RefUnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessageId
+impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::live_inbox::LiveInboxMessageId
 pub struct awaken_runtime_contract::ModelBinding
 pub awaken_runtime_contract::ModelBinding::backend_ref: alloc::string::String
 pub awaken_runtime_contract::ModelBinding::model_ref: alloc::string::String
@@ -1958,6 +2140,7 @@ impl core::panic::unwind_safe::UnwindSafe for awaken_runtime_contract::catalog::
 pub struct awaken_runtime_contract::RuntimeRunContext
 pub awaken_runtime_contract::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>>
+pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
@@ -1965,6 +2148,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::is_cancelled
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::new() -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_cancellation(self, tokio_util::sync::cancellation_token::CancellationToken) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::commit::coordinator::Coordinator>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::store::thread_reader::ThreadReader>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 impl core::clone::Clone for awaken_runtime_contract::runtime_context::RuntimeRunContext
