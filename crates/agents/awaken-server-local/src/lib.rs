@@ -122,6 +122,7 @@ impl LlmExecutor for LabelModel {
         Ok(ChatResponse {
             output: AssistantOutput::text(format!("model={}: {user}", self.0)),
             usage: None,
+            stop_reason: None,
         })
     }
 }
