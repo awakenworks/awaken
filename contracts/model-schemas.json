@@ -625,6 +625,79 @@
       "title": "Offering",
       "type": "object"
     },
+    "Project": {
+      "$defs": {
+        "ProjectId": {
+          "description": "A management-plane project identifier. It doubles as the project's ingress\naddress segment (`/projects/{id}/…` or a per-project domain label), so it is\nconstrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.",
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A consumption-side project under a workspace (ADR-0042 amendment: the URL\ncarries the project as ADDRESSING only — tenancy and authority still flow\nfrom the API key's workspace). Supply (catalog, credentials, pools, MCP\ndefs) stays workspace-owned; a project only *selects* from it, so no secret\nis ever duplicated per project.",
+      "properties": {
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "version": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "workspace_id",
+        "display_name",
+        "version"
+      ],
+      "title": "Project",
+      "type": "object"
+    },
+    "ProjectAgentConfig": {
+      "$defs": {
+        "McpServerId": {
+          "description": "A management-plane MCP server identifier.",
+          "type": "string"
+        },
+        "ProjectId": {
+          "description": "A management-plane project identifier. It doubles as the project's ingress\naddress segment (`/projects/{id}/…` or a per-project domain label), so it is\nconstrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.",
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Which MCP servers an agent uses *within one project* — the project-scoped\nconsumption binding. Shape mirrors [`AgentMcpConfig`] (the workspace-level\ndefault); a session created through `/projects/{id}/…` consults this first\nand falls back to the workspace binding when absent, so bare-path behavior\nis byte-identical to before projects existed.",
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "mcp_server_ids": {
+          "items": {
+            "$ref": "#/$defs/McpServerId"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "version": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "agent_id",
+        "mcp_server_ids",
+        "version"
+      ],
+      "title": "ProjectAgentConfig",
+      "type": "object"
+    },
     "ProtocolEndpoint": {
       "$defs": {
         "ModelApiCompat": {
