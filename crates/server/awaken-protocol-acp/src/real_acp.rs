@@ -47,6 +47,27 @@ pub fn termination_from_stop_reason(reason: StopReason) -> TerminationReason {
     }
 }
 
+/// Reduce an official `agent-client-protocol` transport error to the neutral
+/// [`RawAcpError`](crate::RawAcpError) the classifier consumes: the rendered
+/// message, plus the structured `errorKind`/`error_kind` and JSON-RPC code when
+/// present. So [`classify_error`](crate::classify_error) works identically over
+/// the real codec and the newline-JSON stand-in.
+#[must_use]
+pub fn raw_error_from_acp(err: &agent_client_protocol::Error) -> crate::RawAcpError {
+    let kind = err.data.as_ref().and_then(|data| {
+        data.get("errorKind")
+            .or_else(|| data.get("error_kind"))
+            .and_then(|k| k.as_str())
+            .map(str::to_string)
+    });
+    crate::RawAcpError {
+        message: err.message.clone(),
+        kind,
+        code: Some(i32::from(err.code)),
+        retry_after_secs: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
