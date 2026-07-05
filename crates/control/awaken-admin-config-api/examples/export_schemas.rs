@@ -60,6 +60,11 @@ fn main() {
     add!("McpServerId", awaken_config_resolver::McpServerId);
     add!("McpServerDef", awaken_config_resolver::McpServerDef);
     add!("AgentMcpConfig", awaken_config_resolver::AgentMcpConfig);
+    add!("Project", awaken_config_resolver::Project);
+    add!(
+        "ProjectAgentConfig",
+        awaken_config_resolver::ProjectAgentConfig
+    );
 
     // Resolver output (the admin `inference/resolve` dry-run result, secret-free).
     add!(

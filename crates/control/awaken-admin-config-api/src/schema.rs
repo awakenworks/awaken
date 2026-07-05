@@ -11,7 +11,7 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 /// Namespaced bundle id — the split/merge unit for the admin-config domain.
 pub const BUNDLE_ID: &str = "awaken.admin";
 
-const SPECS: [(i64, &str, &str); 3] = [
+const SPECS: [(i64, &str, &str); 5] = [
     (
         1,
         "inference profiles: authored admin-plane aggregates, one JSON row per id",
@@ -35,6 +35,25 @@ const SPECS: [(i64, &str, &str); 3] = [
             agent_id TEXT PRIMARY KEY, \
             data {json} NOT NULL, \
             created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
+    (
+        4,
+        "projects: consumption-side project rows under a workspace (addressing + binding scope)",
+        "CREATE TABLE {prefix}_project (\
+            id TEXT PRIMARY KEY, \
+            workspace_id TEXT NOT NULL, \
+            data {json} NOT NULL, \
+            created_at {timestamptz} NOT NULL DEFAULT {now})",
+    ),
+    (
+        5,
+        "project agent mcp bindings: which MCP servers an agent uses within one project",
+        "CREATE TABLE {prefix}_project_agent_mcp (\
+            project_id TEXT NOT NULL, \
+            agent_id TEXT NOT NULL, \
+            data {json} NOT NULL, \
+            created_at {timestamptz} NOT NULL DEFAULT {now}, \
+            PRIMARY KEY (project_id, agent_id))",
     ),
 ];
 

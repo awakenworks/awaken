@@ -38,6 +38,7 @@ fn harness() -> Harness {
         secrets: secrets.clone(),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
+        projects: Arc::new(awaken_admin_config_api::InMemoryProjectStore::new()),
         probe: None,
     });
     Harness {
