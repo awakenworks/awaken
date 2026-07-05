@@ -38,7 +38,13 @@ cd "$(dirname "$0")/../.."
 # (2) Alternate-backend / reference / real-provider modules inside LINKED crates,
 #     unreachable from a deterministic e2e by design:
 #       run-ingress/memory.rs   in-memory reference impl (the server uses SQLite).
-#       ext-mcp/stdio.rs        the server wires the HTTP MCP transport only.
+#       ext-mcp/{stdio,plugin,sensitive}.rs + mcp-wire/jsonrpc.rs  the MCP
+#                      transport machinery the served path does not execute: the
+#                      host drives the HTTP client's request path via
+#                      `connect_tools`, not the stdio transport, the McpPlugin
+#                      composition API, the sensitive-field marking (a plugin
+#                      concern), or the JSON-RPC peer (stdio + sampling). All are
+#                      covered by ext-mcp's own unit tests.
 #       sandbox-local/{namespace,provider}.rs  the ADR-0041 provisioning-contract
 #                      tiers; the served host uses the pre-contract
 #                      LocalSandboxProvider, so neither is reached (verified).
@@ -46,7 +52,7 @@ cd "$(dirname "$0")/../.."
 #                      only fires on a REAL CLI's output; the fake CLI cannot
 #                      inject provider text, so it is unit-tested, not e2e.
 # Revisit an exclusion when its wiring changes.
-IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-file-store)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/stdio\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/error\.rs'
+IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-file-store)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/error\.rs'
 
 eval "$(cargo llvm-cov show-env --export-prefix)"
 export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"
