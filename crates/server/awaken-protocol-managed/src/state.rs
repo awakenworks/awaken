@@ -171,6 +171,14 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
+    /// Rebind `thread` to `model` for its subsequent turns (R5, per-turn override).
+    /// The default is a no-op, so a host without per-thread model routing is
+    /// unaffected; the server impl re-stages the thread's model and evicts the
+    /// cached context so the next turn resolves the new executor.
+    async fn rebind_model(&self, _thread: &str, _model: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+
     /// The committed transcript for `thread`, in commit order. Used to rehydrate a
     /// session whose in-memory record was lost (e.g. after a process restart) from
     /// durable truth: a non-empty result means the thread exists in the store. The
@@ -366,7 +374,13 @@ impl ManagedState {
                 id: agent_id.clone(),
                 kind: "agent",
                 version: 1,
-                model: self.runtime.model(),
+                // R6: echo the session's actual model — the requested override, else
+                // the host default — so the client sees which model the session runs.
+                model: req
+                    .agent
+                    .model()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.runtime.model()),
                 name: agent_id.clone(),
                 tools: project::agent_tools(&caps),
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
@@ -582,7 +596,11 @@ impl ManagedState {
             });
 
             match inbound {
-                InboundEvent::UserMessage { content, .. } => {
+                InboundEvent::UserMessage { content, model, .. } => {
+                    // R5: a per-turn model override rebinds the thread before the turn.
+                    if let Some(model) = model {
+                        self.runtime.rebind_model(session_id, model).await?;
+                    }
                     let outcome = self
                         .runtime
                         .run_turn(&agent_id, session_id, content.clone())

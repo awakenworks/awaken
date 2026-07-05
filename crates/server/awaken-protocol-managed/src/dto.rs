@@ -170,6 +170,10 @@ pub enum InboundEvent {
         content: Vec<ContentBlock>,
         #[serde(default)]
         session_thread_id: Option<String>,
+        /// Per-turn model override (R5): switches the thread to `model` for this
+        /// turn onward. Absent → keep the session's current model.
+        #[serde(default)]
+        model: Option<String>,
     },
     #[serde(rename = "system.message")]
     SystemMessage { content: Vec<ContentBlock> },
@@ -357,5 +361,26 @@ mod tests {
         let req: CreateSessionRequest =
             serde_json::from_str(r#"{"agent":{"id":"a","model":"m2"}}"#).unwrap();
         assert_eq!(req.agent.model(), Some("m2"));
+    }
+
+    #[test]
+    fn user_message_carries_a_per_turn_model_override() {
+        let with: InboundEvent = serde_json::from_str(
+            r#"{"type":"user.message","content":[{"type":"text","text":"hi"}],"model":"fast"}"#,
+        )
+        .unwrap();
+        match with {
+            InboundEvent::UserMessage { model, .. } => assert_eq!(model.as_deref(), Some("fast")),
+            _ => panic!("expected user.message"),
+        }
+        // Absent → None (backward compatible).
+        let without: InboundEvent = serde_json::from_str(
+            r#"{"type":"user.message","content":[{"type":"text","text":"hi"}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            without,
+            InboundEvent::UserMessage { model: None, .. }
+        ));
     }
 }
