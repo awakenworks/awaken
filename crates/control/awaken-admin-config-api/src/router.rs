@@ -154,9 +154,6 @@ pub enum ProbeStatus {
     Unknown,
 }
 
-/// A port that live-probes a resolved credential against its provider endpoint. The
-/// implementation (server-local, backed by provider-genai) is the only place the
-
 /// A store for authored [`Project`]s (by project id) and per-(project, agent)
 /// [`ProjectAgentConfig`] consumption bindings — the project aggregates.
 /// Sync + in-memory by default; a durable backend can implement the same port.
@@ -218,6 +215,8 @@ impl ProjectStore for InMemoryProjectStore {
     }
 }
 
+/// A port that live-probes a resolved credential against its provider endpoint. The
+/// implementation (server-local, backed by provider-genai) is the only place the
 /// model SDK is named — the CRUD crate stays SDK-free.
 #[async_trait::async_trait]
 pub trait CredentialProbe: Send + Sync {
