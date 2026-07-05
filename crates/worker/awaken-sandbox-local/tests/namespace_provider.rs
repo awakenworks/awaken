@@ -192,8 +192,8 @@ async fn adopt_reconnects_from_a_persisted_handle() {
 #[tokio::test]
 async fn file_store_mount_is_realized_as_a_bind() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = Arc::new(FsFileStore::open(tmp.path().join("blobs")).unwrap());
-    let id = store.put(b"seed-bytes").unwrap();
+    let store = Arc::new(FsFileStore::open(tmp.path().join("blobs")).await.unwrap());
+    let id = store.put(b"seed-bytes").await.unwrap();
     let provider = NamespaceProvider::new(tmp.path().join("envs")).with_file_store(store);
     let mut spec = spec("t-fs");
     spec.mounts.push(pc::MountRequirement {
