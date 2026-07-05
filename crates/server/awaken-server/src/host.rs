@@ -267,7 +267,7 @@ pub struct SharedHost {
     /// sections (e.g. the tool state machine). Empty by default.
     pub(crate) plugin_ids: Vec<String>,
     pub(crate) plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
-    sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
+    pub(crate) sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
     hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
     /// `store_dir/<thread>.db`, so a parked run survives a process restart. When
