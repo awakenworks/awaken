@@ -31,10 +31,12 @@ use serde_json::Value;
 /// The `awaken-provisioning-contract` seam realized locally (ADR-0041). Additive:
 /// the pre-contract `Environment`/`SandboxProvider` surface below is unchanged.
 mod artifacts;
-mod file_store;
 mod namespace;
 mod provider;
-pub use file_store::{FileStore, FileStoreError, FsFileStore, InMemoryFileStore};
+// The content-addressed blob store is the canonical `awaken-file-store` (ADR-0041,
+// BLAKE3), re-exported here for existing consumers; the provider resolves mount bytes
+// from a `FileStore` handle injected at config time (ADR-0038 D6).
+pub use awaken_file_store::{FileStore, FileStoreError, FsFileStore, InMemoryFileStore};
 pub use namespace::{NamespaceProvider, bubblewrap_argv, sandbox_exec_argv};
 pub use provider::{LocalProcess, LocalProvider, LocalSandbox};
 

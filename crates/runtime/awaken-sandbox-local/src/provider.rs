@@ -28,7 +28,8 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use std::sync::Arc;
 
-use crate::file_store::FileStore;
+use awaken_file_store::FileStore;
+
 use crate::{IsolatedRoot, content_fingerprint};
 
 fn err(e: impl ToString) -> pc::SandboxError {
@@ -37,28 +38,35 @@ fn err(e: impl ToString) -> pc::SandboxError {
 
 /// Resolve a mount's bytes: an in-memory seed map first, then an optional
 /// content-addressed [`FileStore`], then inline `Other({content})`.
-pub(crate) fn resolve_source(
+pub(crate) async fn resolve_source(
     source: &pc::MountSource,
     blobs: &HashMap<String, Vec<u8>>,
     store: &Option<Arc<dyn FileStore>>,
 ) -> Option<Vec<u8>> {
-    let by_id = |id: &str| {
-        blobs
-            .get(id)
-            .cloned()
-            .or_else(|| store.as_ref().and_then(|s| s.get(id).ok().flatten()))
-    };
-    match source {
-        pc::MountSource::File { file_id, .. } => by_id(file_id),
-        pc::MountSource::Resource { resource_id, .. } => by_id(resource_id),
+    // Inline `Other({content})` and unresolvable memory stores short-circuit before
+    // any store hit; the rest resolve by id (seed map first, then the store).
+    let id = match source {
+        pc::MountSource::File { file_id, .. } => file_id.as_str(),
+        pc::MountSource::Resource { resource_id, .. } => resource_id.as_str(),
         // The broker is faked locally by the seed map / store keyed on the reference.
-        pc::MountSource::Secret { reference, .. } => by_id(reference),
-        pc::MountSource::Other(v) => v
-            .get("content")
-            .and_then(|c| c.as_str())
-            .map(|s| s.as_bytes().to_vec()),
-        pc::MountSource::MemoryStore { .. } => None,
+        pc::MountSource::Secret { reference, .. } => reference.as_str(),
+        pc::MountSource::Other(v) => {
+            return v
+                .get("content")
+                .and_then(|c| c.as_str())
+                .map(|s| s.as_bytes().to_vec());
+        }
+        pc::MountSource::MemoryStore { .. } => return None,
+    };
+    if let Some(bytes) = blobs.get(id) {
+        return Some(bytes.clone());
     }
+    if let Some(store) = store {
+        if let Ok(Some(bytes)) = store.get(id).await {
+            return Some(bytes);
+        }
+    }
+    None
 }
 
 /// The declared content hash of a mount source, if any (verified fail-closed).
@@ -140,7 +148,7 @@ impl LocalProvider {
         }
         // All-or-nothing: a failed mount reaps the whole environment (no partial dir).
         for req in &spec.mounts {
-            match self.realize_mount(&sandbox.root, req) {
+            match self.realize_mount(&sandbox.root, req).await {
                 Ok(m) => sandbox.realized.push(m),
                 Err(e) => {
                     let _ = std::fs::remove_dir_all(sandbox.root.root());
@@ -164,13 +172,13 @@ impl LocalProvider {
         }
     }
 
-    fn realize_mount(
+    async fn realize_mount(
         &self,
         root: &IsolatedRoot,
         req: &pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
         let host = root.resolve(&req.mount_path).map_err(err)?;
-        let bytes = resolve_source(&req.source, &self.blobs, &self.file_store);
+        let bytes = resolve_source(&req.source, &self.blobs, &self.file_store).await;
         match bytes {
             Some(bytes) => {
                 verify(&req.source, &bytes)?; // fail closed on content-hash mismatch

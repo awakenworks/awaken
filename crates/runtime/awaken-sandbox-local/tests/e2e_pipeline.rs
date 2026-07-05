@@ -13,9 +13,9 @@ use awaken_sandbox_local::{FileStore, InMemoryFileStore, LocalProvider, Namespac
 
 /// A declared environment (control plane) projected to admission facts + a runnable
 /// spec. Mirrors `EnvironmentKind::Sandbox` with a seeded input file and one env var.
-fn declared() -> (pc::EnvironmentDecl, pc::SandboxSpec, Arc<InMemoryFileStore>) {
+async fn declared() -> (pc::EnvironmentDecl, pc::SandboxSpec, Arc<InMemoryFileStore>) {
     let store = Arc::new(InMemoryFileStore::new());
-    let file_id = store.put(b"input-corpus").unwrap();
+    let file_id = store.put(b"input-corpus").await.unwrap();
 
     let decl = pc::EnvironmentDecl {
         summary: "a coding sandbox for e2e".into(),
@@ -59,7 +59,7 @@ fn declared() -> (pc::EnvironmentDecl, pc::SandboxSpec, Arc<InMemoryFileStore>) 
 #[tokio::test]
 async fn full_declare_admit_prepare_realize_execute_retrieve() {
     let tmp = tempfile::tempdir().unwrap();
-    let (decl, spec, store) = declared();
+    let (decl, spec, store) = declared().await;
 
     // 1. Admission (control plane): a well-formed declaration is accepted.
     pc::check_environment_soundness(&decl).expect("declaration is sound");
@@ -113,7 +113,7 @@ async fn full_declare_admit_prepare_realize_execute_retrieve() {
 
 #[tokio::test]
 async fn admission_rejects_a_reserved_env_key_before_any_provisioning() {
-    let (mut decl, _spec, _store) = declared();
+    let (mut decl, _spec, _store) = declared().await;
     decl.env_keys = vec!["PATH".into()]; // runtime-owned
     assert!(pc::check_environment_soundness(&decl).is_err());
 }
@@ -122,7 +122,7 @@ async fn admission_rejects_a_reserved_env_key_before_any_provisioning() {
 async fn capability_driven_tier_selection() {
     let tmp = tempfile::tempdir().unwrap();
     // A workload that needs OS isolation (to host an opaque agent).
-    let mut spec = declared().1;
+    let mut spec = declared().await.1;
     spec.scope = "e2e-iso".into();
     spec.isolation = pc::IsolationClass::Namespace;
     // read-only mount now allowed because the chosen tier enforces it
@@ -139,7 +139,7 @@ async fn capability_driven_tier_selection() {
     assert!(namespace.capabilities().tool_transparent);
     assert!(pc::prepare_environment(&spec, &namespace.capabilities()).is_ok());
     // realize succeeds without executing (bwrap only needed at spawn time)
-    let store = declared().2;
+    let store = declared().await.2;
     let namespace = NamespaceProvider::new(tmp.path().join("c")).with_file_store(store);
     assert!(namespace.create(&spec).await.is_ok());
 }
