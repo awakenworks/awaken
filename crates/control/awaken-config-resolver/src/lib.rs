@@ -243,6 +243,110 @@ pub struct AgentMcpConfig {
     pub version: i64,
 }
 
+/// Which resources an agent is bound to — the management-plane agent↔resource
+/// binding (ADR-0038). At run bind time each [`ResourceBinding`] is materialized
+/// two ways: into a `MountRequirement` the sandbox realizes, and into a prompt
+/// fragment appended to the agent's effective system prompt (ADR-0038 A3a). Rows
+/// are secret-free — a private resource's credential is a binding by reference,
+/// resolved through the vault like MCP auth, never material here.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AgentResourceConfig {
+    pub agent_id: String,
+    pub resources: Vec<ResourceBinding>,
+    pub version: i64,
+}
+
+/// One resource bound to an agent. `resource_id` addresses the backing resource
+/// (a file/skill id, a memory store id, a repo URL; empty for the outputs mount);
+/// `mount_path` is where it appears in the sandbox; `instructions` is optional
+/// per-binding guidance rendered into the agent's system prompt.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ResourceBinding {
+    pub kind: ResourceKind,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resource_id: String,
+    pub mount_path: String,
+    pub access: ResourceAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+/// The resource kind a binding realizes — one variant per ADR-0038 resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum ResourceKind {
+    /// The outputs mount the host collects as artifacts.
+    Outputs,
+    /// An immutable file blob.
+    File,
+    /// A persistent, keyed memory store.
+    MemoryStore,
+    /// A git working tree cloned from a remote.
+    GithubRepository,
+    /// A versioned skill bundle.
+    Skill,
+}
+
+/// Whether a bound resource is read-only or writable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum ResourceAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+/// Render a bound resource into the prompt fragment appended to the agent's system
+/// prompt at compile time (ADR-0038 A3a): one blurb per kind naming its mount path
+/// and access, plus any per-binding `instructions`. This is the resolve-side
+/// template layer; the config-store's `compose_instructions` does the join and the
+/// runtime never re-renders it per turn.
+#[must_use]
+pub fn resource_binding_prompt(binding: &ResourceBinding) -> String {
+    let path = &binding.mount_path;
+    let access = match binding.access {
+        ResourceAccess::ReadOnly => "read-only",
+        ResourceAccess::ReadWrite => "read/write",
+    };
+    let base = match binding.kind {
+        ResourceKind::Outputs => format!(
+            "Write any output files you want the caller to keep under `{path}`; \
+             files there are collected as run artifacts."
+        ),
+        ResourceKind::File => format!("A file is mounted {access} at `{path}`."),
+        ResourceKind::MemoryStore => format!(
+            "A persistent memory store is mounted {access} at `{path}`; read it for \
+             prior context and write notes there to persist across sessions."
+        ),
+        ResourceKind::GithubRepository => format!(
+            "A git repository is checked out at `{path}` ({access}); use git there to \
+             read, edit, commit, and push."
+        ),
+        ResourceKind::Skill => format!("A skill bundle is mounted read-only at `{path}`."),
+    };
+    match &binding.instructions {
+        Some(extra) if !extra.is_empty() => format!("{base}\n{extra}"),
+        _ => base,
+    }
+}
+
+/// The ordered prompt fragments for an agent's bound resources — the bridge from the
+/// [`AgentResourceConfig`] aggregate to the config-store's `compile_with_resource_prompts`
+/// (which appends them to the agent's effective system prompt, ADR-0038 A3a). One
+/// fragment per binding, in binding order; empty when the agent binds no resources
+/// (so compilation stays byte-identical to an unbound agent).
+#[must_use]
+pub fn resource_prompts_for(config: &AgentResourceConfig) -> Vec<String> {
+    config
+        .resources
+        .iter()
+        .map(resource_binding_prompt)
+        .collect()
+}
+
 /// A management-plane project identifier. It doubles as the project's ingress
 /// address segment (`/projects/{id}/…` or a per-project domain label), so it is
 /// constrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.
@@ -351,6 +455,93 @@ mod tests {
         CredentialCreateParams, CredentialKind, CredentialSourceId, InMemorySecretStore,
         create_source,
     };
+
+    fn binding(kind: ResourceKind, path: &str, access: ResourceAccess) -> ResourceBinding {
+        ResourceBinding {
+            kind,
+            resource_id: String::new(),
+            mount_path: path.to_string(),
+            access,
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn resource_binding_prompt_names_path_access_and_appends_instructions() {
+        // outputs: artifact guidance
+        let out = resource_binding_prompt(&binding(
+            ResourceKind::Outputs,
+            "/mnt/session/outputs",
+            ResourceAccess::ReadWrite,
+        ));
+        assert!(out.contains("/mnt/session/outputs") && out.contains("artifacts"));
+
+        // memory: read/write access is named, and per-binding instructions append.
+        let mut mem = binding(
+            ResourceKind::MemoryStore,
+            "/mnt/memory/prefs",
+            ResourceAccess::ReadWrite,
+        );
+        assert!(resource_binding_prompt(&mem).contains("read/write"));
+        mem.instructions = Some("user preferences".to_string());
+        let rendered = resource_binding_prompt(&mem);
+        assert!(rendered.contains("/mnt/memory/prefs"));
+        assert!(rendered.ends_with("user preferences"));
+
+        // repo + file + skill each name their path.
+        assert!(
+            resource_binding_prompt(&binding(
+                ResourceKind::GithubRepository,
+                "/workspace/repo",
+                ResourceAccess::ReadWrite,
+            ))
+            .contains("/workspace/repo")
+        );
+        assert!(
+            resource_binding_prompt(&binding(
+                ResourceKind::File,
+                "/workspace/data.csv",
+                ResourceAccess::ReadOnly,
+            ))
+            .contains("read-only")
+        );
+        assert!(
+            resource_binding_prompt(&binding(
+                ResourceKind::Skill,
+                "/mnt/skills/xlsx",
+                ResourceAccess::ReadOnly,
+            ))
+            .contains("/mnt/skills/xlsx")
+        );
+    }
+
+    #[test]
+    fn resource_prompts_for_maps_each_binding_in_order() {
+        // Empty bindings → empty fragments (unbound agent compiles byte-identically).
+        let empty = AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![],
+            version: 1,
+        };
+        assert!(resource_prompts_for(&empty).is_empty());
+
+        let cfg = AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![
+                binding(ResourceKind::File, "/w/a.csv", ResourceAccess::ReadOnly),
+                binding(
+                    ResourceKind::Outputs,
+                    "/mnt/session/outputs",
+                    ResourceAccess::ReadWrite,
+                ),
+            ],
+            version: 1,
+        };
+        let prompts = resource_prompts_for(&cfg);
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[0].contains("/w/a.csv"));
+        assert!(prompts[1].contains("/mnt/session/outputs"));
+    }
     use awaken_model_catalog::{
         Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };

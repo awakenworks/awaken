@@ -16,7 +16,8 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
-    AgentMcpConfig, InferenceProfile, McpServerDef, Project, ProjectAgentConfig,
+    AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef, Project,
+    ProjectAgentConfig,
 };
 
 use crate::router::{InferenceProfileStore, McpStore};
@@ -101,6 +102,22 @@ impl SqliteAdminStore {
             .optional()
             .expect("read admin row");
         data.map(|d| serde_json::from_str(&d).expect("decode admin row"))
+    }
+
+    /// Upsert an agent's resource binding (ADR-0038). Inherent (not a router port
+    /// yet): the aggregate + schema land first; the HTTP surface follows.
+    pub fn put_agent_resource(&self, config: AgentResourceConfig) {
+        self.put_row(
+            "agent_resource",
+            "agent_id",
+            &config.agent_id.clone(),
+            &config,
+        );
+    }
+
+    /// One agent's resource binding, `None` when the agent has none.
+    pub fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
+        self.get_row("agent_resource", "agent_id", agent_id)
     }
 }
 
@@ -208,7 +225,7 @@ impl crate::router::ProjectStore for SqliteAdminStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_config_resolver::McpServerId;
+    use awaken_config_resolver::{McpServerId, ResourceAccess, ResourceBinding, ResourceKind};
     use awaken_credential_vault::CredentialBinding;
 
     fn profile(model: &str) -> InferenceProfile {
@@ -269,6 +286,42 @@ mod tests {
             config.mcp_server_ids
         );
         assert!(store.get_agent_config("agent-2").is_none());
+    }
+
+    #[test]
+    fn agent_resource_binding_round_trips_and_overwrites() {
+        let store = SqliteAdminStore::open_in_memory().unwrap();
+        assert!(store.get_agent_resource("agent-1").is_none());
+
+        let config = AgentResourceConfig {
+            agent_id: "agent-1".into(),
+            resources: vec![ResourceBinding {
+                kind: ResourceKind::MemoryStore,
+                resource_id: "memstore-7".into(),
+                mount_path: "/mnt/memory/prefs".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: Some("user preferences".into()),
+            }],
+            version: 1,
+        };
+        store.put_agent_resource(config.clone());
+        assert_eq!(store.get_agent_resource("agent-1").unwrap(), config);
+
+        // Upsert by agent_id replaces the whole binding set.
+        let mut v2 = config.clone();
+        v2.resources.push(ResourceBinding {
+            kind: ResourceKind::Outputs,
+            resource_id: String::new(),
+            mount_path: "/mnt/session/outputs".into(),
+            access: ResourceAccess::ReadWrite,
+            instructions: None,
+        });
+        v2.version = 2;
+        store.put_agent_resource(v2);
+        let got = store.get_agent_resource("agent-1").unwrap();
+        assert_eq!(got.resources.len(), 2);
+        assert_eq!(got.version, 2);
+        assert!(store.get_agent_resource("agent-2").is_none());
     }
 
     #[test]
