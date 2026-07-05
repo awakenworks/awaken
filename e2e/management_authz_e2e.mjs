@@ -12,7 +12,13 @@
 //     credential;
 //   - after a restart over the same dir the SAME token still authenticates
 //     (hydration from iam.sqlite — the admin-token file is not re-minted) and
-//     the authored config persisted.
+//     the authored config persisted;
+//   - the HTTP token-management surface rotates the bootstrap credential:
+//     POST /v1/config/iam/tokens mints a workspace admin token (cleartext
+//     returned exactly once), the NEW token authors config, the list is
+//     secret-free, DELETE /v1/config/iam/tokens/{id} revokes the bootstrap
+//     token (old 401s, new keeps working), and a further restart persists
+//     both facts.
 //
 // Every other e2e runs WITHOUT the AWAKEN_MGMT_IAM env var and stays open.
 //
@@ -42,7 +48,7 @@ async function req(base, method, uri, body, token) {
   });
   const text = await res.text();
   const json = text ? JSON.parse(text) : null;
-  return { status: res.status, json };
+  return { status: res.status, json, text };
 }
 
 async function main() {
@@ -122,6 +128,59 @@ async function main() {
     r = await req(base, 'GET', '/v1/config/catalog');
     assert.equal(r.status, 401, 'the gate survives the restart too');
     pass('restart: same token authenticates (iam.sqlite hydration), config + gate persist');
+
+    // ---- token management: mint, author, rotate the bootstrap credential ---
+    // Mint a workspace admin token over HTTP with the bootstrap token. The
+    // cleartext comes back exactly once, next to the secret-free view.
+    r = await req(base, 'POST', '/v1/config/iam/tokens',
+      { workspace_id: WORKSPACE, role: 'workspace_admin' }, token);
+    assert.equal(r.status, 201, `token mint: ${JSON.stringify(r.json)}`);
+    const opToken = r.json.token;
+    assert.ok(opToken.startsWith('sk-ant-'), 'minted cleartext is sk-ant-… shaped');
+    assert.equal(r.json.api_token.workspace_id, WORKSPACE);
+    assert.equal(r.json.api_token.role, 'workspace_admin');
+    assert.ok(!JSON.stringify(r.json.api_token).includes('$argon2'), 'view is hash-free');
+
+    // The NEW token authors config within its role's reach.
+    r = await req(base, 'PUT', '/v1/config/providers/openai',
+      { id: 'openai', slug: 'openai', display_name: 'OpenAI', version: 1 }, opToken);
+    assert.equal(r.status, 200, `new-token provider put: ${JSON.stringify(r.json)}`);
+    pass('HTTP-minted workspace admin token authors config (cleartext returned once)');
+
+    // The token list is secret-free: views only — never a hash or cleartext.
+    r = await req(base, 'GET', `/v1/config/iam/tokens?workspace_id=${WORKSPACE}`, undefined, opToken);
+    assert.equal(r.status, 200, `token list: ${r.text}`);
+    assert.ok(!r.text.includes('$argon2'), 'token list has no argon2 hash');
+    assert.ok(!r.text.includes(opToken), 'token list has no minted cleartext');
+    assert.ok(!r.text.includes(token), 'token list has no bootstrap cleartext');
+    const bootstrapView = r.json.find((t) => t.principal_id === 'mgmt-bootstrap');
+    assert.ok(bootstrapView, 'bootstrap token is listed by its view');
+    pass('GET /v1/config/iam/tokens is secret-free (prefix/principal/role views only)');
+
+    // Rotate: revoke the bootstrap token WITH the new token. The old
+    // credential 401s immediately; the successor keeps working.
+    r = await req(base, 'DELETE', `/v1/config/iam/tokens/${bootstrapView.id}`, undefined, opToken);
+    assert.equal(r.status, 200, `bootstrap revoke: ${JSON.stringify(r.json)}`);
+    assert.ok(r.json.revoked_at, 'revoked view carries revoked_at');
+    r = await req(base, 'GET', '/v1/config/catalog', undefined, token);
+    assert.equal(r.status, 401, 'revoked bootstrap token is refused');
+    assert.equal(r.json.error.type, 'authentication_error');
+    r = await req(base, 'GET', '/v1/config/catalog', undefined, opToken);
+    assert.equal(r.status, 200, 'the successor token keeps working');
+    pass('bootstrap token revoked over HTTP: old 401s, minted successor still passes');
+
+    // ---- second restart: rotation and mint both persisted -----------------
+    await stopServer(server);
+    server = null;
+    ({ server, baseUrl: base } = spawnServer('management', PORT, env));
+    await waitForPort(PORT);
+
+    r = await req(base, 'GET', '/v1/config/catalog', undefined, token);
+    assert.equal(r.status, 401, 'bootstrap revocation survives the restart');
+    r = await req(base, 'GET', '/v1/config/catalog', undefined, opToken);
+    assert.equal(r.status, 200, `minted token survives the restart: ${JSON.stringify(r.json)}`);
+    assert.ok(r.json.providers && r.json.providers.openai, 'new-token-authored provider persisted');
+    pass('second restart: revocation + minted token persisted (iam.sqlite rows)');
 
     console.log('management_authz_e2e: all checks passed');
   } finally {
