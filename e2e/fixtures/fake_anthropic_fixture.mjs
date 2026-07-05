@@ -34,6 +34,32 @@ export function startFakeAnthropic(apiKey) {
       const reply = `FAKE:${text}`;
       const id = `msg_${state.requests.length}`;
       const model = parsed.model ?? 'fake-model';
+      // `use-tool:<name>` drives one tool round-trip: first call answers with a
+      // tool_use block, the follow-up (carrying the tool_result) answers text.
+      const hasToolResult = (parsed.messages ?? []).some(
+        (m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'),
+      );
+      const toolMatch = !hasToolResult && /^use-tool:(\S+)/.exec(text);
+      if (parsed.stream && toolMatch) {
+        const tool = toolMatch[1];
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        const ev = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        ev('message_start', {
+          type: 'message_start',
+          message: {
+            id, type: 'message', role: 'assistant', model,
+            content: [], stop_reason: null, stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 0 },
+          },
+        });
+        ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: `toolu_${id}`, name: tool, input: {} } });
+        ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"pattern":"*.md"}' } });
+        ev('content_block_stop', { type: 'content_block_stop', index: 0 });
+        ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 1 } });
+        ev('message_stop', { type: 'message_stop' });
+        res.end();
+        return;
+      }
       if (parsed.stream) {
         // The Anthropic streaming wire: the fixed event ladder around one text block.
         res.writeHead(200, { 'content-type': 'text/event-stream' });
