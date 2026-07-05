@@ -3,6 +3,7 @@
 //! the immutable/dedup contract. Compile-verified; running needs a database.
 
 use async_trait::async_trait;
+use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use sqlx::{PgPool, Row};
 
 use crate::{FileStore, FileStoreError, content_id};
@@ -11,7 +12,30 @@ fn e(x: impl ToString) -> FileStoreError {
     FileStoreError(x.to_string())
 }
 
-/// A Postgres-backed [`FileStore`] over a `file_blob(id, bytes, size, created_at)` table.
+/// Table namespace (bundle prefix): tables are `file_store_*`, the ledger is
+/// `file_store_schema_migrations` — scoped so the blob store coexists with other
+/// schemas in a shared database.
+const NS: &str = "file_store";
+
+/// The versioned schema bundle (ADR-0043 scoped migration; foundation's
+/// `awaken-scoped-migration`). One migration: the content-addressed `file_store_blob`
+/// table. All schema changes are additive migrations here, never a raw CREATE TABLE.
+fn file_store_bundle() -> Result<MigrationBundle, MigrationError> {
+    MigrationBundle::new(
+        "awaken.file_store",
+        vec![Migration::new(
+            1,
+            "content-addressed blobs: one row per BLAKE3 content id",
+            "CREATE TABLE {prefix}_blob (\
+                 id TEXT PRIMARY KEY, \
+                 bytes BYTEA NOT NULL, \
+                 size BIGINT NOT NULL, \
+                 created_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+        )?],
+    )
+}
+
+/// A Postgres-backed [`FileStore`] over a `file_store_blob(id, bytes, size, created_at)` table.
 pub struct PgFileStore {
     pool: PgPool,
 }
@@ -30,16 +54,17 @@ impl PgFileStore {
         Self { pool }
     }
 
-    /// Create the blob table if absent (idempotent).
+    /// Apply the versioned `awaken.file_store` migration bundle (idempotent; the
+    /// runner records applied versions in `file_store_schema_migrations`). Replaces
+    /// the former unversioned `CREATE TABLE IF NOT EXISTS`.
     pub async fn ensure_schema(&self) -> Result<(), FileStoreError> {
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS file_blob (\
-             id TEXT PRIMARY KEY, \
-             bytes BYTEA NOT NULL, \
-             size BIGINT NOT NULL, \
-             created_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+        let bundle = file_store_bundle().map_err(e)?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            self.pool.clone(),
+            NS,
         )
-        .execute(&self.pool)
+        .map_err(e)?
+        .run_bundle(&bundle)
         .await
         .map_err(e)?;
         Ok(())
@@ -51,7 +76,7 @@ impl FileStore for PgFileStore {
     async fn put(&self, bytes: &[u8]) -> Result<String, FileStoreError> {
         let id = content_id(bytes);
         sqlx::query(
-            "INSERT INTO file_blob (id, bytes, size) VALUES ($1, $2, $3) \
+            "INSERT INTO file_store_blob (id, bytes, size) VALUES ($1, $2, $3) \
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(&id)
@@ -64,7 +89,7 @@ impl FileStore for PgFileStore {
     }
 
     async fn get(&self, id: &str) -> Result<Option<Vec<u8>>, FileStoreError> {
-        let row = sqlx::query("SELECT bytes FROM file_blob WHERE id = $1")
+        let row = sqlx::query("SELECT bytes FROM file_store_blob WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -73,7 +98,7 @@ impl FileStore for PgFileStore {
     }
 
     async fn list(&self) -> Result<Vec<String>, FileStoreError> {
-        let rows = sqlx::query("SELECT id FROM file_blob ORDER BY id")
+        let rows = sqlx::query("SELECT id FROM file_store_blob ORDER BY id")
             .fetch_all(&self.pool)
             .await
             .map_err(e)?;
@@ -81,7 +106,7 @@ impl FileStore for PgFileStore {
     }
 
     async fn delete(&self, id: &str) -> Result<bool, FileStoreError> {
-        let res = sqlx::query("DELETE FROM file_blob WHERE id = $1")
+        let res = sqlx::query("DELETE FROM file_store_blob WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await

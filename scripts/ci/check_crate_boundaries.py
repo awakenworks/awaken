@@ -191,8 +191,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         "blake3",
         "tokio",
-        # feature `postgres`: bytea backend over sqlx.
+        # feature `postgres`: bytea backend over sqlx, versioned via the foundation's
+        # scoped migration (the `awaken.file_store` bundle; no raw CREATE TABLE).
         "sqlx",
+        "awaken-scoped-migration",
         # feature `s3`: object-store backend (S3/MinIO/GCS/Azure) + its list stream.
         "object_store",
         "futures",
