@@ -299,6 +299,40 @@ pub enum ResourceAccess {
     ReadWrite,
 }
 
+/// Render a bound resource into the prompt fragment appended to the agent's system
+/// prompt at compile time (ADR-0038 A3a): one blurb per kind naming its mount path
+/// and access, plus any per-binding `instructions`. This is the resolve-side
+/// template layer; the config-store's `compose_instructions` does the join and the
+/// runtime never re-renders it per turn.
+#[must_use]
+pub fn resource_binding_prompt(binding: &ResourceBinding) -> String {
+    let path = &binding.mount_path;
+    let access = match binding.access {
+        ResourceAccess::ReadOnly => "read-only",
+        ResourceAccess::ReadWrite => "read/write",
+    };
+    let base = match binding.kind {
+        ResourceKind::Outputs => format!(
+            "Write any output files you want the caller to keep under `{path}`; \
+             files there are collected as run artifacts."
+        ),
+        ResourceKind::File => format!("A file is mounted {access} at `{path}`."),
+        ResourceKind::MemoryStore => format!(
+            "A persistent memory store is mounted {access} at `{path}`; read it for \
+             prior context and write notes there to persist across sessions."
+        ),
+        ResourceKind::GithubRepository => format!(
+            "A git repository is checked out at `{path}` ({access}); use git there to \
+             read, edit, commit, and push."
+        ),
+        ResourceKind::Skill => format!("A skill bundle is mounted read-only at `{path}`."),
+    };
+    match &binding.instructions {
+        Some(extra) if !extra.is_empty() => format!("{base}\n{extra}"),
+        _ => base,
+    }
+}
+
 /// A management-plane project identifier. It doubles as the project's ingress
 /// address segment (`/projects/{id}/…` or a per-project domain label), so it is
 /// constrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.
@@ -407,6 +441,65 @@ mod tests {
         CredentialCreateParams, CredentialKind, CredentialSourceId, InMemorySecretStore,
         create_source,
     };
+
+    fn binding(kind: ResourceKind, path: &str, access: ResourceAccess) -> ResourceBinding {
+        ResourceBinding {
+            kind,
+            resource_id: String::new(),
+            mount_path: path.to_string(),
+            access,
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn resource_binding_prompt_names_path_access_and_appends_instructions() {
+        // outputs: artifact guidance
+        let out = resource_binding_prompt(&binding(
+            ResourceKind::Outputs,
+            "/mnt/session/outputs",
+            ResourceAccess::ReadWrite,
+        ));
+        assert!(out.contains("/mnt/session/outputs") && out.contains("artifacts"));
+
+        // memory: read/write access is named, and per-binding instructions append.
+        let mut mem = binding(
+            ResourceKind::MemoryStore,
+            "/mnt/memory/prefs",
+            ResourceAccess::ReadWrite,
+        );
+        assert!(resource_binding_prompt(&mem).contains("read/write"));
+        mem.instructions = Some("user preferences".to_string());
+        let rendered = resource_binding_prompt(&mem);
+        assert!(rendered.contains("/mnt/memory/prefs"));
+        assert!(rendered.ends_with("user preferences"));
+
+        // repo + file + skill each name their path.
+        assert!(
+            resource_binding_prompt(&binding(
+                ResourceKind::GithubRepository,
+                "/workspace/repo",
+                ResourceAccess::ReadWrite,
+            ))
+            .contains("/workspace/repo")
+        );
+        assert!(
+            resource_binding_prompt(&binding(
+                ResourceKind::File,
+                "/workspace/data.csv",
+                ResourceAccess::ReadOnly,
+            ))
+            .contains("read-only")
+        );
+        assert!(
+            resource_binding_prompt(&binding(
+                ResourceKind::Skill,
+                "/mnt/skills/xlsx",
+                ResourceAccess::ReadOnly,
+            ))
+            .contains("/mnt/skills/xlsx")
+        );
+    }
     use awaken_model_catalog::{
         Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };

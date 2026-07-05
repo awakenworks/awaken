@@ -89,17 +89,6 @@ pub fn compose_instructions(base: &str, resource_prompts: &[String]) -> String {
     out
 }
 
-/// The resource prompt for the outputs mount (ADR-0038 A3): tells the agent where to
-/// write files the host collects as artifacts. The first resource template;
-/// memory/repo/skill add their own beside it.
-#[must_use]
-pub fn outputs_prompt_fragment(outputs_path: &str) -> String {
-    format!(
-        "Write any output files you want the caller to keep under `{outputs_path}`; \
-         files there are collected as run artifacts."
-    )
-}
-
 /// The canonical fingerprint: sha256 of the config serialization, extended by the
 /// resource prompts when present. Empty prompts hash exactly the config bytes, so a
 /// bare compile keeps its prior content address; a non-empty prompt set changes it
@@ -210,7 +199,9 @@ mod tests {
         // ADR-0038 A3a: a bound resource's prompt is injected at compile time into the
         // agent's effective system prompt, and enters the content-address fingerprint.
         let cfg = config(&[]);
-        let frag = outputs_prompt_fragment("/mnt/session/outputs");
+        // Fragments are opaque strings here; the resolve-side templates (per
+        // ResourceKind) live in awaken-config-resolver.
+        let frag = "Outputs are collected under `/mnt/session/outputs`.".to_string();
         let with = compile_with_resource_prompts(&cfg, &[], std::slice::from_ref(&frag)).unwrap();
         let spec = &with.snapshot().resolved_spec;
         assert!(spec.instructions.starts_with("be helpful"));
