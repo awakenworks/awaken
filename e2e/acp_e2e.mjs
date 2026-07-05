@@ -71,6 +71,26 @@ async function main() {
       const acpReplies = texts.filter((t) => t.includes('acp-runtime reply')).length;
       assert.ok(acpReplies >= 2, `R7: each turn relaunches the CLI, got ${acpReplies} acp replies`);
       pass('a second turn relaunches the ACP CLI (R7)');
+
+      // Driver-error paths reachable through the fake CLI: a malformed frame
+      // and a truncated stream both surface a classified failure message. (A
+      // refusal turn_end renders as a normal idle with no distinct wire signal,
+      // and the provider-keyed taxonomy — auth/rate-limit/login — only arises
+      // from a real CLI's output, so those stay unit-tested.)
+      for (const trigger of ['acp-auth reply', 'acp-truncate reply']) {
+        const s2 = await client.beta.sessions.create({
+          agent: { id: 'assistant', runtime: 'acp:claude' },
+          environment_id: 'env_local',
+          betas: BETAS,
+        });
+        await send(client, s2.id, trigger);
+        const texts = await agentTexts(client, s2.id);
+        assert.ok(
+          texts.some((t) => /the agent turn failed/i.test(t)),
+          `failure "${trigger}" rendered a classified failure, got ${JSON.stringify(texts)}`,
+        );
+      }
+      pass('ACP driver failures classify + render (malformed frame + truncation)');
     });
 
     console.log('E2E PASS: ACP-runtime selection + relaunch (R3/R4/R7) via the managed API.');

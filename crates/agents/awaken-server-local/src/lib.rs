@@ -104,8 +104,15 @@ pub fn build_model_route_router() -> Router {
 /// A minimal ACP agent (shell): read the prompt line, emit a message + turn_end —
 /// stands in for `claude --acp` so the ACP-runtime path runs without a real CLI.
 const FAKE_ACP_SCRIPT: &str = "read _p; \
-    printf '%s\\n' '{\"type\":\"message\",\"text\":\"acp-runtime reply\"}'; \
-    printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+    case \"$_p\" in \
+      *acp-refuse*) printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"refusal\"}';; \
+      *acp-truncate*) printf '%s\\n' '{\"type\":\"message\",\"text\":\"partial\"}';; \
+      *acp-auth*) printf '%s\\n' 'not json: 401 Unauthorized invalid api key';; \
+      *acp-ratelimit*) printf '%s\\n' 'not json: HTTP 429 too many requests';; \
+      *acp-login*) printf '%s\\n' 'not json: Please run /login to continue';; \
+      *) printf '%s\\n' '{\"type\":\"message\",\"text\":\"acp-runtime reply\"}'; \
+         printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}';; \
+    esac";
 
 /// A router with out-of-band memory extraction + bounded recall (the memory
 /// e2e): after each turn the extractor sub-run saves a memory, and later
@@ -122,6 +129,17 @@ pub fn build_memory_router() -> Router {
             dir
         });
     let host = SharedHost::new(Arc::new(MemoryProbeModel), "memory").with_memory(mem_dir);
+    mount(Arc::new(host))
+}
+
+/// A router with context compaction (the compaction e2e): a low threshold folds
+/// the older transcript into a summary after a few turns. The deterministic
+/// model returns a fixed summary on the `compactor` sub-run and otherwise
+/// reports the compaction context it received, so an e2e can observe the folded
+/// summary being injected on a later turn. `AWAKEN_MODEL_MODE=compaction`.
+pub fn build_compaction_router() -> Router {
+    let host = SharedHost::new(Arc::new(crate::models::CompactionModel), "compaction")
+        .with_compaction(2, 1);
     mount(Arc::new(host))
 }
 
