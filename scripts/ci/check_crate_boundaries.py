@@ -693,6 +693,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-iam-contract",
         "awaken-iam-core",
         "awaken-iam-preset",
+        # SqlStore/migrations for the embedded authz rows (links-safe since ADR-0005).
+        "awaken-iam-server",
         # The embedded IAM's durable token/binding rows under
         # <AWAKEN_MGMT_DIR>/iam.sqlite — the same rusqlite generation every
         # other sqlite store in the workspace uses.
