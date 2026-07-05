@@ -1745,7 +1745,7 @@ async fn project_ingress(
         Router,
     )>,
     axum::extract::Path((project_id, rest)): axum::extract::Path<(String, String)>,
-    mut request: axum::extract::Request,
+    request: axum::extract::Request,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     use tower::ServiceExt;
