@@ -695,6 +695,10 @@ impl PrefetchedSourceLookup {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ManagedHost {
+    async fn owns_thread(&self, thread: &str) -> bool {
+        self.host.has_durable_thread(thread)
+    }
+
     async fn run_turn(
         &self,
         agent: &str,
