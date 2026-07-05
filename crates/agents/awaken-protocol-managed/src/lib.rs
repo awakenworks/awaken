@@ -14,10 +14,12 @@
 pub mod dto;
 pub mod project;
 mod router;
+mod session_repo;
 mod state;
 pub mod vaults;
 
 pub use router::{ProjectScope, router};
+pub use session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,

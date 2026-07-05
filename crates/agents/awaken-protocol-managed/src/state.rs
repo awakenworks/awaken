@@ -19,6 +19,7 @@ use crate::dto::{
     OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent, StopReason,
 };
 use crate::project::{self, project_messages, project_turn};
+use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::vaults::{McpRefreshBinding, VaultState};
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
@@ -380,6 +381,11 @@ pub struct ManagedState {
     /// creation. `None` means every binding resolves to no credential.
     vaults: Option<Arc<VaultState>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
+    /// Durable-config source of truth for the session aggregate: `create` writes
+    /// it, rehydration reads it so a restored session reports its real
+    /// agent/model/title/metadata/MCP instead of placeholder defaults. The
+    /// in-memory `sessions` map is a per-process read-through cache over it.
+    sessions_repo: Arc<dyn ManagedSessionRepository>,
     session_seq: AtomicU64,
     event_seq: AtomicU64,
 }
@@ -407,9 +413,19 @@ impl ManagedState {
             runtime: Box::new(runtime),
             vaults: None,
             sessions: Mutex::new(HashMap::new()),
+            sessions_repo: Arc::new(InMemorySessionRepository::default()),
             session_seq: AtomicU64::new(0),
             event_seq: AtomicU64::new(0),
         }
+    }
+
+    /// Wire a durable session repository (e.g. SQLite alongside the transcript
+    /// store) so a session's config survives a restart and is reported faithfully
+    /// by another process. The default is in-memory (single-process behavior).
+    #[must_use]
+    pub fn with_session_repo(mut self, repo: Arc<dyn ManagedSessionRepository>) -> Self {
+        self.sessions_repo = repo;
+        self
     }
 
     /// Wire the vault surface, so `POST /v1/sessions` binds each requested MCP
@@ -577,6 +593,19 @@ impl ManagedState {
             outcome_evaluations: Vec::new(),
             status: "idle",
         };
+        // Persist the session's config (secret-free) so a restart or a peer process
+        // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
+        self.sessions_repo
+            .save(PersistedSession {
+                session_id: id.clone(),
+                agent_id: agent_id.clone(),
+                model: session.agent.model.clone(),
+                title: session.title.clone(),
+                metadata: session.metadata.clone(),
+                environment_id: session.environment_id.clone(),
+                mcp_servers: session.agent.mcp_servers.clone(),
+            })
+            .await;
         self.sessions.lock().unwrap().insert(
             id,
             SessionRecord {
@@ -588,13 +617,31 @@ impl ManagedState {
         Ok(session)
     }
 
-    /// A session object reconstructed for a rehydrated (post-restart) session. It
-    /// reuses the runtime's advertised surface; environment/title/metadata default
-    /// because the original create request is no longer available (its MCP servers
-    /// among them, so `mcp_servers` reads empty after a restart).
-    fn rehydrated_session(&self, id: &str) -> Session {
+    /// A session object reconstructed for a rehydrated (post-restart) session.
+    /// When the durable repo holds the session's config it is restored faithfully;
+    /// otherwise (a session created before the repo existed, or a purely in-memory
+    /// deployment) it falls back to the runtime's advertised surface with
+    /// placeholder agent/title/metadata — the pre-repo behavior.
+    fn rehydrated_session(&self, id: &str, persisted: Option<PersistedSession>) -> Session {
         let caps = self.runtime.capabilities();
-        let agent_id = "assistant".to_string();
+        let (agent_id, model, environment_id, title, metadata, mcp_servers) = match persisted {
+            Some(p) => (
+                p.agent_id,
+                p.model,
+                p.environment_id,
+                p.title,
+                p.metadata,
+                p.mcp_servers,
+            ),
+            None => (
+                "assistant".to_string(),
+                self.runtime.model(),
+                "env_local".to_string(),
+                None,
+                Default::default(),
+                Vec::new(),
+            ),
+        };
         Session {
             id: id.to_string(),
             kind: "session",
@@ -602,19 +649,19 @@ impl ManagedState {
                 id: agent_id.clone(),
                 kind: "agent",
                 version: 1,
-                model: self.runtime.model(),
+                model,
                 name: agent_id,
                 tools: project::agent_tools(&caps),
-                mcp_servers: Vec::new(),
+                mcp_servers,
                 skills: project::agent_skills(&caps),
                 multiagent: project::agent_multiagent(&caps),
             },
-            environment_id: "env_local".to_string(),
+            environment_id,
             created_at: PROCESSED_AT.to_string(),
             updated_at: PROCESSED_AT.to_string(),
             archived_at: None,
-            title: None,
-            metadata: Default::default(),
+            title,
+            metadata,
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status: "idle",
@@ -642,9 +689,13 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             })
             .collect();
+        let persisted = self.sessions_repo.get(id).await;
+        let agent_id = persisted
+            .as_ref()
+            .map_or_else(|| "assistant".to_string(), |p| p.agent_id.clone());
         let record = SessionRecord {
-            agent_id: "assistant".to_string(),
-            session: self.rehydrated_session(id),
+            agent_id,
+            session: self.rehydrated_session(id, persisted),
             events,
         };
         self.sessions
@@ -944,4 +995,131 @@ fn content_text(content: &[awaken_agent_contract::agent::content::ContentBlock])
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// A runtime that reports a non-empty committed transcript, so a session can
+    /// rehydrate. Every operational method is unused by these tests.
+    struct RehydrateFake;
+
+    #[async_trait]
+    impl SessionRuntime for RehydrateFake {
+        async fn run_turn(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _content: Vec<ContentBlock>,
+        ) -> Result<TurnOutcome, RunError> {
+            unreachable!()
+        }
+        async fn resume(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _decision: Decision,
+        ) -> Result<TurnOutcome, RunError> {
+            unreachable!()
+        }
+        async fn resume_custom(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _content: &str,
+            _is_error: bool,
+        ) -> Result<TurnOutcome, RunError> {
+            unreachable!()
+        }
+        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+            Ok(())
+        }
+        async fn define_outcome(
+            &self,
+            _thread: &str,
+            _description: &str,
+            _rubric: &str,
+            _max_iterations: u32,
+        ) -> Result<OutcomeReport, RunError> {
+            unreachable!()
+        }
+        async fn committed_messages(&self, thread: &str) -> Vec<Message> {
+            vec![Message::text(
+                awaken_agent_contract::agent::message::Id(format!("{thread}-m0")),
+                awaken_agent_contract::agent::message::Role::User,
+                "hello",
+            )]
+        }
+        fn model(&self) -> String {
+            "host-default-model".to_string()
+        }
+    }
+
+    fn sample_persisted(id: &str) -> PersistedSession {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("team".to_string(), "research".to_string());
+        PersistedSession {
+            session_id: id.to_string(),
+            agent_id: "coder".to_string(),
+            model: "kimi-k2".to_string(),
+            title: Some("My session".to_string()),
+            metadata,
+            environment_id: "env_local".to_string(),
+            mcp_servers: vec![
+                serde_json::json!({"name": "calc", "type": "url", "url": "https://x"}),
+            ],
+        }
+    }
+
+    #[test]
+    fn rehydrated_session_restores_persisted_config() {
+        let state = ManagedState::new(RehydrateFake);
+        let session = state.rehydrated_session("sesn_1", Some(sample_persisted("sesn_1")));
+        assert_eq!(session.agent.id, "coder");
+        assert_eq!(session.agent.model, "kimi-k2");
+        assert_eq!(session.title.as_deref(), Some("My session"));
+        assert_eq!(
+            session.metadata.get("team").map(String::as_str),
+            Some("research")
+        );
+        assert_eq!(
+            session.agent.mcp_servers.len(),
+            1,
+            "the accepted MCP server is restored"
+        );
+    }
+
+    #[test]
+    fn rehydrated_session_falls_back_without_persisted_config() {
+        let state = ManagedState::new(RehydrateFake);
+        let session = state.rehydrated_session("sesn_1", None);
+        assert_eq!(session.agent.id, "assistant");
+        assert_eq!(session.agent.model, "host-default-model");
+        assert!(session.title.is_none());
+        assert!(session.agent.mcp_servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
+        // A session created in one process is gone from a fresh process's cache,
+        // but the shared repo + committed transcript restore it faithfully.
+        let repo: Arc<dyn ManagedSessionRepository> =
+            Arc::new(InMemorySessionRepository::default());
+        repo.save(sample_persisted("sesn_1")).await;
+
+        // Fresh state (empty cache) sharing the durable repo — simulates a restart.
+        let restarted = ManagedState::new(RehydrateFake).with_session_repo(repo);
+        restarted.ensure_session("sesn_1").await.expect("rehydrate");
+        let session = restarted
+            .get_session("sesn_1")
+            .expect("session present after rehydrate");
+        assert_eq!(
+            session.agent.id, "coder",
+            "real agent id, not the placeholder"
+        );
+        assert_eq!(session.title.as_deref(), Some("My session"));
+        assert_eq!(session.agent.mcp_servers.len(), 1);
+    }
 }
