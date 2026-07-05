@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -18,10 +18,36 @@ use crate::host::SharedHost;
 /// Mount the Files API over the host's blob store.
 pub fn files_router(host: Arc<SharedHost>) -> Router {
     Router::new()
-        .route("/v1/files", post(upload_file))
+        .route("/v1/files", post(upload_file).get(list_files))
         .route("/v1/files/:id", get(get_file))
         .route("/v1/files/:id/content", get(download_file))
         .with_state(host)
+}
+
+/// `GET /v1/files?scope_id=<session>` — the session's output artifacts (ADR-0038):
+/// files the agent wrote under `outputs/`, harvested into the blob store. Without a
+/// `scope_id` the list is empty (this server scopes files to a session, not globally).
+async fn list_files(
+    State(host): State<Arc<SharedHost>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let data: Vec<_> = match q.get("scope_id").cloned() {
+        Some(session) => host
+            .session_artifacts(&session)
+            .await
+            .into_iter()
+            .map(|(id, path)| {
+                json!({
+                    "id": id,
+                    "type": "file",
+                    "filename": path,
+                    "downloadable": true,
+                })
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    Json(json!({ "data": data, "has_more": false }))
 }
 
 /// `POST /v1/files` (multipart, `purpose=agent`): store the `file` part's bytes and

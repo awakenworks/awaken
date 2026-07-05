@@ -108,6 +108,14 @@ impl Tool for WriteTool {
         "write"
     }
     async fn call(&self, args: WriteArgs) -> Result<String, ToolError> {
+        // Create parent directories so a write to a nested path (e.g. `outputs/x.txt`)
+        // succeeds without a prior mkdir — matching editor/`write`-tool expectations.
+        if let Some(parent) = std::path::Path::new(&args.path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| ToolError::Execution(format!("write {}: {err}", args.path)))?;
+        }
         std::fs::write(&args.path, &args.content)
             .map_err(|err| ToolError::Execution(format!("write {}: {err}", args.path)))?;
         Ok(format!(
@@ -209,4 +217,28 @@ pub fn executable_hand_tools() -> Vec<Arc<dyn RawTool>> {
         erase(GrepTool),
         erase(BashTool),
     ]
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn write_creates_missing_parent_directories() {
+        // A write to a nested path (e.g. `outputs/x.txt`) must succeed without a prior
+        // mkdir — the artifact-write path (ADR-0038) relies on this.
+        let base = std::env::temp_dir().join(format!("awaken-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let path = base.join("outputs/deep/result.txt");
+        let out = WriteTool
+            .call(WriteArgs {
+                path: path.to_string_lossy().into_owned(),
+                content: "artifact-bytes".into(),
+            })
+            .await
+            .expect("write into a missing dir tree");
+        assert!(out.contains("wrote"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "artifact-bytes");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
