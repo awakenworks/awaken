@@ -105,6 +105,11 @@ pub struct CreateSessionRequest {
     /// by exact `mcp_server_url`).
     #[serde(default)]
     pub vault_ids: Vec<String>,
+    /// Mounted resources (ADR-0038): file / memory_store / github_repository entries
+    /// the SDK sends on `sessions.create`. Kept as opaque `Value`s (the wire shapes
+    /// differ per kind); the state layer parses each into a `SessionResource`.
+    #[serde(default)]
+    pub resources: Vec<Value>,
 }
 
 /// One MCP server on the wire (`BetaManagedAgentsMCPServerURLDefinition` /
