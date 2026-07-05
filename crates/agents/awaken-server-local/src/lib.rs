@@ -1422,6 +1422,9 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         profiles,
         mcp: mcp_store.clone(),
         projects: projects.clone(),
+        // Per-agent resource bindings (ADR-0038). Ephemeral in-memory for now; the
+        // durable SqliteAdminStore also implements `ResourceStore` for a later wire.
+        resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
         // The live credential probe is backed by provider-genai here — the only
         // place the model SDK is named; the admin CRUD crate stays SDK-free.
         probe: Some(Arc::new(GenaiProbe)),

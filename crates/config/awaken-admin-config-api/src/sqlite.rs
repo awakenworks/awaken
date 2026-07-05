@@ -121,6 +121,17 @@ impl SqliteAdminStore {
     }
 }
 
+impl crate::router::ResourceStore for SqliteAdminStore {
+    fn put_agent_resource(&self, config: AgentResourceConfig) {
+        // Fully-qualified so this resolves to the inherent method (durable upsert),
+        // not the trait method being defined.
+        SqliteAdminStore::put_agent_resource(self, config);
+    }
+    fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
+        SqliteAdminStore::get_agent_resource(self, agent_id)
+    }
+}
+
 impl InferenceProfileStore for SqliteAdminStore {
     fn put(&self, id: String, profile: InferenceProfile) {
         self.put_row("inference_profile", "id", &id, &profile);
