@@ -50,6 +50,10 @@ pub enum AgentRef {
         id: String,
         #[serde(default)]
         version: Option<u32>,
+        /// Per-session model override (R2): binds this session's runs to `model`
+        /// instead of the host default. Absent → the host default model.
+        #[serde(default)]
+        model: Option<String>,
     },
 }
 
@@ -58,6 +62,14 @@ impl AgentRef {
         match self {
             AgentRef::Id(id) => id,
             AgentRef::Obj { id, .. } => id,
+        }
+    }
+
+    /// The session's requested model, when the client bound one (R2).
+    pub fn model(&self) -> Option<&str> {
+        match self {
+            AgentRef::Obj { model, .. } => model.as_deref(),
+            AgentRef::Id(_) => None,
         }
     }
 }
@@ -316,4 +328,34 @@ pub struct ListEventsResponse {
     pub data: Vec<Event>,
     pub next_page: Option<String>,
     pub has_more: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_ref_parses_a_per_session_model_and_bare_id() {
+        // Bare string id → no model (R2 optional, backward compatible).
+        let bare: AgentRef = serde_json::from_str(r#""assistant""#).unwrap();
+        assert_eq!(bare.id(), "assistant");
+        assert_eq!(bare.model(), None);
+
+        // Object with a model → carried as the session's model override.
+        let obj: AgentRef =
+            serde_json::from_str(r#"{"id":"assistant","model":"fast-model"}"#).unwrap();
+        assert_eq!(obj.id(), "assistant");
+        assert_eq!(obj.model(), Some("fast-model"));
+
+        // Object without a model → None (host default).
+        let no_model: AgentRef = serde_json::from_str(r#"{"id":"assistant"}"#).unwrap();
+        assert_eq!(no_model.model(), None);
+    }
+
+    #[test]
+    fn create_session_request_accepts_an_agent_with_model() {
+        let req: CreateSessionRequest =
+            serde_json::from_str(r#"{"agent":{"id":"a","model":"m2"}}"#).unwrap();
+        assert_eq!(req.agent.model(), Some("m2"));
+    }
 }
