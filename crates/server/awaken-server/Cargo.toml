@@ -39,8 +39,10 @@ awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqli
 # Embedded IAM (ADR-0042/0043 P1): AWAKEN_MGMT_IAM=embedded gates the management
 # plane behind bearer ApiTokens. contract = ids/scopes/requests, core = token
 # directory + minter + the default-deny PolicySet evaluator, preset = the seeded
-# Anthropic role catalog. (No awaken-iam-server: see the workspace manifest.)
+# Anthropic role catalog + the iam-server store (rusqlite range is links-safe
+# since iam adopted foundation ADR-0005).
 awaken-iam-contract = { workspace = true }
+awaken-iam-server = { workspace = true }
 awaken-iam-core = { workspace = true }
 awaken-iam-preset = { workspace = true }
 # The embedded IAM token/binding rows persist under AWAKEN_MGMT_DIR/iam.sqlite;
