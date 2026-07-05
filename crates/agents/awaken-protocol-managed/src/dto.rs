@@ -54,6 +54,10 @@ pub enum AgentRef {
         /// instead of the host default. Absent → the host default model.
         #[serde(default)]
         model: Option<String>,
+        /// Runtime selection (R3): `"awaken"` (native) or `"acp:<cli>"` (an
+        /// external ACP agent such as Claude Code). Absent → native.
+        #[serde(default)]
+        runtime: Option<String>,
     },
 }
 
@@ -69,6 +73,14 @@ impl AgentRef {
     pub fn model(&self) -> Option<&str> {
         match self {
             AgentRef::Obj { model, .. } => model.as_deref(),
+            AgentRef::Id(_) => None,
+        }
+    }
+
+    /// The session's requested runtime adapter, when the client chose one (R3).
+    pub fn runtime(&self) -> Option<&str> {
+        match self {
+            AgentRef::Obj { runtime, .. } => runtime.as_deref(),
             AgentRef::Id(_) => None,
         }
     }
@@ -361,6 +373,15 @@ mod tests {
         let req: CreateSessionRequest =
             serde_json::from_str(r#"{"agent":{"id":"a","model":"m2"}}"#).unwrap();
         assert_eq!(req.agent.model(), Some("m2"));
+    }
+
+    #[test]
+    fn agent_ref_parses_a_runtime_selection() {
+        let acp: AgentRef = serde_json::from_str(r#"{"id":"a","runtime":"acp:claude"}"#).unwrap();
+        assert_eq!(acp.runtime(), Some("acp:claude"));
+        // Absent → None (native, backward compatible).
+        let native: AgentRef = serde_json::from_str(r#""a""#).unwrap();
+        assert_eq!(native.runtime(), None);
     }
 
     #[test]

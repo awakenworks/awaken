@@ -191,10 +191,10 @@ pub(crate) struct SessionCtx {
     /// The delivery seam a turn's execution goes through (slice C): `DirectRunIngress`
     /// by default; a `DurableRunIngress` when durable dispatch is enabled (slice D).
     /// Both drive the same `runtime`/`commit`; only the delivery guarantees differ.
-    ingress: Arc<dyn RunIngress>,
+    pub(crate) ingress: Arc<dyn RunIngress>,
     /// True when `ingress` is durable: a turn is submitted through the dispatch
     /// queue (`submit_background`) rather than executed inline (slice D).
-    durable: bool,
+    pub(crate) durable: bool,
     /// The concrete durable ingress, present iff `durable`. Kept alongside the
     /// boxed `ingress` so the ADR-0009 operational verbs (recover / reap /
     /// dead-letter GC / superseding submit — slice E) stay reachable; the boxed
@@ -256,6 +256,8 @@ pub struct SharedHost {
     pub(crate) model_ref: String,
     /// Per-thread model→executor routing (R1/R2). See [`crate::model_route`].
     pub(crate) model_route: crate::model_route::ThreadModelBinding,
+    /// ACP runtime backend (R3/R4): serves `acp:*` sessions on an external CLI.
+    pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
     pub(crate) provider: LocalSandboxProvider,
     grader: Arc<dyn Grader>,
     client_tools: HashSet<String>,
@@ -316,6 +318,7 @@ impl SharedHost {
             llm,
             model_ref: model_ref.into(),
             model_route: crate::model_route::ThreadModelBinding::new(),
+            acp: None,
             provider: LocalSandboxProvider::new(sub_base("")),
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
@@ -997,24 +1000,11 @@ impl SharedHost {
         // thread's stale pending/parked dispatches superseded (ADR-0022); direct
         // ingress runs it inline (`submit`). All drive to the same terminal/parked
         // phase and commit through the same boundary, so `finish_step` is identical.
-        let phase = if supersede {
-            ctx.durable_ingress
-                .as_ref()
-                .expect("supersede requires durable ingress")
-                .submit_superseding(activation)
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?
-        } else if ctx.durable {
-            ctx.ingress
-                .submit_background(activation)
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?
-        } else {
-            ctx.ingress
-                .submit(activation, ctx.context())
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?
-        };
+        // R3/R4: route to the ACP executor for acp:* threads, else the native
+        // ingress (direct / durable / superseding). See `crate::turn_exec`.
+        let phase = self
+            .execute_activation(&ctx, thread, activation, supersede)
+            .await?;
         let result = self.finish_step(&ctx, &mut st, run_id, phase, before, thread);
         drop(st);
         self.run_aux_after_step(&ctx, thread, &result.phase).await;

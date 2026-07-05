@@ -642,6 +642,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # Like the examples crate it may name every adapter it composes; nothing
     # depends on it.
     "awaken-server-local": {
+        "awaken-run-executor-acp",
         "awaken-protocol-managed",
         "awaken-protocol-ai-sdk",
         "awaken-protocol-ag-ui",
