@@ -178,6 +178,7 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 **project 容器统一权限(已定的架构决定)**:
 10. vault router 挂进 `/projects/{pid}` ingress(今天 ingress 只转发 session router),vault 创建 stamp `ProjectScope` → vault 归属 project;
 11. managed 运行面纳入 IAM guard:按路径 project 段做 `ScopeRef::Project{workspace_id, project_id}` 校验(词汇已在 awaken-iam-contract),动作词汇为 sessions/vaults 扩展;裸 `/v1/sessions` 保留 stock-SDK 兼容(project-bound key 或默认 project)。
+12. **managed API key 绑定 project 层级(已定)**:runtime key 与平台/管理 key 同一 IAM 机制、同一 wire(`x-api-key` `sk-ant-…`),差别只在绑定 scope 与动作集——管理 key 绑 Workspace/Global + `workspace.*`/`apikey.*`;**runtime key 绑 `ScopeRef::Project` + 仅 run-plane 动作(`run.read`/`run.write`,覆盖 sessions/events/vaults)**。授权规则:经 `/projects/{pid}` 进入时 key 的 scope 必须覆盖该 project(workspace key 经 scope 图祖先关系覆盖其下所有 project);裸 `/v1/sessions` 时 project-bound key 隐含其绑定的 project(寻址从 key 推出,stock-SDK 零改动)。治理仍在 workspace IAM(key 注册表不搬家,project 只是绑定 scope——reference-don't-copy);Console 上 Project ▸ Settings 增设「API keys」段铸造/吊销本项目 runtime key(明文一次),Workspace ▸ Access 继续管管理 key。对齐 Anthropic:其 Console API key 即绑定在 workspace(运行容器)而非组织——我们的 project 正是该运行容器的对应物。
 
 **非阻塞**:SSE live push(live banner + 轮询先行);workspace 枚举(P1 单 workspace)。
 
