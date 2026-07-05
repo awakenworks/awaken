@@ -1037,6 +1037,8 @@ pub awaken_runtime_contract::resolved::ResolvedSpec::model_binding: awaken_runti
 pub awaken_runtime_contract::resolved::ResolvedSpec::plugin_config: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
 pub awaken_runtime_contract::resolved::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::resolved::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+impl awaken_runtime_contract::resolved::ResolvedSpec
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::runtime_adapter(&self) -> &str
 impl core::clone::Clone for awaken_runtime_contract::resolved::ResolvedSpec
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::clone(&self) -> awaken_runtime_contract::resolved::ResolvedSpec
 impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ResolvedSpec
@@ -1811,6 +1813,8 @@ pub awaken_runtime_contract::ResolvedSpec::model_binding: awaken_runtime_contrac
 pub awaken_runtime_contract::ResolvedSpec::plugin_config: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
 pub awaken_runtime_contract::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+impl awaken_runtime_contract::resolved::ResolvedSpec
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::runtime_adapter(&self) -> &str
 impl core::clone::Clone for awaken_runtime_contract::resolved::ResolvedSpec
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::clone(&self) -> awaken_runtime_contract::resolved::ResolvedSpec
 impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ResolvedSpec
