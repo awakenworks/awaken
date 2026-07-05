@@ -11,6 +11,7 @@
 //! distribution stays out — remote relays and multi-node ingress plug in through
 //! seams, not here.
 
+mod acp_backend;
 mod agent_catalog;
 mod authz;
 mod background;
@@ -28,6 +29,7 @@ mod model_route;
 mod skills;
 mod store;
 mod subagent;
+mod turn_exec;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -145,6 +147,33 @@ pub fn build_model_route_router() -> Router {
     mount(Arc::new(
         SharedHost::new(Arc::new(LabelModel("default")), "default")
             .with_executor_provider(Arc::new(RouteProvider)),
+    ))
+}
+
+/// A minimal ACP agent (shell): read the prompt line, emit a message + turn_end —
+/// stands in for `claude --acp` so the ACP-runtime path runs without a real CLI.
+const FAKE_ACP_SCRIPT: &str = "read _p; \
+    printf '%s\\n' '{\"type\":\"message\",\"text\":\"acp-runtime reply\"}'; \
+    printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+
+/// A router where a session can select `runtime: "acp:*"` to run on an external
+/// ACP CLI (here the fake agent), else the native echo model (R3/R4/R7).
+/// `AWAKEN_MODEL_MODE=acp`.
+pub fn build_acp_router() -> Router {
+    let launch = awaken_run_executor_acp::AcpLaunch::custom(
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            FAKE_ACP_SCRIPT.to_string(),
+        ],
+        vec![],
+    );
+    let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
+        launch,
+    ));
+    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+    mount(Arc::new(
+        SharedHost::new(Arc::new(EchoModel), "awaken").with_acp(acp),
     ))
 }
 
@@ -793,6 +822,10 @@ impl SessionRuntime for ManagedHost {
         // consumed at the thread's first turn to resolve its executor + model name.
         if let Some(model) = &init.model {
             self.host.register_thread_model(thread, model);
+        }
+        // R3: stage the session's runtime adapter; `acp:*` routes to the ACP CLI.
+        if let Some(runtime) = &init.runtime {
+            self.host.register_thread_runtime(thread, runtime);
         }
         let Some(mcp) = &self.mcp else {
             return Ok(());
