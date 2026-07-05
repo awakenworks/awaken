@@ -405,6 +405,19 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # feature `real-acp`: the official ACP codec, projected through the same ACL.
         "agent-client-protocol",
     },
+    # ACP run executor: an external ACP agent as a peer RunExecutor. Runtime plane;
+    # drives a channel via the Supervisor, classifies failures, commits through the
+    # coordinator. Host opens the channel (injected), so no config/sandbox dep.
+    "awaken-run-executor-acp": {
+        "awaken-runtime-contract",
+        "awaken-agent-contract",
+        "awaken-provisioning-contract",
+        "awaken-agent-channel",
+        "awaken-protocol-acp",
+        "async-trait",
+        "thiserror",
+        "tokio",
+    },
     # AI SDK v6 protocol adapter: the anti-corruption boundary between the Vercel
     # AI SDK UI Message Stream wire and the neutral runtime. Like the managed
     # adapter it owns public DTOs + the axum router, depends only on the

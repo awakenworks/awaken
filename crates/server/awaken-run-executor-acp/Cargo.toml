@@ -1,0 +1,18 @@
+[package]
+name = "awaken-run-executor-acp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-runtime-contract.workspace = true
+awaken-agent-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-agent-channel.workspace = true
+awaken-protocol-acp.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "time", "sync"] }

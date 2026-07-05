@@ -24,6 +24,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(feature = "real-acp")]
 pub mod real_acp;
 
+/// ACP turn-failure classification + error prompts (ported from oversight-next,
+/// minus its rescheduling/retry).
+pub mod error;
+
+pub use error::{
+    AcpFailure, AcpFailureClass, CredentialKind, RawAcpError, Stage, classify_error,
+    deadline_exceeded, refusal, streamed_hard_limit,
+};
+
 /// Why a turn ended — projected from the agent's terminal frame or the supervisor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
