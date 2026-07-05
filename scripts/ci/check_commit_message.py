@@ -53,13 +53,30 @@ EXTERNAL_TOOL_RE = re.compile(
     r"|(^Platform: [A-Za-z0-9._-]+$)",
     re.IGNORECASE,
 )
+# Latin terms are anchored with \b so a real PM word ("Owner", "est.") is caught
+# but an innocent substring is not ("ownership", "latest.", "Friday 5"). CJK
+# terms take no \b: Python's \b sits between \w chars, and CJK is \w, so a word
+# boundary never falls inside CJK text — anchoring there would match nothing.
 PM_TERMS_RE = re.compile(
-    r"(Phases? [0-9])|(Stages? [0-9])|(Steps? [0-9])|(Week [0-9])|(Day [0-9])"
-    r"|([0-9]+% done)|(Sprint [0-9])|(Milestone)|(est\.)|(estimated)"
-    r"|(In Progress)|(预计)|(计划)|(负责人)|(工作量)|(Owner)|(Assignee)",
+    r"(\bPhases? [0-9])|(\bStages? [0-9])|(\bSteps? [0-9])|(\bWeek [0-9])|(\bDay [0-9])"
+    r"|(\b[0-9]+% done\b)|(\bSprint [0-9])|(\bMilestone\b)|(\best\.)|(\bestimated\b)"
+    r"|(\bIn Progress\b)|(预计)|(计划)|(负责人)|(工作量)|(\bOwner\b)|(\bAssignee\b)",
     re.IGNORECASE,
 )
 URL_RE = re.compile(r"https?://")
+
+# Plan/progress markers an assistant tends to emit — slice / phase / step ids
+# like A1, D0, P2, A3a, R7. Case-SENSITIVE (uppercase-letter start), so lowercase
+# words, the branch name `p2-...`, and identifiers like `x0` are unaffected.
+# Two legitimate namespaces are exempt: G-invariant ids (G1..G29, excluded via
+# the negative lookahead) and ADR-#### references (ADR is multi-letter, so a
+# single-letter-then-digit token never matches inside it). `P2P`, `SHA256`,
+# `ARM64` are safe too — the digits are not followed by a word boundary.
+PLAN_MARKER_RE = re.compile(r"\b(?!G\d)[A-Z]-?\d{1,3}[a-z]?\b")
+
+# Uppercase tech acronyms that share the marker shape but are legitimate nouns
+# (no lowercase spelling that reads well). Compared case-folded.
+PLAN_MARKER_EXEMPT = {"S3", "K8S", "L10N"}
 
 
 def clean_lines(raw: str) -> list[str]:
@@ -120,8 +137,27 @@ def check_message(raw: str) -> list[str]:
         if EXTERNAL_TOOL_RE.match(line):
             errors.append("commit message contains external-tool provenance markers.")
             break
-    if PM_TERMS_RE.search("\n".join(lines)):
-        errors.append("commit message contains prohibited project-management terms.")
+    pm_hit = PM_TERMS_RE.search("\n".join(lines))
+    if pm_hit:
+        errors.append(
+            f"commit message contains a prohibited project-management term: "
+            f"{pm_hit.group(0)!r} — reword without status/phase/ownership jargon."
+        )
+
+    plan_hit = next(
+        (
+            m.group(0)
+            for m in PLAN_MARKER_RE.finditer("\n".join(lines))
+            if m.group(0).upper() not in PLAN_MARKER_EXEMPT
+        ),
+        None,
+    )
+    if plan_hit:
+        errors.append(
+            f"commit message contains a plan/progress marker: {plan_hit!r} — "
+            f"drop slice/phase ids (A1, D0, P2, A3a) from the log; describe the change "
+            f"itself. (G-invariant ids like G18 and ADR-#### are exempt.)"
+        )
 
     return errors
 
@@ -131,6 +167,15 @@ def self_test() -> int:
         "✨ feat(auth): add OAuth2 login",
         "🐛 fix(runtime): guard against empty thread commit",
         "📝 docs(wiki): summarise invariant G18\n\nClarify the boundary rule.",
+        # PM terms are whole-word: these substrings must not trip the filter.
+        "📝 docs(wiki): update ownership index",
+        "🐛 fix(runtime): return the latest request.",
+        "🔧 chore(ci): ship the fix on Friday 5pm",
+        # Plan-marker exemptions: invariant ids, ADR refs, and lookalikes.
+        "🔧 chore(runtime): satisfy invariant G18 boundary",
+        "📝 docs(adr): record ADR-0038 resource injection",
+        "✨ feat(net): add P2P transport with SHA256 digests",
+        "🔧 chore(store): wire the S3 backend behind a flag",
     ]
     bad = [
         "feat: missing emoji and scope",
@@ -142,6 +187,8 @@ def self_test() -> int:
         "✨ feat(auth): ok\n\nvia [HAPI](https://hapi.run)",
         "✨ feat(auth): ok\n\nOwner: alice; 预计 done",
         "✨ wat(auth): unknown type",
+        "🔧 chore(runtime): land slice A3a of the resolver",
+        "🔧 chore(runtime): finish D0 before the cutover",
     ]
     failures = 0
     for msg in good:

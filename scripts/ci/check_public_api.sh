@@ -51,25 +51,43 @@ crates=$(cargo metadata --no-deps --format-version 1 \
 excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store awaken-protocol-managed awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-protocol-acp awaken-server-local awaken-model-catalog awaken-credential-vault awaken-config-resolver awaken-managed-bridge awaken-admin-config-api"
 
 fail=0
+drifted=()      # crates whose surface changed
+compute_fail=0  # a crate whose surface could not be computed
 for c in $crates; do
   case " $excluded " in *" $c "*) echo "skipped $c (excluded from public-API gate)"; continue;; esac
   snap="public-api/$c.txt"
   if ! cur=$(cargo +nightly public-api -p "$c" --simplified 2>/dev/null); then
-    echo "✗ failed to compute public API for $c"; fail=1; continue
+    echo "✗ failed to compute public API for $c"; fail=1; compute_fail=1; continue
   fi
   if [ "$bless" = 1 ] || [ ! -f "$snap" ]; then
     printf '%s\n' "$cur" > "$snap"
     echo "blessed $snap"
-  elif ! diff -u "$snap" <(printf '%s\n' "$cur") >/dev/null; then
-    echo "✗ public API drift in $c:"
-    diff -u "$snap" <(printf '%s\n' "$cur") || true
-    echo "  -> review the change; run scripts/ci/check_public_api.sh --bless to accept"
-    fail=1
+  else
+    d=$(diff -u "$snap" <(printf '%s\n' "$cur") || true)
+    if [ -n "$d" ]; then
+      added=$(printf '%s\n' "$d" | grep -cE '^\+[^+]' || true)
+      removed=$(printf '%s\n' "$d" | grep -cE '^-[^-]' || true)
+      echo "✗ public API drift in $c  (+$added / -$removed)"
+      printf '%s\n' "$d" | sed 's/^/    /'
+      drifted+=("$c")
+      fail=1
+    fi
   fi
 done
 
 if [ "$fail" -ne 0 ]; then
-  echo "✗ public API check failed" >&2
+  {
+    echo ""
+    if [ "${#drifted[@]}" -ne 0 ]; then
+      echo "❌ public API changed in: ${drifted[*]}"
+      echo "   If the change is intended, accept the new surface with:"
+      echo "       scripts/ci/check_public_api.sh --bless"
+      echo "   then commit the updated public-api/*.txt snapshots."
+    fi
+    if [ "$compute_fail" -ne 0 ]; then
+      echo "❌ could not compute the public API for some crate (see ✗ lines above)."
+    fi
+  } >&2
   exit 1
 fi
 echo "✓ public API snapshots match"
