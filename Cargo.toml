@@ -1,10 +1,17 @@
 [workspace]
 resolver = "2"
-# Product buckets by directory (single workspace):
-#   crates/runtime/* → Awaken runtime (Build); a self-contained lower layer.
-#   crates/agents/*  → Awaken Agents (Run); may depend on runtime/, never the reverse
-#                      (enforced by scripts/ci/check_crate_boundaries.py).
+# Product buckets by directory (single workspace), lower→upper:
+#   crates/provisioning/* → execution substrate (sandbox, channel); no runtime dep.
+#   crates/config/*       → control/authoring plane (catalog, vault, resolver); no runtime dep.
+#   crates/resources/*    → agent resource stores (file store); no runtime dep.
+#   crates/runtime/*      → Awaken runtime (Build) incl. ACP driver; may depend on the three above.
+#   crates/agents/*       → Awaken Agents (Run); may depend on all of the above, never the reverse
+#                           (enforced by scripts/ci/check_crate_boundaries.py).
 members = [
+    "crates/foundation/*",
+    "crates/provisioning/*",
+    "crates/config/*",
+    "crates/resources/*",
     "crates/runtime/*",
     "crates/agents/*",
 ]

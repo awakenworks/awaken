@@ -911,10 +911,39 @@ def check_tests_are_not_arch_owners() -> list[str]:
     return errors
 
 
+# Product-bucket dependency order (lower→upper). The three lower planes are
+# runtime-independent; the runtime never depends on config or agents (ADR-0043
+# I4/D6/D9). A bucket may depend only on the buckets in its set.
+#   foundation                → shared neutral contracts (agent/runtime contract)
+#   provisioning              → execution substrate (sandbox contract, channel, container)
+#   config                    → control/authoring plane (catalog, vault, resolver, config-store)
+#   resources                 → agent resource stores (file store)
+#   runtime                   → the engine incl. the ACP driver
+#   agents                    → Run-plane orchestration / composition roots
+BUCKET_ALLOWED_DEPS = {
+    "foundation": {"foundation"},
+    "provisioning": {"foundation", "provisioning", "resources"},
+    "config": {"foundation", "config", "resources"},
+    "resources": {"foundation", "resources"},
+    "runtime": {"foundation", "provisioning", "resources", "runtime"},
+    "agents": {"foundation", "provisioning", "config", "resources", "runtime", "agents"},
+}
+
+
+def normal_dependency_names(manifest: dict) -> set[str]:
+    """Normal + build deps only. Dev-dependencies are test/example wiring and may
+    cross buckets freely (a test is a composition root)."""
+    deps: set[str] = set()
+    for section in ("dependencies", "build-dependencies"):
+        deps.update(manifest.get(section, {}).keys())
+    return deps
+
+
 def check_bucket_direction() -> list[str]:
-    """The product-bucket rule: crates/agents/* may depend on crates/runtime/*,
-    never the reverse. Keys off the actual directory a crate lives in, so it stays
-    correct as crates are added without touching any allowlist."""
+    """The product-bucket order (see BUCKET_ALLOWED_DEPS). provisioning/config/
+    resources are runtime-independent; the runtime never depends on config or
+    agents. Keys off the actual directory a crate lives in, so it stays correct as
+    crates are added without touching any allowlist. Dev-deps are exempt."""
     errors: list[str] = []
     bucket: dict[str, str] = {}
     for manifest_path in iter_crate_manifests():
@@ -923,14 +952,15 @@ def check_bucket_direction() -> list[str]:
     for manifest_path in iter_crate_manifests():
         manifest = load_manifest(manifest_path)
         name = package_name(manifest)
-        if bucket.get(name) != "runtime":
-            continue
-        for dep in dependency_names(manifest):
-            if bucket.get(dep) == "agents":
-                errors.append(
-                    f"runtime/{name} depends on agents/{dep} "
-                    "(runtime must not depend on agents)"
-                )
+        allowed = BUCKET_ALLOWED_DEPS.get(bucket.get(name), set())
+        for dep in normal_dependency_names(manifest):
+            dep_bucket = bucket.get(dep)
+            if dep_bucket is None or dep_bucket in allowed:
+                continue
+            errors.append(
+                f"{bucket.get(name)}/{name} depends on {dep_bucket}/{dep} "
+                f"(a {bucket.get(name)} crate may depend only on {sorted(allowed)})"
+            )
     return errors
 
 
