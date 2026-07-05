@@ -276,36 +276,45 @@ tools) and touches no registry or store. The naming law stays intact — `File` 
 the immutable-blob storage; `SkillRegistry` is the control-plane naming/versioning
 index above it.
 
-### A3: Artifacts are surfaced by path into the prompt — not runtime truth, not a Checkpoint fact
+### A3: Resource prompts inject at config-bind time into the agent system prompt; artifacts are never runtime truth
 
-**Corrects an earlier draft of this amendment** (which routed artifacts through a
-harvest into the blob store, pinned by the Checkpoint). The sandbox→host output
-path (`Sandbox::artifacts()` + `read_artifact()`, files under `outputs_path`) is
-**not** recorded as committed runtime truth. The outputs **path is rendered into
-the prompt** at context-compose time — the same control-plane mechanism by which a
-memory store's `description`/`instructions` are injected into the system prompt
-(D5). `awaken-agent-contract` / `Checkpoint` **do not learn about artifacts** and
-need **no** change; G13 is untouched.
+**Corrects earlier drafts** (which rendered the outputs path into the prompt *per
+turn at runtime*, and before that routed artifacts through a Checkpoint harvest —
+both wrong). Two rulings:
 
-- **Surface, don't commit.** When composing the next turn, the host lists
-  `artifacts()` and renders their paths (+ metadata) into the prompt as context,
-  so the model/user know what was produced. This is control-plane prompt assembly,
-  not a fact-log write.
-- **Bytes are on-demand.** `read_artifact(id)` is called only when a client/API
-  actually downloads an output; it is not a run-boundary harvest. Whether the host
-  additionally copies bytes into the blob store for durable download is a
-  **control-plane option**, never a committed run fact.
-- **Three write-backs stay distinct** (only the outputs row changed):
+**(a) Resource prompts are written at bind/resolve time into the agent's effective
+system prompt.** When a resource is bound to an agent — the consumption binding,
+mirroring `ProjectAgentConfig` / `AgentMcpConfig` for MCP — the resolver renders a
+short description of that resource (its `mount_path`, `access`, a memory store's
+`instructions`, a repo's branch, a skill's purpose, the outputs path) and appends
+it to the agent's **effective** system prompt (base `AgentConfig.instructions` +
+one fragment per binding), handed to the runtime at the config→runtime boundary
+(ADR-0031) — exactly as an MCP binding resolves to a `ResolvedMcpServer`. This is
+**config-time**, not per-turn runtime compose, and **every resource kind shares the
+one mechanism** (a template per kind). `AgentConfig.instructions` itself (the config
+domain's truth, part of the publication fingerprint) is **not** mutated — the
+fragment is composed at resolve, like every other resolved value.
+
+**(b) Artifacts are never runtime truth.** The sandbox→host output path
+(`Sandbox::artifacts()` + `read_artifact()`, files under `outputs_path`) is not
+recorded as committed truth. The agent already knows where to write because the
+outputs path was injected into its system prompt at bind time (a); the host
+retrieves bytes **on demand** via `read_artifact()` when a client/API downloads an
+output. `awaken-agent-contract` / `Checkpoint` **do not learn about artifacts** and
+need **no** change; G13 is untouched. Copying bytes into the blob store for durable
+download is a control-plane option, never a committed run fact.
+
+Three write-backs stay distinct:
 
 | Write-back | Direction | Driver | Mechanism |
 |---|---|---|---|
-| **outputs / artifacts** | sandbox → host | control-plane compose | `artifacts()` → **paths rendered into the prompt**; bytes via `read_artifact()` on demand; **no Checkpoint, no G13** |
+| **outputs / artifacts** | sandbox → host | host, on demand | outputs path is in the system prompt (bound at config time, a); bytes via `read_artifact()`; **no Checkpoint, no G13** |
 | **durable mount** | sandbox → source | provider-internal | `ReadWrite`+`Durable` mounts write back at `dispose`/`attach` (memory → new version; secret → broker) |
 | **git push** | sandbox → remote | agent (bash git) | via the host git-proxy; host does **not** harvest git |
 
 `artifacts()` is idempotent and content-addressed (`Artifact.id = content_hash`),
-so listing/reading is reconnect-safe from any node that can `adopt` the sandbox —
-but nothing about it enters run truth. Artifacts add **no** new storage and touch
+so retrieval is reconnect-safe from any node that can `adopt` the sandbox — but
+nothing about it enters run truth. Artifacts add **no** new storage and touch
 neither `awaken-agent-contract` nor the Checkpoint.
 
 ### Consequences of the amendment
@@ -313,8 +322,13 @@ neither `awaken-agent-contract` nor the Checkpoint.
 - The resource plane has **exactly one content-addressed blob store** as its byte
   substrate — shared by `file` in and `skill` bundles — plus one mutable keyed
   store (`memory_store`) and the vault (`secret`). Reference resources add zero
-  storage; **artifacts add none either** (surfaced by path, bytes read on demand);
-  the skill registry is a control-plane index, not a backend.
+  storage; **artifacts add none either** (outputs path injected into the system
+  prompt at bind time, bytes read on demand); the skill registry is a control-plane
+  index, not a backend.
+- Every resource kind's prompt is injected **at config-bind/resolve time** into the
+  agent's effective system prompt (A3a), mirroring the MCP binding path — not
+  rendered per-turn at runtime; provisioning realizes bytes/mounts and never
+  injects prompts.
 - Adding `github_repository`/`skill` stays "a `MountSource` variant + a realize
   arm": `skill` reuses the `File` arm; `github_repository` reuses the
   egress-substitution (broker) seam for auth (`EnvValue::Secret` /
