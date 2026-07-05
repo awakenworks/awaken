@@ -213,6 +213,115 @@ scope it bounds.
 - **Grow `SessionRuntime` with attach/detach methods.** Rejected (D5): resource
   composition is control-plane; the runtime consumes realized mounts only.
 
+## Amendment — 2026-07-05: resource-family taxonomy, Skill-as-registry, artifacts-as-harvest
+
+A Part B design review (with the user) surfaced three refinements the original
+decision under-specified. The realized code uses a `MountSource` enum
+(`File | Resource | MemoryStore | Secret | Other`) in
+`awaken-provisioning-contract::vocab`, plus `Sandbox::{artifacts, read_artifact}`
+for the reverse channel; these rulings pin how the remaining kinds
+(`github_repository`, `skill`) and the output path fit, and re-scope D1/D3.
+
+### A1: Two resource families — stateful (has a Store) vs reference (no Store)
+
+The load-bearing axis is **not** "how many aggregates" (D1) but **does the
+resource own durable server-side state?** Two families:
+
+- **Stateful → backs a Store**: `file` (immutable blob), `memory_store` (mutable
+  keyed + versioned), `secret` (vault). Bytes/rows live in an awaken-owned store;
+  a `MountSource` variant addresses that store by id/reference.
+- **Reference → no Store**: `github_repository` (the remote *is* the truth; the
+  working tree is ephemeral), `mcp` (a server URL), `multiagent` (an agent-id
+  roster). The descriptor is lightweight config living in `ConfigRegistry`;
+  realize resolves against the external truth and persists nothing.
+
+Corollaries:
+
+- **Descriptor weight ≠ realize weight.** All reference descriptors are light, but
+  `github_repository` realize is heavy I/O (clone + egress credential proxy +
+  push). "Lightweight" describes *ownership of state*, not *cost of realization* —
+  a git mount is not free.
+- Reference resources are **not** peers of the store aggregates in D1; D1's "three
+  store aggregates" is hereby narrowed to *the stateful family only*.
+- `mcp` and `multiagent` are provisioning axes (tool sets / sub-run rosters),
+  **not** `MountSource` mounts, and need no resource store: MCP config +
+  credentials reuse `ConfigRegistry` + the vault (broker reference); multiagent
+  reuses the run/checkpoint stores (no new state).
+
+### A2: `SkillRegistry` is a thin index over the shared blob store, not a store engine
+
+Refines D1/D3. A skill is an **immutable, versioned content bundle referenced by
+id** — structurally a `file` with a manifest and a version line, not a distinct
+storage lifecycle. Therefore:
+
+- **`SkillRegistry` is an index, not a Store engine**: `skill_id → [version →
+  bundle content_hash]`. The **bytes live in the same content-addressed blob store
+  as `file`**; the registry is a thin name/version table over it
+  (ConfigRegistry-adjacent), not a fourth backend.
+- **Prebuilt skills carry no storage** — they ship with the runtime and are pure
+  references (Anthropic's `{type:"anthropic", skill_id}`); only **custom** skills
+  occupy the blob store (Anthropic's `/v1/skills`).
+- Realize: `MountSource::Skill{skill_id, version}` resolves through the registry to
+  a `bundle content_hash`, then materializes read-only via **the same `File`
+  realize arm** (`Realization::Copy`/`Bind`) — one extra registry lookup, no new
+  realizer.
+
+This supersedes D1's implication that `SkillStore` is a peer storage aggregate,
+**and relocates D3's registry placement**: the registry is **control-plane** — the
+host resolves `skill_id@version → bundle content_hash` at *compose time*, when it
+decides which bundle to materialize as a mount — and is **not** owned by
+`awaken-ext-skills`. `awaken-ext-skills` stays a pure **runtime consumer**: it
+reads the already-provisioned skill files mounted into the sandbox (ADR-0036's two
+tools) and touches no registry or store. The naming law stays intact — `File` is
+the immutable-blob storage; `SkillRegistry` is the control-plane naming/versioning
+index above it.
+
+### A3: Artifacts are surfaced by path into the prompt — not runtime truth, not a Checkpoint fact
+
+**Corrects an earlier draft of this amendment** (which routed artifacts through a
+harvest into the blob store, pinned by the Checkpoint). The sandbox→host output
+path (`Sandbox::artifacts()` + `read_artifact()`, files under `outputs_path`) is
+**not** recorded as committed runtime truth. The outputs **path is rendered into
+the prompt** at context-compose time — the same control-plane mechanism by which a
+memory store's `description`/`instructions` are injected into the system prompt
+(D5). `awaken-agent-contract` / `Checkpoint` **do not learn about artifacts** and
+need **no** change; G13 is untouched.
+
+- **Surface, don't commit.** When composing the next turn, the host lists
+  `artifacts()` and renders their paths (+ metadata) into the prompt as context,
+  so the model/user know what was produced. This is control-plane prompt assembly,
+  not a fact-log write.
+- **Bytes are on-demand.** `read_artifact(id)` is called only when a client/API
+  actually downloads an output; it is not a run-boundary harvest. Whether the host
+  additionally copies bytes into the blob store for durable download is a
+  **control-plane option**, never a committed run fact.
+- **Three write-backs stay distinct** (only the outputs row changed):
+
+| Write-back | Direction | Driver | Mechanism |
+|---|---|---|---|
+| **outputs / artifacts** | sandbox → host | control-plane compose | `artifacts()` → **paths rendered into the prompt**; bytes via `read_artifact()` on demand; **no Checkpoint, no G13** |
+| **durable mount** | sandbox → source | provider-internal | `ReadWrite`+`Durable` mounts write back at `dispose`/`attach` (memory → new version; secret → broker) |
+| **git push** | sandbox → remote | agent (bash git) | via the host git-proxy; host does **not** harvest git |
+
+`artifacts()` is idempotent and content-addressed (`Artifact.id = content_hash`),
+so listing/reading is reconnect-safe from any node that can `adopt` the sandbox —
+but nothing about it enters run truth. Artifacts add **no** new storage and touch
+neither `awaken-agent-contract` nor the Checkpoint.
+
+### Consequences of the amendment
+
+- The resource plane has **exactly one content-addressed blob store** as its byte
+  substrate — shared by `file` in and `skill` bundles — plus one mutable keyed
+  store (`memory_store`) and the vault (`secret`). Reference resources add zero
+  storage; **artifacts add none either** (surfaced by path, bytes read on demand);
+  the skill registry is a control-plane index, not a backend.
+- Adding `github_repository`/`skill` stays "a `MountSource` variant + a realize
+  arm": `skill` reuses the `File` arm; `github_repository` reuses the
+  egress-substitution (broker) seam for auth (`EnvValue::Secret` /
+  `EgressOnly`), keeping credentials out of the sandbox (G3).
+- `SkillRegistry` naming stands (D3) but is re-scoped as an index, not a storage
+  engine; D1's aggregate count is scoped to the stateful family.
+
 ## References
 
 - [ADR-0035](0035-environment-provisioning-tools-skills-resources.md),
