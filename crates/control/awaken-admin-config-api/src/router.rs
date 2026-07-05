@@ -14,9 +14,9 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
-    AgentMcpConfig, InferenceProfile, McpServerDef, McpServerId, Project, ProjectAgentConfig,
-    ProjectId, ResolveError, ResolvedInference, SourceLookup, resolve_inference,
-    resolve_mcp_servers, resolve_profile,
+    AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef, McpServerId, Project,
+    ProjectAgentConfig, ProjectId, ResolveError, ResolvedInference, SourceLookup,
+    resolve_inference, resolve_mcp_servers, resolve_profile,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -48,6 +48,10 @@ pub struct AdminState {
     /// consumption bindings (a project SELECTS from workspace supply; the
     /// session ingress consults these when a run arrives via `/projects/{id}`).
     pub projects: Arc<dyn ProjectStore>,
+    /// Per-agent [`AgentResourceConfig`] bindings (ADR-0038): which resources an
+    /// agent mounts. Rendered into the agent's system prompt at compile (A3a) and
+    /// realized into the sandbox at run bind time.
+    pub resources: Arc<dyn ResourceStore>,
     /// Optional live credential validator. When wired (server-local injects a
     /// provider-genai probe), `POST /credentials/:id/validate` performs a real probe;
     /// otherwise it reports `unknown` (the model SDK never enters this CRUD crate —
@@ -138,6 +142,41 @@ impl McpStore for InMemoryMcpStore {
         self.agents
             .lock()
             .expect("agent mcp configs")
+            .get(agent_id)
+            .cloned()
+    }
+}
+
+/// A store for per-agent [`AgentResourceConfig`] bindings (ADR-0038) — which
+/// resources an agent mounts. Sync + in-memory by default; the SQLite backend
+/// implements the same port over a scoped-migration table.
+pub trait ResourceStore: Send + Sync {
+    fn put_agent_resource(&self, config: AgentResourceConfig);
+    fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig>;
+}
+
+/// The default in-memory [`ResourceStore`], keyed by agent id.
+#[derive(Default)]
+pub struct InMemoryResourceStore(std::sync::Mutex<HashMap<String, AgentResourceConfig>>);
+
+impl InMemoryResourceStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl ResourceStore for InMemoryResourceStore {
+    fn put_agent_resource(&self, config: AgentResourceConfig) {
+        self.0
+            .lock()
+            .expect("agent resource configs")
+            .insert(config.agent_id.clone(), config);
+    }
+    fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
+        self.0
+            .lock()
+            .expect("agent resource configs")
             .get(agent_id)
             .cloned()
     }
@@ -277,6 +316,10 @@ pub fn admin_router(state: AdminState) -> Router {
         .route(
             "/v1/config/agents/:agent_id/mcp",
             put(put_agent_mcp).get(get_agent_mcp),
+        )
+        .route(
+            "/v1/config/agents/:agent_id/resources",
+            put(put_agent_resource).get(get_agent_resource),
         )
         .route(
             "/v1/config/agents/:agent_id/mcp/resolve",
@@ -724,6 +767,40 @@ async fn get_agent_mcp(
         .get_agent_config(&agent_id)
         .map(Json)
         .ok_or_else(|| agent_mcp_missing(&agent_id, &req_id(&headers)))
+}
+
+/// Bind which resources an agent mounts (ADR-0038). The path agent id is
+/// authoritative; the binding set is stored whole (upsert by agent id).
+async fn put_agent_resource(
+    State(state): State<AdminState>,
+    Path(agent_id): Path<String>,
+    Json(mut config): Json<AgentResourceConfig>,
+) -> Json<AgentResourceConfig> {
+    config.agent_id = agent_id;
+    state.resources.put_agent_resource(config.clone());
+    Json(config)
+}
+
+async fn get_agent_resource(
+    State(state): State<AdminState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<AgentResourceConfig>, Problem> {
+    state
+        .resources
+        .get_agent_resource(&agent_id)
+        .map(Json)
+        .ok_or_else(|| agent_resource_missing(&agent_id, &req_id(&headers)))
+}
+
+fn agent_resource_missing(agent_id: &str, rid: &str) -> Problem {
+    Problem(ApiError::new(
+        404,
+        "not_found",
+        "Agent resource config not found",
+        format!("no resource config for agent `{agent_id}`"),
+        rid,
+    ))
 }
 
 #[derive(serde::Deserialize)]

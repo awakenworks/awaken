@@ -22,6 +22,7 @@ fn harness() -> Router {
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
         projects: Arc::new(awaken_admin_config_api::InMemoryProjectStore::new()),
+        resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
         probe: None,
     })
 }
@@ -225,4 +226,43 @@ async fn resolving_an_unbound_agent_is_problem_json_404() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     assert_eq!(err["code"], "not_found");
     assert_eq!(err["status"], 404);
+}
+
+#[tokio::test]
+async fn agent_resource_binding_crud_round_trips() {
+    let app = harness();
+
+    // Unknown agent → 404 problem+json.
+    let (s, err) = call(&app, "GET", "/v1/config/agents/nobody/resources", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(err["code"], "not_found");
+
+    // Bind a memory store (read/write, with instructions) + the outputs mount.
+    let body = json!({
+        "agent_id": "ignored-path-wins",
+        "resources": [
+            { "kind": "memory_store", "resource_id": "memstore-7",
+              "mount_path": "/mnt/memory/prefs", "access": "read_write",
+              "instructions": "user preferences" },
+            { "kind": "outputs", "mount_path": "/mnt/session/outputs", "access": "read_write" }
+        ],
+        "version": 1
+    });
+    let (s, put) = call(
+        &app,
+        "PUT",
+        "/v1/config/agents/agent-1/resources",
+        Some(body),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(put["agent_id"], "agent-1"); // the path id is authoritative
+    assert_eq!(put["resources"].as_array().unwrap().len(), 2);
+
+    // Read it back.
+    let (s, got) = call(&app, "GET", "/v1/config/agents/agent-1/resources", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(got["resources"][0]["kind"], "memory_store");
+    assert_eq!(got["resources"][0]["mount_path"], "/mnt/memory/prefs");
+    assert_eq!(got["resources"][1]["kind"], "outputs");
 }
