@@ -732,6 +732,11 @@ impl SessionRuntime for ManagedHost {
         thread: &str,
         init: awaken_protocol_managed::SessionInit,
     ) -> Result<(), RunError> {
+        // R2: bind the session's requested model to the thread (independent of MCP),
+        // consumed at the thread's first turn to resolve its executor + model name.
+        if let Some(model) = &init.model {
+            self.host.register_thread_model(thread, model);
+        }
         let Some(mcp) = &self.mcp else {
             return Ok(());
         };

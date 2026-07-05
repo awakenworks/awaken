@@ -107,6 +107,9 @@ pub struct OutcomeReport {
 pub struct SessionInit {
     pub agent_id: String,
     pub mcp_servers: Vec<McpServerBinding>,
+    /// The session's requested model (R2), staged so the run binds it; `None` →
+    /// the host default.
+    pub model: Option<String>,
 }
 
 /// One session MCP server, bound at creation: the wire name/url plus the vault
@@ -346,6 +349,7 @@ impl ManagedState {
                 SessionInit {
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
+                    model: req.agent.model().map(str::to_string),
                 },
             )
             .await
