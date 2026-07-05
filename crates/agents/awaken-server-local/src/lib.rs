@@ -20,6 +20,7 @@ mod config;
 mod config_plane;
 mod delegate;
 mod durable_ops;
+mod files;
 mod host;
 mod hub;
 mod judge;
@@ -28,6 +29,7 @@ mod mcp;
 mod memory;
 mod model_route;
 mod models;
+mod provisioning;
 mod skills;
 mod store;
 mod subagent;
@@ -551,6 +553,62 @@ impl SessionRuntime for ManagedHost {
         if let Some(runtime) = &init.runtime {
             self.host.register_thread_runtime(thread, runtime);
         }
+        // Stage session resources (ADR-0038): resolve file bytes from the blob store,
+        // realize each as a read-only sandbox mount, and collect prompt fragments for
+        // the system prompt (A3a). Independent of MCP, so it runs before the MCP gate.
+        if !init.resources.is_empty() {
+            use awaken_sandbox_local::{Mount, ResourceMount};
+            let store = self.host.file_store();
+            let mut mounts = Vec::new();
+            let mut prompts = Vec::new();
+            for res in &init.resources {
+                let kind = match res.kind.as_str() {
+                    "file" => awaken_config_resolver::ResourceKind::File,
+                    "memory_store" => awaken_config_resolver::ResourceKind::MemoryStore,
+                    "github_repository" => awaken_config_resolver::ResourceKind::GithubRepository,
+                    _ => continue,
+                };
+                // The legacy environment realizes a resource under `.mnt/<logical>`, so
+                // the path the agent actually reads is `.mnt/<logical>` — surface *that*
+                // in the prompt (the client's requested mount_path becomes the logical).
+                let logical = res.mount_path.trim_start_matches('/').to_string();
+                let realized = format!(".mnt/{logical}");
+                prompts.push(awaken_config_resolver::resource_binding_prompt(
+                    &awaken_config_resolver::ResourceBinding {
+                        kind,
+                        resource_id: res.id.clone(),
+                        mount_path: realized,
+                        access: awaken_config_resolver::ResourceAccess::ReadWrite,
+                        instructions: res.instructions.clone(),
+                    },
+                ));
+                // Files resolve their bytes from the blob store; other kinds mount empty
+                // for now (memory write-back / repo clone are follow-ups).
+                let content = if res.kind == "file" {
+                    match store.get(&res.id).await {
+                        Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+                        _ => {
+                            return Err(RunError::bad_request(format!(
+                                "file resource `{}` not found in the blob store",
+                                res.id
+                            )));
+                        }
+                    }
+                } else {
+                    String::new()
+                };
+                mounts.push(Mount::Resource(ResourceMount {
+                    id: res.id.clone(),
+                    content_hash: String::new(),
+                    logical_path: logical,
+                    content,
+                }));
+            }
+            self.host.register_thread_resources(
+                thread,
+                crate::provisioning::StagedResources { mounts, prompts },
+            );
+        }
         let Some(mcp) = &self.mcp else {
             return Ok(());
         };
@@ -815,11 +873,14 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / reap / dead-letter GC) over the same shared host.
     let durable_ops = crate::durable_ops::durable_ops_router(host.clone());
+    // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
+    let files = crate::files::files_router(host.clone());
     managed
         .merge(ai_sdk)
         .merge(ag_ui)
         .merge(a2a)
         .merge(durable_ops)
+        .merge(files)
 }
 
 /// The composition seam refuses to build an executor from an incomplete or
