@@ -47,10 +47,18 @@ impl SharedHost {
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))
         } else {
-            ctx.ingress
-                .submit(activation, ctx.context())
+            // Native direct turn: the only path whose engine drains a live
+            // inbox in-process, so it is the only path that opens one. The
+            // inbox closes when the attempt returns — success or error — and
+            // unconsumed messages carry over to the thread's next attempt.
+            let context = ctx.context().with_live_inbox(ctx.open_live_inbox());
+            let result = ctx
+                .ingress
+                .submit(activation, context)
                 .await
-                .map_err(|e| HostError::internal(e.to_string()))
+                .map_err(|e| HostError::internal(e.to_string()));
+            ctx.close_live_inbox();
+            result
         }
     }
 }

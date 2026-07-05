@@ -26,7 +26,70 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_runtime_contract::resume::ResumeResult;
+
 use crate::host::{BASE_SEQ, HostError, HostErrorKind, SharedHost};
+
+impl SharedHost {
+    /// Cancel a run by id through the durable live-control seam (ADR-0018, slice E
+    /// follow-up): tries the runtime live channel first (in-flight runs), then the
+    /// dispatch store for a queued or parked run, committing a terminal `Cancelled`
+    /// fact. Fail-closed: an unknown run id errors rather than silently succeeding.
+    pub(crate) async fn cancel_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
+        self.durable_ingress(thread)
+            .await?
+            .live_control()
+            .cancel(run_id)
+            .await
+            .map_err(|e| HostError::bad_request(e.to_string()))
+    }
+
+    /// Wake a live run by id through the durable live-control seam (ADR-0018): a
+    /// live-only nudge. Fail-closed — no live subscriber is a hard error (G5).
+    pub(crate) async fn wake_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
+        self.durable_ingress(thread)
+            .await?
+            .live_control()
+            .wake(run_id)
+            .map_err(|e| HostError::bad_request(e.to_string()))
+    }
+
+    /// Stage a durable cross-thread delivery answering `thread`'s parked run, then
+    /// let the daemon relay it (ADR-0017, slice E follow-up). Resolves the parked
+    /// run's waiting ticket from committed truth, stages a decision into the outbox
+    /// via `DispatchService::send`, and the daemon relays it to the run's pending
+    /// input and wakes it. Exercises the outbox stage→relay path. Requires the
+    /// daemon and a parked run.
+    pub(crate) async fn stage_decision(
+        &self,
+        thread: &str,
+        allow: bool,
+    ) -> Result<String, HostError> {
+        let ctx = self.ctx_for(thread, None).await?;
+        let service = ctx.dispatch_service.as_ref().ok_or_else(|| {
+            HostError::bad_request("dispatch daemon not enabled (set AWAKEN_DISPATCH_DAEMON=1)")
+        })?;
+        let thread_id = ThreadId(thread.to_string());
+        let (run_id, ticket) = ctx
+            .commit
+            .open_wait_for_thread(&thread_id)
+            .ok_or_else(|| HostError::bad_request("no parked run on this thread to deliver to"))?;
+        let input = awaken_run_ingress::PendingInput {
+            message_id: format!("xthread-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst)),
+            run_id: run_id.clone(),
+            thread_id,
+            correlation_id: ticket.correlation_id,
+            available_at_ms: None,
+            result: ResumeResult::Decision { allow, note: None },
+        };
+        service
+            .send(input)
+            .await
+            .map_err(|e| HostError::internal(e.to_string()))?;
+        Ok(run_id.0)
+    }
+}
 
 /// The durable operations router. Mounted on every server; each route fails
 /// closed with 400 when the server is not in durable mode.

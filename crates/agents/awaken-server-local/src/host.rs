@@ -197,7 +197,7 @@ pub(crate) struct SessionCtx {
     /// The standing dispatch daemon for this session (ADR-0011), present when
     /// durable + `AWAKEN_DISPATCH_DAEMON=1`. Held here to keep the background task
     /// alive for the session's lifetime; it drains the shared queue autonomously.
-    dispatch_service: Option<DispatchService<SqliteDispatchStore>>,
+    pub(crate) dispatch_service: Option<DispatchService<SqliteDispatchStore>>,
     config: RunnableConfig,
     pub(crate) commit: Arc<HostCommit>,
     pub(crate) thread_id: ThreadId,
@@ -212,6 +212,10 @@ pub(crate) struct SessionCtx {
     /// held by neither the run loop nor the state lock, so interrupt never blocks
     /// on the loop that holds `state`.
     cancel: std::sync::Mutex<Option<CancellationToken>>,
+    /// The in-flight run's live inbox plus the previous attempt's unconsumed
+    /// leftovers. Same locking discipline as `cancel`; lifecycle and lookup
+    /// live in [`crate::live_inbox`].
+    pub(crate) live_inbox: std::sync::Mutex<crate::live_inbox::LiveInboxSlot>,
     state: tokio::sync::Mutex<SessionState>,
 }
 
@@ -665,7 +669,7 @@ impl SharedHost {
         Ok((boxed, Some(ingress)))
     }
 
-    async fn ctx_for(
+    pub(crate) async fn ctx_for(
         &self,
         thread: &str,
         agent: Option<&str>,
@@ -847,6 +851,7 @@ impl SharedHost {
             env,
             skill_registry,
             cancel: std::sync::Mutex::new(None),
+            live_inbox: std::sync::Mutex::new(crate::live_inbox::LiveInboxSlot::default()),
             state: tokio::sync::Mutex::new(state),
         });
         sessions.insert(thread.to_string(), ctx.clone());
@@ -1186,64 +1191,6 @@ impl SharedHost {
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         Ok(uid.0)
-    }
-
-    /// Cancel a run by id through the durable live-control seam (ADR-0018, slice E
-    /// follow-up): tries the runtime live channel first (in-flight runs), then the
-    /// dispatch store for a queued or parked run, committing a terminal `Cancelled`
-    /// fact. Fail-closed: an unknown run id errors rather than silently succeeding.
-    pub(crate) async fn cancel_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
-        self.durable_ingress(thread)
-            .await?
-            .live_control()
-            .cancel(run_id)
-            .await
-            .map_err(|e| HostError::bad_request(e.to_string()))
-    }
-
-    /// Wake a live run by id through the durable live-control seam (ADR-0018): a
-    /// live-only nudge. Fail-closed — no live subscriber is a hard error (G5).
-    pub(crate) async fn wake_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
-        self.durable_ingress(thread)
-            .await?
-            .live_control()
-            .wake(run_id)
-            .map_err(|e| HostError::bad_request(e.to_string()))
-    }
-
-    /// Stage a durable cross-thread delivery answering `thread`'s parked run, then
-    /// let the daemon relay it (ADR-0017, slice E follow-up). Resolves the parked
-    /// run's waiting ticket from committed truth, stages a decision into the outbox
-    /// via `DispatchService::send`, and the daemon relays it to the run's pending
-    /// input and wakes it. Exercises the outbox stage→relay path. Requires the
-    /// daemon and a parked run.
-    pub(crate) async fn stage_decision(
-        &self,
-        thread: &str,
-        allow: bool,
-    ) -> Result<String, HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
-        let service = ctx.dispatch_service.as_ref().ok_or_else(|| {
-            HostError::bad_request("dispatch daemon not enabled (set AWAKEN_DISPATCH_DAEMON=1)")
-        })?;
-        let thread_id = ThreadId(thread.to_string());
-        let (run_id, ticket) = ctx
-            .commit
-            .open_wait_for_thread(&thread_id)
-            .ok_or_else(|| HostError::bad_request("no parked run on this thread to deliver to"))?;
-        let input = awaken_run_ingress::PendingInput {
-            message_id: format!("xthread-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst)),
-            run_id: run_id.clone(),
-            thread_id,
-            correlation_id: ticket.correlation_id,
-            available_at_ms: None,
-            result: ResumeResult::Decision { allow, note: None },
-        };
-        service
-            .send(input)
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(run_id.0)
     }
 
     /// Resume the run parked on `thread`, answering `tool_use_id` with `resume`.
