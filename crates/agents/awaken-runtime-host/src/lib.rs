@@ -1,0 +1,771 @@
+//! `awaken-runtime-host` — the managed-agents SERVICE layer.
+//!
+//! It owns the protocol-neutral [`SharedHost`] (the thread-keyed session
+//! substrate) and the two port adapters mounted over it: [`ManagedHost`] (the
+//! Managed Agents `SessionRuntime`) and [`ProtocolHost`] (the neutral
+//! `ProtocolRuntime` behind the AI SDK / AG-UI / A2A wire adapters). Both hold
+//! the same `Arc<SharedHost>`, so a turn started through one protocol can be
+//! resumed or observed through another on the *same thread*.
+//!
+//! The composition root (`awaken-server-local`) assembles these into routers;
+//! this crate carries no wire assembly of its own beyond the per-plane routers
+//! it exposes (config / files / memory-stores / durable-ops).
+
+mod acp_backend;
+mod agent_catalog;
+mod background;
+mod compact;
+mod config;
+mod config_plane;
+mod delegate;
+mod durable_ops;
+mod files;
+mod host;
+mod hub;
+mod judge;
+mod live_inbox;
+mod mcp;
+mod memory;
+mod memory_store_api;
+mod model_route;
+mod provisioning;
+mod skills;
+mod store;
+mod subagent;
+mod turn_exec;
+
+use std::sync::Arc;
+
+use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::run::{EndCause, Phase};
+use awaken_protocol_managed::dto::StopReason;
+use awaken_protocol_managed::{
+    AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
+    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
+    TurnOutcome,
+};
+use awaken_protocol_transport::{
+    DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume, StepOutcome,
+};
+use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, Offer};
+
+use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
+
+// The neutral session substrate and its resume vocabulary.
+pub use crate::host::{HostResume, SharedHost};
+pub use crate::hub::{ThreadEvent, ThreadEventHub};
+// The config data plane (ADR-0036/slice A): the service + its router + the
+// advertised-tools helper the composition root builds a config host from.
+pub use crate::config::{advertised_tools, block_text};
+pub use crate::config_plane::{ConfigService, config_router};
+// The per-plane resource routers the composition root merges over one host.
+pub use crate::durable_ops::durable_ops_router;
+pub use crate::files::files_router;
+pub use crate::memory_store_api::memory_stores_router;
+// The model-route seam (R1/R2/R5): a composition root supplies its own
+// `ExecutorProvider` to map a session's model ref to a labeled executor.
+pub use crate::model_route::ExecutorProvider;
+// The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
+// prepared configuration, and the live MCP credential probe.
+pub use crate::mcp::{ExtMcpProbe, PreparedMcpRefresh, VaultRefresher};
+// Skill authoring inputs (ADR-0036): a composition root supplies these to
+// `SharedHost::with_skills`. The whole set is fronted by the single `Skill` tool.
+pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
+pub use awaken_sandbox_local::content_fingerprint;
+// A remote delegate's transport belongs to the A2A bounded context; re-export it so
+// a composition-root caller configures a remote agent from one import.
+pub use awaken_protocol_a2a::{HttpTransport, Response, Transport};
+
+// ── Managed Agents adapter over the shared host ─────────────────────────────
+
+/// Translate the runtime contract's edit refusal into the wire-facing error.
+/// `Closed` collapses into `Inactive`: from the client's view "the attempt is
+/// gone" and "no attempt is running" are the same condition.
+fn to_live_inbox_error(err: EditError) -> LiveInboxError {
+    match err {
+        EditError::Closed => LiveInboxError::Inactive,
+        EditError::UnknownMessage => LiveInboxError::UnknownMessage,
+        EditError::StaleOrder => LiveInboxError::StaleOrder,
+    }
+}
+
+/// Mint a fresh user message from plain text (Managed `user.message` content is
+/// concatenated to text before it enters the host).
+fn user_message(content: Vec<ContentBlock>) -> Message {
+    Message::new(
+        MessageId(format!(
+            "usr-{}",
+            crate::host::BASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        )),
+        Role::User,
+        content,
+    )
+}
+
+fn to_run_error(err: HostError) -> RunError {
+    match err.kind {
+        HostErrorKind::BadRequest => RunError::bad_request(err.message),
+        HostErrorKind::Internal => RunError::internal(err.message),
+    }
+}
+
+/// Map a neutral terminal phase to the Managed idle `stop_reason`. `RequiresAction`
+/// carries no event ids here; the projection refills them from the pending tool.
+fn phase_to_stop(phase: &Phase) -> StopReason {
+    match phase {
+        Phase::Waiting => StopReason::RequiresAction {
+            event_ids: Vec::new(),
+        },
+        Phase::Ended(EndCause::MaxSteps) => StopReason::RetriesExhausted,
+        _ => StopReason::EndTurn,
+    }
+}
+
+fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
+    pending.map(|p| Pending {
+        tool_use_id: p.tool_use_id,
+        name: p.name,
+        input: p.input,
+        client_executed: p.client_executed,
+    })
+}
+
+fn to_turn_outcome(result: TurnResult) -> TurnOutcome {
+    TurnOutcome {
+        stop: phase_to_stop(&result.phase),
+        messages: result.new_messages,
+        pending: to_pending(result.pending),
+    }
+}
+
+/// The Managed Agents `SessionRuntime` port implemented over the shared host.
+/// Holds only an `Arc<SharedHost>` (plus, on the management server, the MCP
+/// stores `prepare_session` reads), so it composes with any other adapter bound
+/// to the same host.
+pub struct ManagedHost {
+    host: Arc<SharedHost>,
+    mcp: Option<ManagedMcp>,
+}
+
+/// The session-ingress MCP wiring (ADR-0043 Phase 3): the stores
+/// `prepare_session` reads to materialize a binding's vault credential and the
+/// management plane's agent↔MCP config. Present only via [`ManagedHost::with_mcp`].
+struct ManagedMcp {
+    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    mcp_store: Arc<dyn awaken_admin_config_api::McpStore>,
+    projects: Arc<dyn awaken_admin_config_api::ProjectStore>,
+}
+
+impl ManagedHost {
+    pub fn new(host: Arc<SharedHost>) -> Self {
+        Self { host, mcp: None }
+    }
+
+    /// Wire the MCP stores so `prepare_session` materializes a session's MCP
+    /// credential bindings and merges the management plane's agent↔MCP config
+    /// (ADR-0043 Phase 3). Hosts built without this keep the trait's no-op
+    /// `prepare_session`, so no other server mode changes behavior.
+    #[must_use]
+    pub fn with_mcp(
+        mut self,
+        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+        mcp_store: Arc<dyn awaken_admin_config_api::McpStore>,
+        projects: Arc<dyn awaken_admin_config_api::ProjectStore>,
+    ) -> Self {
+        self.mcp = Some(ManagedMcp {
+            credentials,
+            secrets,
+            mcp_store,
+            projects,
+        });
+        self
+    }
+}
+
+/// A resolver credential lookup prefetched from the repo, scoped to exactly the
+/// sources and pools the given MCP server defs' bindings name. The admin resolve
+/// route builds its lookup by listing a workspace; the managed session ingress
+/// has no workspace parameter on the wire, so it prefetches per binding instead —
+/// same lookup shape, same fail-closed outcome (a missing source stays absent and
+/// `resolve_mcp_servers` errors on it).
+#[derive(Default)]
+struct PrefetchedSourceLookup {
+    sources: std::collections::HashMap<String, awaken_credential_vault::CredentialSource>,
+    pools: std::collections::HashMap<String, awaken_credential_vault::CredentialPool>,
+}
+
+impl awaken_config_resolver::SourceLookup for PrefetchedSourceLookup {
+    fn get(&self, id: &str) -> Option<&awaken_credential_vault::CredentialSource> {
+        self.sources.get(id)
+    }
+    fn get_pool(&self, id: &str) -> Option<&awaken_credential_vault::CredentialPool> {
+        self.pools.get(id)
+    }
+}
+
+impl PrefetchedSourceLookup {
+    /// Fetch every source/pool the defs' bindings reference. A row the repo does
+    /// not hold is simply not inserted; resolution then fails closed on it.
+    async fn for_defs(
+        defs: &[awaken_config_resolver::McpServerDef],
+        repo: &dyn awaken_credential_vault::repo::CredentialRepo,
+    ) -> Self {
+        use awaken_credential_vault::CredentialBinding;
+        let mut lookup = Self::default();
+        for def in defs {
+            match &def.credential_binding {
+                CredentialBinding::None => {}
+                CredentialBinding::Exact {
+                    credential_source_id,
+                } => {
+                    if let Ok(row) = repo.get(credential_source_id).await {
+                        lookup.sources.insert(row.id.0.clone(), row);
+                    }
+                }
+                CredentialBinding::OneOfCredentialPool { credential_pool_id } => {
+                    if let Ok(pool) = repo.get_pool(credential_pool_id).await {
+                        for member in &pool.members {
+                            if let Ok(row) = repo.get(&member.credential_source_id).await {
+                                lookup.sources.insert(row.id.0.clone(), row);
+                            }
+                        }
+                        lookup.pools.insert(pool.id.0.clone(), pool);
+                    }
+                }
+            }
+        }
+        lookup
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for ManagedHost {
+    async fn owns_thread(&self, thread: &str) -> bool {
+        self.host.has_durable_thread(thread)
+    }
+
+    async fn run_turn(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<TurnOutcome, RunError> {
+        let result = self
+            .host
+            .run_turn(Some(agent), thread, vec![user_message(content)])
+            .await
+            .map_err(to_run_error)?;
+        Ok(to_turn_outcome(result))
+    }
+
+    async fn resume(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        decision: Decision,
+    ) -> Result<TurnOutcome, RunError> {
+        let result = self
+            .host
+            .resume(
+                thread,
+                tool_use_id,
+                HostResume::Confirm {
+                    allow: decision.allow,
+                    note: decision.note,
+                },
+            )
+            .await
+            .map_err(to_run_error)?;
+        Ok(to_turn_outcome(result))
+    }
+
+    async fn resume_custom(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        content: &str,
+        is_error: bool,
+    ) -> Result<TurnOutcome, RunError> {
+        let result = self
+            .host
+            .resume(
+                thread,
+                tool_use_id,
+                HostResume::ClientResult {
+                    content: content.to_string(),
+                    is_error,
+                },
+            )
+            .await
+            .map_err(to_run_error)?;
+        Ok(to_turn_outcome(result))
+    }
+
+    async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot {
+        match self.host.live_inbox(thread).await {
+            Some(inbox) => LiveInboxSnapshot {
+                active: true,
+                version: inbox.version(),
+                messages: inbox
+                    .list()
+                    .into_iter()
+                    .map(|entry| LiveInboxEntry {
+                        id: entry.id.0,
+                        content: entry.message.content,
+                    })
+                    .collect(),
+            },
+            None => LiveInboxSnapshot::inactive(),
+        }
+    }
+
+    async fn live_inbox_queue(
+        &self,
+        thread: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<u64, LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        match inbox.offer(user_message(content)) {
+            Offer::Accepted(id) => Ok(id.0),
+            // The attempt closed between lookup and offer: same outcome as no
+            // attempt at all.
+            Offer::Closed => Err(LiveInboxError::Inactive),
+        }
+    }
+
+    async fn live_inbox_remove(&self, thread: &str, id: u64) -> Result<(), LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        inbox
+            .remove(LiveInboxMessageId(id))
+            .map(|_| ())
+            .map_err(to_live_inbox_error)
+    }
+
+    async fn live_inbox_replace(
+        &self,
+        thread: &str,
+        id: u64,
+        content: Vec<ContentBlock>,
+    ) -> Result<(), LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        inbox
+            .replace(LiveInboxMessageId(id), user_message(content))
+            .map_err(to_live_inbox_error)
+    }
+
+    async fn live_inbox_reorder(
+        &self,
+        thread: &str,
+        order: Vec<u64>,
+    ) -> Result<(), LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        let order: Vec<LiveInboxMessageId> = order.into_iter().map(LiveInboxMessageId).collect();
+        inbox.reorder(&order).map_err(to_live_inbox_error)
+    }
+
+    async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError> {
+        self.host
+            .add_system(thread, text)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
+        self.host.interrupt(thread).await.map_err(to_run_error)
+    }
+
+    async fn define_outcome(
+        &self,
+        thread: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<OutcomeReport, RunError> {
+        let report = self
+            .host
+            .define_outcome(thread, description, rubric, max_iterations)
+            .await
+            .map_err(to_run_error)?;
+        Ok(OutcomeReport {
+            iterations: report
+                .iterations
+                .into_iter()
+                .map(|it| OutcomeIteration {
+                    messages: it.messages,
+                    outcome_id: it.outcome_id,
+                    iteration: it.iteration,
+                    result: it.result,
+                    explanation: it.explanation,
+                })
+                .collect(),
+        })
+    }
+
+    /// Provision a new session's MCP servers on its thread (ADR-0043 Phase 3),
+    /// BEFORE the session record exists — a failure fails the create.
+    ///
+    /// 1. Each binding's vault credential is materialized to a bearer (a binding
+    ///    without a credential stays bearer-less); a missing/broken credential
+    ///    row is the caller's fault (`bad_request`, fail closed).
+    /// 2. Management-plane merge: the agent's authored [`AgentMcpConfig`]
+    ///    (admin `/v1/config/agents/{id}/mcp`), resolved through
+    ///    `resolve_mcp_servers`, is appended AFTER the session-inline servers;
+    ///    on a duplicate URL the session-inline server wins. A management-plane
+    ///    config that cannot resolve is the deployment's fault (`internal`,
+    ///    fail closed — the admin routes validated it at write time).
+    /// 3. The prepared set is staged on the shared host; the thread's first turn
+    ///    connects them (`SharedHost::register_thread_mcp` → `ctx_for`).
+    ///
+    /// Hosts built without [`ManagedHost::with_mcp`] keep the trait's no-op.
+    ///
+    /// [`AgentMcpConfig`]: awaken_config_resolver::AgentMcpConfig
+    async fn rebind_model(&self, thread: &str, model: &str) -> Result<(), RunError> {
+        // R5: re-stage the thread's model and evict its cached context so the next
+        // turn rebuilds with the newly resolved executor (native switch is O(1); an
+        // ACP thread's cached context relaunches its CLI on rebuild).
+        self.host.register_thread_model(thread, model);
+        self.host.sessions.lock().await.remove(thread);
+        Ok(())
+    }
+
+    async fn prepare_session(
+        &self,
+        thread: &str,
+        init: awaken_protocol_managed::SessionInit,
+    ) -> Result<(), RunError> {
+        // R2: bind the session's requested model to the thread (independent of MCP),
+        // consumed at the thread's first turn to resolve its executor + model name.
+        if let Some(model) = &init.model {
+            self.host.register_thread_model(thread, model);
+        }
+        // R3: stage the session's runtime adapter; `acp:*` routes to the ACP CLI.
+        if let Some(runtime) = &init.runtime {
+            self.host.register_thread_runtime(thread, runtime);
+        }
+        // Stage session resources (ADR-0038): resolve file bytes from the blob store,
+        // realize each as a read-only sandbox mount, and collect prompt fragments for
+        // the system prompt (A3a). Independent of MCP, so it runs before the MCP gate.
+        if !init.resources.is_empty() {
+            use awaken_sandbox_local::{Mount, ResourceMount};
+            let store = self.host.file_store();
+            let mut mounts = Vec::new();
+            let mut prompts = Vec::new();
+            let mut memory_mounts = Vec::new();
+            for res in &init.resources {
+                let kind = match res.kind.as_str() {
+                    "file" => awaken_config_resolver::ResourceKind::File,
+                    "memory_store" => awaken_config_resolver::ResourceKind::MemoryStore,
+                    "github_repository" => awaken_config_resolver::ResourceKind::GithubRepository,
+                    _ => continue,
+                };
+                // The legacy environment realizes a resource under `.mnt/<logical>`, so
+                // the path the agent actually reads is `.mnt/<logical>` — surface *that*
+                // in the prompt (the client's requested mount_path becomes the logical).
+                let logical = res.mount_path.trim_start_matches('/').to_string();
+                let realized = format!(".mnt/{logical}");
+                prompts.push(awaken_config_resolver::resource_binding_prompt(
+                    &awaken_config_resolver::ResourceBinding {
+                        kind,
+                        resource_id: res.id.clone(),
+                        mount_path: realized,
+                        access: awaken_config_resolver::ResourceAccess::ReadWrite,
+                        instructions: res.instructions.clone(),
+                    },
+                ));
+                // Resolve the mount's seed content by family: a file resolves its bytes
+                // from the content-addressed blob store; a memory_store from its mutable,
+                // id-keyed store (and is tracked for write-back harvest); other kinds
+                // mount empty (repo clone is a follow-up).
+                let content = match res.kind.as_str() {
+                    "file" => match store.get(&res.id).await {
+                        Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+                        _ => {
+                            return Err(RunError::bad_request(format!(
+                                "file resource `{}` not found in the blob store",
+                                res.id
+                            )));
+                        }
+                    },
+                    "memory_store" => {
+                        let Some(bytes) = self.host.memory_get(&res.id) else {
+                            return Err(RunError::bad_request(format!(
+                                "memory_store resource `{}` does not exist",
+                                res.id
+                            )));
+                        };
+                        memory_mounts.push((res.id.clone(), logical.clone()));
+                        String::from_utf8_lossy(&bytes).into_owned()
+                    }
+                    _ => String::new(),
+                };
+                mounts.push(Mount::Resource(ResourceMount {
+                    id: res.id.clone(),
+                    content_hash: String::new(),
+                    logical_path: logical,
+                    content,
+                }));
+            }
+            self.host.register_thread_resources(
+                thread,
+                crate::provisioning::StagedResources {
+                    mounts,
+                    prompts,
+                    memory_mounts,
+                },
+            );
+        }
+        let Some(mcp) = &self.mcp else {
+            return Ok(());
+        };
+        let mut prepared: Vec<crate::host::PreparedMcpServer> =
+            Vec::with_capacity(init.mcp_servers.len());
+        for binding in &init.mcp_servers {
+            let (bearer, refresh) = match &binding.credential_source_id {
+                Some(source_id) => {
+                    let row = mcp.credentials.get(source_id).await.map_err(|e| {
+                        RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
+                    })?;
+                    let bearer = awaken_credential_vault::materialize(&row, &*mcp.secrets)
+                        .await
+                        .map_err(|e| {
+                            RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
+                        })?;
+                    // The binding's refresh configuration becomes a live
+                    // refresher on the transport: it needs the row's
+                    // material_ref to reseal the fresh access token (a vault
+                    // row always has one; anything else cannot refresh).
+                    let refresh = match (&binding.refresh, &row.material_ref) {
+                        (Some(r), Some(access_token_ref)) => Some(crate::mcp::PreparedMcpRefresh {
+                            token_endpoint: r.token_endpoint.clone(),
+                            client_id: r.client_id.clone(),
+                            token_endpoint_auth: r.token_endpoint_auth.clone(),
+                            scope: r.scope.clone(),
+                            resource: r.resource.clone(),
+                            refresh_token_ref: r.refresh_token_ref.clone(),
+                            access_token_ref: access_token_ref.clone(),
+                            secrets: mcp.secrets.clone(),
+                        }),
+                        _ => None,
+                    };
+                    (Some(bearer), refresh)
+                }
+                None => (None, None),
+            };
+            prepared.push(crate::host::PreparedMcpServer {
+                name: binding.name.clone(),
+                url: binding.url.clone(),
+                bearer,
+                refresh,
+            });
+        }
+        // Consumption-side selection: a session that arrived through
+        // `/projects/{id}` uses that project's agent binding when authored;
+        // otherwise (or on the bare surface) the workspace-level binding
+        // applies — so bare-path behavior is byte-identical to before
+        // projects existed, and two projects can give the same agent id
+        // different tool surfaces.
+        let authored = init
+            .project_id
+            .as_ref()
+            .and_then(|project| {
+                mcp.projects
+                    .get_project_agent(project, &init.agent_id)
+                    .map(|c| c.mcp_server_ids)
+            })
+            .or_else(|| {
+                mcp.mcp_store
+                    .get_agent_config(&init.agent_id)
+                    .map(|c| c.mcp_server_ids)
+            });
+        if let Some(mcp_server_ids) = authored {
+            let config_ids = mcp_server_ids;
+            let mut defs = Vec::with_capacity(config_ids.len());
+            for server_id in &config_ids {
+                defs.push(mcp.mcp_store.get_server(&server_id.0).ok_or_else(|| {
+                    RunError::internal(format!(
+                        "agent `{}` references unknown mcp server `{}`",
+                        init.agent_id, server_id.0
+                    ))
+                })?);
+            }
+            let lookup = PrefetchedSourceLookup::for_defs(&defs, &*mcp.credentials).await;
+            let resolved =
+                awaken_config_resolver::resolve_mcp_servers(&defs, &lookup, &*mcp.secrets)
+                    .await
+                    .map_err(|e| {
+                        RunError::internal(format!(
+                            "agent `{}` mcp config did not resolve: {e}",
+                            init.agent_id
+                        ))
+                    })?;
+            for server in resolved {
+                // Session-inline wins on a duplicate URL: the caller's explicit
+                // request (and its vault binding) overrides the authored default.
+                if prepared.iter().any(|p| p.url == server.url) {
+                    continue;
+                }
+                prepared.push(crate::host::PreparedMcpServer {
+                    name: server.name,
+                    url: server.url,
+                    bearer: server.credential,
+                    // Management-plane servers resolve through the admin
+                    // credential model, which has no OAuth refresh object.
+                    refresh: None,
+                });
+            }
+        }
+        self.host.register_thread_mcp(thread, prepared);
+        Ok(())
+    }
+
+    /// Committed transcript from durable truth, so the adapter can rehydrate a
+    /// session lost to a process restart and resume its parked run (ADR-0039).
+    async fn committed_messages(&self, thread: &str) -> Vec<awaken_agent_contract::Message> {
+        self.host.committed_messages(thread).await
+    }
+
+    fn model(&self) -> String {
+        self.host.model()
+    }
+
+    /// Advertise the host's provisioned surface on the created session: its built-in
+    /// tools (folded into the agent toolset by the adapter), client tools, offered
+    /// skills, and delegate roster. (MCP servers and file resources are not advertised
+    /// — the local host wires no MCP capability and has no Files-API resource yet.)
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            builtin_tools: self
+                .host
+                .builtin_tools()
+                .into_iter()
+                .map(|(name, ask)| BuiltinTool { name, ask })
+                .collect(),
+            custom_tools: self
+                .host
+                .custom_tools()
+                .into_iter()
+                .map(|d| CustomTool {
+                    name: d.id,
+                    description: d.description,
+                    input_schema: d.parameters,
+                })
+                .collect(),
+            skills: self.host.skill_ids(),
+            delegates: self.host.delegate_ids(),
+        }
+    }
+}
+
+// ── Protocol adapter over the shared host ───────────────────────────────────
+//
+// AG-UI, AI SDK, and A2A all drive one neutral `ProtocolRuntime` seam
+// (`awaken-protocol-transport`), so a single host impl backs all three: a turn
+// started through one protocol is resumable and observable through another on the
+// same thread. Each wire adapter keeps only its own encoder + router.
+
+fn to_driver_error(err: HostError) -> DriverError {
+    match err.kind {
+        HostErrorKind::BadRequest => DriverError::BadRequest(err.message),
+        HostErrorKind::Internal => DriverError::Internal(err.message),
+    }
+}
+
+fn to_port_pending(pending: Option<PendingTool>) -> Option<PortPending> {
+    pending.map(|p| PortPending {
+        tool_use_id: p.tool_use_id,
+        name: p.name,
+        input: p.input,
+        client_executed: p.client_executed,
+    })
+}
+
+fn to_step_outcome(result: TurnResult) -> StepOutcome {
+    StepOutcome {
+        waiting: matches!(result.phase, Phase::Waiting),
+        exhausted: matches!(result.phase, Phase::Ended(EndCause::MaxSteps)),
+        new_messages: result.new_messages,
+        pending: to_port_pending(result.pending),
+    }
+}
+
+/// The neutral `ProtocolRuntime` port implemented once over the shared host and
+/// wired behind every wire adapter (AI SDK / AG-UI / A2A) — a twin of
+/// [`ManagedHost`]. All hold the same `Arc<SharedHost>`, so a turn started by one
+/// protocol is resumable and observable through the others on the same thread.
+pub struct ProtocolHost {
+    host: Arc<SharedHost>,
+}
+
+impl ProtocolHost {
+    pub fn new(host: Arc<SharedHost>) -> Self {
+        Self { host }
+    }
+}
+
+#[async_trait::async_trait]
+impl ProtocolRuntime for ProtocolHost {
+    async fn run_turn(
+        &self,
+        thread: &str,
+        _agent: Option<String>,
+        messages: Vec<Message>,
+    ) -> Result<StepOutcome, DriverError> {
+        let result = self
+            .host
+            .run_turn(None, thread, messages)
+            .await
+            .map_err(to_driver_error)?;
+        Ok(to_step_outcome(result))
+    }
+
+    async fn resume(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        resume: PortResume,
+    ) -> Result<StepOutcome, DriverError> {
+        let resume = match resume {
+            PortResume::Confirm { allow, note } => HostResume::Confirm { allow, note },
+            PortResume::ClientResult { content, is_error } => {
+                HostResume::ClientResult { content, is_error }
+            }
+        };
+        let result = self
+            .host
+            .resume(thread, tool_use_id, resume)
+            .await
+            .map_err(to_driver_error)?;
+        Ok(to_step_outcome(result))
+    }
+
+    async fn pending(&self, thread: &str) -> Option<PortPending> {
+        to_port_pending(self.host.pending_tool(thread).await)
+    }
+
+    async fn history(&self, thread: &str) -> Vec<Message> {
+        self.host.committed_messages(thread).await
+    }
+
+    fn model(&self) -> String {
+        self.host.model()
+    }
+}

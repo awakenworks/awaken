@@ -26,7 +26,7 @@ use awaken_sandbox_local::Environment;
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
 
 /// Concatenate the text of a content-block list.
-pub(crate) fn block_text(content: &[ContentBlock]) -> String {
+pub fn block_text(content: &[ContentBlock]) -> String {
     content
         .iter()
         .filter_map(|b| match b {
@@ -134,7 +134,7 @@ fn delegation_descriptor() -> ToolDescriptor {
 /// `skill_descriptors` when MCP joined the flow), and `agent_run` when a delegate
 /// roster is set. The single source for both the run config and a managed
 /// session's advertised capability surface, so the two never drift.
-pub(crate) fn advertised_tools(
+pub fn advertised_tools(
     client_tools: &HashSet<String>,
     delegates: &HashSet<String>,
     dynamic_descriptors: &[ToolDescriptor],

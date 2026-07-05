@@ -654,11 +654,48 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # kube's rustls client needs a CryptoProvider (ring) installed explicitly.
         "rustls",
     },
-    # Single-machine assembly binary: the composition root that wires the kernel
-    # (built-in tools + permission gate + model port) behind the managed adapter.
-    # Like the examples crate it may name every adapter it composes; nothing
-    # depends on it.
+    # Extracted managed-agents SERVICE layer: the protocol-neutral SharedHost +
+    # the two port adapters (ManagedHost / ProtocolHost) + every host module.
+    # server-local composes it; nothing below the agents bucket depends on it.
+    "awaken-runtime-host": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-runtime",
+        "awaken-ext-builtin-tools",
+        "awaken-ext-memory",
+        "awaken-ext-compact",
+        "awaken-ext-permission",
+        "awaken-ext-skills",
+        "awaken-ext-mcp",
+        "awaken-ext-goal",
+        "awaken-ext-state-machine",
+        "awaken-sandbox-local",
+        "awaken-store-sqlite",
+        "awaken-store-fs",
+        "awaken-config-store",
+        "awaken-run-ingress",
+        "awaken-run-executor-acp",
+        "awaken-config-resolver",
+        "awaken-credential-vault",
+        "awaken-admin-config-api",
+        "awaken-protocol-managed",
+        "awaken-protocol-transport",
+        "awaken-protocol-a2a",
+        "async-trait",
+        "axum",
+        "base64",
+        "form_urlencoded",
+        "reqwest",
+        "serde_json",
+        "thiserror",
+        "tokio",
+    },
+    # Single-machine assembly binary: the composition root. Since the service
+    # layer moved to awaken-runtime-host, this bin only composes that host + the
+    # protocol facades + the management plane (admin/vault/IAM) into router
+    # modes; it names no runtime/ext/store crate directly. Nothing depends on it.
     "awaken-server-local": {
+        "awaken-runtime-host",
         "awaken-run-executor-acp",
         "awaken-protocol-managed",
         "awaken-protocol-ai-sdk",
@@ -666,28 +703,14 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-a2a",
         "awaken-protocol-transport",
         "awaken-provider-genai",
-        "awaken-sandbox-local",
-        "awaken-store-sqlite",
-        "awaken-store-fs",
         "awaken-config-store",
-        "awaken-run-ingress",
         "awaken-config-resolver",
         "awaken-admin-config-api",
         "awaken-model-catalog",
         "awaken-credential-vault",
-        "awaken-ext-goal",
-        "awaken-ext-state-machine",
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime",
-        "awaken-ext-builtin-tools",
-        "awaken-ext-permission",
-        "awaken-ext-skills",
-        "awaken-ext-memory",
-        "awaken-ext-compact",
-        # MCP client extension (ADR-0043 Phase 3): a managed session's configured
-        # MCP servers are connected per thread and their tools registered.
-        "awaken-ext-mcp",
         # Embedded management-plane IAM (ADR-0042/0043 P1): contract = the
         # id/scope/request vocabulary, core = the argon2id token directory +
         # minter + default-deny PolicySet evaluator, preset = the seeded
@@ -705,20 +728,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # other sqlite store in the workspace uses.
         "rusqlite",
         "async-trait",
-        # OAuth refresh-token exchange (ADR-0043): the VaultRefresher POSTs the
-        # RFC 6749 refresh grant — the same HTTP client ext-mcp's transport uses.
-        "reqwest",
-        # Confidential-client refresh: the §2.3.1 Basic header is
-        # base64(urlencode(id):urlencode(secret)); both crates are already in
-        # the tree transitively.
-        "base64",
-        "form_urlencoded",
         "serde_json",
         "thiserror",
         "tokio",
         "axum",
         "tower",
         "http-body-util",
+        # dev-only (mcp_sessions test): the VaultRefresher refresh-grant path +
+        # awaken_ext_mcp::to_tool_id assertion + base64 for the §2.3.1 header.
+        "awaken-ext-mcp",
+        "base64",
         # dev-only: the restart-persistence test rebuilds the durable management
         # router over one tempdir across simulated process lifetimes.
         "tempfile",

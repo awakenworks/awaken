@@ -1,0 +1,42 @@
+[package]
+name = "awaken-runtime-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The neutral session substrate (SharedHost) and the two port adapters
+# (ManagedHost / ProtocolHost) live here; the assembly bin mounts them.
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-runtime = { workspace = true }
+awaken-ext-builtin-tools = { workspace = true }
+awaken-ext-memory = { workspace = true }
+awaken-ext-compact = { workspace = true }
+awaken-ext-permission = { workspace = true }
+awaken-ext-skills = { workspace = true }
+awaken-ext-mcp = { workspace = true }
+awaken-ext-goal = { workspace = true }
+awaken-ext-state-machine = { workspace = true, features = ["schema"] }
+awaken-sandbox-local = { workspace = true }
+awaken-store-sqlite = { workspace = true }
+awaken-store-fs = { workspace = true }
+awaken-config-store = { workspace = true }
+awaken-run-ingress = { workspace = true }
+awaken-run-executor-acp = { workspace = true }
+awaken-config-resolver = { workspace = true }
+awaken-credential-vault = { workspace = true }
+awaken-admin-config-api = { workspace = true }
+awaken-protocol-managed = { workspace = true }
+awaken-protocol-transport = { workspace = true }
+awaken-protocol-a2a = { workspace = true }
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+axum = { version = "0.7", features = ["multipart"] }
+# OAuth refresh-token exchange (ADR-0043): `VaultRefresher` POSTs the RFC 6749
+# refresh grant to the credential's token endpoint.
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
+form_urlencoded = "1"

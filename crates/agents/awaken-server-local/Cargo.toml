@@ -9,16 +9,15 @@ name = "awaken-server-local"
 path = "src/main.rs"
 
 [dependencies]
+# The extracted service layer: SharedHost / ManagedHost / ProtocolHost and all
+# host modules live here; this bin only composes them into router modes.
+awaken-runtime-host = { workspace = true }
 awaken-protocol-managed = { workspace = true }
 awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 awaken-protocol-transport = { workspace = true }
-awaken-sandbox-local = { workspace = true }
-awaken-store-sqlite = { workspace = true }
-awaken-store-fs = { workspace = true }
 awaken-config-store = { workspace = true }
-awaken-run-ingress = { workspace = true }
 # ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
 # session selects `runtime: "acp:*"`.
 awaken-run-executor-acp = { workspace = true }
@@ -48,29 +47,10 @@ awaken-iam-preset = { workspace = true }
 # The embedded IAM token/binding rows persist under AWAKEN_MGMT_DIR/iam.sqlite;
 # same rusqlite generation as every other sqlite store in the workspace.
 rusqlite = { version = "0.32", features = ["bundled"] }
-awaken-ext-goal = { workspace = true }
-awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-runtime = { workspace = true }
-awaken-ext-builtin-tools = { workspace = true }
-awaken-ext-memory = { workspace = true }
-awaken-ext-compact = { workspace = true }
-awaken-ext-permission = { workspace = true }
-awaken-ext-skills = { workspace = true }
-# MCP client (ADR-0043 Phase 3): a managed session's configured MCP servers are
-# connected per thread and their tools registered on the runtime.
-awaken-ext-mcp = { workspace = true }
 async-trait.workspace = true
-# OAuth refresh-token exchange (ADR-0043): `VaultRefresher` POSTs the RFC 6749
-# refresh grant to the credential's token endpoint. Same client + feature set as
-# awaken-ext-mcp's own transport, so no second HTTP stack enters the tree.
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
-# Confidential-client refresh (RFC 6749 §2.3.1): the VaultRefresher's
-# `client_secret_basic` header is `Basic base64(urlencode(id):urlencode(secret))`.
-# Both crates are already in the tree transitively (via reqwest/url).
-base64 = "0.22"
-form_urlencoded = "1"
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
@@ -82,5 +62,10 @@ tower = { version = "0.5", features = ["util"] }
 [dev-dependencies]
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
+# mcp_sessions test: drives the VaultRefresher's RFC 6749 refresh grant and
+# asserts the tool-id shape via awaken_ext_mcp::to_tool_id; base64 rebuilds the
+# expected §2.3.1 Basic header. Test-only — the runtime code moved to the host.
+awaken-ext-mcp = { workspace = true }
+base64 = "0.22"
 # Restart-persistence test: a management router rebuilt over the same tempdir.
 tempfile = "3"

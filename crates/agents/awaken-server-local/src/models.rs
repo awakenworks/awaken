@@ -9,7 +9,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
 
-use crate::config::block_text;
+use awaken_runtime_host::block_text;
 
 /// A deterministic, network-free model: it replies with the last user turn's
 /// text, so the server runs end-to-end in CI and under the TypeScript SDK e2e

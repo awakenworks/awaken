@@ -37,6 +37,7 @@ wildcards = "allow"
 [[bans.deny]]
 name = "awaken-agent-contract"
 wrappers = [
+    "awaken-runtime-host",
     "awaken-runtime-contract",
     "awaken-runtime",
     "awaken-ext-builtin-tools",
@@ -74,6 +75,7 @@ reason = "base contract; nothing may pull it upward (no downward dep of its own)
 [[bans.deny]]
 name = "awaken-runtime-contract"
 wrappers = [
+    "awaken-runtime-host",
     "awaken-runtime",
     "awaken-ext-builtin-tools",
     "awaken-ext-permission",
@@ -102,6 +104,7 @@ reason = "contract layer; agent-contract must not depend on it (no upward edge)"
 [[bans.deny]]
 name = "awaken-runtime"
 wrappers = [
+    "awaken-runtime-host",
     "awaken-ext-builtin-tools",
     "awaken-config-store",
     "awaken-runtime-examples",
@@ -117,9 +120,9 @@ reason = "runtime core; contracts must not depend on the kernel (G2, G18)"
 [[bans.deny]]
 name = "awaken-ext-builtin-tools"
 wrappers = [
+    "awaken-runtime-host",
     "awaken-run-ingress",
     "awaken-runtime-examples",
     "awaken-sandbox-local",
-    "awaken-server-local",
 ]
 reason = "extensions sit on top; the runtime core must stay extension-agnostic (G2)"

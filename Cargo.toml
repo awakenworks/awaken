@@ -80,6 +80,7 @@ awaken-sandbox-container = { path = "crates/provisioning/awaken-sandbox-containe
 awaken-runtime-examples = { path = "crates/agents/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/agents/awaken-run-ingress-contract" }
 awaken-run-ingress = { path = "crates/agents/awaken-run-ingress" }
+awaken-runtime-host = { path = "crates/agents/awaken-runtime-host" }
 awaken-server-local = { path = "crates/agents/awaken-server-local" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
