@@ -670,6 +670,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-run-executor-acp"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-channel",
+ "awaken-agent-contract",
+ "awaken-protocol-acp",
+ "awaken-provisioning-contract",
+ "awaken-runtime-contract",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-run-ingress"
 version = "1.0.0-dev"
 dependencies = [

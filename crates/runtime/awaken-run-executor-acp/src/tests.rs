@@ -1,0 +1,202 @@
+//! End-to-end tests with in-memory fakes: a scripted duplex channel stands in for
+//! the launched CLI — no daemon, no network.
+
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::run::{EndCause, Phase};
+use awaken_agent_contract::commit::coordinator::{Coordinator, Error as CommitError};
+use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
+use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::snapshot::{
+    AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+use super::*;
+
+struct FakeProcess;
+
+#[async_trait]
+impl ProcessHandle for FakeProcess {
+    fn id(&self) -> &str {
+        "fake-proc"
+    }
+    async fn wait(&self) -> std::result::Result<ExitStatus, SandboxError> {
+        Ok(ExitStatus {
+            code: Some(0),
+            signaled: false,
+        })
+    }
+    async fn poll(&self) -> std::result::Result<Option<ExitStatus>, SandboxError> {
+        Ok(Some(ExitStatus {
+            code: Some(0),
+            signaled: false,
+        }))
+    }
+    async fn signal(&self, _signal: Signal) -> std::result::Result<(), SandboxError> {
+        Ok(())
+    }
+}
+
+/// A source that scripts a duplex agent: reads the prompt line, emits `frames`.
+struct ScriptedSource {
+    frames: Vec<String>,
+    /// When set, `open` fails with this launch fault instead of scripting a turn.
+    open_error: Option<String>,
+}
+
+#[async_trait]
+impl AgentChannelSource for ScriptedSource {
+    async fn open(
+        &self,
+        _activation: &RunActivation,
+    ) -> std::result::Result<AgentSession, OpenError> {
+        if let Some(e) = &self.open_error {
+            return Err(OpenError(e.clone()));
+        }
+        let (ours, mut theirs) = tokio::io::duplex(4096);
+        let frames = self.frames.clone();
+        tokio::spawn(async move {
+            let mut prompt = String::new();
+            let mut reader = BufReader::new(&mut theirs);
+            let _ = reader.read_line(&mut prompt).await;
+            for f in frames {
+                let _ = theirs.write_all(f.as_bytes()).await;
+                let _ = theirs.write_all(b"\n").await;
+                let _ = theirs.flush().await;
+            }
+        });
+        Ok(AgentSession {
+            channel: Box::new(ours),
+            process: Arc::new(FakeProcess),
+        })
+    }
+}
+
+#[derive(Default)]
+struct RecordingCoordinator {
+    commits: Mutex<Vec<ThreadCommit>>,
+}
+
+#[async_trait]
+impl Coordinator for RecordingCoordinator {
+    async fn commit(&self, commit: ThreadCommit) -> std::result::Result<CommitRecord, CommitError> {
+        self.commits.lock().unwrap().push(commit);
+        Ok(CommitRecord { sequence: 1 })
+    }
+}
+
+fn activation() -> RunActivation {
+    RunActivation {
+        run_id: RunId("run-1".into()),
+        thread_id: ThreadId("thread-1".into()),
+        snapshot: ExecutableAgentSnapshot {
+            id: ExecutableAgentSnapshotId("snap".into()),
+            root_agent_id: AgentId("agent".into()),
+            resolved_spec: ResolvedSpec {
+                catalog_fingerprint: CatalogFingerprint("fp".into()),
+                instructions: "be helpful".into(),
+                max_steps: 8,
+                model_binding: ModelBinding::new("prov", "model", "acp:claude"),
+                tool_descriptors: Vec::new(),
+                plugin_ids: Vec::new(),
+                plugin_config: Default::default(),
+                context_policy: Default::default(),
+            },
+            fingerprint: CatalogFingerprint("fp".into()),
+        },
+        input: vec![Message::text(MessageId("u1".into()), Role::User, "do it")],
+        trace: Default::default(),
+    }
+}
+
+fn exec(frames: Vec<String>) -> AcpRunExecutor {
+    AcpRunExecutor::new(Arc::new(ScriptedSource {
+        frames,
+        open_error: None,
+    }))
+}
+
+#[tokio::test]
+async fn drives_a_turn_commits_messages_and_returns_natural_end() {
+    let e = exec(vec![
+        r#"{"type":"message","text":"working"}"#.into(),
+        r#"{"type":"message","text":"done"}"#.into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(coord.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
+    let commits = coord.commits.lock().unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].messages.len(), 2);
+    assert_eq!(commits[0].messages[0].text_content(), "working");
+    assert_eq!(
+        commits[0].run_fact.phase,
+        Phase::Ended(EndCause::NaturalEnd)
+    );
+}
+
+#[tokio::test]
+async fn a_truncated_stream_is_classified_and_surfaces_an_error_prompt() {
+    // Agent emits a message then closes without a turn_end → AcpError::Truncated.
+    let e = exec(vec![r#"{"type":"message","text":"partial"}"#.into()]);
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(coord.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(phase, Phase::Ended(EndCause::Error(_))));
+    let commits = coord.commits.lock().unwrap();
+    // The partial message plus the appended classified error prompt were committed.
+    let last = commits[0].messages.last().unwrap().text_content();
+    assert!(last.contains("failed") || last.contains("interruption") || last.contains("stopped"));
+}
+
+#[tokio::test]
+async fn a_launch_fault_classifies_at_initialize_and_commits_a_prompt() {
+    let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
+        frames: vec![],
+        open_error: Some("401 Unauthorized: invalid api key".into()),
+    }));
+    let coord = Arc::new(RecordingCoordinator::default());
+    let phase = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(coord.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(phase, Phase::Ended(EndCause::Error(_))));
+    let commits = coord.commits.lock().unwrap();
+    let prompt = commits[0].messages[0].text_content();
+    // Credential-rejection prompt (auth error) surfaced to the run.
+    assert!(prompt.contains("credential"));
+}
+
+#[tokio::test]
+async fn refusal_maps_to_stopped() {
+    let e = exec(vec![r#"{"type":"turn_end","reason":"refusal"}"#.into()]);
+    let phase = e
+        .execute(activation(), RuntimeRunContext::new())
+        .await
+        .unwrap();
+    assert!(matches!(phase, Phase::Ended(EndCause::Stopped(_))));
+}
