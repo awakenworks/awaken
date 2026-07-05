@@ -19,8 +19,8 @@ pub use sqlite::SqliteAdminStore;
 
 pub use router::{
     AdminState, CredentialProbe, CredentialValidation, InMemoryMcpStore, InMemoryProfileStore,
-    InferenceProfileStore, McpStore, ProbeStatus, ResolveRequest, ResolvedInferenceView,
-    ResolvedMcpServerView, admin_router,
+    InMemoryProjectStore, InferenceProfileStore, McpStore, ProbeStatus, ProjectStore,
+    ResolveRequest, ResolvedInferenceView, ResolvedMcpServerView, admin_router,
 };
 
 /// The API surface version this crate serves.

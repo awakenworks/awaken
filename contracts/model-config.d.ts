@@ -11,6 +11,10 @@
  * Stable id of a [`ProtocolEndpoint`].
  *
  * Stable id of a [`Provider`] (vendor namespace).
+ *
+ * A management-plane project identifier. It doubles as the project's ingress
+ * address segment (`/projects/{id}/…` or a per-project domain label), so it is
+ * constrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.
  */
 type CredentialPoolID = string;
 
@@ -26,6 +30,10 @@ type CredentialPoolID = string;
  * Stable id of a [`ProtocolEndpoint`].
  *
  * Stable id of a [`Provider`] (vendor namespace).
+ *
+ * A management-plane project identifier. It doubles as the project's ingress
+ * address segment (`/projects/{id}/…` or a per-project domain label), so it is
+ * constrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.
  */
 type MCPServerID = string;
 
@@ -246,6 +254,36 @@ export interface Offering {
  * The Gemini wire.
  */
 export type ModelAPICompat = "anthropic_messages" | "open_ai_chat" | "gemini";
+
+/**
+ * Which MCP servers an agent uses *within one project* — the project-scoped
+ * consumption binding. Shape mirrors [`AgentMcpConfig`] (the workspace-level
+ * default); a session created through `/projects/{id}/…` consults this first
+ * and falls back to the workspace binding when absent, so bare-path behavior
+ * is byte-identical to before projects existed.
+ */
+export interface ProjectAgentConfig {
+    agent_id:       string;
+    mcp_server_ids: string[];
+    project_id:     string;
+    version:        number;
+    [property: string]: any;
+}
+
+/**
+ * A consumption-side project under a workspace (ADR-0042 amendment: the URL
+ * carries the project as ADDRESSING only — tenancy and authority still flow
+ * from the API key's workspace). Supply (catalog, credentials, pools, MCP
+ * defs) stays workspace-owned; a project only *selects* from it, so no secret
+ * is ever duplicated per project.
+ */
+export interface Project {
+    display_name: string;
+    id:           string;
+    version:      number;
+    workspace_id: string;
+    [property: string]: any;
+}
 
 /**
  * A concrete protocol surface of a provider: which wire + which URL. Distinct
