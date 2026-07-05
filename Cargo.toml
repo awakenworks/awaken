@@ -56,14 +56,12 @@ awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation"
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken
 # authn (argon2id at rest) + grant-based authz gating /v1/config/* and
 # /v1/vaults/* in awaken-server-local, opt-in via AWAKEN_MGMT_IAM=embedded.
-# All three crates pin ONE rev so the contract types line up. Deliberately NOT
-# awaken-iam-server: its mandatory rusqlite 0.40 cannot coexist with
-# awaken-scoped-migration's `sqlite` shell (rusqlite ^0.32, every published
-# rev) because libsqlite3-sys `links = "sqlite3"` admits a single version per
-# graph. The evaluator (`PolicySet`), token directory/minter, and role catalog
-# all live in core/preset; server-local persists the tiny token+binding state
-# itself over the workspace's rusqlite.
+# All four crates pin ONE rev so the contract types line up. awaken-iam-server
+# became consumable once iam adopted foundation ADR-0005 (rusqlite as a
+# links-safe *range*, >=0.32 <0.41), so its SqlStore/migrations now back the
+# embedded authz rows instead of a hand-rolled schema.
 awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
+awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
 awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
 awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
 awaken-managed-bridge = { path = "crates/agents/awaken-managed-bridge" }
