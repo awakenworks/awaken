@@ -92,14 +92,34 @@ impl LlmExecutor for MemoryProbeModel {
                     stop_reason: None,
                 });
             }
+            // Name the memory after a `fact-<tag>` token in the transcript when
+            // present, so distinct turns accumulate distinct memories (which
+            // drives the recall SELECTOR once the store passes its threshold);
+            // otherwise fall back to the fixed sky-color memory.
+            let transcript: String = request
+                .messages
+                .iter()
+                .map(|m| block_text(&m.content))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let (name, content) = transcript
+                .split_whitespace()
+                .find(|w| w.starts_with("fact-"))
+                .map(|tag| (tag.to_string(), format!("remember {tag}")))
+                .unwrap_or_else(|| {
+                    (
+                        "sky-color".to_string(),
+                        "the sky is green today".to_string(),
+                    )
+                });
             return Ok(ChatResponse {
                 output: AssistantOutput::from_tool_calls(vec![ToolCall {
                     call_id: "memwrite-1".to_string(),
                     tool_id: "write_memory".to_string(),
                     arguments: serde_json::json!({
-                        "name": "sky-color",
+                        "name": name,
                         "kind": "project",
-                        "content": "the sky is green today"
+                        "content": content
                     }),
                 }]),
                 usage: None,
