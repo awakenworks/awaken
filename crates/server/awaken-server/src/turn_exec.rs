@@ -25,14 +25,14 @@ impl SharedHost {
     ) -> Result<Phase, HostError> {
         // R3/R4: an ACP-selected thread runs on the external CLI (relaunched per
         // turn — R7), committing through the same coordinator as the native path.
-        if let Some(acp) = &self.acp {
-            if acp.is_acp(thread) {
-                return acp
-                    .executor
-                    .execute(activation, ctx.context())
-                    .await
-                    .map_err(|e| HostError::internal(e.to_string()));
-            }
+        if let Some(acp) = &self.acp
+            && acp.is_acp(thread)
+        {
+            return acp
+                .executor
+                .execute(activation, ctx.context())
+                .await
+                .map_err(|e| HostError::internal(e.to_string()));
         }
         if supersede {
             ctx.durable_ingress
