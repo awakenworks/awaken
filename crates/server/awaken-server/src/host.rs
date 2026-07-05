@@ -794,7 +794,7 @@ impl SharedHost {
         dynamic_descriptors.extend(mcp_descriptors);
         let config = installed.unwrap_or_else(|| {
             server_config(
-                &self.model_ref,
+                &self.model_route.model_ref(thread, &self.model_ref),
                 &self.client_tools,
                 &self.delegates,
                 &plugin_ids,
