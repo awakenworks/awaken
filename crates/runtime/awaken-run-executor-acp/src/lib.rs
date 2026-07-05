@@ -279,5 +279,36 @@ impl RunEventSink for CollectingSink {
     }
 }
 
+/// Routes each run to the native or ACP executor by the resolved spec's
+/// [`runtime_adapter`](awaken_runtime_contract::resolved::ResolvedSpec::runtime_adapter)
+/// (R3). Both peers are `RunExecutor`s, so the selection is the entire "which
+/// runtime serves this agent" mechanism — no separate backend trait, and an
+/// ACP-backed agent is reachable over every wire adapter exactly like a native one.
+pub struct DispatchRunExecutor {
+    native: Arc<dyn RunExecutor>,
+    acp: Arc<dyn RunExecutor>,
+}
+
+impl DispatchRunExecutor {
+    pub fn new(native: Arc<dyn RunExecutor>, acp: Arc<dyn RunExecutor>) -> Self {
+        Self { native, acp }
+    }
+}
+
+#[async_trait]
+impl RunExecutor for DispatchRunExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> Result<Phase> {
+        if activation.snapshot.resolved_spec.runtime_adapter() == "awaken" {
+            self.native.execute(activation, context).await
+        } else {
+            self.acp.execute(activation, context).await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
