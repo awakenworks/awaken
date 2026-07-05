@@ -100,6 +100,54 @@ impl LlmExecutor for EchoModel {
     }
 }
 
+/// A deterministic model tagged with a label, so an e2e can observe which model
+/// (executor) a session/turn resolved to (R1/R2/R5). Replies `model=<label>`.
+pub struct LabelModel(pub &'static str);
+
+#[async_trait::async_trait]
+impl LlmExecutor for LabelModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        Ok(ChatResponse {
+            output: AssistantOutput::text(format!("model={}: {user}", self.0)),
+            usage: None,
+        })
+    }
+}
+
+/// An [`ExecutorProvider`](crate::model_route::ExecutorProvider) mapping a model
+/// ref to a labeled executor, so a session bound to `fast`/`slow` resolves a
+/// distinct model — the R1/R2/R5 demo surface.
+struct RouteProvider;
+
+impl crate::model_route::ExecutorProvider for RouteProvider {
+    fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
+        match model_ref {
+            "fast" => Some(Arc::new(LabelModel("fast"))),
+            "slow" => Some(Arc::new(LabelModel("slow"))),
+            _ => None,
+        }
+    }
+}
+
+/// A router whose per-session/per-turn model selection routes to distinct labeled
+/// executors (R1/R2/R5/R6). `AWAKEN_MODEL_MODE=model-route`.
+pub fn build_model_route_router() -> Router {
+    mount(Arc::new(
+        SharedHost::new(Arc::new(LabelModel("default")), "default")
+            .with_executor_provider(Arc::new(RouteProvider)),
+    ))
+}
+
 /// A deterministic vision-probe model: it reports the media it received on the
 /// last user turn, so an e2e can assert an image survived the whole
 /// adapter -> runtime -> model path (the echo model only sees text). Replies e.g.
