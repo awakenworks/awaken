@@ -13,6 +13,7 @@
 
 mod authz;
 mod models;
+mod session_store;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -575,6 +576,9 @@ struct ManagementStores {
     profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>,
     mcp: Arc<dyn awaken_admin_config_api::McpStore>,
     projects: Arc<dyn awaken_admin_config_api::ProjectStore>,
+    /// Durable home for the Managed session aggregate (its own `sessions.db`), so a
+    /// rehydrated session reports its real config across a restart / peer process.
+    sessions: Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
 }
 
 /// Ephemeral management stores: everything in process memory (dev / e2e default).
@@ -586,6 +590,7 @@ fn in_memory_management_stores() -> ManagementStores {
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
         projects: Arc::new(awaken_admin_config_api::InMemoryProjectStore::new()),
+        sessions: Arc::new(awaken_protocol_managed::InMemorySessionRepository::default()),
     }
 }
 
@@ -631,6 +636,13 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
         profiles: admin.clone(),
         mcp: admin.clone(),
         projects: admin,
+        // A separate `sessions.db` (not a table in admin.db): a live session
+        // instance is a different aggregate from the agent/MCP definitions admin.db
+        // holds (ADR-0039 one-repository-per-aggregate).
+        sessions: Arc::new(
+            crate::session_store::SqliteManagedSessionRepository::open(&db("sessions.db"))
+                .expect("open sessions.db under AWAKEN_MGMT_DIR"),
+        ),
     }
 }
 
@@ -758,6 +770,7 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         profiles,
         mcp: mcp_store,
         projects,
+        sessions,
     } = stores;
     // ONE MCP store across the admin router and the ManagedHost, and ONE
     // credential repo + secret store across admin, vaults, and sessions: a
@@ -812,7 +825,8 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
             mcp_store,
             projects.clone(),
         ))
-        .with_vaults(vault_state),
+        .with_vaults(vault_state)
+        .with_session_repo(sessions),
     );
     // The project ingress (ADR-0042 amendment): the SAME session surface
     // reachable under `/projects/{id}` — the stock SDK reaches it by baseURL
