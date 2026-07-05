@@ -52,7 +52,7 @@ awaken-config-resolver = { path = "crates/config/awaken-config-resolver" }
 awaken-admin-config-api = { path = "crates/config/awaken-admin-config-api" }
 # Foundation contract half (ADR-0043): RFC-9457 ApiError, pagination, and the
 # allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
-awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de" }
+awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken
 # authn (argon2id at rest) + grant-based authz gating /v1/config/* and
 # /v1/vaults/* in awaken-server-local, opt-in via AWAKEN_MGMT_IAM=embedded.
@@ -63,9 +63,9 @@ awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation"
 # graph. The evaluator (`PolicySet`), token directory/minter, and role catalog
 # all live in core/preset; server-local persists the tiny token+binding state
 # itself over the workspace's rusqlite.
-awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev = "380d28fb4b48e583ae956c815cc2aa4f35577b01" }
-awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "380d28fb4b48e583ae956c815cc2aa4f35577b01" }
-awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "380d28fb4b48e583ae956c815cc2aa4f35577b01" }
+awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
+awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
+awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
 awaken-managed-bridge = { path = "crates/agents/awaken-managed-bridge" }
 awaken-store-conformance = { path = "crates/runtime/awaken-store-conformance" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }

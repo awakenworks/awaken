@@ -218,6 +218,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-model-catalog",
  "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
  "axum",
  "http-body-util",
  "rusqlite",
@@ -254,7 +255,7 @@ dependencies = [
 [[package]]
 name = "awaken-api-contract"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=d98b40c90fdac65c329eb279bf5052818906a1de#d98b40c90fdac65c329eb279bf5052818906a1de"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=dfa512edd2e5b7e34ad0b05db01b973845f0f9e9#dfa512edd2e5b7e34ad0b05db01b973845f0f9e9"
 dependencies = [
  "serde",
  "serde_json",
@@ -287,6 +288,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
  "awaken-store-sqlite",
  "rusqlite",
  "serde",
@@ -300,7 +302,7 @@ dependencies = [
 [[package]]
 name = "awaken-connection"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=d98b40c90fdac65c329eb279bf5052818906a1de#d98b40c90fdac65c329eb279bf5052818906a1de"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=dfa512edd2e5b7e34ad0b05db01b973845f0f9e9#dfa512edd2e5b7e34ad0b05db01b973845f0f9e9"
 dependencies = [
  "async-trait",
  "futures",
@@ -321,6 +323,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
  "chacha20poly1305",
  "rusqlite",
  "schemars 1.2.1",
@@ -458,7 +461,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-contract"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=380d28fb4b48e583ae956c815cc2aa4f35577b01#380d28fb4b48e583ae956c815cc2aa4f35577b01"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=6e466668a20011d9394467341fcbdd46eaf2b1c1#6e466668a20011d9394467341fcbdd46eaf2b1c1"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -469,7 +472,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-core"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=380d28fb4b48e583ae956c815cc2aa4f35577b01#380d28fb4b48e583ae956c815cc2aa4f35577b01"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=6e466668a20011d9394467341fcbdd46eaf2b1c1#6e466668a20011d9394467341fcbdd46eaf2b1c1"
 dependencies = [
  "argon2",
  "awaken-iam-contract",
@@ -485,7 +488,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-preset"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=380d28fb4b48e583ae956c815cc2aa4f35577b01#380d28fb4b48e583ae956c815cc2aa4f35577b01"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=6e466668a20011d9394467341fcbdd46eaf2b1c1#6e466668a20011d9394467341fcbdd46eaf2b1c1"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -521,6 +524,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
  "rusqlite",
  "schemars 1.2.1",
  "serde",
@@ -695,6 +699,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
  "awaken-store-postgres",
  "awaken-store-sqlite",
  "futures-lite",
@@ -802,12 +807,20 @@ dependencies = [
 [[package]]
 name = "awaken-scoped-migration"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=d98b40c90fdac65c329eb279bf5052818906a1de#d98b40c90fdac65c329eb279bf5052818906a1de"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=dfa512edd2e5b7e34ad0b05db01b973845f0f9e9#dfa512edd2e5b7e34ad0b05db01b973845f0f9e9"
 dependencies = [
- "rusqlite",
  "sha2",
  "sqlx",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "awaken-scoped-migration-sqlite"
+version = "0.1.0-dev"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=dfa512edd2e5b7e34ad0b05db01b973845f0f9e9#dfa512edd2e5b7e34ad0b05db01b973845f0f9e9"
+dependencies = [
+ "awaken-scoped-migration",
+ "rusqlite",
 ]
 
 [[package]]
@@ -918,6 +931,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
  "awaken-store-conformance",
  "awaken-store-schema",
  "rusqlite",
@@ -1659,7 +1673,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2374,7 +2388,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "system-configuration 0.7.0",
  "tokio",
  "tower-service",
@@ -3415,7 +3429,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.41",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3453,7 +3467,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -3843,7 +3857,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3945,7 +3959,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4408,7 +4422,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4785,7 +4799,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5468,7 +5482,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
