@@ -1,0 +1,12 @@
+{
+  "name": "awaken-console-root",
+  "private": true,
+  "packageManager": "pnpm@11.6.0",
+  "scripts": {
+    "lint": "node web/scripts/lint.mjs",
+    "typecheck": "pnpm -C web typecheck",
+    "build": "pnpm -C web build",
+    "dev": "pnpm -C web dev",
+    "test": "pnpm -C web test"
+  }
+}
