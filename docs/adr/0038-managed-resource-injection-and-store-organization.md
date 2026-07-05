@@ -266,46 +266,55 @@ storage lifecycle. Therefore:
   realize arm** (`Realization::Copy`/`Bind`) — one extra registry lookup, no new
   realizer.
 
-This supersedes D1's implication that `SkillStore` is a peer storage aggregate:
-the family member is a **registry over `FileStore`'s blob substrate**. The naming
-law stays intact — `File` is the immutable-blob storage; `SkillRegistry` is the
-naming/versioning index above it.
+This supersedes D1's implication that `SkillStore` is a peer storage aggregate,
+**and relocates D3's registry placement**: the registry is **control-plane** — the
+host resolves `skill_id@version → bundle content_hash` at *compose time*, when it
+decides which bundle to materialize as a mount — and is **not** owned by
+`awaken-ext-skills`. `awaken-ext-skills` stays a pure **runtime consumer**: it
+reads the already-provisioned skill files mounted into the sandbox (ADR-0036's two
+tools) and touches no registry or store. The naming law stays intact — `File` is
+the immutable-blob storage; `SkillRegistry` is the control-plane naming/versioning
+index above it.
 
-### A3: Artifacts write-back is a harvest into the blob store, pinned by the Checkpoint — not a subsystem
+### A3: Artifacts are surfaced by path into the prompt — not runtime truth, not a Checkpoint fact
 
-The sandbox→host output path (`Sandbox::artifacts()` + `read_artifact()`, files
-under `outputs_path`) is a **harvest step**, not a new store. Three distinct
-write-backs are kept separate:
+**Corrects an earlier draft of this amendment** (which routed artifacts through a
+harvest into the blob store, pinned by the Checkpoint). The sandbox→host output
+path (`Sandbox::artifacts()` + `read_artifact()`, files under `outputs_path`) is
+**not** recorded as committed runtime truth. The outputs **path is rendered into
+the prompt** at context-compose time — the same control-plane mechanism by which a
+memory store's `description`/`instructions` are injected into the system prompt
+(D5). `awaken-agent-contract` / `Checkpoint` **do not learn about artifacts** and
+need **no** change; G13 is untouched.
+
+- **Surface, don't commit.** When composing the next turn, the host lists
+  `artifacts()` and renders their paths (+ metadata) into the prompt as context,
+  so the model/user know what was produced. This is control-plane prompt assembly,
+  not a fact-log write.
+- **Bytes are on-demand.** `read_artifact(id)` is called only when a client/API
+  actually downloads an output; it is not a run-boundary harvest. Whether the host
+  additionally copies bytes into the blob store for durable download is a
+  **control-plane option**, never a committed run fact.
+- **Three write-backs stay distinct** (only the outputs row changed):
 
 | Write-back | Direction | Driver | Mechanism |
 |---|---|---|---|
-| **outputs / artifacts** | sandbox → host | host harvest | `artifacts()` list + `read_artifact()` → **put into the blob store as new `file`s**; refs recorded in the run Checkpoint |
+| **outputs / artifacts** | sandbox → host | control-plane compose | `artifacts()` → **paths rendered into the prompt**; bytes via `read_artifact()` on demand; **no Checkpoint, no G13** |
 | **durable mount** | sandbox → source | provider-internal | `ReadWrite`+`Durable` mounts write back at `dispose`/`attach` (memory → new version; secret → broker) |
 | **git push** | sandbox → remote | agent (bash git) | via the host git-proxy; host does **not** harvest git |
 
-Harvest is a stage at run/step commit points (per-step commit) with a fixed order
-for crash/distribution safety:
-
-1. `artifacts()` — idempotent list; `Artifact.id = content_hash`.
-2. For each new hash: `read_artifact()` → **blob-store `put`** (content-addressed,
-   idempotent, dedup).
-3. Record the artifact **refs** (hash + path) in the run fact log, **committed
-   within the `Checkpoint` txn (G13)**.
-
-Ordering is load-bearing: bytes to the blob store **first** (idempotent), refs
-into the Checkpoint **second**. A crash between them leaves orphan bytes (GC by
-content-hash, harmless) and re-derives refs on the next idempotent harvest. Bytes
-are **not** placed inside the G13 txn (keeps large payloads out of the commit);
-the invariant is only *"a committed ref implies the bytes are durable"*. Any node
-that can `adopt` the sandbox can harvest; re-harvest is a no-op. Artifacts thus
-reuse the `file` aggregate + Checkpoint and add **no** new storage.
+`artifacts()` is idempotent and content-addressed (`Artifact.id = content_hash`),
+so listing/reading is reconnect-safe from any node that can `adopt` the sandbox —
+but nothing about it enters run truth. Artifacts add **no** new storage and touch
+neither `awaken-agent-contract` nor the Checkpoint.
 
 ### Consequences of the amendment
 
 - The resource plane has **exactly one content-addressed blob store** as its byte
-  substrate — shared by `file` in, `skill` bundles, and harvested `artifacts` out
-  — plus one mutable keyed store (`memory_store`) and the vault (`secret`).
-  Reference resources add zero storage.
+  substrate — shared by `file` in and `skill` bundles — plus one mutable keyed
+  store (`memory_store`) and the vault (`secret`). Reference resources add zero
+  storage; **artifacts add none either** (surfaced by path, bytes read on demand);
+  the skill registry is a control-plane index, not a backend.
 - Adding `github_repository`/`skill` stays "a `MountSource` variant + a realize
   arm": `skill` reuses the `File` arm; `github_repository` reuses the
   egress-substitution (broker) seam for auth (`EnvValue::Secret` /
