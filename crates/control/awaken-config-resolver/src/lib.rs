@@ -243,6 +243,41 @@ pub struct AgentMcpConfig {
     pub version: i64,
 }
 
+/// A management-plane project identifier. It doubles as the project's ingress
+/// address segment (`/projects/{id}/…` or a per-project domain label), so it is
+/// constrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProjectId(pub String);
+
+/// A consumption-side project under a workspace (ADR-0042 amendment: the URL
+/// carries the project as ADDRESSING only — tenancy and authority still flow
+/// from the API key's workspace). Supply (catalog, credentials, pools, MCP
+/// defs) stays workspace-owned; a project only *selects* from it, so no secret
+/// is ever duplicated per project.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct Project {
+    pub id: ProjectId,
+    pub workspace_id: String,
+    pub display_name: String,
+    pub version: i64,
+}
+
+/// Which MCP servers an agent uses *within one project* — the project-scoped
+/// consumption binding. Shape mirrors [`AgentMcpConfig`] (the workspace-level
+/// default); a session created through `/projects/{id}/…` consults this first
+/// and falls back to the workspace binding when absent, so bare-path behavior
+/// is byte-identical to before projects existed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProjectAgentConfig {
+    pub project_id: ProjectId,
+    pub agent_id: String,
+    pub mcp_server_ids: Vec<McpServerId>,
+    pub version: i64,
+}
+
 /// The injection-ready MCP server the resolver hands the runtime: the display
 /// name, the URL, and an already-materialized credential (or `None` for an
 /// unauthenticated server). The runtime sees only this — never a binding, a ref,
