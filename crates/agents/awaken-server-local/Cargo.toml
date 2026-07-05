@@ -33,6 +33,16 @@ awaken-model-catalog = { workspace = true, features = ["sqlite"] }
 # `sqlite` + `sealed-aead`: the durable management plane persists secret-free rows in
 # SQLite and secrets only as AEAD-sealed blobs under AWAKEN_MGMT_SEAL_KEY.
 awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead"] }
+# Embedded IAM (ADR-0042/0043 P1): AWAKEN_MGMT_IAM=embedded gates the management
+# plane behind bearer ApiTokens. contract = ids/scopes/requests, core = token
+# directory + minter + the default-deny PolicySet evaluator, preset = the seeded
+# Anthropic role catalog. (No awaken-iam-server: see the workspace manifest.)
+awaken-iam-contract = { workspace = true }
+awaken-iam-core = { workspace = true }
+awaken-iam-preset = { workspace = true }
+# The embedded IAM token/binding rows persist under AWAKEN_MGMT_DIR/iam.sqlite;
+# same rusqlite generation as every other sqlite store in the workspace.
+rusqlite = { version = "0.32", features = ["bundled"] }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-agent-contract.workspace = true

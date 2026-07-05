@@ -92,6 +92,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "argon2"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
+dependencies = [
+ "base64ct",
+ "blake2",
+ "cpufeatures 0.2.17",
+ "password-hash",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -444,6 +456,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-iam-contract"
+version = "0.1.0-dev"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=380d28fb4b48e583ae956c815cc2aa4f35577b01#380d28fb4b48e583ae956c815cc2aa4f35577b01"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "awaken-iam-core"
+version = "0.1.0-dev"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=380d28fb4b48e583ae956c815cc2aa4f35577b01#380d28fb4b48e583ae956c815cc2aa4f35577b01"
+dependencies = [
+ "argon2",
+ "awaken-iam-contract",
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "awaken-iam-preset"
+version = "0.1.0-dev"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=380d28fb4b48e583ae956c815cc2aa4f35577b01#380d28fb4b48e583ae956c815cc2aa4f35577b01"
+dependencies = [
+ "awaken-iam-contract",
+ "awaken-iam-core",
+]
+
+[[package]]
 name = "awaken-managed-bridge"
 version = "1.0.0-dev"
 dependencies = [
@@ -766,6 +814,9 @@ dependencies = [
  "awaken-ext-permission",
  "awaken-ext-skills",
  "awaken-ext-state-machine",
+ "awaken-iam-contract",
+ "awaken-iam-core",
+ "awaken-iam-preset",
  "awaken-model-catalog",
  "awaken-protocol-a2a",
  "awaken-protocol-ag-ui",
@@ -784,6 +835,7 @@ dependencies = [
  "form_urlencoded",
  "http-body-util",
  "reqwest 0.11.27",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -979,6 +1031,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "blake2"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+dependencies = [
+ "digest",
 ]
 
 [[package]]
@@ -1376,6 +1437,7 @@ dependencies = [
  "fiat-crypto",
  "rustc_version",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1532,6 +1594,7 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
+ "pkcs8",
  "signature",
 ]
 
@@ -1543,9 +1606,11 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "serde",
  "sha2",
  "signature",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -3116,6 +3181,17 @@ dependencies = [
  "redox_syscall 0.5.18",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "password-hash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+dependencies = [
+ "base64ct",
+ "rand_core 0.6.4",
+ "subtle",
 ]
 
 [[package]]
