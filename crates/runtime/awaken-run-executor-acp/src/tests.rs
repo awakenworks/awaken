@@ -91,7 +91,7 @@ impl Coordinator for RecordingCoordinator {
     }
 }
 
-fn activation() -> RunActivation {
+pub(crate) fn activation() -> RunActivation {
     RunActivation {
         run_id: RunId("run-1".into()),
         thread_id: ThreadId("thread-1".into()),
