@@ -1550,9 +1550,13 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging
-    // the guarded sub-router later leaves every other surface untouched.
+    // the guarded sub-router later leaves every other surface untouched. The
+    // token-management routes exist ONLY under the guard (they authorize
+    // against the same embedded IAM the guard authenticates with), and they
+    // are merged before the layer so the guard authenticates them first.
     let mut mgmt = admin.merge(vaults);
     if let Some(iam) = iam {
+        mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
         mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
             iam,
             crate::authz::management_guard,
