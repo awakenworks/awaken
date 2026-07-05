@@ -34,6 +34,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "schemars",
         "awaken-scoped-migration",
+        # ADR-0005: the sync rusqlite runner lives in the sibling crate.
+        "awaken-scoped-migration-sqlite",
         "tokio",
         # feature `sqlite`: embedded durable CatalogRepo backend over the crate's
         # own `catalog` migration scope (ADR-0043 sqlite-repos).
@@ -52,6 +54,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "chacha20poly1305",
         "tokio",
         "awaken-scoped-migration",
+        # ADR-0005: the sync rusqlite runner lives in the sibling crate.
+        "awaken-scoped-migration-sqlite",
         # feature `sqlite`: embedded durable CredentialRepo + SealedBlobStore
         # backends over the crate's own `credential` migration scope (ADR-0043
         # sqlite-repos); the durable secret path stays sealed-only.
@@ -92,6 +96,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # get a migration scope of their own (`awaken.admin`), like the
         # catalog/credential domains.
         "awaken-scoped-migration",
+        # ADR-0005: the sync rusqlite runner lives in the sibling crate.
+        "awaken-scoped-migration-sqlite",
         # feature `sqlite`: embedded durable InferenceProfileStore + McpStore
         # backend over the crate's own `admin` migration scope (ADR-0043
         # sqlite-repos).
@@ -287,6 +293,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-store-sqlite",
         "awaken-scoped-migration",
+        # ADR-0005: the sync rusqlite runner lives in the sibling crate.
+        "awaken-scoped-migration-sqlite",
         "async-trait",
         "sqlx",
         "rusqlite",
@@ -324,6 +332,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-store-schema",
         "awaken-store-conformance",
         "awaken-scoped-migration",
+        # ADR-0005: the sync rusqlite runner lives in the sibling crate.
+        "awaken-scoped-migration-sqlite",
         "async-trait",
         "rusqlite",
         "tokio",
@@ -342,6 +352,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime",
         "awaken-ext-builtin-tools",
         "awaken-scoped-migration",
+        # ADR-0005: the sync rusqlite runner lives in the sibling crate.
+        "awaken-scoped-migration-sqlite",
         "awaken-store-postgres",
         "awaken-store-sqlite",
         "async-trait",
