@@ -135,6 +135,46 @@ pub struct McpServerBinding {
     pub refresh: Option<McpRefreshBinding>,
 }
 
+/// A queued live-inbox message on the session's in-flight turn. `id` is the
+/// runtime's queue identity — targetable until the engine consumes the entry.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LiveInboxEntry {
+    pub id: u64,
+    pub content: Vec<ContentBlock>,
+}
+
+/// The session's live-inbox resource: the editable queue of messages addressed
+/// to the in-flight turn. `active: false` means no native turn is running (the
+/// queue shows empty; sends go through the normal event path instead).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LiveInboxSnapshot {
+    pub active: bool,
+    pub version: u64,
+    pub messages: Vec<LiveInboxEntry>,
+}
+
+impl LiveInboxSnapshot {
+    pub fn inactive() -> Self {
+        Self {
+            active: false,
+            version: 0,
+            messages: Vec::new(),
+        }
+    }
+}
+
+/// Why a live-inbox operation failed. Mirrors the runtime contract's edit
+/// errors, plus `Inactive` for "no native turn in flight on this session".
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LiveInboxError {
+    #[error("no turn is in flight; send the message as a normal event")]
+    Inactive,
+    #[error("no queued message with that id")]
+    UnknownMessage,
+    #[error("proposed order does not match the current queue")]
+    StaleOrder,
+}
+
 /// The runtime seam the adapter drives (DDD port). Implemented by the server over
 /// the kernel; the adapter never constructs a runtime.
 #[async_trait]
@@ -223,6 +263,47 @@ pub trait SessionRuntime: Send + Sync {
         max_iterations: u32,
     ) -> Result<OutcomeReport, RunError>;
 
+    /// The live-inbox queue on `thread`'s in-flight turn. The default reports
+    /// an inactive queue, so a host without live-inbox wiring is unaffected.
+    async fn live_inbox_snapshot(&self, _thread: &str) -> LiveInboxSnapshot {
+        LiveInboxSnapshot::inactive()
+    }
+
+    /// Queue a message onto `thread`'s in-flight turn; it is folded into the
+    /// running transcript at the next safe boundary. Fails `Inactive` when no
+    /// native turn is running (the caller should send a normal event instead).
+    async fn live_inbox_queue(
+        &self,
+        _thread: &str,
+        _content: Vec<ContentBlock>,
+    ) -> Result<u64, LiveInboxError> {
+        Err(LiveInboxError::Inactive)
+    }
+
+    /// Delete one queued (not yet consumed) message.
+    async fn live_inbox_remove(&self, _thread: &str, _id: u64) -> Result<(), LiveInboxError> {
+        Err(LiveInboxError::Inactive)
+    }
+
+    /// Replace one queued message's content, keeping its id and position.
+    async fn live_inbox_replace(
+        &self,
+        _thread: &str,
+        _id: u64,
+        _content: Vec<ContentBlock>,
+    ) -> Result<(), LiveInboxError> {
+        Err(LiveInboxError::Inactive)
+    }
+
+    /// Reorder the queue to exactly `order` (a full permutation of current ids).
+    async fn live_inbox_reorder(
+        &self,
+        _thread: &str,
+        _order: Vec<u64>,
+    ) -> Result<(), LiveInboxError> {
+        Err(LiveInboxError::Inactive)
+    }
+
     /// The model id to echo in the session's agent object.
     fn model(&self) -> String;
 
@@ -297,6 +378,10 @@ pub enum StateError {
     VaultNotFound(String),
     #[error(transparent)]
     Run(#[from] RunError),
+    /// A live-inbox operation was refused (inactive queue, unknown message,
+    /// or a stale reorder); the router maps each case to its own status.
+    #[error(transparent)]
+    LiveInbox(#[from] LiveInboxError),
 }
 
 impl ManagedState {
@@ -603,6 +688,67 @@ impl ManagedState {
     /// `POST /v1/sessions/{id}/events`. Mints a receipt per inbound event and acts
     /// on `user.message` (run a turn) and `user.tool_confirmation` (resume a
     /// parked run), appending the projected events.
+    /// Resolve `session_id` (rehydrating from durable truth after a restart,
+    /// like `send_events`) and fail closed when it names no session.
+    async fn require_session(&self, session_id: &str) -> Result<(), StateError> {
+        self.ensure_session(session_id).await?;
+        let sessions = self.sessions.lock().unwrap();
+        if sessions.contains_key(session_id) {
+            Ok(())
+        } else {
+            Err(StateError::NotFound)
+        }
+    }
+
+    /// `GET /v1/sessions/:id/live-inbox` — the in-flight turn's editable queue.
+    pub async fn live_inbox_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<LiveInboxSnapshot, StateError> {
+        self.require_session(session_id).await?;
+        Ok(self.runtime.live_inbox_snapshot(session_id).await)
+    }
+
+    /// `POST /v1/sessions/:id/live-inbox` — queue a message for the in-flight turn.
+    pub async fn live_inbox_queue(
+        &self,
+        session_id: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<u64, StateError> {
+        self.require_session(session_id).await?;
+        Ok(self.runtime.live_inbox_queue(session_id, content).await?)
+    }
+
+    /// `DELETE /v1/sessions/:id/live-inbox/:msg` — withdraw a queued message.
+    pub async fn live_inbox_remove(&self, session_id: &str, id: u64) -> Result<(), StateError> {
+        self.require_session(session_id).await?;
+        Ok(self.runtime.live_inbox_remove(session_id, id).await?)
+    }
+
+    /// `PUT /v1/sessions/:id/live-inbox/:msg` — replace a queued message's content.
+    pub async fn live_inbox_replace(
+        &self,
+        session_id: &str,
+        id: u64,
+        content: Vec<ContentBlock>,
+    ) -> Result<(), StateError> {
+        self.require_session(session_id).await?;
+        Ok(self
+            .runtime
+            .live_inbox_replace(session_id, id, content)
+            .await?)
+    }
+
+    /// `PUT /v1/sessions/:id/live-inbox/order` — reorder the queue (full permutation).
+    pub async fn live_inbox_reorder(
+        &self,
+        session_id: &str,
+        order: Vec<u64>,
+    ) -> Result<(), StateError> {
+        self.require_session(session_id).await?;
+        Ok(self.runtime.live_inbox_reorder(session_id, order).await?)
+    }
+
     pub async fn send_events(
         &self,
         session_id: &str,

@@ -19,9 +19,9 @@ pub mod vaults;
 
 pub use router::{ProjectScope, router};
 pub use state::{
-    AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, McpServerBinding,
-    OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind, SessionInit, SessionRuntime,
-    StateError, TurnOutcome,
+    AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
+    LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,
+    RunError, RunErrorKind, SessionInit, SessionRuntime, StateError, TurnOutcome,
 };
 pub use vaults::{
     McpProbe, McpProbeStatus, McpRefreshBinding, TokenEndpointAuthBinding, VaultState, vault_router,
