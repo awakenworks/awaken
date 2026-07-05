@@ -11,6 +11,16 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
+    // Connect the shared Postgres dispatch pool once, before serving, when durable
+    // ingress is backed by Postgres (a multi-node fleet sharing one queue). Doing it
+    // here keeps the non-`Send` sqlx connect future out of the per-thread run loop.
+    if std::env::var("AWAKEN_INGRESS").as_deref() == Ok("durable")
+        && std::env::var("AWAKEN_DISPATCH_BACKEND").as_deref() == Ok("postgres")
+    {
+        let url = std::env::var("AWAKEN_DATABASE_URL")
+            .map_err(|_| "AWAKEN_DISPATCH_BACKEND=postgres requires AWAKEN_DATABASE_URL")?;
+        awaken_runtime_host::init_shared_postgres_dispatch(&url).await?;
+    }
     let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
         Ok("probe") => {
             awaken_server_local::build_router(Arc::new(awaken_server_local::ProbeModel), "probe")

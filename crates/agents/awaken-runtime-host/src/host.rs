@@ -24,7 +24,7 @@ use awaken_ext_goal::{DelegateGrader, GoalPlugin, GoalSpec, Grader, KeywordGrade
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
 use awaken_run_ingress::{
-    DispatchService, DispatchServiceConfig, DurableRunIngress, SqliteDispatchStore, SystemClock,
+    AnyDispatchStore, DispatchService, DispatchServiceConfig, DurableRunIngress, SystemClock,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
@@ -194,11 +194,11 @@ pub(crate) struct SessionCtx {
     /// boxed `ingress` so the ADR-0009 operational verbs (recover / reap /
     /// dead-letter GC / superseding submit — slice E) stay reachable; the boxed
     /// trait object erases them.
-    pub(crate) durable_ingress: Option<Arc<DurableRunIngress<SqliteDispatchStore>>>,
+    pub(crate) durable_ingress: Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
     /// The standing dispatch daemon for this session (ADR-0011), present when
     /// durable + `AWAKEN_DISPATCH_DAEMON=1`. Held here to keep the background task
     /// alive for the session's lifetime; it drains the shared queue autonomously.
-    pub(crate) dispatch_service: Option<DispatchService<SqliteDispatchStore>>,
+    pub(crate) dispatch_service: Option<DispatchService<AnyDispatchStore>>,
     config: RunnableConfig,
     pub(crate) commit: Arc<HostCommit>,
     pub(crate) thread_id: ThreadId,
@@ -621,7 +621,7 @@ impl SharedHost {
     ) -> Result<
         (
             Arc<dyn RunIngress>,
-            Option<Arc<DurableRunIngress<SqliteDispatchStore>>>,
+            Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
         ),
         HostError,
     > {
@@ -629,21 +629,16 @@ impl SharedHost {
         if !durable {
             return Ok((Arc::new(DirectRunIngress::new(runtime)), None));
         }
-        // A durable dispatch store: a SQLite queue under the store dir (survives a
-        // restart), or a private in-memory SQLite queue when no store dir is set.
-        // Always SQLite so the concrete ingress type is fixed and its operational
-        // verbs (recover / reap / supersede — ADR-0009 follow-ons) stay reachable.
-        let store = Arc::new(match &self.store_dir {
-            Some(dir) => {
-                std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
-                let path = dir.join(format!("{}-dispatch.db", sanitize_thread(thread)));
-                SqliteDispatchStore::open(&path.to_string_lossy())
-                    .map_err(|e| HostError::internal(e.to_string()))?
-            }
-            None => SqliteDispatchStore::open_in_memory()
-                .map_err(|e| HostError::internal(e.to_string()))?,
-        });
-        let ingress = Arc::new(DurableRunIngress::new(runtime, store, commit));
+        // The durable dispatch backend (SQLite per-thread, or the shared Postgres
+        // pool for a multi-node fleet) plus this process's unique claim owner — both
+        // live in `dispatch_backend`, which owns backend selection (ADR-0019/0024).
+        let store = crate::dispatch_backend::open_durable_store(self.store_dir.as_deref(), thread)?;
+        let ingress = Arc::new(DurableRunIngress::with_owner(
+            runtime,
+            store,
+            commit,
+            crate::dispatch_backend::dispatch_owner(),
+        ));
         // Startup recovery: reclaim any dispatch a prior process crashed on
         // mid-flight, driving it to completion against committed truth.
         ingress
@@ -819,7 +814,13 @@ impl SharedHost {
         // (ADR-0011). Runs on the same worker/store as the ingress.
         let dispatch_service = if self.dispatch_daemon {
             durable_ingress.as_ref().map(|ing| {
-                ing.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default())
+                // Enable the lease-renewal heartbeat (ADR-0024): a long run must not
+                // be reclaimed by a peer while this daemon is still executing it.
+                let config = DispatchServiceConfig {
+                    lease_renewal_interval: Some(crate::dispatch_backend::LEASE_RENEWAL),
+                    ..DispatchServiceConfig::default()
+                };
+                ing.spawn_service(Arc::new(SystemClock), config)
             })
         } else {
             None
@@ -1052,7 +1053,7 @@ impl SharedHost {
     pub(crate) async fn durable_ingress(
         &self,
         thread: &str,
-    ) -> Result<Arc<DurableRunIngress<SqliteDispatchStore>>, HostError> {
+    ) -> Result<Arc<DurableRunIngress<AnyDispatchStore>>, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
         ctx.durable_ingress.clone().ok_or_else(|| {
             HostError::bad_request("durable ingress not enabled (set AWAKEN_INGRESS=durable)")

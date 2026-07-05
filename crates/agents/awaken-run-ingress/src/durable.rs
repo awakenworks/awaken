@@ -43,13 +43,25 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
     {
+        Self::with_owner(runtime, store, commit, "durable-run-ingress")
+    }
+
+    /// Like [`new`](Self::new) but with an explicit claim `owner`. Each process in
+    /// a multi-node fleet MUST pass a unique owner: the lease is owner-scoped
+    /// (`renew_lease`/`renew_owned_leases`), so a shared owner would let peers
+    /// renew each other's leases and break the single-owner-per-run guarantee
+    /// (ADR-0019/0024). Single-process deployments can keep the default owner.
+    pub fn with_owner<C>(
+        runtime: Arc<Runtime>,
+        store: Arc<S>,
+        commit: Arc<C>,
+        owner: impl Into<String>,
+    ) -> Self
+    where
+        C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
+    {
         Self {
-            worker: Arc::new(DispatchWorker::new(
-                runtime,
-                store,
-                commit,
-                "durable-run-ingress",
-            )),
+            worker: Arc::new(DispatchWorker::new(runtime, store, commit, owner)),
         }
     }
 

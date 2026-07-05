@@ -18,6 +18,7 @@ mod compact;
 mod config;
 mod config_plane;
 mod delegate;
+mod dispatch_backend;
 mod durable_ops;
 mod files;
 mod host;
@@ -53,6 +54,7 @@ use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, Offer};
 use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
 
 // The neutral session substrate and its resume vocabulary.
+pub use crate::dispatch_backend::init_shared_postgres_dispatch;
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 // The config data plane (ADR-0036/slice A): the service + its router + the
