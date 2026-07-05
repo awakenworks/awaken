@@ -332,8 +332,8 @@ async fn runtime_attach_and_process_reattach_are_unsupported_locally() {
 #[tokio::test]
 async fn mount_resolves_from_a_content_addressed_file_store() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = Arc::new(FsFileStore::open(tmp.path().join("blobs")).unwrap());
-    let id = store.put(b"from-store").unwrap();
+    let store = Arc::new(FsFileStore::open(tmp.path().join("blobs")).await.unwrap());
+    let id = store.put(b"from-store").await.unwrap();
 
     let provider = LocalProvider::new(tmp.path().join("envs")).with_file_store(store);
     let mut spec = spec("t-fs");
