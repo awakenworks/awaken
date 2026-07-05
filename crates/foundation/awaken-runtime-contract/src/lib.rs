@@ -6,6 +6,7 @@ pub mod capability;
 pub mod catalog;
 pub mod control;
 pub mod execution;
+pub mod live_inbox;
 pub mod llm;
 pub mod permission;
 pub mod plugin;
@@ -23,6 +24,7 @@ pub use agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 pub use control::LiveRunControl;
 pub use execution::RunExecutor;
+pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use permission::{GateOutcome, PermissionDecision, PermissionPolicy, ToolGateHook};
 pub use plugin::{
