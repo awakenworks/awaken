@@ -838,6 +838,7 @@ dependencies = [
  "awaken-protocol-managed",
  "awaken-protocol-transport",
  "awaken-provider-genai",
+ "awaken-run-executor-acp",
  "awaken-run-ingress",
  "awaken-runtime",
  "awaken-runtime-contract",

@@ -19,6 +19,9 @@ awaken-store-sqlite = { workspace = true }
 awaken-store-fs = { workspace = true }
 awaken-config-store = { workspace = true }
 awaken-run-ingress = { workspace = true }
+# ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
+# session selects `runtime: "acp:*"`.
+awaken-run-executor-acp = { workspace = true }
 # Management plane (ADR-0043): the composition root resolves a run's inference
 # (adapter_kind + base_url + already-resolved credential) and builds the host's
 # model executor from it — the runtime never sees the credential binding (D6/D9).

@@ -110,6 +110,9 @@ pub struct SessionInit {
     /// The session's requested model (R2), staged so the run binds it; `None` →
     /// the host default.
     pub model: Option<String>,
+    /// The session's requested runtime adapter (R3): `"acp:*"` routes to an ACP
+    /// CLI; `None`/`"awaken"` → native.
+    pub runtime: Option<String>,
 }
 
 /// One session MCP server, bound at creation: the wire name/url plus the vault
@@ -358,6 +361,7 @@ impl ManagedState {
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
                     model: req.agent.model().map(str::to_string),
+                    runtime: req.agent.runtime().map(str::to_string),
                 },
             )
             .await
