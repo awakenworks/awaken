@@ -434,6 +434,7 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
                 metadata: Default::default(),
                 mcp_servers: Vec::new(),
                 vault_ids: Vec::new(),
+                resources: Vec::new(),
             },
             None,
         )
