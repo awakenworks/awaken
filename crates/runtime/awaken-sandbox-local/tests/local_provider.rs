@@ -405,3 +405,27 @@ async fn all_or_nothing_reaps_the_env_on_a_failed_required_mount() {
     // No partial environment left behind.
     assert!(!tmp.path().join("t-aon").exists());
 }
+
+#[tokio::test]
+async fn memory_store_mount_fails_loud_not_a_silent_empty_file() {
+    // ADR-0038: a memory_store is a keyed store, not a byte blob. With no memory
+    // backend wired, realizing it must error — never silently produce an empty
+    // placeholder file that misleads the agent into thinking it has a store.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
+    let mut spec = spec("t-mem");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "mem".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "memstore-7".into(),
+        },
+        mount_path: "/mnt/memory/prefs".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: false, // even optional: must fail loud, not empty-file
+    });
+    match provider.create(&spec).await {
+        Err(e) => assert!(e.to_string().contains("memory_store is not realizable")),
+        Ok(_) => panic!("expected memory_store mount to fail loud, not realize"),
+    }
+}

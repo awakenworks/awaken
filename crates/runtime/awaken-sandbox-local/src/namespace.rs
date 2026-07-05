@@ -191,6 +191,14 @@ impl NamespaceProvider {
         let mut realized = Vec::new();
         for req in &spec.mounts {
             let host = root.resolve(&req.mount_path).map_err(err)?;
+            // memory_store is a keyed store, not a byte blob (ADR-0038); no memory
+            // backend is wired here, so fail loud rather than fake it with a file.
+            if matches!(req.source, pc::MountSource::MemoryStore { .. }) {
+                return Err(err(format!(
+                    "mount {:?}: memory_store is not realizable on this provider (no memory backend wired)",
+                    req.mount_id
+                )));
+            }
             let bytes = resolve_source(&req.source, &self.blobs, &self.file_store).await;
             match &bytes {
                 Some(bytes) => {
