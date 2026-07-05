@@ -24,6 +24,7 @@ mod hub;
 mod judge;
 mod mcp;
 mod memory;
+mod model_route;
 mod skills;
 mod store;
 mod subagent;

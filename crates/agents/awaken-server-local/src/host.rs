@@ -249,8 +249,13 @@ use crate::judge::KernelJudgeRunner;
 
 /// The protocol-neutral, thread-keyed session substrate shared by every adapter.
 pub struct SharedHost {
+    /// The host DEFAULT executor: used by auxiliary sub-agents (judge, compactor,
+    /// memory) and as the fallback when no [`ExecutorProvider`] resolves a thread's
+    /// model. The main run resolves its executor per thread via `resolve_executor`.
     pub(crate) llm: Arc<dyn LlmExecutor>,
     pub(crate) model_ref: String,
+    /// Per-thread model→executor routing (R1/R2). See [`crate::model_route`].
+    pub(crate) model_route: crate::model_route::ThreadModelBinding,
     pub(crate) provider: LocalSandboxProvider,
     grader: Arc<dyn Grader>,
     client_tools: HashSet<String>,
@@ -310,6 +315,7 @@ impl SharedHost {
         Self {
             llm,
             model_ref: model_ref.into(),
+            model_route: crate::model_route::ThreadModelBinding::new(),
             provider: LocalSandboxProvider::new(sub_base("")),
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
@@ -512,6 +518,20 @@ impl SharedHost {
         self
     }
 
+    /// Install the model→executor resolver (R1). Without one, every thread uses `llm`.
+    pub fn with_executor_provider(
+        mut self,
+        provider: Arc<dyn crate::model_route::ExecutorProvider>,
+    ) -> Self {
+        self.model_route.set_provider(provider);
+        self
+    }
+
+    /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
+    pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
+        self.model_route.register(thread, model_ref);
+    }
+
     /// Stage MCP servers for `thread`, to be connected when the thread's context
     /// is first built (its first turn) — the Managed session-create path calls
     /// this from `prepare_session`, so the credential is materialized before the
@@ -683,7 +703,11 @@ impl SharedHost {
         // mutation tools. `server_gate_allowing(&[])` is the plain server gate,
         // so threads without MCP keep the exact default policy.
         let base_gate = crate::config::server_gate_allowing(&mcp.tool_ids);
-        let mut runtime = build_runtime(self.llm.clone(), &env);
+        // R1/R2: per-session executor resolved from the thread's bound model.
+        let exec = self
+            .model_route
+            .resolve_executor(thread, &self.model_ref, &self.llm);
+        let mut runtime = build_runtime(exec, &env);
         if !mcp.tool_ids.is_empty() {
             runtime = runtime.with_gate(base_gate.clone());
         }
