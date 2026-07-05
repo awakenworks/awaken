@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-03
+- Amended: 2026-07-05 (D2 refinement — a project path prefix as pure ADDRESSING;
+  see Amendment)
 - Relates to: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (managed
   protocol is a front-door axis over the neutral core),
   [ADR-0037](0037-managed-capability-advertisement-wire-alignment.md) (align the
@@ -200,6 +202,50 @@ cascade.
 - Multi-region key routing.
 - Cross-repo realization: awaken-iam wiring and the awaken-next public surface
   land under their own ADRs; this ADR fixes the envelope, not the code.
+
+## Amendment (2026-07-05): Project Access Paths Are Addressing, Not Tenancy
+
+Implementation of the consumption-side project surface (`Project` /
+`ProjectAgentConfig` in `awaken-config-resolver`, the `/projects/{id}` ingress
+in `awaken-server-local`) refines D2. The letter of D2 — "no
+`orgs/{org}/projects/{project}` hierarchy in the URL" — was written against
+URL-carried **tenancy**; this amendment records why a project **path prefix**
+does not violate it, and fixes the boundary so it never grows into one.
+
+### What changed
+
+A project has a unique access path: the same Managed session surface is
+reachable at `/projects/{project_id}/v1/…`, and a stock SDK selects a project
+by `baseURL` alone — zero wire change, no new request fields. The segment
+selects a **consumption configuration** (which authored MCP servers / profile
+an agent uses in that project); it is the same mechanism class as an Azure
+OpenAI *deployment* in the URL, not an org/project tenancy hierarchy.
+
+### Why D2's rationale still holds
+
+- **Tenant + authorization still come from the API key alone.** The ingress
+  resolves the path segment against authored `Project` rows and stamps a
+  request-extension; it grants nothing. Sharing a project URL still shares no
+  access (D2's core property).
+- **One certificate / works without DNS.** The path form is canonical; a
+  per-project domain is an optional Host→project mapping over the same
+  resolver (deferred until a deployment needs it).
+- **AI-SDK ergonomics improve**: still one `baseURL` + one key — the project
+  choice rides in the `baseURL` the caller already configures.
+
+### The boundary (fixed)
+
+- The URL never carries **org or workspace** — those remain key-resolved
+  tenancy, unamended.
+- A project id is DNS-safe lowercase (`[a-z0-9-]`, ≤63) at authoring time so
+  the path form and a future domain form share one id space.
+- Supply (catalog, credentials, pools, MCP defs) stays **workspace-owned**; a
+  project only *selects* from it (`ProjectAgentConfig`), so no secret material
+  is ever duplicated per project. Bare paths remain the workspace-default
+  surface, byte-identical to before projects existed.
+- `ScopeRef::Project` token minting stays deferred until a surface authorizes
+  at project scope; until then project paths change *selection*, never
+  *authority*.
 
 ## References
 
