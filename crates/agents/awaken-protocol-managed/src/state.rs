@@ -374,7 +374,13 @@ impl ManagedState {
                 id: agent_id.clone(),
                 kind: "agent",
                 version: 1,
-                model: self.runtime.model(),
+                // R6: echo the session's actual model — the requested override, else
+                // the host default — so the client sees which model the session runs.
+                model: req
+                    .agent
+                    .model()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.runtime.model()),
                 name: agent_id.clone(),
                 tools: project::agent_tools(&caps),
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
