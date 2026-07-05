@@ -23,6 +23,7 @@ mod durable_ops;
 mod host;
 mod hub;
 mod judge;
+mod live_inbox;
 mod mcp;
 mod memory;
 mod model_route;
@@ -41,13 +42,15 @@ use awaken_agent_contract::agent::run::{EndCause, Phase};
 use awaken_config_resolver::ResolvedInference;
 use awaken_protocol_managed::dto::StopReason;
 use awaken_protocol_managed::{
-    AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
-    OutcomeReport, Pending, RunError, SessionRuntime, TurnOutcome, router,
+    AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
+    LiveInboxSnapshot, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError,
+    SessionRuntime, TurnOutcome, router,
 };
 use awaken_protocol_transport::{
     DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume, StepOutcome,
 };
 use awaken_provider_genai::GenaiExecutor;
+use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, Offer};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, ChatRole, LlmExecutor, ToolCall,
 };
@@ -168,6 +171,17 @@ pub fn build_acp_router() -> Router {
 
 /// Mint a fresh user message from plain text (Managed `user.message` content is
 /// concatenated to text before it enters the host).
+/// Translate the runtime contract's edit refusal into the wire-facing error.
+/// `Closed` collapses into `Inactive`: from the client's view "the attempt is
+/// gone" and "no attempt is running" are the same condition.
+fn to_live_inbox_error(err: EditError) -> LiveInboxError {
+    match err {
+        EditError::Closed => LiveInboxError::Inactive,
+        EditError::UnknownMessage => LiveInboxError::UnknownMessage,
+        EditError::StaleOrder => LiveInboxError::StaleOrder,
+    }
+}
+
 fn user_message(content: Vec<ContentBlock>) -> Message {
     Message::new(
         MessageId(format!(
@@ -378,6 +392,84 @@ impl SessionRuntime for ManagedHost {
             .await
             .map_err(to_run_error)?;
         Ok(to_turn_outcome(result))
+    }
+
+    async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot {
+        match self.host.live_inbox(thread).await {
+            Some(inbox) => LiveInboxSnapshot {
+                active: true,
+                version: inbox.version(),
+                messages: inbox
+                    .list()
+                    .into_iter()
+                    .map(|entry| LiveInboxEntry {
+                        id: entry.id.0,
+                        content: entry.message.content,
+                    })
+                    .collect(),
+            },
+            None => LiveInboxSnapshot::inactive(),
+        }
+    }
+
+    async fn live_inbox_queue(
+        &self,
+        thread: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<u64, LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        match inbox.offer(user_message(content)) {
+            Offer::Accepted(id) => Ok(id.0),
+            // The attempt closed between lookup and offer: same outcome as no
+            // attempt at all.
+            Offer::Closed => Err(LiveInboxError::Inactive),
+        }
+    }
+
+    async fn live_inbox_remove(&self, thread: &str, id: u64) -> Result<(), LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        inbox
+            .remove(LiveInboxMessageId(id))
+            .map(|_| ())
+            .map_err(to_live_inbox_error)
+    }
+
+    async fn live_inbox_replace(
+        &self,
+        thread: &str,
+        id: u64,
+        content: Vec<ContentBlock>,
+    ) -> Result<(), LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        inbox
+            .replace(LiveInboxMessageId(id), user_message(content))
+            .map_err(to_live_inbox_error)
+    }
+
+    async fn live_inbox_reorder(
+        &self,
+        thread: &str,
+        order: Vec<u64>,
+    ) -> Result<(), LiveInboxError> {
+        let inbox = self
+            .host
+            .live_inbox(thread)
+            .await
+            .ok_or(LiveInboxError::Inactive)?;
+        let order: Vec<LiveInboxMessageId> = order.into_iter().map(LiveInboxMessageId).collect();
+        inbox.reorder(&order).map_err(to_live_inbox_error)
     }
 
     async fn add_system(&self, thread: &str, text: &str) -> Result<(), RunError> {
