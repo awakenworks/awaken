@@ -2,7 +2,7 @@
 // TS API contract** (ADR-0043). It authors provider / endpoint / offering /
 // credential through `/v1/config/*`, reads the catalog back, and dry-runs a binding
 // through the resolver (`/v1/config/inference/resolve`). Every response is validated
-// against the committed JSON Schema in `contracts/model-schemas.json` (the same SSOT
+// against the committed JSON Schema in `contracts/model-schemas.generated.json` (the same SSOT
 // the `.d.ts` is generated from) with Ajv — so a drift between the running server
 // and the generated contract fails here. This exercises the admin-config-api CRUD +
 // config-resolver + model-catalog + credential domains end to end via the wire.
@@ -18,7 +18,7 @@ import { withScenarioServer, pass } from './harness.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONTRACT = JSON.parse(
-  fs.readFileSync(path.join(REPO_ROOT, 'contracts', 'model-schemas.json'), 'utf8'),
+  fs.readFileSync(path.join(REPO_ROOT, 'contracts', 'model-schemas.generated.json'), 'utf8'),
 );
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 const validators = Object.fromEntries(

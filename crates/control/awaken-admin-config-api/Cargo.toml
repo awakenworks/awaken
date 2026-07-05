@@ -59,5 +59,13 @@ schema = [
 name = "export_schemas"
 required-features = ["schema"]
 
+[[example]]
+name = "export_openapi"
+required-features = ["schema"]
+
+[[test]]
+name = "openapi_contract"
+required-features = ["schema"]
+
 [lints]
 workspace = true

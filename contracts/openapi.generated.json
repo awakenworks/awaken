@@ -1,0 +1,2767 @@
+{
+  "components": {
+    "schemas": {
+      "AgentMcpConfig": {
+        "$defs": {
+          "McpServerId": {
+            "description": "A management-plane MCP server identifier.",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Which MCP servers an agent uses — the management-plane agent↔MCP binding\n(ADR-0043 Phase 3). References [`McpServerDef`]s by id; the resolver\nmaterializes the referenced defs into [`ResolvedMcpServer`]s at run bind time.",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "mcp_server_ids": {
+            "items": {
+              "$ref": "#/$defs/McpServerId"
+            },
+            "type": "array"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id",
+          "mcp_server_ids",
+          "version"
+        ],
+        "title": "AgentMcpConfig",
+        "type": "object"
+      },
+      "AgentResourceConfig": {
+        "$defs": {
+          "ResourceAccess": {
+            "description": "Whether a bound resource is read-only or writable.",
+            "enum": [
+              "read_only",
+              "read_write"
+            ],
+            "type": "string"
+          },
+          "ResourceBinding": {
+            "description": "One resource bound to an agent. `resource_id` addresses the backing resource\n(a file/skill id, a memory store id, a repo URL; empty for the outputs mount);\n`mount_path` is where it appears in the sandbox; `instructions` is optional\nper-binding guidance rendered into the agent's system prompt.",
+            "properties": {
+              "access": {
+                "$ref": "#/$defs/ResourceAccess"
+              },
+              "instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "$ref": "#/$defs/ResourceKind"
+              },
+              "mount_path": {
+                "type": "string"
+              },
+              "resource_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "mount_path",
+              "access"
+            ],
+            "type": "object"
+          },
+          "ResourceKind": {
+            "description": "The resource kind a binding realizes — one variant per ADR-0038 resource.",
+            "oneOf": [
+              {
+                "const": "outputs",
+                "description": "The outputs mount the host collects as artifacts.",
+                "type": "string"
+              },
+              {
+                "const": "file",
+                "description": "An immutable file blob.",
+                "type": "string"
+              },
+              {
+                "const": "memory_store",
+                "description": "A persistent, keyed memory store.",
+                "type": "string"
+              },
+              {
+                "const": "github_repository",
+                "description": "A git working tree cloned from a remote.",
+                "type": "string"
+              },
+              {
+                "const": "skill",
+                "description": "A versioned skill bundle.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Which resources an agent is bound to — the management-plane agent↔resource\nbinding (ADR-0038). At run bind time each [`ResourceBinding`] is materialized\ntwo ways: into a `MountRequirement` the sandbox realizes, and into a prompt\nfragment appended to the agent's effective system prompt (ADR-0038 A3a). Rows\nare secret-free — a private resource's credential is a binding by reference,\nresolved through the vault like MCP auth, never material here.",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/$defs/ResourceBinding"
+            },
+            "type": "array"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id",
+          "resources",
+          "version"
+        ],
+        "title": "AgentResourceConfig",
+        "type": "object"
+      },
+      "ApiError": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "RFC 9457 Problem Details with stable application extension members (`code`, `request_id`, `details`, `errors`).",
+        "properties": {
+          "code": {
+            "description": "Stable application error code; clients may branch on this.",
+            "type": "string"
+          },
+          "detail": {
+            "description": "Request-specific human-readable explanation.",
+            "type": "string"
+          },
+          "details": {
+            "description": "Type-specific structured metadata."
+          },
+          "errors": {
+            "description": "Field/query/header violations for validation-style problems.",
+            "items": {
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "field",
+                "code"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "request_id": {
+            "description": "Correlation id echoed from the `x-request-id` header.",
+            "type": "string"
+          },
+          "status": {
+            "maximum": 599,
+            "minimum": 100,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Stable human-readable summary for this problem type.",
+            "type": "string"
+          },
+          "type": {
+            "description": "URI reference identifying the problem type.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "request_id"
+        ],
+        "title": "ApiError",
+        "type": "object"
+      },
+      "CredentialBinding": {
+        "$defs": {
+          "CredentialPoolId": {
+            "description": "A credential pool identifier.",
+            "type": "string"
+          },
+          "CredentialSourceId": {
+            "description": "Stable id of a [`CredentialSource`].",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The \"which credential\" axis (oversight-next / awaken-management-contract).",
+        "oneOf": [
+          {
+            "description": "No credential is needed.",
+            "properties": {
+              "type": {
+                "const": "none",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Use exactly one source.",
+            "properties": {
+              "credential_source_id": {
+                "$ref": "#/$defs/CredentialSourceId"
+              },
+              "type": {
+                "const": "exact",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "credential_source_id"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Use one eligible member of a pool; the resolver selects by policy and may\nfail over to the next member if the chosen one cannot be materialized.",
+            "properties": {
+              "credential_pool_id": {
+                "$ref": "#/$defs/CredentialPoolId"
+              },
+              "type": {
+                "const": "one_of_credential_pool",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "credential_pool_id"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "CredentialBinding"
+      },
+      "CredentialKind": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Where a secret physically lives (the materialization axis).",
+        "oneOf": [
+          {
+            "const": "vault",
+            "description": "Secret material sealed in the vault (a [`SecretRef`] into [`SecretStore`]).",
+            "type": "string"
+          },
+          {
+            "const": "env",
+            "description": "A host environment variable named by `env_key`; nothing is stored here.",
+            "type": "string"
+          }
+        ],
+        "title": "CredentialKind"
+      },
+      "CredentialPool": {
+        "$defs": {
+          "CredentialPoolId": {
+            "description": "A credential pool identifier.",
+            "type": "string"
+          },
+          "CredentialPoolMember": {
+            "description": "One source's membership in a pool. `ordinal` is the default selection order\n(ascending); a disabled member is skipped. `selection_weight` is reserved for a\nfuture weighted policy and does not affect the default ordinal order.",
+            "properties": {
+              "credential_source_id": {
+                "$ref": "#/$defs/CredentialSourceId"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "ordinal": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "selection_weight": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "credential_source_id",
+              "ordinal",
+              "enabled"
+            ],
+            "type": "object"
+          },
+          "CredentialSourceId": {
+            "description": "Stable id of a [`CredentialSource`].",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A pool of interchangeable credential sources for one provider principal\n(oversight-next account grouping). The resolver picks one eligible member per\nrun; members are tried in policy order so a disabled/exhausted member fails\nover to the next rather than failing the run (fail-closed only when none work).",
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/CredentialPoolId"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/$defs/CredentialPoolMember"
+            },
+            "type": "array"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "members"
+        ],
+        "title": "CredentialPool",
+        "type": "object"
+      },
+      "CredentialPoolId": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A credential pool identifier.",
+        "title": "CredentialPoolId",
+        "type": "string"
+      },
+      "CredentialPoolMember": {
+        "$defs": {
+          "CredentialSourceId": {
+            "description": "Stable id of a [`CredentialSource`].",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "One source's membership in a pool. `ordinal` is the default selection order\n(ascending); a disabled member is skipped. `selection_weight` is reserved for a\nfuture weighted policy and does not affect the default ordinal order.",
+        "properties": {
+          "credential_source_id": {
+            "$ref": "#/$defs/CredentialSourceId"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "ordinal": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "selection_weight": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "credential_source_id",
+          "ordinal",
+          "enabled"
+        ],
+        "title": "CredentialPoolMember",
+        "type": "object"
+      },
+      "CredentialSource": {
+        "$defs": {
+          "CredentialKind": {
+            "description": "Where a secret physically lives (the materialization axis).",
+            "oneOf": [
+              {
+                "const": "vault",
+                "description": "Secret material sealed in the vault (a [`SecretRef`] into [`SecretStore`]).",
+                "type": "string"
+              },
+              {
+                "const": "env",
+                "description": "A host environment variable named by `env_key`; nothing is stored here.",
+                "type": "string"
+              }
+            ]
+          },
+          "CredentialSourceId": {
+            "description": "Stable id of a [`CredentialSource`].",
+            "type": "string"
+          },
+          "CredentialStatus": {
+            "description": "Lifecycle of a source.",
+            "enum": [
+              "active",
+              "disabled",
+              "archived"
+            ],
+            "type": "string"
+          },
+          "SecretRef": {
+            "description": "Opaque handle into a [`SecretStore`]. Never the secret itself.",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The stored credential row — **secret-free** (the read/serde projection). The\nsecret is reachable only via `material_ref` through the [`SecretStore`].",
+        "properties": {
+          "env_key": {
+            "description": "Environment-variable name the secret is injected under (all kinds may set it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/CredentialSourceId"
+          },
+          "kind": {
+            "$ref": "#/$defs/CredentialKind"
+          },
+          "material_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SecretRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Vault reference; `None` for `Env` (the secret never crosses the control plane)."
+          },
+          "provider_id": {
+            "description": "Provider namespace this credential authenticates (`anthropic`, `openai`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/$defs/CredentialStatus"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "kind",
+          "status",
+          "version"
+        ],
+        "title": "CredentialSource",
+        "type": "object"
+      },
+      "CredentialStatus": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Lifecycle of a source.",
+        "enum": [
+          "active",
+          "disabled",
+          "archived"
+        ],
+        "title": "CredentialStatus",
+        "type": "string"
+      },
+      "CredentialValidation": {
+        "$defs": {
+          "ProbeStatus": {
+            "description": "The result of a live credential probe (secret-free), aligned with the Managed\nwire's `valid` / `invalid` / `unknown` statuses.",
+            "enum": [
+              "valid",
+              "invalid",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The secret-free result of a live credential probe.",
+        "properties": {
+          "adapter_kind": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/$defs/ProbeStatus"
+          }
+        },
+        "required": [
+          "status",
+          "adapter_kind"
+        ],
+        "title": "CredentialValidation",
+        "type": "object"
+      },
+      "EnterCredentialRequest": {
+        "$defs": {
+          "CredentialKind": {
+            "description": "Where a secret physically lives (the materialization axis).",
+            "oneOf": [
+              {
+                "const": "vault",
+                "description": "Secret material sealed in the vault (a [`SecretRef`] into [`SecretStore`]).",
+                "type": "string"
+              },
+              {
+                "const": "env",
+                "description": "A host environment variable named by `env_key`; nothing is stored here.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The credential-entry wire body. `secret` is write-only: it is sealed into the\n[`SecretStore`] and never appears on any response (the returned row is\nsecret-free). `RedactedString` is intentionally not `Deserialize`, so the raw\nsecret crosses the wire exactly once, here.",
+        "properties": {
+          "env_key": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/$defs/CredentialKind"
+          },
+          "provider_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secret": {
+            "default": "",
+            "description": "The secret to seal — required for `vault`, unused for `env` (which reads a\nhost variable at materialization), so it defaults to empty.",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "kind"
+        ],
+        "title": "EnterCredentialRequest",
+        "type": "object"
+      },
+      "InferenceProfile": {
+        "$defs": {
+          "CredentialBinding": {
+            "description": "The \"which credential\" axis (oversight-next / awaken-management-contract).",
+            "oneOf": [
+              {
+                "description": "No credential is needed.",
+                "properties": {
+                  "type": {
+                    "const": "none",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Use exactly one source.",
+                "properties": {
+                  "credential_source_id": {
+                    "$ref": "#/$defs/CredentialSourceId"
+                  },
+                  "type": {
+                    "const": "exact",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "credential_source_id"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Use one eligible member of a pool; the resolver selects by policy and may\nfail over to the next member if the chosen one cannot be materialized.",
+                "properties": {
+                  "credential_pool_id": {
+                    "$ref": "#/$defs/CredentialPoolId"
+                  },
+                  "type": {
+                    "const": "one_of_credential_pool",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "credential_pool_id"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "CredentialPoolId": {
+            "description": "A credential pool identifier.",
+            "type": "string"
+          },
+          "CredentialSourceId": {
+            "description": "Stable id of a [`CredentialSource`].",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "An authored \"how to run this model\" unit (ADR-0043 `InferenceProfile` /\noversight-next `ProviderIdentity`): it names the model, the credential binding\n(vault-backed, never inline), and any endpoints the operator has toggled off.\nThe resolver reads it — it is never flowed into the runtime.",
+        "properties": {
+          "credential_binding": {
+            "$ref": "#/$defs/CredentialBinding"
+          },
+          "disabled_endpoint_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "model_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id",
+          "credential_binding"
+        ],
+        "title": "InferenceProfile",
+        "type": "object"
+      },
+      "McpServerDef": {
+        "$defs": {
+          "CredentialBinding": {
+            "description": "The \"which credential\" axis (oversight-next / awaken-management-contract).",
+            "oneOf": [
+              {
+                "description": "No credential is needed.",
+                "properties": {
+                  "type": {
+                    "const": "none",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Use exactly one source.",
+                "properties": {
+                  "credential_source_id": {
+                    "$ref": "#/$defs/CredentialSourceId"
+                  },
+                  "type": {
+                    "const": "exact",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "credential_source_id"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Use one eligible member of a pool; the resolver selects by policy and may\nfail over to the next member if the chosen one cannot be materialized.",
+                "properties": {
+                  "credential_pool_id": {
+                    "$ref": "#/$defs/CredentialPoolId"
+                  },
+                  "type": {
+                    "const": "one_of_credential_pool",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "credential_pool_id"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "CredentialPoolId": {
+            "description": "A credential pool identifier.",
+            "type": "string"
+          },
+          "CredentialSourceId": {
+            "description": "Stable id of a [`CredentialSource`].",
+            "type": "string"
+          },
+          "McpServerId": {
+            "description": "A management-plane MCP server identifier.",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "An authored MCP server definition (ADR-0043 Phase 3): where the server lives\nand which credential authenticates to it. The binding is the same vault-backed\n[`CredentialBinding`] inference uses (never an inline secret), so\n`OneOfCredentialPool` failover applies to MCP credentials for free. The\nresolver reads it — it is never flowed into the runtime.",
+        "properties": {
+          "credential_binding": {
+            "$ref": "#/$defs/CredentialBinding"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/$defs/McpServerId"
+          },
+          "url": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "display_name",
+          "url",
+          "credential_binding",
+          "version"
+        ],
+        "title": "McpServerDef",
+        "type": "object"
+      },
+      "McpServerId": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A management-plane MCP server identifier.",
+        "title": "McpServerId",
+        "type": "string"
+      },
+      "ModelApiCompat": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;\nthe credential/model bindings are resolved against this flavor (ADR-0043).",
+        "oneOf": [
+          {
+            "const": "anthropic_messages",
+            "description": "The `claude` adapter's wire.",
+            "type": "string"
+          },
+          {
+            "const": "open_ai_chat",
+            "description": "The `codex`/OpenAI chat wire.",
+            "type": "string"
+          },
+          {
+            "const": "gemini",
+            "description": "The Gemini wire.",
+            "type": "string"
+          }
+        ],
+        "title": "ModelApiCompat"
+      },
+      "Offering": {
+        "$defs": {
+          "ModelApiCompat": {
+            "description": "The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;\nthe credential/model bindings are resolved against this flavor (ADR-0043).",
+            "oneOf": [
+              {
+                "const": "anthropic_messages",
+                "description": "The `claude` adapter's wire.",
+                "type": "string"
+              },
+              {
+                "const": "open_ai_chat",
+                "description": "The `codex`/OpenAI chat wire.",
+                "type": "string"
+              },
+              {
+                "const": "gemini",
+                "description": "The Gemini wire.",
+                "type": "string"
+              }
+            ]
+          },
+          "ProtocolEndpointId": {
+            "description": "Stable id of a [`ProtocolEndpoint`].",
+            "type": "string"
+          },
+          "ProviderId": {
+            "description": "Stable id of a [`Provider`] (vendor namespace).",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A model reachable on a protocol surface. `model_id` references the catalog's\n`ModelSpec` (the intrinsic model attributes, owned by `awaken-agent-contract`).",
+        "properties": {
+          "flavor": {
+            "$ref": "#/$defs/ModelApiCompat"
+          },
+          "model_id": {
+            "description": "The protocol-agnostic catalog model id (e.g. `claude-opus-4-8`).",
+            "type": "string"
+          },
+          "protocol_endpoint_id": {
+            "$ref": "#/$defs/ProtocolEndpointId"
+          },
+          "provider_id": {
+            "$ref": "#/$defs/ProviderId"
+          },
+          "upstream_model": {
+            "description": "Provider-canonical model name sent upstream when it differs from `model_id`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model_id",
+          "provider_id",
+          "protocol_endpoint_id",
+          "flavor"
+        ],
+        "title": "Offering",
+        "type": "object"
+      },
+      "Project": {
+        "$defs": {
+          "ProjectId": {
+            "description": "A management-plane project identifier. It doubles as the project's ingress\naddress segment (`/projects/{id}/…` or a per-project domain label), so it is\nconstrained to a DNS-safe lowercase slug at authoring time. The rule is the\nshared tenancy slug rule [`awaken_scope::scope::slug_is_valid`], so a project\nid validates identically here, in the scope tree, and across products.",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A consumption-side project under a workspace (ADR-0042 amendment: the URL\ncarries the project as ADDRESSING only — tenancy and authority still flow\nfrom the API key's workspace). Supply (catalog, credentials, pools, MCP\ndefs) stays workspace-owned; a project only *selects* from it, so no secret\nis ever duplicated per project.",
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/$defs/ProjectId"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "display_name",
+          "version"
+        ],
+        "title": "Project",
+        "type": "object"
+      },
+      "ProjectAgentConfig": {
+        "$defs": {
+          "McpServerId": {
+            "description": "A management-plane MCP server identifier.",
+            "type": "string"
+          },
+          "ProjectId": {
+            "description": "A management-plane project identifier. It doubles as the project's ingress\naddress segment (`/projects/{id}/…` or a per-project domain label), so it is\nconstrained to a DNS-safe lowercase slug at authoring time. The rule is the\nshared tenancy slug rule [`awaken_scope::scope::slug_is_valid`], so a project\nid validates identically here, in the scope tree, and across products.",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Which MCP servers an agent uses *within one project* — the project-scoped\nconsumption binding. Shape mirrors [`AgentMcpConfig`] (the workspace-level\ndefault); a session created through `/projects/{id}/…` consults this first\nand falls back to the workspace binding when absent, so bare-path behavior\nis byte-identical to before projects existed.",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "mcp_server_ids": {
+            "items": {
+              "$ref": "#/$defs/McpServerId"
+            },
+            "type": "array"
+          },
+          "project_id": {
+            "$ref": "#/$defs/ProjectId"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "agent_id",
+          "mcp_server_ids",
+          "version"
+        ],
+        "title": "ProjectAgentConfig",
+        "type": "object"
+      },
+      "ProtocolEndpoint": {
+        "$defs": {
+          "ModelApiCompat": {
+            "description": "The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;\nthe credential/model bindings are resolved against this flavor (ADR-0043).",
+            "oneOf": [
+              {
+                "const": "anthropic_messages",
+                "description": "The `claude` adapter's wire.",
+                "type": "string"
+              },
+              {
+                "const": "open_ai_chat",
+                "description": "The `codex`/OpenAI chat wire.",
+                "type": "string"
+              },
+              {
+                "const": "gemini",
+                "description": "The Gemini wire.",
+                "type": "string"
+              }
+            ]
+          },
+          "ProtocolEndpointId": {
+            "description": "Stable id of a [`ProtocolEndpoint`].",
+            "type": "string"
+          },
+          "ProviderId": {
+            "description": "Stable id of a [`Provider`] (vendor namespace).",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A concrete protocol surface of a provider: which wire + which URL. Distinct\nflavors of one provider typically have distinct `base_url`s.",
+        "properties": {
+          "base_url": {
+            "description": "`http(s)` base URL override (proxy / self-hosted / compat endpoint).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "flavor": {
+            "$ref": "#/$defs/ModelApiCompat"
+          },
+          "id": {
+            "$ref": "#/$defs/ProtocolEndpointId"
+          },
+          "provider_id": {
+            "$ref": "#/$defs/ProviderId"
+          },
+          "timeout_secs": {
+            "description": "Request timeout in seconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "provider_id",
+          "flavor",
+          "timeout_secs",
+          "display_name",
+          "version"
+        ],
+        "title": "ProtocolEndpoint",
+        "type": "object"
+      },
+      "Provider": {
+        "$defs": {
+          "ProviderId": {
+            "description": "Stable id of a [`Provider`] (vendor namespace).",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A vendor namespace (`anthropic`, `openai`, …).",
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/$defs/ProviderId"
+          },
+          "slug": {
+            "description": "URL-safe vendor slug, unique in the catalog.",
+            "type": "string"
+          },
+          "version": {
+            "description": "Append-only version bumped on change.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "display_name",
+          "version"
+        ],
+        "title": "Provider",
+        "type": "object"
+      },
+      "ProviderCatalog": {
+        "$defs": {
+          "ModelApiCompat": {
+            "description": "The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;\nthe credential/model bindings are resolved against this flavor (ADR-0043).",
+            "oneOf": [
+              {
+                "const": "anthropic_messages",
+                "description": "The `claude` adapter's wire.",
+                "type": "string"
+              },
+              {
+                "const": "open_ai_chat",
+                "description": "The `codex`/OpenAI chat wire.",
+                "type": "string"
+              },
+              {
+                "const": "gemini",
+                "description": "The Gemini wire.",
+                "type": "string"
+              }
+            ]
+          },
+          "Offering": {
+            "description": "A model reachable on a protocol surface. `model_id` references the catalog's\n`ModelSpec` (the intrinsic model attributes, owned by `awaken-agent-contract`).",
+            "properties": {
+              "flavor": {
+                "$ref": "#/$defs/ModelApiCompat"
+              },
+              "model_id": {
+                "description": "The protocol-agnostic catalog model id (e.g. `claude-opus-4-8`).",
+                "type": "string"
+              },
+              "protocol_endpoint_id": {
+                "$ref": "#/$defs/ProtocolEndpointId"
+              },
+              "provider_id": {
+                "$ref": "#/$defs/ProviderId"
+              },
+              "upstream_model": {
+                "description": "Provider-canonical model name sent upstream when it differs from `model_id`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "model_id",
+              "provider_id",
+              "protocol_endpoint_id",
+              "flavor"
+            ],
+            "type": "object"
+          },
+          "ProtocolEndpoint": {
+            "description": "A concrete protocol surface of a provider: which wire + which URL. Distinct\nflavors of one provider typically have distinct `base_url`s.",
+            "properties": {
+              "base_url": {
+                "description": "`http(s)` base URL override (proxy / self-hosted / compat endpoint).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "flavor": {
+                "$ref": "#/$defs/ModelApiCompat"
+              },
+              "id": {
+                "$ref": "#/$defs/ProtocolEndpointId"
+              },
+              "provider_id": {
+                "$ref": "#/$defs/ProviderId"
+              },
+              "timeout_secs": {
+                "description": "Request timeout in seconds.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "version": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "provider_id",
+              "flavor",
+              "timeout_secs",
+              "display_name",
+              "version"
+            ],
+            "type": "object"
+          },
+          "ProtocolEndpointId": {
+            "description": "Stable id of a [`ProtocolEndpoint`].",
+            "type": "string"
+          },
+          "Provider": {
+            "description": "A vendor namespace (`anthropic`, `openai`, …).",
+            "properties": {
+              "display_name": {
+                "type": "string"
+              },
+              "id": {
+                "$ref": "#/$defs/ProviderId"
+              },
+              "slug": {
+                "description": "URL-safe vendor slug, unique in the catalog.",
+                "type": "string"
+              },
+              "version": {
+                "description": "Append-only version bumped on change.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "slug",
+              "display_name",
+              "version"
+            ],
+            "type": "object"
+          },
+          "ProviderId": {
+            "description": "Stable id of a [`Provider`] (vendor namespace).",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The catalog aggregate: providers, their endpoints, and the offerings across\nthem. The in-memory projection the resolver queries.",
+        "properties": {
+          "endpoints": {
+            "additionalProperties": {
+              "$ref": "#/$defs/ProtocolEndpoint"
+            },
+            "type": "object"
+          },
+          "offerings": {
+            "items": {
+              "$ref": "#/$defs/Offering"
+            },
+            "type": "array"
+          },
+          "providers": {
+            "additionalProperties": {
+              "$ref": "#/$defs/Provider"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "providers",
+          "endpoints",
+          "offerings"
+        ],
+        "title": "ProviderCatalog",
+        "type": "object"
+      },
+      "ResolveAgentMcpRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Resolve an agent's MCP binding within a workspace's credential scope.",
+        "properties": {
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "title": "ResolveAgentMcpRequest",
+        "type": "object"
+      },
+      "ResolveProfileRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Resolve an authored profile within a workspace's credential scope.",
+        "properties": {
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "title": "ResolveProfileRequest",
+        "type": "object"
+      },
+      "ResolveRequest": {
+        "$defs": {
+          "CredentialBinding": {
+            "description": "The \"which credential\" axis (oversight-next / awaken-management-contract).",
+            "oneOf": [
+              {
+                "description": "No credential is needed.",
+                "properties": {
+                  "type": {
+                    "const": "none",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Use exactly one source.",
+                "properties": {
+                  "credential_source_id": {
+                    "$ref": "#/$defs/CredentialSourceId"
+                  },
+                  "type": {
+                    "const": "exact",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "credential_source_id"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Use one eligible member of a pool; the resolver selects by policy and may\nfail over to the next member if the chosen one cannot be materialized.",
+                "properties": {
+                  "credential_pool_id": {
+                    "$ref": "#/$defs/CredentialPoolId"
+                  },
+                  "type": {
+                    "const": "one_of_credential_pool",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "credential_pool_id"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "CredentialPoolId": {
+            "description": "A credential pool identifier.",
+            "type": "string"
+          },
+          "CredentialSourceId": {
+            "description": "Stable id of a [`CredentialSource`].",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A dry-run resolve request: bind `model_id` (+ credential `binding`) against the\nauthored catalog. The workspace scopes which credential sources are visible.",
+        "properties": {
+          "binding": {
+            "$ref": "#/$defs/CredentialBinding"
+          },
+          "model_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "model_id",
+          "binding"
+        ],
+        "title": "ResolveRequest",
+        "type": "object"
+      },
+      "ResolvedInferenceView": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The **secret-free** result of a resolve (ADR-0043): the execution triple + the\nadapter/endpoint it binds to, and whether a credential resolved — never the\nsecret itself. This is what an operator's \"test binding\" call sees.",
+        "properties": {
+          "adapter_kind": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credential_present": {
+            "description": "Whether a credential was materialized (never the value).",
+            "type": "boolean"
+          },
+          "model_id": {
+            "type": "string"
+          },
+          "protocol_endpoint_id": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id",
+          "provider_id",
+          "protocol_endpoint_id",
+          "adapter_kind",
+          "credential_present"
+        ],
+        "title": "ResolvedInferenceView",
+        "type": "object"
+      },
+      "ResolvedMcpServerView": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The **secret-free** projection of a resolved MCP server (ADR-0043): what the\nagent's binding materializes to, and whether a credential resolved — never the\nsecret itself. This is what an operator's \"test binding\" call sees.",
+        "properties": {
+          "credential_present": {
+            "description": "Whether a credential was materialized (never the value).",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "url",
+          "credential_present"
+        ],
+        "title": "ResolvedMcpServerView",
+        "type": "object"
+      },
+      "ValidateCredentialRequest": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Live-validate a credential against a model's resolved provider endpoint.",
+        "properties": {
+          "model_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "model_id"
+        ],
+        "title": "ValidateCredentialRequest",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "summary": "Self-hosted management plane: catalog, credentials, MCP, projects (ADR-0043). Sessions/vaults are the official Anthropic SDK wire and are not described here.",
+    "title": "Awaken Admin Config API",
+    "version": "0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/config/agents/{agent_id}/mcp": {
+      "get": {
+        "operationId": "get_agent_mcp",
+        "parameters": [
+          {
+            "description": "Agent id",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentMcpConfig"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Fetch an agent's workspace-level MCP binding",
+        "tags": [
+          "mcp"
+        ]
+      },
+      "put": {
+        "operationId": "put_agent_mcp",
+        "parameters": [
+          {
+            "description": "Agent id",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentMcpConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentMcpConfig"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Bind which MCP servers an agent uses at workspace level (fail-closed)",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/v1/config/agents/{agent_id}/mcp/resolve": {
+      "post": {
+        "operationId": "resolve_agent_mcp",
+        "parameters": [
+          {
+            "description": "Agent id",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveAgentMcpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ResolvedMcpServerView"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Dry-run resolve an agent's MCP binding (secret-free views)",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/v1/config/agents/{agent_id}/resources": {
+      "get": {
+        "operationId": "get_agent_resource",
+        "parameters": [
+          {
+            "description": "Agent id",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentResourceConfig"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Fetch an agent's resource binding",
+        "tags": [
+          "mcp"
+        ]
+      },
+      "put": {
+        "operationId": "put_agent_resource",
+        "parameters": [
+          {
+            "description": "Agent id",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentResourceConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentResourceConfig"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Bind which resources an agent mounts (ADR-0038); stored whole, path id authoritative",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/v1/config/catalog": {
+      "get": {
+        "operationId": "get_catalog",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderCatalog"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Snapshot the full authored catalog (what the resolver binds against)",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/v1/config/credential-pools/{id}": {
+      "get": {
+        "operationId": "get_pool",
+        "parameters": [
+          {
+            "description": "Credential pool id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialPool"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Fetch a credential pool",
+        "tags": [
+          "credentials"
+        ]
+      },
+      "put": {
+        "operationId": "put_pool",
+        "parameters": [
+          {
+            "description": "Credential pool id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialPool"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialPool"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Author (upsert) a credential pool; the path id is authoritative",
+        "tags": [
+          "credentials"
+        ]
+      }
+    },
+    "/v1/config/credentials": {
+      "get": {
+        "operationId": "list_credentials",
+        "parameters": [
+          {
+            "description": "Workspace whose sources to list",
+            "in": "query",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CredentialSource"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "List a workspace's credential sources (secret-free)",
+        "tags": [
+          "credentials"
+        ]
+      },
+      "post": {
+        "operationId": "post_credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnterCredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialSource"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Enter a credential (secret-in; the secret is sealed and never echoed)",
+        "tags": [
+          "credentials"
+        ]
+      }
+    },
+    "/v1/config/credentials/{id}": {
+      "get": {
+        "operationId": "get_credential",
+        "parameters": [
+          {
+            "description": "Credential source id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialSource"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Fetch one credential source (secret-free)",
+        "tags": [
+          "credentials"
+        ]
+      }
+    },
+    "/v1/config/credentials/{id}/archive": {
+      "post": {
+        "operationId": "archive_credential",
+        "parameters": [
+          {
+            "description": "Credential source id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialSource"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Soft-disable a credential (fails closed at materialization)",
+        "tags": [
+          "credentials"
+        ]
+      }
+    },
+    "/v1/config/credentials/{id}/validate": {
+      "post": {
+        "operationId": "validate_credential",
+        "parameters": [
+          {
+            "description": "Credential source id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateCredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialValidation"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Live-probe a credential against its provider endpoint (secret-free result)",
+        "tags": [
+          "credentials"
+        ]
+      }
+    },
+    "/v1/config/endpoints/{id}": {
+      "get": {
+        "operationId": "get_endpoint",
+        "parameters": [
+          {
+            "description": "Protocol endpoint id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolEndpoint"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Fetch an authored protocol endpoint",
+        "tags": [
+          "catalog"
+        ]
+      },
+      "put": {
+        "operationId": "put_endpoint",
+        "parameters": [
+          {
+            "description": "Protocol endpoint id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProtocolEndpoint"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolEndpoint"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Author (upsert) a protocol endpoint; the path id is authoritative",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/v1/config/inference-profiles/{id}": {
+      "get": {
+        "operationId": "get_profile",
+        "parameters": [
+          {
+            "description": "Inference profile id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InferenceProfile"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Fetch an inference profile",
+        "tags": [
+          "inference"
+        ]
+      },
+      "put": {
+        "operationId": "put_profile",
+        "parameters": [
+          {
+            "description": "Inference profile id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InferenceProfile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InferenceProfile"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Author (upsert) an inference profile",
+        "tags": [
+          "inference"
+        ]
+      }
+    },
+    "/v1/config/inference-profiles/{id}/resolve": {
+      "post": {
+        "operationId": "resolve_profile",
+        "parameters": [
+          {
+            "description": "Inference profile id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedInferenceView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Dry-run resolve an authored profile (secret-free view)",
+        "tags": [
+          "inference"
+        ]
+      }
+    },
+    "/v1/config/inference/resolve": {
+      "post": {
+        "operationId": "resolve_inference",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedInferenceView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Dry-run resolve a model + credential binding against the catalog (secret-free view)",
+        "tags": [
+          "inference"
+        ]
+      }
+    },
+    "/v1/config/mcp-servers": {
+      "get": {
+        "operationId": "list_mcp_servers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/McpServerDef"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "List authored MCP server definitions",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/v1/config/mcp-servers/{id}": {
+      "get": {
+        "operationId": "get_mcp_server",
+        "parameters": [
+          {
+            "description": "MCP server id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerDef"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Fetch an MCP server definition",
+        "tags": [
+          "mcp"
+        ]
+      },
+      "put": {
+        "operationId": "put_mcp_server",
+        "parameters": [
+          {
+            "description": "MCP server id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpServerDef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerDef"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Author (upsert) an MCP server definition (credential binding validated fail-closed)",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/v1/config/offerings": {
+      "post": {
+        "operationId": "post_offering",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Offering"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Offering"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Author an offering (fail-closed reference integrity to provider/endpoint)",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/v1/config/projects": {
+      "get": {
+        "operationId": "list_projects",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Project"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "List authored projects",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/v1/config/projects/{id}": {
+      "get": {
+        "operationId": "get_project",
+        "parameters": [
+          {
+            "description": "Project id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Fetch a project",
+        "tags": [
+          "projects"
+        ]
+      },
+      "put": {
+        "operationId": "put_project",
+        "parameters": [
+          {
+            "description": "Project id (DNS-safe lowercase)",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Project"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Author (upsert) a project; the DNS-safe path id doubles as the ingress address segment",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/v1/config/projects/{project_id}/agents/{agent_id}/mcp": {
+      "get": {
+        "operationId": "get_project_agent_mcp",
+        "parameters": [
+          {
+            "description": "Project id",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Agent id",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectAgentConfig"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Fetch a project-scoped agent MCP binding",
+        "tags": [
+          "projects"
+        ]
+      },
+      "put": {
+        "operationId": "put_project_agent_mcp",
+        "parameters": [
+          {
+            "description": "Project id",
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Agent id",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectAgentConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectAgentConfig"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Bind which MCP servers an agent uses within one project (fail-closed)",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/v1/config/providers/{id}": {
+      "get": {
+        "operationId": "get_provider",
+        "parameters": [
+          {
+            "description": "Provider id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Fetch an authored provider",
+        "tags": [
+          "catalog"
+        ]
+      },
+      "put": {
+        "operationId": "put_provider",
+        "parameters": [
+          {
+            "description": "Provider id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Provider"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error (RFC 9457 problem details)"
+          }
+        },
+        "summary": "Author (upsert) a provider; the path id is authoritative",
+        "tags": [
+          "catalog"
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "description": "Providers, protocol endpoints, offerings",
+      "name": "catalog"
+    },
+    {
+      "description": "Credential sources and pools (secret-in, secret-free-out)",
+      "name": "credentials"
+    },
+    {
+      "description": "Inference profiles and dry-run resolution",
+      "name": "inference"
+    },
+    {
+      "description": "MCP server definitions and agent bindings",
+      "name": "mcp"
+    },
+    {
+      "description": "Projects and per-project agent bindings",
+      "name": "projects"
+    }
+  ]
+}
