@@ -614,6 +614,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Implements the neutral sandbox ports (ADR-0041): a LocalProvider over the
         # provisioning contract, alongside the pre-contract Environment surface.
         "awaken-provisioning-contract",
+        # Content-addressed blob store (ADR-0041): the canonical BLAKE3 content id +
+        # FileStore port the provider resolves mount bytes from (ADR-0038 D6).
+        "awaken-file-store",
         # The tool-transparent capability: spawn_agent returns a pipe-backed AgentChannel.
         "awaken-agent-channel",
         "awaken-ext-builtin-tools",
