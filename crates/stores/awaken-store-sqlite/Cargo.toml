@@ -7,7 +7,8 @@ license.workspace = true
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-store-schema = { workspace = true }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "d98b40c90fdac65c329eb279bf5052818906a1de", features = ["sqlite"] }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
+awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
 async-trait.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
