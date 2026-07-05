@@ -12,6 +12,8 @@ use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use tokio_util::sync::CancellationToken;
 
+use crate::live_inbox::LiveInbox;
+
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
     /// Live best-effort progress delivery; absent means no live streaming.
@@ -24,6 +26,11 @@ pub struct RuntimeRunContext {
     pub reader: Option<Arc<dyn ThreadReader>>,
     /// Cooperative cancellation observed at step boundaries.
     pub cancellation: Option<CancellationToken>,
+    /// Live input-direction mirror of `stream_sink`: an editable in-process
+    /// queue the engine drains at safe loop boundaries; absent means the
+    /// attempt accepts no mid-run input. Best-effort like the sink — the
+    /// durable pending-input path stays the at-least-once channel.
+    pub live_inbox: Option<LiveInbox>,
 }
 
 impl RuntimeRunContext {
@@ -54,6 +61,12 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
         self.cancellation = Some(token);
+        self
+    }
+
+    #[must_use]
+    pub fn with_live_inbox(mut self, inbox: LiveInbox) -> Self {
+        self.live_inbox = Some(inbox);
         self
     }
 
