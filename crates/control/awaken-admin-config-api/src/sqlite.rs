@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use awaken_config_resolver::{AgentMcpConfig, InferenceProfile, McpServerDef};
+use awaken_config_resolver::{
+    AgentMcpConfig, InferenceProfile, McpServerDef, Project, ProjectAgentConfig,
+};
 
 use crate::router::{InferenceProfileStore, McpStore};
 use crate::schema::admin_bundle;
@@ -137,6 +139,69 @@ impl McpStore for SqliteAdminStore {
     }
     fn get_agent_config(&self, agent_id: &str) -> Option<AgentMcpConfig> {
         self.get_row("agent_mcp", "agent_id", agent_id)
+    }
+}
+
+impl crate::router::ProjectStore for SqliteAdminStore {
+    fn put_project(&self, project: Project) {
+        let conn = self.conn.lock().expect("admin store");
+        conn.execute(
+            &format!(
+                "INSERT INTO {NS}_project (id, workspace_id, data) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT(id) DO UPDATE SET workspace_id = ?2, data = ?3"
+            ),
+            rusqlite::params![
+                project.id.0,
+                project.workspace_id,
+                serde_json::to_string(&project).expect("encode project row")
+            ],
+        )
+        .expect("persist project row");
+    }
+    fn get_project(&self, id: &str) -> Option<Project> {
+        self.get_row("project", "id", id)
+    }
+    fn list_projects(&self) -> Vec<Project> {
+        // Sorted by id, matching the in-memory store's ordering contract.
+        let conn = self.conn.lock().expect("admin store");
+        let mut stmt = conn
+            .prepare(&format!("SELECT data FROM {NS}_project ORDER BY id"))
+            .expect("prepare admin list");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("list admin rows");
+        rows.map(|data| {
+            serde_json::from_str(&data.expect("read admin row")).expect("decode admin row")
+        })
+        .collect()
+    }
+    fn put_project_agent(&self, config: ProjectAgentConfig) {
+        let conn = self.conn.lock().expect("admin store");
+        conn.execute(
+            &format!(
+                "INSERT INTO {NS}_project_agent_mcp (project_id, agent_id, data) \
+                 VALUES (?1, ?2, ?3) \
+                 ON CONFLICT(project_id, agent_id) DO UPDATE SET data = ?3"
+            ),
+            rusqlite::params![
+                config.project_id.0,
+                config.agent_id,
+                serde_json::to_string(&config).expect("encode project agent row")
+            ],
+        )
+        .expect("persist project agent row");
+    }
+    fn get_project_agent(&self, project_id: &str, agent_id: &str) -> Option<ProjectAgentConfig> {
+        let conn = self.conn.lock().expect("admin store");
+        conn.query_row(
+            &format!(
+                "SELECT data FROM {NS}_project_agent_mcp WHERE project_id = ?1 AND agent_id = ?2"
+            ),
+            rusqlite::params![project_id, agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .map(|data| serde_json::from_str(&data).expect("decode project agent row"))
     }
 }
 

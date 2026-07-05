@@ -14,8 +14,9 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
-    AgentMcpConfig, InferenceProfile, McpServerDef, McpServerId, ResolveError, ResolvedInference,
-    SourceLookup, resolve_inference, resolve_mcp_servers, resolve_profile,
+    AgentMcpConfig, InferenceProfile, McpServerDef, McpServerId, Project, ProjectAgentConfig,
+    ProjectId, ResolveError, ResolvedInference, SourceLookup, resolve_inference,
+    resolve_mcp_servers, resolve_profile,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -43,6 +44,10 @@ pub struct AdminState {
     /// Authored [`McpServerDef`]s + per-agent [`AgentMcpConfig`] bindings
     /// (ADR-0043 Phase 3; the resolver materializes these at run bind time).
     pub mcp: Arc<dyn McpStore>,
+    /// Authored [`Project`]s + per-(project, agent) [`ProjectAgentConfig`]
+    /// consumption bindings (a project SELECTS from workspace supply; the
+    /// session ingress consults these when a run arrives via `/projects/{id}`).
+    pub projects: Arc<dyn ProjectStore>,
     /// Optional live credential validator. When wired (server-local injects a
     /// provider-genai probe), `POST /credentials/:id/validate` performs a real probe;
     /// otherwise it reports `unknown` (the model SDK never enters this CRUD crate —
@@ -151,6 +156,68 @@ pub enum ProbeStatus {
 
 /// A port that live-probes a resolved credential against its provider endpoint. The
 /// implementation (server-local, backed by provider-genai) is the only place the
+
+/// A store for authored [`Project`]s (by project id) and per-(project, agent)
+/// [`ProjectAgentConfig`] consumption bindings — the project aggregates.
+/// Sync + in-memory by default; a durable backend can implement the same port.
+pub trait ProjectStore: Send + Sync {
+    fn put_project(&self, project: Project);
+    fn get_project(&self, id: &str) -> Option<Project>;
+    fn list_projects(&self) -> Vec<Project>;
+    fn put_project_agent(&self, config: ProjectAgentConfig);
+    fn get_project_agent(&self, project_id: &str, agent_id: &str) -> Option<ProjectAgentConfig>;
+}
+
+/// The default in-memory [`ProjectStore`].
+#[derive(Default)]
+pub struct InMemoryProjectStore {
+    projects: std::sync::Mutex<HashMap<String, Project>>,
+    agents: std::sync::Mutex<HashMap<(String, String), ProjectAgentConfig>>,
+}
+
+impl InMemoryProjectStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl ProjectStore for InMemoryProjectStore {
+    fn put_project(&self, project: Project) {
+        self.projects
+            .lock()
+            .expect("projects")
+            .insert(project.id.0.clone(), project);
+    }
+    fn get_project(&self, id: &str) -> Option<Project> {
+        self.projects.lock().expect("projects").get(id).cloned()
+    }
+    fn list_projects(&self) -> Vec<Project> {
+        let mut projects: Vec<Project> = self
+            .projects
+            .lock()
+            .expect("projects")
+            .values()
+            .cloned()
+            .collect();
+        projects.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+        projects
+    }
+    fn put_project_agent(&self, config: ProjectAgentConfig) {
+        self.agents.lock().expect("project agent configs").insert(
+            (config.project_id.0.clone(), config.agent_id.clone()),
+            config,
+        );
+    }
+    fn get_project_agent(&self, project_id: &str, agent_id: &str) -> Option<ProjectAgentConfig> {
+        self.agents
+            .lock()
+            .expect("project agent configs")
+            .get(&(project_id.to_string(), agent_id.to_string()))
+            .cloned()
+    }
+}
+
 /// model SDK is named — the CRUD crate stays SDK-free.
 #[async_trait::async_trait]
 pub trait CredentialProbe: Send + Sync {
@@ -201,6 +268,12 @@ pub fn admin_router(state: AdminState) -> Router {
         .route(
             "/v1/config/mcp-servers/:id",
             put(put_mcp_server).get(get_mcp_server),
+        )
+        .route("/v1/config/projects", get(list_projects))
+        .route("/v1/config/projects/:id", put(put_project).get(get_project))
+        .route(
+            "/v1/config/projects/:project_id/agents/:agent_id/mcp",
+            put(put_project_agent_mcp).get(get_project_agent_mcp),
         )
         .route(
             "/v1/config/agents/:agent_id/mcp",
@@ -708,6 +781,124 @@ async fn resolve_agent_mcp(
                 credential_present: s.credential.is_some(),
             })
             .collect(),
+    ))
+}
+
+/// Author a project. The path id is authoritative and doubles as the ingress
+/// address segment, so it must be DNS-safe lowercase (`[a-z0-9-]`, 1-63 chars,
+/// no leading/trailing `-`); fail closed on anything else.
+async fn put_project(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(mut project): Json<Project>,
+) -> Result<Json<Project>, Problem> {
+    let rid = req_id(&headers);
+    if !is_dns_safe_project_id(&id) {
+        return Err(Problem(ApiError::new(
+            422,
+            "invalid_project_id",
+            "Invalid project id",
+            format!(
+                "project id `{id}` must be 1-63 lowercase [a-z0-9-] chars without leading/trailing `-`"
+            ),
+            &rid,
+        )));
+    }
+    if project.workspace_id.is_empty() {
+        return Err(Problem(ApiError::new(
+            422,
+            "invalid_project",
+            "Invalid project",
+            "workspace_id must not be empty".to_string(),
+            &rid,
+        )));
+    }
+    project.id = ProjectId(id);
+    state.projects.put_project(project.clone());
+    Ok(Json(project))
+}
+
+async fn get_project(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Project>, Problem> {
+    state
+        .projects
+        .get_project(&id)
+        .map(Json)
+        .ok_or_else(|| project_missing(&id, &req_id(&headers)))
+}
+
+async fn list_projects(State(state): State<AdminState>) -> Json<Vec<Project>> {
+    Json(state.projects.list_projects())
+}
+
+/// Bind which MCP servers an agent uses WITHIN one project. Path ids are
+/// authoritative; the project and every referenced server must already be
+/// authored (fail-closed — a project binding can only select existing supply).
+async fn put_project_agent_mcp(
+    State(state): State<AdminState>,
+    Path((project_id, agent_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(mut config): Json<ProjectAgentConfig>,
+) -> Result<Json<ProjectAgentConfig>, Problem> {
+    let rid = req_id(&headers);
+    if state.projects.get_project(&project_id).is_none() {
+        return Err(project_missing(&project_id, &rid));
+    }
+    for server_id in &config.mcp_server_ids {
+        if state.mcp.get_server(&server_id.0).is_none() {
+            return Err(mcp_server_missing(&server_id.0, &rid));
+        }
+    }
+    config.project_id = ProjectId(project_id);
+    config.agent_id = agent_id;
+    state.projects.put_project_agent(config.clone());
+    Ok(Json(config))
+}
+
+async fn get_project_agent_mcp(
+    State(state): State<AdminState>,
+    Path((project_id, agent_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<ProjectAgentConfig>, Problem> {
+    state
+        .projects
+        .get_project_agent(&project_id, &agent_id)
+        .map(Json)
+        .ok_or_else(|| project_agent_mcp_missing(&project_id, &agent_id, &req_id(&headers)))
+}
+
+/// A project id that can serve as a URL path segment or domain label.
+fn is_dns_safe_project_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 63
+        && !id.starts_with('-')
+        && !id.ends_with('-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+fn project_missing(id: &str, rid: &str) -> Problem {
+    Problem(ApiError::new(
+        404,
+        "not_found",
+        "Project not found",
+        format!("no project `{id}`"),
+        rid,
+    ))
+}
+
+fn project_agent_mcp_missing(project_id: &str, agent_id: &str, rid: &str) -> Problem {
+    Problem(ApiError::new(
+        404,
+        "not_found",
+        "Project agent MCP config not found",
+        format!("no mcp config for agent `{agent_id}` in project `{project_id}`"),
+        rid,
     ))
 }
 
