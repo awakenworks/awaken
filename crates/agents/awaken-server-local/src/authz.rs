@@ -28,10 +28,9 @@
 //! [`ScopeRef::Global`]: in the scope graph, `Global` is an ancestor of every
 //! workspace scope, so the global binding lets the bootstrap credential
 //! provision per-workspace tokens for ANY workspace through the token routes
-//! and then be revoked. The binding row persists in `iam.sqlite` (workspace
-//! column sentinel [`GLOBAL_BINDING_WORKSPACE`]) and is ensured idempotently on
-//! every boot, so existing installs bootstrapped before this fix gain it on
-//! their next start.
+//! and then be revoked. The binding persists in the SqlStore as a real
+//! `ScopeRef::Global` row and is ensured idempotently on every boot, so
+//! existing installs bootstrapped before this fix gain it on their next start.
 //!
 //! **Token management surface.** `POST /v1/config/iam/tokens` mints a
 //! workspace token (the cleartext is returned EXACTLY once, alongside the
@@ -67,12 +66,15 @@
 //! **Persistence + hydration.** The evaluator state (token directory + policy)
 //! is in-memory and rebuilt on every boot: role grants are re-derived from the
 //! preset catalog, while the durable rows — token records (hash only) and role
-//! bindings — hydrate from `<dir>/iam.sqlite`. Every mint writes BOTH the live
-//! engine and the SQLite rows under one lock, so a restart over the same
-//! directory authenticates previously minted tokens. The store is server-local
-//! private (`iam_*` tables, idempotent DDL); `awaken-iam-server`'s SqlStore is
-//! not used because its mandatory rusqlite 0.40 cannot share a graph with the
-//! workspace's rusqlite 0.32 (`links = "sqlite3"`).
+//! bindings — live in `awaken-iam-server`'s own `SqlStore` over
+//! `<dir>/iam.sqlite` (its migration ledger, its `iam_*` tables). Every mint
+//! writes BOTH the live engine and the store rows under one lock, so a restart
+//! over the same directory authenticates previously minted tokens. Hydration
+//! walks the store's bindings to their principals and reloads each principal's
+//! tokens (the `ApiTokenRepo` port deliberately has no list-all). Installs from
+//! the pre-SqlStore layout (hand-rolled singular `iam_api_token` /
+//! `iam_role_binding` tables, kept while iam-server's rusqlite pin was
+//! links-incompatible) are imported once at boot and the legacy tables renamed.
 //!
 //! **What P1 defers**: custom roles, org-level scopes, group rosters,
 //! entitlements, and approval discharge.
@@ -89,7 +91,9 @@ use awaken_iam_core::{
     ApiTokenDirectory, ApiTokenMinter, Effect, EntropySource, Grant, GrantId, GrantSubject,
     IamError, IssuedApiToken, OsEntropy, PolicySet, RoleBinding, RoleId,
 };
-use awaken_iam_preset::named_role_catalog;
+use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
+use awaken_iam_preset::{named_role_catalog, seed_named_roles};
+use awaken_iam_server::{SqlStore, SqliteBackend, sqlite_migrated_store};
 use awaken_protocol_managed::dto::ErrorResponse;
 use axum::body::Body;
 use axum::extract::{Query, Request, State};
@@ -109,12 +113,10 @@ pub const BOOTSTRAP_WORKSPACE: &str = "wrkspc_default";
 /// Service principal id of the bootstrap admin token.
 pub const BOOTSTRAP_PRINCIPAL: &str = "mgmt-bootstrap";
 
-/// Sentinel in `iam_role_binding.workspace` meaning the binding is at
-/// [`ScopeRef::Global`], not at a workspace. `*` can never collide with a real
-/// workspace id (they are plain `[A-Za-z0-9:_-]`). Used for the bootstrap
-/// principal's global `admin` binding (see the module doc's bootstrap-scope
-/// paragraph).
-pub const GLOBAL_BINDING_WORKSPACE: &str = "*";
+/// Sentinel the LEGACY (pre-SqlStore) `iam_role_binding.workspace` column used
+/// for a [`ScopeRef::Global`] binding. Only the one-time legacy import still
+/// reads it; the SqlStore persists real `ScopeRef`s.
+const LEGACY_GLOBAL_BINDING_WORKSPACE: &str = "*";
 
 /// Largest management request body the guard will buffer to fence its
 /// `workspace_id`. Matches axum's own default body limit, so the guard never
@@ -148,7 +150,9 @@ pub struct ManagementAuthz {
     /// Evaluator state; also serializes mint (engine write + row write) so a
     /// concurrent mint cannot interleave the two.
     state: Mutex<EngineState>,
-    conn: Mutex<rusqlite::Connection>,
+    /// iam-server's repository adapter over `<dir>/iam.sqlite` (tokens,
+    /// bindings, role defs — its schema, its migration ledger).
+    store: SqlStore<SqliteBackend>,
 }
 
 /// A mint request for a workspace-scoped service token (operator embeddings
@@ -197,13 +201,22 @@ impl ManagementAuthz {
         let issued = ApiTokenMinter::new(OsEntropy)
             .mint(&mut state.directory, &mut state.policy, request)
             .map_err(|err| err.to_string())?;
-        persist_token(
-            &self.conn.lock().unwrap(),
-            &issued.token,
-            &principal,
-            &spec.role,
-            &spec.workspace_id,
-        )?;
+        // Persist through the SqlStore ports, mirroring exactly what mint wrote
+        // into the live engine: the token row and the principal→role binding at
+        // the token's workspace scope.
+        ApiTokenRepo::create(&self.store, issued.token.clone())
+            .map_err(|err| format!("persist token row: {err}"))?;
+        RoleBindingRepo::add(
+            &self.store,
+            RoleBinding {
+                principal,
+                role: RoleId(spec.role),
+                scope: ScopeRef::Workspace {
+                    workspace_id: WorkspaceId(spec.workspace_id),
+                },
+            },
+        )
+        .map_err(|err| format!("persist role binding: {err}"))?;
         Ok(issued)
     }
 
@@ -232,53 +245,67 @@ impl ManagementAuthz {
             .token(&token_id)
             .expect("a just-revoked token is still stored")
             .clone();
-        let data = serde_json::to_string(&token).expect("encode ApiToken row");
-        self.conn
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE iam_api_token SET data = ?2 WHERE id = ?1",
-                rusqlite::params![token.id.0, data],
-            )
-            .expect("persist token revocation");
+        // The row carries the full token (incl. `revoked_at`), so updating it
+        // persists the revocation across a restart.
+        ApiTokenRepo::update(&self.store, token.clone()).expect("persist token revocation");
         Ok(token)
+    }
+
+    /// Every persisted token, ordered by id. The `ApiTokenRepo` port has no
+    /// list-all by design, so the walk goes bindings → principals → each
+    /// principal's tokens (every mint writes a binding, so the walk is total).
+    fn all_tokens(&self) -> Vec<ApiToken> {
+        let mut principals: Vec<PrincipalRef> = Vec::new();
+        for binding in RoleBindingRepo::list(&self.store).expect("list role bindings") {
+            if !principals.contains(&binding.principal) {
+                principals.push(binding.principal);
+            }
+        }
+        let mut tokens: Vec<ApiToken> = principals
+            .iter()
+            .flat_map(|principal| {
+                ApiTokenRepo::list_for_principal(&self.store, principal)
+                    .expect("list principal tokens")
+            })
+            .collect();
+        tokens.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+        tokens.dedup_by(|a, b| a.id == b.id);
+        tokens
     }
 
     /// Secret-free views of every persisted token bound to `workspace_id`,
     /// ordered by id. Rows and engine are written together under the state
     /// lock, so the rows are current.
     fn token_views(&self, workspace_id: &str) -> Vec<serde_json::Value> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT data, role FROM iam_api_token ORDER BY id")
-            .expect("prepare token listing");
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        self.all_tokens()
+            .into_iter()
+            .filter(|token| token.workspace.0 == workspace_id)
+            .map(|token| {
+                let role = self.role_of(&token);
+                token_view(&token, role)
             })
-            .expect("query token rows");
-        rows.filter_map(|row| {
-            let (data, role) = row.expect("read token row");
-            let token: ApiToken =
-                serde_json::from_str(&data).expect("decode persisted ApiToken row");
-            (token.workspace.0 == workspace_id).then(|| token_view(&token, role))
-        })
-        .collect()
+            .collect()
     }
 
-    /// The persisted mint-time role of token `id`, when recorded (rows written
-    /// before the `role` column existed have none).
+    /// The mint-time role of `token`, derived from its principal's persisted
+    /// binding at the token's workspace (mint wrote exactly that pair; the
+    /// bootstrap principal's extra Global binding carries the same role).
+    fn role_of(&self, token: &ApiToken) -> Option<String> {
+        let bindings = RoleBindingRepo::list_for_principal(&self.store, &token.principal)
+            .expect("list principal bindings");
+        bindings
+            .iter()
+            .find(|b| {
+                matches!(&b.scope, ScopeRef::Workspace { workspace_id } if workspace_id == &token.workspace)
+            })
+            .or_else(|| bindings.first())
+            .map(|b| b.role.0.clone())
+    }
+
+    /// The persisted mint-time role of token `id`, when derivable.
     fn token_role(&self, id: &str) -> Option<String> {
-        self.conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT role FROM iam_api_token WHERE id = ?1",
-                rusqlite::params![id],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .ok()
-            .flatten()
+        let token = self.token_by_id(id)?;
+        self.role_of(&token)
     }
 
     /// Authenticate a presented bearer credential, returning its principal and
@@ -314,68 +341,6 @@ impl ManagementAuthz {
     }
 }
 
-/// Idempotent DDL for the embedded IAM rows. Token records carry the full
-/// serde of the contract [`ApiToken`] (argon2id hash, never a secret) in
-/// `data` plus the mint-time `role` (for the secret-free view); keyed columns
-/// exist only for uniqueness. A binding's `workspace` is either a workspace id
-/// or the [`GLOBAL_BINDING_WORKSPACE`] sentinel for a Global-scope binding.
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS iam_api_token (
-    id     TEXT PRIMARY KEY,
-    prefix TEXT NOT NULL UNIQUE,
-    data   TEXT NOT NULL,
-    role   TEXT
-);
-CREATE TABLE IF NOT EXISTS iam_role_binding (
-    principal TEXT NOT NULL,
-    role      TEXT NOT NULL,
-    workspace TEXT NOT NULL,
-    PRIMARY KEY (principal, role, workspace)
-);
-";
-
-/// Idempotent column migration for installs whose `iam_api_token` predates the
-/// `role` column: add it, then backfill each row's role from its principal's
-/// binding at the token's workspace (mint wrote exactly that pair). A row with
-/// no matching binding keeps NULL and its view simply omits `role`.
-fn migrate_token_role_column(conn: &rusqlite::Connection) {
-    let has_role = conn
-        .prepare("SELECT role FROM iam_api_token LIMIT 0")
-        .is_ok();
-    if has_role {
-        return;
-    }
-    conn.execute_batch("ALTER TABLE iam_api_token ADD COLUMN role TEXT")
-        .expect("add iam_api_token.role column");
-    let rows: Vec<(String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT id, data FROM iam_api_token")
-            .expect("prepare role backfill scan");
-        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .expect("query token rows for role backfill")
-            .map(|row| row.expect("read token row"))
-            .collect()
-    };
-    for (id, data) in rows {
-        let token: ApiToken = serde_json::from_str(&data).expect("decode persisted ApiToken row");
-        let principal = serde_json::to_string(&token.principal).expect("encode principal ref");
-        let role: Option<String> = conn
-            .query_row(
-                "SELECT role FROM iam_role_binding WHERE principal = ?1 AND workspace = ?2",
-                rusqlite::params![principal, token.workspace.0],
-                |row| row.get(0),
-            )
-            .ok();
-        if let Some(role) = role {
-            conn.execute(
-                "UPDATE iam_api_token SET role = ?2 WHERE id = ?1",
-                rusqlite::params![id, role],
-            )
-            .expect("backfill token role");
-        }
-    }
-}
-
 /// Open (or create) the embedded IAM state under `dir`: migrate
 /// `<dir>/iam.sqlite`, install the preset role catalog as role grants, hydrate
 /// persisted tokens + bindings into the live evaluator, and — when the token
@@ -386,26 +351,34 @@ fn migrate_token_role_column(conn: &rusqlite::Connection) {
 /// refuses to start.
 pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
     std::fs::create_dir_all(dir).expect("create AWAKEN_MGMT_DIR for embedded IAM");
-    let conn = rusqlite::Connection::open(dir.join("iam.sqlite"))
-        .expect("open iam.sqlite under AWAKEN_MGMT_DIR");
-    conn.execute_batch(SCHEMA).expect("migrate iam.sqlite");
-    migrate_token_role_column(&conn);
+    let db_path = dir.join("iam.sqlite");
+    import_legacy_layout(&db_path);
+    let backend =
+        SqliteBackend::open_path(&db_path).expect("open iam.sqlite under AWAKEN_MGMT_DIR");
+    let store = sqlite_migrated_store(backend, "iam").expect("migrate iam.sqlite");
+
+    // Durable role catalog (idempotent upsert of the preset roles) — the PAP
+    // and any external reader see the same catalog the evaluator derives from.
+    let now = Timestamp(now_rfc3339());
+    seed_named_roles(&store, &now).expect("seed the preset role catalog");
 
     // Bootstrap scope fix (module doc): ensure the bootstrap principal's
     // `admin` role is bound at Global — without it the bootstrap credential
     // could only administer wrkspc_default and could not provision tokens for
-    // any other workspace. INSERT OR IGNORE keeps this idempotent for fresh
-    // bootstraps, restarts, and existing installs alike; the row is inserted
-    // before hydration so the loop below binds it into the live policy. It is
-    // inert unless a live token authenticates as the bootstrap principal, so
-    // re-ensuring it after the bootstrap token is revoked grants nothing.
-    let bootstrap_principal = serde_json::to_string(&PrincipalRef::Service {
-        service_id: BOOTSTRAP_PRINCIPAL.to_string(),
-    })
-    .expect("encode bootstrap principal ref");
-    conn.execute(
-        "INSERT OR IGNORE INTO iam_role_binding (principal, role, workspace) VALUES (?1, ?2, ?3)",
-        rusqlite::params![bootstrap_principal, "admin", GLOBAL_BINDING_WORKSPACE],
+    // any other workspace. `RoleBindingRepo::add` is idempotent, and the row is
+    // written before hydration so the loop below binds it into the live
+    // policy. It is inert unless a live token authenticates as the bootstrap
+    // principal, so re-ensuring it after the bootstrap token is revoked grants
+    // nothing.
+    RoleBindingRepo::add(
+        &store,
+        RoleBinding {
+            principal: PrincipalRef::Service {
+                service_id: BOOTSTRAP_PRINCIPAL.to_string(),
+            },
+            role: RoleId("admin".to_string()),
+            scope: ScopeRef::Global,
+        },
     )
     .expect("ensure the bootstrap principal's global admin binding");
 
@@ -417,7 +390,6 @@ pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
     // wildcard of authority — a principal only *holds* a role where its
     // workspace-scoped RoleBinding covers, so the binding confines the reach.
     // Re-derived every boot (roles are seed data; custom roles are post-P1).
-    let now = Timestamp(now_rfc3339());
     for role in named_role_catalog(&now) {
         for (index, pattern) in role.action_patterns.iter().enumerate() {
             policy.add_grant(Grant {
@@ -431,26 +403,73 @@ pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
     }
 
     // Hydrate the durable rows into the in-memory evaluator (it is never
-    // auto-hydrated): token records into the directory, bindings into the
-    // policy. Failing closed on a corrupt row (panic) beats dropping a token
-    // silently — the operator would see 401s with no way to tell why.
+    // auto-hydrated): bindings into the policy, and — since `ApiTokenRepo` has
+    // no list-all by design — each binding principal's tokens into the
+    // directory. Every mint writes a binding, so the walk is total. Failing
+    // closed on a corrupt row (panic) beats dropping a token silently.
     let mut hydrated_tokens = 0usize;
-    {
+    let mut seen_principals: Vec<PrincipalRef> = Vec::new();
+    for binding in RoleBindingRepo::list(&store).expect("list role bindings") {
+        if !seen_principals.contains(&binding.principal) {
+            seen_principals.push(binding.principal.clone());
+            for token in ApiTokenRepo::list_for_principal(&store, &binding.principal)
+                .expect("list principal tokens")
+            {
+                directory.create(token).expect("hydrate unique token row");
+                hydrated_tokens += 1;
+            }
+        }
+        policy.bind_role(binding);
+    }
+
+    let authz = Arc::new(ManagementAuthz {
+        state: Mutex::new(EngineState { directory, policy }),
+        store,
+    });
+
+    if hydrated_tokens == 0 {
+        bootstrap_admin_token(&authz, dir);
+    }
+    authz
+}
+
+/// One-time import of the pre-SqlStore layout: the hand-rolled singular
+/// `iam_api_token` / `iam_role_binding` tables (token serde in `data`, binding
+/// workspace with the `*` Global sentinel). Rows are copied into staging so the
+/// SqlStore boot path below re-persists them through its own ports, then the
+/// legacy tables are renamed (`*_imported`) so the import never runs twice.
+/// iam-server's own tables are plural (`iam_api_tokens`), so the two layouts
+/// never collide in one file.
+fn import_legacy_layout(db_path: &Path) {
+    if !db_path.exists() {
+        return;
+    }
+    let conn = rusqlite::Connection::open(db_path).expect("open iam.sqlite for legacy check");
+    let has_legacy = conn
+        .prepare("SELECT data FROM iam_api_token LIMIT 0")
+        .is_ok();
+    if !has_legacy {
+        return;
+    }
+    // Read the legacy rows now; write them through the SqlStore after it has
+    // migrated (same file, second connection is fine for SQLite).
+    let tokens: Vec<ApiToken> = {
         let mut stmt = conn
             .prepare("SELECT data FROM iam_api_token ORDER BY id")
-            .expect("prepare token hydration");
+            .expect("prepare legacy token scan");
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(0))
-            .expect("query token rows");
-        for data in rows {
-            let token: ApiToken = serde_json::from_str(&data.expect("read token row"))
-                .expect("decode persisted ApiToken row");
-            directory.create(token).expect("hydrate unique token row");
-            hydrated_tokens += 1;
-        }
+            .expect("query legacy token rows");
+        rows.map(|data| {
+            serde_json::from_str(&data.expect("read legacy token row"))
+                .expect("decode legacy ApiToken row")
+        })
+        .collect()
+    };
+    let bindings: Vec<RoleBinding> = {
         let mut stmt = conn
             .prepare("SELECT principal, role, workspace FROM iam_role_binding")
-            .expect("prepare binding hydration");
+            .expect("prepare legacy binding scan");
         let rows = stmt
             .query_map([], |row| {
                 Ok((
@@ -459,34 +478,51 @@ pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
                     row.get::<_, String>(2)?,
                 ))
             })
-            .expect("query binding rows");
-        for row in rows {
-            let (principal, role, workspace) = row.expect("read binding row");
-            let scope = if workspace == GLOBAL_BINDING_WORKSPACE {
+            .expect("query legacy binding rows");
+        rows.map(|row| {
+            let (principal, role, workspace) = row.expect("read legacy binding row");
+            let scope = if workspace == LEGACY_GLOBAL_BINDING_WORKSPACE {
                 ScopeRef::Global
             } else {
                 ScopeRef::Workspace {
                     workspace_id: WorkspaceId(workspace),
                 }
             };
-            policy.bind_role(RoleBinding {
-                principal: serde_json::from_str(&principal)
-                    .expect("decode persisted principal ref"),
+            RoleBinding {
+                principal: serde_json::from_str(&principal).expect("decode legacy principal ref"),
                 role: RoleId(role),
                 scope,
-            });
+            }
+        })
+        .collect()
+    };
+    conn.execute_batch(
+        "ALTER TABLE iam_api_token RENAME TO iam_api_token_imported;\n\
+         ALTER TABLE iam_role_binding RENAME TO iam_role_binding_imported;",
+    )
+    .expect("retire legacy iam tables");
+    drop(conn);
+
+    // Re-open through the store and write the rows through its ports.
+    let backend = SqliteBackend::open_path(db_path).expect("reopen iam.sqlite for legacy import");
+    let store =
+        sqlite_migrated_store(backend, "iam").expect("migrate iam.sqlite for legacy import");
+    let mut imported = 0usize;
+    for token in tokens {
+        if ApiTokenRepo::get(&store, &token.id)
+            .expect("probe imported token")
+            .is_none()
+        {
+            ApiTokenRepo::create(&store, token).expect("import legacy token row");
+            imported += 1;
         }
     }
-
-    let authz = Arc::new(ManagementAuthz {
-        state: Mutex::new(EngineState { directory, policy }),
-        conn: Mutex::new(conn),
-    });
-
-    if hydrated_tokens == 0 {
-        bootstrap_admin_token(&authz, dir);
+    for binding in bindings {
+        RoleBindingRepo::add(&store, binding).expect("import legacy binding row");
     }
-    authz
+    eprintln!(
+        "awaken-server-local: embedded IAM imported {imported} legacy token row(s) into the iam-server store"
+    );
 }
 
 /// First-boot bootstrap: mint the one `admin`-role token the operator starts
@@ -526,30 +562,6 @@ fn write_owner_only(path: &Path, contents: &str) -> std::io::Result<()> {
         options.mode(0o600);
     }
     options.open(path)?.write_all(contents.as_bytes())
-}
-
-/// Persist a freshly minted token + its workspace role binding. Called with
-/// the engine lock held so row and engine cannot diverge under concurrency.
-fn persist_token(
-    conn: &rusqlite::Connection,
-    token: &ApiToken,
-    principal: &PrincipalRef,
-    role: &str,
-    workspace: &str,
-) -> Result<(), String> {
-    let data = serde_json::to_string(token).map_err(|err| err.to_string())?;
-    conn.execute(
-        "INSERT INTO iam_api_token (id, prefix, data, role) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![token.id.0, token.prefix.0, data, role],
-    )
-    .map_err(|err| format!("persist token row: {err}"))?;
-    let principal = serde_json::to_string(principal).map_err(|err| err.to_string())?;
-    conn.execute(
-        "INSERT OR IGNORE INTO iam_role_binding (principal, role, workspace) VALUES (?1, ?2, ?3)",
-        rusqlite::params![principal, role, workspace],
-    )
-    .map_err(|err| format!("persist role binding: {err}"))?;
-    Ok(())
 }
 
 // ---- Middleware --------------------------------------------------------------

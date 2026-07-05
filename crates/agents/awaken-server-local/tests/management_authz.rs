@@ -12,8 +12,8 @@
 //! guard the plane stays exactly as open as before (regression pin).
 
 use awaken_server_local::{
-    ADMIN_TOKEN_FILE, BOOTSTRAP_WORKSPACE, TokenSpec, build_durable_management_router,
-    build_secured_management_router,
+    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, TokenSpec,
+    build_durable_management_router, build_secured_management_router,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -437,5 +437,87 @@ async fn without_the_guard_the_management_plane_stays_open() {
         Some(provider_body()),
     )
     .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_legacy_hand_rolled_iam_layout_is_imported_once_on_boot() {
+    use awaken_iam_core::{ApiTokenDirectory, ApiTokenMinter, OsEntropy, PolicySet};
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // Reproduce a pre-SqlStore install faithfully: the old code persisted the
+    // contract ApiToken serde in singular `iam_api_token` (+ mint-time role)
+    // and bindings in `iam_role_binding` with the `*` Global sentinel.
+    let cleartext;
+    {
+        let mut directory = ApiTokenDirectory::new();
+        let mut policy = PolicySet::new();
+        let issued = ApiTokenMinter::new(OsEntropy)
+            .mint(
+                &mut directory,
+                &mut policy,
+                awaken_iam_core::MintApiToken {
+                    id: awaken_iam_contract::ApiTokenId("tok_legacy_admin".into()),
+                    principal: awaken_iam_contract::PrincipalRef::Service {
+                        service_id: BOOTSTRAP_PRINCIPAL.into(),
+                    },
+                    workspace: awaken_iam_contract::WorkspaceId(BOOTSTRAP_WORKSPACE.into()),
+                    role: awaken_iam_core::RoleId("admin".into()),
+                    created_at: awaken_iam_contract::Timestamp("2026-01-01T00:00:00Z".into()),
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        cleartext = issued.secret;
+        let conn = rusqlite::Connection::open(dir.path().join("iam.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE iam_api_token (id TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE, \
+             data TEXT NOT NULL, role TEXT);\n\
+             CREATE TABLE iam_role_binding (principal TEXT NOT NULL, role TEXT NOT NULL, \
+             workspace TEXT NOT NULL, PRIMARY KEY (principal, role, workspace));",
+        )
+        .unwrap();
+        let principal = serde_json::to_string(&issued.token.principal).unwrap();
+        conn.execute(
+            "INSERT INTO iam_api_token (id, prefix, data, role) VALUES (?1, ?2, ?3, 'admin')",
+            rusqlite::params![
+                issued.token.id.0,
+                issued.token.prefix.0,
+                serde_json::to_string(&issued.token).unwrap()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO iam_role_binding (principal, role, workspace) VALUES (?1, 'admin', ?2)",
+            rusqlite::params![principal, BOOTSTRAP_WORKSPACE],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO iam_role_binding (principal, role, workspace) VALUES (?1, 'admin', '*')",
+            rusqlite::params![principal],
+        )
+        .unwrap();
+    }
+
+    // Boot the SqlStore-backed code over the legacy file: the import must carry
+    // the token across (no re-bootstrap: the hydrated directory is non-empty,
+    // so no admin-token file appears), authenticating and authorizing as before.
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY);
+    assert!(!dir.path().join(ADMIN_TOKEN_FILE).exists());
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/v1/config/providers/anthropic",
+        Some(&cleartext),
+        Some(provider_body()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // A second boot must not import again (the legacy tables were renamed).
+    drop(app);
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY);
+    let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&cleartext), None).await;
     assert_eq!(s, StatusCode::OK);
 }
