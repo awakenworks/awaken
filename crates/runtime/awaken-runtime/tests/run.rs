@@ -23,6 +23,7 @@ impl LlmExecutor for TextLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text(self.0.to_string()),
             usage: None,
+            stop_reason: None,
         })
     }
 }

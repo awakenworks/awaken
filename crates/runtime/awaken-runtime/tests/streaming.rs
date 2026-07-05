@@ -38,6 +38,7 @@ impl LlmExecutor for StreamingLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text(self.chunks.concat()),
             usage: None,
+            stop_reason: None,
         })
     }
 
@@ -52,6 +53,7 @@ impl LlmExecutor for StreamingLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text(self.chunks.concat()),
             usage: None,
+            stop_reason: None,
         })
     }
 }

@@ -130,6 +130,7 @@ impl LlmExecutor for SkillUserModel {
                     return Ok(ChatResponse {
                         output: AssistantOutput::text("NO_SKILL_ADVERTISED"),
                         usage: None,
+                        stop_reason: None,
                     });
                 }
                 // Discovery is a `list_skills` call, not the descriptor: neither
@@ -141,6 +142,7 @@ impl LlmExecutor for SkillUserModel {
                     return Ok(ChatResponse {
                         output: AssistantOutput::text("CATALOG_IN_DESCRIPTOR"),
                         usage: None,
+                        stop_reason: None,
                     });
                 }
                 Ok(ChatResponse {
@@ -150,6 +152,7 @@ impl LlmExecutor for SkillUserModel {
                         arguments: serde_json::json!({}),
                     }]),
                     usage: None,
+                    stop_reason: None,
                 })
             }
             1 => Ok(ChatResponse {
@@ -159,10 +162,12 @@ impl LlmExecutor for SkillUserModel {
                     arguments: serde_json::json!({ "skill": SKILL_ID }),
                 }]),
                 usage: None,
+                stop_reason: None,
             }),
             _ => Ok(ChatResponse {
                 output: AssistantOutput::text("USED_SKILL"),
                 usage: None,
+                stop_reason: None,
             }),
         }
     }

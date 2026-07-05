@@ -30,6 +30,7 @@ impl LlmExecutor for TextLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text("done".to_string()),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -113,7 +114,10 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
     // passes and the run completes — config produced what the runtime consumed.
     let phase = runtime.execute(activation, ctx).await.expect("execute");
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
-    assert_eq!(commit.commit_count(), 1);
+    // Per-step durability: the input commits at the first step boundary
+    // (under a Running fact), then the text-only terminal step commits
+    // through finish.
+    assert_eq!(commit.commit_count(), 2);
 }
 
 /// Rebuild an owned `RuntimeCatalogInstall` (the contract type is not `Clone`).

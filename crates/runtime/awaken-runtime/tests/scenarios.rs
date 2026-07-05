@@ -45,6 +45,7 @@ impl LlmExecutor for TextLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text("done".to_string()),
             usage: None,
+            stop_reason: None,
         })
     }
 }

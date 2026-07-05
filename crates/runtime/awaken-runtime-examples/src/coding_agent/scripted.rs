@@ -56,6 +56,7 @@ impl LlmExecutor for ScriptedCoder {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }

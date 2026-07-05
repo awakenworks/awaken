@@ -14,6 +14,12 @@ pub struct Id(pub String);
 /// unable to drift from its own classification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Phase {
+    /// The run is executing. Committed at step boundaries so completed steps
+    /// are durable (and visible to readers) before the run reaches a
+    /// terminus. Not a pause — a running run carries no waiting ticket and
+    /// cannot be resumed; a run left `Running` by a crashed process is an
+    /// orphan a host terminalizes (cancel/stop) or redelivers.
+    Running,
     /// The run paused on a waiting ticket. A pause is not a terminus.
     Waiting,
     /// The run reached a terminus through one mechanism.
@@ -42,12 +48,40 @@ pub enum EndCause {
 /// neutral fault kinds; it never keeps a free-form status string as authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Failure {
-    /// Model inference failed permanently or exhausted its retries.
-    Inference(String),
+    /// Model inference failed permanently or exhausted its retries. `code` is
+    /// the provider error's stable snake_case classification (for example
+    /// `rate_limited`, `context_overflow`, `unauthorized`), so a host can
+    /// categorize a fault the loop could not handle without parsing `message`.
+    Inference { code: String, message: String },
     /// A plugin contributed beyond its declared capability bound.
     CapabilityBound,
     /// A staged state batch held an exclusive-key conflict.
     StateConflict,
+}
+
+impl Failure {
+    /// The stable snake_case code classifying this fault, for hosts that
+    /// categorize failures without parsing messages.
+    pub fn code(&self) -> &str {
+        match self {
+            Failure::Inference { code, .. } => code,
+            Failure::CapabilityBound => "capability_bound",
+            Failure::StateConflict => "state_conflict",
+        }
+    }
+
+    /// A human-readable description of the fault.
+    pub fn message(&self) -> String {
+        match self {
+            Failure::Inference { message, .. } => message.clone(),
+            Failure::CapabilityBound => {
+                "a plugin contributed beyond its declared capability bound".to_string()
+            }
+            Failure::StateConflict => {
+                "a staged state batch held an exclusive-key conflict".to_string()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

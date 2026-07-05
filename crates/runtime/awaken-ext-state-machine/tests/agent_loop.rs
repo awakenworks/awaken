@@ -72,6 +72,7 @@ impl LlmExecutor for ScriptedLlm {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -461,6 +462,7 @@ impl LlmExecutor for RecordingLlm {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }

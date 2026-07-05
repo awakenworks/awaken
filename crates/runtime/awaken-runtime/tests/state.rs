@@ -53,6 +53,7 @@ impl LlmExecutor for CallThenEnd {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }

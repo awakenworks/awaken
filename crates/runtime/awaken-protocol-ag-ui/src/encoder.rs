@@ -86,6 +86,11 @@ impl Transcoder for AgUiEncoder {
                     run_id: self.run_id.clone(),
                 }]
             }
+            // AG-UI runs end with either RUN_FINISHED or RUN_ERROR; a fault
+            // maps to the latter, code-prefixed so clients can categorize.
+            AgentEvent::RunFailed { code, message } => vec![AgUiEvent::RunError {
+                message: format!("{code}: {message}"),
+            }],
         }
     }
 }

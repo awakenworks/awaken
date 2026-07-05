@@ -48,6 +48,7 @@ impl LlmExecutor for EchoUserLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text(seen),
             usage: None,
+            stop_reason: None,
         })
     }
 }

@@ -156,6 +156,7 @@ impl LlmExecutor for WriteReadProbe {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -229,6 +230,7 @@ impl LlmExecutor for ReviseModel {
         Ok(ChatResponse {
             output: AssistantOutput::text(reply),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -325,6 +327,7 @@ impl LlmExecutor for GradedModel {
         Ok(ChatResponse {
             output: AssistantOutput::text(reply),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -433,6 +436,7 @@ impl LlmExecutor for SystemEchoModel {
         Ok(ChatResponse {
             output: AssistantOutput::text(format!("system says: {system}")),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -647,6 +651,7 @@ impl LlmExecutor for ToolCatalogProbe {
         Ok(ChatResponse {
             output: AssistantOutput::text(ids.join(",")),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -696,6 +701,7 @@ impl LlmExecutor for LoopModel {
                 arguments: serde_json::json!({ "pattern": "*" }),
             }]),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -755,6 +761,7 @@ impl LlmExecutor for GatedReviseModel {
         Ok(ChatResponse {
             output: AssistantOutput::text("a rough draft"),
             usage: None,
+            stop_reason: None,
         })
     }
 }

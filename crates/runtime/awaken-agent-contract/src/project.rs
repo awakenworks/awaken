@@ -54,6 +54,10 @@ pub enum AgentEvent {
     Waiting { pending_tool_use_id: Option<String> },
     /// The step reached a natural or budget-exhausted terminus.
     RunFinished { exhausted: bool },
+    /// The run ended on an execution fault. `code` is the fault's stable
+    /// snake_case classification (e.g. `unauthorized`, `context_overflow`),
+    /// so a host can categorize the failure without parsing `message`.
+    RunFailed { code: String, message: String },
 }
 
 /// Transcode neutral projection events into a protocol's wire events. One impl per
@@ -161,13 +165,22 @@ pub fn terminal_waiting(pending_tool_use_id: Option<&str>) -> AgentEvent {
     }
 }
 
-/// The terminal projection event for a phase.
+/// The terminal projection event for a phase. A fault projects as `RunFailed`
+/// carrying its classification code, so hosts can tell a failed run from a
+/// finished one without reading the committed phase.
 pub fn terminal(phase: &Phase, pending: Option<(&str, bool)>) -> AgentEvent {
     match phase {
+        // Not a terminus: a run committed mid-flight projects as its
+        // in-progress signal. Hosts normally project only parked/ended phases.
+        Phase::Running => AgentEvent::RunStarted,
         Phase::Waiting => AgentEvent::Waiting {
             pending_tool_use_id: pending.map(|p| p.0.to_string()),
         },
         Phase::Ended(EndCause::MaxSteps) => AgentEvent::RunFinished { exhausted: true },
+        Phase::Ended(EndCause::Error(failure)) => AgentEvent::RunFailed {
+            code: failure.code().to_string(),
+            message: failure.message(),
+        },
         Phase::Ended(_) => AgentEvent::RunFinished { exhausted: false },
     }
 }
@@ -176,6 +189,28 @@ pub fn terminal(phase: &Phase, pending: Option<(&str, bool)>) -> AgentEvent {
 mod tests {
     use super::*;
     use crate::agent::message::Id;
+    use crate::agent::run::Failure;
+
+    #[test]
+    fn error_terminal_projects_run_failed_with_the_fault_code() {
+        let inference = Phase::Ended(EndCause::Error(Failure::Inference {
+            code: "unauthorized".to_string(),
+            message: "bad api key".to_string(),
+        }));
+        assert_eq!(
+            terminal(&inference, None),
+            AgentEvent::RunFailed {
+                code: "unauthorized".to_string(),
+                message: "bad api key".to_string(),
+            }
+        );
+
+        let capability = Phase::Ended(EndCause::Error(Failure::CapabilityBound));
+        assert!(matches!(
+            terminal(&capability, None),
+            AgentEvent::RunFailed { code, .. } if code == "capability_bound"
+        ));
+    }
 
     #[test]
     fn classifies_pending_client_tool() {

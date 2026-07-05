@@ -94,6 +94,7 @@ impl LlmExecutor for EchoModel {
         Ok(ChatResponse {
             output: AssistantOutput::text(format!("Echo: {last_user}")),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -137,6 +138,7 @@ impl LlmExecutor for VisionProbeModel {
         Ok(ChatResponse {
             output: AssistantOutput::text(reply),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -179,6 +181,7 @@ impl LlmExecutor for ProbeModel {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -217,6 +220,7 @@ impl LlmExecutor for StateMachineModel {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -242,6 +246,7 @@ impl LlmExecutor for InstructionEchoModel {
         Ok(ChatResponse {
             output: AssistantOutput::text(format!("instructions: {system}")),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -271,6 +276,7 @@ impl LlmExecutor for ReviseModel {
         Ok(ChatResponse {
             output: AssistantOutput::text(reply),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -317,6 +323,7 @@ impl LlmExecutor for CustomToolModel {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -352,6 +359,7 @@ impl LlmExecutor for McpToolModel {
             return Ok(ChatResponse {
                 output: AssistantOutput::text(format!("result: {result}")),
                 usage: None,
+                stop_reason: None,
             });
         }
         let last_user = request
@@ -374,11 +382,13 @@ impl LlmExecutor for McpToolModel {
                     arguments: serde_json::json!({ "a": a, "b": b }),
                 }]),
                 usage: None,
+                stop_reason: None,
             });
         }
         Ok(ChatResponse {
             output: AssistantOutput::text(format!("Echo: {last_user}")),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -400,6 +410,7 @@ impl LlmExecutor for DelegatingModel {
             return Ok(ChatResponse {
                 output: AssistantOutput::text("researched: 42"),
                 usage: None,
+                stop_reason: None,
             });
         }
         let tool_results = request
@@ -445,6 +456,7 @@ impl LlmExecutor for DelegatingModel {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -1670,6 +1682,7 @@ impl LlmExecutor for SkillDrivingModel {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }

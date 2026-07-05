@@ -64,6 +64,26 @@ pub struct ToolSchema {
 pub struct ChatResponse {
     pub output: AssistantOutput,
     pub usage: Option<TokenUsage>,
+    /// Why the turn ended, when the provider reports it. `None` means the
+    /// provider gave no reason; the runtime treats that as a natural end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<StopReason>,
+}
+
+/// Provider-neutral reason a turn stopped. `MaxTokens` is the one the loop
+/// acts on: it marks a truncated turn that may need continuation recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StopReason {
+    /// The model finished naturally.
+    EndTurn,
+    /// The output hit the response token limit and was truncated.
+    MaxTokens,
+    /// The turn stopped to invoke one or more tools.
+    ToolUse,
+    /// A configured stop sequence matched.
+    StopSequence,
+    /// A safety/content filter ended the turn.
+    ContentFilter,
 }
 
 /// One assistant turn as a list of content blocks. Text and tool requests may
@@ -125,26 +145,95 @@ pub struct TokenUsage {
     pub completion_tokens: u64,
 }
 
+/// A classified inference failure. The variant is the classification: it
+/// decides both the retry policy (`is_retryable`) and the stable code
+/// (`code`) a run that cannot recover reports in its terminal failure.
+/// Retryable: `Provider`, `RateLimited`, `Overloaded`, `Timeout`. Permanent:
+/// everything else — retrying an identical request cannot succeed.
 #[derive(Debug, Error)]
 pub enum Error {
     /// The selected binding cannot be served (unknown model, bad endpoint).
     /// Permanent: retrying will not help.
     #[error("model binding rejected: {0}")]
     Binding(String),
-    /// The provider call failed permanently (auth, quota exhausted, bad request,
-    /// context overflow). Not worth retrying.
-    #[error("model inference failed: {0}")]
-    Inference(String),
-    /// A transient failure worth retrying with backoff (rate limit, overload,
-    /// 5xx, connection reset, timeout).
-    #[error("model inference transiently failed: {0}")]
-    Transient(String),
+    /// A generic provider-side failure (5xx, connection reset, unclassified
+    /// transport error). Retryable with backoff.
+    #[error("provider error: {0}")]
+    Provider(String),
+    /// The provider rate-limited the request (429). Retryable; honors the
+    /// server's `Retry-After` hint when present.
+    #[error("rate limited: {message}")]
+    RateLimited {
+        message: String,
+        retry_after: Option<std::time::Duration>,
+    },
+    /// The provider is overloaded (529/503). Retryable with a longer backoff
+    /// base than a generic provider error.
+    #[error("provider overloaded: {message}")]
+    Overloaded {
+        message: String,
+        retry_after: Option<std::time::Duration>,
+    },
+    /// The call or stream timed out (408/504, client-side timeout). Retryable.
+    #[error("model call timed out: {0}")]
+    Timeout(String),
+    /// The prompt exceeds the model's context window (413, or 400 with a
+    /// context-length message). Permanent for this request shape — only a
+    /// smaller prompt can succeed.
+    #[error("context overflow: {0}")]
+    ContextOverflow(String),
+    /// The request is malformed (400/422). Permanent.
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+    /// Authentication or authorization failed (401/403). Permanent.
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
+    /// The requested model does not exist (404). Permanent.
+    #[error("model not found: {0}")]
+    ModelNotFound(String),
+    /// A content-safety filter rejected the request or response. Permanent.
+    #[error("content filtered: {0}")]
+    ContentFiltered(String),
 }
 
 impl Error {
     /// Whether the runtime should retry the call after backoff.
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Error::Transient(_))
+        matches!(
+            self,
+            Error::Provider(_)
+                | Error::RateLimited { .. }
+                | Error::Overloaded { .. }
+                | Error::Timeout(_)
+        )
+    }
+
+    /// The server's `Retry-After` hint, when the provider sent one.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            Error::RateLimited { retry_after, .. } | Error::Overloaded { retry_after, .. } => {
+                *retry_after
+            }
+            _ => None,
+        }
+    }
+
+    /// The stable snake_case code classifying this error. A run that cannot
+    /// recover automatically records this code in its terminal failure, so
+    /// hosts can categorize faults without parsing messages.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Error::Binding(_) => "binding_rejected",
+            Error::Provider(_) => "provider_error",
+            Error::RateLimited { .. } => "rate_limited",
+            Error::Overloaded { .. } => "overloaded",
+            Error::Timeout(_) => "timeout",
+            Error::ContextOverflow(_) => "context_overflow",
+            Error::InvalidRequest(_) => "invalid_request",
+            Error::Unauthorized(_) => "unauthorized",
+            Error::ModelNotFound(_) => "model_not_found",
+            Error::ContentFiltered(_) => "content_filtered",
+        }
     }
 }
 

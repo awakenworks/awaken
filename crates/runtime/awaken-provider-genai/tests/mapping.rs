@@ -9,7 +9,7 @@ use awaken_provider_genai::{
     to_genai_request,
 };
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatMessage, ChatRequest, ChatRole, Error as LlmError, ToolSchema,
+    AssistantOutput, ChatMessage, ChatRequest, ChatRole, ToolSchema,
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 use genai::chat::{ChatRole as GenaiRole, MessageContent, ToolCall as GenaiToolCall, Usage};
@@ -174,33 +174,79 @@ fn executor_constructors_are_available() {
 }
 
 #[test]
-fn transient_provider_errors_are_retryable() {
-    for msg in [
-        "429 Too Many Requests",
-        "model is Overloaded",
-        "rate limit exceeded",
-        "503 Service Unavailable",
-        "connection reset by peer",
-        "request timed out",
+fn retryable_provider_errors_classify_and_are_retryable() {
+    for (msg, code) in [
+        ("429 Too Many Requests", "rate_limited"),
+        ("rate limit exceeded", "rate_limited"),
+        ("model is Overloaded", "overloaded"),
+        ("503 Service Unavailable", "overloaded"),
+        ("request timed out", "timeout"),
+        ("connection reset by peer", "provider_error"),
+        ("500 Internal Server Error", "provider_error"),
+        // An unclassified message defaults to a retryable provider error.
+        ("wire fell out of the socket", "provider_error"),
     ] {
-        assert!(
-            matches!(classify_error(msg), LlmError::Transient(_)),
-            "{msg:?} should be transient"
-        );
+        let err = classify_error(msg);
+        assert_eq!(err.code(), code, "{msg:?}");
+        assert!(err.is_retryable(), "{msg:?} should be retryable");
     }
 }
 
 #[test]
-fn permanent_provider_errors_are_not_retryable() {
-    for msg in [
-        "invalid api key",
-        "401 Unauthorized",
-        "context length exceeded",
-        "model not found",
+fn permanent_provider_errors_classify_and_are_not_retryable() {
+    for (msg, code) in [
+        ("invalid api key", "unauthorized"),
+        ("401 Unauthorized", "unauthorized"),
+        ("context length exceeded", "context_overflow"),
+        (
+            "prompt is too long: 250000 tokens > 200000 maximum",
+            "context_overflow",
+        ),
+        (
+            "400 maximum context length is 128000 tokens, please reduce the length",
+            "context_overflow",
+        ),
+        ("404 model not found", "model_not_found"),
+        ("400 Bad Request: invalid request body", "invalid_request"),
+        ("request blocked by content filter", "content_filtered"),
     ] {
-        assert!(
-            matches!(classify_error(msg), LlmError::Inference(_)),
-            "{msg:?} should be permanent"
-        );
+        let err = classify_error(msg);
+        assert_eq!(err.code(), code, "{msg:?}");
+        assert!(!err.is_retryable(), "{msg:?} should be permanent");
+    }
+}
+
+#[test]
+fn genai_stop_reasons_map_onto_neutral_stop_reasons() {
+    use awaken_provider_genai::map_stop_reason;
+    use awaken_runtime_contract::llm::StopReason;
+    use genai::chat::StopReason as GenaiStopReason;
+
+    let cases = [
+        (
+            GenaiStopReason::Completed("end_turn".to_string()),
+            Some(StopReason::EndTurn),
+        ),
+        (
+            GenaiStopReason::MaxTokens("max_tokens".to_string()),
+            Some(StopReason::MaxTokens),
+        ),
+        (
+            GenaiStopReason::ToolCall("tool_use".to_string()),
+            Some(StopReason::ToolUse),
+        ),
+        (
+            GenaiStopReason::StopSequence("stop_sequence".to_string()),
+            Some(StopReason::StopSequence),
+        ),
+        (
+            GenaiStopReason::ContentFilter("SAFETY".to_string()),
+            Some(StopReason::ContentFilter),
+        ),
+        // A provider-specific reason the SDK cannot classify stays unknown.
+        (GenaiStopReason::Other("load".to_string()), None),
+    ];
+    for (genai_reason, expected) in cases {
+        assert_eq!(map_stop_reason(&genai_reason), expected);
     }
 }

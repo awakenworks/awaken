@@ -58,6 +58,7 @@ impl LlmExecutor for ToolThenText {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }

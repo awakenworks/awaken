@@ -266,8 +266,13 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::r
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::EndCause
 pub enum awaken_agent_contract::agent::run::Failure
 pub awaken_agent_contract::agent::run::Failure::CapabilityBound
-pub awaken_agent_contract::agent::run::Failure::Inference(alloc::string::String)
+pub awaken_agent_contract::agent::run::Failure::Inference
+pub awaken_agent_contract::agent::run::Failure::Inference::code: alloc::string::String
+pub awaken_agent_contract::agent::run::Failure::Inference::message: alloc::string::String
 pub awaken_agent_contract::agent::run::Failure::StateConflict
+impl awaken_agent_contract::agent::run::Failure
+pub fn awaken_agent_contract::agent::run::Failure::code(&self) -> &str
+pub fn awaken_agent_contract::agent::run::Failure::message(&self) -> alloc::string::String
 impl core::clone::Clone for awaken_agent_contract::agent::run::Failure
 pub fn awaken_agent_contract::agent::run::Failure::clone(&self) -> awaken_agent_contract::agent::run::Failure
 impl core::cmp::Eq for awaken_agent_contract::agent::run::Failure
@@ -288,6 +293,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for awaken_agent_contract::agent::r
 impl core::panic::unwind_safe::UnwindSafe for awaken_agent_contract::agent::run::Failure
 pub enum awaken_agent_contract::agent::run::Phase
 pub awaken_agent_contract::agent::run::Phase::Ended(awaken_agent_contract::agent::run::EndCause)
+pub awaken_agent_contract::agent::run::Phase::Running
 pub awaken_agent_contract::agent::run::Phase::Waiting
 impl core::clone::Clone for awaken_agent_contract::agent::run::Phase
 pub fn awaken_agent_contract::agent::run::Phase::clone(&self) -> awaken_agent_contract::agent::run::Phase
@@ -1191,6 +1197,9 @@ pub enum awaken_agent_contract::project::AgentEvent
 pub awaken_agent_contract::project::AgentEvent::AssistantMessage
 pub awaken_agent_contract::project::AgentEvent::AssistantMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::project::AgentEvent::AssistantMessage::id: alloc::string::String
+pub awaken_agent_contract::project::AgentEvent::RunFailed
+pub awaken_agent_contract::project::AgentEvent::RunFailed::code: alloc::string::String
+pub awaken_agent_contract::project::AgentEvent::RunFailed::message: alloc::string::String
 pub awaken_agent_contract::project::AgentEvent::RunFinished
 pub awaken_agent_contract::project::AgentEvent::RunFinished::exhausted: bool
 pub awaken_agent_contract::project::AgentEvent::RunStarted
@@ -1312,6 +1321,9 @@ pub awaken_agent_contract::stream::event::Kind::Continuation::detail: serde_json
 pub awaken_agent_contract::stream::event::Kind::Continuation::steered: bool
 pub awaken_agent_contract::stream::event::Kind::OutputText
 pub awaken_agent_contract::stream::event::Kind::OutputText::text: alloc::string::String
+pub awaken_agent_contract::stream::event::Kind::RunFailed
+pub awaken_agent_contract::stream::event::Kind::RunFailed::code: alloc::string::String
+pub awaken_agent_contract::stream::event::Kind::RunFailed::message: alloc::string::String
 pub awaken_agent_contract::stream::event::Kind::RunFinished
 pub awaken_agent_contract::stream::event::Kind::RunStarted
 pub awaken_agent_contract::stream::event::Kind::ToolCall
