@@ -29,6 +29,22 @@ pub fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
 ) -> Result<RunnableConfig, CompileError> {
+    compile_with_resource_prompts(config, tools, &[])
+}
+
+/// Compile with per-binding **resource prompts** appended to the agent's system
+/// prompt (ADR-0038 A3a): the config→runtime boundary is where a bound resource's
+/// description — the outputs path, a memory store's instructions, a repo's branch, a
+/// skill's purpose — is injected into the agent's effective instructions, not at
+/// runtime per turn. Passing `&[]` is exactly [`compile`] (fingerprint included), so
+/// bare compilation is byte-identical to before resources existed. Each fragment
+/// also enters the content-address fingerprint, so a different prompt set compiles to
+/// a different runnable (no stale cache hit on changed instructions).
+pub fn compile_with_resource_prompts(
+    config: &AgentConfig,
+    tools: &[ToolDescriptor],
+    resource_prompts: &[String],
+) -> Result<RunnableConfig, CompileError> {
     let mut descriptors = Vec::with_capacity(config.tool_ids.len());
     for id in &config.tool_ids {
         let descriptor =
@@ -43,22 +59,63 @@ pub fn compile(
     }
 
     Ok(RunnableConfig::builder(&config.id)
-        .instructions(&config.instructions)
+        .instructions(&compose_instructions(
+            &config.instructions,
+            resource_prompts,
+        ))
         .model(config.model_binding.clone())
         .max_steps(config.max_steps)
         .tools(descriptors)
         .plugins(config.plugin_ids.clone())
         .plugin_config(config.plugin_config.clone())
         .context_policy(config.context_policy.clone())
-        .fingerprint(fingerprint_of(config)?)
+        .fingerprint(fingerprint_of(config, resource_prompts)?)
         .build())
 }
 
-/// The canonical fingerprint of a config: sha256 of its serialization. The config
-/// has no maps, so serialization is deterministic across runs.
-fn fingerprint_of(config: &AgentConfig) -> Result<String, CompileError> {
-    let bytes =
+/// The agent's **effective** system prompt: its base `instructions` followed by one
+/// block per bound-resource prompt, blank-line separated. Empty `resource_prompts`
+/// returns the base verbatim (byte-identical to pre-resource behavior).
+#[must_use]
+pub fn compose_instructions(base: &str, resource_prompts: &[String]) -> String {
+    if resource_prompts.is_empty() {
+        return base.to_string();
+    }
+    let mut out = String::from(base);
+    for fragment in resource_prompts {
+        out.push_str("\n\n");
+        out.push_str(fragment);
+    }
+    out
+}
+
+/// The resource prompt for the outputs mount (ADR-0038 A3): tells the agent where to
+/// write files the host collects as artifacts. The first resource template;
+/// memory/repo/skill add their own beside it.
+#[must_use]
+pub fn outputs_prompt_fragment(outputs_path: &str) -> String {
+    format!(
+        "Write any output files you want the caller to keep under `{outputs_path}`; \
+         files there are collected as run artifacts."
+    )
+}
+
+/// The canonical fingerprint: sha256 of the config serialization, extended by the
+/// resource prompts when present. Empty prompts hash exactly the config bytes, so a
+/// bare compile keeps its prior content address; a non-empty prompt set changes it
+/// (a different effective system prompt is a different runnable). The config has no
+/// maps, so serialization is deterministic across runs.
+fn fingerprint_of(
+    config: &AgentConfig,
+    resource_prompts: &[String],
+) -> Result<String, CompileError> {
+    let mut bytes =
         serde_json::to_vec(config).map_err(|err| CompileError::Serialize(err.to_string()))?;
+    if !resource_prompts.is_empty() {
+        let extra = serde_json::to_vec(resource_prompts)
+            .map_err(|err| CompileError::Serialize(err.to_string()))?;
+        bytes.extend_from_slice(&extra);
+    }
     Ok(format!("{:x}", Sha256::digest(&bytes)))
 }
 
@@ -138,6 +195,46 @@ mod tests {
                 agent: "agent-1".to_string(),
                 tool: "ghost".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn compose_instructions_appends_fragments_and_preserves_base() {
+        assert_eq!(compose_instructions("base", &[]), "base");
+        let out = compose_instructions("base", &["r1".to_string(), "r2".to_string()]);
+        assert_eq!(out, "base\n\nr1\n\nr2");
+    }
+
+    #[test]
+    fn resource_prompts_flow_into_effective_instructions_and_change_the_fingerprint() {
+        // ADR-0038 A3a: a bound resource's prompt is injected at compile time into the
+        // agent's effective system prompt, and enters the content-address fingerprint.
+        let cfg = config(&[]);
+        let frag = outputs_prompt_fragment("/mnt/session/outputs");
+        let with = compile_with_resource_prompts(&cfg, &[], std::slice::from_ref(&frag)).unwrap();
+        let spec = &with.snapshot().resolved_spec;
+        assert!(spec.instructions.starts_with("be helpful"));
+        assert!(spec.instructions.contains("/mnt/session/outputs"));
+        // The prompt changes the runnable's content address (no stale cache hit).
+        assert_ne!(
+            with.snapshot().fingerprint.0,
+            compile(&cfg, &[]).unwrap().snapshot().fingerprint.0
+        );
+    }
+
+    #[test]
+    fn empty_resource_prompts_are_byte_identical_to_bare_compile() {
+        let cfg = config(&["echo"]);
+        let tools = vec![tool("echo")];
+        let bare = compile(&cfg, &tools).unwrap();
+        let with_empty = compile_with_resource_prompts(&cfg, &tools, &[]).unwrap();
+        assert_eq!(
+            bare.snapshot().resolved_spec.instructions,
+            with_empty.snapshot().resolved_spec.instructions
+        );
+        assert_eq!(
+            bare.snapshot().fingerprint.0,
+            with_empty.snapshot().fingerprint.0
         );
     }
 
