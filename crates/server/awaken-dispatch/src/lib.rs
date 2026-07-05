@@ -14,6 +14,7 @@
 //! thread's pending input, and run outcome stays in committed facts, read back
 //! through the commit boundary's `ThreadReader`/`RunStore` ports.
 
+mod any;
 mod capability;
 mod clock;
 mod dispatch;
@@ -29,6 +30,7 @@ mod sqlite;
 mod wake;
 mod worker;
 
+pub use any::AnyDispatchStore;
 pub use capability::RunIngressCapabilities;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use dispatch::{
