@@ -366,3 +366,78 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
         assert_eq!(s, StatusCode::NOT_FOUND, "no half-provisioned session");
     }
 }
+
+/// A fresh process restarts the session sequence at 0, but the store may hold
+/// committed truth from a previous process. Minting must skip such ids: a NEW
+/// session must never graft onto an old thread's transcript (rehydration by
+/// explicit id stays the only reattach path).
+#[tokio::test]
+async fn minting_skips_session_ids_that_own_committed_truth() {
+    use awaken_agent_contract::agent::content::ContentBlock;
+
+    struct HauntedRuntime;
+    #[async_trait::async_trait]
+    impl SessionRuntime for HauntedRuntime {
+        async fn run_turn(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _content: Vec<ContentBlock>,
+        ) -> Result<TurnOutcome, RunError> {
+            unreachable!("no turn in this test")
+        }
+        async fn resume(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _decision: Decision,
+        ) -> Result<TurnOutcome, RunError> {
+            unreachable!()
+        }
+        async fn resume_custom(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _content: &str,
+            _is_error: bool,
+        ) -> Result<TurnOutcome, RunError> {
+            unreachable!()
+        }
+        async fn owns_thread(&self, thread: &str) -> bool {
+            // A previous process persisted threads sesn_0 and sesn_1.
+            thread == "sesn_0" || thread == "sesn_1"
+        }
+        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+            Ok(())
+        }
+        async fn define_outcome(
+            &self,
+            _thread: &str,
+            _description: &str,
+            _rubric: &str,
+            _max_iterations: u32,
+        ) -> Result<OutcomeReport, RunError> {
+            unreachable!()
+        }
+        fn model(&self) -> String {
+            "haunted".into()
+        }
+    }
+
+    let state = ManagedState::new(HauntedRuntime);
+    let session = state
+        .create_session(
+            awaken_protocol_managed::dto::CreateSessionRequest {
+                agent: awaken_protocol_managed::dto::AgentRef::Id("assistant".into()),
+                environment_id: None,
+                title: None,
+                metadata: Default::default(),
+                mcp_servers: Vec::new(),
+                vault_ids: Vec::new(),
+            },
+            None,
+        )
+        .await
+        .expect("create skips haunted ids");
+    assert_eq!(session.id, "sesn_2", "sesn_0/sesn_1 own committed truth");
+}
