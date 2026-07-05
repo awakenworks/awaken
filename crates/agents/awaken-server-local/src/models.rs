@@ -482,3 +482,51 @@ impl LlmExecutor for DelegatingModel {
         })
     }
 }
+
+/// The compaction e2e model. On the `compactor` sub-run (its system prompt is
+/// the summarize instructions) it returns a fixed summary line; on a main turn
+/// it prefixes its reply with the system/context text it received, so an e2e
+/// can observe the folded summary being injected on a later turn.
+pub struct CompactionModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for CompactionModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let system_text: String = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::System)
+            .map(|m| block_text(&m.content))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let joined_user: String = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::User)
+            .map(|m| block_text(&m.content))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if joined_user.contains("summarize") || system_text.contains("summar") {
+            return Ok(ChatResponse {
+                output: AssistantOutput::text("SUMMARY: earlier turns folded"),
+                usage: None,
+                stop_reason: None,
+            });
+        }
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        Ok(ChatResponse {
+            output: AssistantOutput::text(format!("ctx:[{system_text}] echo:{last_user}")),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}

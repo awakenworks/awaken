@@ -23,10 +23,31 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-IGNORE='awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/stdio\.rs|awaken-sandbox-local/src/namespace\.rs'
+# Denominator = code the SERVED binary (awaken-server-local) can actually reach
+# from an e2e run. Two exclusion classes, each principled:
+#
+# (1) Workspace crates NOT linked into the binary — no e2e can execute them
+#     (verified with `cargo tree -p awaken-server-local -i <crate>`):
+#       protocol-mcp   the MCP *server* surface (awaken exposing its tools);
+#                      the binary is an MCP *client* only.
+#       store-postgres / run-ingress postgres paths — need a live PostgreSQL.
+#       store-conformance — the trait test harness, not production code.
+#       runtime-examples / sandbox-container — examples / an alt sandbox tier
+#                      with no product wiring.
+#       file-store     not wired into the served composition yet.
+# (2) Alternate-backend / reference / real-provider modules inside LINKED crates,
+#     unreachable from a deterministic e2e by design:
+#       run-ingress/memory.rs   in-memory reference impl (the server uses SQLite).
+#       ext-mcp/stdio.rs        the server wires the HTTP MCP transport only.
+#       sandbox-local/namespace.rs  no wiring selects the namespace tier (ADR-0041).
+#       protocol-acp/error.rs   the provider-error taxonomy (auth/rate-limit/…)
+#                      only fires on a REAL CLI's output; the fake CLI cannot
+#                      inject provider text, so it is unit-tested, not e2e.
+# Revisit an exclusion when its wiring changes.
+IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-file-store)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/stdio\.rs|awaken-sandbox-local/src/namespace\.rs|awaken-protocol-acp/src/error\.rs'
 
 eval "$(cargo llvm-cov show-env --export-prefix)"
-export RUSTFLAGS="$RUSTFLAGS -C llvm-args=-runtime-counter-relocation"
+export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"
 export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p%c.profraw"
 cargo llvm-cov clean --workspace
 
