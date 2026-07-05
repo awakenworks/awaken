@@ -13,13 +13,16 @@ blake3 = "1"
 tokio = { workspace = true, features = ["fs", "io-util"] }
 # Network backends over the same trait. Optional: default build stays fs/in-mem only.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
+# Versioned schema via the foundation's scoped migration (never a raw CREATE TABLE):
+# the `file_blob` table is migration 1 of the `awaken.file_store` bundle.
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", features = ["postgres"], optional = true }
 object_store = { version = "0.12", features = ["aws"], optional = true }
 futures = { version = "0.3", optional = true }
 
 [features]
 # Postgres bytea backend (idempotent INSERT ... ON CONFLICT). Compile-verified;
 # running needs a database.
-postgres = ["dep:sqlx"]
+postgres = ["dep:sqlx", "dep:awaken-scoped-migration"]
 # Object-store backend (S3/MinIO/GCS/Azure via `object_store`; key = content id).
 # Unit-tested against the in-memory object store; real S3 needs credentials.
 s3 = ["dep:object_store", "dep:futures"]
