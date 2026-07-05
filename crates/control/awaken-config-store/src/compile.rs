@@ -59,10 +59,7 @@ pub fn compile_with_resource_prompts(
     }
 
     Ok(RunnableConfig::builder(&config.id)
-        .instructions(&compose_instructions(
-            &config.instructions,
-            resource_prompts,
-        ))
+        .instructions(compose_instructions(&config.instructions, resource_prompts))
         .model(config.model_binding.clone())
         .max_steps(config.max_steps)
         .tools(descriptors)
