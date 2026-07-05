@@ -36,6 +36,7 @@ impl LlmExecutor for TextLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text("done".to_string()),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -57,6 +58,7 @@ impl LlmExecutor for GatedLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text("late".to_string()),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -157,6 +159,54 @@ async fn live_cancel_steers_an_in_flight_run() {
     release.notify_one();
 
     let outcome = handle.await.expect("join").expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::Cancelled));
+}
+
+/// Signals when inference starts, then never returns — a provider that hangs.
+struct HangingLlm {
+    started: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for HangingLlm {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.started.notify_one();
+        std::future::pending::<()>().await;
+        unreachable!("a hung inference never completes")
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_cancel_aborts_a_hung_inference() {
+    let started = Arc::new(Notify::new());
+    let runtime = Arc::new(Runtime::new().with_llm(Arc::new(HangingLlm {
+        started: started.clone(),
+    })));
+    install(&runtime);
+
+    let token = CancellationToken::new();
+    let context = RuntimeRunContext::new().with_cancellation(token);
+
+    let runtime_for_run = runtime.clone();
+    let handle = tokio::spawn(async move { runtime_for_run.execute(activation(), context).await });
+
+    // The provider never returns, so the cancel must abort inference in
+    // flight — a step-boundary check alone would hang forever.
+    started.notified().await;
+    runtime
+        .deliver(LiveCommand::Cancel {
+            run_id: RunId("run-1".to_string()),
+        })
+        .expect("cancel delivered");
+
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        .await
+        .expect("cancel aborts the hung inference")
+        .expect("join")
+        .expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::Cancelled));
 }
 

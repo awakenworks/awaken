@@ -159,6 +159,7 @@ mod tests {
             Ok(ChatResponse {
                 output: AssistantOutput::text(self.0),
                 usage: None,
+                stop_reason: None,
             })
         }
     }
@@ -166,7 +167,7 @@ mod tests {
     #[async_trait]
     impl LlmExecutor for ErrModel {
         async fn infer(&self, _r: ChatRequest) -> LlmResult<ChatResponse> {
-            Err(awaken_runtime_contract::llm::Error::Inference(
+            Err(awaken_runtime_contract::llm::Error::InvalidRequest(
                 "boom".into(),
             ))
         }

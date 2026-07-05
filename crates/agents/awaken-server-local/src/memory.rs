@@ -205,6 +205,7 @@ mod tests {
             Ok(ChatResponse {
                 output,
                 usage: None,
+                stop_reason: None,
             })
         }
     }
@@ -227,6 +228,7 @@ mod tests {
             Ok(ChatResponse {
                 output: AssistantOutput::text("relevant: [1], [2]"),
                 usage: None,
+                stop_reason: None,
             })
         }
     }
@@ -300,6 +302,7 @@ mod tests {
                 return Ok(ChatResponse {
                     output: AssistantOutput::text("done"),
                     usage: None,
+                    stop_reason: None,
                 });
             }
             let seen: Vec<String> = request
@@ -316,6 +319,7 @@ mod tests {
                     arguments: serde_json::json!({ "name": "seen", "content": seen.join("|") }),
                 }]),
                 usage: None,
+                stop_reason: None,
             })
         }
     }

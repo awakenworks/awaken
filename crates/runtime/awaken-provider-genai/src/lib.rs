@@ -9,8 +9,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource, extract_text};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, ChatRole, Error, LlmExecutor, Result, TokenUsage,
-    ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, ChatRole, Error, LlmExecutor, Result, StopReason,
+    TokenUsage, ToolCall,
 };
 use genai::Client;
 use genai::chat::{
@@ -19,11 +19,16 @@ use genai::chat::{
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the stream may go silent between events before the turn fails as
+/// a retryable timeout. The overall `timeout` only guards opening the call;
+/// without this, a provider that stalls mid-stream would hang the run forever.
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A `genai::Client` behind the neutral `LlmExecutor` port.
 pub struct GenaiExecutor {
     client: Client,
     timeout: Duration,
+    idle_timeout: Duration,
 }
 
 impl Default for GenaiExecutor {
@@ -31,6 +36,7 @@ impl Default for GenaiExecutor {
         Self {
             client: Client::default(),
             timeout: DEFAULT_TIMEOUT,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
     }
 }
@@ -44,13 +50,21 @@ impl GenaiExecutor {
     pub fn with_client(client: Client) -> Self {
         Self {
             client,
-            timeout: DEFAULT_TIMEOUT,
+            ..Self::default()
         }
     }
 
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Set the per-event stall bound for streaming: a stream that produces no
+    /// event within this window fails as a retryable timeout.
+    #[must_use]
+    pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.idle_timeout = idle_timeout;
         self
     }
 
@@ -139,8 +153,8 @@ impl LlmExecutor for GenaiExecutor {
             self.client.exec_chat(model, genai_request, None),
         )
         .await
-        // A timeout is transient: the same call may succeed on retry.
-        .map_err(|_| Error::Transient("model call timed out".to_string()))?
+        // A timeout is retryable: the same call may succeed on retry.
+        .map_err(|_| Error::Timeout("model call timed out".to_string()))?
         .map_err(|err| classify_error(&err.to_string()))?;
 
         Ok(from_genai_response(response))
@@ -174,17 +188,30 @@ impl LlmExecutor for GenaiExecutor {
                 .exec_chat_stream(model, genai_request, Some(&options)),
         )
         .await
-        .map_err(|_| Error::Transient("model stream timed out".to_string()))?
+        .map_err(|_| Error::Timeout("model stream timed out".to_string()))?
         .map_err(|err| classify_error(&err.to_string()))?;
 
         let mut stream = stream_response.stream;
         let mut captured: Option<MessageContent> = None;
         let mut usage: Option<TokenUsage> = None;
+        let mut stop_reason: Option<StopReason> = None;
         // Fallback assembly, used only if the provider delivers no captured turn.
         let mut text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
 
-        while let Some(event) = stream.next().await {
+        loop {
+            // Bound the wait for each event: a stream that goes silent without
+            // closing must fail as a retryable stall, not hang the run.
+            let event = match tokio::time::timeout(self.idle_timeout, stream.next()).await {
+                Ok(Some(event)) => event,
+                Ok(None) => break,
+                Err(_) => {
+                    return Err(Error::Timeout(format!(
+                        "model stream stalled: no event within {:?}",
+                        self.idle_timeout
+                    )));
+                }
+            };
             match event.map_err(|err| classify_error(&err.to_string()))? {
                 // Live text: forward each chunk as it arrives (valid UTF-8 by type).
                 ChatStreamEvent::Chunk(chunk) if !chunk.content.is_empty() => {
@@ -205,6 +232,7 @@ impl LlmExecutor for GenaiExecutor {
                 }
                 // Committed turn: genai's parsed, ordered content and usage.
                 ChatStreamEvent::End(end) => {
+                    stop_reason = end.captured_stop_reason.as_ref().and_then(map_stop_reason);
                     captured = end.captured_content;
                     usage = end.captured_usage.as_ref().map(map_usage);
                 }
@@ -232,36 +260,80 @@ impl LlmExecutor for GenaiExecutor {
                 AssistantOutput::from_blocks(blocks)
             }
         };
-        Ok(ChatResponse { output, usage })
+        Ok(ChatResponse {
+            output,
+            usage,
+            stop_reason,
+        })
     }
 }
 
-/// Classify a provider error string as transient (retryable) or permanent.
-/// Rate limits, overloads, 5xx, and connection resets are worth retrying; auth,
-/// quota, and bad-request style failures are not.
+/// Classify a provider error string into the contract's error taxonomy. The
+/// SDK surfaces errors as strings, so classification matches lowercase
+/// substrings, most-specific class first: a context-overflow 400 must not fall
+/// into the generic invalid-request bucket, and a safety rejection must not
+/// look like a retryable provider fault. An unmatched message classifies as a
+/// retryable `Provider` error — the unknown-failure default mirrors treating
+/// an unclassified transport fault as worth one more attempt.
 pub fn classify_error(message: &str) -> Error {
+    fn hits(lower: &str, needles: &[&str]) -> bool {
+        needles.iter().any(|needle| lower.contains(needle))
+    }
+
     let lower = message.to_lowercase();
-    const TRANSIENT: &[&str] = &[
-        "rate limit",
-        "ratelimit",
-        "overloaded",
-        "too many requests",
-        "429",
-        "500",
-        "502",
-        "503",
-        "504",
-        "timeout",
-        "timed out",
-        "connection reset",
-        "connection closed",
-        "temporarily",
-        "unavailable",
+    // Covers Anthropic/OpenAI/Azure phrasings of "the prompt does not fit".
+    const OVERFLOW: &[&str] = &[
+        "prompt is too long",
+        "context_length_exceeded",
+        "context length",
+        "input is too long",
+        "maximum context length",
+        "reduce the length",
+        "too many tokens",
+        "request too large",
+        "413",
     ];
-    if TRANSIENT.iter().any(|needle| lower.contains(needle)) {
-        Error::Transient(message.to_string())
+    const CONTENT_FILTER: &[&str] = &["content_filter", "content filter", "content policy"];
+    const UNAUTHORIZED: &[&str] = &[
+        "401",
+        "403",
+        "unauthorized",
+        "forbidden",
+        "invalid api key",
+        "authentication",
+        "permission denied",
+    ];
+    const MODEL_NOT_FOUND: &[&str] = &["404", "model not found", "model_not_found"];
+    const RATE_LIMITED: &[&str] = &["rate limit", "ratelimit", "429", "too many requests"];
+    const OVERLOADED: &[&str] = &["overloaded", "529", "503", "unavailable"];
+    const TIMEOUT: &[&str] = &["timeout", "timed out", "408", "504"];
+    const INVALID_REQUEST: &[&str] = &["400", "422", "invalid request", "invalid_request_error"];
+
+    let message = message.to_string();
+    if hits(&lower, CONTENT_FILTER) {
+        Error::ContentFiltered(message)
+    } else if hits(&lower, OVERFLOW) {
+        Error::ContextOverflow(message)
+    } else if hits(&lower, UNAUTHORIZED) {
+        Error::Unauthorized(message)
+    } else if hits(&lower, MODEL_NOT_FOUND) {
+        Error::ModelNotFound(message)
+    } else if hits(&lower, RATE_LIMITED) {
+        Error::RateLimited {
+            message,
+            retry_after: None,
+        }
+    } else if hits(&lower, OVERLOADED) {
+        Error::Overloaded {
+            message,
+            retry_after: None,
+        }
+    } else if hits(&lower, TIMEOUT) {
+        Error::Timeout(message)
+    } else if hits(&lower, INVALID_REQUEST) {
+        Error::InvalidRequest(message)
     } else {
-        Error::Inference(message.to_string())
+        Error::Provider(message)
     }
 }
 
@@ -427,6 +499,22 @@ pub fn from_genai_response(response: genai::chat::ChatResponse) -> ChatResponse 
     ChatResponse {
         output: map_assistant_output(&response.content),
         usage: Some(map_usage(&response.usage)),
+        stop_reason: response.stop_reason.as_ref().and_then(map_stop_reason),
+    }
+}
+
+/// Map the SDK's stop reason onto the neutral one. A provider-specific reason
+/// the SDK cannot classify (`Other`) maps to `None` — unknown, treated by the
+/// loop as a natural end.
+pub fn map_stop_reason(reason: &genai::chat::StopReason) -> Option<StopReason> {
+    use genai::chat::StopReason as GenaiStopReason;
+    match reason {
+        GenaiStopReason::Completed(_) => Some(StopReason::EndTurn),
+        GenaiStopReason::MaxTokens(_) => Some(StopReason::MaxTokens),
+        GenaiStopReason::ToolCall(_) => Some(StopReason::ToolUse),
+        GenaiStopReason::StopSequence(_) => Some(StopReason::StopSequence),
+        GenaiStopReason::ContentFilter(_) => Some(StopReason::ContentFilter),
+        GenaiStopReason::Other(_) => None,
     }
 }
 

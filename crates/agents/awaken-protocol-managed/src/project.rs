@@ -182,6 +182,14 @@ impl Transcoder for ManagedEncoder {
                     stop_reason,
                 })]
             }
+            // The managed wire vocabulary has no error stop reason; a failed
+            // run still idles the session with EndTurn — the fault stays
+            // authoritative in the run's committed phase.
+            AgentEvent::RunFailed { .. } => {
+                vec![ProjectedEvent::minted(OutboundKind::SessionStatusIdle {
+                    stop_reason: StopReason::EndTurn,
+                })]
+            }
         }
     }
 }

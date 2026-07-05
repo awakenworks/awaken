@@ -107,6 +107,7 @@ mod tests {
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("summary of {user_msgs} messages")),
                 usage: None,
+                stop_reason: None,
             })
         }
     }

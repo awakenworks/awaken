@@ -31,5 +31,13 @@ pub enum Kind {
         steered: bool,
         detail: serde_json::Value,
     },
+    /// The run ended on an execution fault. Emitted before the terminal
+    /// `RunFinished` so hosts keep one close signal; `code` is the fault's
+    /// stable snake_case classification. Best-effort like every stream event —
+    /// the committed `Phase` remains the authority.
+    RunFailed {
+        code: String,
+        message: String,
+    },
     RunFinished,
 }

@@ -1516,6 +1516,7 @@ mod tests {
             Ok(ChatResponse {
                 output: AssistantOutput::text("a rough draft"),
                 usage: None,
+                stop_reason: None,
             })
         }
     }
@@ -1605,6 +1606,7 @@ mod tests {
             Ok(ChatResponse {
                 output,
                 usage: None,
+                stop_reason: None,
             })
         }
     }
@@ -1641,6 +1643,7 @@ mod tests {
             Ok(ChatResponse {
                 output: AssistantOutput::text(reply),
                 usage: None,
+                stop_reason: None,
             })
         }
     }
@@ -1728,6 +1731,7 @@ mod tests {
                 return Ok(ChatResponse {
                     output,
                     usage: None,
+                    stop_reason: None,
                 });
             }
             // Main agent: answer from recalled memory when present.
@@ -1739,6 +1743,7 @@ mod tests {
             Ok(ChatResponse {
                 output: AssistantOutput::text(reply),
                 usage: None,
+                stop_reason: None,
             })
         }
     }
@@ -1831,6 +1836,7 @@ mod tests {
             Ok(ChatResponse {
                 output,
                 usage: None,
+                stop_reason: None,
             })
         }
     }
@@ -1900,12 +1906,14 @@ mod tests {
                 return Ok(ChatResponse {
                     output: AssistantOutput::text("ok"),
                     usage: None,
+                    stop_reason: None,
                 });
             }
             if request.messages.iter().any(|m| m.role == ChatRole::Tool) {
                 return Ok(ChatResponse {
                     output: AssistantOutput::text("extracted"),
                     usage: None,
+                    stop_reason: None,
                 });
             }
             // Join the user texts it was seeded with, excluding the extraction prompt.
@@ -1923,6 +1931,7 @@ mod tests {
                     arguments: serde_json::json!({ "name": "seen", "content": seen.join(",") }),
                 }]),
                 usage: None,
+                stop_reason: None,
             })
         }
     }
