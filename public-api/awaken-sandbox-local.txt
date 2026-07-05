@@ -1,4 +1,8 @@
 pub mod awaken_sandbox_local
+pub use awaken_sandbox_local::FileStore
+pub use awaken_sandbox_local::FileStoreError
+pub use awaken_sandbox_local::FsFileStore
+pub use awaken_sandbox_local::InMemoryFileStore
 pub enum awaken_sandbox_local::Mount
 pub awaken_sandbox_local::Mount::Resource(awaken_sandbox_local::ResourceMount)
 impl awaken_sandbox_local::Mount
@@ -56,6 +60,7 @@ pub struct awaken_sandbox_local::Environment
 impl awaken_sandbox_local::Environment
 pub fn awaken_sandbox_local::Environment::hand_tools(&self) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_sandbox_local::Environment::id(&self) -> &str
+pub fn awaken_sandbox_local::Environment::list_files(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>
 pub fn awaken_sandbox_local::Environment::new(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_sandbox_local::HandTool>>) -> Self
 pub fn awaken_sandbox_local::Environment::receipt(&self) -> &awaken_sandbox_local::ProvisionReceipt
 pub fn awaken_sandbox_local::Environment::resources(&self) -> &[awaken_sandbox_local::ResourceRef]
@@ -84,32 +89,6 @@ impl core::marker::Sync for awaken_sandbox_local::EscapeError
 impl core::marker::Unpin for awaken_sandbox_local::EscapeError
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::EscapeError
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::EscapeError
-pub struct awaken_sandbox_local::FileStoreError(pub alloc::string::String)
-impl core::error::Error for awaken_sandbox_local::FileStoreError
-impl core::fmt::Debug for awaken_sandbox_local::FileStoreError
-pub fn awaken_sandbox_local::FileStoreError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for awaken_sandbox_local::FileStoreError
-pub fn awaken_sandbox_local::FileStoreError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Freeze for awaken_sandbox_local::FileStoreError
-impl core::marker::Send for awaken_sandbox_local::FileStoreError
-impl core::marker::Sync for awaken_sandbox_local::FileStoreError
-impl core::marker::Unpin for awaken_sandbox_local::FileStoreError
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::FileStoreError
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::FileStoreError
-pub struct awaken_sandbox_local::FsFileStore
-impl awaken_sandbox_local::FsFileStore
-pub fn awaken_sandbox_local::FsFileStore::open(impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<Self, awaken_sandbox_local::FileStoreError>
-impl awaken_sandbox_local::FileStore for awaken_sandbox_local::FsFileStore
-pub fn awaken_sandbox_local::FsFileStore::delete(&self, &str) -> core::result::Result<bool, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::FsFileStore::get(&self, &str) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::FsFileStore::list(&self) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::FsFileStore::put(&self, &[u8]) -> core::result::Result<alloc::string::String, awaken_sandbox_local::FileStoreError>
-impl core::marker::Freeze for awaken_sandbox_local::FsFileStore
-impl core::marker::Send for awaken_sandbox_local::FsFileStore
-impl core::marker::Sync for awaken_sandbox_local::FsFileStore
-impl core::marker::Unpin for awaken_sandbox_local::FsFileStore
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::FsFileStore
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::FsFileStore
 pub struct awaken_sandbox_local::HandOutput
 pub awaken_sandbox_local::HandOutput::content: alloc::string::String
 pub awaken_sandbox_local::HandOutput::is_error: bool
@@ -126,22 +105,6 @@ impl core::marker::Sync for awaken_sandbox_local::HandOutput
 impl core::marker::Unpin for awaken_sandbox_local::HandOutput
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::HandOutput
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::HandOutput
-pub struct awaken_sandbox_local::InMemoryFileStore
-impl awaken_sandbox_local::InMemoryFileStore
-pub fn awaken_sandbox_local::InMemoryFileStore::new() -> Self
-impl awaken_sandbox_local::FileStore for awaken_sandbox_local::InMemoryFileStore
-pub fn awaken_sandbox_local::InMemoryFileStore::delete(&self, &str) -> core::result::Result<bool, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::InMemoryFileStore::get(&self, &str) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::InMemoryFileStore::list(&self) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::InMemoryFileStore::put(&self, &[u8]) -> core::result::Result<alloc::string::String, awaken_sandbox_local::FileStoreError>
-impl core::default::Default for awaken_sandbox_local::InMemoryFileStore
-pub fn awaken_sandbox_local::InMemoryFileStore::default() -> awaken_sandbox_local::InMemoryFileStore
-impl !core::marker::Freeze for awaken_sandbox_local::InMemoryFileStore
-impl core::marker::Send for awaken_sandbox_local::InMemoryFileStore
-impl core::marker::Sync for awaken_sandbox_local::InMemoryFileStore
-impl core::marker::Unpin for awaken_sandbox_local::InMemoryFileStore
-impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::InMemoryFileStore
-impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::InMemoryFileStore
 pub struct awaken_sandbox_local::IsolatedRoot
 impl awaken_sandbox_local::IsolatedRoot
 pub fn awaken_sandbox_local::IsolatedRoot::new(impl core::convert::Into<std::path::PathBuf>) -> Self
@@ -174,7 +137,7 @@ impl awaken_sandbox_local::LocalProvider
 pub async fn awaken_sandbox_local::LocalProvider::create_sandbox(&self, &awaken_provisioning_contract::spec::SandboxSpec) -> core::result::Result<awaken_sandbox_local::LocalSandbox, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::LocalProvider::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_sandbox_local::LocalProvider::with_blob(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
-pub fn awaken_sandbox_local::LocalProvider::with_file_store(self, alloc::sync::Arc<dyn awaken_sandbox_local::FileStore>) -> Self
+pub fn awaken_sandbox_local::LocalProvider::with_file_store(self, alloc::sync::Arc<dyn awaken_file_store::FileStore>) -> Self
 impl awaken_provisioning_contract::sandbox::SandboxProvider for awaken_sandbox_local::LocalProvider
 pub fn awaken_sandbox_local::LocalProvider::adopt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::sandbox::SandboxHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_local::LocalProvider::capabilities(&self) -> awaken_provisioning_contract::sandbox::SandboxCapabilities
@@ -222,7 +185,7 @@ pub struct awaken_sandbox_local::NamespaceProvider
 impl awaken_sandbox_local::NamespaceProvider
 pub fn awaken_sandbox_local::NamespaceProvider::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_sandbox_local::NamespaceProvider::with_blob(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
-pub fn awaken_sandbox_local::NamespaceProvider::with_file_store(self, alloc::sync::Arc<dyn awaken_sandbox_local::FileStore>) -> Self
+pub fn awaken_sandbox_local::NamespaceProvider::with_file_store(self, alloc::sync::Arc<dyn awaken_file_store::FileStore>) -> Self
 impl awaken_provisioning_contract::sandbox::SandboxProvider for awaken_sandbox_local::NamespaceProvider
 pub fn awaken_sandbox_local::NamespaceProvider::adopt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::sandbox::SandboxHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_local::NamespaceProvider::capabilities(&self) -> awaken_provisioning_contract::sandbox::SandboxCapabilities
@@ -336,21 +299,6 @@ impl core::marker::Sync for awaken_sandbox_local::SandboxSpec
 impl core::marker::Unpin for awaken_sandbox_local::SandboxSpec
 impl core::panic::unwind_safe::RefUnwindSafe for awaken_sandbox_local::SandboxSpec
 impl core::panic::unwind_safe::UnwindSafe for awaken_sandbox_local::SandboxSpec
-pub trait awaken_sandbox_local::FileStore: core::marker::Send + core::marker::Sync
-pub fn awaken_sandbox_local::FileStore::delete(&self, &str) -> core::result::Result<bool, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::FileStore::get(&self, &str) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::FileStore::list(&self) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::FileStore::put(&self, &[u8]) -> core::result::Result<alloc::string::String, awaken_sandbox_local::FileStoreError>
-impl awaken_sandbox_local::FileStore for awaken_sandbox_local::FsFileStore
-pub fn awaken_sandbox_local::FsFileStore::delete(&self, &str) -> core::result::Result<bool, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::FsFileStore::get(&self, &str) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::FsFileStore::list(&self) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::FsFileStore::put(&self, &[u8]) -> core::result::Result<alloc::string::String, awaken_sandbox_local::FileStoreError>
-impl awaken_sandbox_local::FileStore for awaken_sandbox_local::InMemoryFileStore
-pub fn awaken_sandbox_local::InMemoryFileStore::delete(&self, &str) -> core::result::Result<bool, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::InMemoryFileStore::get(&self, &str) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::InMemoryFileStore::list(&self) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_sandbox_local::FileStoreError>
-pub fn awaken_sandbox_local::InMemoryFileStore::put(&self, &[u8]) -> core::result::Result<alloc::string::String, awaken_sandbox_local::FileStoreError>
 pub trait awaken_sandbox_local::HandTool: core::marker::Send + core::marker::Sync
 pub fn awaken_sandbox_local::HandTool::id(&self) -> &str
 pub fn awaken_sandbox_local::HandTool::run<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_local::HandOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
