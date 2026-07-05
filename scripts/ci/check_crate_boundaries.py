@@ -657,6 +657,20 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # MCP client extension (ADR-0043 Phase 3): a managed session's configured
         # MCP servers are connected per thread and their tools registered.
         "awaken-ext-mcp",
+        # Embedded management-plane IAM (ADR-0042/0043 P1): contract = the
+        # id/scope/request vocabulary, core = the argon2id token directory +
+        # minter + default-deny PolicySet evaluator, preset = the seeded
+        # Anthropic role catalog as data. Deliberately NOT awaken-iam-server:
+        # its mandatory rusqlite 0.40 cannot share the `links = "sqlite3"`
+        # graph with awaken-scoped-migration's rusqlite ^0.32 sqlite shell,
+        # so the assembly persists the token/binding rows itself.
+        "awaken-iam-contract",
+        "awaken-iam-core",
+        "awaken-iam-preset",
+        # The embedded IAM's durable token/binding rows under
+        # <AWAKEN_MGMT_DIR>/iam.sqlite — the same rusqlite generation every
+        # other sqlite store in the workspace uses.
+        "rusqlite",
         "async-trait",
         # OAuth refresh-token exchange (ADR-0043): the VaultRefresher POSTs the
         # RFC 6749 refresh grant — the same HTTP client ext-mcp's transport uses.

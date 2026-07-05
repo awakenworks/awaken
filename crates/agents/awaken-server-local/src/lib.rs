@@ -12,6 +12,7 @@
 //! seams, not here.
 
 mod agent_catalog;
+mod authz;
 mod background;
 mod compact;
 mod config;
@@ -51,6 +52,12 @@ use axum::Router;
 use crate::config::block_text;
 use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
 
+// Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
+// fn, the mint spec (tests / operator embeddings), and the bootstrap constants.
+pub use crate::authz::{
+    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, ManagementAuthz, TokenSpec,
+    embedded_iam,
+};
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
@@ -1446,13 +1453,41 @@ fn mgmt_seal_key_from_env() -> [u8; 32] {
 /// rebuilt fresh per process (session durability has its own axis,
 /// `AWAKEN_STORAGE_DIR`). After a restart a vault wire GET 404s while the
 /// domain row it entered is still there for the resolver.
+///
+/// Additionally (ADR-0042/0043 P1), `AWAKEN_MGMT_IAM=embedded` gates the
+/// management surfaces (`/v1/config/*` + `/v1/vaults/*`) behind bearer
+/// `ApiToken` authn + preset-role authz (see [`crate::authz`]); it requires
+/// `AWAKEN_MGMT_DIR` (the token/binding rows live in `<dir>/iam.sqlite`) and
+/// panics with a clear message when it is missing. Unset — the default — is
+/// today's open behavior, byte-identical.
 pub fn build_management_router() -> Router {
+    let iam = match std::env::var("AWAKEN_MGMT_IAM") {
+        Ok(mode) if mode == "embedded" => {
+            let dir = std::env::var("AWAKEN_MGMT_DIR").unwrap_or_else(|_| {
+                panic!(
+                    "AWAKEN_MGMT_IAM=embedded requires AWAKEN_MGMT_DIR: the embedded \
+                     IAM persists its API tokens and role bindings under \
+                     <AWAKEN_MGMT_DIR>/iam.sqlite; an in-memory token directory would \
+                     mint a fresh bootstrap admin token on every restart."
+                )
+            });
+            Some(embedded_iam(std::path::Path::new(&dir)))
+        }
+        Ok(other) => panic!(
+            "unsupported AWAKEN_MGMT_IAM value `{other}`: only `embedded` (or unset for \
+             the open management plane) is supported"
+        ),
+        Err(_) => None,
+    };
     match std::env::var("AWAKEN_MGMT_DIR") {
         Ok(dir) => {
             let key = mgmt_seal_key_from_env();
-            build_durable_management_router(std::path::Path::new(&dir), &key)
+            management_router_over(
+                durable_management_stores(std::path::Path::new(&dir), &key),
+                iam,
+            )
         }
-        Err(_) => management_router_over(in_memory_management_stores()),
+        Err(_) => management_router_over(in_memory_management_stores(), iam),
     }
 }
 
@@ -1460,12 +1495,29 @@ pub fn build_management_router() -> Router {
 /// read): the durable management plane over `dir`, sealing secrets under `key`.
 /// Exposed so a restart test can rebuild a router over one directory across
 /// simulated process lifetimes without racing on process-global env vars.
+/// No IAM guard — the open (default) management plane.
 pub fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
-    management_router_over(durable_management_stores(dir, key))
+    management_router_over(durable_management_stores(dir, key), None)
 }
 
-/// Mount the management plane over an explicit store set.
-fn management_router_over(stores: ManagementStores) -> Router {
+/// [`build_durable_management_router`] with the embedded IAM guard enabled —
+/// the env-free equivalent of `AWAKEN_MGMT_IAM=embedded`. Returns the
+/// [`ManagementAuthz`] handle too so a test (or an embedding) can mint
+/// further workspace tokens against the same policy state.
+pub fn build_secured_management_router(
+    dir: &std::path::Path,
+    key: &[u8; 32],
+) -> (Router, Arc<ManagementAuthz>) {
+    let iam = embedded_iam(dir);
+    let router = management_router_over(durable_management_stores(dir, key), Some(iam.clone()));
+    (router, iam)
+}
+
+/// Mount the management plane over an explicit store set, optionally gated by
+/// the embedded IAM guard (`iam`). The guard wraps ONLY the admin + vault
+/// routers: the Managed session surface keeps its own axis and P1 does not
+/// gate it (ADR-0043).
+fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAuthz>>) -> Router {
     let ManagementStores {
         catalog,
         credentials,
@@ -1496,6 +1548,17 @@ fn management_router_over(stores: ManagementStores) -> Router {
     );
     let vaults = awaken_protocol_managed::vault_router(vault_state.clone());
 
+    // The IAM guard (when enabled) wraps the admin + vault routers only. An
+    // axum layer binds to the routes present when it is applied, so merging
+    // the guarded sub-router later leaves every other surface untouched.
+    let mut mgmt = admin.merge(vaults);
+    if let Some(iam) = iam {
+        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+            iam,
+            crate::authz::management_guard,
+        ));
+    }
+
     // The MCP-driving deterministic model, so an e2e can hold a real multi-turn
     // conversation through ext-mcp (`add a b` → mcp__calc__add → `result: …`);
     // non-`add` turns still echo, preserving the prior expectations.
@@ -1504,9 +1567,7 @@ fn management_router_over(stores: ManagementStores) -> Router {
         ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
             .with_vaults(vault_state),
     );
-    mount_with_managed(host, managed_state)
-        .merge(admin)
-        .merge(vaults)
+    mount_with_managed(host, managed_state).merge(mgmt)
 }
 
 /// A tool gate that defers every tool call as a committed `ScheduledAction`
