@@ -107,6 +107,11 @@ pub struct OutcomeReport {
 pub struct SessionInit {
     pub agent_id: String,
     pub mcp_servers: Vec<McpServerBinding>,
+    /// The consumption-side project the session arrived through
+    /// (`/projects/{id}/v1/sessions`), stamped by the ingress middleware.
+    /// `None` = the bare workspace-default surface — byte-identical behavior
+    /// to before projects existed.
+    pub project_id: Option<String>,
     /// The session's requested model (R2), staged so the run binds it; `None` →
     /// the host default.
     pub model: Option<String>,
@@ -323,7 +328,11 @@ impl ManagedState {
     /// silent no-binding whose 401 only surfaces at the first turn. (Without a
     /// wired vault surface there is nothing to validate against and every
     /// binding resolves to no credential, as before.)
-    pub async fn create_session(&self, req: CreateSessionRequest) -> Result<Session, StateError> {
+    pub async fn create_session(
+        &self,
+        req: CreateSessionRequest,
+        project_id: Option<String>,
+    ) -> Result<Session, StateError> {
         if let Some(vaults) = &self.vaults
             && let Some(unknown) = req.vault_ids.iter().find(|v| !vaults.has_vault(v))
         {
@@ -360,6 +369,7 @@ impl ManagedState {
                 SessionInit {
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
+                    project_id,
                     model: req.agent.model().map(str::to_string),
                     runtime: req.agent.runtime().map(str::to_string),
                 },

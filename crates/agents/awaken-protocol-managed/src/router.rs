@@ -90,15 +90,23 @@ fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
     (status, Json(ErrorResponse::new(kind, message)))
 }
 
+/// The consumption-side project a request arrived through, stamped into the
+/// request extensions by the host's `/projects/{id}` ingress middleware
+/// (ADR-0042 amendment: the URL segment is ADDRESSING only — tenancy and
+/// authority still flow from the API key). Absent on the bare surface.
+#[derive(Debug, Clone)]
+pub struct ProjectScope(pub String);
+
 async fn create_session(
     State(state): State<Arc<ManagedState>>,
+    project: Option<axum::Extension<ProjectScope>>,
     ManagedJson(req): ManagedJson<CreateSessionRequest>,
 ) -> Result<Json<Session>, (StatusCode, Json<ErrorResponse>)> {
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
     // RunError to the envelope exactly like a turn's failure, so a failed create
     // is loud rather than a half-provisioned session.
     state
-        .create_session(req)
+        .create_session(req, project.map(|p| p.0.0.clone()))
         .await
         .map(Json)
         .map_err(error_response)
