@@ -27,6 +27,7 @@ mod judge;
 mod live_inbox;
 mod mcp;
 mod memory;
+mod memory_store_api;
 mod model_route;
 mod models;
 mod provisioning;
@@ -561,6 +562,7 @@ impl SessionRuntime for ManagedHost {
             let store = self.host.file_store();
             let mut mounts = Vec::new();
             let mut prompts = Vec::new();
+            let mut memory_mounts = Vec::new();
             for res in &init.resources {
                 let kind = match res.kind.as_str() {
                     "file" => awaken_config_resolver::ResourceKind::File,
@@ -582,10 +584,12 @@ impl SessionRuntime for ManagedHost {
                         instructions: res.instructions.clone(),
                     },
                 ));
-                // Files resolve their bytes from the blob store; other kinds mount empty
-                // for now (memory write-back / repo clone are follow-ups).
-                let content = if res.kind == "file" {
-                    match store.get(&res.id).await {
+                // Resolve the mount's seed content by family: a file resolves its bytes
+                // from the content-addressed blob store; a memory_store from its mutable,
+                // id-keyed store (and is tracked for write-back harvest); other kinds
+                // mount empty (repo clone is a follow-up).
+                let content = match res.kind.as_str() {
+                    "file" => match store.get(&res.id).await {
                         Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
                         _ => {
                             return Err(RunError::bad_request(format!(
@@ -593,9 +597,18 @@ impl SessionRuntime for ManagedHost {
                                 res.id
                             )));
                         }
+                    },
+                    "memory_store" => {
+                        let Some(bytes) = self.host.memory_get(&res.id) else {
+                            return Err(RunError::bad_request(format!(
+                                "memory_store resource `{}` does not exist",
+                                res.id
+                            )));
+                        };
+                        memory_mounts.push((res.id.clone(), logical.clone()));
+                        String::from_utf8_lossy(&bytes).into_owned()
                     }
-                } else {
-                    String::new()
+                    _ => String::new(),
                 };
                 mounts.push(Mount::Resource(ResourceMount {
                     id: res.id.clone(),
@@ -606,7 +619,11 @@ impl SessionRuntime for ManagedHost {
             }
             self.host.register_thread_resources(
                 thread,
-                crate::provisioning::StagedResources { mounts, prompts },
+                crate::provisioning::StagedResources {
+                    mounts,
+                    prompts,
+                    memory_mounts,
+                },
             );
         }
         let Some(mcp) = &self.mcp else {
@@ -875,12 +892,14 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     let durable_ops = crate::durable_ops::durable_ops_router(host.clone());
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = crate::files::files_router(host.clone());
+    let memory_stores = crate::memory_store_api::memory_stores_router(host.clone());
     managed
         .merge(ai_sdk)
         .merge(ag_ui)
         .merge(a2a)
         .merge(durable_ops)
         .merge(files)
+        .merge(memory_stores)
 }
 
 /// The composition seam refuses to build an executor from an incomplete or
