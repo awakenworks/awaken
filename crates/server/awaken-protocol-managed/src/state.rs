@@ -107,6 +107,10 @@ pub struct OutcomeReport {
 pub struct SessionInit {
     pub agent_id: String,
     pub mcp_servers: Vec<McpServerBinding>,
+    /// The session's mounted resources (ADR-0038), parsed from the wire `resources[]`:
+    /// files, memory stores, repos. The host realizes each into the run's sandbox and
+    /// appends a prompt fragment to the system prompt (A3a). Empty = no mounts.
+    pub resources: Vec<SessionResource>,
     /// The consumption-side project the session arrived through
     /// (`/projects/{id}/v1/sessions`), stamped by the ingress middleware.
     /// `None` = the bare workspace-default surface — byte-identical behavior
@@ -118,6 +122,19 @@ pub struct SessionInit {
     /// The session's requested runtime adapter (R3): `"acp:*"` routes to an ACP
     /// CLI; `None`/`"awaken"` → native.
     pub runtime: Option<String>,
+}
+
+/// One session-mounted resource (ADR-0038), parsed from a wire `resources[]` entry.
+/// `kind` is the wire discriminant (`file` / `memory_store` / `github_repository`);
+/// `id` is the backing reference (`file_id` / `memory_store_id` / repo `url`);
+/// `mount_path` is where it appears in the sandbox; `instructions` is optional
+/// per-binding guidance rendered into the system prompt.
+#[derive(Debug, Clone)]
+pub struct SessionResource {
+    pub kind: String,
+    pub id: String,
+    pub mount_path: String,
+    pub instructions: Option<String>,
 }
 
 /// One session MCP server, bound at creation: the wire name/url plus the vault
@@ -468,12 +485,48 @@ impl ManagedState {
                 }
             })
             .collect();
+        // Parse the wire `resources[]` (ADR-0038): file / memory_store / repo entries,
+        // each addressed by its backing id and a sandbox mount path (defaulted per kind
+        // when the client omits it, mirroring the Managed defaults).
+        let resources = req
+            .resources
+            .iter()
+            .filter_map(|v| {
+                let kind = v.get("type")?.as_str()?.to_string();
+                let id = match kind.as_str() {
+                    "file" => v.get("file_id")?.as_str()?.to_string(),
+                    "memory_store" => v.get("memory_store_id")?.as_str()?.to_string(),
+                    "github_repository" => v.get("url")?.as_str()?.to_string(),
+                    _ => return None,
+                };
+                let mount_path = v
+                    .get("mount_path")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| match kind.as_str() {
+                        "file" => format!("/mnt/session/uploads/{id}"),
+                        "memory_store" => "/mnt/memory/store".to_string(),
+                        _ => format!("/workspace/{id}"),
+                    });
+                let instructions = v
+                    .get("instructions")
+                    .and_then(|s| s.as_str())
+                    .map(str::to_string);
+                Some(SessionResource {
+                    kind,
+                    id,
+                    mount_path,
+                    instructions,
+                })
+            })
+            .collect();
         self.runtime
             .prepare_session(
                 &id,
                 SessionInit {
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
+                    resources,
                     project_id,
                     model: req.agent.model().map(str::to_string),
                     runtime: req.agent.runtime().map(str::to_string),

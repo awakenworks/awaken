@@ -31,12 +31,13 @@ use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::agent_resolver::AgentResolver;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::ToolOutput;
-use awaken_sandbox_local::{Environment, LocalSandboxProvider, SandboxProvider, SandboxSpec};
+use awaken_sandbox_local::{
+    Environment, FileStore, InMemoryFileStore, LocalSandboxProvider, SandboxProvider,
+};
 use awaken_store_fs::FsCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
@@ -244,6 +245,7 @@ fn detail_str(detail: &serde_json::Value, key: &str) -> String {
 }
 
 use crate::judge::KernelJudgeRunner;
+use crate::provisioning::StagedResources;
 
 /// The protocol-neutral, thread-keyed session substrate shared by every adapter.
 pub struct SharedHost {
@@ -258,10 +260,10 @@ pub struct SharedHost {
     pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
     pub(crate) provider: LocalSandboxProvider,
     grader: Arc<dyn Grader>,
-    client_tools: HashSet<String>,
+    pub(crate) client_tools: HashSet<String>,
     /// Skills offered on every thread (ADR-0036). The whole set is fronted by the
     /// single `Skill` tool; the model activates one by id to load its instructions.
-    skills: Vec<SkillSpec>,
+    pub(crate) skills: Vec<SkillSpec>,
     pub(crate) delegates: HashSet<String>,
     /// Runtime plugins this host activates on every thread, and their config
     /// sections (e.g. the tool state machine). Empty by default.
@@ -296,6 +298,13 @@ pub struct SharedHost {
     /// Phase 3), consumed when the thread's context is first built. Keyed by
     /// thread id; a thread with no entry connects to no MCP server.
     thread_mcp: std::sync::Mutex<HashMap<String, Vec<PreparedMcpServer>>>,
+    /// Per-thread staged resource mounts + prompt fragments (ADR-0038), set by a
+    /// session's `prepare_session` and consumed by `sandbox_spec` (mounts) and the
+    /// run's system prompt (fragments). A thread with no entry mounts nothing.
+    pub(crate) thread_resources: std::sync::Mutex<HashMap<String, StagedResources>>,
+    /// Content-addressed blob store backing the Files API, file-resource mounts, and
+    /// collected artifacts. In-memory by default (one server process).
+    pub(crate) file_store: Arc<dyn FileStore>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch
@@ -341,6 +350,8 @@ impl SharedHost {
             compact_summarizer: None,
             config_service: None,
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
+            thread_resources: std::sync::Mutex::new(HashMap::new()),
+            file_store: Arc::new(InMemoryFileStore::new()),
             gate_override: None,
             dispatch_daemon: std::env::var("AWAKEN_DISPATCH_DAEMON").is_ok_and(|v| v == "1"),
         }
@@ -455,39 +466,6 @@ impl SharedHost {
     pub fn with_skills(mut self, skills: Vec<SkillSpec>) -> Self {
         self.skills.extend(skills);
         self
-    }
-
-    /// The provisioning request for a thread. Skills are not a sandbox mount
-    /// (ADR-0036); the environment provisions isolation tools only. (Wire-driven file
-    /// resources are a later milestone — a Files API plus a `resources` input channel.)
-    fn sandbox_spec(&self, thread: &str) -> SandboxSpec {
-        SandboxSpec::new(thread)
-    }
-
-    /// The registered built-in tools advertised on a managed session's agent object:
-    /// each hand-tool id and whether its calls require confirmation. Folded into the
-    /// public `agent_toolset` by the adapter. Deterministic from host config.
-    pub fn builtin_tools(&self) -> Vec<(String, bool)> {
-        crate::config::builtin_hand_tools()
-    }
-
-    /// The client-executed (custom) tools advertised on a managed session: their
-    /// descriptors, so the adapter can shape each as a `custom` tool definition.
-    pub fn custom_tools(&self) -> Vec<ToolDescriptor> {
-        self.client_tools
-            .iter()
-            .map(|id| crate::config::client_tool_descriptor(id))
-            .collect()
-    }
-
-    /// The skill ids offered on every thread (advertised as the agent's `skills`).
-    pub fn skill_ids(&self) -> Vec<String> {
-        self.skills.iter().map(|s| s.id.clone()).collect()
-    }
-
-    /// The delegate agent ids (advertised as the agent's `multiagent` roster).
-    pub fn delegate_ids(&self) -> Vec<String> {
-        self.delegates.iter().cloned().collect()
     }
 
     /// Grade outcomes with a real judge sub-agent (`judge_agent_id`) run through the
@@ -855,6 +833,15 @@ impl SharedHost {
             state: tokio::sync::Mutex::new(state),
         });
         sessions.insert(thread.to_string(), ctx.clone());
+        // Deliver the session's staged resource prompts (ADR-0038 A3a) as system
+        // context on the first turn, so the model knows what it has mounted and where.
+        let prompts = self.thread_resource_prompts(thread);
+        if !prompts.is_empty() {
+            let mut st = ctx.state.lock().await;
+            for prompt in prompts {
+                st.pending_system.push(prompt);
+            }
+        }
         Ok(ctx)
     }
 

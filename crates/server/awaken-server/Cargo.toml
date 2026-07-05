@@ -74,7 +74,7 @@ form_urlencoded = "1"
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
-axum = "0.7"
+axum = { version = "0.7", features = ["multipart"] }
 # oneshot-forwarding for the /projects/{id} prefix-stripping ingress proxy
 # (also used by the integration tests).
 tower = { version = "0.5", features = ["util"] }
