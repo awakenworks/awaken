@@ -1,0 +1,59 @@
+//! ACP backend routing for the managed host (R3/R4): which threads run on an
+//! external ACP CLI, and the executor that drives them.
+//!
+//! A session selects its runtime through the Managed API (`agent.runtime`), staged
+//! here per thread. `is_acp` decides the routing in `turn_exec`; the executor is a
+//! peer `RunExecutor` that launches the CLI and commits through the same boundary
+//! as the native path.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use awaken_run_executor_acp::AcpRunExecutor;
+
+/// Holds the ACP executor and the per-thread runtime selection.
+pub(crate) struct AcpBackend {
+    pub(crate) executor: Arc<AcpRunExecutor>,
+    thread_runtime: Mutex<HashMap<String, String>>,
+}
+
+impl AcpBackend {
+    pub(crate) fn new(executor: Arc<AcpRunExecutor>) -> Self {
+        Self {
+            executor,
+            thread_runtime: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Stage `thread`'s selected runtime adapter (e.g. `"acp:claude"` or `"awaken"`).
+    pub(crate) fn register(&self, thread: &str, adapter: &str) {
+        self.thread_runtime
+            .lock()
+            .expect("acp thread-runtime mutex poisoned")
+            .insert(thread.to_string(), adapter.to_string());
+    }
+
+    /// Whether `thread` runs on an ACP CLI (`acp` / `acp:*`).
+    pub(crate) fn is_acp(&self, thread: &str) -> bool {
+        self.thread_runtime
+            .lock()
+            .expect("acp thread-runtime mutex poisoned")
+            .get(thread)
+            .is_some_and(|a| a == "acp" || a.starts_with("acp:"))
+    }
+}
+
+impl crate::host::SharedHost {
+    /// Serve `acp:*` sessions on `executor` (R3/R4). Threads select it via the API.
+    pub fn with_acp(mut self, executor: Arc<AcpRunExecutor>) -> Self {
+        self.acp = Some(Arc::new(AcpBackend::new(executor)));
+        self
+    }
+
+    /// Stage `thread`'s runtime adapter (R3): `"acp:*"` routes it to the ACP CLI.
+    pub fn register_thread_runtime(&self, thread: &str, adapter: &str) {
+        if let Some(acp) = &self.acp {
+            acp.register(thread, adapter);
+        }
+    }
+}
