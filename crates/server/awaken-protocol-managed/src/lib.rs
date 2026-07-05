@@ -17,7 +17,7 @@ mod router;
 mod state;
 pub mod vaults;
 
-pub use router::router;
+pub use router::{ProjectScope, router};
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, McpServerBinding,
     OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind, SessionInit, SessionRuntime,

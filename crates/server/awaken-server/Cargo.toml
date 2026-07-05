@@ -75,9 +75,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 axum = "0.7"
+# oneshot-forwarding for the /projects/{id} prefix-stripping ingress proxy
+# (also used by the integration tests).
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
 # Restart-persistence test: a management router rebuilt over the same tempdir.
