@@ -80,6 +80,7 @@ awaken-sandbox-container = { path = "crates/worker/awaken-sandbox-container" }
 awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
 awaken-dispatch = { path = "crates/server/awaken-dispatch" }
+awaken-session-executor = { path = "crates/server/awaken-session-executor" }
 awaken-server = { path = "crates/server/awaken-server" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
