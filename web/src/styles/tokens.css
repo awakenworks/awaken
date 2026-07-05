@@ -1,0 +1,97 @@
+/* Design tokens (design/web-ui.md §5): neutral chrome, amber accent (needs a
+ * human), agent purple (AI activity), red spark. Two themes via data-theme. */
+
+:root,
+[data-theme="light"] {
+  --bg: #ffffff;
+  --canvas: #fafafa;
+  --surface: #ffffff;
+  --soft: #f7f7f7;
+  --muted: #f4f4f4;
+  --rail: #f7f7f5;
+  --sunk: #efefec;
+  --fg: #0a0a0a;
+  --fg-strong: #000000;
+  --fg2: #555555;
+  --fg3: #8e8e8e;
+  --line: #e6e6e6;
+  --line-strong: #d1d1d1;
+  --edge: rgba(20, 20, 18, 0.08);
+
+  --accent: oklch(62% 0.14 78);
+  --accent-hover: oklch(56% 0.14 74);
+  --accent-ink: oklch(46% 0.13 70);
+  --accent-tint: oklch(62% 0.14 78 / 0.12);
+  --accent-fg: #ffffff;
+
+  --agent: oklch(56% 0.15 300);
+  --agent-ink: oklch(42% 0.16 300);
+  --agent-tint: oklch(56% 0.15 300 / 0.1);
+  --agent-fg: #ffffff;
+
+  --spark: #cf4040;
+  --ok: oklch(60% 0.12 150);
+  --ok-tint: oklch(60% 0.12 150 / 0.1);
+  --warn: oklch(70% 0.135 78);
+  --warn-tint: oklch(70% 0.135 78 / 0.14);
+  --danger: oklch(58% 0.18 25);
+  --danger-tint: oklch(58% 0.18 25 / 0.1);
+  --info: oklch(60% 0.11 240);
+  --info-tint: oklch(60% 0.11 240 / 0.1);
+  --dawn: rgba(224, 151, 90, 0.08);
+
+  --shadow-card: 0 0 0 1px var(--edge), 0 1px 1px rgba(26, 29, 30, 0.03);
+  --shadow-pop: 0 0 0 1px var(--edge), 0 16px 40px rgba(20, 16, 12, 0.16);
+}
+
+[data-theme="dark"] {
+  --bg: #0a0a0a;
+  --canvas: #111111;
+  --surface: #161616;
+  --soft: #1a1a1a;
+  --muted: #161616;
+  --rail: #121212;
+  --sunk: #0d0d0d;
+  --fg: #ededed;
+  --fg-strong: #ffffff;
+  --fg2: #9a9a9a;
+  --fg3: #5e5e5e;
+  --line: #232323;
+  --line-strong: #2f2f2f;
+  --edge: rgba(255, 255, 255, 0.09);
+
+  --accent: oklch(74% 0.13 78);
+  --accent-hover: oklch(78% 0.13 80);
+  --accent-ink: oklch(84% 0.12 82);
+  --accent-tint: oklch(74% 0.13 78 / 0.14);
+  --accent-fg: #1c1305;
+
+  --agent: oklch(70% 0.135 270);
+  --agent-ink: oklch(80% 0.11 275);
+  --agent-tint: oklch(70% 0.135 270 / 0.16);
+  --agent-fg: #14102a;
+
+  --spark: #fa6863;
+  --ok: oklch(74% 0.13 150);
+  --ok-tint: oklch(74% 0.13 150 / 0.14);
+  --warn: oklch(82% 0.15 78);
+  --warn-tint: oklch(82% 0.15 78 / 0.14);
+  --danger: oklch(70% 0.18 28);
+  --danger-tint: oklch(70% 0.18 28 / 0.14);
+  --info: oklch(74% 0.14 240);
+  --info-tint: oklch(74% 0.14 240 / 0.14);
+  --dawn: rgba(224, 151, 90, 0.12);
+
+  --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-pop: 0 0 0 1px var(--line-strong), 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+
+:root {
+  --font-sans: "Inter", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-card: 10px;
+  --r-pill: 9999px;
+}

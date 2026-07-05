@@ -1,0 +1,125 @@
+// Workspace · MCP servers: authored definitions with fail-closed credential
+// bindings. Status/restart is a gated follow-up (design/web-ui.md §7.9).
+
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { api } from "../lib/api/client";
+import type { CredentialBinding, McpServerDef } from "../lib/api/types";
+import { useApp } from "../lib/app-state";
+
+export default function McpServersSurface() {
+  const app = useApp();
+  const qc = useQueryClient();
+  const servers = useQuery({
+    queryKey: ["mcp-servers"],
+    queryFn: () => api.get<McpServerDef[]>("/v1/config/mcp-servers"),
+  });
+  const [form, setForm] = useState({ id: "", name: "", url: "", bindKind: "none", bindId: "" });
+  const upsert = useMutation({
+    mutationFn: () => {
+      const binding: CredentialBinding =
+        form.bindKind === "exact"
+          ? { type: "exact", credential_source_id: form.bindId }
+          : form.bindKind === "one_of_credential_pool"
+            ? { type: "one_of_credential_pool", credential_pool_id: form.bindId }
+            : { type: "none" };
+      return api.put<McpServerDef>(`/v1/config/mcp-servers/${form.id}`, {
+        id: form.id,
+        display_name: form.name || form.id,
+        url: form.url,
+        credential_binding: binding,
+        version: 1,
+      });
+    },
+    onSuccess: () => {
+      setForm({ id: "", name: "", url: "", bindKind: "none", bindId: "" });
+      void qc.invalidateQueries({ queryKey: ["mcp-servers"] });
+    },
+  });
+  return (
+    <>
+      <div className="card" style={{ padding: 0 }}>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>{app.t("Name", "名称")}</th>
+              <th>URL</th>
+              <th>{app.t("Credential binding", "凭证绑定")}</th>
+              <th>v</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(servers.data ?? []).map((s) => (
+              <tr key={s.id}>
+                <td className="mono">{s.id}</td>
+                <td>{s.display_name}</td>
+                <td className="mono mut">{s.url}</td>
+                <td>
+                  <span className="pill neutral">
+                    {s.credential_binding.type}
+                    {"credential_source_id" in s.credential_binding && ` · ${s.credential_binding.credential_source_id}`}
+                    {"credential_pool_id" in s.credential_binding && ` · ${s.credential_binding.credential_pool_id}`}
+                  </span>
+                </td>
+                <td className="mut">{s.version}</td>
+              </tr>
+            ))}
+            {(servers.data ?? []).length === 0 && (
+              <tr>
+                <td colSpan={5} className="mut">
+                  {app.t("No MCP servers authored yet.", "尚未作者化 MCP 服务器。")}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="card">
+        <h2>{app.t("Author MCP server", "作者化 MCP 服务器")}</h2>
+        <p className="hint">
+          {app.t(
+            "The binding is validated fail-closed on write: an unknown credential source or pool is rejected, never a dangling reference.",
+            "写入时 fail-closed 校验:未知凭证源/池直接拒绝,不会留下悬空引用。",
+          )}
+        </p>
+        <div className="row">
+          <span className="field">
+            <label>id</label>
+            <input className="input mono" value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value })} />
+          </span>
+          <span className="field">
+            <label>{app.t("display name", "显示名")}</label>
+            <input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </span>
+          <span className="field" style={{ flex: 1 }}>
+            <label>url</label>
+            <input className="input mono" placeholder="https://" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} />
+          </span>
+          <span className="field">
+            <label>binding</label>
+            <select className="input" value={form.bindKind} onChange={(e) => setForm({ ...form, bindKind: e.target.value })}>
+              <option value="none">none</option>
+              <option value="exact">exact</option>
+              <option value="one_of_credential_pool">pool</option>
+            </select>
+          </span>
+          {form.bindKind !== "none" && (
+            <span className="field">
+              <label>{form.bindKind === "exact" ? "credential_source_id" : "credential_pool_id"}</label>
+              <input className="input mono" value={form.bindId} onChange={(e) => setForm({ ...form, bindId: e.target.value })} />
+            </span>
+          )}
+          <button className="btn primary" style={{ alignSelf: "flex-end" }} disabled={!form.id || !form.url || upsert.isPending} onClick={() => upsert.mutate()}>
+            {app.t("Save", "保存")}
+          </button>
+        </div>
+        {upsert.error instanceof Error && <div className="err">{upsert.error.message}</div>}
+      </div>
+      <div className="banner gate">
+        <span>◌</span>
+        <span>{app.t("Health/status + Restart land with the probe extension (roadmap §7.9).", "健康状态与 Restart 随探针扩展落地(路线 §7.9)。")}</span>
+      </div>
+    </>
+  );
+}
