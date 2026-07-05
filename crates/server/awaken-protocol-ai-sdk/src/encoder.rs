@@ -77,6 +77,11 @@ impl Transcoder for AiSdkEncoder {
             AgentEvent::RunFinished { .. } => {
                 vec![UIStreamEvent::FinishStep, UIStreamEvent::finish("stop")]
             }
+            AgentEvent::RunFailed { code, message } => vec![
+                UIStreamEvent::error(format!("{code}: {message}")),
+                UIStreamEvent::FinishStep,
+                UIStreamEvent::finish("error"),
+            ],
         }
     }
 }

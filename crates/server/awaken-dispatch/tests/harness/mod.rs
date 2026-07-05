@@ -45,6 +45,7 @@ impl LlmExecutor for TextLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text(self.0.to_string()),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -69,6 +70,7 @@ impl LlmExecutor for ToolThenText {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -190,6 +192,7 @@ impl LlmExecutor for EchoInputLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text(echoed),
             usage: None,
+            stop_reason: None,
         })
     }
 }

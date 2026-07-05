@@ -150,6 +150,7 @@ mod tests {
             Ok(ChatResponse {
                 output: AssistantOutput::text(system),
                 usage: None,
+                stop_reason: None,
             })
         }
     }

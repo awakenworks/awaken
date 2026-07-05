@@ -72,9 +72,10 @@ async fn durable_submit_persists_then_runs_to_completion() {
         .expect("durable submit");
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
 
-    // Committed truth holds the run: the user turn then the assistant reply (the
-    // input is committed so a later turn sees it).
-    assert_eq!(commit.commit_count(), 1);
+    // Committed truth holds the run: the user turn then the assistant reply.
+    // Per-step durability: the input commits at the first step boundary, the
+    // terminal turn through finish.
+    assert_eq!(commit.commit_count(), 2);
     let messages = commit.committed().messages;
     assert_eq!(messages[0].text_content(), "go");
     assert_eq!(messages.last().unwrap().text_content(), "done");
@@ -121,7 +122,9 @@ async fn durable_submit_is_idempotent_per_run() {
         .await
         .expect("second submit");
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
-    assert_eq!(commit.commit_count(), 1, "the run committed exactly once");
+    // Two commits (input + terminal) from the first submit; the re-submit
+    // adds none.
+    assert_eq!(commit.commit_count(), 2, "the run committed exactly once");
 }
 
 #[tokio::test]
@@ -258,8 +261,8 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
     );
     assert_eq!(
         commit.commit_count(),
-        1,
-        "recovery ran the run exactly once"
+        2,
+        "recovery ran the run exactly once (input + terminal commits)"
     );
     assert_eq!(store.dispatch_count(), 0);
 }

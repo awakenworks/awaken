@@ -59,6 +59,7 @@ impl LlmExecutor for EchoLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text(last_user),
             usage: None,
+            stop_reason: None,
         })
     }
 }

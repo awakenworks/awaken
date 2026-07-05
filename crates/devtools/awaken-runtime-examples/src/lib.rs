@@ -44,6 +44,7 @@ impl LlmExecutor for ScriptedLlm {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -62,6 +63,7 @@ impl LlmExecutor for GreeterLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text("Hello! How can I help?".to_string()),
             usage: None,
+            stop_reason: None,
         })
     }
 }

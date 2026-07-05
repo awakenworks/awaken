@@ -119,6 +119,7 @@ impl LlmExecutor for RefreshProbe {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }

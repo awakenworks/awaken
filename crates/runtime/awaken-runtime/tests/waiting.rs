@@ -53,6 +53,7 @@ impl LlmExecutor for ToolThenText {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -232,8 +233,10 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
     // The ticket is cleared once resumed.
     assert!(commit.waiting_for(&RunId("run-1".to_string())).is_none());
 
-    // The fact log keeps the Waiting -> Ended progression in order, and the
-    // latest fact is the authority replay derives (ADR-0006 D1).
+    // The fact log keeps the full progression in order — Running (input
+    // committed at the first step boundary), Waiting (parked), Running (the
+    // resumed result committed), Ended — and the latest fact is the authority
+    // replay derives (ADR-0006 D1).
     let phases: Vec<_> = committed
         .run_facts
         .iter()
@@ -242,7 +245,12 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
         .collect();
     assert_eq!(
         phases,
-        vec![Phase::Waiting, Phase::Ended(EndCause::NaturalEnd)]
+        vec![
+            Phase::Running,
+            Phase::Waiting,
+            Phase::Running,
+            Phase::Ended(EndCause::NaturalEnd)
+        ]
     );
     assert_eq!(
         replay_latest_phase(&committed, &RunId("run-1".to_string())),
