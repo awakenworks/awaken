@@ -90,7 +90,7 @@ impl SqliteCommitCoordinator {
 
     fn from_connection(conn: Connection) -> Result<Self, StoreError> {
         let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration::sqlite::SqliteMigrationRunner::with_prefix(NS)
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|err| StoreError::Migrate(err.to_string()))?
             .run_bundle(&conn, &bundle)
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
