@@ -83,8 +83,9 @@
 | `/p/:pid/overview` | 项目脉搏:活跃会话、最近 dispatch、绑定健康(resolve chips) | 🔶(会话列表⛔) |
 | `/p/:pid/sessions` | 会话列表 + New session 拆分按钮 | 🔶(列表端点⛔;创建 ✅ `/projects/:pid/v1/sessions`) |
 | `/p/:pid/sessions/:sid` | **§4 核心界面**:转录 + HITL + outcomes + durable 抽屉 | ✅ |
+| `/p/:pid/vaults` | 运行凭证容器(managed wire 资源,随 session 消费):vault 及其三型 credential、`mcp_oauth_validate`;标注 host-ephemeral | 🔶 vault 面 ✅,但挂到 `/projects/{pid}` ingress ⛔(见 §7) |
 | `/p/:pid/agents` | per-project MCP 绑定 + resolve 预览(reference-don't-copy) | ✅ |
-| `/p/:pid/settings` | 项目信息、ingress baseURL | ✅ |
+| `/p/:pid/settings` | 项目信息、ingress baseURL、**权限说明**(project 容器统一 `ScopeRef::Project` 授权) | ✅(guard ⛔) |
 
 ### Workspace · Supply
 
@@ -96,7 +97,7 @@
 | `/skills` + `/skills/:id` | 技能目录(ro):context、user/model-invocable、allowed_tools、arguments | ⛔ capability catalog(plugin-configuration.md 已规划) |
 | `/tools` + `/tools/:id` | 工具目录 + 工具编辑器(overrides) | ⛔ 同上 |
 | `/models` | Catalog 三层(Provider/Endpoint/Offering)+ Inference profiles + resolve 试算链 chips + **Test model**(≈goal test modal,经 credential validate) | ✅ |
-| `/credentials` | Sources(enter/validate/archive)、Pools、Vaults(三型 + mcp_oauth_validate) | ✅ |
+| `/credentials` | **供给侧凭证**:Sources(enter/validate/archive)、Pools(ordinal failover)。Vault 属运行面,页面在 Project scope(§project 容器决定) | ✅ |
 | `/mcp-servers` + `/:id` | 定义 CRUD + Bound-by 反查;**状态/健康点 + Restart**(goal);nav 健康点 | 🔶 CRUD ✅;status/restart ⛔(ExtMcpProbe 可扩) |
 | `/a2a-servers` | 远程委托服务器目录:delegate card 查看;CRUD | 🔶 card ✅(`/v1/delegates/:id/card`);CRUD ⛔ |
 
@@ -180,6 +181,10 @@ Token 工程(照抄 oversight-next):`design-tokens/*.tokens.json`(W3C)→ build 
 8. MCP status/restart(ExtMcpProbe 扩展)、A2A servers CRUD、agent-preview 端点(对草稿沙箱)、admin assistant 面。
 
 **契约配套**:每落地一组端点 → openapi 注册表 + schemars 同步扩展(✅ 管线已就绪,当前覆盖 admin config plane 19 路径/28 操作)。
+
+**project 容器统一权限(已定的架构决定)**:
+9. vault router 挂进 `/projects/{pid}` ingress(今天 ingress 只转发 session router),vault 创建 stamp `ProjectScope` → vault 归属 project;
+10. managed 运行面纳入 IAM guard:按路径 project 段做 `ScopeRef::Project{workspace_id, project_id}` 校验(词汇已在 awaken-iam-contract),动作词汇为 sessions/vaults 扩展(当前 guard 只覆盖 admin+vault 路由、只有 workspace./apikey. 动作);裸 `/v1/sessions` 保留 stock-SDK 兼容(project-bound key 或默认 project)。
 
 **非阻塞**:SSE live push(live banner + 轮询先行);workspace 枚举(P1 单 workspace)。
 
