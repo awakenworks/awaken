@@ -622,11 +622,23 @@ async fn drive(
         transcript.push(assistant.clone());
         new_messages.push(assistant);
 
-        // A text-only turn (no tool requests) is a natural end — unless a run-end
-        // guard steers another turn. The runtime owns *when* the loop stops; a
-        // guard supplies the predicate and any feedback. Its `detail` is opaque
-        // (anti-corruption): the kernel forwards it, never interprets it.
+        // A text-only turn (no tool requests) is a natural end — unless queued
+        // live input or a run-end guard keeps the loop going. Queued input is
+        // drained first: a message the caller already addressed to this run
+        // preempts any guard's end-of-run verdict, exactly as if it had arrived
+        // one turn earlier.
         if calls.is_empty() {
+            let injected = drain_live_inbox(context, run_id, &transcript);
+            if !injected.is_empty() {
+                for message in injected {
+                    transcript.push(message.clone());
+                    new_messages.push(message);
+                }
+                continue;
+            }
+            // The runtime owns *when* the loop stops; a guard supplies the
+            // predicate and any feedback. Its `detail` is opaque
+            // (anti-corruption): the kernel forwards it, never interprets it.
             match consult_run_end(
                 env,
                 run_id,
@@ -1058,6 +1070,45 @@ fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
         role: Role::User,
         content: vec![ContentBlock::text(feedback)],
     }
+}
+
+/// The id prefix shared by a run's live-inbox injections — same discipline as
+/// `steer_id_prefix`: run-scoped, so counting committed messages with this
+/// prefix keeps ids unique across a park/resume of the same run.
+fn inbox_id_prefix(run_id: &RunId) -> String {
+    format!("{}-inbox-", run_id.0)
+}
+
+/// Take everything queued on the attempt's live inbox and re-identify it for
+/// the transcript. Content and role pass through untouched; only the id is
+/// replaced, because caller-supplied ids carry no uniqueness promise inside
+/// the committed thread. Empty (or absent) inbox means no messages.
+fn drain_live_inbox(
+    context: &RuntimeRunContext,
+    run_id: &RunId,
+    transcript: &[Message],
+) -> Vec<Message> {
+    let Some(inbox) = context.live_inbox.as_ref() else {
+        return Vec::new();
+    };
+    let drained = inbox.drain_at_boundary();
+    if drained.is_empty() {
+        return Vec::new();
+    }
+    let prefix = inbox_id_prefix(run_id);
+    let base = transcript
+        .iter()
+        .filter(|message| message.id.0.starts_with(&prefix))
+        .count();
+    drained
+        .into_iter()
+        .enumerate()
+        .map(|(nth, entry)| Message {
+            id: MessageId(format!("{prefix}{}", base + nth)),
+            role: entry.message.role,
+            content: entry.message.content,
+        })
+        .collect()
 }
 
 /// Build the committed ticket for a parked tool call. `handle` carries opaque
