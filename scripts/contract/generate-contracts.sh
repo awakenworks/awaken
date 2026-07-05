@@ -12,7 +12,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 out_dir="$repo_root/contracts"
-schema_json="$out_dir/model-schemas.json"
+schema_json="$out_dir/model-schemas.generated.json"
+openapi_json="$out_dir/openapi.generated.json"
 ts_out="$out_dir/model-config.d.ts"
 check=0
 [ "${1:-}" = "--check" ] && check=1
@@ -21,9 +22,12 @@ mkdir -p "$out_dir"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-# 1. JSON Schema SSOT from the Rust DTOs.
+# 1. JSON Schema SSOT from the Rust DTOs, plus the OpenAPI 3.1 document (route
+#    registry over the same schemas; drives frontend openapi-typescript codegen).
 cargo run --locked -q -p awaken-admin-config-api --features schema --example export_schemas \
     > "$tmp/schemas.json"
+cargo run --locked -q -p awaken-admin-config-api --features schema --example export_openapi \
+    > "$tmp/openapi.generated.json"
 
 # 2. TS types via quicktype, if node tooling is available. Split the bundle into
 #    one file per type so quicktype emits a single deduped .d.ts.
@@ -53,6 +57,8 @@ fi
 if [ "$check" = 1 ]; then
     diff -u "$schema_json" "$tmp/schemas.json" >/dev/null \
         || { echo "✗ $schema_json is stale — run scripts/contract/generate-contracts.sh"; exit 1; }
+    diff -u "$openapi_json" "$tmp/openapi.generated.json" >/dev/null \
+        || { echo "✗ $openapi_json is stale — run scripts/contract/generate-contracts.sh"; exit 1; }
     if [ "$generated_ts" = 1 ]; then
         diff -u "$ts_out" "$tmp/final.d.ts" >/dev/null \
             || { echo "✗ $ts_out is stale — run scripts/contract/generate-contracts.sh"; exit 1; }
@@ -60,6 +66,7 @@ if [ "$check" = 1 ]; then
     echo "OK - contracts up to date."
 else
     cp "$tmp/schemas.json" "$schema_json"
+    cp "$tmp/openapi.generated.json" "$openapi_json"
     [ "$generated_ts" = 1 ] && cp "$tmp/final.d.ts" "$ts_out"
-    echo "wrote $schema_json$([ "$generated_ts" = 1 ] && echo " + $ts_out")"
+    echo "wrote $schema_json + $openapi_json$([ "$generated_ts" = 1 ] && echo " + $ts_out")"
 fi

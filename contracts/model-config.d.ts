@@ -14,7 +14,9 @@
  *
  * A management-plane project identifier. It doubles as the project's ingress
  * address segment (`/projects/{id}/…` or a per-project domain label), so it is
- * constrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.
+ * constrained to a DNS-safe lowercase slug at authoring time. The rule is the
+ * shared tenancy slug rule [`awaken_scope::scope::slug_is_valid`], so a project
+ * id validates identically here, in the scope tree, and across products.
  */
 type CredentialPoolID = string;
 
@@ -33,7 +35,9 @@ type CredentialPoolID = string;
  *
  * A management-plane project identifier. It doubles as the project's ingress
  * address segment (`/projects/{id}/…` or a per-project domain label), so it is
- * constrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.
+ * constrained to a DNS-safe lowercase slug at authoring time. The rule is the
+ * shared tenancy slug rule [`awaken_scope::scope::slug_is_valid`], so a project
+ * id validates identically here, in the scope tree, and across products.
  */
 type MCPServerID = string;
 
@@ -46,6 +50,101 @@ export interface AgentMCPConfig {
     agent_id:       string;
     mcp_server_ids: string[];
     version:        number;
+    [property: string]: any;
+}
+
+/**
+ * Which resources an agent is bound to — the management-plane agent↔resource
+ * binding (ADR-0038). At run bind time each [`ResourceBinding`] is materialized
+ * two ways: into a `MountRequirement` the sandbox realizes, and into a prompt
+ * fragment appended to the agent's effective system prompt (ADR-0038 A3a). Rows
+ * are secret-free — a private resource's credential is a binding by reference,
+ * resolved through the vault like MCP auth, never material here.
+ */
+export interface AgentResourceConfig {
+    agent_id:  string;
+    resources: ResourceElement[];
+    version:   number;
+    [property: string]: any;
+}
+
+/**
+ * One resource bound to an agent. `resource_id` addresses the backing resource
+ * (a file/skill id, a memory store id, a repo URL; empty for the outputs mount);
+ * `mount_path` is where it appears in the sandbox; `instructions` is optional
+ * per-binding guidance rendered into the agent's system prompt.
+ */
+export interface ResourceElement {
+    access:        Access;
+    instructions?: null | string;
+    kind:          Kind;
+    mount_path:    string;
+    resource_id?:  string;
+    [property: string]: any;
+}
+
+/**
+ * Whether a bound resource is read-only or writable.
+ */
+export type Access = "read_only" | "read_write";
+
+/**
+ * The resource kind a binding realizes — one variant per ADR-0038 resource.
+ *
+ * The outputs mount the host collects as artifacts.
+ *
+ * An immutable file blob.
+ *
+ * A persistent, keyed memory store.
+ *
+ * A git working tree cloned from a remote.
+ *
+ * A versioned skill bundle.
+ */
+export type Kind = "outputs" | "file" | "memory_store" | "github_repository" | "skill";
+
+/**
+ * RFC 9457 Problem Details with stable application extension members (`code`, `request_id`,
+ * `details`, `errors`).
+ */
+export interface APIError {
+    /**
+     * Stable application error code; clients may branch on this.
+     */
+    code: string;
+    /**
+     * Request-specific human-readable explanation.
+     */
+    detail?: string;
+    /**
+     * Type-specific structured metadata.
+     */
+    details?: any;
+    /**
+     * Field/query/header violations for validation-style problems.
+     */
+    errors?:   Error[];
+    instance?: string;
+    /**
+     * Correlation id echoed from the `x-request-id` header.
+     */
+    request_id: string;
+    status:     number;
+    /**
+     * Stable human-readable summary for this problem type.
+     */
+    title: string;
+    /**
+     * URI reference identifying the problem type.
+     */
+    type: string;
+    [property: string]: any;
+}
+
+export interface Error {
+    code:     string;
+    field:    string;
+    message?: string;
     [property: string]: any;
 }
 
@@ -160,6 +259,25 @@ export interface CredentialValidation {
  * wire's `valid` / `invalid` / `unknown` statuses.
  */
 export type Status = "valid" | "invalid" | "unknown";
+
+/**
+ * The credential-entry wire body. `secret` is write-only: it is sealed into the
+ * [`SecretStore`] and never appears on any response (the returned row is
+ * secret-free). `RedactedString` is intentionally not `Deserialize`, so the raw
+ * secret crosses the wire exactly once, here.
+ */
+export interface EnterCredentialRequest {
+    env_key?:     null | string;
+    kind:         CredentialKind;
+    provider_id?: null | string;
+    /**
+     * The secret to seal — required for `vault`, unused for `env` (which reads a
+     * host variable at materialization), so it defaults to empty.
+     */
+    secret?:      string;
+    workspace_id: string;
+    [property: string]: any;
+}
 
 /**
  * An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
@@ -392,6 +510,14 @@ export interface Provider {
 }
 
 /**
+ * Resolve an agent's MCP binding within a workspace's credential scope.
+ */
+export interface ResolveAgentMCPRequest {
+    workspace_id: string;
+    [property: string]: any;
+}
+
+/**
  * The **secret-free** result of a resolve (ADR-0043): the execution triple + the
  * adapter/endpoint it binds to, and whether a credential resolved — never the
  * secret itself. This is what an operator's "test binding" call sees.
@@ -421,5 +547,50 @@ export interface ResolvedMCPServerView {
     credential_present: boolean;
     name:               string;
     url:                string;
+    [property: string]: any;
+}
+
+/**
+ * Resolve an authored profile within a workspace's credential scope.
+ */
+export interface ResolveProfileRequest {
+    workspace_id: string;
+    [property: string]: any;
+}
+
+/**
+ * A dry-run resolve request: bind `model_id` (+ credential `binding`) against the
+ * authored catalog. The workspace scopes which credential sources are visible.
+ */
+export interface ResolveRequest {
+    binding:      Binding;
+    model_id:     string;
+    workspace_id: string;
+    [property: string]: any;
+}
+
+/**
+ * The "which credential" axis (oversight-next / awaken-management-contract).
+ *
+ * No credential is needed.
+ *
+ * Use exactly one source.
+ *
+ * Use one eligible member of a pool; the resolver selects by policy and may
+ * fail over to the next member if the chosen one cannot be materialized.
+ */
+export interface Binding {
+    type:                  Type;
+    credential_source_id?: string;
+    credential_pool_id?:   string;
+    [property: string]: any;
+}
+
+/**
+ * Live-validate a credential against a model's resolved provider endpoint.
+ */
+export interface ValidateCredentialRequest {
+    model_id:     string;
+    workspace_id: string;
     [property: string]: any;
 }
