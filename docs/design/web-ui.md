@@ -1,191 +1,191 @@
-# Web UI 设计与实现方案 — Oversight 外壳 × Awaken 管理面
+# Web UI 设计与实现方案 — Oversight 外壳 × Awaken 管理面(goal 全功能覆盖)
 
 > 来源四方:
-> 1. **Oversight Prototype**(claude.ai/design handoff,`Oversight Prototype.dc.html` 已全文精读)——信息架构、交互模式、视觉意象;
-> 2. **goal 仓库 admin-console**(`~/Codes/awaken-worktrees/goal/apps/admin-console`)——管理面页面套路与部分工程模式;
-> 3. **oversight-next `/web`**(`~/Codes/oversight-next/web`,即 awaken-flow 的**生产实现**,~87k LOC、239 个 API 操作、179 个测试文件)——**工程架构的主要蓝本**:token 流水线、contract-first codegen、事件日志 reducer、导航 SSOT;
-> 4. **本仓库(hapi-web-ui 分支)的真实 API 面**——决定页面必须覆盖的功能。本分支目前没有任何前端代码,从零开始。
+> 1. **Oversight Prototype**(claude.ai/design handoff,已全文精读)——信息架构、交互模式、视觉意象;
+> 2. **goal 仓库 admin-console**(`~/Codes/awaken-worktrees/goal/apps/admin-console`)——**功能面基准**(本 UI 必须覆盖其全部能力)+ 部分工程模式;
+> 3. **oversight-next `/web`**(awaken-flow 生产实现,~87k LOC)——**工程架构蓝本**:token 流水线、contract-first codegen、事件日志 reducer、导航 SSOT;
+> 4. **本仓库 API 面**——决定各页面今天能接什么、什么排入后端补齐(对齐 goal-coverage 路线 P0–P4)。
 
 ## 0. 设计论点(一句话)
 
-采用 Oversight 原型的**「Workspace ▸ Project 两级作用域 + 全局 cockpit(Home/Inbox)」外壳**,把原型虚构的 issue-tracker 领域替换为我们的真实领域(Session 是工作单元,Agent/Model/Credential/MCP/Project 是 Workspace 供给);**工程实现整体对照 oversight-next/web 的成熟做法**(W3C token 流水线、OpenAPI codegen 门禁、单出口 fetch、append-only 事件日志 reducer),并避开它已暴露的几个坑。
+采用 Oversight 原型的**「Workspace ▸ Project 两级作用域 + 全局 cockpit(Home/Inbox)」外壳**;功能范围 = **goal admin-console 全集 ∪ 本仓库管理面**(Session/Project 是我们超出 goal 的部分,Eval/Audit/观测/目录/沙箱/助手是 goal 超出本分支现状、必须纳入并随后端补齐逐步点亮的部分);工程实现整体对照 oversight-next/web。goal 缺前端没有的概念一律不发明;goal 有而我们后端未备的页面**照常设计、以能力门控置灰**(goal 自己的 feature-disabled-notice 模式),不因后端进度裁剪 IA。
 
 ## 1. 四方对照:各取什么
 
 | 来源 | 采纳 | 放弃 / 替换 |
 |---|---|---|
-| Oversight 原型 | 两级作用域侧栏(2a merged shell)、Home/Inbox 全局层、statChip 全可点、needs-you hero 行内 Approve、live banner 批量刷新、agent 紫=AI 活动、readiness(Bind & ready)清单、resolved binding 链式 chips、record-before-effect 日志表、编辑器外壳(顶栏版本+Publish / 主区 / 右 rail) | Issues/Cycles/Board、状态机工作流编辑器、CEL 转移、Automation when→then(我们无对应 REST 面;**模式**保留,映射到我们的实体) |
-| goal admin-console | ⌘K palette、capabilities 门控、secret 全链路脱敏、URL 同步列表状态、unsaved-changes guard、toast/confirm、admin token modal、行内工具审批卡(Allow/Deny → 自动续跑) | 其单层 admin 目录式 IA(被两级作用域取代);RJSF;Tailwind(见 §6 的 CSS 决策) |
-| **oversight-next /web** | **token 三层流水线**(W3C tokens JSON → build 脚本 → tokens.css,`data-theme` 切换,token-contract 测试);**contract-first codegen**(OpenAPI → 类型 + 生成客户端 + ajv 校验器,`*:check` git-diff 门禁);**单出口 fetch**(`client.ts` 唯一 egress + `no-raw-fetch` 测试);**`paths.ts` 导航 SSOT**(router/侧栏/palette 共用);**append-only 事件日志 reducer**(单 query cache 条目,按 id 去重、按 seq 排序,transcript 是纯投影);session-as-query 认证模式;LOADING sentinel(roster 未就绪不发项目级请求);structure tests 钉住 IA;chat 组件套件(ChatMessageList/ToolCallCard/ReasoningBlock);react-router v7 薄路由包装 Surface 组件 | 其 213KB `global.css`(改为按 surface 拆分)、67KB 单文件 Surface(强制拆分)、挂空的 `@xyflow` 依赖(不引入)、事件 payload `as Record<string,unknown>` 逃逸(我们的事件是封闭 tagged union,类型化到底)、jsdom 冒充 e2e(P2 起补 Playwright 走真 SSE) |
-| 本仓库 API | 全部管理面(§3 逐页端点);`contracts/model-config.d.ts` 复用 | — |
+| Oversight 原型 | 两级作用域侧栏(2a merged shell)、Home/Inbox 全局层、statChip 全可点、needs-you hero 行内 Approve、live banner、agent 紫=AI 活动、readiness 清单、resolved binding 链式 chips、record-before-effect 日志表、编辑器外壳(顶栏版本+Publish / 主区 / 右 rail) | Issues/Cycles/Board、状态机工作流编辑器、CEL、Automation when→then(无对应 REST 面;模式保留) |
+| goal admin-console | **功能全集**(§3 逐页映射):Dashboard 观测、Agents 编辑器(多 tab + 历史恢复 + diff)+ **Sandbox 沙箱预览**(流式 + 行内审批 + 附件)、per-agent 运行看板、Skills/Tools 目录、Models/Providers(+活探测)、MCP(+status/restart)、A2A servers、Datasets/Eval runs/Eval reports(+trace 抽屉 + 存 fixture)、Audit log、Admin assistant FAB(+草稿手递编辑器)、permission 预览/编辑器、插件 JSON-Schema 配置表单;工程模式:capabilities 门控、secret 脱敏、URL 同步列表状态、unsaved guard、token modal、⌘K | 其单层目录式 IA(被两级作用域取代);RJSF 库本体(表单自研,schema 驱动思路保留);Tailwind |
+| oversight-next /web | W3C token 三层流水线 + token-contract 测试;OpenAPI codegen `*:check` 门禁;单出口 fetch + no-raw-fetch;`paths.ts` 导航 SSOT;append-only 事件日志 reducer(transcript 纯投影);session-as-query;roster sentinel;structure tests;chat 套件;react-router v7 薄路由 | 213KB global.css(按 surface 拆)、67KB 单文件(限行数)、挂空 @xyflow(不引)、payload 类型逃逸(我们全强类型)、无真浏览器 e2e(P2 补 Playwright) |
+| 本仓库 API | §3 各页端点;`contracts/openapi.generated.json`(已落地)+ `model-config.d.ts` | — |
 
-原型领域 → 我们的实体映射(关键决定):
+领域映射(关键决定):
 
 | 原型概念 | 我们的实体 |
 |---|---|
-| Workspace(共享供给) | `workspace_id`(IAM fence):catalog(providers/endpoints/offerings)、credentials+pools、vaults、MCP servers、inference profiles、IAM tokens、已发布 agents |
-| Project(工作) | `Project` 实体 + `/projects/{id}` ingress;per-project agent MCP 绑定 |
-| Issue(工作单元) | **Session**(`sesn_*`,idle/running/requires_action) |
-| Inbox 审批 | `requires_action`(tool_confirmation)、durable deliver 决策、dead-letters、凭证 validate 失败 |
-| 工作流编辑器 Publish v8 | Agent config **draft → validate → publish**(`publication_id`/`fingerprint`) |
-| Automation firing log(record-before-effect) | Durable dispatch 队列(`status/attempts`)+ dead-letters |
-| Resolved binding 链(Agent → model → provider ●verified) | `POST /v1/config/inference/resolve` 等三个 dry-run 端点直接供数 |
-| Bind & ready(缺项必须真实创建) | 我们的 fail-closed resolve |
+| Workspace(共享供给) | `workspace_id`:catalog、credentials+pools、vaults、MCP、A2A、inference profiles、IAM tokens、agents、skills/tools 目录 |
+| Project(工作) | `Project` + `/projects/{id}` ingress;per-project agent MCP 绑定 |
+| Issue(工作单元) | **Session**(idle/running/requires_action) |
+| Inbox 审批 | `requires_action` tool confirmation、durable deliver、dead-letters、凭证失效 |
+| 工作流编辑器 Publish v8 | Agent config draft → validate → publish |
+| Automation firing log | Durable dispatch 队列 + dead-letters(record-before-effect) |
+| Resolved binding 链 | 三个 dry-run resolve 端点直接供数 |
+| Bind & ready | fail-closed resolve |
+| (goal)Observe 组 | Dashboard / Audit / Datasets / Evals,归入 workspace 作用域的观测分组 |
 
 ## 2. 信息架构与导航外壳
 
-原型 2a merged shell,oversight-next 已验证同一模型可落地(其 `primaryNavGroups`:global 常驻 + project/workspace 二选一,scope 存 localStorage、随路由自动同步):
+原型 2a merged shell;workspace 段较长,沿用原型的 10px 大写分组标题分成 **Supply / Observe / Govern** 三小组(对应 goal 的 Resources+Infrastructure / Observe / 权限):
 
 ```
-┌ Sidebar 236px (--rail) ────────────────┐┌ Main ─────────────────────────────┐
-│ [A] <workspace>       Workspace ▾      ││ 46px 面包屑: workspace / scope / 页 │
-│  └─ 📁 <project>          PROJECT ▾    ││ ─────────────────────────────────  │
-│ [ Search…                        ⌘K ]  ││  内容区 padding 20/24, max 1280    │
-│ GLOBAL · ALL PROJECTS                  ││  (dawn glow 径向渐变置于画布顶部)   │
+┌ Sidebar 236px ─────────────────────────┐┌ Main ─────────────────────────────┐
+│ [A] <workspace>       Workspace ▾      ││ 46px 面包屑 + dawn glow            │
+│  └─ 📁 <project>          PROJECT ▾    ││                                    │
+│ [ Search…                        ⌘K ]  ││                                    │
+│ GLOBAL · ALL PROJECTS                  ││                                    │
 │  Home        Inbox ❸(紫)              ││                                    │
 │ ── 按 scope 二选一 ──                   ││                                    │
-│ PROJECT · <id>          WORKSPACE      ││                                    │
-│  Overview                Agents        ││                                    │
-│  Sessions                Models        ││                                    │
-│  Agents(绑定)            Credentials   ││                                    │
-│  Settings                MCP Servers   ││                                    │
-│                          Access        ││                                    │
-│ footer: EN/中 · ☀/☾ · 头像             ││                                    │
+│ PROJECT · <id>     │ WORKSPACE · SUPPLY ││                                   │
+│  Overview          │  Agents ❹(紫)     ││                                   │
+│  Sessions          │  Skills(ro) Tools  ││                                   │
+│  Agents(绑定)      │  Models Credentials││                                   │
+│  Settings          │  MCP  A2A          ││                                   │
+│                    │ · OBSERVE          ││                                   │
+│                    │  Dashboard         ││                                   │
+│                    │  Evals  Datasets   ││                                   │
+│                    │  Audit log         ││                                   │
+│                    │ · GOVERN           ││                                   │
+│                    │  Access  Settings  ││                                   │
+│ footer: EN/中 · ☀/☾ · 头像   [✦ 助手 FAB 右下角常驻]                          │
 └────────────────────────────────────────┘└───────────────────────────────────┘
 ```
 
-实现要点(照抄 oversight-next):
-- **`src/lib/navigation/paths.ts` 是唯一事实源**:typed 路由模式 + URL builder,router、侧栏、⌘K、面包屑标题全部由它派生,无漂移。
-- 子项 expand-on-select(父 surface 激活才显示子项);Home/Inbox/Settings scope 无关;scope 持久化 `localStorage`。
-- Settings 用统一页 + 两段左 rail(Project 段 / Workspace 段),带 scope banner。
-- 侧栏 Sessions 项挂**紫色 agent 徽章** = 正在运行的会话数(oversight-next 用 scheduling map 的 `processing` 计数,我们用 running 会话计数)。
-- 移动端:侧栏 off-canvas + scrim + Escape;<680px 弹层转 bottom-sheet。
+- `paths.ts` 导航 SSOT;子项 expand-on-select;scope 持久化;Settings 统一页双段 rail + scope banner。
+- **Admin assistant** 不占导航:右下角 FAB 浮窗(goal 模式),⌘K 可唤起;助手产出的 agent 草稿**手递到编辑器**(goal 的 assistant-draft-bus 模式)。
+- 未就绪的功能面(后端 404/registry_unavailable)不隐藏导航项:显示 goal 式 feature-disabled 页(说明缺什么、链接到配置/路线),保持 IA 稳定。
 
-## 3. 路由与页面清单(功能全覆盖,每页标注后端端点)
+## 3. 路由与页面清单(= goal 全集 ∪ 本仓库管理面;标注端点与就绪度)
 
-路由文件是薄包装,渲染 `*Surface` 组件(oversight-next 模式)。
+**就绪度**:✅ 本分支已有端点;🔶 部分(可先上,能力门控残缺项);⛔ 待后端(goal-coverage P0–P4 对齐项,页面照常设计、置灰)。
 
 ### Global
 
-| 路由 | 内容 | 端点 |
+| 路由 | 内容 | 端点 / 就绪度 |
 |---|---|---|
-| `/` Home | KPI 行(Projects / Active sessions / Needs you)、Needs-you 列表(行内 Approve)、Projects 表(活跃会话数、紫 working、红 blocked) | `GET /v1/config/projects`;会话聚合见 §7 缺口 |
-| `/inbox` | 过滤 chips(All / Approvals / Attention):① `requires_action` 会话 tool confirmation(行内 Allow/Deny → `POST /v1/sessions/:id/events` `user.tool_confirmation`);② dead-letters(`GET /v1/durable/threads/:t/dead-letters` + purge/reap);③ 凭证失效 →「Fix in Credentials ↗」。每行带 ReasonCode 说明(oversight-next `ReasonCodeNotice` 模式) | 各来源端点 + §7 缺口 |
+| `/` Home | KPI(Projects/Active sessions/Needs you)+ Needs-you 行内 Approve + Projects 表;融合 goal Dashboard 的 hero(容量/健康摘要) | 🔶 projects ✅;会话聚合与 runs summary ⛔ |
+| `/inbox` | Approvals(requires_action 行内 Allow/Deny)/ Attention(dead-letters、凭证失效、MCP 不健康) | 🔶 |
+| FAB 助手 | 流式对话、工具卡、生成 agent 草稿→跳编辑器;设置(模型/策略 prompt) | ⛔ `/v1/admin/assistant/*` |
 
-### Project scope(会话操作走 `/projects/{pid}` ingress,天然拿到 project-scoped 工具面)
+### Project scope
 
-| 路由 | 内容 | 端点 |
+| 路由 | 内容 | 端点 / 就绪度 |
 |---|---|---|
-| `/p/:pid/overview` | 项目脉搏:活跃会话卡、最近 dispatch、agent 绑定健康(resolve chips) | resolve 端点 + 会话列表(§7) |
-| `/p/:pid/sessions` | 会话列表(状态点、agent、model、标题、紫色 agent-active 侧边条);「New session」拆分按钮(agent / environment / vault / 内联 MCP) | `POST /projects/:pid/v1/sessions` |
-| `/p/:pid/sessions/:sid` | **核心界面,见 §4** | events + SSE + durable |
-| `/p/:pid/agents` | 每个 agent 的 MCP 绑定(reference-don't-copy:列 workspace 供给,内联勾选,Manage ↗ 抽屉);保存前 resolve 预览 | `PUT/GET /v1/config/projects/:pid/agents/:aid/mcp`,`POST /v1/config/agents/:aid/mcp/resolve` |
-| `/p/:pid/settings` | 项目信息(id 只读、display_name)、ingress baseURL(一键复制,标注「寻址而非授权」ADR-0042) | `PUT/GET /v1/config/projects/:id` |
+| `/p/:pid/overview` | 项目脉搏:活跃会话、最近 dispatch、绑定健康(resolve chips) | 🔶(会话列表⛔) |
+| `/p/:pid/sessions` | 会话列表 + New session 拆分按钮 | 🔶(列表端点⛔;创建 ✅ `/projects/:pid/v1/sessions`) |
+| `/p/:pid/sessions/:sid` | **§4 核心界面**:转录 + HITL + outcomes + durable 抽屉 | ✅ |
+| `/p/:pid/agents` | per-project MCP 绑定 + resolve 预览(reference-don't-copy) | ✅ |
+| `/p/:pid/settings` | 项目信息、ingress baseURL | ✅ |
 
-### Workspace scope
+### Workspace · Supply
 
-| 路由 | 内容 | 端点 |
+| 路由 | 内容 | 端点 / 就绪度 |
 |---|---|---|
-| `/agents` | 已发布 agent 列表(能力徽章);**编辑器**:draft → Validate → Publish(顶栏 Publish + fingerprint/publication_id,原型编辑器外壳;spec 编辑用 CodeMirror + JSON Schema,oversight-next `WorkflowSpecEditor` 同款);workspace MCP 绑定 tab | `PUT /v1/config/agents/:id`、`POST …/validate`、`POST …/publish`、`PUT/GET /v1/config/agents/:id/mcp` |
-| `/models` | Catalog:Providers / Endpoints / Offerings;Inference profiles +「Resolve 试算」→ 链式 chips `model → credential → provider ●verified` | `/v1/config/providers|endpoints|offerings|catalog`、`inference-profiles/:id(+/resolve)`、`POST /v1/config/inference/resolve` |
-| `/credentials` | ① Sources(enter 只写、列表恒 secret-free、Validate 活探针、Archive);② Pools(ordinal/weight 失效顺位);③ Vaults(三型凭证 + `mcp_oauth_validate`;标注 host-ephemeral) | `/v1/config/credentials*`、`credential-pools/:id`、`/v1/vaults*` |
-| `/mcp-servers` | 定义 CRUD +「Bound by」反查(删除前警示下游绑定) | `GET/PUT /v1/config/mcp-servers*` |
-| `/access` | IAM tokens:mint(明文仅一次)、列表、revoke;角色×动作矩阵;bootstrap 提示 | `POST/GET/DELETE /v1/config/iam/tokens*` |
-| `/settings` | 两段 rail 汇总入口 + workspace 身份 | — |
+| `/agents` | 列表(model、能力徽章、来源徽章、**运行统计列**);删除 | 🔶 list/meta ⛔,publish 面 ✅ |
+| `/agents/:id`(编辑器) | goal 全 tab 集:**Basics / Tools / Skills / Plugins(JSON-Schema 配置表单)/ Delegates / Permissions(模式编辑 + 预览)/ Advanced(原始 JSON,CodeMirror)/ History(审计历史 + restore)**;顶栏 draft→Validate→**Publish**(fingerprint);diff 弹窗、unsaved guard、readiness 清单;**右侧 Sandbox 沙箱**(§4b) | 🔶 validate/publish ✅;meta/overrides/history/restore、permission-preview ⛔ |
+| `/agents/:id/dashboard` | per-agent 运行看板:推理延迟分布、生命周期事件、工具调用延迟 | ⛔ runtime-stats |
+| `/skills` + `/skills/:id` | 技能目录(ro):context、user/model-invocable、allowed_tools、arguments | ⛔ capability catalog(plugin-configuration.md 已规划) |
+| `/tools` + `/tools/:id` | 工具目录 + 工具编辑器(overrides) | ⛔ 同上 |
+| `/models` | Catalog 三层(Provider/Endpoint/Offering)+ Inference profiles + resolve 试算链 chips + **Test model**(≈goal test modal,经 credential validate) | ✅ |
+| `/credentials` | Sources(enter/validate/archive)、Pools、Vaults(三型 + mcp_oauth_validate) | ✅ |
+| `/mcp-servers` + `/:id` | 定义 CRUD + Bound-by 反查;**状态/健康点 + Restart**(goal);nav 健康点 | 🔶 CRUD ✅;status/restart ⛔(ExtMcpProbe 可扩) |
+| `/a2a-servers` | 远程委托服务器目录:delegate card 查看;CRUD | 🔶 card ✅(`/v1/delegates/:id/card`);CRUD ⛔ |
 
-**暂不做**(无 REST 面,不发明功能):Cycles/Insights/Analytics、Automation 规则 CRUD、Workers 舰队页。durable ops 收进会话详情抽屉(§4)。
+### Workspace · Observe(goal Observe 组全集)
 
-## 4. 核心界面:Session 详情
+| 路由 | 内容 | 端点 / 就绪度 |
+|---|---|---|
+| `/dashboard` | 运维看板:能力/健康摘要、负载 hero、活动 4 格、近期 audit 事件、时间范围切换 | ⛔ capabilities/system-info/runs-summary |
+| `/audit-log` | 审计表,`?resource=` 过滤(各资源页「查看审计」入口跳这) | ⛔ |
+| `/datasets` + `/:id` | Eval 数据集 CRUD;items/fixtures/expectations | ⛔ eval 面 |
+| `/eval-runs` + `/:id` | 评测运行列表(按 dataset 过滤)、baseline 对比 | ⛔ |
+| `/eval-reports` | 回放/评测报告 + **Trace 详情抽屉**(延迟/tokens/成本/scorer 分组/工具用量)+ **存为 fixture** | ⛔ |
 
-三栏式:左转录、右属性 rail(340px,窄屏折叠)。
+### Workspace · Govern
 
-**数据层(oversight-next 的关键模式,原样采用)**:committed 事件(`GET /v1/sessions/:id/events` + SSE replay)进入**单个 React Query cache 条目**,由纯 reducer 处理——按 `evt_*` id 去重、按序合并,乱序/重放自然收敛;**转录 UI 是该日志的纯投影**,不另设聊天 store。我们的事件是封闭 tagged union(`OutboundKind`),投影函数全程强类型,不允许 `as Record<string,unknown>` 逃逸。
+| 路由 | 内容 | 端点 / 就绪度 |
+|---|---|---|
+| `/access` | IAM tokens mint(明文一次)/list/revoke + 角色×动作矩阵 | ✅ |
+| `/settings` | 双段 rail 汇总 + workspace 身份 | ✅ |
 
-**转录渲染**:
+**仍不做**(两个来源都没有的原型虚构域):Cycles/Insights/Analytics、Automation 规则 CRUD、Workers 舰队页(durable ops 收进会话抽屉;观测由 Dashboard 承担)。
+
+## 4. 核心界面
+
+### 4a. Session 详情(我们超出 goal 的部分)
+
+数据层:committed 事件 + SSE replay 进**单 query cache 条目**,纯 reducer 去重排序,transcript 是纯投影;事件是封闭 tagged union,全程强类型。
 
 | 事件 | 渲染 |
 |---|---|
-| `agent.message` | 左侧气泡,渲染 ContentBlock 数组(text、image 内联);markdown 用 marked+dompurify(oversight-next `ChatMarkdown`) |
-| `agent.tool_use` | 可折叠 tool 卡(🛠 mono 工具名 + 状态 pill,`ToolCallCard` 同款);展开 Input JSON;`evaluated_permission` 小字标注 |
-| `agent.custom_tool_use` | 同上,标「client-executed」,结果回填表单 → `user.custom_tool_result` |
-| `agent.tool_result` | 折叠进对应 tool 卡 Output/Error 面板 |
-| `session.status_running` | 紫色脉冲点「Agent working」(iaPulse) |
-| `session.status_idle` | `end_turn` 静默;`requires_action` → **行内审批卡**(amber 边,Allow / Deny + deny_message)→ `user.tool_confirmation`;`retries_exhausted` 红色告警条 |
-| `span.outcome_evaluation_*` | 折叠「Outcome iteration N」时间线(result + explanation) |
+| `agent.message` | 左气泡,渲染 ContentBlock 数组(text、image 内联);marked+dompurify |
+| `agent.tool_use` / `tool_result` | 折叠 tool 卡(状态 pill、Input/Output/Error 面板、`evaluated_permission` 标注) |
+| `agent.custom_tool_use` | 标 client-executed,结果回填表单 |
+| `session.status_running` | 紫色脉冲「Agent working」 |
+| `session.status_idle` | `requires_action` → 行内审批卡(Allow/Deny+deny_message);`retries_exhausted` 红条 |
+| `span.outcome_evaluation_*` | Outcome 迭代时间线 |
 
-- 所有 tool i/o、错误文本过 secret 脱敏管道再进 DOM。
-- SSE 是 committed-replay 而非 live push → 用**原型 live banner**:轮询发现新事件不打断阅读,顶部浮出「N new updates · Refresh」,点击合并渲染。轮询间隔参照 oversight-next 分级:活跃会话 5s、列表 15s、dispatch/凭证 30s。
-- 用户消息右对齐(`--sunk` 底)。
+Composer:`user.message` + per-turn model 下拉;interrupt/pause/resume;define_outcome 表单。右 rail:能力广告卡、属性、**Durable 抽屉**(dispatches 账本、submit_background/supersede/cancel/wake/deliver、dead-letters、reconcile/reap)。SSE 为 replay → live banner「N new updates · Refresh」+ 分级轮询(活跃 5s/列表 15s/后台 30s)。所有 payload 过 secret 脱敏管道。
 
-**Composer**:文本 + 发送(`user.message`);model 覆盖下拉(per-turn);「⚙」:`user.interrupt` / `user.pause` / `user.resume`;Define outcome 表单(→ `user.define_outcome`)。
+### 4b. Agent Sandbox(goal 的杀手级功能,必须保留)
 
-**右 rail**:Agent 卡(能力广告:builtin_tools(ask 标记)/custom_tools/skills/delegates)、Session 属性(id mono、created、metadata、resources)、**Durable 抽屉**(端点 400 时隐藏):Dispatches 表(`run_id/status/attempts`,record-before-effect 账本样式)、Submit background / Supersede / Cancel / Wake / Deliver、Superseded、Dead-letters(+purge)、Reconcile / Reap(危险操作走 confirm)。
+编辑器右侧常驻沙箱面板,对**当前草稿**试跑:
+- 通道:今天可直接用 ✅ `POST /v1/ai-sdk/agents/:id/runs`(AI SDK UI Message Stream,`@ai-sdk/react` useChat 直连,goal 同款);对**未发布草稿**试跑需 ⛔ preview 端点(goal 的 `agent-previews/runs`)。
+- 渲染:Readable/JSON 双视图、reasoning 折叠、文件附件(≤4 个/8MB)、统计条(消息数/工具调用/上轮延迟)、Recent runs 抽屉、Reset 新会话。
+- **行内审批**:tool 卡 `approval-requested` → Allow/Deny → 自动续跑(`sendAutomaticallyWhen`);PermissionConfirm 特判显示目标工具名。
+- 全部 i/o 走脱敏管道(goal agent-secret-redaction 模式)。
+
+### 4c. Agent 编辑器 + 助手手递
+
+goal 的编辑器骨架 + 我们的 publish 语义:tab 集见 §3;顶栏 Validate→Publish(产出 fingerprint/publication_id);Plugins tab 用 capability catalog 下发的 JSON Schema 自动生成配置表单(plugin-configuration.md 的既定设计);History tab 接审计历史 + restore。FAB 助手生成的 AgentSpec 草稿推入编辑器并跳转,`needsApproval` 标记待确认。
 
 ## 5. 设计系统
 
-**基调(经 oversight-next 生产校准修订)**:原型的暖纸底(`#f8f5ef`)在 awaken-flow 产品化时**没有存活**——生产 token 收敛为**无色中性 chrome(#fff/#fafafa/#f7f7f7,暗 #0a0a0a/#111)+ amber 强调(oklch 78 色相)+ agent 紫 + 红 spark**,即品牌系统的统一底座。我们跟随这一收敛,与 oversight-next 同底不同款:
+基调(oversight-next 生产校准):**无色中性 chrome + amber 强调(oklch 78)+ agent 紫(hue 300/270)+ 红 spark**;Inter 正文 + JetBrains Mono 只管 id/数据/代码(A/B 校准 B 方案);基准 14px、radii 4/6/8/10/pill、hairline ring 阴影、dawn glow 低调保留;动效仅 iaPulse/iaBlink/180ms 浮层。色彩纪律:amber=需要人、紫=agent 活动、红=阻塞、绿=通过/verified、蓝=角色/引用;chrome 不带情绪色。
 
-- chrome 无色;**颜色只给语义**:amber = 需要**人**(主按钮、当前项、approval);紫 = **agent 活动**(脉冲、徽章、活跃侧边条);红 = 阻塞/告警;绿 = 通过/verified;蓝 = 角色/引用;
-- Inter 正文(CJK 回退 Noto Sans SC,`zh` 时 letter-spacing 归零)+ JetBrains Mono **只**用于 id/数据/代码(A/B 校准 B 方案);
-- 基准字号 14px、radii sm4/md6/lg8/card10/pill9999、间距 4 的倍数、hairline ring 阴影代替重边框;
-- dawn glow 径向渐变作为画布顶部的品牌隐喻保留(低透明度,不干扰内容);
-- 动效克制:iaPulse(agent 呼吸)、iaBlink(流式光标)、浮层 180ms,共三种。
+Token 工程(照抄 oversight-next):`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS 变量(primitives → `--brand-*` 语义 → 短别名/`--aw-*`)+ manifest + token-contract 测试;`data-theme` 明暗持久化。品牌切换(如日后归入 awaken-agents 品牌 indigo/compact)只动 4 个 themed 旋钮。
 
-**Token 工程(照抄 oversight-next 流水线)**:
-- 事实源 `design-tokens/awaken-console.tokens.json`(W3C Design Tokens 格式)→ `scripts/build-tokens.mjs` → `src/styles/tokens.css` + manifest;
-- 三层:primitives(`--brand-color-*`)→ 语义(`--brand-bg/--brand-accent/--brand-agent/--brand-tone-*`,含 color-mix 派生 tint)→ 短别名 + `--aw-*` 别名;组件只消费后两层;
-- 明暗:`:root,[data-theme="light"]` / `[data-theme="dark"]`,localStorage 持久化;
-- `token-contract` 测试钉住 CSS 变量面,防漂移。
-- 关键值(与 oversight-next 对齐):accent `oklch(62% .14 78)` 亮 / `oklch(74% .13 78)` 暗;agent `oklch(56% .15 300)` / `oklch(70% .135 270)`;spark `#cf4040`/`#fa6863`;状态色、优先级 ramp 按其 `--brand-state-*`/`--pri-*` 取值。
-- **品牌可切换性是免费的**:若日后确认本产品应归入「awaken-agents」品牌(indigo 265、compact、dark-first),只需换 tokens.json 的 4 个 themed 旋钮(accent/默认明暗/密度),chrome、紫、spark、状态色全部不动。默认先用 amber,与用户要实现的 Oversight 视觉家族一致。
+形态配方(原型数值):卡片 r10 + `0 0 0 1px var(--edge), 0 1px 1px rgba(26,29,30,.03)`;导航项 h32 r6 active=card 底+ring;pill r9999 11/600;拆分按钮;statChip 全可点;dropdown 手机端 bottom-sheet;micro-label 10-11/700 大写;KPI `tabular-nums`。
 
-**形态配方**(原型逐条提取,数值不变):卡片 radius 10 + `0 0 0 1px var(--edge), 0 1px 1px rgba(26,29,30,.03)`;导航项 h32 r6,active = card 底 + ring + icon 变 accent;pill r9999 h20–24 11/600 tint 底;状态点 6–9px;拆分按钮;statChip 全可点;通用 dropdown 手机端 bottom-sheet;micro-label 10–11/700 大写宽字距;KPI 值 `tabular-nums`。
+## 6. 工程蓝图
 
-## 6. 工程蓝图(对照 oversight-next 的落地形态)
+目录(pnpm workspace,`apps/console/`):routes.tsx + `routes/*.tsx` 薄包装 → `surfaces/<domain>/`(每 surface 自带 css,禁全局巨石);`lib/navigation/paths.ts` SSOT;`lib/api/client.ts` 唯一 fetch 出口(bearer 注入 + `ApiClientError{status,request_id}` + no-raw-fetch 测试);`lib/query/use-*`;`lib/query/session-event-log.ts` reducer;`lib/security/redact.ts`;`components/{app,chat,ui}`。
 
-**目录**(pnpm workspace,`apps/console/`):
+- 栈:React 19、Vite、TS strict、react-router v7、TanStack Query v5、i18next(en/zh-CN)、lucide-react、CodeMirror 6、marked+dompurify、`@ai-sdk/react`(沙箱/助手流)、Vitest+TL;不引 Tailwind/Redux/RJSF/@xyflow。
+- **Contract-first(已落地)**:`contracts/openapi.generated.json` 由 `awaken-admin-config-api::export_openapi` 生成(operation 注册表 + schemars SSOT;`generate-contracts.sh --check` 门禁;`openapi_contract` 测试锁路由挂载)→ 前端 `openapi-typescript` codegen + dev-only ajv 校验。新后端面(eval/audit/观测)落地时同步扩注册表。
+- 能力门控:按端点探活(404→route_absent 置灰页,503→registry_unavailable);认证 session-as-query;项目 roster sentinel;structure tests + token-contract 测试;P2 起 Playwright 真 SSE。
+- 组件 copy-adapt 自 oversight-next(token 脚本、AppShell/⌘K、chat 套件、client 骨架、reducer);goal 侧 copy-adapt 交互设计(沙箱审批流、editor tabs、trace 抽屉),代码按我们的栈重写。
 
-```
-apps/console/
-  design-tokens/awaken-console.tokens.json
-  scripts/build-tokens.mjs · build-types.mjs · build-api-client.mjs (*:check 门禁)
-  src/
-    routes.tsx            # createBrowserRouter + RouteObject[]
-    routes/*.tsx          # 薄包装 → Surface
-    lib/navigation/paths.ts   # 导航 SSOT
-    lib/api/client.ts     # 唯一 fetch 出口(auth 注入 + ApiClientError{status,request_id})
-    lib/api/*-client.ts   # 按域薄封装(sessions/config/vaults/durable/iam)
-    lib/query/use-*.ts    # React Query hooks
-    lib/query/session-event-log.ts  # append-only reducer(去重/排序/派生 lifecycle)
-    lib/security/redact.ts
-    components/app/       # AppShell / Sidebar / TopBar / CommandPalette / ScopePicker
-    components/chat/      # MessageList / ToolCallCard / ApprovalCard / Composer
-    components/ui/        # button/pill/chip/card/drawer/segmented/…
-    surfaces/<domain>/    # 每 surface 一目录,自带 css(禁止单一 global.css 膨胀)
-    styles/tokens.css (generated) · base.css
-```
+## 7. 后端缺口(= goal 功能对齐清单,对齐 goal-coverage P0–P4 路线)
 
-- **栈**:React 19、Vite、TS strict、react-router v7(data router + lazy)、TanStack Query v5、i18next(en/zh-CN)、lucide-react、CodeMirror 6(agent spec JSON 编辑)、marked+dompurify、Vitest+Testing Library。
-- **CSS 决策**:跟 oversight-next 用手写 CSS + token 变量(不引 Tailwind,与其风格一致、便于日后共库),但**按 surface 拆文件**,吸取 213KB global.css 的教训;单文件上限约束(lint 或约定 <400 行)。
-- **Contract-first(后端配套已落地)**:`contracts/openapi.generated.json`(OpenAPI 3.1)由 `awaken-admin-config-api` 的 `export_openapi` 导出(operation 注册表 + schemars schema 复用,`generate-contracts.sh --check` 门禁,`openapi_contract` 测试锁路由挂载)。前端接 `openapi-typescript` → `_api.d.ts` + 生成客户端 + dev-only ajv 响应校验(打日志不抛错)。
-- **认证**:session-as-query(瞬态故障在 loading 内重试;区分「API 未代理返回 HTML」的 diagnostic 与真 401);IAM bearer 存 localStorage;`RequireSession` 守卫 + returnUrl。
-- **项目 roster sentinel**:project 未解析前,project-scoped queries 全部 disabled(oversight-next LOADING_DIRECTORY 模式),避免错闪。
-- **测试**:structure tests 钉 IA(侧栏分组、路由→面包屑);token-contract 测试;reducer 纯函数单测(乱序/重放收敛);`no-raw-fetch` 测试;P2 起补 Playwright 真浏览器 e2e 走 SSE(oversight-next 的已知空白)。
-- **组件迁移策略**:从 oversight-next **copy-adapt**(不是共享包,两 repo 两产品,避免过早抽库):token 流水线脚本、AppShell/Sidebar/CommandPalette、chat 套件、Inbox surface 骨架、`client.ts`/`errors.ts`/no-raw-fetch、run-event-stream reducer(改名 session-event-log,类型换成我们的 OutboundKind)。其 239 个 feature client 不迁移——按我们的路由重写。
-- **明确不引入**:@xyflow(oversight-next 也没真用)、Redux/Zustand、RJSF、Tailwind。
+**P2 前置(会话面)**:
+1. `GET /v1/sessions`(列表 + status/project 过滤)——Home/Inbox/会话列表的硬前置。
+2. needs-attention 聚合(或列表过滤);session title/archive 更新端点。
 
-## 7. 后端缺口(前端落地的前置项,按优先级)
+**goal 对齐(Observe/目录/沙箱/助手),按依赖排序**:
+3. `GET /v1/capabilities`(能力目录:skills/tools/插件 schema)——Skills/Tools 页 + Plugins 配置表单 + 全局门控的共同前提(plugin-configuration.md 已有设计)。
+4. Agent 管理读面:list/meta/history/restore、permission-preview——编辑器 History/Permissions tab。
+5. 运行观测:runs summary、per-agent runtime-stats——Dashboard + agent 看板。
+6. `GET /v1/audit-log`——审计页(admin 面已有 x-request-id 关联,缺持久化+查询)。
+7. Eval 面:datasets/eval-runs/reports CRUD(observability-eval-dataset-boundary.md 已界定)。
+8. MCP status/restart(ExtMcpProbe 扩展)、A2A servers CRUD、agent-preview 端点(对草稿沙箱)、admin assistant 面。
 
-1. **`GET /v1/sessions`(列表 + 按 status/project 过滤)**——Home、Inbox、会话列表全依赖枚举;没有它 P2 只能按 id 打开会话。
-2. **needs-attention 聚合**(或列表带 `status=requires_action` 过滤)——Inbox 数据源。
-3. ~~OpenAPI 契约~~ **已落地**(`contracts/openapi.generated.json`):采用 oversight-next 方式而非 utoipa——手写 operation 注册表 + 复用现有 schemars 导出(OpenAPI 3.1 原生接受 JSON Schema 2020-12)+ `export_openapi` example + `openapi_contract` 测试锁路由;理由:schemars 已是我们的 schema SSOT(utoipa 有自己的 ToSchema,会造成双源漂移),managed 会话 wire 属官方 SDK 需要「策展排除」,且路由按模式动态装配、跨多 crate。当前覆盖 admin config plane 19 路径 / 28 操作;IAM tokens 与 durable ops 的注册表扩展是后续增量。
-4. Session 元数据更新端点(title/archive;字段已存在,无 PATCH)。
-5. SSE live push(当前 committed-replay)——非阻塞,live banner + 分级轮询先行(oversight-next 生产也全靠轮询)。
-6. Workspace 枚举(非一等实体)——P1 固定单 workspace(取自 token)。
+**契约配套**:每落地一组端点 → openapi 注册表 + schemars 同步扩展(✅ 管线已就绪,当前覆盖 admin config plane 19 路径/28 操作)。
 
-## 8. 分期
+**非阻塞**:SSE live push(live banner + 轮询先行);workspace 枚举(P1 单 workspace)。
 
-- **P1 地基 + 管理面(零后端改动)**:token 流水线、外壳(paths.ts/侧栏/⌘K/明暗/i18n)、单出口 fetch、Workspace 全部资源页(Models、Credentials、MCP、Access、Agents 列表)+ Settings。
-- **P2 会话面**:事件日志 reducer + 转录 + composer + HITL 审批 + live banner;Inbox(先聚合 dead-letters 与凭证告警;缺口 1 落地后补会话审批);Playwright 首条 SSE 用例。
-- **P3 项目面**:project 切换器 + roster sentinel、per-project MCP 绑定 + resolve 预览、`/projects/{id}` ingress 会话。
-- **P4 深水区**:Agent 编辑器 publish 流(CodeMirror spec + readiness 清单)、Durable 运维抽屉全量、outcome 面板、vault mcp_oauth 全流程。
+## 8. 分期(与 goal-coverage 后端路线交错)
+
+- **P1 地基 + 管理面(零后端改动)**:token 流水线、外壳(paths/⌘K/明暗/i18n/门控框架)、单出口 fetch + codegen;Models、Credentials、MCP、A2A(card 只读)、Access、Agents(publish 面)+ Settings;**Sandbox 对已发布 agent 先行**(ai-sdk 端点已备)。
+- **P2 会话面**:事件 reducer + 转录 + HITL + live banner;Inbox;Playwright 首条 SSE 用例。(前置:缺口 1–2)
+- **P3 项目面**:project 切换器 + roster sentinel、per-project 绑定 + resolve 预览、ingress 会话。
+- **P4 goal Observe/目录对齐**:capabilities 目录(Skills/Tools/Plugins 表单)→ Dashboard/audit → agent 看板 → eval 三页 → 助手 FAB;各页随后端端点落地逐个点亮(门控页先行占位)。
