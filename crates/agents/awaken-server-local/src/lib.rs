@@ -727,6 +727,15 @@ impl SessionRuntime for ManagedHost {
     /// Hosts built without [`ManagedHost::with_mcp`] keep the trait's no-op.
     ///
     /// [`AgentMcpConfig`]: awaken_config_resolver::AgentMcpConfig
+    async fn rebind_model(&self, thread: &str, model: &str) -> Result<(), RunError> {
+        // R5: re-stage the thread's model and evict its cached context so the next
+        // turn rebuilds with the newly resolved executor (native switch is O(1); an
+        // ACP thread's cached context relaunches its CLI on rebuild).
+        self.host.register_thread_model(thread, model);
+        self.host.sessions.lock().await.remove(thread);
+        Ok(())
+    }
+
     async fn prepare_session(
         &self,
         thread: &str,
