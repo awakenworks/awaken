@@ -243,6 +243,62 @@ pub struct AgentMcpConfig {
     pub version: i64,
 }
 
+/// Which resources an agent is bound to — the management-plane agent↔resource
+/// binding (ADR-0038). At run bind time each [`ResourceBinding`] is materialized
+/// two ways: into a `MountRequirement` the sandbox realizes, and into a prompt
+/// fragment appended to the agent's effective system prompt (ADR-0038 A3a). Rows
+/// are secret-free — a private resource's credential is a binding by reference,
+/// resolved through the vault like MCP auth, never material here.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AgentResourceConfig {
+    pub agent_id: String,
+    pub resources: Vec<ResourceBinding>,
+    pub version: i64,
+}
+
+/// One resource bound to an agent. `resource_id` addresses the backing resource
+/// (a file/skill id, a memory store id, a repo URL; empty for the outputs mount);
+/// `mount_path` is where it appears in the sandbox; `instructions` is optional
+/// per-binding guidance rendered into the agent's system prompt.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ResourceBinding {
+    pub kind: ResourceKind,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resource_id: String,
+    pub mount_path: String,
+    pub access: ResourceAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+/// The resource kind a binding realizes — one variant per ADR-0038 resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum ResourceKind {
+    /// The outputs mount the host collects as artifacts.
+    Outputs,
+    /// An immutable file blob.
+    File,
+    /// A persistent, keyed memory store.
+    MemoryStore,
+    /// A git working tree cloned from a remote.
+    GithubRepository,
+    /// A versioned skill bundle.
+    Skill,
+}
+
+/// Whether a bound resource is read-only or writable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum ResourceAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
 /// A management-plane project identifier. It doubles as the project's ingress
 /// address segment (`/projects/{id}/…` or a per-project domain label), so it is
 /// constrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.
