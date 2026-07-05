@@ -31,10 +31,12 @@ use serde_json::Value;
 /// The `awaken-provisioning-contract` seam realized locally (ADR-0041). Additive:
 /// the pre-contract `Environment`/`SandboxProvider` surface below is unchanged.
 mod artifacts;
-mod file_store;
 mod namespace;
 mod provider;
-pub use file_store::{FileStore, FileStoreError, FsFileStore, InMemoryFileStore};
+// The content-addressed blob store is the canonical `awaken-file-store` (ADR-0041,
+// BLAKE3), re-exported here for existing consumers; the provider resolves mount bytes
+// from a `FileStore` handle injected at config time (ADR-0038 D6).
+pub use awaken_file_store::{FileStore, FileStoreError, FsFileStore, InMemoryFileStore};
 pub use namespace::{NamespaceProvider, bubblewrap_argv, sandbox_exec_argv};
 pub use provider::{LocalProcess, LocalProvider, LocalSandbox};
 
@@ -223,14 +225,13 @@ pub(crate) fn rooted_hand_tools(root: IsolatedRoot) -> Vec<Arc<dyn HandTool>> {
         .collect()
 }
 
-/// A stable content fingerprint over provisioning bytes. Cheap and dependency-free
-/// (mirrors the `ResolvedSpec` descriptor-hash style); it is the pin identity a
-/// mount declares and the provider verifies, not a cryptographic guarantee.
+/// A stable content id over provisioning bytes — the pin identity a mount declares
+/// and the provider verifies. Delegates to [`awaken_file_store::content_id`] (BLAKE3),
+/// so the id is identical to what the content-addressed [`FileStore`] assigns and is
+/// stable across processes, Rust versions, and nodes (unlike the old 64-bit
+/// `DefaultHasher`), which distributed reference-passing (ADR-0038 D6) requires.
 pub fn content_fingerprint(bytes: &[u8]) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    awaken_file_store::content_id(bytes)
 }
 
 /// A typed provisioning input carried in [`SandboxSpec::mounts`] as an opaque
@@ -590,6 +591,20 @@ impl SandboxProvider for LocalSandboxProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_fingerprint_is_blake3_and_matches_file_store() {
+        // Unified on the content-addressed store's id (BLAKE3): a blob's mount id is
+        // identical whichever crate computed it — the precondition for swapping the
+        // FileStore impl at config time (ADR-0038 D6). BLAKE3 hex is 64 chars, so this
+        // also proves we left the old unstable 16-hex DefaultHasher fingerprint.
+        let bytes = b"provisioned bytes";
+        assert_eq!(
+            content_fingerprint(bytes),
+            awaken_file_store::content_id(bytes)
+        );
+        assert_eq!(content_fingerprint(bytes).len(), 64);
+    }
 
     #[test]
     fn resolve_stays_under_root() {

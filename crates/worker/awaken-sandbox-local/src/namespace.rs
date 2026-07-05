@@ -20,7 +20,8 @@ use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
 
-use crate::file_store::FileStore;
+use awaken_file_store::FileStore;
+
 use crate::provider::{LocalProcess, resolve_source, verify};
 use crate::{IsolatedRoot, content_fingerprint};
 
@@ -181,7 +182,7 @@ impl NamespaceProvider {
     }
 
     /// Realize the mounts under `root`, all-or-nothing: any failure reaps the tree.
-    fn realize_layout(
+    async fn realize_layout(
         &self,
         root: &IsolatedRoot,
         spec: &pc::SandboxSpec,
@@ -190,7 +191,7 @@ impl NamespaceProvider {
         let mut realized = Vec::new();
         for req in &spec.mounts {
             let host = root.resolve(&req.mount_path).map_err(err)?;
-            let bytes = resolve_source(&req.source, &self.blobs, &self.file_store);
+            let bytes = resolve_source(&req.source, &self.blobs, &self.file_store).await;
             match &bytes {
                 Some(bytes) => {
                     verify(&req.source, bytes)?; // fail closed on content-hash mismatch
@@ -262,7 +263,7 @@ impl pc::SandboxProvider for NamespaceProvider {
             }
         }
 
-        let (layout, realized) = match self.realize_layout(&root, spec) {
+        let (layout, realized) = match self.realize_layout(&root, spec).await {
             Ok(v) => v,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(root.root());
