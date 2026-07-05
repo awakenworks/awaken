@@ -88,9 +88,67 @@ async function main() {
         `model must reproduce the mounted file's secret token; got: ${JSON.stringify(said.slice(0, 200))}`,
       );
       pass(`model read the mounted file and reproduced the token: ${TOKEN}`);
+
+      // 4. ARTIFACT write + retrieval: the model writes a file under `outputs/`; the
+      //    host harvests it, and we retrieve it via files.list(scope_id) + download.
+      const ARTIFACT = 'DONE_9931'; // awaken-allow: secret
+      await client.beta.sessions.events.send(session.id, {
+        events: [
+          {
+            type: 'user.message',
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Using your tools, write the exact text ${ARTIFACT} into a new file ` +
+                  `at the path outputs/result.txt. Reply with "written" when done.`,
+              },
+            ],
+          },
+        ],
+        betas: BETAS,
+      });
+      // `write` is not auto-allowed (only read/glob/grep are), so the run parks for a
+      // confirmation. Approve each pending write tool_use, then wait for it to land.
+      const approved = new Set();
+      let files = [];
+      for (let attempt = 0; attempt < 20 && files.length === 0; attempt++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const evs = [];
+        for await (const e of client.beta.sessions.events.list(session.id, { betas: BETAS })) evs.push(e);
+        for (const e of evs) {
+          if (
+            e.type === 'agent.tool_use' &&
+            e.evaluated_permission === 'ask' &&
+            !approved.has(e.id)
+          ) {
+            approved.add(e.id);
+            await client.beta.sessions.events.send(session.id, {
+              events: [{ type: 'user.tool_confirmation', tool_use_id: e.id, result: 'allow' }],
+              betas: BETAS,
+            });
+          }
+        }
+        files = [];
+        for await (const f of client.beta.files.list({ scope_id: session.id, betas: BETAS })) {
+          files.push(f);
+        }
+      }
+      assert.ok(approved.size > 0, 'the write tool should have parked for a confirmation');
+      pass(`approved ${approved.size} gated tool call(s) via user.tool_confirmation`);
+      assert.ok(files.length > 0, `session artifacts should be listed; got ${files.length}`);
+      const artifact = files.find((f) => (f.filename ?? '').includes('result.txt')) ?? files[0];
+      pass(`artifact listed via files.list(scope_id): ${artifact.filename} (${artifact.id.slice(0, 12)})`);
+      const resp = await client.beta.files.download(artifact.id, { betas: BETAS });
+      const text = await resp.text();
+      assert.ok(
+        text.includes(ARTIFACT),
+        `downloaded artifact must contain ${ARTIFACT}; got ${JSON.stringify(text.slice(0, 120))}`,
+      );
+      pass(`artifact written by the model, harvested + downloaded by the host: ${ARTIFACT}`);
     });
 
-    console.log('E2E PASS: file resource mounted, read by a real model via the official SDK, prompt effect verified.');
+    console.log('E2E PASS: file resource read + artifact write/retrieve verified end-to-end with a real model via the official SDK.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

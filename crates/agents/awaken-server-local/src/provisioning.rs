@@ -58,6 +58,28 @@ impl SharedHost {
         self.file_store.clone()
     }
 
+    /// Collect a session's output artifacts (ADR-0038): the files the agent wrote
+    /// under the environment's `outputs/` dir, each stored into the blob store and
+    /// returned as `(content_id, logical_path)`. This is the sandbox→host reverse
+    /// channel behind `GET /v1/files?scope_id=<session>`; empty when the session has
+    /// no environment or wrote nothing.
+    pub async fn session_artifacts(&self, thread: &str) -> Vec<(String, String)> {
+        let env = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(thread).map(|ctx| ctx.env.clone())
+        };
+        let Some(env) = env else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (path, bytes) in env.list_files("outputs") {
+            if let Ok(id) = self.file_store.put(&bytes).await {
+                out.push((id, path));
+            }
+        }
+        out
+    }
+
     /// The registered built-in tools advertised on a managed session's agent object:
     /// each hand-tool id and whether its calls require confirmation. Folded into the
     /// public `agent_toolset` by the adapter. Deterministic from host config.

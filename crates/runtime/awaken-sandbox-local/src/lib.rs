@@ -442,6 +442,43 @@ impl Environment {
         out
     }
 
+    /// List regular files under `<root>/<subdir>` (recursively), returning each
+    /// file's path relative to `subdir` and its bytes, sorted by path. Empty when
+    /// the dir is absent. Collects a session's output artifacts (agent-written
+    /// files) for retrieval; the returned paths are logical (never a host path, G3).
+    pub fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {
+        let Some(root) = &self.root else {
+            return Vec::new();
+        };
+        let base = root.join(subdir);
+        let mut out = Vec::new();
+        let mut stack = vec![base.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                match entry.file_type() {
+                    Ok(t) if t.is_dir() => stack.push(path),
+                    Ok(t) if t.is_file() => {
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            let rel = path
+                                .strip_prefix(&base)
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .replace('\\', "/");
+                            out.push((rel, bytes));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// Attach realized resource references.
     pub fn with_resources(mut self, resources: Vec<ResourceRef>) -> Self {
         self.resources = resources;
