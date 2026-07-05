@@ -86,8 +86,10 @@ export function startCalcFixture(token, options = {}) {
     // --- the OAuth token endpoint: no bearer required (public client) ---
     if (req.url === '/token') {
       if (req.method !== 'POST') {
-        res.writeHead(405);
-        res.end();
+        // Hold an SSE stream open (the ext-mcp background listener connects
+        // here); it carries no events and dies with the fixture.
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(': keepalive\n\n');
         return;
       }
       let raw = '';
@@ -133,11 +135,11 @@ export function startCalcFixture(token, options = {}) {
       res.end();
       return;
     }
-    // The awaken-ext-mcp transport also opens a background GET SSE listener; a
-    // 405 tells it this server has no standalone stream (it stops cleanly).
+    // The awaken-ext-mcp transport also opens a background GET SSE listener;
+    // hold the stream open (no events) so the listener loop runs for real.
     if (req.method !== 'POST') {
-      res.writeHead(405);
-      res.end();
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(': keepalive\n\n');
       return;
     }
     let raw = '';
