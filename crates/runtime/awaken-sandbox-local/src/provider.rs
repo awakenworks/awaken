@@ -61,10 +61,10 @@ pub(crate) async fn resolve_source(
     if let Some(bytes) = blobs.get(id) {
         return Some(bytes.clone());
     }
-    if let Some(store) = store {
-        if let Ok(Some(bytes)) = store.get(id).await {
-            return Some(bytes);
-        }
+    if let Some(store) = store
+        && let Ok(Some(bytes)) = store.get(id).await
+    {
+        return Some(bytes);
     }
     None
 }
