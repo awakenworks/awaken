@@ -757,6 +757,18 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             WORKSPACE_WRITE
         }),
         ["v1", "config", "agents", _, "mcp", "resolve"] if !read => scoped(WORKSPACE_READ),
+        // -- projects (consumption-side addressing + per-project agent bindings) --
+        ["v1", "config", "projects"] if read => scoped(WORKSPACE_READ),
+        ["v1", "config", "projects", _] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
+        ["v1", "config", "projects", _, "agents", _, "mcp"] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
         // -- the Managed vault front door --
         ["v1", "vaults"] if !read => scoped(APIKEY_WRITE),
         ["v1", "vaults", _] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
