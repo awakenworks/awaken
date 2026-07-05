@@ -121,9 +121,10 @@ fn end_cause(reason: TerminationReason) -> EndCause {
         TerminationReason::NaturalEnd => EndCause::NaturalEnd,
         TerminationReason::Cancelled => EndCause::Cancelled,
         TerminationReason::Refusal => EndCause::Stopped("agent refused".to_string()),
-        TerminationReason::Error => {
-            EndCause::Error(Failure::Inference("agent reported an error".to_string()))
-        }
+        TerminationReason::Error => EndCause::Error(Failure::Inference {
+            code: "acp_error".to_string(),
+            message: "agent reported an error".to_string(),
+        }),
         TerminationReason::TimedOut => EndCause::Stopped("turn deadline exceeded".to_string()),
     }
 }
@@ -134,7 +135,10 @@ fn failure_cause(failure: &AcpFailure) -> EndCause {
     match failure.termination() {
         TerminationReason::TimedOut => EndCause::Stopped("turn deadline exceeded".to_string()),
         TerminationReason::Refusal => EndCause::Stopped("agent refused".to_string()),
-        _ => EndCause::Error(Failure::Inference(failure.message.clone())),
+        _ => EndCause::Error(Failure::Inference {
+            code: "acp_failure".to_string(),
+            message: failure.message.clone(),
+        }),
     }
 }
 
