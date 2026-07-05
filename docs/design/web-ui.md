@@ -194,3 +194,132 @@ Token 工程(照抄 oversight-next):`design-tokens/*.tokens.json`(W3C)→ build 
 - **P2 会话面**:事件 reducer + 转录 + HITL + live banner;Inbox;Playwright 首条 SSE 用例。(前置:缺口 1–2)
 - **P3 项目面**:project 切换器 + roster sentinel、per-project 绑定 + resolve 预览、ingress 会话。
 - **P4 goal Observe/目录对齐**:capabilities 目录(Skills/Tools/Plugins 表单)→ Dashboard/audit → agent 看板 → eval 三页 → 助手 FAB;各页随后端端点落地逐个点亮(门控页先行占位)。
+
+## 9. 线框图
+
+约定:Project 容器**完全参照 Anthropic Console 的设计语言**(单行表格 + mono id + 状态点、右上主按钮、右侧抽屉、密钥只显示一次);Workspace 参照 **oversight-next 的 Settings 设计**(双段 rail、每段 hint 文案、scope 色调 banner)。amber=需要人,紫=agent 活动。
+
+### 9a. Project · Sessions 列表(Anthropic 表格风)
+
+```text
+┌ Acme Inc / acme-web / Sessions ──────────────────────────────┬───────────────┐
+│                                                              │ [+ New session]│
+├──────────────────────────────────────────────────────────────┴───────────────┤
+│ (All) (Running ●) (Needs you ⚠2) (Idle)        [ Search sesn_…        ] [⟳]  │
+├───────────────────────────────────────────────────────────────────────────────┤
+│  STATUS      SESSION            TITLE                AGENT        UPDATED     │
+│  ● running   sesn_01hx…f2a4     Fix flaky auth test  builder@3    2m ago    ▸ │
+│▐ ⚠ needs you sesn_01hx…9c1b     Migrate settings     reviewer@1   18m ago   ▸ │  ← amber 行内标注
+│  ○ idle      sesn_01hx…77d0     Draft ADR summary    docs@1       1h ago    ▸ │     tool: bash 待确认
+│  ○ idle      sesn_01hw…be32     (untitled)           builder@3    3d ago    ▸ │
+├───────────────────────────────────────────────────────────────────────────────┤
+│  4 sessions · baseURL  …/projects/acme-web   [copy]                           │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 9b. Project · Session 详情(转录 = 事件日志纯投影)
+
+```text
+┌ ‹ Sessions   sesn_01hx…9c1b · Migrate settings          ⏸ pause  ⏹ interrupt ┐
+├──────────────────────────────────────────────────┬────────────────────────────┤
+│  ▲ 2 new updates · Refresh          (live banner)│ AGENT                      │
+│ ┌──────────────────────────────────────────────┐ │  reviewer@1 · claude-opus-4│
+│ │ you                                          │ │  toolset: bash✓ edit✓     │
+│ │   Migrate the settings schema to v2          │ │  read✓ write(ask) …       │
+│ └──────────────────────────────────────────────┘ │  skills: adr-writer        │
+│ ┌──────────────────────────────────────────────┐ │  delegates: sec_reviewer   │
+│ │ ⬡ agent          ⣿ working (紫脉冲)          │ ├────────────────────────────┤
+│ │  I'll start by inspecting the current schema.│ │ PROPERTIES                 │
+│ │ ▸ 🛠 read · settings/schema.json      done ✓ │ │  created   2026-07-05      │
+│ │ ▸ 🛠 bash · npm run migrate       ⚠ 待确认   │ │  env       env_node20      │
+│ │ ┌──────────────────────────────────────────┐ │ │  vaults    vlt_9f…(1)      │
+│ │ │ ⚠ Approve `bash` execution?              │ │ │  metadata  {…}             │
+│ │ │   npm run migrate --workspace…           │ │ ├────────────────────────────┤
+│ │ │   evaluated_permission: ask              │ │ │ OUTCOME                    │
+│ │ │        [ Deny + note… ]  [ ✓ Allow ]     │ │ │  iteration 1 · revising    │
+│ │ └──────────────────────────────────────────┘ │ ├────────────────────────────┤
+│ └──────────────────────────────────────────────┘ │ ▸ DURABLE OPS              │
+│                                                  │   dispatches 2 · dlq 0     │
+│ ┌──────────────────────────────────────────────┐ │   [background] [supersede] │
+│ │ Message…                [model: opus-4 ▾] ➤ │ │   [reconcile]  [reap]      │
+│ └──────────────────────────────────────────────┘ │                            │
+└──────────────────────────────────────────────────┴────────────────────────────┘
+```
+
+### 9c. Project · New session(Anthropic 创建面板风)
+
+```text
+┌ New session · acme-web ───────────────────────────────────────────┐
+│ Agent        [ builder@3 · claude-sonnet-4.5              ▾ ]     │
+│ Model        [ inherit from agent                          ▾ ]     │
+│ Environment  [ env_node20                                  ▾ ]     │
+│ Vaults       [x] vlt_9f…  runtime-mcp   [ ] vlt_02…  scratch      │
+│ MCP servers  ┌───────────────────────────────────────────────┐    │
+│  (inline)    │ name  docs-search   url  https://mcp.acme…    │ ✕  │
+│              └───────────────────────────────────────────────┘    │
+│              [+ add inline server]   ⓘ project 绑定的 MCP 自动并入 │
+│ Title        [ Migrate settings schema                       ]    │
+│                                        [ Cancel ] [ Create ➤ ]    │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+### 9d. Project · Vaults(密钥只显示一次;host-ephemeral 提示)
+
+```text
+┌ Acme Inc / acme-web / Vaults ────────────────────────────┬───────────────────┐
+│ ⓘ Vault 视图随进程重建(host-ephemeral)                  │   [+ Create vault] │
+├──────────────────────────────────────────────────────────┴───────────────────┤
+│ ▾ vlt_9f3a…c210   runtime-mcp                    2 credentials       [Delete] │
+│    ┌─────────────────────────────────────────────────────────────────────────┐
+│    │ crd_11ab…  mcp_oauth        token_endpoint https://… ● valid  [Validate]│
+│    │ crd_58cd…  static_bearer    ●●●●●●●● (write-only)             [—]       │
+│    └─────────────────────────────────────────────────────────────[+ Add]────┘
+│ ▸ vlt_02be…77   scratch                          0 credentials       [Delete] │
+├───────────────────────────────────────────────────────────────────────────────┤
+│  Add credential (drawer) ──────────────────────────────────────────────       │
+│   Type   (env-var) (static_bearer) (mcp_oauth●)                               │
+│   token_endpoint [https://…]  client_id [......]  auth [none ▾]  scope [ ]    │
+│   refresh_token  [●●●●●●●●●●]   ⓘ 密封后不再回显                [ Save ]      │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 9e. Workspace · Settings 统一页(oversight-next 双段 rail)
+
+```text
+┌ Acme Inc / Settings ──────────────────────────────────────────────────────────┐
+│ ┌─ rail 216px ──────────┐  ┌──────────────────────────────────────────────┐  │
+│ │ PROJECT · ACME-WEB    │  │ ⚑ Scoped to workspace · Acme Inc             │  │
+│ │   General             │  │   Shared across every project.    (banner)   │  │
+│ │   Agent MCP bindings  │  ├──────────────────────────────────────────────┤  │
+│ │   Vaults ↗            │  │ AI providers                                 │  │
+│ │ WORKSPACE · ACME INC  │  │ hint: Providers, endpoints, offerings and    │  │
+│ │   Identity            │  │ profiles — inference routing shared across   │  │
+│ │ ▸ AI providers        │  │ every project.                               │  │
+│ │   Credentials         │  │ ┌──────────────────────────────────────────┐ │  │
+│ │   MCP / A2A servers   │  │ │ PROVIDER   ENDPOINT        MODELS  STATUS│ │  │
+│ │   Access              │  │ │ anthropic  api.anthropic…  5   ● verified│ │  │
+│ │                       │  │ │ openai     api.openai…     4   ● verified│ │  │
+│ │                       │  │ └──────────────────────────────────────────┘ │  │
+│ └───────────────────────┘  └──────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 9f. Workspace · Credentials(供给侧;resolve 链是签名交互)
+
+```text
+┌ Acme Inc / Credentials ──────────────────────────────────┬────────────────────┐
+│                                                          │ [+ Enter credential]│
+├──────────────────────────────────────────────────────────┴────────────────────┤
+│ SOURCES                                       ?workspace_id=wrkspc_default    │
+│  ID          KIND    PROVIDER    STATUS       LAST PROBE                       │
+│  cs_anth_01  vault   anthropic   ● active     ● valid 5m   [Validate][Archive] │
+│  cs_env_02   env     anthropic   ● active     ◌ unknown    [Validate][Archive] │
+│  cs_oai_03   vault   openai      ◌ disabled   ✗ invalid    [Validate][—]       │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ POOLS                                                                          │
+│  pool_main   members: ① cs_anth_01 (w=10)  ② cs_env_02 (w=1)   failover: ordinal│
+├────────────────────────────────────────────────────────────────────────────────┤
+│ RESOLVE 试算:model [claude-sonnet-4.5 ▾] binding [pool_main ▾]  [Resolve]      │
+│  → ( claude-sonnet-4.5 ) → ( cs_anth_01 · credential ✓ ) → ( anthropic ● )     │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
