@@ -45,10 +45,31 @@ fn chat_response_round_trips_with_tool_calls() {
             arguments: serde_json::json!({"text": "hi"}),
         }]),
         usage: None,
+        stop_reason: None,
     };
     let json = serde_json::to_string(&response).expect("serialize");
     let back: ChatResponse = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(response, back);
+}
+
+#[test]
+fn chat_response_stop_reason_round_trips_and_defaults_when_absent() {
+    use awaken_runtime_contract::llm::StopReason;
+
+    let response = ChatResponse {
+        output: AssistantOutput::text("cut off"),
+        usage: None,
+        stop_reason: Some(StopReason::MaxTokens),
+    };
+    let json = serde_json::to_string(&response).expect("serialize");
+    let back: ChatResponse = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(response, back);
+
+    // A response recorded before the field existed still deserializes: the
+    // absent stop reason defaults to `None` (unknown).
+    let legacy = r#"{"output":{"blocks":[{"type":"text","text":"hi"}]},"usage":null}"#;
+    let back: ChatResponse = serde_json::from_str(legacy).expect("legacy deserializes");
+    assert_eq!(back.stop_reason, None);
 }
 
 /// A deterministic fake provider proves the port is object-safe and awaitable.
@@ -68,6 +89,7 @@ impl LlmExecutor for EchoExecutor {
         Ok(ChatResponse {
             output: AssistantOutput::text(echoed),
             usage: None,
+            stop_reason: None,
         })
     }
 }

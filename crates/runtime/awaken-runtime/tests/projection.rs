@@ -37,6 +37,7 @@ impl LlmExecutor for TextLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text("done".to_string()),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -115,10 +116,12 @@ async fn projection_derives_from_committed_events_not_the_live_stream() {
     let (commit, _sink) = run().await;
     let committed = commit.committed();
 
-    // The projection is built from committed event records.
+    // The projection is built from committed event records: the transition
+    // into Running at the first step boundary, then the terminal phase.
     let events = project_phase_events(&committed);
-    assert_eq!(events.len(), 1);
-    assert!(events[0].contains("NaturalEnd"));
+    assert_eq!(events.len(), 2);
+    assert!(events[0].contains("Running"));
+    assert!(events[1].contains("NaturalEnd"));
 
     // The same truth is reachable through the RunStore read port.
     let record = commit.get(&RunId("run-1".to_string())).expect("run record");

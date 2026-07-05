@@ -229,6 +229,16 @@ impl<S: Dispatch> DispatchWorker<S> {
         let outcome = match &phase {
             Phase::Waiting => DispatchOutcome::Parked,
             Phase::Ended(_) => DispatchOutcome::Done,
+            // `execute`/`resume` only ever return a parked or ended phase;
+            // `Running` exists as durable mid-flight truth, never as an
+            // executor result. Fail loudly rather than settle a live run.
+            Phase::Running => {
+                return Err(Error::Execution(
+                    awaken_runtime_contract::execution::Error::Execution(
+                        "executor returned a non-settled Running phase".to_string(),
+                    ),
+                ));
+            }
         };
         self.store.settle(&run_id, outcome, &all_pending).await?;
         Ok(Some((run_id, phase)))

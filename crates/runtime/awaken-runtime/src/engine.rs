@@ -23,7 +23,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
-    ChatMessage, ChatRequest, ChatRole, DeltaSink, ToolCall, ToolSchema,
+    ChatMessage, ChatRequest, ChatRole, DeltaSink, StopReason, ToolCall, ToolSchema,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
@@ -111,11 +111,13 @@ pub(crate) async fn run_agent_loop(
         &resolved,
         &env,
         &run_id,
+        &thread_id,
         &context,
         transcript,
         activation.input,
         0,
         store,
+        Vec::new(),
     )
     .await?;
     finalize(&context, &thread_id, run_id, checkpoint).await
@@ -243,22 +245,22 @@ pub(crate) async fn resume_run(
     }
     transcript.extend(resumed.iter().cloned());
 
-    let mut checkpoint = drive(
+    // State staged by the resumed tool itself seeds the attempt's batch (kept
+    // first), so step commits and conflict validation cover it too.
+    let checkpoint = drive(
         runtime,
         &resolved,
         &env,
         &run_id,
+        &thread_id,
         &context,
         transcript,
         resumed,
         RESUME_STEP_BASE,
         store,
+        seed_state,
     )
     .await?;
-    // State staged by the resumed tool itself is committed too (kept first).
-    let mut combined = seed_state;
-    combined.append(&mut checkpoint.staged_state);
-    checkpoint.staged_state = combined;
 
     finalize(&context, &thread_id, run_id, checkpoint).await
 }
@@ -361,26 +363,35 @@ fn permission_audit(call: &ToolCall, outcome: &GateOutcome) -> EventDraft {
 }
 
 /// Run the model/tool loop over a prepared transcript. Shared by fresh execution
-/// and resume; the caller seeds the transcript and the already-produced messages.
+/// and resume; the caller seeds the transcript, the already-produced messages,
+/// and any state the resume itself staged (`seed_state`).
 #[allow(clippy::too_many_arguments)]
 async fn drive(
     runtime: &Runtime,
     resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
+    thread_id: &ThreadId,
     context: &RuntimeRunContext,
     mut transcript: Vec<Message>,
     mut new_messages: Vec<Message>,
     step_base: usize,
     mut store: Store,
+    seed_state: Vec<StateCommand>,
 ) -> Result<Checkpoint> {
     let llm = runtime.llm().ok_or_else(|| {
         Error::Execution("no model provider configured for this runtime".to_string())
     })?;
 
-    let mut staged_state: Vec<StateCommand> = Vec::new();
+    let mut staged_state: Vec<StateCommand> = seed_state;
     // Permission-audit drafts accumulated across the attempt's gate decisions.
     let mut audit: Vec<EventDraft> = Vec::new();
+    // Watermarks for step-boundary incremental commits: everything below a
+    // watermark is already durable; the checkpoint returns only the tail.
+    let mut committed_messages = 0usize;
+    let mut committed_state = 0usize;
+    let mut committed_audit = 0usize;
+    let mut running_committed = false;
     // The loop's terminal decision. It stays `None` only if the loop runs to its
     // step ceiling, which is itself a terminus (`MaxSteps`).
     let mut end: Option<End> = None;
@@ -409,7 +420,45 @@ async fn drive(
     // `None`), so this is zero-overhead for them.
     let mut live_env: Option<ResolvedExecutionEnv> = None;
     let mut last_live_version = runtime.active_live_version(&resolved.spec.plugin_ids);
+    // Failed inference steps in a row (post-retry). The runtime's tolerance
+    // decides when the streak is terminal; a success resets it.
+    let mut consecutive_inference_failures = 0usize;
     for step in 0..resolved.spec.max_steps {
+        // Step-boundary incremental commit: everything the completed steps
+        // staged — messages, state, audit — becomes durable under a `Running`
+        // fact before the next inference. A crash then loses at most the step
+        // in flight, and readers see committed progress mid-run. The staged
+        // batch is validated cumulatively (the tail alone could hide an
+        // exclusive-key conflict with an already-committed step); a conflict
+        // ends the run as `finalize` would, except steps committed while the
+        // batch was still valid stay committed. Without a coordinator the
+        // block is inert and the whole batch rides `finalize`, as before.
+        if context.commit.is_some()
+            && (new_messages.len() > committed_messages
+                || staged_state.len() > committed_state
+                || audit.len() > committed_audit)
+        {
+            if validate_batch(&staged_state).is_err() {
+                staged_state.truncate(committed_state);
+                end = Some(End::Ended(EndCause::Error(Failure::StateConflict)));
+                break;
+            }
+            commit_step_delta(
+                context,
+                thread_id,
+                run_id,
+                new_messages[committed_messages..].to_vec(),
+                staged_state[committed_state..].to_vec(),
+                audit[committed_audit..].to_vec(),
+                !running_committed,
+            )
+            .await?;
+            committed_messages = new_messages.len();
+            committed_state = staged_state.len();
+            committed_audit = audit.len();
+            running_committed = true;
+        }
+
         if context.is_cancelled() {
             end = Some(End::Ended(EndCause::Cancelled));
             break;
@@ -448,24 +497,105 @@ async fn drive(
         )
         .await;
 
-        let request = build_chat_request(
-            &resolved.spec,
-            &prelude,
-            &transcript,
-            &env.dynamic_descriptors(),
-        );
-        // A transient inference failure retries with backoff; a permanent failure
-        // (or exhausted retries) commits a typed terminal reason (G26).
-        let response =
-            match infer_with_retry(llm, request, runtime.infer_retries(), &delta_sink).await {
-                Ok(response) => response,
-                Err(err) => {
-                    end = Some(End::Ended(EndCause::Error(Failure::Inference(
-                        err.to_string(),
-                    ))));
-                    break;
+        // A `MaxTokens`-truncated text-only turn is continued in place: the
+        // partial text is committed as its own assistant message, a continuation
+        // prompt follows it, and inference reruns on the grown transcript — up
+        // to a per-step budget. A truncated turn that still carries tool calls
+        // skips recovery: those calls must be answered by tool results, not
+        // another assistant turn. An exhausted budget lets the truncated turn
+        // stand as the step's output. A retryable inference failure retries with
+        // backoff inside `infer_with_retry`; a permanent failure (or exhausted
+        // retries) commits a typed terminal reason carrying the error's
+        // classification code (G26).
+        let mut truncation_retries = 0;
+        let infer_turn = async {
+            loop {
+                let request = build_chat_request(
+                    &resolved.spec,
+                    &prelude,
+                    &transcript,
+                    &env.dynamic_descriptors(),
+                );
+                match infer_with_retry(
+                    llm,
+                    request,
+                    runtime.retry_policy(),
+                    runtime.circuit_breaker(),
+                    &delta_sink,
+                )
+                .await
+                {
+                    Ok(response) => {
+                        let truncated_text_only = response.stop_reason
+                            == Some(StopReason::MaxTokens)
+                            && response.output.tool_calls().is_empty()
+                            && !response.output.text_content().is_empty();
+                        if truncated_text_only
+                            && truncation_retries < runtime.max_continuation_retries()
+                        {
+                            let partial = truncated_assistant_message(
+                                run_id,
+                                step_base + step,
+                                truncation_retries,
+                                response.output.blocks,
+                            );
+                            transcript.push(partial.clone());
+                            new_messages.push(partial);
+                            let prompt =
+                                continuation_message(run_id, step_base + step, truncation_retries);
+                            transcript.push(prompt.clone());
+                            new_messages.push(prompt);
+                            truncation_retries += 1;
+                            continue;
+                        }
+                        break Ok(response);
+                    }
+                    Err(err) => break Err(err),
                 }
-            };
+            }
+        };
+        // A cancel aborts a hung or long inference in flight rather than
+        // waiting for the step boundary. Dropping the inference future may
+        // abandon a half-open breaker probe; recording that reopens the
+        // circuit for a later re-probe without polluting the failure count.
+        let inference = match &context.cancellation {
+            Some(token) => {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => None,
+                    result = infer_turn => Some(result),
+                }
+            }
+            None => Some(infer_turn.await),
+        };
+        let Some(inference) = inference else {
+            runtime
+                .circuit_breaker()
+                .record_abandoned_probe(&resolved.spec.model_binding.model_ref);
+            end = Some(End::Ended(EndCause::Cancelled));
+            break;
+        };
+        let response = match inference {
+            Ok(response) => {
+                consecutive_inference_failures = 0;
+                response
+            }
+            Err(err) => {
+                // Below the tolerance the failed step is absorbed and the next
+                // step re-infers; each absorbed failure still consumes a step,
+                // so `max_steps` stays the runaway backstop. At the tolerance
+                // the streak ends the run with the last error's classification.
+                consecutive_inference_failures += 1;
+                if consecutive_inference_failures < runtime.max_consecutive_inference_failures() {
+                    continue;
+                }
+                end = Some(End::Ended(EndCause::Error(Failure::Inference {
+                    code: err.code().to_string(),
+                    message: err.to_string(),
+                })));
+                break;
+            }
+        };
 
         run_phase_hooks(
             env,
@@ -684,12 +814,65 @@ async fn drive(
 
     // No early terminus means the loop exhausted its step ceiling.
     let end = end.unwrap_or(End::Ended(EndCause::MaxSteps));
+    // Return only the tail beyond the step-commit watermarks: the final
+    // commit must not re-append what step commits already made durable.
     Ok(Checkpoint {
-        new_messages,
-        staged_state,
-        audit,
+        new_messages: new_messages.split_off(committed_messages),
+        staged_state: staged_state.split_off(committed_state),
+        audit: audit.split_off(committed_audit),
         end,
     })
+}
+
+/// Commit one step's staged delta under a `Running` fact — the durable record
+/// that the run is mid-flight with these steps completed. The first step
+/// commit also records the phase transition into `Running`; terminal and
+/// parked outcomes never come through here (they ride `finish`, where the
+/// phase and any waiting ticket commit atomically).
+async fn commit_step_delta(
+    context: &RuntimeRunContext,
+    thread_id: &ThreadId,
+    run_id: &RunId,
+    messages: Vec<Message>,
+    state: Vec<StateCommand>,
+    audit: Vec<EventDraft>,
+    first: bool,
+) -> Result<()> {
+    let Some(coordinator) = &context.commit else {
+        return Ok(());
+    };
+    let mut events = Vec::with_capacity(audit.len() + 2);
+    if first {
+        events.push(EventDraft {
+            kind: EventKind::RunPhaseChanged,
+            payload: serde_json::json!({ "phase": Phase::Running }),
+        });
+    }
+    // Mirror the finish boundary: state riding a commit is announced by a
+    // StateChanged event, whichever boundary commits it.
+    if !state.is_empty() {
+        events.push(EventDraft {
+            kind: EventKind::StateChanged,
+            payload: serde_json::json!({ "commands": state.len() }),
+        });
+    }
+    events.extend(audit);
+    coordinator
+        .commit(ThreadCommit {
+            thread_id: thread_id.clone(),
+            run_fact: RunFact {
+                run_id: run_id.clone(),
+                phase: Phase::Running,
+            },
+            messages,
+            state,
+            events,
+            outbox: Vec::new(),
+            waiting: None,
+        })
+        .await
+        .map_err(|err| Error::Commit(err.to_string()))?;
+    Ok(())
 }
 
 /// Forwards a turn's streamed text chunks to the live stream as `OutputText`
@@ -728,26 +911,46 @@ impl DeltaSink for StreamDeltaSink<'_> {
 }
 
 /// Call inference, streaming text chunks to `sink` as they arrive and retrying a
-/// transient failure up to `retries` times with a short linear backoff. A
-/// permanent failure returns immediately (G26).
+/// retryable failure per the policy (exponential backoff with jitter, honoring a
+/// server `Retry-After`). A permanent failure returns immediately (G26). Every
+/// attempt first passes the model's circuit breaker: while its circuit is open
+/// the call fails fast as a retryable provider error instead of burning the
+/// retry budget against a provider that is already down.
 async fn infer_with_retry(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,
-    retries: usize,
+    policy: &crate::retry::LlmRetryPolicy,
+    breaker: &crate::circuit_breaker::CircuitBreaker,
     sink: &dyn DeltaSink,
 ) -> std::result::Result<
     awaken_runtime_contract::llm::ChatResponse,
     awaken_runtime_contract::llm::Error,
 > {
+    let model = request.model_binding.model_ref.clone();
     let mut attempt = 0;
     loop {
+        if let Err(reason) = breaker.check(&model) {
+            return Err(awaken_runtime_contract::llm::Error::Provider(reason));
+        }
         match llm.infer_streaming(request.clone(), sink).await {
-            Ok(response) => return Ok(response),
-            Err(err) if err.is_retryable() && attempt < retries => {
-                attempt += 1;
-                tokio::time::sleep(std::time::Duration::from_millis(10 * attempt as u64)).await;
+            Ok(response) => {
+                breaker.record_success(&model);
+                return Ok(response);
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                // Only retryable errors speak to provider health; the counted
+                // set must stay exactly `is_retryable`, or permanent faults
+                // (bad key, overlong prompt) would trip the breaker.
+                if err.is_retryable() {
+                    breaker.record_failure(&model);
+                }
+                if err.is_retryable() && attempt < policy.max_retries {
+                    tokio::time::sleep(policy.delay_before_retry(&err, attempt)).await;
+                    attempt += 1;
+                } else {
+                    return Err(err);
+                }
+            }
         }
     }
 }
@@ -957,21 +1160,20 @@ async fn resume_delegation(
         store.apply(command);
     }
     transcript.extend(resumed.iter().cloned());
-    let mut checkpoint = drive(
+    let checkpoint = drive(
         runtime,
         resolved,
         env,
         run_id,
+        thread_id,
         context,
         transcript,
         resumed,
         RESUME_STEP_BASE,
         store,
+        seed_state,
     )
     .await?;
-    let mut combined = seed_state;
-    combined.append(&mut checkpoint.staged_state);
-    checkpoint.staged_state = combined;
     finalize(context, thread_id, run_id.clone(), checkpoint).await
 }
 
@@ -1259,6 +1461,36 @@ fn to_tool_schema(descriptor: &ToolDescriptor) -> ToolSchema {
     }
 }
 
+/// What a truncated turn is told so it resumes rather than restarts (mirrors
+/// the goal runtime's continuation prompt verbatim).
+const CONTINUATION_PROMPT: &str = "Your response was cut off because it exceeded the output \
+     token limit. Please break your work into smaller pieces. Continue from where you left off.";
+
+/// The committed partial text of a `MaxTokens`-truncated turn. Its id carries
+/// the continuation round so it never collides with the step's final
+/// assistant message.
+fn truncated_assistant_message(
+    run_id: &RunId,
+    step: usize,
+    nth: usize,
+    blocks: Vec<ContentBlock>,
+) -> Message {
+    Message {
+        id: MessageId(format!("{}-assistant-{step}-truncated-{nth}", run_id.0)),
+        role: Role::Assistant,
+        content: blocks,
+    }
+}
+
+/// The user message that asks a truncated turn to continue where it left off.
+fn continuation_message(run_id: &RunId, step: usize, nth: usize) -> Message {
+    Message {
+        id: MessageId(format!("{}-continuation-{step}-{nth}", run_id.0)),
+        role: Role::User,
+        content: vec![ContentBlock::text(CONTINUATION_PROMPT)],
+    }
+}
+
 /// The committed assistant turn: its content blocks verbatim (text and tool-use
 /// interleaved), so the transcript explains both what was said and what was
 /// called.
@@ -1364,6 +1596,20 @@ async fn finish(
             .map_err(|err| Error::Commit(err.to_string()))?;
     }
 
+    // A fault is announced before the close signal, so a live consumer can
+    // categorize the failure by code while still keying stream teardown on
+    // the single terminal `RunFinished`.
+    if let Phase::Ended(EndCause::Error(failure)) = &phase {
+        emit(
+            context,
+            &run_id,
+            StreamKind::RunFailed {
+                code: failure.code().to_string(),
+                message: failure.message(),
+            },
+        )
+        .await;
+    }
     emit(context, &run_id, StreamKind::RunFinished).await;
     Ok(phase)
 }

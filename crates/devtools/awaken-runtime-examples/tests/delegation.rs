@@ -47,6 +47,7 @@ impl LlmExecutor for CoordinatorLlm {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }

@@ -92,7 +92,9 @@ async fn durable_ingress_foreground_submit_and_cancel() {
         .await
         .expect("foreground submit");
     assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
-    assert_eq!(commit.commit_count(), 1);
+    // Per-step durability: input commit at the first step boundary, then the
+    // terminal commit.
+    assert_eq!(commit.commit_count(), 2);
 
     // Cancelling a run that is not in flight is a typed NotActive, not a panic.
     let err = ingress

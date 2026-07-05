@@ -35,6 +35,7 @@ impl LlmExecutor for TextLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text(self.0.to_string()),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -106,9 +107,10 @@ async fn one_model_step_commits_facts_and_streams_progress() {
         .expect("run executes");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
 
-    // Committed truth: one commit, the user turn and the assistant reply, and a
-    // run fact. The user input is committed so the next turn sees it.
-    assert_eq!(commit.commit_count(), 1);
+    // Committed truth: the input commits at the first step boundary (under a
+    // Running fact), the assistant reply with the terminal fact. The user
+    // input is committed so the next turn sees it.
+    assert_eq!(commit.commit_count(), 2);
     let committed = commit.committed();
     assert_eq!(committed.messages.len(), 2);
     assert_eq!(committed.messages[0].text_content(), "hello");
@@ -121,7 +123,8 @@ async fn one_model_step_commits_facts_and_streams_progress() {
         replay_latest_phase(&committed, &RunId("run-1".to_string())),
         Some(Phase::Ended(EndCause::NaturalEnd))
     );
-    assert_eq!(committed.events.len(), 1);
+    // Two phase events: the transition into Running, then the terminal.
+    assert_eq!(committed.events.len(), 2);
 
     // Live stream order is RunStarted -> OutputText -> RunFinished.
     let kinds = sink.events();

@@ -60,6 +60,7 @@ impl LlmExecutor for ToolThenText {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -257,6 +258,7 @@ impl LlmExecutor for CallsTool {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -360,6 +362,7 @@ impl LlmExecutor for CaptureTools {
         Ok(ChatResponse {
             output: AssistantOutput::text("done".to_string()),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -428,6 +431,7 @@ impl LlmExecutor for AlwaysToolCall {
                 arguments: serde_json::json!({"text": "again"}),
             }]),
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -512,6 +516,7 @@ impl LlmExecutor for InterleavedThenText {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }

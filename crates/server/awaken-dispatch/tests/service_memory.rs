@@ -23,6 +23,12 @@ use awaken_runtime_contract::resume::ResumeResult;
 use harness::{THREAD, TICKET, activation, text_runtime, tool_runtime};
 
 /// Poll a condition up to ~3s, yielding to the daemon between checks.
+/// The run's committed phase, if any — per-step commits make a run durable
+/// (as `Running`) before it parks or ends, so waits key on the phase itself.
+fn phase_of(commit: &MemoryCommitCoordinator, run: &str) -> Option<Phase> {
+    RunStore::get(commit, &RunId(run.to_string())).map(|r| r.phase)
+}
+
 async fn wait_for(cond: impl Fn() -> bool) -> bool {
     for _ in 0..600 {
         if cond() {
@@ -71,7 +77,7 @@ async fn service_resumes_a_parked_run_on_delivery() {
     // The daemon runs the submission until it parks on the gate.
     service.submit(activation("run-1")).await.expect("submit");
     assert!(
-        wait_for(|| commit.commit_count() >= 1).await,
+        wait_for(|| phase_of(&commit, "run-1") == Some(Phase::Waiting)).await,
         "the run parked"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 0);
@@ -89,7 +95,7 @@ async fn service_resumes_a_parked_run_on_delivery() {
         .await
         .expect("deliver");
     assert!(
-        wait_for(|| commit.commit_count() >= 2).await,
+        wait_for(|| matches!(phase_of(&commit, "run-1"), Some(Phase::Ended(_)))).await,
         "the daemon resumed the run"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the pending tool ran once");
@@ -171,8 +177,12 @@ async fn service_fires_a_scheduled_delivery_when_due() {
     );
 
     service.submit(activation("run-1")).await.expect("submit");
-    assert!(wait_for(|| commit.commit_count() >= 1).await, "run parked");
+    assert!(
+        wait_for(|| phase_of(&commit, "run-1") == Some(Phase::Waiting)).await,
+        "run parked"
+    );
     assert_eq!(ran.load(Ordering::SeqCst), 0);
+    let parked_commits = commit.commit_count();
 
     // Deliver an input scheduled for t=2000; at t=0 it must not fire.
     service
@@ -192,7 +202,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
         commit.commit_count(),
-        1,
+        parked_commits,
         "a scheduled delivery does not fire early"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 0);
@@ -201,7 +211,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
     clock.set(2_000);
     service.notify().await;
     assert!(
-        wait_for(|| commit.commit_count() >= 2).await,
+        wait_for(|| matches!(phase_of(&commit, "run-1"), Some(Phase::Ended(_)))).await,
         "fired when due"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 1);
@@ -219,7 +229,10 @@ async fn service_relays_a_cross_thread_send() {
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
 
     service.submit(activation("run-1")).await.expect("submit");
-    assert!(wait_for(|| commit.commit_count() >= 1).await, "run parked");
+    assert!(
+        wait_for(|| phase_of(&commit, "run-1") == Some(Phase::Waiting)).await,
+        "run parked"
+    );
 
     // Stage a cross-thread delivery; the daemon relays then resumes the run.
     service
@@ -234,7 +247,7 @@ async fn service_relays_a_cross_thread_send() {
         .await
         .expect("send");
     assert!(
-        wait_for(|| commit.commit_count() >= 2).await,
+        wait_for(|| matches!(phase_of(&commit, "run-1"), Some(Phase::Ended(_)))).await,
         "relayed + resumed"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 1);

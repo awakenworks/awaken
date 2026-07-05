@@ -44,27 +44,86 @@ pub struct Runtime {
     plugins: Vec<Arc<dyn Plugin>>,
     /// Cancellation tokens for in-flight runs, so live control can steer them.
     active_runs: Mutex<HashMap<RunId, CancellationToken>>,
-    /// How many extra attempts to make on a transient inference failure.
-    infer_retries: usize,
+    /// How retryable inference failures are retried (attempts and backoff).
+    retry_policy: crate::retry::LlmRetryPolicy,
+    /// How many continuation rounds a `MaxTokens`-truncated text turn may use
+    /// per step before the partial output stands as the turn.
+    max_continuation_retries: usize,
+    /// The nth consecutive failed inference step ends the run. 1 (the default)
+    /// means a single failure is terminal; a higher value absorbs failures at
+    /// step granularity so a long-lived agent can ride out a provider outage.
+    max_consecutive_inference_failures: usize,
+    /// Per-model circuit breaker shared by every run on this runtime.
+    circuit_breaker: crate::circuit_breaker::CircuitBreaker,
 }
 
 impl Runtime {
     pub fn new() -> Self {
         Self {
-            infer_retries: 2,
+            max_continuation_retries: 2,
+            max_consecutive_inference_failures: 1,
             ..Self::default()
         }
     }
 
-    /// Set how many extra attempts to make on a transient inference failure.
+    /// Set how many extra attempts to make on a retryable inference failure.
     #[must_use]
     pub fn with_infer_retries(mut self, retries: usize) -> Self {
-        self.infer_retries = retries;
+        self.retry_policy.max_retries = retries;
         self
     }
 
-    pub(crate) fn infer_retries(&self) -> usize {
-        self.infer_retries
+    /// Replace the whole inference retry policy (attempts and backoff pacing).
+    #[must_use]
+    pub fn with_retry_policy(mut self, policy: crate::retry::LlmRetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+
+    /// Set the per-step budget for continuing a `MaxTokens`-truncated turn.
+    #[must_use]
+    pub fn with_max_continuation_retries(mut self, retries: usize) -> Self {
+        self.max_continuation_retries = retries;
+        self
+    }
+
+    /// Set how many consecutive failed inference steps end the run. The
+    /// default 1 makes a single (post-retry) failure terminal; `n` lets the
+    /// loop absorb `n - 1` consecutive failures, retrying at step granularity,
+    /// and end with the nth failure's classification. A success resets the
+    /// count.
+    #[must_use]
+    pub fn with_max_consecutive_inference_failures(mut self, max: usize) -> Self {
+        self.max_consecutive_inference_failures = max;
+        self
+    }
+
+    /// Replace the per-model circuit breaker's tuning (threshold, cooldown,
+    /// half-open probes).
+    #[must_use]
+    pub fn with_circuit_breaker(
+        mut self,
+        config: crate::circuit_breaker::CircuitBreakerConfig,
+    ) -> Self {
+        self.circuit_breaker = crate::circuit_breaker::CircuitBreaker::new(config);
+        self
+    }
+
+    pub(crate) fn retry_policy(&self) -> &crate::retry::LlmRetryPolicy {
+        &self.retry_policy
+    }
+
+    pub(crate) fn max_continuation_retries(&self) -> usize {
+        self.max_continuation_retries
+    }
+
+    pub(crate) fn max_consecutive_inference_failures(&self) -> usize {
+        // A derived-default 0 must not mean "never terminal": clamp to 1.
+        self.max_consecutive_inference_failures.max(1)
+    }
+
+    pub(crate) fn circuit_breaker(&self) -> &crate::circuit_breaker::CircuitBreaker {
+        &self.circuit_breaker
     }
 
     /// Inject the model provider used by execution (composition root wiring).

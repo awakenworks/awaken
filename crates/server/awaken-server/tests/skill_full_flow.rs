@@ -199,6 +199,7 @@ impl LlmExecutor for FullFlowModel {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
@@ -303,6 +304,7 @@ impl LlmExecutor for PathProbeModel {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }

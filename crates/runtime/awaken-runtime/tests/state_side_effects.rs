@@ -70,6 +70,7 @@ impl LlmExecutor for CallsThenEnd {
         Ok(ChatResponse {
             output,
             usage: None,
+            stop_reason: None,
         })
     }
 }
