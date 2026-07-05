@@ -94,6 +94,7 @@ mod tests {
             Ok(ChatResponse {
                 output: AssistantOutput::text(self.0),
                 usage: None,
+                stop_reason: None,
             })
         }
     }
