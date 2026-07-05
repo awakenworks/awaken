@@ -41,6 +41,23 @@ pub struct ResolvedSpec {
     pub context_policy: ContextPolicy,
 }
 
+impl ResolvedSpec {
+    /// The execution adapter this run binds to (R3): `"awaken"` for the native
+    /// runtime, or `"acp:<cli>"` for an external ACP agent (Claude Code / Codex).
+    /// Derived by convention from the model binding's `backend_ref` — an `acp:*`
+    /// backend selects that ACP CLI — so runtime selection is first-class without
+    /// churning the resolved-spec shape (30+ existing constructions).
+    #[must_use]
+    pub fn runtime_adapter(&self) -> &str {
+        let backend = self.model_binding.backend_ref.as_str();
+        if backend == "acp" || backend.starts_with("acp:") {
+            backend
+        } else {
+            "awaken"
+        }
+    }
+}
+
 /// How the model-visible context window is bounded before each inference.
 ///
 /// The policy trims a *view* of the transcript that goes to the model; the
