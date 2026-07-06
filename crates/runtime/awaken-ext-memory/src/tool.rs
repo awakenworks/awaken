@@ -5,16 +5,16 @@ use async_trait::async_trait;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{Tool, ToolError};
 
-use crate::store::MemoryStore;
+use crate::localfs::MemoryDir;
 
 /// Writes one memory to a stable store. Constructed with the store so the write
 /// lands in the persistent memory directory, not the sub-run's sandbox.
 pub struct WriteMemoryTool {
-    store: MemoryStore,
+    store: MemoryDir,
 }
 
 impl WriteMemoryTool {
-    pub fn new(store: MemoryStore) -> Self {
+    pub fn new(store: MemoryDir) -> Self {
         Self { store }
     }
 }
@@ -76,7 +76,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!("awaken-writetool-{stamp}"));
-        let tool = WriteMemoryTool::new(MemoryStore::new(&root));
+        let tool = WriteMemoryTool::new(MemoryDir::new(&root));
         let out = tool
             .call(serde_json::json!({ "name": "pref", "content": "likes tea" }))
             .await
@@ -90,7 +90,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn missing_fields_are_rejected() {
-        let tool = WriteMemoryTool::new(MemoryStore::new(std::env::temp_dir().join("x")));
+        let tool = WriteMemoryTool::new(MemoryDir::new(std::env::temp_dir().join("x")));
         assert!(tool.call(serde_json::json!({ "name": "a" })).await.is_err());
         assert!(
             tool.call(serde_json::json!({ "content": "b" }))

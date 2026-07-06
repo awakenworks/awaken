@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ChatRole, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 
-use crate::store::Entry;
+use crate::localfs::Entry;
 
 /// Selects which saved memories are relevant to a user's message. Implemented by
 /// the host — over a single model call or a `memory-selector` sub-agent — so the
@@ -150,7 +150,7 @@ mod tests {
     use awaken_runtime_contract::llm::{AssistantOutput, ChatResponse, Result as LlmResult};
     use std::time::SystemTime;
 
-    use crate::store::MemoryStore;
+    use crate::localfs::MemoryDir;
 
     struct ReplyModel(&'static str);
     #[async_trait]
@@ -181,7 +181,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let store = MemoryStore::new(&root);
+        let store = MemoryDir::new(&root);
         for i in 0..n {
             store
                 .write(&format!("m{i}"), &format!("memory number {i}"))

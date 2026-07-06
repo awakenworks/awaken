@@ -16,7 +16,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
-    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryStore, RecallBounds,
+    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryDir, RecallBounds,
     RecallSelector, SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent, parse_indices,
     select_input,
 };
@@ -91,7 +91,7 @@ pub struct MemoryExtraction {
     provider: Arc<LocalSandboxProvider>,
     catalog: Arc<AgentCatalog>,
     background: Arc<BackgroundRuns>,
-    store: MemoryStore,
+    store: MemoryDir,
     bounds: RecallBounds,
 }
 
@@ -108,7 +108,7 @@ impl MemoryExtraction {
             provider,
             catalog,
             background,
-            store: MemoryStore::new(root),
+            store: MemoryDir::new(root),
             bounds: RecallBounds::default(),
         }
     }
@@ -159,7 +159,7 @@ impl MemoryExtraction {
 
     /// The memory store (shared with the recall plugin, which reads it at
     /// `BeforeInference`).
-    pub fn store(&self) -> MemoryStore {
+    pub fn store(&self) -> MemoryDir {
         self.store.clone()
     }
 

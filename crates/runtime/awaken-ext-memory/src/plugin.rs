@@ -23,9 +23,9 @@ use awaken_runtime_contract::plugin::{
     PluginConfigError, PluginManifest,
 };
 
+use crate::localfs::MemoryDir;
 use crate::recall::{RecallBounds, render};
 use crate::select::{RecallSelector, manifest, query_from};
-use crate::store::MemoryStore;
 
 /// The plugin id under which memory recall is activated (must be listed in a run's
 /// `plugin_ids` to contribute, G30).
@@ -35,13 +35,13 @@ pub const MEMORY_PLUGIN_ID: &str = "memory";
 /// store (shared with extraction), the recall bounds, and — optionally — a
 /// relevance selector.
 pub struct MemoryPlugin {
-    store: MemoryStore,
+    store: MemoryDir,
     bounds: RecallBounds,
     selector: Option<Arc<dyn RecallSelector>>,
 }
 
 impl MemoryPlugin {
-    pub fn new(store: MemoryStore, bounds: RecallBounds) -> Self {
+    pub fn new(store: MemoryDir, bounds: RecallBounds) -> Self {
         Self {
             store,
             bounds,
@@ -133,7 +133,7 @@ pub fn config_schema() -> serde_json::Value {
 /// The `BeforeInference` hook. Relevance selection runs at most once per run (the
 /// hook fires every step), cached by `run_id`.
 struct RecallHook {
-    store: MemoryStore,
+    store: MemoryDir,
     bounds: RecallBounds,
     selector: Option<Arc<dyn RecallSelector>>,
     cache: Mutex<HashMap<RunId, Vec<Message>>>,
@@ -207,7 +207,7 @@ mod tests {
     use super::*;
     use crate::recall::RecallBounds;
 
-    fn store_with(entries: &[(&str, &str)]) -> MemoryStore {
+    fn store_with(entries: &[(&str, &str)]) -> MemoryDir {
         let root = std::env::temp_dir().join(format!(
             "awaken-mem-plugin-{}",
             std::time::SystemTime::now()
@@ -215,7 +215,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let store = MemoryStore::new(&root);
+        let store = MemoryDir::new(&root);
         for (n, c) in entries {
             store.write(n, c).unwrap();
         }

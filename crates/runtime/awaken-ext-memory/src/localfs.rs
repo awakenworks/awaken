@@ -1,8 +1,11 @@
-//! File-backed memory store: one `<slug>.md` per memory under a stable root.
+//! Local-filesystem access to a directory of memory files: one `<slug>.md` per
+//! memory under a root the host provides.
 //!
-//! The store is the durable, cross-session half of memory. Writes are scoped to
-//! `root` (a memory cannot escape it), and reads are ordered newest-first so a
-//! bounded recall keeps the most recent memories.
+//! This is the runtime's *only* memory persistence surface — plain reads and writes
+//! of a local directory. It is deliberately NOT a store: it knows nothing of
+//! durability, ids, or restarts (that is the resources plane's `awaken-memory-store`,
+//! wired by the host). Writes are scoped to `root` (a memory cannot escape it), and
+//! reads are ordered newest-first so a bounded recall keeps the most recent memories.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -36,13 +39,15 @@ pub struct Entry {
     pub modified: SystemTime,
 }
 
-/// A file-backed memory store rooted at a stable directory.
+/// A handle to a local directory of memory files, rooted at `root`. Reads and
+/// writes `<slug>.md` files there — nothing more; the directory's durability is the
+/// host's concern, not this handle's.
 #[derive(Clone)]
-pub struct MemoryStore {
+pub struct MemoryDir {
     root: PathBuf,
 }
 
-impl MemoryStore {
+impl MemoryDir {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
@@ -114,7 +119,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!("awaken-mem-store-{stamp}"));
-        let store = MemoryStore::new(&root);
+        let store = MemoryDir::new(&root);
 
         store.write("first", "one").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));

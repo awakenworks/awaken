@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::MemoryStore;
+use crate::localfs::MemoryDir;
 
 /// How large a recalled memory block may get. Configured (e.g. from a plugin
 /// config section) rather than hard-coded.
@@ -48,7 +48,7 @@ fn truncate(text: &str, cap: usize) -> String {
 /// Build a bounded recall block from a store, or `None` when nothing is saved.
 /// Newest memories are kept; older ones are dropped once a cap is hit, with a
 /// trailing note recording how many were omitted.
-pub fn recall_block(store: &MemoryStore, bounds: &RecallBounds) -> Option<String> {
+pub fn recall_block(store: &MemoryDir, bounds: &RecallBounds) -> Option<String> {
     render(&store.entries(), bounds)
 }
 
@@ -56,7 +56,7 @@ pub fn recall_block(store: &MemoryStore, bounds: &RecallBounds) -> Option<String
 /// the newest memories bounded; once it grows past `bounds.select_over`, pick the
 /// relevant ones for `query` with a single model call, then bound-render those.
 pub async fn recall_relevant(
-    store: &MemoryStore,
+    store: &MemoryDir,
     bounds: &RecallBounds,
     llm: &dyn awaken_runtime_contract::llm::LlmExecutor,
     model: &awaken_runtime_contract::resolved::ModelBinding,
@@ -71,7 +71,7 @@ pub async fn recall_relevant(
     if picked.is_empty() {
         return None;
     }
-    let selected: Vec<crate::store::Entry> = picked
+    let selected: Vec<crate::localfs::Entry> = picked
         .into_iter()
         .filter_map(|i| entries.get(i).cloned())
         .collect();
@@ -80,7 +80,7 @@ pub async fn recall_relevant(
 
 /// Render an already-ordered (newest-first) slice of entries into a bounded recall
 /// block. Shared by whole-store recall and relevance-selected recall.
-pub fn render(entries: &[crate::store::Entry], bounds: &RecallBounds) -> Option<String> {
+pub fn render(entries: &[crate::localfs::Entry], bounds: &RecallBounds) -> Option<String> {
     if entries.is_empty() {
         return None;
     }
@@ -116,13 +116,13 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn store_with(entries: &[(&str, &str)]) -> MemoryStore {
+    fn store_with(entries: &[(&str, &str)]) -> MemoryDir {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!("awaken-recall-{stamp}"));
-        let store = MemoryStore::new(&root);
+        let store = MemoryDir::new(&root);
         for (name, content) in entries {
             store.write(name, content).unwrap();
             std::thread::sleep(Duration::from_millis(5));
