@@ -30,6 +30,10 @@ eval "$(cargo llvm-cov show-env --sh)"
 
 echo "[build] instrumented awaken-server into $CARGO_TARGET_DIR"
 cargo build --quiet -p awaken-server --bin awaken-server
+# The open single-machine binary the deployment-agnostic standalone_e2e.mjs drives
+# (it spawns its own process); build it instrumented into the same target dir so
+# its coverage is attributed to the e2e too.
+cargo build --quiet -p awaken-standalone --bin awaken-standalone
 
 cd e2e
 run() { # file, label, extra-env...
