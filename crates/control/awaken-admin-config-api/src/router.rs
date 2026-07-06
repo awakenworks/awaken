@@ -14,9 +14,10 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
-    AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef, McpServerId, Project,
-    ProjectAgentConfig, ProjectId, ResolveError, ResolvedInference, SourceLookup,
-    resolve_inference, resolve_mcp_servers, resolve_profile,
+    AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, InvalidProjectId,
+    McpServerDef, McpServerId, McpStore, Project, ProjectAgentConfig, ProjectId, ProjectStore,
+    ResolveError, ResolvedInference, ResourceStore, SourceLookup, resolve_inference,
+    resolve_mcp_servers, resolve_profile,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -59,129 +60,6 @@ pub struct AdminState {
     pub probe: Option<Arc<dyn CredentialProbe>>,
 }
 
-/// A store for authored [`InferenceProfile`]s (an admin-plane aggregate). Sync +
-/// in-memory by default; a durable backend can implement the same port.
-pub trait InferenceProfileStore: Send + Sync {
-    fn put(&self, id: String, profile: InferenceProfile);
-    fn get(&self, id: &str) -> Option<InferenceProfile>;
-}
-
-/// The default in-memory [`InferenceProfileStore`].
-#[derive(Default)]
-pub struct InMemoryProfileStore(std::sync::Mutex<HashMap<String, InferenceProfile>>);
-
-impl InMemoryProfileStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl InferenceProfileStore for InMemoryProfileStore {
-    fn put(&self, id: String, profile: InferenceProfile) {
-        self.0.lock().expect("profiles").insert(id, profile);
-    }
-    fn get(&self, id: &str) -> Option<InferenceProfile> {
-        self.0.lock().expect("profiles").get(id).cloned()
-    }
-}
-
-/// A store for authored [`McpServerDef`]s (by server id) and per-agent
-/// [`AgentMcpConfig`] bindings (by agent id) — the admin-plane MCP aggregates.
-/// Sync + in-memory by default; a durable backend can implement the same port.
-pub trait McpStore: Send + Sync {
-    fn put_server(&self, def: McpServerDef);
-    fn get_server(&self, id: &str) -> Option<McpServerDef>;
-    fn list_servers(&self) -> Vec<McpServerDef>;
-    fn put_agent_config(&self, config: AgentMcpConfig);
-    fn get_agent_config(&self, agent_id: &str) -> Option<AgentMcpConfig>;
-}
-
-/// The default in-memory [`McpStore`].
-#[derive(Default)]
-pub struct InMemoryMcpStore {
-    servers: std::sync::Mutex<HashMap<String, McpServerDef>>,
-    agents: std::sync::Mutex<HashMap<String, AgentMcpConfig>>,
-}
-
-impl InMemoryMcpStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl McpStore for InMemoryMcpStore {
-    fn put_server(&self, def: McpServerDef) {
-        self.servers
-            .lock()
-            .expect("mcp servers")
-            .insert(def.id.0.clone(), def);
-    }
-    fn get_server(&self, id: &str) -> Option<McpServerDef> {
-        self.servers.lock().expect("mcp servers").get(id).cloned()
-    }
-    fn list_servers(&self) -> Vec<McpServerDef> {
-        let mut servers: Vec<McpServerDef> = self
-            .servers
-            .lock()
-            .expect("mcp servers")
-            .values()
-            .cloned()
-            .collect();
-        servers.sort_by(|a, b| a.id.0.cmp(&b.id.0));
-        servers
-    }
-    fn put_agent_config(&self, config: AgentMcpConfig) {
-        self.agents
-            .lock()
-            .expect("agent mcp configs")
-            .insert(config.agent_id.clone(), config);
-    }
-    fn get_agent_config(&self, agent_id: &str) -> Option<AgentMcpConfig> {
-        self.agents
-            .lock()
-            .expect("agent mcp configs")
-            .get(agent_id)
-            .cloned()
-    }
-}
-
-/// A store for per-agent [`AgentResourceConfig`] bindings (ADR-0038) — which
-/// resources an agent mounts. Sync + in-memory by default; the SQLite backend
-/// implements the same port over a scoped-migration table.
-pub trait ResourceStore: Send + Sync {
-    fn put_agent_resource(&self, config: AgentResourceConfig);
-    fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig>;
-}
-
-/// The default in-memory [`ResourceStore`], keyed by agent id.
-#[derive(Default)]
-pub struct InMemoryResourceStore(std::sync::Mutex<HashMap<String, AgentResourceConfig>>);
-
-impl InMemoryResourceStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl ResourceStore for InMemoryResourceStore {
-    fn put_agent_resource(&self, config: AgentResourceConfig) {
-        self.0
-            .lock()
-            .expect("agent resource configs")
-            .insert(config.agent_id.clone(), config);
-    }
-    fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
-        self.0
-            .lock()
-            .expect("agent resource configs")
-            .get(agent_id)
-            .cloned()
-    }
-}
-
 /// The result of a live credential probe (secret-free), aligned with the Managed
 /// wire's `valid` / `invalid` / `unknown` statuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -191,67 +69,6 @@ pub enum ProbeStatus {
     Valid,
     Invalid,
     Unknown,
-}
-
-/// A store for authored [`Project`]s (by project id) and per-(project, agent)
-/// [`ProjectAgentConfig`] consumption bindings — the project aggregates.
-/// Sync + in-memory by default; a durable backend can implement the same port.
-pub trait ProjectStore: Send + Sync {
-    fn put_project(&self, project: Project);
-    fn get_project(&self, id: &str) -> Option<Project>;
-    fn list_projects(&self) -> Vec<Project>;
-    fn put_project_agent(&self, config: ProjectAgentConfig);
-    fn get_project_agent(&self, project_id: &str, agent_id: &str) -> Option<ProjectAgentConfig>;
-}
-
-/// The default in-memory [`ProjectStore`].
-#[derive(Default)]
-pub struct InMemoryProjectStore {
-    projects: std::sync::Mutex<HashMap<String, Project>>,
-    agents: std::sync::Mutex<HashMap<(String, String), ProjectAgentConfig>>,
-}
-
-impl InMemoryProjectStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl ProjectStore for InMemoryProjectStore {
-    fn put_project(&self, project: Project) {
-        self.projects
-            .lock()
-            .expect("projects")
-            .insert(project.id.0.clone(), project);
-    }
-    fn get_project(&self, id: &str) -> Option<Project> {
-        self.projects.lock().expect("projects").get(id).cloned()
-    }
-    fn list_projects(&self) -> Vec<Project> {
-        let mut projects: Vec<Project> = self
-            .projects
-            .lock()
-            .expect("projects")
-            .values()
-            .cloned()
-            .collect();
-        projects.sort_by(|a, b| a.id.0.cmp(&b.id.0));
-        projects
-    }
-    fn put_project_agent(&self, config: ProjectAgentConfig) {
-        self.agents.lock().expect("project agent configs").insert(
-            (config.project_id.0.clone(), config.agent_id.clone()),
-            config,
-        );
-    }
-    fn get_project_agent(&self, project_id: &str, agent_id: &str) -> Option<ProjectAgentConfig> {
-        self.agents
-            .lock()
-            .expect("project agent configs")
-            .get(&(project_id.to_string(), agent_id.to_string()))
-            .cloned()
-    }
 }
 
 /// A port that live-probes a resolved credential against its provider endpoint. The
@@ -861,8 +678,8 @@ async fn resolve_agent_mcp(
 }
 
 /// Author a project. The path id is authoritative and doubles as the ingress
-/// address segment, so it must be DNS-safe lowercase (`[a-z0-9-]`, 1-63 chars,
-/// no leading/trailing `-`); fail closed on anything else.
+/// address segment, so it must be a DNS-safe lowercase slug (the shared tenancy
+/// rule, [`ProjectId::parse`]); fail closed on anything else.
 async fn put_project(
     State(state): State<AdminState>,
     Path(id): Path<String>,
@@ -870,17 +687,17 @@ async fn put_project(
     Json(mut project): Json<Project>,
 ) -> Result<Json<Project>, Problem> {
     let rid = req_id(&headers);
-    if !is_dns_safe_project_id(&id) {
-        return Err(Problem(ApiError::new(
+    let project_id = ProjectId::parse(id).map_err(|InvalidProjectId(id)| {
+        Problem(ApiError::new(
             422,
             "invalid_project_id",
             "Invalid project id",
             format!(
-                "project id `{id}` must be 1-63 lowercase [a-z0-9-] chars without leading/trailing `-`"
+                "project id `{id}` must be a DNS-safe lowercase slug ([a-z0-9-], 1-50 chars, no leading/trailing `-`)"
             ),
             &rid,
-        )));
-    }
+        ))
+    })?;
     if project.workspace_id.is_empty() {
         return Err(Problem(ApiError::new(
             422,
@@ -890,7 +707,7 @@ async fn put_project(
             &rid,
         )));
     }
-    project.id = ProjectId(id);
+    project.id = project_id;
     state.projects.put_project(project.clone());
     Ok(Json(project))
 }
@@ -945,17 +762,6 @@ async fn get_project_agent_mcp(
         .get_project_agent(&project_id, &agent_id)
         .map(Json)
         .ok_or_else(|| project_agent_mcp_missing(&project_id, &agent_id, &req_id(&headers)))
-}
-
-/// A project id that can serve as a URL path segment or domain label.
-fn is_dns_safe_project_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 63
-        && !id.starts_with('-')
-        && !id.ends_with('-')
-        && id
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn project_missing(id: &str, rid: &str) -> Problem {
