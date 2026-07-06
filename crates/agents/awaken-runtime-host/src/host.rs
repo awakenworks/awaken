@@ -307,10 +307,11 @@ pub struct SharedHost {
     pub(crate) file_store: Arc<dyn FileStore>,
     /// Mutable, id-keyed memory stores (ADR-0038 MemoryStore family): unlike the
     /// content-addressed `file_store`, a memory store keeps a stable id whose bytes a
-    /// session mounts read-write and the host harvests back after a turn. Persists
-    /// across sessions so memory written in one is visible in the next. In-memory by
-    /// default (one server process).
-    pub(crate) memory_stores: std::sync::Mutex<HashMap<String, Vec<u8>>>,
+    /// session mounts read-write and the host harvests back after a turn. Backed by
+    /// the durable [`awaken_memory_store::MemoryBlobStore`] — under the storage dir it
+    /// survives a restart, so memory written in one process is visible to the next; an
+    /// ephemeral per-process dir when the host has no storage dir (unit tests).
+    pub(crate) memory_stores: awaken_memory_store::MemoryBlobStore,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch
@@ -327,6 +328,22 @@ impl SharedHost {
     /// A host over `llm`. Configure it with the chainable `with_*` builders
     /// (client tools, delegates, a judge grader, a durable store).
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
+        // Composition root: durability is picked from the environment.
+        // `AWAKEN_STORAGE_DIR` set → durable SQLite commit store + a durable memory
+        // blob store under it (both survive a restart); unset → ephemeral.
+        let store_dir = std::env::var("AWAKEN_STORAGE_DIR")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        // The ADR-0038 memory_store family persists under the storage dir when set so
+        // a harvested write-back outlives the process; otherwise a per-process temp dir
+        // (unit tests / ephemeral use) keeps it in-run only.
+        let memory_store_root = match &store_dir {
+            Some(dir) => dir.join("memory_stores"),
+            None => std::env::temp_dir().join(format!("awaken-memstore-{}", std::process::id())),
+        };
+        let memory_stores = awaken_memory_store::MemoryBlobStore::open(&memory_store_root)
+            .expect("open durable memory-store root");
         Self {
             llm,
             model_ref: model_ref.into(),
@@ -341,14 +358,8 @@ impl SharedHost {
             plugin_config: std::collections::BTreeMap::new(),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
-            // Composition root: the deployment picks durability via the
-            // environment. `AWAKEN_STORAGE_DIR` set → each thread commits to a
-            // durable SQLite database under it (survives a restart); unset (unit
-            // tests, ephemeral use) → in-memory. `with_store_dir` still overrides.
-            store_dir: std::env::var("AWAKEN_STORAGE_DIR")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from),
+            // `with_store_dir` still overrides this environment-derived default.
+            store_dir,
             remote_agents: HashMap::new(),
             memory: None,
             memory_selector: None,
@@ -358,7 +369,7 @@ impl SharedHost {
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
             thread_resources: std::sync::Mutex::new(HashMap::new()),
             file_store: Arc::new(InMemoryFileStore::new()),
-            memory_stores: std::sync::Mutex::new(HashMap::new()),
+            memory_stores,
             gate_override: None,
             dispatch_daemon: std::env::var("AWAKEN_DISPATCH_DAEMON").is_ok_and(|v| v == "1"),
         }

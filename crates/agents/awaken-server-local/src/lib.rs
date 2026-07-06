@@ -88,15 +88,39 @@ const FAKE_ACP_SCRIPT: &str = "read _p; \
 /// `AWAKEN_MODEL_MODE=memory`; the store lives under `AWAKEN_MEMORY_DIR` (a
 /// fresh temp dir when unset).
 pub fn build_memory_router() -> Router {
+    // The extraction store's durable root: an explicit `AWAKEN_MEMORY_DIR` override
+    // wins; otherwise it lives under the standard `AWAKEN_STORAGE_DIR` (so memory is
+    // governed by the same durable root as every other piece of committed state and
+    // survives a restart); only with neither set does it fall back to a per-process
+    // temp dir (ephemeral).
     let mem_dir = std::env::var("AWAKEN_MEMORY_DIR")
+        .ok()
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            let dir =
-                std::env::temp_dir().join(format!("awaken-memory-e2e-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).expect("create memory dir");
-            dir
+        .or_else(|| {
+            std::env::var("AWAKEN_STORAGE_DIR")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(awaken_memory_store::memory_scope_root)
+        })
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-memory-e2e-{}", std::process::id()))
         });
+    std::fs::create_dir_all(&mem_dir).expect("create memory dir");
     let host = SharedHost::new(Arc::new(MemoryProbeModel), "memory").with_memory(mem_dir);
+    mount(Arc::new(host))
+}
+
+/// A router for the memory_store RESOURCE durability e2e (ADR-0038 MemoryStore
+/// family): a deterministic model writes into a mounted, read-write memory store
+/// and the host harvests the write back under the store's stable id. Distinct from
+/// [`build_memory_router`]'s cross-session *extraction* memory — this exercises the
+/// `resources[{type:"memory_store"}]` mount + write-back + `/v1/memory_stores` API.
+/// `AWAKEN_MODEL_MODE=memory-resource`.
+pub fn build_memory_resource_router() -> Router {
+    let host = SharedHost::new(
+        Arc::new(crate::models::MemoryResourceModel),
+        "memory-resource",
+    );
     mount(Arc::new(host))
 }
 

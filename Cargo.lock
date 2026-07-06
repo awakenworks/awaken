@@ -554,6 +554,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-memory-store"
+version = "1.0.0-dev"
+
+[[package]]
 name = "awaken-model-catalog"
 version = "1.0.0-dev"
 dependencies = [
@@ -824,6 +828,7 @@ dependencies = [
  "awaken-ext-permission",
  "awaken-ext-skills",
  "awaken-ext-state-machine",
+ "awaken-memory-store",
  "awaken-protocol-a2a",
  "awaken-protocol-managed",
  "awaken-protocol-transport",
@@ -911,6 +916,7 @@ dependencies = [
  "awaken-iam-core",
  "awaken-iam-preset",
  "awaken-iam-server",
+ "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-protocol-a2a",
  "awaken-protocol-ag-ui",

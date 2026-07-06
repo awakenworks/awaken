@@ -18,6 +18,9 @@ awaken-ext-skills = { workspace = true }
 awaken-ext-mcp = { workspace = true }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
+# Durable memory persistence (resources plane): backs the ADR-0038 memory_store
+# family so a harvested write-back survives a process restart.
+awaken-memory-store = { workspace = true }
 awaken-sandbox-local = { workspace = true }
 awaken-store-sqlite = { workspace = true }
 awaken-store-fs = { workspace = true }

@@ -64,22 +64,18 @@ impl SharedHost {
 
     /// Create a new, empty memory store and return its stable id (ADR-0038 MemoryStore).
     /// Unlike a blob id, this id is mutable: a session mounts it read-write and the host
-    /// harvests the write back under the same id.
+    /// harvests the write back under the same id. Backed by the durable
+    /// [`awaken_memory_store::MemoryBlobStore`], so the store (and its id) survive a
+    /// process restart when the host runs under a storage dir.
     pub fn create_memory_store(&self) -> String {
-        let id = format!(
-            "memstore_{}",
-            crate::host::BASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        );
         self.memory_stores
-            .lock()
-            .unwrap()
-            .insert(id.clone(), Vec::new());
-        id
+            .create()
+            .expect("create durable memory store")
     }
 
     /// The current bytes of a memory store; `None` if the id is unknown.
     pub fn memory_get(&self, id: &str) -> Option<Vec<u8>> {
-        self.memory_stores.lock().unwrap().get(id).cloned()
+        self.memory_stores.get(id)
     }
 
     /// Harvest a thread's read-write memory mounts back into their stores (ADR-0038):
@@ -112,9 +108,8 @@ impl SharedHost {
         for (store_id, logical) in mounts {
             if let Some((_, bytes)) = realized.iter().find(|(path, _)| *path == logical) {
                 self.memory_stores
-                    .lock()
-                    .unwrap()
-                    .insert(store_id, bytes.clone());
+                    .put(&store_id, bytes)
+                    .expect("persist harvested memory write-back");
             }
         }
     }

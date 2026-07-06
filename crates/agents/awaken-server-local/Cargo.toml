@@ -18,6 +18,9 @@ awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 awaken-protocol-transport = { workspace = true }
 awaken-config-store = { workspace = true }
+# Durable memory persistence (resources plane): the memory-extraction mode roots its
+# store under AWAKEN_STORAGE_DIR via `memory_scope_root` so it survives a restart.
+awaken-memory-store = { workspace = true }
 # ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
 # session selects `runtime: "acp:*"`.
 awaken-run-executor-acp = { workspace = true }
