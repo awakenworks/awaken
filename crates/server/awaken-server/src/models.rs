@@ -267,6 +267,48 @@ impl LlmExecutor for MemoryResourceModel {
     }
 }
 
+/// A deterministic model for the github_repository resource e2e (ADR-0038). The
+/// repo is cloned host-side into the working tree at `workspace/repo`; the model
+/// first `read`s the seed file (proving the clone landed inside the jail) and then
+/// `write`s a new file, which the host commits and pushes back to the remote on
+/// harvest. Sequenced off the tool-result count so it needs no transcript parsing.
+pub struct GitRepoModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for GitRepoModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let tool_results = request
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .count();
+        let output = match tool_results {
+            0 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "r".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({ "path": "workspace/repo/README.md" }),
+            }]),
+            1 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "w".into(),
+                tool_id: "write".into(),
+                arguments: serde_json::json!({
+                    "path": "workspace/repo/NEW.txt",
+                    "content": "AGENT_REPO_MARKER_3390"
+                }),
+            }]),
+            _ => AssistantOutput::text("repo turn done"),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 /// A deterministic model for the state-machine e2e. It calls `glob` (an
 /// auto-allowed perception tool that succeeds against an empty sandbox) twice: the
 /// first walks the machine `s0 -> s1` (firing its emit); the second is out of order

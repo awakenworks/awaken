@@ -695,6 +695,9 @@ impl SharedHost {
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?,
         );
+        // Clone any staged github_repository resources into the fresh environment,
+        // host-side (ADR-0038); fail-closed so a bad repo aborts session start.
+        self.provision_thread_repos(thread, &env)?;
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread).await?);
         // This thread's staged MCP servers (ADR-0043 Phase 3), registered by the

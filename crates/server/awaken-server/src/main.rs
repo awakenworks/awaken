@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("acp") => awaken_server::build_acp_router(),
         Ok("memory") => awaken_server::build_memory_router(),
         Ok("memory-resource") => awaken_server::build_memory_resource_router(),
+        Ok("git-repo") => awaken_server::build_git_repo_router(),
         Ok("compaction") => awaken_server::build_compaction_router(),
         _ => awaken_server::build_echo_router(),
     };
