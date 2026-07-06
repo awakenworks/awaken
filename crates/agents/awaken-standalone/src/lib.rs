@@ -12,15 +12,23 @@
 //! HTTP authoring plane: configuration is injected at boot, not CRUD'd over the
 //! wire.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use awaken_authz_enforce::{EnforceEngine, RequestTenancy, TokenSpec, guard};
 use awaken_config_resolver::{InMemoryProjectStore, Project, ProjectId, ProjectStore};
-use awaken_protocol_managed::{ManagedState, ProjectScope, router as managed_router};
+use awaken_protocol_managed::{
+    InMemorySessionRepository, ManagedSessionRepository, ManagedState, ProjectScope,
+    router as managed_router,
+};
+use awaken_protocol_transport::ProtocolRuntime;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
-use awaken_runtime_host::{ManagedHost, SharedHost};
+use awaken_runtime_host::{
+    ManagedHost, ProtocolHost, SharedHost, SqliteManagedSessionRepository, durable_ops_router,
+    files_router, memory_stores_router, skills_router,
+};
 use axum::Router;
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
@@ -71,17 +79,30 @@ pub fn build(model: Arc<dyn LlmExecutor>) -> Standalone {
         version: 1,
     });
 
+    // `SharedHost::new` itself goes durable off `AWAKEN_STORAGE_DIR` (SQLite commit
+    // store + memory blob store). Match the Managed session repo to the same root
+    // so a created session survives a restart; in-memory when no dir is set.
     let host = Arc::new(SharedHost::new(model, "awaken"));
-    let managed_state = Arc::new(ManagedState::new(ManagedHost::new(host)));
+    let session_repo: Arc<dyn ManagedSessionRepository> = match storage_dir() {
+        Some(dir) => Arc::new(
+            SqliteManagedSessionRepository::open(&dir.join("sessions.db").to_string_lossy())
+                .expect("open sessions.db under AWAKEN_STORAGE_DIR"),
+        ),
+        None => Arc::new(InMemorySessionRepository::default()),
+    };
+    let managed_state =
+        Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_session_repo(session_repo));
 
-    // The bare surface and the inner surface the project ingress forwards to are
-    // the SAME router, each wrapped with the guard so both axes are enforced. The
-    // project ingress stamps RequestTenancy before forwarding, so the guard on
-    // the inner router authorizes at the project's scope.
-    let bare = managed_router(managed_state.clone())
+    // The full open protocol surface (Managed + AI SDK + AG-UI + A2A + the file /
+    // memory / skill / durable-ops resource planes), built twice: the bare axis and
+    // the copy the project ingress forwards to. Each is wrapped with the guard, so
+    // every protocol on both addressing axes is enforced. The project ingress stamps
+    // RequestTenancy before forwarding, so the inner guard authorizes at the
+    // project's scope.
+    let bare = session_surface(&managed_state, &host)
         .layer(axum::middleware::from_fn_with_state(engine.clone(), guard));
-    let inner =
-        managed_router(managed_state).layer(axum::middleware::from_fn_with_state(engine, guard));
+    let inner = session_surface(&managed_state, &host)
+        .layer(axum::middleware::from_fn_with_state(engine, guard));
     let project_sessions = Router::new().route(
         "/projects/:project_id/*rest",
         any(project_ingress).with_state((projects, inner)),
@@ -92,6 +113,32 @@ pub fn build(model: Arc<dyn LlmExecutor>) -> Standalone {
         admin_token,
         api_token,
     }
+}
+
+/// The full open protocol surface over one host: Managed sessions + the AI SDK,
+/// AG-UI and A2A adapters (all over a neutral `ProtocolHost` bound to the same
+/// host) + the file / memory-store / skill / durable-ops resource planes. Built
+/// on demand so the bare and project axes each get their own guarded copy.
+fn session_surface(managed_state: &Arc<ManagedState>, host: &Arc<SharedHost>) -> Router {
+    let port: Arc<dyn ProtocolRuntime> = Arc::new(ProtocolHost::new(host.clone()));
+    managed_router(managed_state.clone())
+        .merge(awaken_protocol_ai_sdk::router(port.clone()))
+        .merge(awaken_protocol_ag_ui::router(port.clone()))
+        .merge(awaken_protocol_a2a::router(port))
+        .merge(files_router(host.clone()))
+        .merge(memory_stores_router(host.clone()))
+        .merge(skills_router(host.clone()))
+        .merge(durable_ops_router(host.clone()))
+}
+
+/// The durable storage root, when configured. `SharedHost::new` reads the same
+/// variable for its own commit/memory durability, so a set dir makes the whole
+/// standalone survive a restart.
+fn storage_dir() -> Option<PathBuf> {
+    std::env::var("AWAKEN_STORAGE_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Resolve the `/projects/{id}` segment: 404 an unauthored project, else strip

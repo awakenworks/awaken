@@ -14,6 +14,12 @@ path = "src/main.rs"
 # invariant is asserted in CI (check_crate_boundaries.py, license tier).
 awaken-runtime-host.workspace = true
 awaken-protocol-managed.workspace = true
+# The sibling protocol adapters over the same host — the standalone serves the
+# whole open protocol surface (Managed + AI SDK + AG-UI + A2A), all behind the guard.
+awaken-protocol-ai-sdk.workspace = true
+awaken-protocol-ag-ui.workspace = true
+awaken-protocol-a2a.workspace = true
+awaken-protocol-transport.workspace = true
 awaken-authz-enforce.workspace = true
 awaken-config-resolver.workspace = true
 awaken-runtime-contract.workspace = true

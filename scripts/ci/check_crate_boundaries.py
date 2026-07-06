@@ -38,6 +38,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-standalone": {
         "awaken-runtime-host",
         "awaken-protocol-managed",
+        "awaken-protocol-ai-sdk",
+        "awaken-protocol-ag-ui",
+        "awaken-protocol-a2a",
+        "awaken-protocol-transport",
         "awaken-authz-enforce",
         "awaken-config-resolver",
         "awaken-runtime-contract",
