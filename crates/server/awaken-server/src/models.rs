@@ -228,6 +228,45 @@ impl LlmExecutor for ProbeModel {
     }
 }
 
+/// A deterministic model for the memory_store RESOURCE durability e2e (ADR-0038).
+/// On its first turn it writes the user's text into the mounted memory store,
+/// realized read-write at `.mnt/notes.txt`; the host harvests that write back into
+/// the store under its stable id on turn end. On the follow-up turn (a tool result
+/// is present) it replies `memory persisted`. Driving write -> harvest lets an e2e
+/// prove the store's contents survive a real process restart.
+pub struct MemoryResourceModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for MemoryResourceModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let wrote = request.messages.iter().any(|m| m.role == ChatRole::Tool);
+        let user_text = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::User)
+            .map(|m| block_text(&m.content))
+            .unwrap_or_default();
+        let output = if wrote {
+            AssistantOutput::text("memory persisted")
+        } else {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "memres-1".into(),
+                tool_id: "write".into(),
+                arguments: serde_json::json!({ "path": ".mnt/notes.txt", "content": user_text }),
+            }])
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 /// A deterministic model for the state-machine e2e. It calls `glob` (an
 /// auto-allowed perception tool that succeeds against an empty sandbox) twice: the
 /// first walks the machine `s0 -> s1` (firing its emit); the second is out of order
