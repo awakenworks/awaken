@@ -136,6 +136,30 @@ pub struct SessionResource {
     pub id: String,
     pub mount_path: String,
     pub instructions: Option<String>,
+    /// `github_repository` only: the GitHub PAT the host uses to clone/push. Never
+    /// echoed back and never placed in the sandbox (host-side git transport only).
+    pub auth_token: Option<String>,
+    /// `github_repository` only: the branch to check out (`checkout.name`); `None`
+    /// clones the remote's default branch.
+    pub git_ref: Option<String>,
+}
+
+/// The repo name for a default mount path: the URL's last path segment, minus a
+/// trailing `.git`. Falls back to `repo` when the URL has no usable segment.
+fn repo_name(url: &str) -> String {
+    let stem = url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .strip_suffix(".git")
+        .or_else(|| Some(url.trim_end_matches('/').rsplit('/').next().unwrap_or("")))
+        .unwrap_or("");
+    if stem.is_empty() {
+        "repo".to_string()
+    } else {
+        stem.to_string()
+    }
 }
 
 /// One session MCP server, bound at creation: the wire name/url plus the vault
@@ -522,17 +546,30 @@ impl ManagedState {
                     .unwrap_or_else(|| match kind.as_str() {
                         "file" => format!("/mnt/session/uploads/{id}"),
                         "memory_store" => "/mnt/memory/store".to_string(),
-                        _ => format!("/workspace/{id}"),
+                        // Repo default mirrors Managed Agents: /workspace/<repo-name>.
+                        _ => format!("/workspace/{}", repo_name(&id)),
                     });
                 let instructions = v
                     .get("instructions")
                     .and_then(|s| s.as_str())
+                    .map(str::to_string);
+                // github_repository auth + checkout (ignored for other kinds).
+                let auth_token = v
+                    .get("authorization_token")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string);
+                let git_ref = v
+                    .get("checkout")
+                    .and_then(|c| c.get("name"))
+                    .and_then(|n| n.as_str())
                     .map(str::to_string);
                 Some(SessionResource {
                     kind,
                     id,
                     mount_path,
                     instructions,
+                    auth_token,
+                    git_ref,
                 })
             })
             .collect();

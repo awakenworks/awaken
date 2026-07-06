@@ -125,6 +125,14 @@ pub fn build_memory_resource_router() -> Router {
     mount(Arc::new(host))
 }
 
+/// A router for the github_repository RESOURCE e2e (ADR-0038): a deterministic model
+/// reads a host-cloned repo's file and writes a change the host commits + pushes back
+/// to the remote on harvest. `AWAKEN_MODEL_MODE=git-repo`.
+pub fn build_git_repo_router() -> Router {
+    let host = SharedHost::new(Arc::new(crate::models::GitRepoModel), "git-repo");
+    mount(Arc::new(host))
+}
+
 /// A router with context compaction (the compaction e2e): a low threshold folds
 /// the older transcript into a summary after a few turns. The deterministic
 /// model returns a fixed summary on the `compactor` sub-run and otherwise
