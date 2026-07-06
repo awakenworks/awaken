@@ -17,8 +17,13 @@
 //! graph resolves that project up to `Workspace{ws_other} → Global`, never to
 //! `ws_local`. So an out-of-tenant request is denied even for an `admin` token.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::extract::{Request, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 
 use awaken_iam_contract::{
     ActionKey, AuthorizationDecision, AuthorizationRequest, PrincipalRef, ProjectId, ScopeRef,
@@ -54,10 +59,10 @@ pub struct TokenSpec {
 /// preset role catalog. Cheap to construct; the single-machine seeder mints a
 /// couple of tokens into it at boot.
 pub struct EnforceEngine {
-    state: Mutex<State>,
+    state: Mutex<EngineState>,
 }
 
-struct State {
+struct EngineState {
     directory: ApiTokenDirectory,
     policy: PolicySet,
 }
@@ -94,7 +99,7 @@ impl EnforceEngine {
             effect: Effect::Allow,
         });
         Self {
-            state: Mutex::new(State {
+            state: Mutex::new(EngineState {
                 directory: ApiTokenDirectory::new(),
                 policy,
             }),
@@ -179,6 +184,73 @@ pub fn session_action(method: &str) -> ActionKey {
         "GET" | "HEAD" => ActionKey(format!("{AGENT_NAMESPACE}.read")),
         _ => ActionKey(format!("{AGENT_NAMESPACE}.write")),
     }
+}
+
+/// The tenancy the ingress resolved for a request, stamped into the request
+/// extensions before the [`guard`] runs. Present for a `/projects/{id}` request
+/// (carrying the *project's* workspace, so the fence is correct); absent for a
+/// bare request, where the guard falls back to the token's home workspace.
+#[derive(Debug, Clone)]
+pub struct RequestTenancy {
+    pub workspace_id: String,
+    pub project_id: Option<String>,
+}
+
+/// The session-axis guard: authenticate the bearer, derive the scope from the
+/// request's [`RequestTenancy`] (or the token's workspace when bare), map the
+/// method to an action, and authorize — fail-closed. Apply with
+/// `axum::middleware::from_fn_with_state(engine, guard)` over the protocol
+/// router. A missing/invalid credential is 401; a denied decision is 403.
+pub async fn guard(
+    State(engine): State<Arc<EnforceEngine>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(presented) = presented_bearer(request.headers()) else {
+        return reject(StatusCode::UNAUTHORIZED, "missing bearer credential");
+    };
+    let Ok((principal, token_workspace)) = engine.authenticate(&presented) else {
+        return reject(StatusCode::UNAUTHORIZED, "invalid credential");
+    };
+    let tenancy = request.extensions().get::<RequestTenancy>().cloned();
+    let (workspace_id, project_id) = match tenancy {
+        Some(t) => (t.workspace_id, t.project_id),
+        None => (token_workspace.0, None),
+    };
+    let scope = request_scope(&workspace_id, project_id.as_deref());
+    let action = session_action(request.method().as_str());
+    match engine.authorize(principal, &action, scope) {
+        AuthorizationDecision::Allow => next.run(request).await,
+        AuthorizationDecision::Deny | AuthorizationDecision::RequireApproval => {
+            reject(StatusCode::FORBIDDEN, "not authorized for this scope")
+        }
+    }
+}
+
+/// The presented secret from `Authorization: Bearer …` or the SDK's `x-api-key`.
+fn presented_bearer(headers: &HeaderMap) -> Option<String> {
+    if let Some(value) = headers.get("authorization").and_then(|h| h.to_str().ok()) {
+        let trimmed = value.trim();
+        if let Some(rest) = trimmed
+            .strip_prefix("Bearer ")
+            .or_else(|| trimmed.strip_prefix("bearer "))
+        {
+            return Some(rest.trim().to_string());
+        }
+    }
+    headers
+        .get("x-api-key")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn reject(status: StatusCode, detail: &str) -> Response {
+    (
+        status,
+        axum::Json(serde_json::json!({ "error": { "type": "unauthorized", "message": detail } })),
+    )
+        .into_response()
 }
 
 /// Days since the Unix epoch → RFC 3339 UTC, allocation-free of any date crate
@@ -298,5 +370,102 @@ mod tests {
         assert_eq!(session_action("GET").0, "agent.read");
         assert_eq!(session_action("POST").0, "agent.write");
         assert_eq!(session_action("DELETE").0, "agent.write");
+    }
+
+    // --- guard middleware (session-axis, deployment-form-independent) ---------
+
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use axum::middleware::from_fn_with_state;
+    use axum::routing::any;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    async fn call(
+        engine: Arc<EnforceEngine>,
+        method: Method,
+        bearer: Option<&str>,
+        tenancy: Option<RequestTenancy>,
+    ) -> StatusCode {
+        let app = Router::new()
+            .fallback(any(|| async { "ok" }))
+            .layer(from_fn_with_state(engine, guard));
+        let mut builder = Request::builder().method(method).uri("/v1/sessions");
+        if let Some(bearer) = bearer {
+            builder = builder.header("authorization", format!("Bearer {bearer}"));
+        }
+        let mut request = builder.body(Body::empty()).expect("request");
+        if let Some(tenancy) = tenancy {
+            request.extensions_mut().insert(tenancy);
+        }
+        app.oneshot(request).await.expect("router call").status()
+    }
+
+    fn admin_engine() -> (Arc<EnforceEngine>, String) {
+        let engine = Arc::new(EnforceEngine::seeded());
+        let secret = engine
+            .mint(TokenSpec {
+                token_id: "tok_admin".into(),
+                service_id: "operator".into(),
+                workspace_id: WS.into(),
+                role: "admin".into(),
+                expires_at: None,
+            })
+            .expect("mint admin");
+        (engine, secret)
+    }
+
+    #[tokio::test]
+    async fn guard_rejects_a_missing_credential() {
+        let (engine, _s) = admin_engine();
+        assert_eq!(
+            call(engine, Method::POST, None, None).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn guard_rejects_an_invalid_credential() {
+        let (engine, _s) = admin_engine();
+        assert_eq!(
+            call(engine, Method::GET, Some("sk-ant-bogus.nope"), None).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn guard_allows_a_bare_request_with_a_valid_token() {
+        let (engine, secret) = admin_engine();
+        assert_eq!(
+            call(engine, Method::POST, Some(&secret), None).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn guard_allows_a_project_in_the_tokens_workspace() {
+        let (engine, secret) = admin_engine();
+        let tenancy = RequestTenancy {
+            workspace_id: WS.into(),
+            project_id: Some(PROJ.into()),
+        };
+        assert_eq!(
+            call(engine, Method::POST, Some(&secret), Some(tenancy)).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn guard_forbids_a_project_in_another_workspace() {
+        let (engine, secret) = admin_engine();
+        let tenancy = RequestTenancy {
+            workspace_id: "wrkspc_other".into(),
+            project_id: Some("proj_x".into()),
+        };
+        assert_eq!(
+            call(engine, Method::POST, Some(&secret), Some(tenancy)).await,
+            StatusCode::FORBIDDEN
+        );
     }
 }

@@ -269,6 +269,10 @@ dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-iam-preset",
+ "axum 0.7.9",
+ "serde_json",
+ "tokio",
+ "tower",
 ]
 
 [[package]]
