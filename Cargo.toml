@@ -85,6 +85,7 @@ awaken-run-ingress-contract = { path = "crates/agents/awaken-run-ingress-contrac
 awaken-run-ingress = { path = "crates/agents/awaken-run-ingress" }
 awaken-runtime-host = { path = "crates/agents/awaken-runtime-host" }
 awaken-server-local = { path = "crates/agents/awaken-server-local" }
+awaken-authz-enforce = { path = "crates/agents/awaken-authz-enforce" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

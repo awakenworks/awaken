@@ -263,6 +263,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-authz-enforce"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-iam-contract",
+ "awaken-iam-core",
+ "awaken-iam-preset",
+]
+
+[[package]]
 name = "awaken-config-resolver"
 version = "1.0.0-dev"
 dependencies = [

@@ -1,0 +1,16 @@
+[package]
+name = "awaken-authz-enforce"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The shared authz engine (in-memory ApiTokenDirectory + PolicySet + preset role
+# catalog). This crate is the open "judgment" half — authenticate + authorize; it
+# never touches the durable iam-server store (that is the BuSL authoring half).
+awaken-iam-contract.workspace = true
+awaken-iam-core.workspace = true
+awaken-iam-preset.workspace = true
+
+[lints]
+workspace = true
