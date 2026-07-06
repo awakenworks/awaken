@@ -86,6 +86,7 @@ awaken-dispatch = { path = "crates/server/awaken-dispatch" }
 awaken-session-executor = { path = "crates/server/awaken-session-executor" }
 awaken-server = { path = "crates/server/awaken-server" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
+awaken-standalone = { path = "crates/bin/awaken-standalone" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
