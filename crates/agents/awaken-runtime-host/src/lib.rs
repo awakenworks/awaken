@@ -474,11 +474,37 @@ impl SessionRuntime for ManagedHost {
             let mut mounts = Vec::new();
             let mut prompts = Vec::new();
             let mut memory_mounts = Vec::new();
+            let mut repos = Vec::new();
             for res in &init.resources {
+                // github_repository is provisioned by a host-side `git clone` (ADR-0038),
+                // not a byte mount: the token authenticates the clone transport host-side
+                // and never enters the jail. Stage it for a post-create clone and surface
+                // the working-tree path (not `.mnt/`) in the prompt.
+                if res.kind == "github_repository" {
+                    let logical = res.mount_path.trim_start_matches('/').to_string();
+                    prompts.push(awaken_config_resolver::resource_binding_prompt(
+                        &awaken_config_resolver::ResourceBinding {
+                            kind: awaken_config_resolver::ResourceKind::GithubRepository,
+                            resource_id: res.id.clone(),
+                            mount_path: logical.clone(),
+                            access: awaken_config_resolver::ResourceAccess::ReadWrite,
+                            instructions: res.instructions.clone(),
+                        },
+                    ));
+                    repos.push(crate::provisioning::RepoStage {
+                        logical,
+                        url: res.id.clone(),
+                        git_ref: res.git_ref.clone(),
+                        token: res
+                            .auth_token
+                            .clone()
+                            .map(awaken_agent_contract::RedactedString::from),
+                    });
+                    continue;
+                }
                 let kind = match res.kind.as_str() {
                     "file" => awaken_config_resolver::ResourceKind::File,
                     "memory_store" => awaken_config_resolver::ResourceKind::MemoryStore,
-                    "github_repository" => awaken_config_resolver::ResourceKind::GithubRepository,
                     _ => continue,
                 };
                 // The legacy environment realizes a resource under `.mnt/<logical>`, so
@@ -497,8 +523,7 @@ impl SessionRuntime for ManagedHost {
                 ));
                 // Resolve the mount's seed content by family: a file resolves its bytes
                 // from the content-addressed blob store; a memory_store from its mutable,
-                // id-keyed store (and is tracked for write-back harvest); other kinds
-                // mount empty (repo clone is a follow-up).
+                // id-keyed store (and is tracked for write-back harvest).
                 let content = match res.kind.as_str() {
                     "file" => match store.get(&res.id).await {
                         Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
@@ -534,6 +559,7 @@ impl SessionRuntime for ManagedHost {
                     mounts,
                     prompts,
                     memory_mounts,
+                    repos,
                 },
             );
         }

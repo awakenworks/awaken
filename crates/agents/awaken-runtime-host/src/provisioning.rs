@@ -22,6 +22,20 @@ pub(crate) struct StagedResources {
     /// `harvest_thread_memory` can read the realized file back into the store after a
     /// turn (ADR-0038 MemoryStore write-back). Empty for file/repo mounts.
     pub memory_mounts: Vec<(String, String)>,
+    /// github_repository resources (ADR-0038). Provisioned by a host-side `git clone`
+    /// after the environment is created (not a byte mount) and pushed back on harvest.
+    pub repos: Vec<RepoStage>,
+}
+
+/// A staged github_repository: cloned host-side into the jailed `logical` path and
+/// pushed back on harvest. The `token` is the host-held GitHub PAT, used only on the
+/// git transport — it never enters the sandbox jail.
+#[derive(Clone)]
+pub(crate) struct RepoStage {
+    pub logical: String,
+    pub url: String,
+    pub git_ref: Option<String>,
+    pub token: Option<awaken_agent_contract::RedactedString>,
 }
 
 impl SharedHost {
@@ -133,6 +147,64 @@ impl SharedHost {
                     .put(&store_id, bytes)
                     .expect("persist harvested memory write-back");
             }
+        }
+    }
+
+    /// Clone a thread's staged github_repository resources into its freshly-created
+    /// environment (ADR-0038). Runs after `provider.create`, host-side, so the token
+    /// authenticates the clone transport without ever entering the jail. Fail-closed:
+    /// a clone error surfaces so the session doesn't run believing a repo mounted.
+    pub(crate) fn provision_thread_repos(
+        &self,
+        thread: &str,
+        env: &awaken_sandbox_local::Environment,
+    ) -> Result<(), crate::host::HostError> {
+        let repos = self
+            .thread_resources
+            .lock()
+            .unwrap()
+            .get(thread)
+            .map(|s| s.repos.clone())
+            .unwrap_or_default();
+        for repo in repos {
+            env.provision_repo(
+                &repo.logical,
+                &repo.url,
+                repo.git_ref.as_deref(),
+                repo.token.as_ref().map(|t| t.expose_secret()),
+            )
+            .map_err(|e| crate::host::HostError::internal(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Push a thread's github_repository edits back to their remotes (ADR-0038
+    /// write-back, symmetric to `harvest_thread_memory`): host-side `add`/`commit`/
+    /// `push` with the held token. A no-op for a thread with no repos or no live env;
+    /// a clean working tree pushes nothing. Best-effort — a push failure is logged by
+    /// the caller's context, not fatal to an already-finished turn.
+    pub async fn harvest_thread_repo(&self, thread: &str) {
+        let (env, repos) = {
+            let sessions = self.sessions.lock().await;
+            let env = sessions.get(thread).map(|ctx| ctx.env.clone());
+            let repos = self
+                .thread_resources
+                .lock()
+                .unwrap()
+                .get(thread)
+                .map(|s| s.repos.clone())
+                .unwrap_or_default();
+            (env, repos)
+        };
+        let Some(env) = env else {
+            return;
+        };
+        for repo in repos {
+            let _ = env.commit_and_push(
+                &repo.logical,
+                repo.token.as_ref().map(|t| t.expose_secret()),
+                "Awaken agent session changes",
+            );
         }
     }
 

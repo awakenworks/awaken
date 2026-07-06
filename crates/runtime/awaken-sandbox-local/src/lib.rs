@@ -479,6 +479,78 @@ impl Environment {
         out
     }
 
+    /// Clone a git repository into `<root>/<logical>` **host-side** (ADR-0038
+    /// github_repository resource). The credential never enters the jail: git runs
+    /// as a host process, the token is used only for the clone transport, and the
+    /// persisted `origin` remote is rewritten tokenless so the agent (jailed in the
+    /// root) can `read .git/config` without seeing a secret. Fail-closed: a bad
+    /// `logical`, missing root, or non-zero git exit is an error, so a session never
+    /// starts believing a repo mounted when it did not.
+    pub fn provision_repo(
+        &self,
+        logical: &str,
+        url: &str,
+        git_ref: Option<&str>,
+        token: Option<&str>,
+    ) -> Result<(), SandboxError> {
+        let dest = self.jailed(logical)?;
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| SandboxError(e.to_string()))?;
+        }
+        let mut args = vec!["clone".to_string()];
+        if let Some(r) = git_ref {
+            args.push("--branch".into());
+            args.push(r.to_string());
+        }
+        args.push(authed_url(url, token));
+        args.push(dest.to_string_lossy().into_owned());
+        run_git(None, &args)?;
+        // Drop the token from the persisted remote and set a committer identity so a
+        // later host-side `commit_and_push` succeeds in a fresh clone.
+        if token.is_some() {
+            run_git(Some(&dest), &["remote", "set-url", "origin", url])?;
+        }
+        run_git(Some(&dest), &["config", "user.email", "agent@awaken.local"])?;
+        run_git(Some(&dest), &["config", "user.name", "Awaken Agent"])?;
+        Ok(())
+    }
+
+    /// Stage every change under the repo at `<root>/<logical>`, commit it, and push
+    /// to `origin` **host-side** with the credential (ADR-0038 write-back, symmetric
+    /// to memory harvest). The token is supplied on the push transport only, never
+    /// persisted. Returns `Ok(true)` when a commit was pushed, `Ok(false)` when the
+    /// working tree was clean (nothing to push). Fail-closed on any git error.
+    pub fn commit_and_push(
+        &self,
+        logical: &str,
+        token: Option<&str>,
+        message: &str,
+    ) -> Result<bool, SandboxError> {
+        let dest = self.jailed(logical)?;
+        run_git(Some(&dest), &["add", "-A"])?;
+        // `commit` exits non-zero with nothing staged; treat that as a clean tree.
+        if !git_ok(Some(&dest), &["commit", "-m", message]) {
+            return Ok(false);
+        }
+        let url = git_stdout(Some(&dest), &["remote", "get-url", "origin"])?;
+        let url = url.trim();
+        run_git(Some(&dest), &["push", &authed_url(url, token), "HEAD"])?;
+        Ok(true)
+    }
+
+    /// Resolve a logical path under the realized root, fail-closed on escape (G3).
+    fn jailed(&self, logical: &str) -> Result<PathBuf, SandboxError> {
+        let root = self
+            .root
+            .as_ref()
+            .ok_or_else(|| SandboxError("environment has no realized root".into()))?;
+        let logical = logical.trim_start_matches('/');
+        if logical.is_empty() || logical.split('/').any(|seg| seg == ".." || seg == ".") {
+            return Err(SandboxError(format!("unsafe repo mount path `{logical}`")));
+        }
+        Ok(root.join(logical))
+    }
+
     /// Attach realized resource references.
     pub fn with_resources(mut self, resources: Vec<ResourceRef>) -> Self {
         self.resources = resources;
@@ -622,6 +694,182 @@ impl SandboxProvider for LocalSandboxProvider {
             std::fs::remove_dir_all(&dir).map_err(|e| SandboxError(e.to_string()))?;
         }
         Ok(())
+    }
+}
+
+/// Splice a bearer token into an `https://` URL for a single git transport op,
+/// so it lands in the process's transient argv and never in `.git/config`. Only
+/// `https://` is rewritten (GitHub uses the `x-access-token` username convention);
+/// a local path, `file://`, or an already-authed URL passes through unchanged, and
+/// an absent token is a no-op — the tokenless path used by local remotes and tests.
+fn authed_url(url: &str, token: Option<&str>) -> String {
+    match token {
+        Some(t) if url.starts_with("https://") && !url.contains('@') => {
+            format!("https://x-access-token:{t}@{}", &url["https://".len()..])
+        }
+        _ => url.to_string(),
+    }
+}
+
+/// Run `git <args>` (optionally in `cwd`) with prompts disabled, returning its
+/// captured output. Any spawn failure or non-zero exit is a fail-closed
+/// [`SandboxError`] carrying stderr — never a silent partial success.
+fn git_run(cwd: Option<&Path>, args: &[&str]) -> Result<std::process::Output, SandboxError> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0").args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| SandboxError(format!("git {}: {e}", args.first().unwrap_or(&""))))?;
+    if !out.status.success() {
+        return Err(SandboxError(format!(
+            "git {} failed: {}",
+            args.first().unwrap_or(&""),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out)
+}
+
+/// [`git_run`] with owned-string args (for the transient authed URL).
+fn run_git(cwd: Option<&Path>, args: &[impl AsRef<str>]) -> Result<(), SandboxError> {
+    let borrowed: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
+    git_run(cwd, &borrowed).map(|_| ())
+}
+
+/// Run a git command for its success/failure only (used for `commit`, which exits
+/// non-zero on a clean tree — an expected, non-error outcome).
+fn git_ok(cwd: Option<&Path>, args: &[&str]) -> bool {
+    git_run(cwd, args).is_ok()
+}
+
+/// Run a git command and return its trimmed stdout.
+fn git_stdout(cwd: Option<&Path>, args: &[&str]) -> Result<String, SandboxError> {
+    Ok(String::from_utf8_lossy(&git_run(cwd, args)?.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod repo_tests {
+    use super::*;
+
+    fn git(cwd: &Path, args: &[&str]) {
+        git_run(Some(cwd), args).expect("git op");
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("awaken-repo-{tag}-{stamp}"))
+    }
+
+    // A bare "remote" seeded with one commit, plus its non-bare source. Returns the
+    // bare repo path to clone from.
+    fn seed_remote(base: &Path) -> PathBuf {
+        let work = base.join("seed");
+        std::fs::create_dir_all(&work).unwrap();
+        git(&work, &["init", "-q", "-b", "main"]);
+        git(&work, &["config", "user.email", "seed@t"]);
+        git(&work, &["config", "user.name", "seed"]);
+        std::fs::write(work.join("README.md"), "hello from remote").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-q", "-m", "seed"]);
+        let bare = base.join("remote.git");
+        git_run(
+            None,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                work.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        bare
+    }
+
+    fn env_at(root: &Path) -> Environment {
+        std::fs::create_dir_all(root).unwrap();
+        Environment::new("t", Vec::new()).with_root(root)
+    }
+
+    #[test]
+    fn provision_clones_then_commit_and_push_writes_back() {
+        let base = scratch("roundtrip");
+        let bare = seed_remote(&base);
+        let root = base.join("env");
+        let env = env_at(&root);
+
+        // Clone: the seeded file lands under the jailed logical path.
+        env.provision_repo("workspace/repo", bare.to_str().unwrap(), None, None)
+            .unwrap();
+        let readme = root.join("workspace/repo/README.md");
+        assert_eq!(
+            std::fs::read_to_string(&readme).unwrap(),
+            "hello from remote"
+        );
+
+        // Agent-style edit, then host commits + pushes it back to the bare remote.
+        std::fs::write(root.join("workspace/repo/NEW.txt"), "written by agent").unwrap();
+        assert!(
+            env.commit_and_push("workspace/repo", None, "agent change")
+                .unwrap()
+        );
+
+        // A clean tree pushes nothing.
+        assert!(!env.commit_and_push("workspace/repo", None, "noop").unwrap());
+
+        // The remote now carries the new file — a fresh clone sees it.
+        let verify = base.join("verify");
+        git_run(
+            None,
+            &[
+                "clone",
+                "-q",
+                bare.to_str().unwrap(),
+                verify.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(verify.join("NEW.txt")).unwrap(),
+            "written by agent"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn unsafe_logical_path_is_rejected() {
+        let base = scratch("escape");
+        let env = env_at(&base.join("env"));
+        assert!(env.provision_repo("../escape", "x", None, None).is_err());
+        assert!(env.provision_repo("", "x", None, None).is_err());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn authed_url_keeps_secret_out_of_plain_and_local_urls() {
+        // https gets the token spliced in transiently; everything else is untouched.
+        assert_eq!(
+            authed_url("https://github.com/o/r", Some("ghp_x")),
+            "https://x-access-token:ghp_x@github.com/o/r"
+        );
+        assert_eq!(
+            authed_url("https://github.com/o/r", None),
+            "https://github.com/o/r"
+        );
+        assert_eq!(
+            authed_url("/tmp/local.git", Some("ghp_x")),
+            "/tmp/local.git"
+        );
+        assert_eq!(
+            authed_url("file:///tmp/r.git", Some("ghp_x")),
+            "file:///tmp/r.git"
+        );
     }
 }
 

@@ -37,6 +37,9 @@ async fn list_files(
             // into their stores (ADR-0038 MemoryStore write-back) before listing the
             // output artifacts, so a poll here also persists the session's memory edits.
             host.harvest_thread_memory(&session).await;
+            // Same reverse channel for github_repository: commit + push the agent's
+            // edits back to the remote (ADR-0038 write-back).
+            host.harvest_thread_repo(&session).await;
             host.session_artifacts(&session)
                 .await
                 .into_iter()
