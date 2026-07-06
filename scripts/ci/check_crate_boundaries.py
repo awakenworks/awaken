@@ -723,6 +723,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-a2a",
         "async-trait",
         "axum",
+        "rusqlite",
+        "tempfile",
         "base64",
         "form_urlencoded",
         "reqwest",

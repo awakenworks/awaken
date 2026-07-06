@@ -13,7 +13,6 @@
 
 mod authz;
 mod models;
-mod session_store;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -676,7 +675,7 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
         // instance is a different aggregate from the agent/MCP definitions admin.db
         // holds (ADR-0039 one-repository-per-aggregate).
         sessions: Arc::new(
-            crate::session_store::SqliteManagedSessionRepository::open(&db("sessions.db"))
+            awaken_runtime_host::SqliteManagedSessionRepository::open(&db("sessions.db"))
                 .expect("open sessions.db under AWAKEN_MGMT_DIR"),
         ),
     }
