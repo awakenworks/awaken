@@ -135,6 +135,51 @@ async fn project_ingress(
     }
 }
 
+/// Boot the zero-config single-machine server over the built-in [`HelloModel`].
+/// A real deployment calls [`build`] with `awaken_provider_genai::GenAiExecutor`
+/// (pointed at a provider or the awaken-cloud gateway) instead.
+#[must_use]
+pub fn boot() -> Standalone {
+    build(Arc::new(HelloModel))
+}
+
+/// Boot, bind `addr`, and serve until `shutdown` resolves. `addr` may use port
+/// `0` for an ephemeral port; the bound address + the seeded keys are handed to
+/// `on_bound` once (the binary passes [`print_banner`]). Extracted from `main` so
+/// the bind/serve path is exercised by a test rather than only in production.
+pub async fn run(
+    addr: &str,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    on_bound: impl FnOnce(&Standalone, std::net::SocketAddr),
+) -> std::io::Result<()> {
+    let standalone = boot();
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let local = listener.local_addr()?;
+    on_bound(&standalone, local);
+    axum::serve(listener, standalone.router)
+        .with_graceful_shutdown(shutdown)
+        .await
+}
+
+/// The default `on_bound` for [`run`]: print the [`banner`] to stderr.
+pub fn print_banner(standalone: &Standalone, addr: std::net::SocketAddr) {
+    eprintln!("{}", banner(standalone, &addr.to_string()));
+}
+
+/// The one-time startup banner: the seeded keys (the single-machine operator
+/// hand-off) and the addressing, printed once at boot.
+#[must_use]
+pub fn banner(standalone: &Standalone, addr: &str) -> String {
+    format!(
+        "awaken-standalone: single-machine open runtime\n  \
+         admin key: {}\n  api key:   {}\n  \
+         project:   /projects/{PROJECT_ID}/v1/sessions (also bare /v1/sessions)\n  \
+         listening on http://{addr}\n  \
+         rotate the printed keys before exposing this beyond localhost.",
+        standalone.admin_token, standalone.api_token
+    )
+}
+
 /// The default single-machine model: a deterministic greeter that ends the turn
 /// with one line of text — no external provider, so a standalone boots and runs
 /// with zero configuration. A real deployment injects
