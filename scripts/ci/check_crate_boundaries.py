@@ -692,7 +692,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-executor-acp",
         "awaken-config-resolver",
         "awaken-credential-vault",
-        "awaken-admin-config-api",
         "awaken-protocol-managed",
         "awaken-protocol-transport",
         "awaken-protocol-a2a",

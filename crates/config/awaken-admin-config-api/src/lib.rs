@@ -17,11 +17,17 @@ pub mod sqlite;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteAdminStore;
 
+// The read ports + in-memory impls now live in the open resolver crate; re-export
+// them so existing `awaken_admin_config_api::…Store` paths keep resolving (same
+// type). The authoring HTTP surface writes through these ports; the SQLite backend
+// (`SqliteAdminStore`) implements them.
+pub use awaken_config_resolver::{
+    InMemoryMcpStore, InMemoryProfileStore, InMemoryProjectStore, InMemoryResourceStore,
+    InferenceProfileStore, McpStore, ProjectStore, ResourceStore,
+};
 pub use router::{
-    AdminState, CredentialProbe, CredentialValidation, InMemoryMcpStore, InMemoryProfileStore,
-    InMemoryProjectStore, InMemoryResourceStore, InferenceProfileStore, McpStore, ProbeStatus,
-    ProjectStore, ResolveRequest, ResolvedInferenceView, ResolvedMcpServerView, ResourceStore,
-    admin_router,
+    AdminState, CredentialProbe, CredentialValidation, ProbeStatus, ResolveRequest,
+    ResolvedInferenceView, ResolvedMcpServerView, admin_router,
 };
 
 /// The API surface version this crate serves.

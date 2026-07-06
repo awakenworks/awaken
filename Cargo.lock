@@ -816,7 +816,6 @@ name = "awaken-runtime-host"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-admin-config-api",
  "awaken-agent-contract",
  "awaken-config-resolver",
  "awaken-config-store",

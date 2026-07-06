@@ -16,11 +16,10 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
-    AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef, Project,
-    ProjectAgentConfig,
+    AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
+    McpStore, Project, ProjectAgentConfig, ProjectStore, ResourceStore,
 };
 
-use crate::router::{InferenceProfileStore, McpStore};
 use crate::schema::admin_bundle;
 
 /// The admin component's table namespace (its bundle prefix).
@@ -121,7 +120,7 @@ impl SqliteAdminStore {
     }
 }
 
-impl crate::router::ResourceStore for SqliteAdminStore {
+impl ResourceStore for SqliteAdminStore {
     fn put_agent_resource(&self, config: AgentResourceConfig) {
         // Fully-qualified so this resolves to the inherent method (durable upsert),
         // not the trait method being defined.
@@ -170,7 +169,7 @@ impl McpStore for SqliteAdminStore {
     }
 }
 
-impl crate::router::ProjectStore for SqliteAdminStore {
+impl ProjectStore for SqliteAdminStore {
     fn put_project(&self, project: Project) {
         let conn = self.conn.lock().expect("admin store");
         conn.execute(

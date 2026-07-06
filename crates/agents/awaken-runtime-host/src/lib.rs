@@ -158,8 +158,8 @@ pub struct ManagedHost {
 struct ManagedMcp {
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    mcp_store: Arc<dyn awaken_admin_config_api::McpStore>,
-    projects: Arc<dyn awaken_admin_config_api::ProjectStore>,
+    mcp_store: Arc<dyn awaken_config_resolver::McpStore>,
+    projects: Arc<dyn awaken_config_resolver::ProjectStore>,
 }
 
 impl ManagedHost {
@@ -176,8 +176,8 @@ impl ManagedHost {
         mut self,
         credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
         secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-        mcp_store: Arc<dyn awaken_admin_config_api::McpStore>,
-        projects: Arc<dyn awaken_admin_config_api::ProjectStore>,
+        mcp_store: Arc<dyn awaken_config_resolver::McpStore>,
+        projects: Arc<dyn awaken_config_resolver::ProjectStore>,
     ) -> Self {
         self.mcp = Some(ManagedMcp {
             credentials,

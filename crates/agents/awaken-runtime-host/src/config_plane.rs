@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use awaken_admin_config_api::ResourceStore;
+use awaken_config_resolver::ResourceStore;
 use awaken_config_store::{
     AgentConfig, ConfigRegistry, RunnableConfig, StoredPublication, compile_with_resource_prompts,
 };
@@ -193,7 +193,7 @@ mod resource_prompt_tests {
     #[tokio::test]
     async fn publish_injects_bound_resource_prompts_into_the_compiled_instructions() {
         // Author a resource binding for agent-1 in the shared store (ADR-0038 A3a).
-        let resources = Arc::new(awaken_admin_config_api::InMemoryResourceStore::new());
+        let resources = Arc::new(awaken_config_resolver::InMemoryResourceStore::new());
         resources.put_agent_resource(AgentResourceConfig {
             agent_id: "agent-1".into(),
             resources: vec![ResourceBinding {

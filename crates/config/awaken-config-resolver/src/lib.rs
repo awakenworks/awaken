@@ -17,6 +17,16 @@ use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{CredentialBinding, CredentialError, CredentialSource, SecretStore};
 use awaken_model_catalog::{ModelApiCompat, ProviderCatalog};
 
+/// Read ports for the authored aggregates (`ProjectStore`, `McpStore`,
+/// `InferenceProfileStore`, `ResourceStore`) + in-memory reference impls. They
+/// live on the read side so the runtime host reads config without depending on
+/// the authoring HTTP crate (which writes through the same ports).
+pub mod stores;
+pub use stores::{
+    InMemoryMcpStore, InMemoryProfileStore, InMemoryProjectStore, InMemoryResourceStore,
+    InferenceProfileStore, McpStore, ProjectStore, ResourceStore,
+};
+
 /// The resolved execution unit: *(model × credential-identity × provider ×
 /// flavor)*. Mirrors awaken-management-contract's `InferenceTriple`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
