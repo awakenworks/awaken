@@ -47,6 +47,29 @@ impl SkillSource for EnvSkillSource {
     }
 }
 
+/// Bridges the durable [`awaken_skill_store::SkillStore`] to the [`SkillSource`] port:
+/// scans the persisted catalog live, returning each `SKILL.md` as neutral file data.
+/// The host owns this bridge so `awaken-ext-skills` stays store-unaware — it sees only
+/// `SkillFile`s, never the store. Scanned on every query so a skill added through the
+/// `/v1/skills` API this run is discovered without a rebuild.
+struct StoreSkillSource {
+    store: Arc<awaken_skill_store::SkillStore>,
+}
+
+impl SkillSource for StoreSkillSource {
+    fn scan(&self) -> Vec<SkillFile> {
+        self.store
+            .list()
+            .into_iter()
+            .map(|(id, content)| SkillFile {
+                id,
+                content,
+                dir: None,
+            })
+            .collect()
+    }
+}
+
 /// Runs a `context: fork` skill as a fresh, isolated sub-agent, returning its
 /// reply. Bridges the [`SubAgentRunner`] port to the shared `run_subagent`.
 struct ForkRunner {
@@ -86,6 +109,7 @@ pub(crate) struct SkillWiring {
 /// `fork_base` is the sub-agent sandbox base for `context: fork` skills.
 pub(crate) fn wire_skills(
     configured: &[SkillSpec],
+    skill_store: Option<Arc<awaken_skill_store::SkillStore>>,
     env: Arc<Environment>,
     llm: Arc<dyn LlmExecutor>,
     model_ref: &str,
@@ -93,23 +117,36 @@ pub(crate) fn wire_skills(
     base_gate: Arc<dyn ToolGateHook>,
     fork_base: PathBuf,
 ) -> Option<SkillWiring> {
-    if configured.is_empty() {
+    // Offer skills when either a static set is configured or a durable catalog is
+    // wired — the workspace-authored source alone never opens the surface (a run with
+    // no delivered skills shows nothing until the agent authors one it can re-read).
+    if configured.is_empty() && skill_store.is_none() {
         return None;
     }
-    // Delivered (configured, trusted) skills plus a live scan of the workspace for
-    // skills the agent authored this run (AgentCreated).
-    let delivered: Arc<dyn SkillRegistry> = Arc::new(InMemorySkillRegistry::from_specs(
-        configured.iter().cloned(),
-    ));
-    let authored: Arc<dyn SkillRegistry> = Arc::new(SourceSkillRegistry::new(
+    // Delivered skills come from two trusted sources: the static configured set and —
+    // when wired — the durable `/v1/skills` catalog (both `Delivered` provenance),
+    // plus a live scan of the workspace for skills the agent authored this run
+    // (`AgentCreated`). Static wins over durable wins over authored on a duplicate id.
+    let mut registries: Vec<Arc<dyn SkillRegistry>> = Vec::new();
+    if !configured.is_empty() {
+        registries.push(Arc::new(InMemorySkillRegistry::from_specs(
+            configured.iter().cloned(),
+        )));
+    }
+    if let Some(store) = skill_store {
+        registries.push(Arc::new(SourceSkillRegistry::new(
+            Arc::new(StoreSkillSource { store }),
+            SkillProvenance::Delivered,
+        )));
+    }
+    registries.push(Arc::new(SourceSkillRegistry::new(
         Arc::new(EnvSkillSource {
             env,
             subdir: WORKSPACE_SKILLS_SUBDIR.to_string(),
         }),
         SkillProvenance::AgentCreated,
-    ));
-    let registry: Arc<dyn SkillRegistry> =
-        Arc::new(CompositeSkillRegistry::new(vec![delivered, authored]));
+    )));
+    let registry: Arc<dyn SkillRegistry> = Arc::new(CompositeSkillRegistry::new(registries));
 
     let activations = PathActivations::new();
     let gate: Arc<dyn ToolGateHook> = Arc::new(RecordingGate::new(base_gate, activations.clone()));
@@ -147,6 +184,34 @@ fn skill_descriptor() -> ToolDescriptor {
 mod tests {
     use super::*;
     use awaken_sandbox_local::{SandboxProvider, SandboxSpec};
+
+    #[test]
+    fn durable_store_source_scans_the_catalog_as_delivered_skill_files() {
+        // The host's bridge over the durable skill store yields neutral SkillFiles the
+        // extension parses — so a skill persisted in the store is offered as Delivered
+        // without awaken-ext-skills ever seeing the store.
+        let root = std::env::temp_dir().join(format!("awaken-skillsrc-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let store = Arc::new(awaken_skill_store::SkillStore::open(&root).unwrap());
+        store
+            .put("greet", "---\ndescription: say hi\n---\nHELLO")
+            .unwrap();
+
+        let source = StoreSkillSource {
+            store: store.clone(),
+        };
+        let files = source.scan();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].id, "greet");
+        assert!(files[0].content.contains("HELLO"));
+
+        let reg = SourceSkillRegistry::new(Arc::new(source), SkillProvenance::Delivered);
+        let spec = reg.get("greet").expect("delivered skill resolves");
+        assert_eq!(spec.description, "say hi");
+        assert_eq!(spec.provenance, SkillProvenance::Delivered);
+        assert!(spec.body.contains("HELLO"));
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[tokio::test]
     async fn agent_authored_skill_is_discovered_live_from_the_workspace() {

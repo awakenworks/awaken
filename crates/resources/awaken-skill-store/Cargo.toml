@@ -1,0 +1,13 @@
+[package]
+name = "awaken-skill-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Durable skill catalog for the resources plane. Deliberately std-only: a leaf like
+# awaken-memory-store / awaken-file-store, it names no runtime/host/ext type, so the
+# host can serve delivered skills from it while awaken-ext-skills stays store-unaware
+# (it only ever sees SkillFile data through its SkillSource port).
+
+[lints]
+workspace = true

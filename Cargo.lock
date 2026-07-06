@@ -837,6 +837,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-local",
+ "awaken-skill-store",
  "awaken-store-fs",
  "awaken-store-sqlite",
  "axum 0.7.9",
@@ -938,6 +939,10 @@ dependencies = [
  "tokio",
  "tower",
 ]
+
+[[package]]
+name = "awaken-skill-store"
+version = "1.0.0-dev"
 
 [[package]]
 name = "awaken-store-conformance"

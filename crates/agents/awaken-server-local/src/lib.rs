@@ -43,6 +43,7 @@ pub use awaken_runtime_host::{
     PreparedMcpRefresh, ProtocolHost, Response, SharedHost, SkillContext, SkillSpec, ThreadEvent,
     ThreadEventHub, Transport, VaultRefresher, advertised_tools, config_router,
     content_fingerprint, durable_ops_router, files_router, memory_stores_router, parse_skill_md,
+    skills_router,
 };
 
 /// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a
@@ -186,6 +187,8 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = files_router(host.clone());
     let memory_stores = memory_stores_router(host.clone());
+    // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.
+    let skills = skills_router(host.clone());
     managed
         .merge(ai_sdk)
         .merge(ag_ui)
@@ -193,6 +196,7 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
         .merge(durable_ops)
         .merge(files)
         .merge(memory_stores)
+        .merge(skills)
 }
 
 /// The composition seam refuses to build an executor from an incomplete or
@@ -1030,4 +1034,24 @@ pub fn build_skills_router() -> Router {
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let review = SkillSpec::new("review", "Review", "review code", "REVIEW-BODY");
     build_router_with_skills(Arc::new(SkillDrivingModel), "skills", vec![greet, review])
+}
+
+/// A router whose delivered skills come from a DURABLE catalog (`/v1/skills`) instead
+/// of static config, rooted under `AWAKEN_STORAGE_DIR` (a per-process temp dir when
+/// unset). A skill posted to `/v1/skills` is offered on every thread and survives a
+/// restart. The `SkillDrivingModel` discovers → activates `greet` → replies with its
+/// body, so an e2e proves a durably-configured skill reaches the model across a
+/// restart. `AWAKEN_MODEL_MODE=skills-durable`.
+pub fn build_skills_durable_router() -> Router {
+    let dir = std::env::var("AWAKEN_STORAGE_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-skills-durable-{}", std::process::id()))
+        })
+        .join("skills_catalog");
+    mount(Arc::new(
+        SharedHost::new(Arc::new(SkillDrivingModel), "skills-durable").with_skill_store(dir),
+    ))
 }

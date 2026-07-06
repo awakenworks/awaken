@@ -31,6 +31,7 @@ mod memory_store_api;
 mod model_route;
 mod provisioning;
 mod skills;
+mod skills_api;
 mod store;
 mod subagent;
 mod turn_exec;
@@ -65,6 +66,7 @@ pub use crate::config_plane::{ConfigService, config_router};
 pub use crate::durable_ops::durable_ops_router;
 pub use crate::files::files_router;
 pub use crate::memory_store_api::memory_stores_router;
+pub use crate::skills_api::skills_router;
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `ExecutorProvider` to map a session's model ref to a labeled executor.
 pub use crate::model_route::ExecutorProvider;

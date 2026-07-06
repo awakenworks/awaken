@@ -264,6 +264,12 @@ pub struct SharedHost {
     /// Skills offered on every thread (ADR-0036). The whole set is fronted by the
     /// single `Skill` tool; the model activates one by id to load its instructions.
     pub(crate) skills: Vec<SkillSpec>,
+    /// An optional durable delivered-skill catalog (resources plane). When set, its
+    /// `SKILL.md`s are offered alongside the static `skills` and survive a restart, so
+    /// a catalog configured through `/v1/skills` outlives the process. The host reads
+    /// the bytes and feeds them to the extension's `SkillSource`, so the runtime stays
+    /// store-unaware.
+    pub(crate) skill_store: Option<Arc<awaken_skill_store::SkillStore>>,
     pub(crate) delegates: HashSet<String>,
     /// Runtime plugins this host activates on every thread, and their config
     /// sections (e.g. the tool state machine). Empty by default.
@@ -353,6 +359,7 @@ impl SharedHost {
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
             skills: Vec::new(),
+            skill_store: None,
             delegates: HashSet::new(),
             plugin_ids: Vec::new(),
             plugin_config: std::collections::BTreeMap::new(),
@@ -483,6 +490,19 @@ impl SharedHost {
     /// authoring/collection — it only carries the offered set.
     pub fn with_skills(mut self, skills: Vec<SkillSpec>) -> Self {
         self.skills.extend(skills);
+        self
+    }
+
+    /// Back the delivered skill catalog with a durable [`awaken_skill_store::SkillStore`]
+    /// rooted at `dir`. Its `SKILL.md`s are offered on every thread alongside any
+    /// static [`with_skills`](Self::with_skills) set and survive a restart, so a skill
+    /// added through `/v1/skills` is still offered by a later process over the same
+    /// dir. The extension never learns of the store — the host scans it into the
+    /// `SkillSource` port as plain file data.
+    pub fn with_skill_store(mut self, dir: impl Into<PathBuf>) -> Self {
+        let store = awaken_skill_store::SkillStore::open(dir.into())
+            .expect("open durable skill store root");
+        self.skill_store = Some(Arc::new(store));
         self
     }
 
@@ -728,6 +748,7 @@ impl SharedHost {
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
         if let Some(wiring) = crate::skills::wire_skills(
             &self.skills,
+            self.skill_store.clone(),
             env.clone(),
             self.llm.clone(),
             &self.model_ref,

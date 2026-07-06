@@ -78,6 +78,28 @@ impl SharedHost {
         self.memory_stores.get(id)
     }
 
+    /// Store (or overwrite) a delivered skill's `SKILL.md` `content` under `id` in the
+    /// durable catalog, returning the safe id it is addressable by. `None` when this
+    /// host has no durable skill store wired (nothing to persist into).
+    pub fn skill_store_put(&self, id: &str, content: &str) -> Option<String> {
+        self.skill_store
+            .as_ref()
+            .map(|store| store.put(id, content).expect("persist durable skill"))
+    }
+
+    /// The ids in the durable skill catalog (empty when no store is wired).
+    pub fn skill_store_list(&self) -> Vec<String> {
+        self.skill_store
+            .as_ref()
+            .map(|store| store.list().into_iter().map(|(id, _)| id).collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether this host has a durable skill catalog wired.
+    pub fn has_skill_store(&self) -> bool {
+        self.skill_store.is_some()
+    }
+
     /// Harvest a thread's read-write memory mounts back into their stores (ADR-0038):
     /// read each realized `.mnt/<logical>` file and persist it under the store id, so a
     /// memory write in this session is visible to the next one that mounts the same id.
@@ -152,9 +174,20 @@ impl SharedHost {
             .collect()
     }
 
-    /// The skill ids offered on every thread (advertised as the agent's `skills`).
+    /// The skill ids offered on every thread (advertised as the agent's `skills`):
+    /// the static configured set plus any durable `/v1/skills` catalog, de-duplicated
+    /// with the static set winning, so the advertisement matches what `list_skills`
+    /// resolves.
     pub fn skill_ids(&self) -> Vec<String> {
-        self.skills.iter().map(|s| s.id.clone()).collect()
+        let mut ids: Vec<String> = self.skills.iter().map(|s| s.id.clone()).collect();
+        if let Some(store) = &self.skill_store {
+            for (id, _) in store.list() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
     }
 
     /// The delegate agent ids (advertised as the agent's `multiagent` roster).

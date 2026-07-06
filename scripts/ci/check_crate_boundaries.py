@@ -206,6 +206,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # std-only leaf — names no runtime, host, or provider type, so the host backs
     # memory durability with it while the runtime stays store-unaware.
     "awaken-memory-store": set(),
+    # Durable skill catalog (resources plane): a SKILL.md-per-skill store on disk the
+    # host serves delivered skills from. A std-only leaf — names no runtime/host/ext
+    # type, so awaken-ext-skills stays store-unaware (it sees only SkillFile data).
+    "awaken-skill-store": set(),
     # Agent-transport seam (ADR-0041 amendment): the segregated `AgentChannel`
     # duplex + `AgentTransport` capability port, kept off `ProcessHandle` (ISP).
     # A leaf over tokio's async IO traits; names no provider, protocol, or host
@@ -676,6 +680,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-state-machine",
         "awaken-sandbox-local",
         "awaken-memory-store",
+        "awaken-skill-store",
         "awaken-store-sqlite",
         "awaken-store-fs",
         "awaken-config-store",

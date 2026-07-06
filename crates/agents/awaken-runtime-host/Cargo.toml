@@ -21,6 +21,9 @@ awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 # Durable memory persistence (resources plane): backs the ADR-0038 memory_store
 # family so a harvested write-back survives a process restart.
 awaken-memory-store = { workspace = true }
+# Durable skill catalog (resources plane): backs the delivered-skill source so a
+# skill added via /v1/skills survives a restart; awaken-ext-skills stays store-unaware.
+awaken-skill-store = { workspace = true }
 awaken-sandbox-local = { workspace = true }
 awaken-store-sqlite = { workspace = true }
 awaken-store-fs = { workspace = true }
