@@ -37,6 +37,10 @@ awaken-protocol-transport = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true
+# Durable Managed-session repository (sessions.db) — the open home for
+# SqliteManagedSessionRepository, moved here so any bin (standalone/enterprise)
+# gets restart-surviving sessions without the BuSL authoring plane.
+rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 axum = { version = "0.7", features = ["multipart"] }
@@ -45,3 +49,7 @@ axum = { version = "0.7", features = ["multipart"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
 form_urlencoded = "1"
+
+[dev-dependencies]
+# The durable session-store round-trip test opens a real sessions.db under a temp dir.
+tempfile = "3"
