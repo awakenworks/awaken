@@ -32,6 +32,22 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "tower",
     },
+    # The open single-machine assembly. Composes ONLY open crates — this closure
+    # is the zero-BuSL invariant (no admin-config-api write plane, no iam-server,
+    # no store-postgres). Adding a BuSL dep here should fail review.
+    "awaken-standalone": {
+        "awaken-runtime-host",
+        "awaken-protocol-managed",
+        "awaken-authz-enforce",
+        "awaken-config-resolver",
+        "awaken-runtime-contract",
+        "axum",
+        "async-trait",
+        "tokio",
+        "tower",
+        # dev-only: e2e drives the guarded surface.
+        "serde_json",
+    },
     # Tenancy scope tree (Org⊃Workspace⊃Project) vendored serde-only from
     # awaken-flow's awaken-flow-work; a foundation leaf, names no iam/store/wire.
     "awaken-scope": {"serde"},

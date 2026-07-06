@@ -1,0 +1,29 @@
+[package]
+name = "awaken-standalone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "awaken-standalone"
+path = "src/main.rs"
+
+[dependencies]
+# The open single-machine assembly: it composes ONLY open crates — no
+# admin-config-api write plane, no iam-server, no distributed store. The zero-BuSL
+# invariant is asserted in CI (check_crate_boundaries.py, license tier).
+awaken-runtime-host.workspace = true
+awaken-protocol-managed.workspace = true
+awaken-authz-enforce.workspace = true
+awaken-config-resolver.workspace = true
+awaken-runtime-contract.workspace = true
+axum = "0.7"
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

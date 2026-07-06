@@ -95,6 +95,7 @@ wrappers = [
     "awaken-sandbox-local",
     "awaken-protocol-mcp",
     "awaken-server-local",
+    "awaken-standalone",
     "awaken-config-resolver",
     "awaken-run-executor-acp",
 ]

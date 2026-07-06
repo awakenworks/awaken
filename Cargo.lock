@@ -966,6 +966,22 @@ name = "awaken-skill-store"
 version = "1.0.0-dev"
 
 [[package]]
+name = "awaken-standalone"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-authz-enforce",
+ "awaken-config-resolver",
+ "awaken-protocol-managed",
+ "awaken-runtime-contract",
+ "awaken-runtime-host",
+ "axum 0.7.9",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "awaken-store-conformance"
 version = "1.0.0-dev"
 dependencies = [
