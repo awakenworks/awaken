@@ -64,22 +64,40 @@ impl SharedHost {
 
     /// Create a new, empty memory store and return its stable id (ADR-0038 MemoryStore).
     /// Unlike a blob id, this id is mutable: a session mounts it read-write and the host
-    /// harvests the write back under the same id.
+    /// harvests the write back under the same id. Backed by the durable
+    /// [`awaken_memory_store::MemoryBlobStore`], so the store (and its id) survive a
+    /// process restart when the host runs under a storage dir.
     pub fn create_memory_store(&self) -> String {
-        let id = format!(
-            "memstore_{}",
-            crate::host::BASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        );
         self.memory_stores
-            .lock()
-            .unwrap()
-            .insert(id.clone(), Vec::new());
-        id
+            .create()
+            .expect("create durable memory store")
     }
 
     /// The current bytes of a memory store; `None` if the id is unknown.
     pub fn memory_get(&self, id: &str) -> Option<Vec<u8>> {
-        self.memory_stores.lock().unwrap().get(id).cloned()
+        self.memory_stores.get(id)
+    }
+
+    /// Store (or overwrite) a delivered skill's `SKILL.md` `content` under `id` in the
+    /// durable catalog, returning the safe id it is addressable by. `None` when this
+    /// host has no durable skill store wired (nothing to persist into).
+    pub fn skill_store_put(&self, id: &str, content: &str) -> Option<String> {
+        self.skill_store
+            .as_ref()
+            .map(|store| store.put(id, content).expect("persist durable skill"))
+    }
+
+    /// The ids in the durable skill catalog (empty when no store is wired).
+    pub fn skill_store_list(&self) -> Vec<String> {
+        self.skill_store
+            .as_ref()
+            .map(|store| store.list().into_iter().map(|(id, _)| id).collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether this host has a durable skill catalog wired.
+    pub fn has_skill_store(&self) -> bool {
+        self.skill_store.is_some()
     }
 
     /// Harvest a thread's read-write memory mounts back into their stores (ADR-0038):
@@ -112,9 +130,8 @@ impl SharedHost {
         for (store_id, logical) in mounts {
             if let Some((_, bytes)) = realized.iter().find(|(path, _)| *path == logical) {
                 self.memory_stores
-                    .lock()
-                    .unwrap()
-                    .insert(store_id, bytes.clone());
+                    .put(&store_id, bytes)
+                    .expect("persist harvested memory write-back");
             }
         }
     }
@@ -157,9 +174,20 @@ impl SharedHost {
             .collect()
     }
 
-    /// The skill ids offered on every thread (advertised as the agent's `skills`).
+    /// The skill ids offered on every thread (advertised as the agent's `skills`):
+    /// the static configured set plus any durable `/v1/skills` catalog, de-duplicated
+    /// with the static set winning, so the advertisement matches what `list_skills`
+    /// resolves.
     pub fn skill_ids(&self) -> Vec<String> {
-        self.skills.iter().map(|s| s.id.clone()).collect()
+        let mut ids: Vec<String> = self.skills.iter().map(|s| s.id.clone()).collect();
+        if let Some(store) = &self.skill_store {
+            for (id, _) in store.list() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
     }
 
     /// The delegate agent ids (advertised as the agent's `multiagent` roster).

@@ -43,6 +43,7 @@ pub use awaken_session_executor::{
     PreparedMcpRefresh, ProtocolHost, Response, SharedHost, SkillContext, SkillSpec, ThreadEvent,
     ThreadEventHub, Transport, VaultRefresher, advertised_tools, config_router,
     content_fingerprint, durable_ops_router, files_router, memory_stores_router, parse_skill_md,
+    skills_router,
 };
 
 /// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a
@@ -88,15 +89,39 @@ const FAKE_ACP_SCRIPT: &str = "read _p; \
 /// `AWAKEN_MODEL_MODE=memory`; the store lives under `AWAKEN_MEMORY_DIR` (a
 /// fresh temp dir when unset).
 pub fn build_memory_router() -> Router {
+    // The extraction store's durable root: an explicit `AWAKEN_MEMORY_DIR` override
+    // wins; otherwise it lives under the standard `AWAKEN_STORAGE_DIR` (so memory is
+    // governed by the same durable root as every other piece of committed state and
+    // survives a restart); only with neither set does it fall back to a per-process
+    // temp dir (ephemeral).
     let mem_dir = std::env::var("AWAKEN_MEMORY_DIR")
+        .ok()
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            let dir =
-                std::env::temp_dir().join(format!("awaken-memory-e2e-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).expect("create memory dir");
-            dir
+        .or_else(|| {
+            std::env::var("AWAKEN_STORAGE_DIR")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(awaken_memory_store::memory_scope_root)
+        })
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-memory-e2e-{}", std::process::id()))
         });
+    std::fs::create_dir_all(&mem_dir).expect("create memory dir");
     let host = SharedHost::new(Arc::new(MemoryProbeModel), "memory").with_memory(mem_dir);
+    mount(Arc::new(host))
+}
+
+/// A router for the memory_store RESOURCE durability e2e (ADR-0038 MemoryStore
+/// family): a deterministic model writes into a mounted, read-write memory store
+/// and the host harvests the write back under the store's stable id. Distinct from
+/// [`build_memory_router`]'s cross-session *extraction* memory — this exercises the
+/// `resources[{type:"memory_store"}]` mount + write-back + `/v1/memory_stores` API.
+/// `AWAKEN_MODEL_MODE=memory-resource`.
+pub fn build_memory_resource_router() -> Router {
+    let host = SharedHost::new(
+        Arc::new(crate::models::MemoryResourceModel),
+        "memory-resource",
+    );
     mount(Arc::new(host))
 }
 
@@ -162,6 +187,8 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = files_router(host.clone());
     let memory_stores = memory_stores_router(host.clone());
+    // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.
+    let skills = skills_router(host.clone());
     managed
         .merge(ai_sdk)
         .merge(ag_ui)
@@ -169,6 +196,7 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
         .merge(durable_ops)
         .merge(files)
         .merge(memory_stores)
+        .merge(skills)
 }
 
 /// The composition seam refuses to build an executor from an incomplete or
@@ -1006,4 +1034,24 @@ pub fn build_skills_router() -> Router {
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let review = SkillSpec::new("review", "Review", "review code", "REVIEW-BODY");
     build_router_with_skills(Arc::new(SkillDrivingModel), "skills", vec![greet, review])
+}
+
+/// A router whose delivered skills come from a DURABLE catalog (`/v1/skills`) instead
+/// of static config, rooted under `AWAKEN_STORAGE_DIR` (a per-process temp dir when
+/// unset). A skill posted to `/v1/skills` is offered on every thread and survives a
+/// restart. The `SkillDrivingModel` discovers → activates `greet` → replies with its
+/// body, so an e2e proves a durably-configured skill reaches the model across a
+/// restart. `AWAKEN_MODEL_MODE=skills-durable`.
+pub fn build_skills_durable_router() -> Router {
+    let dir = std::env::var("AWAKEN_STORAGE_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-skills-durable-{}", std::process::id()))
+        })
+        .join("skills_catalog");
+    mount(Arc::new(
+        SharedHost::new(Arc::new(SkillDrivingModel), "skills-durable").with_skill_store(dir),
+    ))
 }
