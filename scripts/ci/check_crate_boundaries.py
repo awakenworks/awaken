@@ -45,8 +45,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "tokio",
         "tower",
-        # dev-only: e2e drives the guarded surface.
-        "serde_json",
     },
     # Tenancy scope tree (Org⊃Workspace⊃Project) vendored serde-only from
     # awaken-flow's awaken-flow-work; a foundation leaf, names no iam/store/wire.
