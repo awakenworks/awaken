@@ -69,6 +69,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-config-resolver": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
+        "awaken-scope",
         "awaken-model-catalog",
         "awaken-credential-vault",
         "serde",

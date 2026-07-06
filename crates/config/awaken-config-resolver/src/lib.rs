@@ -351,10 +351,30 @@ pub fn resource_prompts_for(config: &AgentResourceConfig) -> Vec<String> {
 
 /// A management-plane project identifier. It doubles as the project's ingress
 /// address segment (`/projects/{id}/…` or a per-project domain label), so it is
-/// constrained to DNS-safe lowercase `[a-z0-9-]` at authoring time.
+/// constrained to a DNS-safe lowercase slug at authoring time. The rule is the
+/// shared tenancy slug rule [`awaken_scope::scope::slug_is_valid`], so a project
+/// id validates identically here, in the scope tree, and across products.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProjectId(pub String);
+
+impl ProjectId {
+    /// Parse a project id, enforcing the shared tenancy slug rule. Rejecting the
+    /// invalid form here (rather than letting a bad id reach a store or a URL)
+    /// keeps the invariant on the type, not in the HTTP handler.
+    pub fn parse(raw: impl Into<String>) -> Result<Self, InvalidProjectId> {
+        let raw = raw.into();
+        if awaken_scope::scope::slug_is_valid(&raw) {
+            Ok(Self(raw))
+        } else {
+            Err(InvalidProjectId(raw))
+        }
+    }
+}
+
+/// A rejected project id: not a DNS-safe lowercase slug (see [`ProjectId::parse`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidProjectId(pub String);
 
 /// A consumption-side project under a workspace (ADR-0042 amendment: the URL
 /// carries the project as ADDRESSING only — tenancy and authority still flow

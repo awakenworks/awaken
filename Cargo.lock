@@ -272,6 +272,7 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-provider-genai",
  "awaken-runtime-contract",
+ "awaken-scope",
  "schemars 1.2.1",
  "serde",
  "serde_json",

@@ -14,9 +14,9 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
-    AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef, McpServerId, Project,
-    ProjectAgentConfig, ProjectId, ResolveError, ResolvedInference, SourceLookup,
-    resolve_inference, resolve_mcp_servers, resolve_profile,
+    AgentMcpConfig, AgentResourceConfig, InferenceProfile, InvalidProjectId, McpServerDef,
+    McpServerId, Project, ProjectAgentConfig, ProjectId, ResolveError, ResolvedInference,
+    SourceLookup, resolve_inference, resolve_mcp_servers, resolve_profile,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -861,8 +861,8 @@ async fn resolve_agent_mcp(
 }
 
 /// Author a project. The path id is authoritative and doubles as the ingress
-/// address segment, so it must be DNS-safe lowercase (`[a-z0-9-]`, 1-63 chars,
-/// no leading/trailing `-`); fail closed on anything else.
+/// address segment, so it must be a DNS-safe lowercase slug (the shared tenancy
+/// rule, [`ProjectId::parse`]); fail closed on anything else.
 async fn put_project(
     State(state): State<AdminState>,
     Path(id): Path<String>,
@@ -870,17 +870,17 @@ async fn put_project(
     Json(mut project): Json<Project>,
 ) -> Result<Json<Project>, Problem> {
     let rid = req_id(&headers);
-    if !is_dns_safe_project_id(&id) {
-        return Err(Problem(ApiError::new(
+    let project_id = ProjectId::parse(id).map_err(|InvalidProjectId(id)| {
+        Problem(ApiError::new(
             422,
             "invalid_project_id",
             "Invalid project id",
             format!(
-                "project id `{id}` must be 1-63 lowercase [a-z0-9-] chars without leading/trailing `-`"
+                "project id `{id}` must be a DNS-safe lowercase slug ([a-z0-9-], 1-50 chars, no leading/trailing `-`)"
             ),
             &rid,
-        )));
-    }
+        ))
+    })?;
     if project.workspace_id.is_empty() {
         return Err(Problem(ApiError::new(
             422,
@@ -890,7 +890,7 @@ async fn put_project(
             &rid,
         )));
     }
-    project.id = ProjectId(id);
+    project.id = project_id;
     state.projects.put_project(project.clone());
     Ok(Json(project))
 }
@@ -945,17 +945,6 @@ async fn get_project_agent_mcp(
         .get_project_agent(&project_id, &agent_id)
         .map(Json)
         .ok_or_else(|| project_agent_mcp_missing(&project_id, &agent_id, &req_id(&headers)))
-}
-
-/// A project id that can serve as a URL path segment or domain label.
-fn is_dns_safe_project_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 63
-        && !id.starts_with('-')
-        && !id.ends_with('-')
-        && id
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn project_missing(id: &str, rid: &str) -> Problem {
