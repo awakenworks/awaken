@@ -11,3 +11,4 @@ coverage/
 .next/
 .turbo/
 .vite/
+*.profraw
