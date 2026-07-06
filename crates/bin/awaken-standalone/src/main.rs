@@ -10,11 +10,10 @@
 async fn main() {
     let addr =
         std::env::var("AWAKEN_STANDALONE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    awaken_standalone::run(
-        &addr,
-        std::future::pending(),
-        awaken_standalone::print_banner,
-    )
-    .await
-    .expect("serve the standalone");
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    awaken_standalone::run(&addr, shutdown, awaken_standalone::print_banner)
+        .await
+        .expect("serve the standalone");
 }
