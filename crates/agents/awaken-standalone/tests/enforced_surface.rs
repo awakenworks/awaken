@@ -171,6 +171,84 @@ async fn a_full_agent_turn_runs_under_the_project_prefix() {
     );
 }
 
+#[tokio::test]
+async fn a_created_session_round_trips_through_retrieve() {
+    let Standalone {
+        router, api_token, ..
+    } = build(Arc::new(HelloModel));
+    let (status, session) = request(
+        &router,
+        "POST",
+        "/v1/sessions",
+        &api_token,
+        Some(json!({ "agent": "assistant" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = session["id"].as_str().expect("session id").to_string();
+
+    let (status, retrieved) = request(
+        &router,
+        "GET",
+        &format!("/v1/sessions/{id}"),
+        &api_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(retrieved["id"].as_str(), Some(id.as_str()));
+}
+
+#[tokio::test]
+async fn multiple_turns_accumulate_agent_replies() {
+    let Standalone {
+        router, api_token, ..
+    } = build(Arc::new(HelloModel));
+    let (_, session) = request(
+        &router,
+        "POST",
+        "/v1/sessions",
+        &api_token,
+        Some(json!({ "agent": "assistant" })),
+    )
+    .await;
+    let id = session["id"].as_str().expect("session id").to_string();
+
+    for text in ["first", "second"] {
+        let (status, _) = request(
+            &router,
+            "POST",
+            &format!("/v1/sessions/{id}/events"),
+            &api_token,
+            Some(json!({
+                "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }]
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let (status, list) = request(
+        &router,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        &api_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let replies = list["data"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .filter(|e| e["type"] == "agent.message")
+        .count();
+    assert!(
+        replies >= 2,
+        "two turns yield at least two agent replies, got {replies}"
+    );
+}
+
 // --- boot + banner (the single-machine hand-off) ----------------------------
 
 #[test]
