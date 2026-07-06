@@ -12,6 +12,9 @@ path = "src/main.rs"
 # The extracted service layer: SharedHost / ManagedHost / ProtocolHost and all
 # host modules live here; this bin only composes them into router modes.
 awaken-runtime-host = { workspace = true }
+# Open enforcement (S1): the session-axis guard + RequestTenancy the project
+# ingress stamps. The standalone wraps the session router with it.
+awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true }
 awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }

@@ -900,7 +900,7 @@ async fn project_ingress(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     use tower::ServiceExt;
-    if projects.get_project(&project_id).is_none() {
+    let Some(project) = projects.get_project(&project_id) else {
         return (
             axum::http::StatusCode::NOT_FOUND,
             axum::Json(awaken_protocol_managed::dto::ErrorResponse::new(
@@ -909,7 +909,7 @@ async fn project_ingress(
             )),
         )
             .into_response();
-    }
+    };
     // Rebuild the request against the bare path the inner router serves (keep
     // method/headers/body/query, drop the OUTER router's routing extensions —
     // stale `UrlParams` would otherwise stack onto the inner match and break
@@ -927,7 +927,16 @@ async fn project_ingress(
     *forwarded.headers_mut() = parts.headers;
     forwarded
         .extensions_mut()
-        .insert(awaken_protocol_managed::ProjectScope(project_id));
+        .insert(awaken_protocol_managed::ProjectScope(project_id.clone()));
+    // The tenancy the session-axis guard authorizes against: the project's OWN
+    // workspace (so the scope fence is correct), plus the project id. Additive —
+    // inert unless a guard layer wraps this router (the standalone does).
+    forwarded
+        .extensions_mut()
+        .insert(awaken_authz_enforce::RequestTenancy {
+            workspace_id: project.workspace_id.clone(),
+            project_id: Some(project_id),
+        });
     match sessions.oneshot(forwarded).await {
         Ok(response) => response,
         Err(err) => match err {},

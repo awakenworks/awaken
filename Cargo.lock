@@ -929,6 +929,7 @@ dependencies = [
  "async-trait",
  "awaken-admin-config-api",
  "awaken-agent-contract",
+ "awaken-authz-enforce",
  "awaken-config-resolver",
  "awaken-config-store",
  "awaken-credential-vault",
