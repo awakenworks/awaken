@@ -263,6 +263,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-authz-enforce"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-iam-contract",
+ "awaken-iam-core",
+ "awaken-iam-preset",
+ "axum 0.7.9",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "awaken-config-resolver"
 version = "1.0.0-dev"
 dependencies = [
@@ -272,6 +285,7 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-provider-genai",
  "awaken-runtime-contract",
+ "awaken-scope",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -815,7 +829,6 @@ name = "awaken-session-executor"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-admin-config-api",
  "awaken-agent-contract",
  "awaken-config-resolver",
  "awaken-config-store",

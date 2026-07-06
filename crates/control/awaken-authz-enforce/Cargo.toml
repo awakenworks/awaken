@@ -1,0 +1,23 @@
+[package]
+name = "awaken-authz-enforce"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The shared authz engine (in-memory ApiTokenDirectory + PolicySet + preset role
+# catalog). This crate is the open "judgment" half — authenticate + authorize; it
+# never touches the durable iam-server store (that is the BuSL authoring half).
+awaken-iam-contract.workspace = true
+awaken-iam-core.workspace = true
+awaken-iam-preset.workspace = true
+# The guard is an axum middleware over the session/protocol router.
+axum = "0.7"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

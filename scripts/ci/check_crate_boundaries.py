@@ -20,6 +20,18 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
     "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize"},
+    # Open "judgment" half of access control: authenticate + authorize over the
+    # shared in-memory iam engine (no iam-server / durable store — that is BuSL).
+    "awaken-authz-enforce": {
+        "awaken-iam-contract",
+        "awaken-iam-core",
+        "awaken-iam-preset",
+        "axum",
+        "serde_json",
+        # dev-only: guard middleware tests drive a minimal axum router.
+        "tokio",
+        "tower",
+    },
     # Tenancy scope tree (Org⊃Workspace⊃Project) vendored serde-only from
     # awaken-flow's awaken-flow-work; a foundation leaf, names no iam/store/wire.
     "awaken-scope": {"serde"},
@@ -69,6 +81,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-config-resolver": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
+        "awaken-scope",
         "awaken-model-catalog",
         "awaken-credential-vault",
         "serde",
@@ -691,7 +704,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-executor-acp",
         "awaken-config-resolver",
         "awaken-credential-vault",
-        "awaken-admin-config-api",
         "awaken-protocol-managed",
         "awaken-protocol-transport",
         "awaken-protocol-a2a",
