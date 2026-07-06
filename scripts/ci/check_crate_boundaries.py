@@ -722,6 +722,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # modes; it names no runtime/ext/store crate directly. Nothing depends on it.
     "awaken-server": {
         "awaken-session-executor",
+        "awaken-authz-enforce",
         "awaken-run-executor-acp",
         "awaken-protocol-managed",
         "awaken-protocol-ai-sdk",
