@@ -884,6 +884,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-scope"
+version = "1.0.0-dev"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "awaken-scoped-migration"
 version = "0.1.0-dev"
 source = "git+https://github.com/awakenworks/awaken-foundation?rev=dfa512edd2e5b7e34ad0b05db01b973845f0f9e9#dfa512edd2e5b7e34ad0b05db01b973845f0f9e9"

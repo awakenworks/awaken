@@ -20,6 +20,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
     "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize"},
+    # Tenancy scope tree (Org⊃Workspace⊃Project) vendored serde-only from
+    # awaken-flow's awaken-flow-work; a foundation leaf, names no iam/store/wire.
+    "awaken-scope": {"serde"},
     # Host-side credential vocabulary (Credential / AuthChallenge /
     # CredentialRefresher) shared by the outbound wire clients (awaken-ext-mcp,
     # awaken-protocol-a2a). A leaf like the contracts: names no wire, store, or
