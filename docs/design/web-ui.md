@@ -213,7 +213,7 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 9c. **凭证双轴收敛(方案 B,兼容优先)**:managed **wire 不变**(`mcp_servers:{type,name,url}` 已与 Anthropic 一致);默认运行凭证走 Vault(按 url,`VaultState` 已就位)。`McpServerDef.credential_binding` **保留、标弃用、默认 `none`——不移除**(向后兼容 + 兜可选目录集中治理);`CredentialSource/Pool` 主服务推理、兼顾该可选 MCP 路径。改动面因此收窄为:resolver 默认优先 Vault + UI/文档弃用标注,不动 wire、不破 config schema。
 
 **project 容器统一权限(已定的架构决定)**:
-10. vault router 挂进 `/projects/{pid}` ingress(今天 ingress 只转发 session router),vault 创建 stamp `ProjectScope` → vault 归属 project;所有新增 managed 资源 router 同样挂 ingress;
+10. vault router 挂进 `/projects/{pid}` ingress(今天 ingress 只转发 session router),vault 创建 stamp `ProjectScope` → vault 归属 project;所有新增 managed 资源 router 同样挂 ingress;补 `GET /v1/vaults/:id/credentials` 列表(今天只有 create/get-by-id/delete/archive,控制台只能显示本会话内新建的凭证);
 11. managed 运行面纳入 IAM guard:按路径 project 段做 `ScopeRef::Project{workspace_id, project_id}` 校验(词汇已在 awaken-iam-contract),动作词汇为 sessions/vaults 扩展;裸 `/v1/sessions` 保留 stock-SDK 兼容(project-bound key 或默认 project)。
 12. **managed API key 绑定 project 层级(已定)**:runtime key 与平台/管理 key 同一 IAM 机制、同一 wire(`x-api-key` `sk-ant-…`),差别只在绑定 scope 与动作集——管理 key 绑 Workspace/Global + `workspace.*`/`apikey.*`;**runtime key 绑 `ScopeRef::Project` + 仅 run-plane 动作(`run.read`/`run.write`,覆盖 sessions/events/vaults)**。授权规则:经 `/projects/{pid}` 进入时 key 的 scope 必须覆盖该 project(workspace key 经 scope 图祖先关系覆盖其下所有 project);裸 `/v1/sessions` 时 project-bound key 隐含其绑定的 project(寻址从 key 推出,stock-SDK 零改动)。治理仍在 workspace IAM(key 注册表不搬家,project 只是绑定 scope——reference-don't-copy);Console 上 Project ▸ Settings 增设「API keys」段铸造/吊销本项目 runtime key(明文一次),Workspace ▸ Access 继续管管理 key。对齐 Anthropic:其 Console API key 即绑定在 workspace(运行容器)而非组织——我们的 project 正是该运行容器的对应物。
 

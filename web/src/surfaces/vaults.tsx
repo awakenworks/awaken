@@ -13,6 +13,31 @@ import { api } from "../lib/api/client";
 import type { Vault, VaultCredential } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
+// Per-type create templates (flat, `type`-tagged — the shape /v1/vaults/:id/
+// credentials accepts, matching the Anthropic *CreateParams). Secret fields are
+// write-only. `type` is added by the form; the body is the rest.
+const CRED_TEMPLATES: Record<string, string> = {
+  static_bearer: `{
+  "mcp_server_url": "https://mcp.example.com/docs",
+  "token": "…"
+}`,
+  environment_variable: `{
+  "secret_name": "MY_API_KEY",
+  "secret_value": "…",
+  "networking": { "type": "limited", "allowed_hosts": ["api.example.com"] }
+}`,
+  mcp_oauth: `{
+  "mcp_server_url": "https://mcp.example.com/mcp",
+  "access_token": "…",
+  "refresh": {
+    "client_id": "…",
+    "refresh_token": "…",
+    "token_endpoint": "https://provider.example.com/oauth/token",
+    "token_endpoint_auth": { "type": "none" }
+  }
+}`,
+};
+
 function vaultRegistry(pid: string): string[] {
   try {
     return JSON.parse(localStorage.getItem(`awaken.console.vaults.${pid}`) ?? "[]") as string[];
@@ -32,15 +57,18 @@ function CredentialRow({ vaultId, cred }: { vaultId: string; cred: VaultCredenti
     mutationFn: () =>
       api.post<{ status?: string }>(`/v1/vaults/${vaultId}/credentials/${cred.id}/mcp_oauth_validate`),
   });
+  // The credential kind + fields live under `auth` (secret-free projection).
+  const kind = cred.auth?.type ?? "?";
+  const target = cred.auth?.mcp_server_url ?? cred.auth?.secret_name ?? "—";
   return (
     <tr>
       <td className="mono">{cred.id}</td>
       <td>
-        <span className="pill neutral">{cred.type}</span>
+        <span className="pill neutral">{kind}</span>
       </td>
-      <td className="mono mut">{typeof cred.mcp_server_url === "string" ? cred.mcp_server_url : "●●●●●●●● (write-only)"}</td>
+      <td className="mono mut">{target}</td>
       <td style={{ textAlign: "right" }}>
-        {cred.type === "mcp_oauth" ? (
+        {kind === "mcp_oauth" ? (
           <span className="row" style={{ justifyContent: "flex-end" }}>
             {validate.data && (
               <span className={`pill ${validate.data.status === "valid" ? "ok" : "warn"}`}>
@@ -69,11 +97,15 @@ function VaultCard({ pid, id }: { pid: string; id: string }) {
   });
   const [adding, setAdding] = useState(false);
   const [type, setType] = useState("static_bearer");
-  const [body, setBody] = useState("{\n  \"mcp_server_url\": \"https://\",\n  \"token\": \"…\"\n}");
+  const [body, setBody] = useState(CRED_TEMPLATES.static_bearer);
+  // No list endpoint exists (§7): show credentials created this session from the
+  // POST response (secret-free `auth` projection), so the operator sees what landed.
+  const [created, setCreated] = useState<VaultCredential[]>([]);
   const create = useMutation({
-    mutationFn: (payload: unknown) => api.post(`/v1/vaults/${id}/credentials`, payload),
-    onSuccess: () => {
+    mutationFn: (payload: unknown) => api.post<VaultCredential>(`/v1/vaults/${id}/credentials`, payload),
+    onSuccess: (cred) => {
       setAdding(false);
+      setCreated((prev) => [cred, ...prev.filter((c) => c.id !== cred.id)]);
       void qc.invalidateQueries({ queryKey: ["vault", id] });
     },
   });
@@ -87,7 +119,7 @@ function VaultCard({ pid, id }: { pid: string; id: string }) {
       void qc.invalidateQueries();
     },
   });
-  const creds = (vault.data?.credentials as VaultCredential[] | undefined) ?? [];
+  const creds = created;
   return (
     <div className="card" style={{ padding: 0 }}>
       <div className="row" style={{ padding: "12px 16px" }}>
@@ -102,13 +134,18 @@ function VaultCard({ pid, id }: { pid: string; id: string }) {
         </button>
       </div>
       {creds.length > 0 && (
-        <table className="table">
-          <tbody>
-            {creds.map((c) => (
-              <CredentialRow key={c.id} vaultId={id} cred={c} />
-            ))}
-          </tbody>
-        </table>
+        <>
+          <div className="mut" style={{ padding: "0 16px 4px", fontSize: 11 }}>
+            {app.t("Created this session (no list endpoint yet — §7).", "本次会话内新建(暂无列表端点——§7)。")}
+          </div>
+          <table className="table">
+            <tbody>
+              {creds.map((c) => (
+                <CredentialRow key={c.id} vaultId={id} cred={c} />
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
       {adding && (
         <div className="overlay" onClick={() => setAdding(false)}>
@@ -116,7 +153,14 @@ function VaultCard({ pid, id }: { pid: string; id: string }) {
             <h3>{app.t("Add credential", "添加凭证")}</h3>
             <div className="row">
               {["environment_variable", "static_bearer", "mcp_oauth"].map((t) => (
-                <button key={t} className={`btn ${type === t ? "primary" : "ghost"}`} onClick={() => setType(t)}>
+                <button
+                  key={t}
+                  className={`btn ${type === t ? "primary" : "ghost"}`}
+                  onClick={() => {
+                    setType(t);
+                    setBody(CRED_TEMPLATES[t] ?? body);
+                  }}
+                >
                   {t}
                 </button>
               ))}
