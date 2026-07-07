@@ -79,6 +79,58 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
 }
 
 #[tokio::test]
+async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
+    use awaken_agent_contract::store::stream_checkpoint::{
+        StreamCheckpoint, StreamCheckpointStore,
+    };
+    use awaken_runtime::memory::MemoryStreamCheckpointStore;
+
+    let runtime = text_runtime(); // answers "done"
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
+    // A crash mid-recovery left this partial for the run's in-flight step.
+    checkpoints
+        .put(StreamCheckpoint {
+            run_id: "run-ckpt".to_string(),
+            thread_id: THREAD.to_string(),
+            model: "m".to_string(),
+            partial_text: "Resumed ".to_string(),
+            partial_tools: Vec::new(),
+        })
+        .await;
+
+    let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "unit-worker")
+        .with_stream_checkpoint(checkpoints.clone() as Arc<dyn StreamCheckpointStore>);
+
+    store
+        .enqueue(RunExecutionRequest::new(activation("run-ckpt")))
+        .await
+        .unwrap();
+    let processed = worker.tick(0).await.expect("tick");
+    assert_eq!(
+        processed,
+        Some((
+            RunId("run-ckpt".to_string()),
+            Phase::Ended(EndCause::NaturalEnd)
+        ))
+    );
+
+    // The durable worker threaded the checkpoint store into the run context, so
+    // the engine resumed the first step from the flushed partial: the committed
+    // turn is the recovered prefix stitched onto the model's continuation.
+    let committed = commit.committed();
+    let assistant = committed
+        .messages
+        .iter()
+        .find(|m| m.role == awaken_agent_contract::agent::message::Role::Assistant)
+        .expect("assistant message committed");
+    assert_eq!(assistant.text_content(), "Resumed done");
+    // The consumed checkpoint is cleared once the step concludes.
+    assert!(checkpoints.get("run-ckpt").await.is_none());
+}
+
+#[tokio::test]
 async fn durable_ingress_foreground_submit_and_cancel() {
     let runtime: Arc<Runtime> = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
