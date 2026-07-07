@@ -333,7 +333,7 @@ impl RunExecutor for DispatchRunExecutor {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<Phase> {
-        match activation.snapshot.resolved_spec.backend() {
+        match Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref) {
             Backend::Native => self.native.execute(activation, context).await,
             Backend::Acp { .. } => self.acp.execute(activation, context).await,
         }
