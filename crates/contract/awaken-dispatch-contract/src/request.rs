@@ -16,11 +16,26 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunExecutionRequest {
     pub activation: RunActivation,
+    /// W3C `traceparent` captured when the run was admitted, so a durably-dispatched
+    /// execution continues the admitting request's distributed trace across the
+    /// queue boundary. Absent when admitted without an active trace (or by an older
+    /// writer): a pre-existing queue row simply deserializes it as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
 }
 
 impl RunExecutionRequest {
     pub fn new(activation: RunActivation) -> Self {
-        Self { activation }
+        Self {
+            activation,
+            traceparent: None,
+        }
+    }
+
+    /// Attach the admitting request's W3C `traceparent` (see the field docs).
+    pub fn with_traceparent(mut self, traceparent: Option<String>) -> Self {
+        self.traceparent = traceparent;
+        self
     }
 
     pub fn run_id(&self) -> &RunId {

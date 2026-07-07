@@ -1084,6 +1084,11 @@ impl ManagedState {
         Ok(self.runtime.live_inbox_reorder(session_id, order).await?)
     }
 
+    #[tracing::instrument(
+        name = "sessions.events.send",
+        skip_all,
+        fields(gen_ai.conversation.id = %session_id)
+    )]
     pub async fn send_events(
         &self,
         session_id: &str,

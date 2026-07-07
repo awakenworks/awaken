@@ -204,7 +204,12 @@ pub async fn run(
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
     on_bound(&standalone, local);
-    axum::serve(listener, standalone.router)
+    // Root every request span in the ingress middleware (extracts the inbound
+    // `traceparent`); deeper `#[instrument]` spans nest under it on one trace.
+    let router = standalone
+        .router
+        .layer(axum::middleware::from_fn(awaken_observability::trace_http));
+    axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)
         .await
 }
