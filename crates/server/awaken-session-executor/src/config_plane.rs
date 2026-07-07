@@ -113,6 +113,25 @@ impl ConfigService {
     }
 }
 
+/// Adapts the config plane to the managed agents registry's projection port
+/// ([`awaken_protocol_managed::AgentConfigSource`]): `/v1/agents` reads an agent's
+/// model/system/tools from the published config truth ([`ConfigService::installed`])
+/// rather than a second copy. This is the host-side half of the "retreat to
+/// projection" seam — the managed adapter names only the port, never this type.
+pub struct ConfigServiceAgentSource(pub Arc<ConfigService>);
+
+impl awaken_protocol_managed::AgentConfigSource for ConfigServiceAgentSource {
+    fn agent_view(&self, agent_id: &str) -> Option<awaken_protocol_managed::AgentConfigView> {
+        let runnable = self.0.installed(agent_id)?;
+        let spec = &runnable.snapshot().resolved_spec;
+        Some(awaken_protocol_managed::AgentConfigView {
+            model: Some(spec.model_binding.model_ref.clone()),
+            system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
+            tool_ids: spec.tool_descriptors.iter().map(|d| d.id.clone()).collect(),
+        })
+    }
+}
+
 /// The config data-plane router: `/v1/config/agents/:id` (author) plus
 /// `/validate` and `/publish` (lifecycle).
 pub fn config_router(service: Arc<ConfigService>) -> Router {
