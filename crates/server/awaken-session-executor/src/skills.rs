@@ -107,6 +107,7 @@ pub(crate) struct SkillWiring {
 /// Assemble the skill surface for a thread, or `None` when no skills are offered.
 /// `base_gate` is wrapped so conditional (`paths`) skills surface on file touch;
 /// `fork_base` is the sub-agent sandbox base for `context: fork` skills.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_skills(
     configured: &[SkillSpec],
     skill_store: Option<Arc<awaken_skill_store::SkillStore>>,
