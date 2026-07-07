@@ -41,7 +41,7 @@ use awaken_managed_bridge::{
     WireEnvVarCreate, WireMcpOauthCreate, WireStaticBearerCreate, env_var_to_create_params,
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -86,6 +86,45 @@ pub struct DeletedVault {
     pub id: String,
     #[serde(rename = "type")]
     pub object_type: &'static str,
+}
+
+/// `BetaManagedAgentsDeletedCredential` — the `DELETE .../credentials/:id` receipt.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeletedCredential {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub object_type: &'static str,
+}
+
+/// The SDK's cursor page shape (`PageCursor<Item>` = `{ data, has_more,
+/// next_page }`). This single-machine surface returns every row in one page, so
+/// `has_more` is always `false` and `next_page` always `null` — the official
+/// client stops after the first page. `include_archived` (query, default
+/// `false`) is the only list knob.
+#[derive(Debug, Clone, Serialize)]
+pub struct Page<T> {
+    pub data: Vec<T>,
+    pub has_more: bool,
+    pub next_page: Option<String>,
+}
+
+impl<T> Page<T> {
+    /// One full page: every row, no continuation.
+    fn single(data: Vec<T>) -> Self {
+        Self {
+            data,
+            has_more: false,
+            next_page: None,
+        }
+    }
+}
+
+/// `VaultListParams` / `CredentialListParams` query: the only knob is whether
+/// archived rows are included (default `false` = active only).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListQuery {
+    #[serde(default)]
+    pub include_archived: bool,
 }
 
 /// The outbound-host substitution scope of an env-var credential
@@ -239,6 +278,126 @@ pub enum CredentialCreateParams {
     },
 }
 
+/// serde helper distinguishing an absent field (`None`) from an explicit JSON
+/// `null` (`Some(None)`) from a present value (`Some(Some(v))`). Lets an update
+/// PATCH a nullable field to `null` (clear) without conflating it with "omitted"
+/// (keep) — the `metadata`-patch / `display_name` semantics the SDK documents.
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
+}
+
+/// Apply a metadata patch in place: a `Some(v)` upserts the key, a `None` (JSON
+/// `null`) deletes it, and any key absent from the patch is preserved. Shared by
+/// vault + credential update.
+fn apply_metadata_patch(
+    target: &mut BTreeMap<String, String>,
+    patch: BTreeMap<String, Option<String>>,
+) {
+    for (key, value) in patch {
+        match value {
+            Some(v) => {
+                target.insert(key, v);
+            }
+            None => {
+                target.remove(&key);
+            }
+        }
+    }
+}
+
+/// `VaultUpdateParams` body — a partial update. `display_name` replaces when
+/// present (a vault name cannot be cleared, so `null`/absent both mean "keep");
+/// `metadata` is a patch (see [`apply_metadata_patch`]).
+#[derive(Debug, Clone, Deserialize)]
+pub struct VaultUpdateParams {
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<BTreeMap<String, Option<String>>>,
+}
+
+/// `CredentialUpdateParams` body — a partial update. `auth` (when present) must
+/// carry the credential's own `type` (the kind is immutable, as are `secret_name`
+/// / `mcp_server_url`); a mismatch is a clean `400`. `display_name` uses
+/// [`double_option`] so `null` clears it. `metadata` is a patch.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CredentialUpdateParams {
+    #[serde(default)]
+    pub auth: Option<CredentialUpdateAuth>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub display_name: Option<Option<String>>,
+    #[serde(default)]
+    pub metadata: Option<BTreeMap<String, Option<String>>>,
+}
+
+/// The typed `auth` patch of a credential update, one variant per SDK
+/// `*UpdateParams`. Every field is optional; secret fields are write-only and
+/// re-sealed under the credential's existing `SecretRef` when present.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CredentialUpdateAuth {
+    EnvironmentVariable {
+        #[serde(default)]
+        networking: Option<CredentialNetworking>,
+        /// Write-only: re-sealed under the row's `material_ref`, never echoed.
+        #[serde(default)]
+        secret_value: Option<String>,
+    },
+    StaticBearer {
+        /// Write-only: re-sealed under the row's `material_ref`, never echoed.
+        #[serde(default)]
+        token: Option<String>,
+    },
+    McpOauth {
+        /// Write-only: re-sealed under the row's `material_ref`, never echoed.
+        #[serde(default)]
+        access_token: Option<String>,
+        #[serde(default)]
+        expires_at: Option<String>,
+        #[serde(default)]
+        refresh: Option<McpOauthRefreshUpdate>,
+    },
+}
+
+/// The `refresh` patch of an `mcp_oauth` credential update
+/// (`BetaManagedAgentsMCPOAuthRefreshUpdateParams`). Only applies to a credential
+/// that already carries a refresh configuration; the `refresh_token` and any
+/// confidential-client `client_secret` are re-sealed under their existing sibling
+/// refs, never echoed.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpOauthRefreshUpdate {
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub token_endpoint_auth: Option<TokenEndpointAuthUpdate>,
+}
+
+/// The token-endpoint auth **update** patch
+/// (`BetaManagedAgentsTokenEndpointAuth{Basic,Post}UpdateParam`). Distinct from
+/// the create shape ([`TokenEndpointAuthParams`]): on update `client_secret` is
+/// OPTIONAL — omitting it switches/keeps the scheme against the *already-sealed*
+/// client secret, while supplying it re-seals. `None` is accepted too (lenient;
+/// the SDK's update type does not send it) and drops the confidential binding.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TokenEndpointAuthUpdate {
+    None,
+    ClientSecretBasic {
+        #[serde(default)]
+        client_secret: Option<String>,
+    },
+    ClientSecretPost {
+        #[serde(default)]
+        client_secret: Option<String>,
+    },
+}
+
 /// The stored refresh configuration of an `mcp_oauth` credential, exposed for a
 /// session's transport-level token refresh (consumer: `ManagedState::create_session`
 /// → [`crate::McpServerBinding`], which the server's `ManagedHost::prepare_session`
@@ -322,6 +481,8 @@ pub struct CredentialValidation {
 struct VaultRecord {
     display_name: String,
     metadata: BTreeMap<String, String>,
+    /// `Some(ts)` once archived (soft-delete); excluded from a default list.
+    archived_at: Option<String>,
 }
 
 /// The kind-specific wire-only fields of a stored credential — everything the
@@ -364,6 +525,8 @@ struct CredentialRecord {
     auth: AuthRecord,
     metadata: BTreeMap<String, String>,
     display_name: Option<String>,
+    /// `Some(ts)` once archived (soft-delete); excluded from a default list.
+    archived_at: Option<String>,
 }
 
 #[derive(Default)]
@@ -498,7 +661,7 @@ impl VaultState {
     fn project_vault(id: &str, record: &VaultRecord) -> Vault {
         Vault {
             id: id.to_string(),
-            archived_at: None,
+            archived_at: record.archived_at.clone(),
             created_at: OBJECT_AT.to_string(),
             display_name: record.display_name.clone(),
             metadata: record.metadata.clone(),
@@ -531,7 +694,7 @@ impl VaultState {
         };
         Credential {
             id: id.to_string(),
-            archived_at: None,
+            archived_at: record.archived_at.clone(),
             auth,
             created_at: OBJECT_AT.to_string(),
             metadata: record.metadata.clone(),
@@ -548,12 +711,25 @@ impl VaultState {
 /// The Managed vault/credential routes. Mount alongside the session router.
 pub fn vault_router(state: Arc<VaultState>) -> Router {
     Router::new()
-        .route("/v1/vaults", post(create_vault))
-        .route("/v1/vaults/:id", get(retrieve_vault).delete(delete_vault))
-        .route("/v1/vaults/:vault_id/credentials", post(create_credential))
+        .route("/v1/vaults", post(create_vault).get(list_vaults))
+        .route(
+            "/v1/vaults/:id",
+            get(retrieve_vault).post(update_vault).delete(delete_vault),
+        )
+        .route("/v1/vaults/:id/archive", post(archive_vault))
+        .route(
+            "/v1/vaults/:vault_id/credentials",
+            post(create_credential).get(list_credentials),
+        )
         .route(
             "/v1/vaults/:vault_id/credentials/:id",
-            get(retrieve_credential),
+            get(retrieve_credential)
+                .post(update_credential)
+                .delete(delete_credential),
+        )
+        .route(
+            "/v1/vaults/:vault_id/credentials/:id/archive",
+            post(archive_credential),
         )
         .route(
             "/v1/vaults/:vault_id/credentials/:id/mcp_oauth_validate",
@@ -593,6 +769,7 @@ async fn create_vault(
     let record = VaultRecord {
         display_name: params.display_name,
         metadata: params.metadata,
+        archived_at: None,
     };
     let vault = VaultState::project_vault(&id, &record);
     state.inner.lock().unwrap().vaults.insert(id, record);
@@ -606,6 +783,29 @@ async fn retrieve_vault(
     let store = state.inner.lock().unwrap();
     let record = store.vaults.get(&id).ok_or_else(|| not_found("vault"))?;
     Ok(Json(VaultState::project_vault(&id, record)))
+}
+
+/// `GET /v1/vaults` — one full page of vaults (the SDK `beta.vaults.list`).
+/// Deterministic order: ascending wire id (`vlt_…` is zero-padded, so
+/// lexicographic == creation order). Archived vaults are excluded unless
+/// `?include_archived=true`.
+async fn list_vaults(
+    State(state): State<Arc<VaultState>>,
+    Query(query): Query<ListQuery>,
+) -> Json<Page<Vault>> {
+    let store = state.inner.lock().unwrap();
+    let mut ids: Vec<&String> = store
+        .vaults
+        .iter()
+        .filter(|(_, r)| query.include_archived || r.archived_at.is_none())
+        .map(|(id, _)| id)
+        .collect();
+    ids.sort();
+    let data = ids
+        .into_iter()
+        .map(|id| VaultState::project_vault(id, &store.vaults[id]))
+        .collect();
+    Json(Page::single(data))
 }
 
 async fn delete_vault(
@@ -622,6 +822,51 @@ async fn delete_vault(
         id,
         object_type: "vault_deleted",
     }))
+}
+
+/// `POST /v1/vaults/:id/archive` — soft-delete (the SDK `beta.vaults.archive`).
+/// Stamps `archived_at` and returns the vault; an already-archived vault is
+/// re-stamped idempotently. The vault's credentials are unaffected (archiving a
+/// vault does not cascade — only `DELETE` cascades).
+async fn archive_vault(
+    State(state): State<Arc<VaultState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vault>, WireError> {
+    let mut store = state.inner.lock().unwrap();
+    let record = store
+        .vaults
+        .get_mut(&id)
+        .ok_or_else(|| not_found("vault"))?;
+    record.archived_at = Some(OBJECT_AT.to_string());
+    Ok(Json(VaultState::project_vault(&id, record)))
+}
+
+/// `POST /v1/vaults/:id` — partial update (the SDK `beta.vaults.update`).
+/// Replaces `display_name` when present and PATCHes `metadata`; returns the
+/// updated vault. A `404` for an unknown vault. An empty body is a no-op update
+/// that echoes the vault.
+async fn update_vault(
+    State(state): State<Arc<VaultState>>,
+    Path(id): Path<String>,
+    ManagedJson(params): ManagedJson<VaultUpdateParams>,
+) -> Result<Json<Vault>, WireError> {
+    if let Some(name) = &params.display_name {
+        if name.is_empty() || name.len() > 255 {
+            return Err(bad_request("display_name must be 1-255 characters"));
+        }
+    }
+    let mut store = state.inner.lock().unwrap();
+    let record = store
+        .vaults
+        .get_mut(&id)
+        .ok_or_else(|| not_found("vault"))?;
+    if let Some(name) = params.display_name {
+        record.display_name = name;
+    }
+    if let Some(patch) = params.metadata {
+        apply_metadata_patch(&mut record.metadata, patch);
+    }
+    Ok(Json(VaultState::project_vault(&id, record)))
 }
 
 async fn create_credential(
@@ -820,10 +1065,39 @@ async fn create_credential(
         auth,
         metadata,
         display_name,
+        archived_at: None,
     };
     let credential = VaultState::project_credential(&id, &record);
     state.inner.lock().unwrap().credentials.insert(id, record);
     Ok((StatusCode::OK, Json(credential)))
+}
+
+/// `GET /v1/vaults/:vault_id/credentials` — one full page of a vault's
+/// credentials (the SDK `beta.vaults.credentials.list`). An unknown vault is a
+/// `404` (not an empty page), matching retrieve. Deterministic order: ascending
+/// wire id. Archived credentials are excluded unless `?include_archived=true`.
+async fn list_credentials(
+    State(state): State<Arc<VaultState>>,
+    Path(vault_id): Path<String>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Page<Credential>>, WireError> {
+    let store = state.inner.lock().unwrap();
+    if !store.vaults.contains_key(&vault_id) {
+        return Err(not_found("vault"));
+    }
+    let mut ids: Vec<&String> = store
+        .credentials
+        .iter()
+        .filter(|(_, c)| c.vault_id == vault_id)
+        .filter(|(_, c)| query.include_archived || c.archived_at.is_none())
+        .map(|(id, _)| id)
+        .collect();
+    ids.sort();
+    let data = ids
+        .into_iter()
+        .map(|id| VaultState::project_credential(id, &store.credentials[id]))
+        .collect();
+    Ok(Json(Page::single(data)))
 }
 
 async fn retrieve_credential(
@@ -836,6 +1110,243 @@ async fn retrieve_credential(
         .get(&id)
         .filter(|c| c.vault_id == vault_id)
         .ok_or_else(|| not_found("credential"))?;
+    Ok(Json(VaultState::project_credential(&id, record)))
+}
+
+/// `DELETE /v1/vaults/:vault_id/credentials/:id` — hard-delete one credential
+/// (the SDK `beta.vaults.credentials.delete`). Drops the wire bookkeeping (the
+/// sealed secrets go inert, as in `delete_vault`); the domain row is orphaned,
+/// never re-referenced. Scoped by `vault_id`: a credential under another vault
+/// 404s rather than deleting across the path scope.
+async fn delete_credential(
+    State(state): State<Arc<VaultState>>,
+    Path((vault_id, id)): Path<(String, String)>,
+) -> Result<Json<DeletedCredential>, WireError> {
+    let mut store = state.inner.lock().unwrap();
+    let matches_vault = store
+        .credentials
+        .get(&id)
+        .is_some_and(|c| c.vault_id == vault_id);
+    if !matches_vault {
+        return Err(not_found("credential"));
+    }
+    store.credentials.remove(&id);
+    Ok(Json(DeletedCredential {
+        id,
+        object_type: "vault_credential_deleted",
+    }))
+}
+
+/// `POST /v1/vaults/:vault_id/credentials/:id/archive` — soft-delete (the SDK
+/// `beta.vaults.credentials.archive`). Stamps `archived_at` and returns the
+/// secret-free credential; scoped by `vault_id`.
+async fn archive_credential(
+    State(state): State<Arc<VaultState>>,
+    Path((vault_id, id)): Path<(String, String)>,
+) -> Result<Json<Credential>, WireError> {
+    let mut store = state.inner.lock().unwrap();
+    let record = store
+        .credentials
+        .get_mut(&id)
+        .filter(|c| c.vault_id == vault_id)
+        .ok_or_else(|| not_found("credential"))?;
+    record.archived_at = Some(OBJECT_AT.to_string());
+    Ok(Json(VaultState::project_credential(&id, record)))
+}
+
+/// `POST /v1/vaults/:vault_id/credentials/:id` — partial update (the SDK
+/// `beta.vaults.credentials.update`). The credential kind is immutable: an `auth`
+/// patch must carry the credential's own `type` or the request is a `400`. Secret
+/// fields (`secret_value` / `token` / `access_token` / `refresh_token` /
+/// confidential `client_secret`) are write-only and re-sealed under the
+/// credential's *existing* refs — never echoed. `display_name` may be cleared
+/// (JSON `null`); `metadata` is a patch. Three phases keep the `SecretStore`
+/// `await`s off the state mutex: validate + snapshot, re-seal, then apply.
+async fn update_credential(
+    State(state): State<Arc<VaultState>>,
+    Path((vault_id, id)): Path<(String, String)>,
+    ManagedJson(params): ManagedJson<CredentialUpdateParams>,
+) -> Result<Json<Credential>, WireError> {
+    // Phase 1 — validate the kind match + refresh precondition, snapshot the id.
+    let source_id = {
+        let store = state.inner.lock().unwrap();
+        let record = store
+            .credentials
+            .get(&id)
+            .filter(|c| c.vault_id == vault_id)
+            .ok_or_else(|| not_found("credential"))?;
+        if let Some(auth) = &params.auth {
+            let kind_matches = matches!(
+                (auth, &record.auth),
+                (
+                    CredentialUpdateAuth::EnvironmentVariable { .. },
+                    AuthRecord::EnvironmentVariable { .. }
+                ) | (
+                    CredentialUpdateAuth::StaticBearer { .. },
+                    AuthRecord::StaticBearer { .. }
+                ) | (
+                    CredentialUpdateAuth::McpOauth { .. },
+                    AuthRecord::McpOauth { .. }
+                )
+            );
+            if !kind_matches {
+                return Err(bad_request(
+                    "auth.type does not match the credential's type",
+                ));
+            }
+            if let CredentialUpdateAuth::McpOauth {
+                refresh: Some(_), ..
+            } = auth
+            {
+                let has_refresh = matches!(
+                    &record.auth,
+                    AuthRecord::McpOauth {
+                        refresh: Some(_),
+                        ..
+                    }
+                );
+                if !has_refresh {
+                    return Err(bad_request(
+                        "credential has no refresh configuration to update",
+                    ));
+                }
+            }
+        }
+        record.source_id.clone()
+    };
+
+    // Phase 2 — re-seal every supplied secret under its existing ref (no lock).
+    if let Some(auth) = &params.auth {
+        let primary = match auth {
+            CredentialUpdateAuth::EnvironmentVariable { secret_value, .. } => secret_value.clone(),
+            CredentialUpdateAuth::StaticBearer { token } => token.clone(),
+            CredentialUpdateAuth::McpOauth { access_token, .. } => access_token.clone(),
+        };
+        if let Some(secret) = primary {
+            let row = state
+                .credentials
+                .get(&source_id)
+                .await
+                .map_err(|e| bad_request(e.to_string()))?;
+            let material_ref = row
+                .material_ref
+                .ok_or_else(|| bad_request("credential row has no material_ref"))?;
+            state
+                .secrets
+                .put(&material_ref, RedactedString::new(secret))
+                .await
+                .map_err(|e| bad_request(e.to_string()))?;
+        }
+        if let CredentialUpdateAuth::McpOauth {
+            refresh: Some(update),
+            ..
+        } = auth
+        {
+            if let Some(rt) = &update.refresh_token {
+                let rref = SecretRef(format!("sec:refresh:{}", source_id.0));
+                state
+                    .secrets
+                    .put(&rref, RedactedString::new(rt.clone()))
+                    .await
+                    .map_err(|e| bad_request(e.to_string()))?;
+            }
+            // Re-seal the client secret only when the update actually carries one;
+            // an omitted `client_secret` keeps the currently-sealed value.
+            if let Some(
+                TokenEndpointAuthUpdate::ClientSecretBasic {
+                    client_secret: Some(cs),
+                }
+                | TokenEndpointAuthUpdate::ClientSecretPost {
+                    client_secret: Some(cs),
+                },
+            ) = &update.token_endpoint_auth
+            {
+                let cref = SecretRef(format!("sec:client:{}", source_id.0));
+                state
+                    .secrets
+                    .put(&cref, RedactedString::new(cs.clone()))
+                    .await
+                    .map_err(|e| bad_request(e.to_string()))?;
+            }
+        }
+    }
+
+    // Phase 3 — apply the secret-free wire mutations under the lock, then project.
+    let mut store = state.inner.lock().unwrap();
+    let record = store
+        .credentials
+        .get_mut(&id)
+        .filter(|c| c.vault_id == vault_id)
+        .ok_or_else(|| not_found("credential"))?;
+    if let Some(auth) = params.auth {
+        match auth {
+            CredentialUpdateAuth::EnvironmentVariable { networking, .. } => {
+                if let (
+                    Some(nw),
+                    AuthRecord::EnvironmentVariable {
+                        networking: cur, ..
+                    },
+                ) = (networking, &mut record.auth)
+                {
+                    *cur = nw;
+                }
+            }
+            CredentialUpdateAuth::StaticBearer { .. } => {}
+            CredentialUpdateAuth::McpOauth {
+                expires_at,
+                refresh,
+                ..
+            } => {
+                if let AuthRecord::McpOauth {
+                    expires_at: cur_ex,
+                    refresh: cur_refresh,
+                    ..
+                } = &mut record.auth
+                {
+                    if let Some(new_ex) = expires_at {
+                        *cur_ex = Some(new_ex);
+                    }
+                    if let (Some(update), Some(r)) = (refresh, cur_refresh.as_mut()) {
+                        if let Some(scope) = update.scope {
+                            r.projection.scope = Some(scope);
+                        }
+                        if let Some(tea) = update.token_endpoint_auth {
+                            // The confidential binding always points at the stable
+                            // `sec:client:{source_id}` ref: an omitted secret keeps
+                            // the sealed value, a supplied one re-sealed it above.
+                            let client_ref = || SecretRef(format!("sec:client:{}", source_id.0));
+                            let (tag, binding) = match tea {
+                                TokenEndpointAuthUpdate::None => (
+                                    TokenEndpointAuthResponse::None,
+                                    TokenEndpointAuthBinding::None,
+                                ),
+                                TokenEndpointAuthUpdate::ClientSecretBasic { .. } => (
+                                    TokenEndpointAuthResponse::ClientSecretBasic,
+                                    TokenEndpointAuthBinding::ClientSecretBasic {
+                                        secret_ref: client_ref(),
+                                    },
+                                ),
+                                TokenEndpointAuthUpdate::ClientSecretPost { .. } => (
+                                    TokenEndpointAuthResponse::ClientSecretPost,
+                                    TokenEndpointAuthBinding::ClientSecretPost {
+                                        secret_ref: client_ref(),
+                                    },
+                                ),
+                            };
+                            r.projection.token_endpoint_auth = tag;
+                            r.token_endpoint_auth = binding;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(display_name) = params.display_name {
+        record.display_name = display_name;
+    }
+    if let Some(patch) = params.metadata {
+        apply_metadata_patch(&mut record.metadata, patch);
+    }
     Ok(Json(VaultState::project_credential(&id, record)))
 }
 
