@@ -9,11 +9,15 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "postgres")]
+pub mod postgres;
 mod router;
 pub mod schema;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
+#[cfg(feature = "postgres")]
+pub use postgres::PostgresAdminStore;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteAdminStore;
 
