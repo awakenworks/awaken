@@ -21,6 +21,7 @@ use awaken_agent_contract::event::record::Record as EventRecord;
 use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::store::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink as StreamSink};
@@ -253,4 +254,39 @@ pub fn replay_latest_phase(committed: &CommittedThread, run_id: &RunId) -> Optio
         .rev()
         .find(|fact| &fact.run_id == run_id)
         .map(|fact| fact.phase.clone())
+}
+
+/// In-memory [`StreamCheckpointStore`]: a `run_id`-keyed map of interrupted-stream
+/// partials. Durable only within one process, so it recovers an interrupted step
+/// across an in-process worker restart but not a process crash — a durable
+/// backend (e.g. `awaken-store-fs`) is required for cross-process resume. Useful
+/// as the default for a single long-lived process and as a test double.
+#[derive(Debug, Default)]
+pub struct MemoryStreamCheckpointStore {
+    checkpoints: Mutex<HashMap<String, StreamCheckpoint>>,
+}
+
+impl MemoryStreamCheckpointStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl StreamCheckpointStore for MemoryStreamCheckpointStore {
+    async fn get(&self, run_id: &str) -> Option<StreamCheckpoint> {
+        self.checkpoints.lock().ok()?.get(run_id).cloned()
+    }
+
+    async fn put(&self, checkpoint: StreamCheckpoint) {
+        if let Ok(mut map) = self.checkpoints.lock() {
+            map.insert(checkpoint.run_id.clone(), checkpoint);
+        }
+    }
+
+    async fn delete(&self, run_id: &str) {
+        if let Ok(mut map) = self.checkpoints.lock() {
+            map.remove(run_id);
+        }
+    }
 }
