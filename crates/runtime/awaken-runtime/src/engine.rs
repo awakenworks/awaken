@@ -17,13 +17,17 @@ use awaken_agent_contract::commit::staged::ThreadCommit;
 use awaken_agent_contract::event::draft::Draft as EventDraft;
 use awaken_agent_contract::event::kind::Kind as EventKind;
 use awaken_agent_contract::fact::run::Fact as RunFact;
+use awaken_agent_contract::store::stream_checkpoint::{
+    PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
+};
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::event::{Event as StreamEvent, Kind as StreamKind};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
-    ChatMessage, ChatRequest, ChatRole, DeltaSink, StopReason, ToolCall, ToolSchema,
+    AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, DeltaSink, StopReason,
+    ToolCall, ToolSchema,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
@@ -398,6 +402,24 @@ async fn drive(
     // Forwards streamed text chunks to the live stream during each inference.
     let delta_sink = StreamDeltaSink { context, run_id };
 
+    // Durable interrupted-stream checkpoints (Phase 3), when a store is wired.
+    // A checkpoint left by a crash mid-recovery is read once here and applied to
+    // this drive's first step — the only step that can be resuming, since
+    // per-step commit means at most one step was ever in flight.
+    let checkpoint_ctx = context
+        .stream_checkpoint
+        .as_ref()
+        .map(|store| CheckpointCtx {
+            store: store.as_ref(),
+            run_id: run_id.0.clone(),
+            thread_id: thread_id.0.clone(),
+            model: resolved.spec.model_binding.model_ref.clone(),
+        });
+    let mut resume_checkpoint = match &checkpoint_ctx {
+        Some(ctx) => ctx.store.get(&ctx.run_id).await,
+        None => None,
+    };
+
     // How many times a run-end guard has steered this run. It is both the
     // guard's iteration signal and the runtime's run-scoped continuation count;
     // `max_steps` remains the hard runaway backstop, since each steer costs a step.
@@ -508,7 +530,16 @@ async fn drive(
         // retries) commits a typed terminal reason carrying the error's
         // classification code (G26).
         let mut truncation_retries = 0;
+        // A persisted partial resumes only this drive's first step (see above);
+        // it is consumed on the first inference call of that step.
+        let step_resume = if step == 0 {
+            resume_checkpoint.take()
+        } else {
+            None
+        };
+        let checkpoint_ref = checkpoint_ctx.as_ref();
         let infer_turn = async {
+            let mut pending_resume = step_resume;
             loop {
                 let request = build_chat_request(
                     &resolved.spec,
@@ -522,6 +553,8 @@ async fn drive(
                     runtime.retry_policy(),
                     runtime.circuit_breaker(),
                     &delta_sink,
+                    checkpoint_ref,
+                    pending_resume.take(),
                 )
                 .await
                 {
@@ -922,41 +955,311 @@ impl DeltaSink for StreamDeltaSink<'_> {
     }
 }
 
-/// Call inference, streaming text chunks to `sink` as they arrive and retrying a
+/// The model-facing prompt appended after a confirmed partial when continuing an
+/// interrupted stream, so the model resumes instead of regenerating. Same intent
+/// as the in-place `MaxTokens` continuation, but for a transient mid-stream drop.
+const STREAM_CONTINUATION_PROMPT: &str = "Your previous response was interrupted \
+    mid-stream. Continue from exactly where you left off, without repeating any \
+    text you already wrote.";
+
+/// The current attempt's captured partial: streamed text plus any tool calls
+/// seen (each with its accumulated-so-far raw argument text, last-wins by id).
+struct Snapshot {
+    text: String,
+    tools: Vec<PartialToolCall>,
+}
+
+/// Wraps the live `DeltaSink` to also capture the current attempt's streamed
+/// partial, so a mid-stream interruption can be *continued from it* rather than
+/// regenerated from scratch (R1–R3 recovery). Text and tool progress are
+/// forwarded to `inner` unchanged, so the live stream is untouched. Tool
+/// arguments arrive as raw, accumulated JSON text (see `on_tool_call`); whether
+/// they parse later decides completed-vs-in-flight.
+struct ContinuationSink<'a> {
+    inner: &'a dyn DeltaSink,
+    text: std::sync::Mutex<String>,
+    tools: std::sync::Mutex<Vec<PartialToolCall>>,
+}
+
+impl<'a> ContinuationSink<'a> {
+    fn new(inner: &'a dyn DeltaSink) -> Self {
+        Self {
+            inner,
+            text: std::sync::Mutex::new(String::new()),
+            tools: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The current attempt's captured partial.
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            text: self.text.lock().expect("continuation buffer").clone(),
+            tools: self.tools.lock().expect("continuation tools").clone(),
+        }
+    }
+
+    /// Reset per-attempt capture before a fresh attempt streams.
+    fn reset(&self) {
+        self.text.lock().expect("continuation buffer").clear();
+        self.tools.lock().expect("continuation tools").clear();
+    }
+}
+
+#[async_trait]
+impl DeltaSink for ContinuationSink<'_> {
+    async fn on_text(&self, chunk: &str) {
+        // Guard drops at the statement end, never held across the await below.
+        self.text
+            .lock()
+            .expect("continuation buffer")
+            .push_str(chunk);
+        self.inner.on_text(chunk).await;
+    }
+
+    async fn on_tool_call(&self, call_id: &str, tool_id: &str, arguments: &serde_json::Value) {
+        // Mid-stream, a provider hands tool arguments as raw accumulated JSON
+        // text (a `Value::String`), which may be incomplete if the drop lands
+        // mid-arguments. Keep the raw text, last-wins per call id (the provider
+        // resends the running accumulation), so a later parse decides whether the
+        // call had finished.
+        let raw = match arguments {
+            serde_json::Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        {
+            let mut tools = self.tools.lock().expect("continuation tools");
+            match tools.iter_mut().find(|t| t.call_id == call_id) {
+                Some(existing) => {
+                    existing.tool_id = tool_id.to_string();
+                    existing.raw_arguments = raw;
+                }
+                None => tools.push(PartialToolCall {
+                    call_id: call_id.to_string(),
+                    tool_id: tool_id.to_string(),
+                    raw_arguments: raw,
+                }),
+            }
+        }
+        self.inner.on_tool_call(call_id, tool_id, arguments).await;
+    }
+}
+
+/// The tool calls whose accumulated arguments parse as complete JSON — i.e. the
+/// model finished emitting them before the drop, so they can be executed as-is
+/// (R2). A call still in flight (unparseable / empty-named args) is excluded.
+fn parse_completed(tools: &[PartialToolCall]) -> Vec<ToolCall> {
+    tools
+        .iter()
+        .filter(|tool| !tool.tool_id.is_empty())
+        .filter_map(|tool| {
+            serde_json::from_str::<serde_json::Value>(&tool.raw_arguments)
+                .ok()
+                .map(|arguments| ToolCall {
+                    call_id: tool.call_id.clone(),
+                    tool_id: tool.tool_id.clone(),
+                    arguments,
+                })
+        })
+        .collect()
+}
+
+/// Synthesize the turn the model had produced when a drop interrupted it after
+/// its tool calls were complete (R2): the salvaged text followed by the completed
+/// tool-use blocks, stopped for tool use. The engine's tool loop runs these
+/// without another model round-trip.
+fn synthesized_tool_response(text: &str, calls: Vec<ToolCall>) -> ChatResponse {
+    let mut blocks = Vec::new();
+    if !text.is_empty() {
+        blocks.push(ContentBlock::text(text.to_string()));
+    }
+    for call in calls {
+        blocks.push(ContentBlock::tool_use(
+            call.call_id,
+            call.tool_id,
+            call.arguments,
+        ));
+    }
+    ChatResponse {
+        output: AssistantOutput::from_blocks(blocks),
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+    }
+}
+
+/// Rebuild a request that carries the confirmed partial as an assistant prefix
+/// followed by a continuation prompt, so the model continues rather than
+/// regenerates. Request-only: these two messages are never committed to the
+/// transcript — a transient interruption is not a real turn boundary.
+fn continuation_request(request: &ChatRequest, prefix: &str) -> ChatRequest {
+    let mut messages = request.messages.clone();
+    messages.push(ChatMessage {
+        role: ChatRole::Assistant,
+        content: vec![ContentBlock::text(prefix.to_string())],
+    });
+    messages.push(ChatMessage {
+        role: ChatRole::User,
+        content: vec![ContentBlock::text(STREAM_CONTINUATION_PROMPT.to_string())],
+    });
+    ChatRequest {
+        messages,
+        ..request.clone()
+    }
+}
+
+/// Prepend the confirmed partial `prefix` onto a continued response so the
+/// committed turn is the whole text. An empty prefix returns the response
+/// unchanged — the common, non-interrupted path pays nothing.
+fn stitch_prefix(response: ChatResponse, prefix: &str) -> ChatResponse {
+    if prefix.is_empty() {
+        return response;
+    }
+    let mut blocks = response.output.blocks;
+    match blocks.first_mut() {
+        Some(ContentBlock::Text { text }) => *text = format!("{prefix}{text}"),
+        _ => blocks.insert(0, ContentBlock::text(prefix.to_string())),
+    }
+    ChatResponse {
+        output: AssistantOutput::from_blocks(blocks),
+        ..response
+    }
+}
+
+/// Per-run wiring for durable interrupted-stream checkpoints (Phase 3), present
+/// only when the run context supplies a `StreamCheckpointStore`. Holds the keys a
+/// flush needs; the store handle is borrowed for the run's duration.
+struct CheckpointCtx<'a> {
+    store: &'a dyn StreamCheckpointStore,
+    run_id: String,
+    thread_id: String,
+    model: String,
+}
+
+impl CheckpointCtx<'_> {
+    fn checkpoint(&self, text: String, tools: Vec<PartialToolCall>) -> StreamCheckpoint {
+        StreamCheckpoint {
+            run_id: self.run_id.clone(),
+            thread_id: self.thread_id.clone(),
+            model: self.model.clone(),
+            partial_text: text,
+            partial_tools: tools,
+        }
+    }
+}
+
+/// Call inference, streaming chunks to `sink` as they arrive and retrying a
 /// retryable failure per the policy (exponential backoff with jitter, honoring a
 /// server `Retry-After`). A permanent failure returns immediately (G26). Every
 /// attempt first passes the model's circuit breaker: while its circuit is open
 /// the call fails fast as a retryable provider error instead of burning the
 /// retry budget against a provider that is already down.
+///
+/// A stream cut off mid-flight is recovered from its partial rather than
+/// regenerated: text-only continues from an assistant prefix + continuation
+/// prompt (R1); a still-open tool call is dropped and the text continues (R3);
+/// tool calls that finished before the drop are executed without re-inferring
+/// (R2); nothing salvageable restarts clean (R4). When a `checkpoint` store is
+/// wired, the partial is flushed durably at the interruption boundary (Phase 3)
+/// so a crash *during* recovery resumes in a fresh process (via `resume`) instead
+/// of re-running the step. The checkpoint is deleted the instant recovery
+/// concludes here — it survives only the crash window this guards.
 async fn infer_with_retry(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,
     policy: &crate::retry::LlmRetryPolicy,
     breaker: &crate::circuit_breaker::CircuitBreaker,
     sink: &dyn DeltaSink,
-) -> std::result::Result<
-    awaken_runtime_contract::llm::ChatResponse,
-    awaken_runtime_contract::llm::Error,
-> {
+    checkpoint: Option<&CheckpointCtx<'_>>,
+    resume: Option<StreamCheckpoint>,
+) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
+    let result =
+        infer_with_retry_inner(llm, request, policy, breaker, sink, checkpoint, resume).await;
+    // Any return means recovery concluded in-process, so the checkpoint (if any)
+    // is spent. It survives only a crash *before* this line — mid-recovery —
+    // which is exactly the cross-process window Phase 3 guards.
+    if let Some(ctx) = checkpoint {
+        ctx.store.delete(&ctx.run_id).await;
+    }
+    result
+}
+
+async fn infer_with_retry_inner(
+    llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
+    request: ChatRequest,
+    policy: &crate::retry::LlmRetryPolicy,
+    breaker: &crate::circuit_breaker::CircuitBreaker,
+    sink: &dyn DeltaSink,
+    checkpoint: Option<&CheckpointCtx<'_>>,
+    resume: Option<StreamCheckpoint>,
+) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let model = request.model_binding.model_ref.clone();
+    let sink = ContinuationSink::new(sink);
+    // Text confirmed from prior interrupted attempts; grows as continuation
+    // proceeds. Empty means "start (or restart) clean".
+    let mut prefix = String::new();
+
+    // Cross-process resume: reproduce in-process the plan a fresh interruption
+    // would have taken from this persisted partial.
+    if let Some(cp) = resume {
+        let completed = parse_completed(&cp.partial_tools);
+        if !completed.is_empty() {
+            // R2: the model had finished its tool calls before the crash — run
+            // them without re-inferring.
+            return Ok(synthesized_tool_response(&cp.partial_text, completed));
+        }
+        // R1/R3: continue from the recovered text (any in-flight tool dropped).
+        // R4 (empty text) leaves the prefix empty, i.e. a clean start.
+        prefix = cp.partial_text;
+    }
+
     let mut attempt = 0;
     loop {
         if let Err(reason) = breaker.check(&model) {
             return Err(awaken_runtime_contract::llm::Error::Provider(reason));
         }
-        match llm.infer_streaming(request.clone(), sink).await {
+        let attempt_request = if prefix.is_empty() {
+            request.clone()
+        } else {
+            continuation_request(&request, &prefix)
+        };
+        sink.reset();
+        match llm.infer_streaming(attempt_request, &sink).await {
             Ok(response) => {
                 breaker.record_success(&model);
-                return Ok(response);
+                return Ok(stitch_prefix(response, &prefix));
             }
             Err(err) => {
                 // Only retryable errors speak to provider health; the counted
                 // set must stay exactly `is_retryable`, or permanent faults
                 // (bad key, overlong prompt) would trip the breaker.
-                if err.is_retryable() {
+                let retryable = err.is_retryable();
+                if retryable {
                     breaker.record_failure(&model);
                 }
-                if err.is_retryable() && attempt < policy.max_retries {
+                let snapshot = sink.snapshot();
+                // The whole text so far: prior confirmed prefix + this attempt.
+                let combined_text = format!("{prefix}{}", snapshot.text);
+
+                if retryable {
+                    // Boundary flush (Phase 3): persist the whole in-flight partial
+                    // so a crash during recovery resumes here. Best-effort — a
+                    // store fault must never turn a recoverable blip into a failure.
+                    if let Some(ctx) = checkpoint {
+                        ctx.store
+                            .put(ctx.checkpoint(combined_text.clone(), snapshot.tools.clone()))
+                            .await;
+                    }
+                    // R2: tool calls finished before the drop → execute them now
+                    // rather than re-inferring, even if the retry budget is spent.
+                    let completed = parse_completed(&snapshot.tools);
+                    if !completed.is_empty() {
+                        return Ok(synthesized_tool_response(&combined_text, completed));
+                    }
+                }
+
+                if retryable && attempt < policy.max_retries {
+                    // R1/R3/R4 collapse: continue from the combined text (empty ⇒
+                    // clean restart); any still-open tool call is dropped.
+                    prefix = combined_text;
                     tokio::time::sleep(policy.delay_before_retry(&err, attempt)).await;
                     attempt += 1;
                 } else {
@@ -1670,145 +1973,4 @@ fn map_resolver_error(err: resolver::Error) -> Error {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding};
-
-    fn spec(instructions: &str) -> ResolvedSpec {
-        ResolvedSpec {
-            catalog_fingerprint: CatalogFingerprint("c".to_string()),
-            instructions: instructions.to_string(),
-            max_steps: 16,
-            model_binding: ModelBinding {
-                provider_instance_ref: "p".to_string(),
-                model_ref: "m".to_string(),
-                backend_ref: "b".to_string(),
-            },
-            tool_descriptors: Vec::new(),
-            plugin_ids: Vec::new(),
-            plugin_config: Default::default(),
-            context_policy: ContextPolicy::KeepAll,
-        }
-    }
-
-    fn user_message() -> Message {
-        Message::text(MessageId("m1".to_string()), Role::User, "hi")
-    }
-
-    #[test]
-    fn instructions_lead_the_request_as_a_system_message() {
-        let request = build_chat_request(&spec("be helpful"), &[], &[user_message()], &[]);
-        assert_eq!(request.messages.len(), 2);
-        assert!(matches!(request.messages[0].role, ChatRole::System));
-        assert_eq!(
-            request.messages[0].content,
-            vec![ContentBlock::text("be helpful")]
-        );
-        assert!(matches!(request.messages[1].role, ChatRole::User));
-    }
-
-    #[test]
-    fn empty_instructions_contribute_no_system_message() {
-        let request = build_chat_request(&spec(""), &[], &[user_message()], &[]);
-        assert_eq!(request.messages.len(), 1);
-        assert!(matches!(request.messages[0].role, ChatRole::User));
-    }
-
-    fn numbered(n: usize) -> Message {
-        Message::text(MessageId(format!("m{n}")), Role::User, n.to_string())
-    }
-
-    fn spec_with(policy: ContextPolicy) -> ResolvedSpec {
-        ResolvedSpec {
-            context_policy: policy,
-            ..spec("sys")
-        }
-    }
-
-    fn user_texts(request: &ChatRequest) -> Vec<String> {
-        request
-            .messages
-            .iter()
-            .filter(|m| matches!(m.role, ChatRole::User))
-            .map(|m| {
-                m.content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<String>()
-            })
-            .collect()
-    }
-
-    #[test]
-    fn keep_all_sends_the_whole_transcript() {
-        let transcript: Vec<Message> = (0..5).map(numbered).collect();
-        let request = build_chat_request(&spec_with(ContextPolicy::KeepAll), &[], &transcript, &[]);
-        // 1 system + 5 users
-        assert_eq!(request.messages.len(), 6);
-    }
-
-    #[test]
-    fn keep_last_keeps_system_prefix_plus_the_last_n() {
-        let transcript: Vec<Message> = (0..5).map(numbered).collect();
-        let request = build_chat_request(
-            &spec_with(ContextPolicy::KeepLast { keep_last: 2 }),
-            &[],
-            &transcript,
-            &[],
-        );
-        // system stays; only the last 2 user messages survive.
-        assert!(matches!(request.messages[0].role, ChatRole::System));
-        assert_eq!(user_texts(&request), vec!["3".to_string(), "4".to_string()]);
-    }
-
-    #[test]
-    fn keep_last_larger_than_history_keeps_everything() {
-        let transcript: Vec<Message> = (0..3).map(numbered).collect();
-        let request = build_chat_request(
-            &spec_with(ContextPolicy::KeepLast { keep_last: 10 }),
-            &[],
-            &transcript,
-            &[],
-        );
-        assert_eq!(user_texts(&request).len(), 3);
-    }
-
-    #[test]
-    fn keep_last_zero_keeps_only_the_system_prefix() {
-        let transcript: Vec<Message> = (0..3).map(numbered).collect();
-        let request = build_chat_request(
-            &spec_with(ContextPolicy::KeepLast { keep_last: 0 }),
-            &[],
-            &transcript,
-            &[],
-        );
-        assert_eq!(request.messages.len(), 1);
-        assert!(matches!(request.messages[0].role, ChatRole::System));
-    }
-
-    #[test]
-    fn prelude_is_injected_after_instructions_before_the_transcript() {
-        let prelude = vec![Message::text(
-            MessageId("p1".to_string()),
-            Role::System,
-            "recalled context",
-        )];
-        let transcript = vec![user_message()];
-        let request = build_chat_request(&spec("be helpful"), &prelude, &transcript, &[]);
-        assert_eq!(request.messages.len(), 3);
-        assert!(matches!(request.messages[0].role, ChatRole::System));
-        assert_eq!(
-            request.messages[0].content,
-            vec![ContentBlock::text("be helpful")]
-        );
-        assert!(matches!(request.messages[1].role, ChatRole::System));
-        assert_eq!(
-            request.messages[1].content,
-            vec![ContentBlock::text("recalled context")]
-        );
-        assert!(matches!(request.messages[2].role, ChatRole::User));
-    }
-}
+mod tests;

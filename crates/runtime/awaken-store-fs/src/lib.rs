@@ -27,6 +27,7 @@ use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::event::record::Record as EventRecord;
 use awaken_agent_contract::store::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::store::run_store::RunStore;
+use awaken_agent_contract::store::stream_checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -134,5 +135,76 @@ impl CheckpointReader for FsCommitCoordinator {
 
     fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
         self.inner.list_events(scope, from, limit)
+    }
+}
+
+/// Filesystem-backed [`StreamCheckpointStore`]: one JSON file per `run_id` under
+/// a directory. Unlike the commit log this is mutable key-value state, so a `put`
+/// writes a temp file and atomically renames it over the target (a crash mid-write
+/// leaves the prior checkpoint intact, never a torn one), and `delete` removes it.
+/// Durable across process restarts — this is the backend that makes an interrupted
+/// inference step resumable in a fresh process. Best-effort per the port contract:
+/// every error is swallowed (a `get` fault reads as "no checkpoint").
+pub struct FsStreamCheckpointStore {
+    dir: PathBuf,
+}
+
+impl FsStreamCheckpointStore {
+    /// Open (creating if needed) a checkpoint directory rooted at `dir`.
+    pub fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
+        let dir = dir.as_ref().to_path_buf();
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self { dir })
+    }
+
+    /// The checkpoint file path for `run_id`. The id is filename-encoded so an
+    /// opaque or path-bearing run id cannot escape the directory or collide:
+    /// every byte outside `[A-Za-z0-9._-]` becomes `%XX` (reversible, injective).
+    fn path_for(&self, run_id: &str) -> PathBuf {
+        let mut name = String::with_capacity(run_id.len() + 5);
+        for byte in run_id.bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') {
+                name.push(byte as char);
+            } else {
+                name.push_str(&format!("%{byte:02X}"));
+            }
+        }
+        name.push_str(".json");
+        self.dir.join(name)
+    }
+}
+
+#[async_trait]
+impl StreamCheckpointStore for FsStreamCheckpointStore {
+    async fn get(&self, run_id: &str) -> Option<StreamCheckpoint> {
+        let bytes = std::fs::read(self.path_for(run_id)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    async fn put(&self, checkpoint: StreamCheckpoint) {
+        let path = self.path_for(&checkpoint.run_id);
+        let Ok(json) = serde_json::to_vec(&checkpoint) else {
+            return;
+        };
+        // Atomic replace: write a sibling temp, fsync it, then rename over the
+        // target so a reader never observes a partial write.
+        let tmp = path.with_extension("json.tmp");
+        let write = (|| -> std::io::Result<()> {
+            let mut file = File::create(&tmp)?;
+            file.write_all(&json)?;
+            file.sync_all()?;
+            std::fs::rename(&tmp, &path)
+        })();
+        if write.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+
+    async fn delete(&self, run_id: &str) {
+        match std::fs::remove_file(self.path_for(run_id)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {}
+        }
     }
 }
