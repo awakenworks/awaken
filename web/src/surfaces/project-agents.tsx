@@ -6,8 +6,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../lib/api/client";
-import type { AgentConfigItem, AgentConfigList } from "../lib/api/types";
+import type { AgentConfig, AgentConfigItem, AgentConfigList } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+
+function modelId(m: AgentConfig["model"]): string {
+  return typeof m === "string" ? m : (m?.id ?? "");
+}
 
 export default function ProjectAgentsSurface() {
   const app = useApp();
@@ -48,10 +52,10 @@ export default function ProjectAgentsSurface() {
           <tbody>
             {rows.map((a) => (
               <tr key={a.id} data-click="true" onClick={() => nav(`/p/${pid}/agents/${a.id}`)}>
-                <td className="mono">{a.id}</td>
-                <td className="mono mut">{a.model_binding?.model_ref || "—"}</td>
-                <td className="mut">{a.tool_ids?.length ?? 0}</td>
-                <td className="mut">{a.plugin_ids?.length ?? 0}</td>
+                <td className="mono">{a.name || a.id}</td>
+                <td className="mono mut">{modelId(a.model) || "—"}</td>
+                <td className="mut">{a.tools?.length ?? 0}</td>
+                <td className="mut">{a.plugins?.length ?? 0}</td>
                 <td>
                   {a.published ? (
                     <span className="pill ok">{app.t("published", "已发布")}</span>

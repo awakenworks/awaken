@@ -1,9 +1,10 @@
-// Project · Agent editor: authors the rich AgentConfig against our own config
-// plane (PUT /v1/config/agents/:id), the management console's agent source —
-// distinct from the SDK-facing /v1/agents registry. Tabs map 1:1 onto AgentConfig
-// fields; policy (permission / state_machine / deferred-tools / generative-ui)
-// lives under plugin_config, authored here as JSON sections. `Publish` compiles +
-// installs the config so sessions run it (design/web-ui.md §4b).
+// Project · Agent editor: authors the agent object against our own config plane
+// (PUT /v1/config/agents/:id). The object model IS the managed `/v1/agents` object
+// (name / model / system / tools / mcp_servers / skills / multiagent / metadata)
+// plus our extension block (plugins / plugin_config / context_policy / max_steps) —
+// consistent with the SDK object, extended with our differentiated value. Policy
+// (permission / state_machine / deferred-tools / generative-ui) lives under
+// plugin_config. `Publish` compiles + installs the config so sessions run it.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
@@ -18,16 +19,24 @@ type Tab = "basics" | "context" | "tools" | "plugins";
 
 const BLANK: AgentConfig = {
   id: "",
-  instructions: "You are a helpful coding agent.",
+  name: "",
+  model: { id: "" },
+  system: "You are a helpful coding agent.",
+  metadata: {},
+  tools: [],
+  mcp_servers: [],
+  skills: [],
   max_steps: 8,
-  model_binding: { provider_instance_ref: "", model_ref: "", backend_ref: "openai" },
-  tool_ids: [],
-  plugin_ids: [],
+  plugins: [],
   plugin_config: {},
   context_policy: { kind: "keep_all" },
 };
 
-/** A minimal add/remove editor for a string list (tool ids, plugin ids). */
+function modelId(m: AgentConfig["model"]): string {
+  return typeof m === "string" ? m : (m?.id ?? "");
+}
+
+/** A minimal add/remove editor for a string list (tools, plugins). */
 function ListEditor({
   values,
   onChange,
@@ -85,7 +94,7 @@ export default function AgentEditorSurface() {
   const [manageModels, setManageModels] = useState(false);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
 
-  // Existing agent: hydrate the draft from the config plane.
+  // Existing agent: hydrate the draft from the config plane (managed object shape).
   const existing = useQuery({
     queryKey: ["config-agent", id],
     enabled: !isNew,
@@ -94,7 +103,7 @@ export default function AgentEditorSurface() {
   });
   useEffect(() => {
     if (existing.data) {
-      setCfg(existing.data);
+      setCfg({ ...BLANK, ...existing.data });
       setDirty(false);
     }
   }, [existing.data]);
@@ -113,20 +122,19 @@ export default function AgentEditorSurface() {
     setDirty(true);
     setNote(null);
   };
-  const patchBinding = (p: Partial<AgentConfig["model_binding"]>) =>
-    patch({ model_binding: { ...cfg.model_binding, ...p } });
 
   const targetId = () => (isNew ? cfg.id.trim() : id);
-  const canSave = targetId().length > 0 && cfg.instructions.trim().length > 0;
+  const canSave = targetId().length > 0 && (cfg.system ?? "").trim().length > 0;
+  const body = () => ({ ...cfg, id: targetId() });
 
   const validate = useMutation({
-    mutationFn: () => api.post<{ valid: boolean; error?: string }>(`/v1/config/agents/${targetId()}/validate`, cfg),
+    mutationFn: () => api.post<{ valid: boolean; error?: string }>(`/v1/config/agents/${targetId()}/validate`, body()),
     onSuccess: (r) =>
       setNote(r.valid ? { ok: true, text: app.t("Config is valid.", "配置有效。") } : { ok: false, text: r.error ?? "invalid" }),
     onError: (e) => setNote({ ok: false, text: e instanceof Error ? e.message : "error" }),
   });
   const save = useMutation({
-    mutationFn: () => api.put<{ id: string }>(`/v1/config/agents/${targetId()}`, { ...cfg, id: targetId() }),
+    mutationFn: () => api.put<{ id: string }>(`/v1/config/agents/${targetId()}`, body()),
     onSuccess: () => {
       setDirty(false);
       setNote({ ok: true, text: app.t("Saved.", "已保存。") });
@@ -197,16 +205,21 @@ export default function AgentEditorSurface() {
       <div className="card">
         {tab === "basics" && (
           <>
-            <div className="field">
-              <label>{app.t("Agent id", "Agent id")}</label>
-              <input
-                className="input mono"
-                value={cfg.id}
-                disabled={!isNew}
-                placeholder="coding-agent"
-                onChange={(e) => patch({ id: e.target.value })}
-              />
-              {!isNew && <span className="mut">{app.t("Id is immutable after creation.", "创建后 id 不可变。")}</span>}
+            <div className="row">
+              <div className="field" style={{ flex: 1 }}>
+                <label>{app.t("Agent id", "Agent id")}</label>
+                <input
+                  className="input mono"
+                  value={cfg.id}
+                  disabled={!isNew}
+                  placeholder="coding-agent"
+                  onChange={(e) => patch({ id: e.target.value })}
+                />
+              </div>
+              <div className="field" style={{ flex: 1 }}>
+                <label>{app.t("Name", "名称")}</label>
+                <input className="input" value={cfg.name ?? ""} placeholder="Coding Assistant" onChange={(e) => patch({ name: e.target.value })} />
+              </div>
             </div>
             <div className="field">
               <label className="row" style={{ justifyContent: "space-between" }}>
@@ -216,7 +229,7 @@ export default function AgentEditorSurface() {
                 </button>
               </label>
               {models.length > 0 ? (
-                <select className="input mono" value={cfg.model_binding.model_ref} onChange={(e) => patchBinding({ model_ref: e.target.value })}>
+                <select className="input mono" value={modelId(cfg.model)} onChange={(e) => patch({ model: { id: e.target.value } })}>
                   <option value="">{app.t("— select a model —", "— 选择模型 —")}</option>
                   {models.map((m) => (
                     <option key={m} value={m}>
@@ -225,32 +238,26 @@ export default function AgentEditorSurface() {
                   ))}
                 </select>
               ) : (
-                <input className="input mono" value={cfg.model_binding.model_ref} placeholder="kimi-k2" onChange={(e) => patchBinding({ model_ref: e.target.value })} />
+                <input className="input mono" value={modelId(cfg.model)} placeholder="kimi-k2" onChange={(e) => patch({ model: { id: e.target.value } })} />
               )}
             </div>
-            <div className="row">
-              <div className="field" style={{ flex: 1 }}>
-                <label>{app.t("Provider instance", "提供方实例")}</label>
-                <input className="input mono" value={cfg.model_binding.provider_instance_ref} placeholder="kimi" onChange={(e) => patchBinding({ provider_instance_ref: e.target.value })} />
-              </div>
-              <div className="field" style={{ flex: 1 }}>
-                <label>{app.t("Backend", "后端")}</label>
-                <input className="input mono" value={cfg.model_binding.backend_ref} placeholder="openai" onChange={(e) => patchBinding({ backend_ref: e.target.value })} />
-              </div>
-              <div className="field" style={{ width: 120 }}>
-                <label>{app.t("Max steps", "最大步数")}</label>
-                <input
-                  className="input mono"
-                  type="number"
-                  min={1}
-                  value={cfg.max_steps}
-                  onChange={(e) => patch({ max_steps: Math.max(1, Number(e.target.value) || 1) })}
-                />
-              </div>
+            <div className="field">
+              <label>{app.t("Description", "描述")}</label>
+              <input className="input" value={cfg.description ?? ""} onChange={(e) => patch({ description: e.target.value })} />
+            </div>
+            <div className="field" style={{ width: 140 }}>
+              <label>{app.t("Max steps", "最大步数")}</label>
+              <input
+                className="input mono"
+                type="number"
+                min={1}
+                value={cfg.max_steps}
+                onChange={(e) => patch({ max_steps: Math.max(1, Number(e.target.value) || 1) })}
+              />
             </div>
             <div className="field">
               <label>{app.t("System instructions", "系统指令")}</label>
-              <textarea className="input mono" rows={8} value={cfg.instructions} onChange={(e) => patch({ instructions: e.target.value })} />
+              <textarea className="input mono" rows={8} value={cfg.system ?? ""} onChange={(e) => patch({ system: e.target.value })} />
             </div>
           </>
         )}
@@ -298,15 +305,13 @@ export default function AgentEditorSurface() {
         )}
 
         {tab === "tools" && (
-          <>
-            <label className="field-label" style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--fg3)" }}>
-              {app.t("Tool ids", "工具 id")}
-            </label>
-            <span className="mut" style={{ marginBottom: 6 }}>
+          <div className="field">
+            <label>{app.t("Tools", "工具")}</label>
+            <span className="mut">
               {app.t("Hand tools bound by id at compile. Empty = no hand tools.", "编译时按 id 绑定的 hand 工具;空 = 无。")}
             </span>
-            <ListEditor values={cfg.tool_ids} onChange={(v) => patch({ tool_ids: v })} placeholder="mcp__calc__add" />
-          </>
+            <ListEditor values={cfg.tools} onChange={(v) => patch({ tools: v })} placeholder="mcp__calc__add" />
+          </div>
         )}
 
         {tab === "plugins" && (
@@ -316,7 +321,7 @@ export default function AgentEditorSurface() {
               <span className="mut">
                 {app.t("A runtime plugin contributes only when listed here.", "运行时插件只有列在此处才生效。")}
               </span>
-              <ListEditor values={cfg.plugin_ids} onChange={(v) => patch({ plugin_ids: v })} placeholder="permission" />
+              <ListEditor values={cfg.plugins} onChange={(v) => patch({ plugins: v })} placeholder="permission" />
             </div>
             <div className="field">
               <label>{app.t("Plugin config (policy sections)", "插件配置(策略段)")}</label>
@@ -327,7 +332,7 @@ export default function AgentEditorSurface() {
                 )}
               </span>
               <PluginConfigEditor
-                pluginIds={cfg.plugin_ids}
+                pluginIds={cfg.plugins}
                 config={cfg.plugin_config}
                 onChange={(next) => patch({ plugin_config: next })}
               />

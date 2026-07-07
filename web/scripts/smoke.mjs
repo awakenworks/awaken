@@ -97,18 +97,25 @@ await step("read project agent mcp", "GET", "/v1/config/projects/demo/agents/def
 // ---- Project · Agents authoring via config plane (surfaces/agent-editor.tsx) ----
 // The console authors the rich AgentConfig against our own management API, then
 // publishes (compile + install). Publish/compile is inference-agnostic.
+// The object model IS the managed /v1/agents object (name/model/system/tools/…)
+// plus extensions (plugins/plugin_config/context_policy/max_steps).
 const cfgAgent = {
   id: "smoke-agent",
-  instructions: "You are a smoke-test agent.",
+  name: "Smoke Agent",
+  model: { id: "claude" },
+  system: "You are a smoke-test agent.",
+  tools: [],
+  mcp_servers: [],
+  skills: [],
   max_steps: 8,
-  model_binding: { provider_instance_ref: "anthropic", model_ref: "claude", backend_ref: "anthropic_messages" },
-  tool_ids: [],
-  plugin_ids: [],
+  plugins: [],
   plugin_config: {},
   context_policy: { kind: "keep_all" },
 };
 await step("author config agent", "PUT", "/v1/config/agents/smoke-agent", cfgAgent, (s, p) => s === 200 && p.id === "smoke-agent");
 await step("validate config agent", "POST", "/v1/config/agents/smoke-agent/validate", cfgAgent, (s, p) => s === 200 && p.valid === true);
+// The stored object round-trips in the managed shape: model {id}, system, published flag.
+await step("get config agent (managed shape)", "GET", "/v1/config/agents/smoke-agent", undefined, (s, p) => s === 200 && p.type === "agent" && p.model?.id === "claude" && p.system === "You are a smoke-test agent." && p.published === false);
 await step("list config agents (draft)", "GET", "/v1/config/agents", undefined, (s, p) => s === 200 && p.data.some((a) => a.id === "smoke-agent" && a.published === false));
 await step("publish config agent", "POST", "/v1/config/agents/smoke-agent/publish", undefined, (s, p) => s === 200 && p.installed === true);
 await step("list config agents (published)", "GET", "/v1/config/agents", undefined, (s, p) => s === 200 && p.data.some((a) => a.id === "smoke-agent" && a.published === true));

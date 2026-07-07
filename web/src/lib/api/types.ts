@@ -332,31 +332,37 @@ export interface Agent {
 }
 
 // ---- config-plane agent authoring (/v1/config/agents) ----
-// The rich AgentConfig the console authors directly, distinct from the SDK-facing
-// /v1/agents registry above. `publish` compiles + installs it so sessions run it.
+// The object model is the managed `/v1/agents` Agent object (name / model / system
+// / tools / mcp_servers / skills / multiagent / metadata) PLUS our extension block
+// (plugins / plugin_config / context_policy / max_steps). The console authors this
+// against our own config plane; `publish` compiles + installs it so sessions run it.
 
-export interface ModelBinding {
-  provider_instance_ref: string;
-  model_ref: string;
-  backend_ref: string;
-}
 /** Internally tagged on `kind` (snake_case), mirroring the Rust ContextPolicy. */
 export type ContextPolicy = { kind: "keep_all" } | { kind: "keep_last"; keep_last: number };
 
 export interface AgentConfig {
   id: string;
-  instructions: string;
+  type?: "agent";
+  // managed Agent object fields:
+  name?: string | null;
+  description?: string | null;
+  model: { id: string; speed?: string } | string;
+  system?: string;
+  metadata?: Record<string, string>;
+  tools: string[];
+  mcp_servers: unknown[];
+  skills: unknown[];
+  multiagent?: unknown;
+  // extensions (our differentiated value, additive to the managed object):
   max_steps: number;
-  model_binding: ModelBinding;
-  tool_ids: string[];
-  plugin_ids: string[];
+  plugins: string[];
   /** Per-plugin config sections, keyed by plugin id (permission / state_machine /
    * deferred-tools / generative-ui all live here as JSON). */
   plugin_config: Record<string, unknown>;
   context_policy: ContextPolicy;
 }
-/** A list/get item: the stored config plus a live `published` flag (a compiled
- * config is currently installed in the runtime catalog). */
+/** A list/get item: the object plus a live `published` flag (a compiled config is
+ * currently installed in the runtime catalog). */
 export type AgentConfigItem = AgentConfig & { published?: boolean };
 export interface AgentConfigList {
   data: AgentConfigItem[];

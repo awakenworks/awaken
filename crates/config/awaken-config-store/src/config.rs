@@ -103,7 +103,7 @@ impl<'de> Deserialize<'de> for ModelSelection {
 /// domain's source of truth; the runtime never edits it — it consumes only the
 /// compiled snapshot (ADR-0031). Field order is the canonical serialization order
 /// used for the publication fingerprint, so it must stay stable.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub id: String,
     pub instructions: String,
@@ -143,4 +143,21 @@ pub struct AgentConfig {
     /// byte-identical; a non-empty pool enters the content address like any field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_candidates: Vec<ModelBinding>,
+    /// Managed-Agent identity/wire fields, carried so the config plane's agent
+    /// object stays consistent with the SDK `/v1/agents` object (name / model /
+    /// system / tools / mcp_servers / skills / multiagent / metadata). These are
+    /// authoring metadata — the runtime consumes only the compiled fields above —
+    /// so they are `skip_serializing_if`-empty to keep prior fingerprints identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiagent: Option<serde_json::Value>,
 }

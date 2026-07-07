@@ -175,6 +175,7 @@ mod tests {
             plugin_config: Default::default(),
             context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
             tool_patterns: Vec::new(),
+            ..Default::default()
         }
     }
 
