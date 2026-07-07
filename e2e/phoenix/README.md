@@ -38,6 +38,18 @@ AWAKEN_MODEL_MODE=echo AWAKEN_HTTP_ADDR=127.0.0.1:38080 \
 #   Jaeger   http://localhost:16686
 ```
 
+### Automated backend assertion
+
+With the stack up, `trace_backends_e2e.mjs` drives OTLP traffic and asserts the
+spans landed correctly in **both** backends (Jaeger: GenAI tree + SpanKinds +
+`traceparent` continuation; Phoenix: same GenAI spans + the same trace id — proving
+the collector fan-out is consistent). It self-skips (green) when the stack is down:
+
+```bash
+docker compose -f e2e/phoenix/docker-compose.yml up -d --wait
+cd e2e && npm run test:trace   # runs the file-sink + live-backend checks
+```
+
 Tear down:
 
 ```bash

@@ -11,6 +11,7 @@
     "test:mcp": "node managed_mcp_e2e.mjs && node management_mcp_e2e.mjs && node managed_mcp_refresh_e2e.mjs",
     "test:real": "node managed_real_e2e.mjs && node ai_sdk_real_e2e.mjs && node managed_resolved_real_e2e.mjs && node management_validate_e2e.mjs && node managed_resources_e2e.mjs",
     "test:gemini": "node managed_real_gemini_e2e.mjs",
+    "test:trace": "node trace_capture_e2e.mjs && node trace_backends_e2e.mjs",
     "test:k6": "bash k6/run.sh smoke",
     "test:k6:stress": "bash k6/run.sh stress",
     "test:durable": "sh -c 'export AWAKEN_STORAGE_DIR=\"${AWAKEN_STORAGE_DIR:-$(mktemp -d)}\"; node managed_e2e.mjs && node managed_hitl_e2e.mjs && node managed_restart_e2e.mjs && node managed_durable_e2e.mjs'",
