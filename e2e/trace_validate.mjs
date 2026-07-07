@@ -147,6 +147,49 @@ export function assertToolSpan(spans, toolName) {
   return tool;
 }
 
+/// (3e) The detached background aux run (memory extraction) is linked into the
+/// spawning turn's trace via an `aux.background` span, instead of a disconnected
+/// root. Asserts the aux span nests under the turn and drove a sub-run.
+export function assertBackgroundLinked(spans) {
+  const { byId } = index(spans);
+  const aux = spans.find((s) => s.name === 'aux.background');
+  assert.ok(aux, 'no aux.background span; the background run was not linked to the trace');
+  const chain = ancestors(aux, byId);
+  assert.ok(
+    chain.some((s) => s.name === 'host.run_turn' || s.name === 'sessions.events.send'),
+    `aux.background not under the turn; chain: ${chain.map((s) => s.name).join(' -> ')}`,
+  );
+  const subRun = spans.find(
+    (s) => s.name === 'runtime.run' && ancestors(s, byId).some((a) => a.span_id === aux.span_id),
+  );
+  assert.ok(subRun, 'aux.background produced no runtime.run sub-run');
+  return aux;
+}
+
+/// (3f) Durable dispatch relay: a run admitted via `submit_background` and drained
+/// by the daemon continues the admitting request's trace — a `wake.dispatch` span
+/// on the submit's trace, parented into the submit ingress span, driving a run.
+export function assertDurableDispatch(spans) {
+  const { byId } = index(spans);
+  const submit = spans.find(
+    (s) => s.name === 'http.request' && (s.attributes?.['http.route'] ?? '').endsWith('submit_background'),
+  );
+  assert.ok(submit, 'no submit_background ingress span');
+  const wake = spans.find((s) => s.name === 'wake.dispatch');
+  assert.ok(wake, 'no wake.dispatch span; the durable trace relay is missing');
+  assert.equal(wake.trace_id, submit.trace_id, 'wake.dispatch on a different trace than the submit');
+  const chain = [wake, ...ancestors(wake, byId)];
+  assert.ok(
+    chain.some((s) => s.span_id === submit.span_id),
+    'wake.dispatch not parented under the submit ingress span (durable relay broken)',
+  );
+  const subRun = spans.find(
+    (s) => s.name === 'runtime.run' && ancestors(s, byId).some((a) => a.span_id === wake.span_id),
+  );
+  assert.ok(subRun, 'wake.dispatch drove no runtime.run');
+  return wake;
+}
+
 /// (3c) W3C traceparent propagation: the request carrying `00-<tid>-<sid>-01`
 /// produced a root ingress span on trace `<tid>` whose parent is `<sid>`.
 export function assertPropagation(spans, route, tid, sid) {
