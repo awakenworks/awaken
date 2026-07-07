@@ -11,6 +11,7 @@
 //! `user.tool_confirmation`, `user.custom_tool_result`, `user.define_outcome`,
 //! `user.interrupt`), `GET /v1/sessions/{id}/events`, and the SSE stream.
 
+pub mod agents_registry;
 pub mod dto;
 pub mod pagination;
 pub mod project;
@@ -20,6 +21,7 @@ mod state;
 pub mod user_profiles;
 pub mod vaults;
 
+pub use agents_registry::{AgentRegistryState, agents_router};
 pub use router::{ProjectScope, router};
 pub use session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 pub use state::{

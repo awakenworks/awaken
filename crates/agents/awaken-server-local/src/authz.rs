@@ -797,6 +797,19 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             WORKSPACE_WRITE
         }),
         ["v1", "user_profiles", _, "enrollment_url"] if !read => scoped(WORKSPACE_WRITE),
+        // -- the public agent registry (distinct from /v1/config/agents authoring) --
+        ["v1", "agents"] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
+        ["v1", "agents", _] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
+        ["v1", "agents", _, "versions"] if read => scoped(WORKSPACE_READ),
+        ["v1", "agents", _, "archive"] if !read => scoped(WORKSPACE_WRITE),
         _ => None,
     }
 }
