@@ -41,6 +41,11 @@ coding-agent-tui = [
 # `hello_agent` reuses the config domain's pure `compile()` to derive the
 # fingerprint — the embedded path borrows the producer, not the cloud storage.
 awaken-config-store = { workspace = true }
+# `memory_skills_combo` is the bare-Runtime assembly recipe for the two
+# extensions together — it must build from their public exports alone.
+awaken-ext-memory = { workspace = true }
+awaken-ext-skills = { workspace = true }
+awaken-ext-builtin-tools = { workspace = true }
 
 [[example]]
 name = "coding_agent"
