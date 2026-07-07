@@ -4,10 +4,13 @@ import GatedPage from "./components/app/GatedPage";
 import A2aSurface from "./surfaces/a2a";
 import AccessSurface from "./surfaces/access";
 import CredentialsSurface from "./surfaces/credentials";
+import DeploymentsSurface from "./surfaces/deployments";
 import EnvironmentsSurface from "./surfaces/environments";
 import HomeSurface from "./surfaces/home";
 import McpServersSurface from "./surfaces/mcp-servers";
+import MemorySurface from "./surfaces/memory";
 import ModelsSurface from "./surfaces/models";
+import SkillsSurface from "./surfaces/skills";
 import ProjectAgentsSurface from "./surfaces/project-agents";
 import ProjectOverviewSurface from "./surfaces/project-overview";
 import ProjectSettingsSurface from "./surfaces/project-settings";
@@ -30,9 +33,9 @@ export const router = createBrowserRouter([
       { path: "p/:pid/agents", element: <ProjectAgentsSurface /> },
       { path: "p/:pid/environments", element: <EnvironmentsSurface /> },
       { path: "p/:pid/vaults", element: <VaultsSurface /> },
-      { path: "p/:pid/memory", element: <GatedPage title="Memory stores" endpoint="/projects/{pid}/v1/memory_stores" /> },
-      { path: "p/:pid/deployments", element: <GatedPage title="Deployments" endpoint="/projects/{pid}/v1/deployments" /> },
-      { path: "p/:pid/skills", element: <GatedPage title="Skills" endpoint="/projects/{pid}/v1/skills" /> },
+      { path: "p/:pid/memory", element: <MemorySurface /> },
+      { path: "p/:pid/deployments", element: <DeploymentsSurface /> },
+      { path: "p/:pid/skills", element: <SkillsSurface /> },
       { path: "p/:pid/settings", element: <ProjectSettingsSurface /> },
 
       // Workspace scope = shared supply + governance.

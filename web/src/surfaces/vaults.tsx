@@ -1,16 +1,13 @@
-// Project · Vaults: the SINGLE home for runtime/tool credentials (design/web-ui.md
+// Project · Vaults: the single home for runtime/tool credentials (design/web-ui.md
 // §1, option B) — MCP OAuth (auto-refreshed), static bearer, and env-var secrets,
 // self-managed on the managed wire and injected at egress (the sandbox never sees
 // them). Consumed via `vault_ids` at session create, matched to MCP servers by url.
-// No list endpoint exists (host-ephemeral), so this keeps a local registry of
-// vaults created in this browser; the routes are the bare /v1/vaults face until
-// the project ingress mounts it (§7.10).
+// Real list endpoints: GET /v1/vaults and GET /v1/vaults/:id/credentials.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { useParams } from "react-router";
 import { api } from "../lib/api/client";
-import type { Vault, VaultCredential } from "../lib/api/types";
+import type { Page, Vault, VaultCredential } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
 // Per-type create templates (flat, `type`-tagged — the shape /v1/vaults/:id/
@@ -38,26 +35,12 @@ const CRED_TEMPLATES: Record<string, string> = {
 }`,
 };
 
-function vaultRegistry(pid: string): string[] {
-  try {
-    return JSON.parse(localStorage.getItem(`awaken.console.vaults.${pid}`) ?? "[]") as string[];
-  } catch {
-    return [];
-  }
-}
-function rememberVault(pid: string, id: string) {
-  const list = vaultRegistry(pid).filter((v) => v !== id);
-  list.unshift(id);
-  localStorage.setItem(`awaken.console.vaults.${pid}`, JSON.stringify(list.slice(0, 50)));
-}
-
 function CredentialRow({ vaultId, cred }: { vaultId: string; cred: VaultCredential }) {
   const app = useApp();
   const validate = useMutation({
     mutationFn: () =>
       api.post<{ status?: string }>(`/v1/vaults/${vaultId}/credentials/${cred.id}/mcp_oauth_validate`),
   });
-  // The credential kind + fields live under `auth` (secret-free projection).
   const kind = cred.auth?.type ?? "?";
   const target = cred.auth?.mcp_server_url ?? cred.auth?.secret_name ?? "—";
   return (
@@ -75,7 +58,7 @@ function CredentialRow({ vaultId, cred }: { vaultId: string; cred: VaultCredenti
                 {validate.data.status ?? "checked"}
               </span>
             )}
-            <button className="btn ghost" disabled={validate.isPending} onClick={() => validate.mutate()}>
+            <button className="btn ghost" style={{ height: 22 }} disabled={validate.isPending} onClick={() => validate.mutate()}>
               {app.t("Validate", "验证")}
             </button>
           </span>
@@ -87,44 +70,33 @@ function CredentialRow({ vaultId, cred }: { vaultId: string; cred: VaultCredenti
   );
 }
 
-function VaultCard({ pid, id }: { pid: string; id: string }) {
+function VaultCard({ id, name }: { id: string; name?: string }) {
   const app = useApp();
   const qc = useQueryClient();
-  const vault = useQuery({
-    queryKey: ["vault", id],
-    queryFn: () => api.get<Vault & { credentials?: VaultCredential[] }>(`/v1/vaults/${id}`),
-    retry: false,
+  const creds = useQuery({
+    queryKey: ["vault-credentials", id],
+    queryFn: () => api.get<Page<VaultCredential>>(`/v1/vaults/${id}/credentials`),
   });
   const [adding, setAdding] = useState(false);
   const [type, setType] = useState("static_bearer");
   const [body, setBody] = useState(CRED_TEMPLATES.static_bearer);
-  // No list endpoint exists (§7): show credentials created this session from the
-  // POST response (secret-free `auth` projection), so the operator sees what landed.
-  const [created, setCreated] = useState<VaultCredential[]>([]);
   const create = useMutation({
-    mutationFn: (payload: unknown) => api.post<VaultCredential>(`/v1/vaults/${id}/credentials`, payload),
-    onSuccess: (cred) => {
+    mutationFn: (payload: unknown) => api.post(`/v1/vaults/${id}/credentials`, payload),
+    onSuccess: () => {
       setAdding(false);
-      setCreated((prev) => [cred, ...prev.filter((c) => c.id !== cred.id)]);
-      void qc.invalidateQueries({ queryKey: ["vault", id] });
+      void qc.invalidateQueries({ queryKey: ["vault-credentials", id] });
     },
   });
   const del = useMutation({
     mutationFn: () => api.del(`/v1/vaults/${id}`),
-    onSuccess: () => {
-      localStorage.setItem(
-        `awaken.console.vaults.${pid}`,
-        JSON.stringify(vaultRegistry(pid).filter((v) => v !== id)),
-      );
-      void qc.invalidateQueries();
-    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["vaults"] }),
   });
-  const creds = created;
+  const rows = creds.data?.data ?? [];
   return (
     <div className="card" style={{ padding: 0 }}>
       <div className="row" style={{ padding: "12px 16px" }}>
         <code>{id}</code>
-        {vault.isError && <span className="pill warn">{app.t("not found (ephemeral?)", "不存在(进程重建?)")}</span>}
+        {name && <span className="mut">{name}</span>}
         <span style={{ flex: 1 }} />
         <button className="btn ghost" onClick={() => setAdding(true)}>
           + {app.t("Add credential", "添加凭证")}
@@ -133,19 +105,19 @@ function VaultCard({ pid, id }: { pid: string; id: string }) {
           {app.t("Delete", "删除")}
         </button>
       </div>
-      {creds.length > 0 && (
-        <>
-          <div className="mut" style={{ padding: "0 16px 4px", fontSize: 11 }}>
-            {app.t("Created this session (no list endpoint yet — §7).", "本次会话内新建(暂无列表端点——§7)。")}
-          </div>
-          <table className="table">
-            <tbody>
-              {creds.map((c) => (
-                <CredentialRow key={c.id} vaultId={id} cred={c} />
-              ))}
-            </tbody>
-          </table>
-        </>
+      {rows.length > 0 && (
+        <table className="table">
+          <tbody>
+            {rows.map((c) => (
+              <CredentialRow key={c.id} vaultId={id} cred={c} />
+            ))}
+          </tbody>
+        </table>
+      )}
+      {rows.length === 0 && (
+        <div className="mut" style={{ padding: "0 16px 12px", fontSize: 12 }}>
+          {creds.isLoading ? "…" : app.t("No credentials yet.", "还没有凭证。")}
+        </div>
       )}
       {adding && (
         <div className="overlay" onClick={() => setAdding(false)}>
@@ -167,7 +139,7 @@ function VaultCard({ pid, id }: { pid: string; id: string }) {
             </div>
             <div className="field">
               <label>{app.t("Payload (secret fields are write-only)", "请求体(秘密字段只写)")}</label>
-              <textarea className="input mono" rows={7} value={body} onChange={(e) => setBody(e.target.value)} />
+              <textarea className="input mono" rows={8} value={body} onChange={(e) => setBody(e.target.value)} />
             </div>
             {create.error instanceof Error && <div className="err">{create.error.message}</div>}
             <div className="row" style={{ justifyContent: "flex-end" }}>
@@ -193,29 +165,26 @@ function VaultCard({ pid, id }: { pid: string; id: string }) {
 
 export default function VaultsSurface() {
   const app = useApp();
-  const { pid = "" } = useParams();
   const qc = useQueryClient();
-  const [known, setKnown] = useState(() => vaultRegistry(pid));
   const [vaultName, setVaultName] = useState("runtime");
+  const vaults = useQuery({
+    queryKey: ["vaults"],
+    queryFn: () => api.get<Page<Vault>>("/v1/vaults"),
+    refetchInterval: 30_000,
+  });
   const create = useMutation({
     mutationFn: () => api.post<Vault>("/v1/vaults", { display_name: vaultName || "vault" }),
-    onSuccess: (v) => {
-      rememberVault(pid, v.id);
-      setKnown(vaultRegistry(pid));
-      void qc.invalidateQueries();
-    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["vaults"] }),
   });
+  const rows = (vaults.data?.data ?? []).filter((v) => !v.archived_at);
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <span className="banner gate" style={{ flex: 1, marginRight: 10 }}>
-          <span>ⓘ</span>
-          <span>
-            {app.t(
-              "The single home for runtime/tool credentials — MCP OAuth (auto-refreshed), static bearer, env-var — injected at egress, matched to MCP servers by url. Views are host-ephemeral; project-ingress mounting is roadmap §7.10 (bare /v1/vaults face for now).",
-              "运行/工具凭证的唯一家——MCP OAuth(自动续期)、static bearer、env-var——egress 注入、按 url 匹配 MCP。视图随进程重建;挂到项目 ingress 是路线 §7.10(暂走裸 /v1/vaults 面)。",
-            )}
-          </span>
+        <span className="mut" style={{ flex: 1, marginRight: 10 }}>
+          {app.t(
+            "The single home for runtime/tool credentials — MCP OAuth (auto-refreshed), static bearer, env-var — injected at egress, matched to MCP servers by url.",
+            "运行/工具凭证的唯一家——MCP OAuth(自动续期)、static bearer、env-var——egress 注入、按 url 匹配 MCP。",
+          )}
         </span>
         <span className="row">
           <input
@@ -230,11 +199,15 @@ export default function VaultsSurface() {
           </button>
         </span>
       </div>
-      {create.error instanceof Error && <div className="err">{create.error.message}</div>}
-      {known.map((id) => (
-        <VaultCard key={id} pid={pid} id={id} />
+      {(create.error instanceof Error || vaults.error instanceof Error) && (
+        <div className="err">{(create.error || vaults.error)?.message}</div>
+      )}
+      {rows.map((v) => (
+        <VaultCard key={v.id} id={v.id} name={v.display_name} />
       ))}
-      {known.length === 0 && <div className="mut">{app.t("No vaults known to this browser yet.", "本浏览器还没有已知的 vault。")}</div>}
+      {rows.length === 0 && (
+        <div className="mut">{vaults.isLoading ? "…" : app.t("No vaults yet.", "还没有 vault。")}</div>
+      )}
     </>
   );
 }

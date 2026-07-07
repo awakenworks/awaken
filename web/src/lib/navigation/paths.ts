@@ -26,9 +26,9 @@ export const NAV: NavItem[] = [
   { key: "agents", label: "Agents", labelZh: "Agents", group: "project", path: "/p/:pid/agents" },
   { key: "environments", label: "Environments", labelZh: "运行环境", group: "project", path: "/p/:pid/environments" },
   { key: "vaults", label: "Vaults", labelZh: "运行凭证", group: "project", path: "/p/:pid/vaults" },
-  { key: "memory", label: "Memory stores", labelZh: "记忆库", group: "project", path: "/p/:pid/memory", gated: true },
-  { key: "deployments", label: "Deployments", labelZh: "调度部署", group: "project", path: "/p/:pid/deployments", gated: true },
-  { key: "pskills", label: "Skills", labelZh: "技能", group: "project", path: "/p/:pid/skills", gated: true },
+  { key: "memory", label: "Memory stores", labelZh: "记忆库", group: "project", path: "/p/:pid/memory" },
+  { key: "deployments", label: "Deployments", labelZh: "调度部署", group: "project", path: "/p/:pid/deployments" },
+  { key: "pskills", label: "Skills", labelZh: "技能", group: "project", path: "/p/:pid/skills" },
   { key: "psettings", label: "Settings", labelZh: "项目设置", group: "project", path: "/p/:pid/settings" },
 
   // Workspace = shared supply + governance: no Managed Agents wire mapping;

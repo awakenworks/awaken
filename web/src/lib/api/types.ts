@@ -252,6 +252,85 @@ export interface Environment {
   updated_at: string;
 }
 
+// ---- memory stores ----
+
+export interface MemoryStore {
+  id: string;
+  type: "memory_store";
+  name: string;
+  description?: string | null;
+  metadata: Record<string, string>;
+  archived_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---- skills ----
+
+export interface Skill {
+  id: string;
+  type?: string;
+  name?: string;
+  display_name?: string;
+  description?: string | null;
+  latest_version?: string | number;
+  [k: string]: unknown;
+}
+
+// ---- deployments ----
+
+export interface DeploymentSchedule {
+  type: "cron";
+  expression: string;
+  timezone: string;
+  upcoming_runs_at?: string[];
+  last_run_at?: string | null;
+}
+export interface Deployment {
+  id: string;
+  type?: "deployment";
+  name: string;
+  agent: { id: string; type?: "agent"; version?: number };
+  environment_id: string;
+  schedule: DeploymentSchedule;
+  status?: string;
+  paused_reason?: { type: string } | null;
+  archived_at?: string | null;
+  created_at: string;
+}
+export interface DeploymentRun {
+  id: string;
+  deployment_id: string;
+  session_id?: string | null;
+  error?: { type: string; message?: string } | null;
+  trigger_context?: { type: string };
+  created_at: string;
+}
+
+// ---- agents (registry) ----
+
+export interface AgentModelRef {
+  id: string;
+  speed?: string;
+}
+export interface Agent {
+  id: string;
+  type: "agent";
+  name: string;
+  model: AgentModelRef | string;
+  system?: string | null;
+  description?: string | null;
+  tools: unknown[];
+  mcp_servers: unknown[];
+  skills: unknown[];
+  multiagent?: unknown;
+  metadata: Record<string, string>;
+  version: number;
+  archived_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ---- vaults ----
 
 export interface Vault {
