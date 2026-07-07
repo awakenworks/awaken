@@ -96,3 +96,83 @@ async fn environments_are_isolated_and_escapes_fail_closed() {
     provider.teardown("A").await.unwrap();
     provider.teardown("B").await.unwrap();
 }
+
+/// True only when bwrap + unprivileged userns work AND this host can actually reach
+/// external DNS — both are needed to demonstrate the on/off egress difference. When
+/// either is missing the egress test self-skips (mirrors the namespace-tier probe).
+async fn bwrap_and_net_available() -> bool {
+    use std::process::Stdio;
+    let bwrap_ok = tokio::process::Command::new("bwrap")
+        .args(["--unshare-user", "--ro-bind", "/", "/", "--", "true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !bwrap_ok {
+        return false;
+    }
+    tokio::process::Command::new("getent")
+        .args(["hosts", "example.com"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// `deny_egress` is real: the same bash command that resolves an external host in an
+/// unrestricted sandbox cannot reach the network in a `deny_egress` one (it runs
+/// inside a `bwrap --unshare-net` namespace).
+#[tokio::test]
+async fn deny_egress_blocks_bash_network_but_unrestricted_allows_it() {
+    if !bwrap_and_net_available().await {
+        eprintln!("skipping: bwrap/userns or host DNS unavailable on this host");
+        return;
+    }
+    let base = std::env::temp_dir().join(format!(
+        "awaken-sbx-egress-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
+    let provider = LocalSandboxProvider::new(&base);
+    let probe = "getent hosts example.com >/dev/null 2>&1 && echo NET-UP || echo NET-DOWN";
+
+    // Egress denied → the bash tool has no route to the network.
+    let denied = provider
+        .create(&SandboxSpec::new("iso").with_deny_egress(true))
+        .await
+        .unwrap();
+    let out = invoke(
+        &denied.hand_tools(),
+        "bash",
+        serde_json::json!({ "command": probe }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        out.content.contains("NET-DOWN"),
+        "deny_egress must block network: {}",
+        out.content
+    );
+
+    // Same command, egress allowed → resolution works (proves the flag is the cause).
+    let allowed = provider
+        .create(&SandboxSpec::new("open").with_deny_egress(false))
+        .await
+        .unwrap();
+    let out = invoke(
+        &allowed.hand_tools(),
+        "bash",
+        serde_json::json!({ "command": probe }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        out.content.contains("NET-UP"),
+        "unrestricted egress must reach the network: {}",
+        out.content
+    );
+}

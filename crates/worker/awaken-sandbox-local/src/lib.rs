@@ -91,7 +91,12 @@ impl IsolatedRoot {
 /// Path tools (`read`/`write`/`edit`/`grep`) rebase their `path`; `glob` rebases
 /// its `pattern`; `bash` is prefixed with `cd '<root>'` so relative commands run
 /// in the environment. Unknown tools pass through unchanged.
-fn jail_args(tool_id: &str, mut args: Value, root: &IsolatedRoot) -> Result<Value, ToolError> {
+fn jail_args(
+    tool_id: &str,
+    mut args: Value,
+    root: &IsolatedRoot,
+    deny_egress: bool,
+) -> Result<Value, ToolError> {
     let escape = |e: EscapeError| ToolError::Execution(e.to_string());
     let rebase = |args: &mut Value, key: &str, root: &IsolatedRoot| -> Result<(), ToolError> {
         if let Some(Value::String(p)) = args.get(key) {
@@ -105,13 +110,63 @@ fn jail_args(tool_id: &str, mut args: Value, root: &IsolatedRoot) -> Result<Valu
         "glob" => rebase(&mut args, "pattern", root)?,
         "bash" => {
             if let Some(Value::String(cmd)) = args.get("command") {
-                let rooted = format!("cd '{}' && {}", root.root().display(), cmd);
+                let rooted = if deny_egress {
+                    // Egress denied: run the command inside a bwrap namespace with no
+                    // network (`--unshare-net`), rooted at the environment dir. The
+                    // shared bash tool still `sh -c`s this string, which execs bwrap.
+                    bwrap_no_egress(&root.root().to_string_lossy(), cmd)
+                } else {
+                    // Legacy lexical jail (host network shared): unchanged.
+                    format!("cd '{}' && {}", root.root().display(), cmd)
+                };
                 args["command"] = Value::String(rooted);
             }
         }
         _ => {}
     }
     Ok(args)
+}
+
+/// Single-quote a token for a POSIX shell (`'` → `'\''`), so a token survives the
+/// outer `sh -c` verbatim.
+fn sh_squote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Build a `bwrap … -- /bin/sh -c '<cmd>'` command string that runs `cmd` under
+/// `root` with network egress denied (`--unshare-net`). Every token is shell-quoted
+/// so the outer `sh -c` (in the shared bash tool) hands bwrap a clean argv and the
+/// user command reaches the inner shell intact. The flag set is the one validated on
+/// the target host: read-only host userland, a private `/tmp`, `/dev` and `/proc`,
+/// and the environment dir bound read-write as the working directory.
+fn bwrap_no_egress(root: &str, cmd: &str) -> String {
+    let tokens: [&str; 20] = [
+        "bwrap",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--tmpfs",
+        "/tmp",
+        "--unshare-net",
+        "--bind",
+        root,
+        root,
+        "--chdir",
+        root,
+        "--",
+        "/bin/sh",
+        "-c",
+        cmd,
+    ];
+    tokens
+        .iter()
+        .map(|t| sh_squote(t))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A hand tool bound to a sandbox environment. Unlike a [`RawTool`], its result is
@@ -163,11 +218,17 @@ impl HandOutput {
 pub(crate) struct RootedTool {
     inner: Arc<dyn RawTool>,
     root: IsolatedRoot,
+    /// Deny network egress for the `bash` tool (from the environment's spec).
+    deny_egress: bool,
 }
 
 impl RootedTool {
-    pub(crate) fn new(inner: Arc<dyn RawTool>, root: IsolatedRoot) -> Self {
-        Self { inner, root }
+    pub(crate) fn new(inner: Arc<dyn RawTool>, root: IsolatedRoot, deny_egress: bool) -> Self {
+        Self {
+            inner,
+            root,
+            deny_egress,
+        }
     }
 }
 
@@ -178,7 +239,12 @@ impl HandTool for RootedTool {
     }
 
     async fn run(&self, mut call: ToolCall) -> Result<HandOutput, ToolError> {
-        call.arguments = jail_args(self.inner.id(), call.arguments, &self.root)?;
+        call.arguments = jail_args(
+            self.inner.id(),
+            call.arguments,
+            &self.root,
+            self.deny_egress,
+        )?;
         let out = self.inner.invoke(call).await?;
         // Narrow to content/error: an environment tool never authors runtime state.
         Ok(HandOutput {
@@ -218,10 +284,12 @@ fn hand_tool_as_raw(tool: Arc<dyn HandTool>) -> Arc<dyn RawTool> {
 /// The built-in hand tools, each jailed to `root`. Internal: the local provider's
 /// way to bind [`HandTool`]s to an environment; a distributed provider builds its
 /// own relay `HandTool`s instead.
-pub(crate) fn rooted_hand_tools(root: IsolatedRoot) -> Vec<Arc<dyn HandTool>> {
+pub(crate) fn rooted_hand_tools(root: IsolatedRoot, deny_egress: bool) -> Vec<Arc<dyn HandTool>> {
     executable_hand_tools()
         .into_iter()
-        .map(|inner| Arc::new(RootedTool::new(inner, root.clone())) as Arc<dyn HandTool>)
+        .map(|inner| {
+            Arc::new(RootedTool::new(inner, root.clone(), deny_egress)) as Arc<dyn HandTool>
+        })
         .collect()
 }
 
@@ -342,6 +410,12 @@ pub struct SandboxSpec {
     pub id: String,
     pub mounts: Vec<Value>,
     pub constraints: Option<Value>,
+    /// Deny the sandbox network egress: when set, the `bash` tool runs inside a
+    /// `bwrap --unshare-net` namespace with no route to the host network. Default
+    /// `false` keeps the legacy lexical jail (host network shared), byte-identical
+    /// to before this field existed. Requires unprivileged user namespaces; if the
+    /// host can't provide them the bash call fails loudly (never silently unisolated).
+    pub deny_egress: bool,
 }
 
 impl SandboxSpec {
@@ -356,6 +430,13 @@ impl SandboxSpec {
     /// carrier so the wire stays forward-compatible.
     pub fn with_mount(mut self, mount: Mount) -> Self {
         self.mounts.push(mount.to_value());
+        self
+    }
+
+    /// Deny network egress for this sandbox (see [`Self::deny_egress`]).
+    #[must_use]
+    pub fn with_deny_egress(mut self, deny: bool) -> Self {
+        self.deny_egress = deny;
         self
     }
 }
@@ -682,10 +763,12 @@ impl SandboxProvider for LocalSandboxProvider {
             }
         }
 
-        Ok(Environment::new(spec.id.clone(), rooted_hand_tools(root))
-            .with_root(dir)
-            .with_resources(resources)
-            .with_receipt(ProvisionReceipt { entries }))
+        Ok(
+            Environment::new(spec.id.clone(), rooted_hand_tools(root, spec.deny_egress))
+                .with_root(dir)
+                .with_resources(resources)
+                .with_receipt(ProvisionReceipt { entries }),
+        )
     }
 
     async fn teardown(&self, id: &str) -> Result<(), SandboxError> {
@@ -957,20 +1040,34 @@ mod tests {
     #[test]
     fn jail_rebases_glob_pattern_and_cds_bash() {
         let root = IsolatedRoot::new("/env");
-        let g = jail_args("glob", serde_json::json!({ "pattern": "src/*.rs" }), &root).unwrap();
+        let g = jail_args(
+            "glob",
+            serde_json::json!({ "pattern": "src/*.rs" }),
+            &root,
+            false,
+        )
+        .unwrap();
         assert_eq!(g["pattern"], "/env/src/*.rs");
 
-        let b = jail_args("bash", serde_json::json!({ "command": "ls" }), &root).unwrap();
+        let b = jail_args("bash", serde_json::json!({ "command": "ls" }), &root, false).unwrap();
         assert_eq!(b["command"], "cd '/env' && ls");
     }
 
     #[test]
     fn jail_passes_unknown_tools_through_and_rejects_escapes() {
         let root = IsolatedRoot::new("/env");
-        let u = jail_args("weird", serde_json::json!({ "path": "../x" }), &root).unwrap();
+        let u = jail_args("weird", serde_json::json!({ "path": "../x" }), &root, false).unwrap();
         assert_eq!(u["path"], "../x"); // unknown tool: untouched
 
-        assert!(jail_args("read", serde_json::json!({ "path": "../escape" }), &root).is_err());
+        assert!(
+            jail_args(
+                "read",
+                serde_json::json!({ "path": "../escape" }),
+                &root,
+                false
+            )
+            .is_err()
+        );
     }
 
     // ---- HandOutput ----
@@ -1042,7 +1139,7 @@ mod tests {
 
     #[test]
     fn rooted_hand_tools_wraps_every_builtin_hand_tool() {
-        let tools = rooted_hand_tools(IsolatedRoot::new("/env"));
+        let tools = rooted_hand_tools(IsolatedRoot::new("/env"), false);
         let ids: Vec<_> = tools.iter().map(|t| t.id().to_string()).collect();
         for expected in ["read", "write", "edit", "glob", "grep", "bash"] {
             assert!(ids.contains(&expected.to_string()), "missing {expected}");
