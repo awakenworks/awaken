@@ -825,6 +825,111 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
 }
 
 #[tokio::test]
+async fn update_credential_covers_static_and_mcp_auth_branches() {
+    let h = harness();
+    let vault_id = create_vault(&h, "v").await;
+    let url = "https://mcp.example.com/sse";
+
+    // static_bearer: rotate the token (phase-2 primary re-seal for a bearer).
+    let (_, bearer) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({ "type": "static_bearer", "mcp_server_url": url, "token": "brr-old" })), // awaken-allow: secret
+    )
+    .await;
+    let bearer_id = bearer["id"].as_str().unwrap().to_string();
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{bearer_id}"),
+        Some(json!({ "auth": { "type": "static_bearer", "token": "brr-new" } })), // awaken-allow: secret
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let bearer_source = h.state.credential_source_id(&vault_id, &bearer_id).unwrap();
+    let bearer_row = {
+        use awaken_credential_vault::repo::CredentialRepo;
+        h.credentials.get(&bearer_source).await.unwrap()
+    };
+    assert_eq!(
+        awaken_credential_vault::materialize(&bearer_row, &*h.secrets)
+            .await
+            .unwrap()
+            .expose_secret(),
+        "brr-new"
+    );
+
+    // mcp_oauth WITH refresh: rotate access_token + expires_at, and drive the
+    // `none` then `client_secret_basic` refresh-scheme update branches (the
+    // SDK-driven test only reached `client_secret_post`).
+    let oauth = create_mcp_oauth(
+        &h,
+        &vault_id,
+        url,
+        Some(json!({
+            "client_id": "cli",
+            "refresh_token": "rt", // awaken-allow: secret
+            "token_endpoint": "https://auth.example.com/token",
+            "token_endpoint_auth": { "type": "none" }
+        })),
+    )
+    .await;
+    let oauth_id = oauth["id"].as_str().unwrap().to_string();
+
+    let (s, u1) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{oauth_id}"),
+        Some(json!({
+            "auth": {
+                "type": "mcp_oauth",
+                "access_token": "at-new", // awaken-allow: secret
+                "expires_at": "2030-01-01T00:00:00Z",
+                "refresh": { "scope": "s2", "token_endpoint_auth": { "type": "none" } }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(u1["auth"]["expires_at"], "2030-01-01T00:00:00Z");
+    assert_eq!(u1["auth"]["refresh"]["scope"], "s2");
+    assert_eq!(u1["auth"]["refresh"]["token_endpoint_auth"]["type"], "none");
+
+    let (s, u2) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{oauth_id}"),
+        Some(json!({
+            "auth": {
+                "type": "mcp_oauth",
+                "refresh": { "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-b" } } // awaken-allow: secret
+            }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        u2["auth"]["refresh"]["token_endpoint_auth"]["type"],
+        "client_secret_basic"
+    );
+
+    // The rotated access token re-sealed under the row's material_ref.
+    let oauth_source = h.state.credential_source_id(&vault_id, &oauth_id).unwrap();
+    let oauth_row = {
+        use awaken_credential_vault::repo::CredentialRepo;
+        h.credentials.get(&oauth_source).await.unwrap()
+    };
+    assert_eq!(
+        awaken_credential_vault::materialize(&oauth_row, &*h.secrets)
+            .await
+            .unwrap()
+            .expose_secret(),
+        "at-new"
+    );
+}
+
+#[tokio::test]
 async fn retrieve_vault_unknown_is_404() {
     let h = harness();
     let (s, _) = call(&h.app, "GET", "/v1/vaults/vlt_missing", None).await;
