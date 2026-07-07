@@ -678,6 +678,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-managed-bridge",
  "awaken-model-catalog",
+ "awaken-provisioning-contract",
  "axum 0.7.9",
  "http-body-util",
  "serde",

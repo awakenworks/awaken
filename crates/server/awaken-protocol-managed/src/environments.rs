@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_provisioning_contract::NetworkPolicy;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -57,6 +58,33 @@ impl EnvRecord {
             "metadata": self.metadata,
             "config": self.config,
         })
+    }
+
+    /// Map this environment's Anthropic `BetaEnvironment.networking` wire config
+    /// onto the neutral [`NetworkPolicy`] the sandbox understands (the ACL edge):
+    /// `unrestricted → Unrestricted`, `limited{hosts} → Allowlist`, `none → None`.
+    /// Absent networking (incl. `self_hosted`) or an unknown type is `Unrestricted`
+    /// — the host network is shared unless a policy explicitly restricts it.
+    fn network_policy(&self) -> NetworkPolicy {
+        let Some(net) = self.config.get("networking") else {
+            return NetworkPolicy::Unrestricted;
+        };
+        match net.get("type").and_then(Value::as_str) {
+            Some("none") => NetworkPolicy::None,
+            Some("limited") => {
+                let hosts = net
+                    .get("allowed_hosts")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|h| h.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                NetworkPolicy::Allowlist { hosts }
+            }
+            _ => NetworkPolicy::Unrestricted,
+        }
     }
 }
 
@@ -110,24 +138,16 @@ impl EnvironmentState {
         Self::default()
     }
 
-    /// Whether `env_id`'s networking policy denies egress. `true` for an explicit
-    /// `limited` or `none` policy — bwrap enforces on/off egress only, so a `limited`
-    /// host allowlist is not honorable locally and fails closed to no egress. An
-    /// `unrestricted` policy, absent networking (incl. `self_hosted`), or an unknown
-    /// environment → `false` (the sandbox shares the host network).
+    /// Whether `env_id`'s networking policy denies egress for the local sandbox.
+    /// Routes the wire config through the neutral [`NetworkPolicy`] and asks whether
+    /// a binary (on/off) enforcer must deny it: `limited` (an allowlist bwrap can't
+    /// honor, so it fails closed) and `none` deny; `unrestricted`, absent networking
+    /// (incl. `self_hosted`), or an unknown environment share the host network.
     #[must_use]
     pub fn deny_egress(&self, env_id: &str) -> bool {
         let envs = self.envs.lock().unwrap();
-        let Some(rec) = envs.get(env_id) else {
-            return false;
-        };
-        matches!(
-            rec.config
-                .get("networking")
-                .and_then(|n| n.get("type"))
-                .and_then(|t| t.as_str()),
-            Some("limited") | Some("none")
-        )
+        envs.get(env_id)
+            .is_some_and(|rec| rec.network_policy().denies_under_binary_enforcer())
     }
 }
 
@@ -479,4 +499,66 @@ async fn stop_work(
     work.stopped_at = Some(OBJECT_AT.to_string());
     work.state = "stopped";
     Ok(Json(work.project(&wid)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_with(config: Value) -> EnvRecord {
+        EnvRecord {
+            name: "e".into(),
+            description: String::new(),
+            metadata: BTreeMap::new(),
+            config,
+            archived_at: None,
+        }
+    }
+
+    #[test]
+    fn wire_networking_maps_to_neutral_policy_and_egress() {
+        // unrestricted → shares host network
+        let open = env_with(json!({ "networking": { "type": "unrestricted" } }));
+        assert_eq!(open.network_policy(), NetworkPolicy::Unrestricted);
+        assert!(!open.network_policy().denies_under_binary_enforcer());
+
+        // limited{allowed_hosts} → typed Allowlist, denies under bwrap (fail-closed)
+        let limited = env_with(json!({
+            "networking": { "type": "limited", "allowed_hosts": ["api.anthropic.com"] }
+        }));
+        assert_eq!(
+            limited.network_policy(),
+            NetworkPolicy::Allowlist {
+                hosts: vec!["api.anthropic.com".to_string()],
+            }
+        );
+        assert!(limited.network_policy().denies_under_binary_enforcer());
+
+        // none → no egress
+        let none = env_with(json!({ "networking": { "type": "none" } }));
+        assert_eq!(none.network_policy(), NetworkPolicy::None);
+        assert!(none.network_policy().denies_under_binary_enforcer());
+
+        // absent networking / self_hosted / unknown → Unrestricted (shares host)
+        let self_hosted = env_with(json!({ "type": "self_hosted" }));
+        assert_eq!(self_hosted.network_policy(), NetworkPolicy::Unrestricted);
+        assert!(!self_hosted.network_policy().denies_under_binary_enforcer());
+    }
+
+    #[test]
+    fn deny_egress_reads_the_typed_policy_per_environment() {
+        let state = EnvironmentState::new();
+        state.envs.lock().unwrap().insert(
+            "env_open".into(),
+            env_with(json!({ "networking": { "type": "unrestricted" } })),
+        );
+        state.envs.lock().unwrap().insert(
+            "env_closed".into(),
+            env_with(json!({ "networking": { "type": "none" } })),
+        );
+        assert!(!state.deny_egress("env_open"));
+        assert!(state.deny_egress("env_closed"));
+        // Unknown environment shares the host network (no record → false).
+        assert!(!state.deny_egress("env_missing"));
+    }
 }
