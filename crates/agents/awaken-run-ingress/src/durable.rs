@@ -111,7 +111,8 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self.worker
             .store()
             .enqueue_with(
-                RunExecutionRequest::new(activation),
+                RunExecutionRequest::new(activation)
+                    .with_traceparent(awaken_observability::current_traceparent()),
                 SubmitOptions {
                     supersede: true,
                     ..Default::default()
@@ -242,7 +243,10 @@ impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
         let run_id = activation.run_id.clone();
         self.worker
             .store()
-            .enqueue(RunExecutionRequest::new(activation))
+            .enqueue(
+                RunExecutionRequest::new(activation)
+                    .with_traceparent(awaken_observability::current_traceparent()),
+            )
             .await
             .map_err(|err| ExecError::Execution(err.to_string()))?;
         let processed = self.worker.run_until_idle(0).await.map_err(exec_error)?;

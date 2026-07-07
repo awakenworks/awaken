@@ -764,6 +764,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-ext-builtin-tools",
+ "awaken-observability",
  "awaken-run-ingress-contract",
  "awaken-runtime",
  "awaken-runtime-contract",
@@ -779,6 +780,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]

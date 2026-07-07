@@ -413,6 +413,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-ingress-contract",
         "awaken-runtime",
         "awaken-ext-builtin-tools",
+        "awaken-observability",
+        "tracing",
         "awaken-scoped-migration",
         # ADR-0005: the sync rusqlite runner lives in the sibling crate.
         "awaken-scoped-migration-sqlite",

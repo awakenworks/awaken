@@ -21,6 +21,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::Error;
 use crate::dispatch::{Dispatch, DispatchOutcome, PendingInput};
@@ -140,6 +141,11 @@ impl<S: Dispatch> DispatchWorker<S> {
             return Ok(None);
         };
         let run_id = claimed.request.run_id().clone();
+        // Continue the admitting request's trace across the durable queue boundary:
+        // this `wake.dispatch` span's remote parent is the persisted traceparent, so
+        // the run driven below (`runtime.run` → …) nests under the trace that
+        // submitted it — even when a daemon in another task/process drains it.
+        let dispatch = awaken_observability::dispatch_span(claimed.request.traceparent.as_deref());
         let mut all_pending: Vec<String> = claimed
             .pending
             .iter()
@@ -151,7 +157,9 @@ impl<S: Dispatch> DispatchWorker<S> {
             // deferred action, not waits for external input. This also covers a
             // crash recovery of a scheduled park (no pending input is expected).
             Some(ticket) if ticket.reason == WaitingReason::ScheduledAction => {
-                self.perform_scheduled(&run_id, now_ms).await?
+                self.perform_scheduled(&run_id, now_ms)
+                    .instrument(dispatch.clone())
+                    .await?
             }
             // The run is parked. Deliver only input whose correlation matches the
             // committed ticket; input for a superseded ticket (stale) is dropped
@@ -169,6 +177,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                         let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms);
                         self.runtime
                             .resume(command, self.reader.as_ref(), self.execution_context())
+                            .instrument(dispatch.clone())
                             .await?
                     }
                     None => {
@@ -220,6 +229,7 @@ impl<S: Dispatch> DispatchWorker<S> {
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
                     self.runtime
                         .execute(activation, self.execution_context())
+                        .instrument(dispatch.clone())
                         .await?
                 }
             },

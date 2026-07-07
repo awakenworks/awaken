@@ -21,10 +21,12 @@
 mod config;
 mod http;
 mod otel;
+mod propagation;
 
 pub use config::{OtelConfig, OtelConfigBuilder, OtelProtocol};
 pub use http::trace_http;
 pub use otel::init_otlp_tracer;
+pub use propagation::{current_traceparent, dispatch_span};
 
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
