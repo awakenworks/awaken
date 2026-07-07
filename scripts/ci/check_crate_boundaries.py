@@ -453,6 +453,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # the ACL that maps the Anthropic wire ⇄ the neutral credential model.
         "awaken-credential-vault",
         "awaken-managed-bridge",
+        # Neutral egress vocabulary: the environments ACL maps the Anthropic
+        # `BetaEnvironment.networking` config onto `NetworkPolicy`, so the sandbox
+        # egress decision is a shared neutral fact, not an inline string match.
+        "awaken-provisioning-contract",
         "async-trait",
         "serde",
         "serde_json",

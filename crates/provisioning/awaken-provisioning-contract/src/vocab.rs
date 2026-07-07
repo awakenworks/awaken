@@ -174,6 +174,15 @@ impl NetworkPolicy {
             NetworkPolicy::None => 2,
         }
     }
+
+    /// Whether a *binary* (on/off) egress enforcer — one that can only allow or
+    /// deny all egress, e.g. bwrap `--unshare-net` — must deny to satisfy this
+    /// policy. `Unrestricted` allows; `Allowlist` and `None` deny — an allowlist
+    /// cannot be honored by an on/off enforcer, so it fails closed to no egress.
+    #[must_use]
+    pub fn denies_under_binary_enforcer(&self) -> bool {
+        !matches!(self, NetworkPolicy::Unrestricted)
+    }
 }
 
 // ── Resource limits ───────────────────────────────────────────────────────────
@@ -208,6 +217,18 @@ pub struct Artifact {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_enforcer_denies_all_but_unrestricted() {
+        assert!(!NetworkPolicy::Unrestricted.denies_under_binary_enforcer());
+        assert!(
+            NetworkPolicy::Allowlist {
+                hosts: vec!["api.example.com".into()],
+            }
+            .denies_under_binary_enforcer()
+        );
+        assert!(NetworkPolicy::None.denies_under_binary_enforcer());
+    }
 
     fn req(source: MountSource, access: MountAccess, lifetime: MountLifetime) -> MountRequirement {
         MountRequirement {
