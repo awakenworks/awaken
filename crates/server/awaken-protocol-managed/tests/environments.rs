@@ -48,6 +48,60 @@ async fn make_env(app: &Router) -> String {
     e["id"].as_str().unwrap().to_string()
 }
 
+/// The environment projects to the official `BetaEnvironment` shape: ownership is
+/// credential-implicit, so the object carries NO `scope` — and a `scope` sent in
+/// the create body is ignored (non-official field), keeping the response byte-
+/// compatible with the Anthropic SDK's decoder.
+#[tokio::test]
+async fn environment_carries_no_scope_and_ignores_a_body_scope() {
+    let app = app();
+
+    // A plain create: exactly the official field set, no `scope`.
+    let (s, env) = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(json!({ "name": "prod" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(env.get("scope").is_none(), "no scope on the wire: {env}");
+    let expected: std::collections::BTreeSet<&str> = [
+        "id",
+        "type",
+        "archived_at",
+        "created_at",
+        "updated_at",
+        "name",
+        "description",
+        "metadata",
+        "config",
+    ]
+    .into_iter()
+    .collect();
+    let got: std::collections::BTreeSet<&str> = env
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(got, expected, "only the official BetaEnvironment fields");
+
+    // A caller sending `scope` gets it ignored, not echoed.
+    let (s, scoped) = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(json!({ "name": "prod2", "scope": "org_acme/ws_eng/proj_x" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        scoped.get("scope").is_none(),
+        "a body scope is ignored, not echoed"
+    );
+}
+
 #[tokio::test]
 async fn environment_crud_and_work_lifecycle() {
     let app = app();

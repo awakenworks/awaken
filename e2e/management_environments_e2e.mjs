@@ -36,6 +36,20 @@ async function main() {
       assert.ok(env.id.startsWith('env_'), `id: ${env.id}`);
       pass('beta.environments.create -> BetaEnvironment');
 
+      // Byte-faithful to the official BetaEnvironment: ownership is credential-
+      // implicit, so the object carries no `scope`, and a `scope` sent in the body
+      // is ignored (non-official field) rather than echoed.
+      assert.equal(env.scope, undefined, 'SDK-created environment carries no scope');
+      const rawRes = await fetch(`${baseUrl}/v1/environments`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+        body: JSON.stringify({ name: 'raw-scoped', scope: 'org_acme/ws_eng/proj_x' }),
+      });
+      assert.equal(rawRes.status, 200);
+      const rawEnv = await rawRes.json();
+      assert.ok(!('scope' in rawEnv), 'a body scope is ignored, not echoed on the wire');
+      pass('environment is byte-faithful: no scope field, body scope ignored');
+
       const gotEnv = await client.beta.environments.retrieve(env.id, { betas: BETAS });
       assert.equal(gotEnv.id, env.id);
       const upEnv = await client.beta.environments.update(env.id, {
