@@ -584,6 +584,247 @@ async fn delete_credential_removes_one_and_scopes_by_vault() {
 }
 
 #[tokio::test]
+async fn update_vault_replaces_name_and_patches_metadata() {
+    let h = harness();
+    let (_, vault) = call(
+        &h.app,
+        "POST",
+        "/v1/vaults",
+        Some(json!({ "display_name": "old", "metadata": { "a": "1", "keep": "x" } })),
+    )
+    .await;
+    let vault_id = vault["id"].as_str().unwrap().to_string();
+
+    // Rename + patch metadata: upsert `b`, delete `a` (null), preserve `keep`.
+    let (s, updated) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}"),
+        Some(json!({ "display_name": "new", "metadata": { "a": null, "b": "2" } })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(updated["display_name"], "new");
+    assert_eq!(updated["metadata"]["b"], "2");
+    assert_eq!(updated["metadata"]["keep"], "x");
+    assert!(updated["metadata"].get("a").is_none());
+
+    // An empty body is a no-op that echoes the (already-updated) vault.
+    let (s, echo) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(echo["display_name"], "new");
+
+    // A bad name is a 400; an unknown vault is a 404.
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}"),
+        Some(json!({ "display_name": "x".repeat(256) })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        "/v1/vaults/vlt_missing",
+        Some(json!({ "display_name": "y" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change() {
+    let h = harness();
+    let vault_id = create_vault(&h, "v").await;
+    let cred_id = create_credential(&h, &vault_id, "ENVKEY").await;
+
+    // Patch networking + re-seal the secret + set display_name + patch metadata.
+    let (s, updated) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
+        Some(json!({
+            "auth": {
+                "type": "environment_variable",
+                "secret_value": "rotated-secret", // awaken-allow: secret
+                "networking": { "type": "limited", "allowed_hosts": ["api.example.com"] }
+            },
+            "display_name": "renamed",
+            "metadata": { "team": "core" }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(updated["auth"]["networking"]["type"], "limited");
+    assert_eq!(
+        updated["auth"]["networking"]["allowed_hosts"][0],
+        "api.example.com"
+    );
+    assert_eq!(updated["display_name"], "renamed");
+    assert_eq!(updated["metadata"]["team"], "core");
+    // The rotated secret never appears on the wire.
+    assert!(
+        !serde_json::to_string(&updated)
+            .unwrap()
+            .contains("rotated-secret")
+    );
+
+    // The re-seal reached the domain: materialize yields the new secret.
+    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+    let source = {
+        use awaken_credential_vault::repo::CredentialRepo;
+        h.credentials.get(&source_id).await.unwrap()
+    };
+    let secret = awaken_credential_vault::materialize(&source, &*h.secrets)
+        .await
+        .unwrap();
+    assert_eq!(secret.expose_secret(), "rotated-secret");
+
+    // Changing the credential's kind is rejected (kind is immutable).
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
+        Some(json!({ "auth": { "type": "static_bearer", "token": "x" } })), // awaken-allow: secret
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // An unknown credential is a 404.
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/crd_missing"),
+        Some(json!({ "display_name": "z" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn update_credential_clears_display_name_with_explicit_null() {
+    let h = harness();
+    let vault_id = create_vault(&h, "v").await;
+    let (_, cred) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "static_bearer",
+            "mcp_server_url": "https://mcp.example.com/sse",
+            "token": "brr", // awaken-allow: secret
+            "display_name": "to-clear"
+        })),
+    )
+    .await;
+    let cred_id = cred["id"].as_str().unwrap().to_string();
+    assert_eq!(cred["display_name"], "to-clear");
+
+    // display_name: null clears it (distinct from omitting the field).
+    let (s, updated) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
+        Some(json!({ "display_name": null })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        updated.get("display_name").is_none(),
+        "display_name is cleared"
+    );
+}
+
+#[tokio::test]
+async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
+    let h = harness();
+    let vault_id = create_vault(&h, "mcp").await;
+    let url = "https://mcp.example.com/sse";
+    let cred = create_mcp_oauth(
+        &h,
+        &vault_id,
+        url,
+        Some(json!({
+            "client_id": "cli",
+            "refresh_token": "rt-old", // awaken-allow: secret
+            "token_endpoint": "https://auth.example.com/token",
+            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-old" }, // awaken-allow: secret
+            "scope": "old"
+        })),
+    )
+    .await;
+    let cred_id = cred["id"].as_str().unwrap().to_string();
+    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+
+    // Rotate the refresh token + client secret and change the scheme + scope.
+    let (s, updated) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
+        Some(json!({
+            "auth": {
+                "type": "mcp_oauth",
+                "refresh": {
+                    "refresh_token": "rt-new", // awaken-allow: secret
+                    "scope": "new",
+                    "token_endpoint_auth": { "type": "client_secret_post", "client_secret": "cs-new" } // awaken-allow: secret
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(updated["auth"]["refresh"]["scope"], "new");
+    assert_eq!(
+        updated["auth"]["refresh"]["token_endpoint_auth"]["type"],
+        "client_secret_post"
+    );
+    let raw = serde_json::to_string(&updated).unwrap();
+    assert!(!raw.contains("rt-new") && !raw.contains("cs-new"));
+
+    // Both rotated secrets are re-sealed under their existing sibling refs.
+    let rt = h
+        .secrets
+        .get(&SecretRef(format!("sec:refresh:{}", source_id.0)))
+        .await
+        .unwrap();
+    assert_eq!(rt.expose_secret(), "rt-new");
+    let cs = h
+        .secrets
+        .get(&SecretRef(format!("sec:client:{}", source_id.0)))
+        .await
+        .unwrap();
+    assert_eq!(cs.expose_secret(), "cs-new");
+    // The binding the session refresher reads now reflects the new scheme.
+    let binding = h.state.mcp_refresh_for_source(&source_id).unwrap();
+    assert_eq!(
+        binding.token_endpoint_auth,
+        TokenEndpointAuthBinding::ClientSecretPost {
+            secret_ref: SecretRef(format!("sec:client:{}", source_id.0))
+        }
+    );
+
+    // Updating refresh on a credential that has none is a 400.
+    let plain = create_mcp_oauth(&h, &vault_id, url, None).await;
+    let plain_id = plain["id"].as_str().unwrap().to_string();
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{plain_id}"),
+        Some(json!({ "auth": { "type": "mcp_oauth", "refresh": { "refresh_token": "x" } } })), // awaken-allow: secret
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn retrieve_vault_unknown_is_404() {
     let h = harness();
     let (s, _) = call(&h.app, "GET", "/v1/vaults/vlt_missing", None).await;
