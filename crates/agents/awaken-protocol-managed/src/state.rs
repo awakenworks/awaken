@@ -876,7 +876,10 @@ impl ManagedState {
         Ok(record.session.resources.clone())
     }
 
-    /// `POST /v1/sessions/{id}/resources` — mount a resource, minting an id.
+    /// `POST /v1/sessions/{id}/resources` — mount a resource on a live session,
+    /// minting an id. `file` and `github_repository` are attachable here; a
+    /// `memory_store` is bound at session creation only (Managed Agents contract),
+    /// so adding one to a running session fails closed with a 400.
     pub fn create_resource(
         &self,
         id: &str,
@@ -884,6 +887,12 @@ impl ManagedState {
     ) -> Result<serde_json::Value, StateError> {
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        if resource.get("type").and_then(|t| t.as_str()) == Some("memory_store") {
+            return Err(StateError::Run(RunError::bad_request(
+                "memory stores can only be attached at session creation time; \
+                 adding or removing one from a running session is not supported",
+            )));
+        }
         let n = record.session.resources.len();
         let resource_id = format!("{id}:resource:{n}");
         if let Some(obj) = resource.as_object_mut() {
@@ -933,17 +942,27 @@ impl ManagedState {
         Ok(resource.clone())
     }
 
-    /// `DELETE /v1/sessions/{id}/resources/{resource_id}`.
+    /// `DELETE /v1/sessions/{id}/resources/{resource_id}` — detach a `file` or
+    /// `github_repository` from a live session. A `memory_store` binds at session
+    /// creation and cannot be removed from a running session (Managed Agents
+    /// contract), so detaching one fails closed with a 400.
     pub fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        let before = record.session.resources.len();
-        record.session.resources.retain(|r| r["id"] != resource_id);
-        if record.session.resources.len() < before {
-            Ok(())
-        } else {
-            Err(StateError::NotFound)
+        let target = record
+            .session
+            .resources
+            .iter()
+            .find(|r| r["id"] == resource_id)
+            .ok_or(StateError::NotFound)?;
+        if target.get("type").and_then(|t| t.as_str()) == Some("memory_store") {
+            return Err(StateError::Run(RunError::bad_request(
+                "memory stores can only be attached at session creation time; \
+                 adding or removing one from a running session is not supported",
+            )));
         }
+        record.session.resources.retain(|r| r["id"] != resource_id);
+        Ok(())
     }
 
     /// Append one step's projected events to the session, minting ids where the
