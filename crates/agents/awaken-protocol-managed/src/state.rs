@@ -599,6 +599,10 @@ pub struct ManagedState {
 pub enum StateError {
     #[error("session not found")]
     NotFound,
+    /// A write was sent to an archived (terminated, read-only) session; the router
+    /// maps it to 409 `invalid_request_error`.
+    #[error("session is archived and is read-only")]
+    Archived,
     /// A session create named a vault that does not exist (`vault_ids`); the
     /// router maps it to the standard 404 envelope naming the vault id.
     #[error("vault `{0}` not found")]
@@ -984,12 +988,24 @@ impl ManagedState {
             .ok_or(StateError::NotFound)
     }
 
-    /// `POST /v1/sessions/{id}/archive` — soft-delete (stamp `archived_at`).
+    /// `POST /v1/sessions/{id}/archive` — terminate the session: stamp
+    /// `archived_at`, move `status` to `terminated`, and commit a
+    /// `session.status_terminated` event so a streaming/listing client observes the
+    /// terminal transition (not just the mutated status field). Idempotent: a
+    /// re-archive returns the same terminal record without a second event.
     pub fn archive_session(&self, id: &str) -> Result<Session, StateError> {
+        let terminated_id = self.next_event_id();
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        record.session.archived_at = Some(PROCESSED_AT.to_string());
-        record.session.status = "terminated";
+        if record.session.archived_at.is_none() {
+            record.session.archived_at = Some(PROCESSED_AT.to_string());
+            record.session.status = "terminated";
+            record.events.push(Event {
+                id: terminated_id,
+                kind: OutboundKind::SessionStatusTerminated {},
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
+        }
         Ok(record.session.clone())
     }
 
@@ -1322,13 +1338,16 @@ impl ManagedState {
         // (a process restart) before resolving the agent — so a resume continues
         // the parked run instead of failing closed (ADR-0039).
         self.ensure_session(session_id).await?;
+        // An archived session is terminal and read-only: refuse every inbound write
+        // (message, resume, interrupt, outcome) with a 409, before touching the
+        // runtime — the contract makes an archived session read-only.
         let agent_id = {
             let sessions = self.sessions.lock().unwrap();
-            sessions
-                .get(session_id)
-                .ok_or(StateError::NotFound)?
-                .agent_id
-                .clone()
+            let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+            if record.session.archived_at.is_some() {
+                return Err(StateError::Archived);
+            }
+            record.agent_id.clone()
         };
 
         let mut receipts = Vec::new();
