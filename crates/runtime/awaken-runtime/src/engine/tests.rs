@@ -1,5 +1,7 @@
 use super::*;
-use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding};
+use awaken_runtime_contract::resolved::{
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
+};
 
 fn spec(instructions: &str) -> ResolvedSpec {
     ResolvedSpec {

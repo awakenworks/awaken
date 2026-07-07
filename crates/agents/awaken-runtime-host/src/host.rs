@@ -984,6 +984,11 @@ impl SharedHost {
 
     /// Run one turn on `thread`: buffered system messages first, then `input`.
     /// Runs to the first pause (a parked tool) or the natural end.
+    #[tracing::instrument(
+        name = "host.run_turn",
+        skip_all,
+        fields(awaken.thread.id = %thread)
+    )]
     pub async fn run_turn(
         &self,
         agent: Option<&str>,

@@ -185,6 +185,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "tokio",
         "tokio-util",
+        "tracing",
     },
     # In-memory reference store backend (ADR-0039 2.2): the neutral commit/read
     # ports over `RwLock`/`HashMap`, dependency-free apart from the contract.
@@ -457,6 +458,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "axum",
         "tokio-stream",
+        "tracing",
         "tower",
         "http-body-util",
         # dev-only: vault E2E resolves the entered credential through the resolver.
@@ -752,6 +754,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sha2",
         "thiserror",
         "tokio",
+        "tracing",
     },
     # Single-machine assembly binary: the composition root. Since the service
     # layer moved to awaken-runtime-host, this bin only composes that host + the

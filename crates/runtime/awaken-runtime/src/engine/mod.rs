@@ -27,13 +27,13 @@ use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, DeltaSink, StopReason,
-    ToolCall, ToolSchema,
+    ToolCall,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, ResolvedExecutionEnv, RunEndContext, RunEndDecision,
 };
-use awaken_runtime_contract::resolved::{ContextPolicy, ResolvedRun, ResolvedSpec, ToolDescriptor};
+use awaken_runtime_contract::resolved::ResolvedRun;
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -42,12 +42,16 @@ use awaken_runtime_contract::tool::ToolOutput;
 
 use crate::runtime::Runtime;
 
+mod convert;
+pub(crate) use convert::*;
+
 /// Message-id base for messages produced by a resumed attempt, kept distinct
 /// from the original attempt's ids.
 const RESUME_STEP_BASE: usize = 1_000;
 
 #[async_trait]
 impl RunExecutor for Runtime {
+    #[tracing::instrument(name = "runtime.run", skip_all, fields(awaken.run.id = %activation.run_id.0))]
     async fn execute(
         &self,
         activation: RunActivation,
@@ -369,7 +373,24 @@ fn permission_audit(call: &ToolCall, outcome: &GateOutcome) -> EventDraft {
 /// Run the model/tool loop over a prepared transcript. Shared by fresh execution
 /// and resume; the caller seeds the transcript, the already-produced messages,
 /// and any state the resume itself staged (`seed_state`).
+// The agent-invocation span in OTel GenAI terms: this is the reasoning loop that
+// drives one agent turn to completion, so it carries `gen_ai.operation.name =
+// "invoke_agent"` and parents the `chat` / `execute_tool` spans. `SpanKind::Internal`;
+// `gen_ai.provider.name` is the neutral `awaken` (G22). Awaken run/thread ids ride
+// alongside as `awaken.*` extensions.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    name = "invoke_agent",
+    skip_all,
+    fields(
+        otel.kind = "internal",
+        gen_ai.operation.name = "invoke_agent",
+        gen_ai.provider.name = "awaken",
+        gen_ai.conversation.id = %thread_id.0,
+        awaken.run.id = %run_id.0,
+        awaken.thread.id = %thread_id.0,
+    )
+)]
 async fn drive(
     runtime: &Runtime,
     resolved: &ResolvedRun,
@@ -1162,6 +1183,28 @@ impl CheckpointCtx<'_> {
 /// so a crash *during* recovery resumes in a fresh process (via `resume`) instead
 /// of re-running the step. The checkpoint is deleted the instant recovery
 /// concludes here — it survives only the crash window this guards.
+// The `chat` inference span lives at this retry seam, not inside a provider, so
+// every executor (echo/probe as well as the real genai client) yields one span per
+// logical model call. It follows the OTel GenAI semantic conventions: span name
+// `chat {model}`, `SpanKind::Client`, `gen_ai.operation.name = "chat"`, and the
+// `gen_ai.usage.*` / `gen_ai.response.finish_reasons` recorded from the committed
+// `ChatResponse`. Retries happen inside `infer_with_retry_inner`, within this span.
+// `gen_ai.provider.name` is the neutral `awaken` (the runtime never names a concrete
+// provider SDK — G22); the bound model is the real routing identity.
+#[tracing::instrument(
+    name = "chat",
+    skip_all,
+    fields(
+        otel.name = tracing::field::Empty,
+        otel.kind = "client",
+        gen_ai.operation.name = "chat",
+        gen_ai.provider.name = "awaken",
+        gen_ai.request.model = %request.model_binding.model_ref,
+        gen_ai.response.finish_reasons = tracing::field::Empty,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+    )
+)]
 async fn infer_with_retry(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,
@@ -1171,6 +1214,12 @@ async fn infer_with_retry(
     checkpoint: Option<&CheckpointCtx<'_>>,
     resume: Option<StreamCheckpoint>,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
+    let span = tracing::Span::current();
+    // OTel GenAI span name is the templated `{operation} {model}` (SHOULD).
+    span.record(
+        "otel.name",
+        format!("chat {}", request.model_binding.model_ref).as_str(),
+    );
     let result =
         infer_with_retry_inner(llm, request, policy, breaker, sink, checkpoint, resume).await;
     // Any return means recovery concluded in-process, so the checkpoint (if any)
@@ -1178,6 +1227,18 @@ async fn infer_with_retry(
     // which is exactly the cross-process window Phase 3 guards.
     if let Some(ctx) = checkpoint {
         ctx.store.delete(&ctx.run_id).await;
+    }
+    if let Ok(response) = &result {
+        if let Some(usage) = &response.usage {
+            span.record("gen_ai.usage.input_tokens", usage.prompt_tokens as i64);
+            span.record("gen_ai.usage.output_tokens", usage.completion_tokens as i64);
+        }
+        if let Some(reason) = &response.stop_reason {
+            span.record(
+                "gen_ai.response.finish_reasons",
+                format!("{reason:?}").as_str(),
+            );
+        }
     }
     result
 }
@@ -1701,11 +1762,28 @@ async fn run_delegation(
 /// dynamic tool (from `env`) takes precedence over the static registry, so an
 /// MCP server's live tools resolve; `env` is `None` on the resume path, which
 /// only re-runs a statically registered pending tool.
+// OTel GenAI tool span: name `execute_tool {tool}`, `SpanKind::Internal`,
+// `gen_ai.operation.name = "execute_tool"` with the tool name + call id.
+#[tracing::instrument(
+    name = "execute_tool",
+    skip_all,
+    fields(
+        otel.name = tracing::field::Empty,
+        otel.kind = "internal",
+        gen_ai.operation.name = "execute_tool",
+        gen_ai.tool.name = %call.tool_id,
+        gen_ai.tool.call.id = %call.call_id,
+    )
+)]
 async fn execute_tool(
     runtime: &Runtime,
     env: Option<&ResolvedExecutionEnv>,
     call: &ToolCall,
 ) -> ToolOutput {
+    tracing::Span::current().record(
+        "otel.name",
+        format!("execute_tool {}", call.tool_id).as_str(),
+    );
     let tool = env
         .and_then(|env| env.dynamic_tool(&call.tool_id))
         .or_else(|| runtime.tool(&call.tool_id).cloned());
@@ -1715,161 +1793,6 @@ async fn execute_tool(
             Err(err) => ToolOutput::error(&call.call_id, err.to_string()),
         },
         None => ToolOutput::error(&call.call_id, format!("unknown tool: {}", call.tool_id)),
-    }
-}
-
-/// Build a model request from the resolved binding, transcript, and visible
-/// tool descriptors. `dynamic` carries any plugin-contributed tools live for
-/// this step (e.g. an MCP server's current tool set), merged after the pinned
-/// config descriptors so the model sees both.
-pub(crate) fn build_chat_request(
-    spec: &ResolvedSpec,
-    prelude: &[Message],
-    transcript: &[Message],
-    dynamic: &[ToolDescriptor],
-) -> ChatRequest {
-    // The agent's instructions lead the request as a system message, ahead of the
-    // transcript. Empty instructions contribute no system message.
-    let mut messages = Vec::with_capacity(transcript.len() + prelude.len() + 1);
-    if !spec.instructions.is_empty() {
-        messages.push(ChatMessage {
-            role: ChatRole::System,
-            content: vec![ContentBlock::text(spec.instructions.clone())],
-        });
-    }
-    // Request-only context (recalled memories, retrieved docs): after the
-    // instructions, before the conversation. Never committed — a view concern.
-    messages.extend(prelude.iter().map(to_chat_message));
-    messages.extend(transcript.iter().map(to_chat_message));
-    let messages = apply_context_policy(&spec.context_policy, messages);
-    let tools = spec
-        .tool_descriptors
-        .iter()
-        .chain(dynamic.iter())
-        .map(to_tool_schema)
-        .collect();
-    ChatRequest {
-        model_binding: spec.model_binding.clone(),
-        messages,
-        tools,
-    }
-}
-
-/// Bound the model-visible message list per `policy`. Operates on the request
-/// view only — the committed transcript is untouched (G13). For `KeepLast`, every
-/// system message is kept regardless of position — the agent instructions and any
-/// injected compaction summary must survive — and only the last `keep_last`
-/// non-system (conversational) messages are kept; older ones are dropped.
-fn apply_context_policy(policy: &ContextPolicy, messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    let keep_last = match policy {
-        ContextPolicy::KeepAll => return messages,
-        ContextPolicy::KeepLast { keep_last } => *keep_last,
-    };
-    let conversational = messages
-        .iter()
-        .filter(|m| m.role != ChatRole::System)
-        .count();
-    if conversational <= keep_last {
-        return messages;
-    }
-    let mut to_drop = conversational - keep_last;
-    messages
-        .into_iter()
-        .filter(|m| {
-            if m.role == ChatRole::System {
-                return true;
-            }
-            if to_drop > 0 {
-                to_drop -= 1;
-                return false;
-            }
-            true
-        })
-        .collect()
-}
-
-fn to_chat_message(message: &Message) -> ChatMessage {
-    ChatMessage {
-        role: to_chat_role(&message.role),
-        content: message.content.clone(),
-    }
-}
-
-fn to_chat_role(role: &Role) -> ChatRole {
-    match role {
-        Role::System => ChatRole::System,
-        Role::User => ChatRole::User,
-        Role::Assistant => ChatRole::Assistant,
-        Role::Tool => ChatRole::Tool,
-    }
-}
-
-/// Project a pinned descriptor into the model-visible schema. The real
-/// description and JSON Schema travel to the model, so it can call tools with
-/// arguments; the descriptor's `content_hash` stays internal (G3/G8).
-fn to_tool_schema(descriptor: &ToolDescriptor) -> ToolSchema {
-    ToolSchema {
-        id: descriptor.id.clone(),
-        description: descriptor.description.clone(),
-        parameters: descriptor.parameters.clone(),
-    }
-}
-
-/// What a truncated turn is told so it resumes rather than restarts (mirrors
-/// the goal runtime's continuation prompt verbatim).
-const CONTINUATION_PROMPT: &str = "Your response was cut off because it exceeded the output \
-     token limit. Please break your work into smaller pieces. Continue from where you left off.";
-
-/// The committed partial text of a `MaxTokens`-truncated turn. Its id carries
-/// the continuation round so it never collides with the step's final
-/// assistant message.
-fn truncated_assistant_message(
-    run_id: &RunId,
-    step: usize,
-    nth: usize,
-    blocks: Vec<ContentBlock>,
-) -> Message {
-    Message {
-        id: MessageId(format!("{}-assistant-{step}-truncated-{nth}", run_id.0)),
-        role: Role::Assistant,
-        content: blocks,
-    }
-}
-
-/// The user message that asks a truncated turn to continue where it left off.
-fn continuation_message(run_id: &RunId, step: usize, nth: usize) -> Message {
-    Message {
-        id: MessageId(format!("{}-continuation-{step}-{nth}", run_id.0)),
-        role: Role::User,
-        content: vec![ContentBlock::text(CONTINUATION_PROMPT)],
-    }
-}
-
-/// The committed assistant turn: its content blocks verbatim (text and tool-use
-/// interleaved), so the transcript explains both what was said and what was
-/// called.
-fn assistant_message(run_id: &RunId, step: usize, blocks: Vec<ContentBlock>) -> Message {
-    Message {
-        id: MessageId(format!("{}-assistant-{step}", run_id.0)),
-        role: Role::Assistant,
-        content: blocks,
-    }
-}
-
-fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Message {
-    tool_result_message_from(&call.call_id, &output.content)
-}
-
-/// A tool-role message carrying a structured `ToolResult` block addressed to the
-/// originating call, so the model sees a real tool result rather than loose text.
-fn tool_result_message_from(call_id: &str, text: &str) -> Message {
-    Message {
-        id: MessageId(format!("tool-{call_id}")),
-        role: Role::Tool,
-        content: vec![ContentBlock::tool_result(
-            call_id.to_string(),
-            vec![ContentBlock::text(text.to_string())],
-        )],
     }
 }
 
