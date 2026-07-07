@@ -222,11 +222,43 @@ export interface CreateSessionRequest {
   vault_ids?: string[];
 }
 
+// ---- Managed Agents SDK page shape (PageCursor: {data, has_more, next_page}) ----
+
+export interface Page<T> {
+  data: T[];
+  has_more: boolean;
+  next_page: string | null;
+}
+
+// ---- environments ----
+
+export type EnvNetworking =
+  | { type: "unrestricted" }
+  | { type: "limited"; allowed_hosts?: string[]; allow_package_managers?: boolean; allow_mcp_servers?: boolean };
+
+export interface EnvironmentConfig {
+  type: "cloud" | "self_hosted";
+  networking?: EnvNetworking;
+}
+export interface Environment {
+  id: string;
+  type: "environment";
+  name: string;
+  description?: string;
+  config: EnvironmentConfig;
+  metadata: Record<string, string>;
+  archived_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ---- vaults ----
 
 export interface Vault {
   id: string;
   type: "vault";
+  display_name?: string;
+  archived_at?: string | null;
   [k: string]: unknown;
 }
 /** The secret-free credential projection: `type` is the object type

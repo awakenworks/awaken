@@ -4,6 +4,7 @@ import GatedPage from "./components/app/GatedPage";
 import A2aSurface from "./surfaces/a2a";
 import AccessSurface from "./surfaces/access";
 import CredentialsSurface from "./surfaces/credentials";
+import EnvironmentsSurface from "./surfaces/environments";
 import HomeSurface from "./surfaces/home";
 import McpServersSurface from "./surfaces/mcp-servers";
 import ModelsSurface from "./surfaces/models";
@@ -27,7 +28,7 @@ export const router = createBrowserRouter([
       { path: "p/:pid/sessions", element: <SessionsSurface /> },
       { path: "p/:pid/sessions/:sid", element: <SessionDetailSurface /> },
       { path: "p/:pid/agents", element: <ProjectAgentsSurface /> },
-      { path: "p/:pid/environments", element: <GatedPage title="Environments" endpoint="/projects/{pid}/v1/environments" /> },
+      { path: "p/:pid/environments", element: <EnvironmentsSurface /> },
       { path: "p/:pid/vaults", element: <VaultsSurface /> },
       { path: "p/:pid/memory", element: <GatedPage title="Memory stores" endpoint="/projects/{pid}/v1/memory_stores" /> },
       { path: "p/:pid/deployments", element: <GatedPage title="Deployments" endpoint="/projects/{pid}/v1/deployments" /> },

@@ -24,7 +24,7 @@ export const NAV: NavItem[] = [
   { key: "overview", label: "Overview", labelZh: "项目概览", group: "project", path: "/p/:pid/overview" },
   { key: "sessions", label: "Sessions", labelZh: "会话", group: "project", path: "/p/:pid/sessions" },
   { key: "agents", label: "Agents", labelZh: "Agents", group: "project", path: "/p/:pid/agents" },
-  { key: "environments", label: "Environments", labelZh: "运行环境", group: "project", path: "/p/:pid/environments", gated: true },
+  { key: "environments", label: "Environments", labelZh: "运行环境", group: "project", path: "/p/:pid/environments" },
   { key: "vaults", label: "Vaults", labelZh: "运行凭证", group: "project", path: "/p/:pid/vaults" },
   { key: "memory", label: "Memory stores", labelZh: "记忆库", group: "project", path: "/p/:pid/memory", gated: true },
   { key: "deployments", label: "Deployments", labelZh: "调度部署", group: "project", path: "/p/:pid/deployments", gated: true },
