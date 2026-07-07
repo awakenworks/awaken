@@ -31,4 +31,12 @@ pub struct AgentConfig {
     /// authored before this field loadable.
     #[serde(default)]
     pub context_policy: ContextPolicy,
+    /// Glob patterns (`*` wildcard) selecting additional tools from the catalog by
+    /// id at compile — a permissive selector that complements the exact `tool_ids`.
+    /// Unlike a `tool_id`, a pattern that matches nothing is not an error (it is a
+    /// filter, not a reference). Appended last with `skip_serializing_if` so an
+    /// empty set serializes to nothing and keeps prior fingerprints byte-identical;
+    /// a non-empty set enters the content address like any other config field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_patterns: Vec<String>,
 }
