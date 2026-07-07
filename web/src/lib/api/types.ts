@@ -222,11 +222,165 @@ export interface CreateSessionRequest {
   vault_ids?: string[];
 }
 
+// ---- Managed Agents SDK page shape (PageCursor: {data, has_more, next_page}) ----
+
+export interface Page<T> {
+  data: T[];
+  has_more: boolean;
+  next_page: string | null;
+}
+
+// ---- environments ----
+
+export type EnvNetworking =
+  | { type: "unrestricted" }
+  | { type: "limited"; allowed_hosts?: string[]; allow_package_managers?: boolean; allow_mcp_servers?: boolean };
+
+export interface EnvironmentConfig {
+  type: "cloud" | "self_hosted";
+  networking?: EnvNetworking;
+}
+export interface Environment {
+  id: string;
+  type: "environment";
+  name: string;
+  description?: string;
+  config: EnvironmentConfig;
+  metadata: Record<string, string>;
+  archived_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---- memory stores ----
+
+export interface MemoryStore {
+  id: string;
+  type: "memory_store";
+  name: string;
+  description?: string | null;
+  metadata: Record<string, string>;
+  archived_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---- skills ----
+
+export interface Skill {
+  id: string;
+  type?: string;
+  name?: string;
+  display_name?: string;
+  description?: string | null;
+  latest_version?: string | number;
+  [k: string]: unknown;
+}
+
+// ---- deployments ----
+
+export interface DeploymentSchedule {
+  type: "cron";
+  expression: string;
+  timezone: string;
+  upcoming_runs_at?: string[];
+  last_run_at?: string | null;
+}
+export interface Deployment {
+  id: string;
+  type?: "deployment";
+  name: string;
+  agent: { id: string; type?: "agent"; version?: number };
+  environment_id: string;
+  schedule: DeploymentSchedule;
+  status?: string;
+  paused_reason?: { type: string } | null;
+  archived_at?: string | null;
+  created_at: string;
+}
+export interface DeploymentRun {
+  id: string;
+  deployment_id: string;
+  session_id?: string | null;
+  error?: { type: string; message?: string } | null;
+  trigger_context?: { type: string };
+  created_at: string;
+}
+
+// ---- agents (registry) ----
+
+export interface AgentModelRef {
+  id: string;
+  speed?: string;
+}
+export interface Agent {
+  id: string;
+  type: "agent";
+  name: string;
+  model: AgentModelRef | string;
+  system?: string | null;
+  description?: string | null;
+  tools: unknown[];
+  mcp_servers: unknown[];
+  skills: unknown[];
+  multiagent?: unknown;
+  metadata: Record<string, string>;
+  version: number;
+  archived_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---- config-plane agent authoring (/v1/config/agents) ----
+// The object model is the managed `/v1/agents` Agent object (name / model / system
+// / tools / mcp_servers / skills / multiagent / metadata) PLUS our extension block
+// (plugins / plugin_config / context_policy / max_steps). The console authors this
+// against our own config plane; `publish` compiles + installs it so sessions run it.
+
+/** Internally tagged on `kind` (snake_case), mirroring the Rust ContextPolicy. */
+export type ContextPolicy = { kind: "keep_all" } | { kind: "keep_last"; keep_last: number };
+
+export interface AgentConfig {
+  id: string;
+  type?: "agent";
+  // managed Agent object fields:
+  name?: string | null;
+  description?: string | null;
+  model: { id: string; speed?: string } | string;
+  system?: string;
+  metadata?: Record<string, string>;
+  tools: string[];
+  mcp_servers: unknown[];
+  skills: unknown[];
+  multiagent?: unknown;
+  // extensions (our differentiated value, additive to the managed object):
+  max_steps: number;
+  plugins: string[];
+  /** Per-plugin config sections, keyed by plugin id (permission / state_machine /
+   * deferred-tools / generative-ui all live here as JSON). */
+  plugin_config: Record<string, unknown>;
+  context_policy: ContextPolicy;
+}
+/** A list/get item: the object plus a live `published` flag (a compiled config is
+ * currently installed in the runtime catalog). */
+export type AgentConfigItem = AgentConfig & { published?: boolean };
+export interface AgentConfigList {
+  data: AgentConfigItem[];
+}
+export interface PublishResult {
+  publication_id: string;
+  fingerprint: string;
+  agent_id: string;
+  installed: boolean;
+}
+
 // ---- vaults ----
 
 export interface Vault {
   id: string;
   type: "vault";
+  display_name?: string;
+  archived_at?: string | null;
   [k: string]: unknown;
 }
 /** The secret-free credential projection: `type` is the object type

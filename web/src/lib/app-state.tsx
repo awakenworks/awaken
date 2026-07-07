@@ -47,7 +47,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [projectId, setProjectId] = useState<string>(
     () => localStorage.getItem("awaken.console.project") ?? "",
   );
-  const [theme, setTheme] = useState(() => localStorage.getItem("awaken.console.theme") ?? "light");
+  // Awaken Agents brand defaults to dark (awaken-theme.js BRANDS.agents.defaultMode).
+  const [theme, setTheme] = useState(() => localStorage.getItem("awaken.console.theme") ?? "dark");
   const [locale, setLocale] = useState<Locale>(
     () => (localStorage.getItem("awaken.console.locale") as Locale) || "en",
   );

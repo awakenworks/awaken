@@ -74,6 +74,11 @@ pub trait ConfigRegistry: Send + Sync {
     /// Load an agent config by id.
     async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError>;
 
+    /// List every stored agent config (the authoring aggregate), ascending by id.
+    /// Backs the management console's agent list, which authors against this
+    /// config plane directly rather than the SDK-facing `/v1/agents` registry.
+    async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError>;
+
     /// Store a publication, idempotent by fingerprint.
     async fn put_publication(
         &self,
@@ -118,6 +123,13 @@ pub trait ScopedConfigRegistry: Send + Sync {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Option<AgentConfig>, ConfigStoreError>;
+
+    /// List every agent config owned by `scope`, ascending by id — a row owned by
+    /// another scope is invisible.
+    async fn list_configs_scoped(
+        &self,
+        scope: &ScopeId,
+    ) -> Result<Vec<AgentConfig>, ConfigStoreError>;
 
     /// Store a publication owned by `scope`, idempotent by fingerprint.
     async fn put_publication_scoped(
@@ -169,6 +181,10 @@ impl<S: ScopedConfigRegistry + ?Sized> ConfigRegistry for ScopedConfig<S> {
 
     async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
         self.inner.get_config_scoped(&self.scope, id).await
+    }
+
+    async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        self.inner.list_configs_scoped(&self.scope).await
     }
 
     async fn put_publication(

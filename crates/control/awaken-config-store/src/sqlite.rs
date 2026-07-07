@@ -126,6 +126,27 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         .await
     }
 
+    async fn list_configs_scoped(&self, scope: &ScopeId) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        let scope = scope.0.clone();
+        self.with_conn(move |conn, p| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT data FROM {p}_agent WHERE scope_id = ?1 ORDER BY id ASC"
+                ))
+                .map_err(reject)?;
+            let rows = stmt
+                .query_map(params![scope], |r| r.get::<_, String>(0))
+                .map_err(reject)?;
+            let mut configs = Vec::new();
+            for row in rows {
+                let data = row.map_err(reject)?;
+                configs.push(serde_json::from_str(&data).map_err(reject)?);
+            }
+            Ok(configs)
+        })
+        .await
+    }
+
     async fn put_publication_scoped(
         &self,
         scope: &ScopeId,
@@ -190,6 +211,10 @@ impl ConfigRegistry for SqliteConfigStore {
     async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
         self.get_config_scoped(&ScopeId::from(DEFAULT_SCOPE), id)
             .await
+    }
+
+    async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        self.list_configs_scoped(&ScopeId::from(DEFAULT_SCOPE)).await
     }
 
     async fn put_publication(
