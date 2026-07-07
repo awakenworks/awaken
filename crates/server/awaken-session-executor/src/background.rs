@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
+use tracing::Instrument;
 
 /// A registry of detached background tasks that can be drained before shutdown.
 #[derive(Default)]
@@ -28,8 +29,20 @@ impl BackgroundRuns {
     /// Detach `fut` to run in the background. It is tracked so [`drain`] can await
     /// it; a panic in the task is isolated (JoinSet surfaces it only on join, and
     /// drain swallows it — a background aux run is best-effort).
+    ///
+    /// The detached task is linked into the trace that spawned it: `tokio::spawn`
+    /// starts a task with no ambient span, so an aux sub-run (memory extraction,
+    /// dream) would otherwise emit a disconnected trace root. We attach a child
+    /// span of the *current* span, so the aux run's spans nest under the
+    /// originating turn's trace. The child holds only the parent's id, so the turn
+    /// span still closes on time while the aux run continues.
     pub async fn spawn(&self, fut: impl Future<Output = ()> + Send + 'static) {
-        self.tasks.lock().await.spawn(fut);
+        let span = tracing::info_span!(
+            parent: &tracing::Span::current(),
+            "aux.background",
+            otel.kind = "internal"
+        );
+        self.tasks.lock().await.spawn(fut.instrument(span));
     }
 
     /// Await all in-flight background tasks, up to `timeout`. Returns `true` if

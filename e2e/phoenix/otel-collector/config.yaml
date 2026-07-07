@@ -1,0 +1,27 @@
+# OTel Collector: receive OTLP from the Awaken server and fan the trace stream out
+# to both Phoenix (GenAI-native) and Jaeger (general span view), so one run's tree
+# is visible in each. `network_mode: host` on the collector means these 127.0.0.1
+# targets reach the other containers' published host ports.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  otlphttp/phoenix:
+    endpoint: http://127.0.0.1:6006
+  otlphttp/jaeger:
+    endpoint: http://127.0.0.1:14318
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/phoenix, otlphttp/jaeger]

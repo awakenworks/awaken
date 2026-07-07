@@ -51,6 +51,9 @@ base64 = "0.22"
 form_urlencoded = "1"
 # Content SHA-256 for the memory_stores memories/versions API (`content_sha256`).
 sha2 = "0.10"
+# Host turn span (`#[instrument]`) exported through the global subscriber the service
+# binary installs; this crate emits spans, never wires an exporter.
+tracing = "0.1"
 
 [dev-dependencies]
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.

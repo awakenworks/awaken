@@ -1,0 +1,46 @@
+# Trace-collection stack for viewing Awaken's OTLP export (the live counterpart to
+# the collector-free AWAKEN_TRACE_FILE path that trace_capture_e2e.mjs asserts on).
+#
+# One OTLP stream from the server fans out to BOTH backends so the same trace tree
+# can be inspected in each:
+#   * Collector OTLP/HTTP  http://localhost:4318/v1/traces   (point the server here)
+#   * Collector OTLP/gRPC  localhost:4317
+#   * Phoenix UI + REST    http://localhost:6006             (GenAI-native view)
+#   * Jaeger UI            http://localhost:16686
+#
+# Bring it up:  docker compose -f e2e/phoenix/docker-compose.yml up -d --wait
+# Then run the server pointed at the collector (see README.md), drive any e2e, and
+# open Phoenix/Jaeger. Tear down: docker compose -f e2e/phoenix/docker-compose.yml down
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:version-11.34.0
+    ports:
+      - "6006:6006"
+    environment:
+      PHOENIX_WORKING_DIR: /tmp/phoenix
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6006/v1/projects')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "14318:4318"    # Jaeger's own OTLP/HTTP, remapped off 4318 (the collector owns 4318)
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    network_mode: host
+    depends_on:
+      phoenix:
+        condition: service_healthy
+      jaeger:
+        condition: service_started

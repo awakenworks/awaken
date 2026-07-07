@@ -109,7 +109,10 @@ impl<S: Dispatch + 'static> DispatchService<S> {
     pub async fn submit(&self, activation: RunActivation) -> Result<(), Error> {
         self.worker
             .store()
-            .enqueue(RunExecutionRequest::new(activation))
+            .enqueue(
+                RunExecutionRequest::new(activation)
+                    .with_traceparent(awaken_observability::current_traceparent()),
+            )
             .await?;
         let _ = self.wake.publish().await;
         Ok(())

@@ -17,6 +17,9 @@ thiserror.workspace = true
 tokio.workspace = true
 axum = "0.7"
 tokio-stream = "0.1"
+# Managed operation span (`#[instrument]`) exported through the global subscriber the
+# service binary installs; this crate emits spans, never wires an exporter.
+tracing = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
