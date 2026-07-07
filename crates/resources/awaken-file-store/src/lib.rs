@@ -158,9 +158,18 @@ pub fn is_content_id(base: &Path, id: &str) -> bool {
     base.join(id).exists()
 }
 
+/// The portable schema shared by the durable relational backends (`postgres` /
+/// `sqlite` features).
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub mod schema;
+
 /// Postgres `bytea` backend (`postgres` feature).
 #[cfg(feature = "postgres")]
 pub mod postgres;
+
+/// SQLite `BLOB` backend (`sqlite` feature).
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 
 /// Object-store backend — S3/MinIO/GCS/Azure (`s3` feature).
 #[cfg(feature = "s3")]
@@ -226,5 +235,74 @@ mod tests {
             mem.put(b"portable").await.unwrap(),
             fs.put(b"portable").await.unwrap()
         );
+    }
+
+    /// Live Postgres round-trip for [`PgFileStore`](crate::postgres::PgFileStore),
+    /// isolated in its own schema. Skips when no Postgres is reachable
+    /// (`AWAKEN_TEST_DATABASE_URL`), proving the shared portable bundle renders and
+    /// runs on Postgres too.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn postgres_round_trip() {
+        use crate::postgres::PgFileStore;
+
+        let base = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+        });
+        let Ok(admin) = sqlx::PgPool::connect(&base).await else {
+            println!("[skip] no Postgres reachable");
+            return;
+        };
+        use sqlx::Executor;
+        let _ = admin
+            .execute("DROP SCHEMA IF EXISTS t_file_store CASCADE")
+            .await;
+        admin
+            .execute("CREATE SCHEMA t_file_store")
+            .await
+            .expect("create schema");
+        admin.close().await;
+        let sep = if base.contains('?') { '&' } else { '?' };
+        let url = format!("{base}{sep}options=-c%20search_path%3Dt_file_store");
+        let store = PgFileStore::connect(&url).await.unwrap();
+        round_trip(&store).await;
+        // Same id as the core, across the network backend too.
+        assert_eq!(
+            store.put(b"portable").await.unwrap(),
+            InMemoryFileStore::new().put(b"portable").await.unwrap()
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    mod sqlite {
+        use super::*;
+        use crate::sqlite::SqliteFileStore;
+
+        #[tokio::test]
+        async fn sqlite_round_trip() {
+            round_trip(&SqliteFileStore::open_in_memory().unwrap()).await;
+        }
+
+        #[tokio::test]
+        async fn sqlite_persists_and_shares_the_core_id() {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("blobs.db");
+            let path = path.to_str().unwrap();
+            let id = {
+                let store = SqliteFileStore::open(path).unwrap();
+                // Same id as the in-memory backend (computed in the core).
+                assert_eq!(
+                    store.put(b"portable").await.unwrap(),
+                    InMemoryFileStore::new().put(b"portable").await.unwrap()
+                );
+                store.put(b"durable").await.unwrap()
+            };
+            // A fresh handle on the same file sees the blob (idempotent migration).
+            let reopened = SqliteFileStore::open(path).unwrap();
+            assert_eq!(
+                reopened.get(&id).await.unwrap().as_deref(),
+                Some(&b"durable"[..])
+            );
+        }
     }
 }
