@@ -140,18 +140,6 @@ fn project_config_view(id: &str, view: &AgentConfigView) -> Value {
     })
 }
 
-/// Overlay config-plane truth onto a registry projection: where an agent exists in
-/// both, the config plane is authoritative for model/system/tools (single truth).
-fn overlay_config_view(wire: &mut Value, view: &AgentConfigView) {
-    if let Some(obj) = wire.as_object_mut() {
-        if let Some(model) = &view.model {
-            obj.insert("model".into(), json!({ "id": model }));
-        }
-        obj.insert("system".into(), json!(view.system));
-        obj.insert("tools".into(), json!(tools_wire(&view.tool_ids)));
-    }
-}
-
 /// Mount the agent-registry routes.
 pub fn agents_router(state: Arc<AgentRegistryState>) -> Router {
     Router::new()
@@ -247,20 +235,15 @@ async fn retrieve_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, WireError> {
-    // A registry record wins; the config plane, when wired, is authoritative for the
-    // fields it owns (model/system/tools) and is overlaid onto the record.
+    // A registry record (an agent created via this API) wins.
     {
         let store = state.inner.lock().unwrap();
         if let Some(record) = store.get(&id) {
-            let mut wire = record.project(&id);
-            if let Some(view) = state.config_source.as_ref().and_then(|s| s.agent_view(&id)) {
-                overlay_config_view(&mut wire, &view);
-            }
-            return Ok(Json(wire));
+            return Ok(Json(record.project(&id)));
         }
     }
-    // No registry record: an agent published on the config plane is retrievable here
-    // as a pure projection of that single truth (never created via this registry).
+    // Otherwise an agent published on the config plane is retrievable here as a pure
+    // projection of that single truth (never created via this registry).
     if let Some(view) = state.config_source.as_ref().and_then(|s| s.agent_view(&id)) {
         return Ok(Json(project_config_view(&id, &view)));
     }
@@ -409,26 +392,5 @@ mod tests {
         // An id in neither the registry nor the config plane is still 404.
         let (status, _) = get(&app, "/v1/agents/ghost").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-    }
-
-    #[test]
-    fn overlay_makes_config_authoritative_for_model_system_tools() {
-        let mut wire = json!({
-            "model": { "id": "stale" }, "system": "stale", "tools": [],
-            "name": "keep-me",
-        });
-        overlay_config_view(
-            &mut wire,
-            &AgentConfigView {
-                model: Some("fresh".to_string()),
-                system: Some("fresh sys".to_string()),
-                tool_ids: vec!["t".to_string()],
-            },
-        );
-        assert_eq!(wire["model"]["id"], "fresh");
-        assert_eq!(wire["system"], "fresh sys");
-        assert_eq!(wire["tools"][0]["name"], "t");
-        // Presentation fields the config plane does not own are untouched.
-        assert_eq!(wire["name"], "keep-me");
     }
 }

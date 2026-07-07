@@ -26,6 +26,9 @@ const agentConfig = {
   max_steps: 4,
   model_binding: { provider_instance_ref: 'default', model_ref: 'config-model', backend_ref: 'default' },
   tool_ids: [],
+  // A glob selector over the catalog: matched at compile against the advertised
+  // hand tools (a pattern that matches nothing would not be an error).
+  tool_patterns: ['*'],
   plugin_ids: [],
   plugin_config: {},
 };
