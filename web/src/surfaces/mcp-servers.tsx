@@ -1,5 +1,8 @@
-// Workspace · MCP servers: authored definitions with fail-closed credential
-// bindings. Status/restart is a gated follow-up (design/web-ui.md §7.9).
+// Workspace · MCP catalog: an OPTIONAL reusable-definition layer. The default
+// (design/web-ui.md §1, option B) is inline MCP on the agent — {type,name,url}
+// with no auth; the runtime credential comes from the project Vault by url
+// match. `credential_binding` here is legacy and slated for removal (§7.9c);
+// keep it only for the optional central-governance path.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -38,6 +41,15 @@ export default function McpServersSurface() {
   });
   return (
     <>
+      <div className="banner info">
+        <span>ⓘ</span>
+        <span>
+          {app.t(
+            "Optional reusable catalog. The default is inline MCP on the agent (url only); credentials come from the project Vault by url match. Use this only for central reuse/governance.",
+            "可选复用目录。默认在 agent 上内联 MCP(仅 url);凭证由 Project Vault 按 url 匹配提供。仅在需要集中复用/治理时使用。",
+          )}
+        </span>
+      </div>
       <div className="card" style={{ padding: 0 }}>
         <table className="table">
           <thead>

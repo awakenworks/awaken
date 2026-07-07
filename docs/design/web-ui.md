@@ -21,7 +21,7 @@
 | 外壳概念 | 我们的实体 |
 |---|---|
 | **Project(运行面容器 = Managed Agents 资源全体)** | `Project` + `/projects/{id}` ingress:**Agent `agent_*`**、**Environment `env_*`**、Session `sesn_*` + Event `evt_*`、Vault `vlt_*` + Credential `crd_*`、**Memory store `memstore_*`**、**Deployment `depl_*` + Run `drun_*`**、Skill(delivered)、Files。全部按 `project_id` 落库,统一 `ScopeRef::Project` 授权 |
-| **Workspace(共享供给 + 治理)** | 无 Managed Agents wire 映射、被项目按 id 引用的一切:catalog(Provider/Endpoint/Offering)、CredentialSource + Pool、InferenceProfile、MCP/A2A **定义**、IAM tokens、Project 注册表 |
+| **Workspace(共享供给 + 治理)** | 无 Managed Agents wire 映射、被项目按 id 引用的一切:catalog(Provider/Endpoint/Offering)、**推理凭证** CredentialSource + Pool、InferenceProfile、IAM tokens、Project 注册表;MCP/A2A 目录降为**可选复用层**(默认内联,见下) |
 | 工作单元 | **Session**(idle/running;requires_action 是派生过滤词,不是 wire status) |
 | 需要客户端动作 | `requires_action` 派生过滤(`GET /v1/sessions?status=requires_action`)→ Home KPI + 会话列表过滤;审批本身在客户应用完成 |
 | 编辑器 Publish | Agent config draft → validate → publish(fingerprint) |
@@ -34,7 +34,18 @@
 
 1. **Project 拥有运行实例**——上述每种资源都durable 落库并 stamp `project_id`(与 session 的 `project_id`/`archived_at` 同款),经 `/projects/{pid}/…` 寻址,统一 `ScopeRef::Project` 授权 + run-plane 动作集(`run.read`/`run.write`)。裸 `/v1/…` 面保留 stock-SDK 兼容(project-bound key 隐含其 project)。
 2. **Workspace 拥有共享供给**——catalog、credential sources/pools、inference profile、MCP/A2A 定义、IAM 是跨项目复用的供给,无 managed wire,治理留在 workspace IAM。
-3. **Reference-don't-copy**——agent 的 `model`/`mcp_servers`/凭证按 id **引用** workspace 供给,供给不进 project、运行时 resolve;project 只持有绑定关系(如 per-project agent MCP 绑定)。这样单份供给服务多个 project,版本与轮换只改一处。
+3. **Reference-don't-copy**——agent 的 `model` 按 id **引用** workspace 供给(模型 catalog),供给不进 project、运行时 resolve;单份供给服务多个 project,版本与轮换只改一处。
+
+**凭证收敛为双轴(方案 B,对齐 Anthropic-literal)**:凭证按"哪个模型跑" vs "连外部工具用什么身份"分两条轴,天然不重叠——
+
+| 凭证 | 是什么 | 归属 | Anthropic 对应 |
+|---|---|---|---|
+| **推理凭证** | 模型 provider API key(喂 model catalog / inference profile) | **Workspace 供给**(CredentialSource/Pool) | 无(Anthropic 自跑模型;我们不锁模型,这是独有的) |
+| **运行/工具凭证** | MCP OAuth / static bearer / env-var 密钥 | **Project Vault(自管)** | 有 |
+
+- **MCP/A2A 默认内联**:agent/session 直接携带 `mcp_servers:[{type,name,url}]`(无 auth),与 Anthropic wire 同构、agent 自包含。workspace MCP 目录降为**可选复用层**(要集中治理/复用的团队再启用);A2A delegate 名册是 agent config,catalog 同为可选。
+- **Vault 是 managed 自管资源**:project 作用域、走 managed wire CRUD;运行时**自动续 OAuth**、**egress 处替换** env-var、按 MCP `url` 匹配注入——沙箱永不见明文。secretless 因此从"resolve-and-hand-off"变为"**egress 注入**",更贴 ADR-0008 网关本意。
+- 结果:MCP 鉴权不再走 workspace CredentialSource + `credential_binding`,**Vault 成为运行期凭证唯一家**(仓里 `VaultState` 已按 url 键 + 带 refresh;`McpServerDef.credential_binding` 是待删的冗余并行路径,见 §7)。
 
 ## 2. 信息架构与导航外壳
 
@@ -103,7 +114,7 @@ Project 容器覆盖 Managed Agents 的资源全体 + 跑在共享 host 上的�
 | `/p/:pid/sessions/:sid` | **§4 核心界面**:转录 + 行内工具确认(运维/调试)+ outcomes + rename/archive + durable 抽屉 | ✅ |
 | `/p/:pid/agents` | Agent config draft→validate→**publish** + per-project MCP 绑定 + resolve 预览(reference-don't-copy);全 tab 编辑器/版本历史/Sandbox 随 wire 落地 | 🔶 publish + 项目绑定 ✅;list/meta/history、managed wire CRUD ⛔(§7) |
 | `/p/:pid/environments` | 容器模板 CRUD(cloud/self-hosted、networking) | ⛔ `/projects/{pid}/v1/environments` |
-| `/p/:pid/vaults` | 运行凭证容器:vault 及其三型 credential、`mcp_oauth_validate`;标注 host-ephemeral | 🔶 vault 面 ✅,挂到 `/projects/{pid}` ingress ⛔(§7) |
+| `/p/:pid/vaults` | **运行期凭证唯一家(managed 自管)**:MCP OAuth(自动续期)/ static bearer / env-var 三型 credential、`mcp_oauth_validate`;egress 注入、按 url 匹配、写入即只写 | 🔶 vault 面 ✅,挂到 `/projects/{pid}` ingress ⛔(§7) |
 | `/p/:pid/memory` | Memory store CRUD + memories/versions/redact | ⛔ `/projects/{pid}/v1/memory_stores` |
 | `/p/:pid/deployments` | 调度部署列表 + run 记录(cron、pause/unpause/archive) | ⛔ `/projects/{pid}/v1/deployments` |
 | `/p/:pid/skills` | 项目运行期已交付技能目录(ro) | ⛔ `/projects/{pid}/v1/skills` |
@@ -114,9 +125,9 @@ Project 容器覆盖 Managed Agents 的资源全体 + 跑在共享 host 上的�
 | 路由 | 内容 | 端点 / 就绪度 |
 |---|---|---|
 | `/models` | Catalog 三层(Provider/Endpoint/Offering)+ Inference profiles + resolve 试算链 chips + Test model(经 credential validate) | ✅ |
-| `/credentials` | **供给侧凭证**:Sources(enter/validate/archive)、Pools(ordinal failover)。Vault 属运行面,页面在 Project scope | ✅ |
-| `/mcp-servers` + `/:id` | 定义 CRUD + Bound-by 反查;状态/健康点 + Restart;nav 健康点 | 🔶 CRUD ✅;status/restart ⛔(ExtMcpProbe 可扩) |
-| `/a2a-servers` | 远程委托服务器目录:delegate card 查看;CRUD | 🔶 card ✅(`/v1/delegates/:id/card`);CRUD ⛔ |
+| `/credentials`(**Inference credentials**) | **推理凭证**(仅喂模型):Sources(enter/validate/archive)、Pools(ordinal failover)。运行/工具凭证在 Project Vault | ✅ |
+| `/mcp-servers` + `/:id` | **可选复用目录**(默认内联在 agent):定义 CRUD + Bound-by 反查;运行凭证由 Vault 按 url 提供,`credential_binding` 为待删遗留;状态/健康点 + Restart | 🔶 CRUD ✅;credential_binding 去除、status/restart ⛔ |
+| `/a2a-servers` | **可选** delegate 目录(名册是 agent config):delegate card 查看;CRUD | 🔶 card ✅(`/v1/delegates/:id/card`);CRUD ⛔ |
 
 ### Workspace · Observe
 
@@ -198,7 +209,8 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 9. MCP status/restart、A2A servers CRUD、agent-preview 端点(对草稿沙箱)、admin assistant 面。
 
 **managed 资源全面 project 化(新架构决定 — 对齐 Anthropic wire)**:
-9b. **Agent/Environment/Memory store/Deployment/Skill 上 Managed Agents wire,且全部 project 化**:仿 session,每种资源加 durable `project_id`,经 `/projects/{pid}/v1/{agents,environments,memory_stores,deployments,skills}` 寻址,统一 `ScopeRef::Project`;agent config 从 admin plane(`/v1/config/agents`)迁到 managed wire,publish→版本化(每次 update 产生不可变 version,session 按 `{id,version}` 钉)。Reference-don't-copy:agent 的 model/mcp/凭证按 id 引用 workspace 供给。落地顺序:agents(read 面先行)→ environments → memory → deployments。
+9b. **Agent/Environment/Memory store/Deployment/Skill 上 Managed Agents wire,且全部 project 化**:仿 session,每种资源加 durable `project_id`,经 `/projects/{pid}/v1/{agents,environments,memory_stores,deployments,skills}` 寻址,统一 `ScopeRef::Project`;agent config 从 admin plane(`/v1/config/agents`)迁到 managed wire,publish→版本化(每次 update 产生不可变 version,session 按 `{id,version}` 钉)。**agent 内联 `mcp_servers:[{type,name,url}]`**(方案 B):MCP 是 agent 自包含配置,凭证由 Project Vault 按 url 提供。落地顺序:agents(read 面先行)→ environments → memory → deployments。
+9c. **凭证双轴收敛(方案 B)**:`McpServerDef` 去掉 `credential_binding`(只留 url),运行凭证唯一来源是 Vault(仓里 `VaultState` 已按 url 键 + refresh);`CredentialSource/Pool` 收窄为**仅推理**。改动面:config schema + resolver + 契约(openapi 注册表)+ e2e;MCP 目录降为可选复用层。
 
 **project 容器统一权限(已定的架构决定)**:
 10. vault router 挂进 `/projects/{pid}` ingress(今天 ingress 只转发 session router),vault 创建 stamp `ProjectScope` → vault 归属 project;所有新增 managed 资源 router 同样挂 ingress;

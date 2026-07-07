@@ -34,9 +34,9 @@ export const NAV: NavItem[] = [
   // Workspace = shared supply + governance: no Managed Agents wire mapping;
   // projects reference these by id (reference-don't-copy).
   { key: "models", label: "Models", labelZh: "模型", group: "supply", path: "/models" },
-  { key: "credentials", label: "Credentials", labelZh: "凭证", group: "supply", path: "/credentials" },
-  { key: "mcp", label: "MCP servers", labelZh: "MCP 服务器", group: "supply", path: "/mcp-servers" },
-  { key: "a2a", label: "A2A servers", labelZh: "A2A 服务器", group: "supply", path: "/a2a-servers" },
+  { key: "credentials", label: "Inference credentials", labelZh: "推理凭证", group: "supply", path: "/credentials" },
+  { key: "mcp", label: "MCP catalog", labelZh: "MCP 目录", group: "supply", path: "/mcp-servers" },
+  { key: "a2a", label: "A2A catalog", labelZh: "A2A 目录", group: "supply", path: "/a2a-servers" },
 
   { key: "dashboard", label: "Dashboard", labelZh: "看板", group: "observe", path: "/dashboard", gated: true },
   { key: "evals", label: "Eval runs", labelZh: "评测", group: "observe", path: "/eval-runs", gated: true },

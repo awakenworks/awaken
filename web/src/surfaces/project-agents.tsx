@@ -18,9 +18,14 @@ import { useApp } from "../lib/app-state";
 
 const WORKSPACE = "wrkspc_default";
 
+// Option B: MCP is declared INLINE on the agent — {type,name,url}, no auth.
+// The runtime credential comes from the project Vault, matched by url.
 const DRAFT_TEMPLATE = `{
   "instructions": "You are a helpful coding agent.",
-  "model": "claude-sonnet-4-5"
+  "model": "claude-sonnet-4-5",
+  "mcp_servers": [
+    { "type": "url", "name": "docs", "url": "https://mcp.example.com/docs" }
+  ]
 }`;
 
 export default function ProjectAgentsSurface() {
@@ -87,8 +92,8 @@ export default function ProjectAgentsSurface() {
     <>
       <p className="mut" style={{ margin: 0 }}>
         {app.t(
-          "Agents are project resources. This project owns the configs; they reference workspace supply (models, MCP definitions, credentials) by id.",
-          "Agent 是项目资源。项目拥有其配置,并按 id 引用工作区供给(模型、MCP 定义、凭证)。",
+          "Agents are project resources. MCP servers are declared inline (url only); their runtime credentials come from the project Vault. The agent references only the model by id from workspace supply.",
+          "Agent 是项目资源。MCP 服务器内联声明(仅 url),运行凭证来自 Project Vault;agent 仅按 id 引用工作区供给里的模型。",
         )}
       </p>
       <div className="row">
@@ -135,11 +140,11 @@ export default function ProjectAgentsSurface() {
       </div>
 
       <div className="card">
-        <h2>{app.t("Per-project MCP binding", "项目级 MCP 绑定")}</h2>
+        <h2>{app.t("Per-project MCP binding (optional catalog path)", "项目级 MCP 绑定(可选目录路径)")}</h2>
         <p className="hint">
           {app.t(
-            "Pick which authored MCP servers this agent uses inside this project. The project SELECTS from workspace supply; unknown ids fail closed.",
-            "勾选该 agent 在本项目内可用的已作者化 MCP 服务器。项目从工作区供给中「选择」;未知 id 会被拒绝。",
+            "Optional: instead of inlining above, reference the shared MCP catalog by id (central reuse/governance). The project SELECTS from workspace supply; unknown ids fail closed.",
+            "可选:不在上方内联,而是按 id 引用共享 MCP 目录(集中复用/治理)。项目从工作区供给中「选择」;未知 id 会被拒绝。",
           )}
         </p>
         {(servers.data ?? []).map((s) => (
