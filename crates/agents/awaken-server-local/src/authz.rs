@@ -785,6 +785,18 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             _,
             "mcp_oauth_validate" | "archive",
         ] if !read => scoped(APIKEY_WRITE),
+        // -- user profiles (managed-account entities: workspace configuration) --
+        ["v1", "user_profiles"] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
+        ["v1", "user_profiles", _] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
+        ["v1", "user_profiles", _, "enrollment_url"] if !read => scoped(WORKSPACE_WRITE),
         _ => None,
     }
 }
@@ -1269,6 +1281,16 @@ mod tests {
         assert_eq!(
             action_for(&post, "/v1/vaults/v1/credentials/c1/mcp_oauth_validate"),
             Some(APIKEY_WRITE)
+        );
+        // User-profile family maps to workspace.* by method.
+        assert_eq!(action_for(&get, "/v1/user_profiles"), Some(WORKSPACE_READ));
+        assert_eq!(
+            action_for(&post, "/v1/user_profiles"),
+            Some(WORKSPACE_WRITE)
+        );
+        assert_eq!(
+            action_for(&post, "/v1/user_profiles/uprof_1/enrollment_url"),
+            Some(WORKSPACE_WRITE)
         );
         // An unmapped route fails closed (the guard turns None into 403).
         assert_eq!(action_for(&get, "/v1/config/unknown"), None);
