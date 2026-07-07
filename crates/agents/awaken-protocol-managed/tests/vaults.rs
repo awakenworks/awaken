@@ -825,6 +825,69 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
 }
 
 #[tokio::test]
+async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sealed_one() {
+    // The SDK's *update* token_endpoint_auth makes `client_secret` OPTIONAL: a
+    // caller may switch/keep the scheme without resending the secret. This must
+    // NOT 400 (the create shape requires the secret), and the previously sealed
+    // secret must be preserved.
+    let h = harness();
+    let vault_id = create_vault(&h, "mcp").await;
+    let url = "https://mcp.example.com/sse";
+    let cred = create_mcp_oauth(
+        &h,
+        &vault_id,
+        url,
+        Some(json!({
+            "client_id": "cli",
+            "refresh_token": "rt", // awaken-allow: secret
+            "token_endpoint": "https://auth.example.com/token",
+            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-orig" } // awaken-allow: secret
+        })),
+    )
+    .await;
+    let cred_id = cred["id"].as_str().unwrap().to_string();
+    let source_id = h.state.credential_source_id(&vault_id, &cred_id).unwrap();
+
+    // Switch scheme to `post` WITHOUT a client_secret — a valid SDK payload.
+    let (s, updated) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
+        Some(json!({
+            "auth": {
+                "type": "mcp_oauth",
+                "refresh": { "token_endpoint_auth": { "type": "client_secret_post" } }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "omitting client_secret on update must not 400"
+    );
+    assert_eq!(
+        updated["auth"]["refresh"]["token_endpoint_auth"]["type"],
+        "client_secret_post"
+    );
+    // The original sealed client secret is preserved (not wiped), and the binding
+    // still points at the stable ref for the new scheme.
+    let cs = h
+        .secrets
+        .get(&SecretRef(format!("sec:client:{}", source_id.0)))
+        .await
+        .unwrap();
+    assert_eq!(cs.expose_secret(), "cs-orig");
+    let binding = h.state.mcp_refresh_for_source(&source_id).unwrap();
+    assert_eq!(
+        binding.token_endpoint_auth,
+        TokenEndpointAuthBinding::ClientSecretPost {
+            secret_ref: SecretRef(format!("sec:client:{}", source_id.0))
+        }
+    );
+}
+
+#[tokio::test]
 async fn update_credential_covers_static_and_mcp_auth_branches() {
     let h = harness();
     let vault_id = create_vault(&h, "v").await;

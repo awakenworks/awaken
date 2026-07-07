@@ -375,7 +375,27 @@ pub struct McpOauthRefreshUpdate {
     #[serde(default)]
     pub scope: Option<String>,
     #[serde(default)]
-    pub token_endpoint_auth: Option<TokenEndpointAuthParams>,
+    pub token_endpoint_auth: Option<TokenEndpointAuthUpdate>,
+}
+
+/// The token-endpoint auth **update** patch
+/// (`BetaManagedAgentsTokenEndpointAuth{Basic,Post}UpdateParam`). Distinct from
+/// the create shape ([`TokenEndpointAuthParams`]): on update `client_secret` is
+/// OPTIONAL — omitting it switches/keeps the scheme against the *already-sealed*
+/// client secret, while supplying it re-seals. `None` is accepted too (lenient;
+/// the SDK's update type does not send it) and drops the confidential binding.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TokenEndpointAuthUpdate {
+    None,
+    ClientSecretBasic {
+        #[serde(default)]
+        client_secret: Option<String>,
+    },
+    ClientSecretPost {
+        #[serde(default)]
+        client_secret: Option<String>,
+    },
 }
 
 /// The stored refresh configuration of an `mcp_oauth` credential, exposed for a
@@ -1230,15 +1250,21 @@ async fn update_credential(
                     .await
                     .map_err(|e| bad_request(e.to_string()))?;
             }
+            // Re-seal the client secret only when the update actually carries one;
+            // an omitted `client_secret` keeps the currently-sealed value.
             if let Some(
-                TokenEndpointAuthParams::ClientSecretBasic { client_secret }
-                | TokenEndpointAuthParams::ClientSecretPost { client_secret },
+                TokenEndpointAuthUpdate::ClientSecretBasic {
+                    client_secret: Some(cs),
+                }
+                | TokenEndpointAuthUpdate::ClientSecretPost {
+                    client_secret: Some(cs),
+                },
             ) = &update.token_endpoint_auth
             {
                 let cref = SecretRef(format!("sec:client:{}", source_id.0));
                 state
                     .secrets
-                    .put(&cref, RedactedString::new(client_secret.clone()))
+                    .put(&cref, RedactedString::new(cs.clone()))
                     .await
                     .map_err(|e| bad_request(e.to_string()))?;
             }
@@ -1285,19 +1311,22 @@ async fn update_credential(
                             r.projection.scope = Some(scope);
                         }
                         if let Some(tea) = update.token_endpoint_auth {
+                            // The confidential binding always points at the stable
+                            // `sec:client:{source_id}` ref: an omitted secret keeps
+                            // the sealed value, a supplied one re-sealed it above.
                             let client_ref = || SecretRef(format!("sec:client:{}", source_id.0));
                             let (tag, binding) = match tea {
-                                TokenEndpointAuthParams::None => (
+                                TokenEndpointAuthUpdate::None => (
                                     TokenEndpointAuthResponse::None,
                                     TokenEndpointAuthBinding::None,
                                 ),
-                                TokenEndpointAuthParams::ClientSecretBasic { .. } => (
+                                TokenEndpointAuthUpdate::ClientSecretBasic { .. } => (
                                     TokenEndpointAuthResponse::ClientSecretBasic,
                                     TokenEndpointAuthBinding::ClientSecretBasic {
                                         secret_ref: client_ref(),
                                     },
                                 ),
-                                TokenEndpointAuthParams::ClientSecretPost { .. } => (
+                                TokenEndpointAuthUpdate::ClientSecretPost { .. } => (
                                     TokenEndpointAuthResponse::ClientSecretPost,
                                     TokenEndpointAuthBinding::ClientSecretPost {
                                         secret_ref: client_ref(),

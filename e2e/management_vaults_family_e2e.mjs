@@ -121,6 +121,34 @@ async function main() {
       );
       pass('beta.vaults.credentials.delete -> BetaManagedAgentsDeletedCredential; retrieve 404s after');
 
+      // -- Credential Update: mcp_oauth refresh scheme kept WITHOUT resending
+      //    the client secret (the SDK's update type makes client_secret optional;
+      //    the create type requires it — this must not 400). ------------------
+      const oauth = await client.beta.vaults.credentials.create(vaultA.id, {
+        type: 'mcp_oauth',
+        mcp_server_url: 'https://mcp.example.com/sse',
+        access_token: 'at', // awaken-allow: secret
+        refresh: {
+          client_id: 'cli',
+          refresh_token: 'rt', // awaken-allow: secret
+          token_endpoint: 'https://auth.example.com/token',
+          token_endpoint_auth: { type: 'client_secret_basic', client_secret: 'cs-orig' }, // awaken-allow: secret
+        },
+        betas: BETAS,
+      });
+      const oauthUpdated = await client.beta.vaults.credentials.update(oauth.id, {
+        vault_id: vaultA.id,
+        auth: {
+          type: 'mcp_oauth',
+          // No client_secret: keep the sealed one, only change the scheme.
+          refresh: { token_endpoint_auth: { type: 'client_secret_post' } },
+        },
+        betas: BETAS,
+      });
+      assert.equal(oauthUpdated.auth.refresh.token_endpoint_auth.type, 'client_secret_post');
+      assert.ok(!JSON.stringify(oauthUpdated).includes('cs-orig'), 'client secret never echoed');
+      pass('beta.vaults.credentials.update -> refresh scheme switch without resending client_secret');
+
       // -- Vault Archive (soft-delete, hidden from default list) -------------
       const archivedVault = await client.beta.vaults.archive(vaultB.id, { betas: BETAS });
       assert.ok(archivedVault.archived_at, 'archived vault carries archived_at');
