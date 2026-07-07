@@ -10,12 +10,15 @@ import http from 'node:http';
 // upstream failures so e2e can drive the runtime's retry + circuit-breaker + error
 // paths without a live key. Default (no opts) is the original always-succeed fake.
 export function startFakeAnthropic(apiKey, opts = {}) {
-  const { failuresBeforeSuccess = 0, alwaysFail = false, faultStatus = 503 } = opts;
+  const { failuresBeforeSuccess = 0, alwaysFail = false, faultStatus = 503, delayMs = 0 } = opts;
   const state = { requests: [], unauthorized: 0, attempts: 0 };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
-    req.on('end', () => {
+    req.on('end', async () => {
+      // Hold the response so a turn stays in flight (lets e2e drive the live-inbox
+      // while a turn is running). Only the authenticated success path is delayed.
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
       const presented = req.headers['x-api-key'] ?? (req.headers.authorization ?? '').replace(/^Bearer /, '');
       if (req.method !== 'POST' || !req.url.endsWith('/messages')) {
         res.writeHead(404, { 'content-type': 'application/json' });
