@@ -31,6 +31,7 @@ use awaken_protocol_acp::{
 use awaken_provisioning_contract::ProcessHandle;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
+use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 /// An already-launched ACP agent: the duplex channel plus the process handle for
@@ -332,10 +333,9 @@ impl RunExecutor for DispatchRunExecutor {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<Phase> {
-        if activation.snapshot.resolved_spec.runtime_adapter() == "awaken" {
-            self.native.execute(activation, context).await
-        } else {
-            self.acp.execute(activation, context).await
+        match activation.snapshot.resolved_spec.backend() {
+            Backend::Native => self.native.execute(activation, context).await,
+            Backend::Acp { .. } => self.acp.execute(activation, context).await,
         }
     }
 }
