@@ -140,13 +140,13 @@ fn pick_skill_md(files: &[(String, String)]) -> Option<&str> {
         .map(|(_, c)| c.as_str())
 }
 
-/// Build a version from SKILL.md content: parse its frontmatter for name +
-/// description, deliver the content to the runtime catalog, and register it.
+/// Build a version's projected metadata from SKILL.md content (parse frontmatter
+/// for name + description). Delivery to the durable catalog is the caller's job —
+/// the SDK path delivers under the skill's name, the legacy path under its id — so
+/// a skill is stored under exactly one durable id (no double-write).
 fn build_version(state: &SkillsApi, content: &str) -> SkillVersion {
     let spec = awaken_ext_skills::parse_skill_md("skill", content);
     let n = state.version_seq.fetch_add(1, Ordering::SeqCst);
-    // Deliver to the runtime's durable catalog so the skill is offered on threads.
-    let _ = state.host.skill_store_put(&spec.name, content);
     SkillVersion {
         id: format!("skver_{n:016}"),
         version: (n + 1).to_string(),
@@ -192,6 +192,8 @@ async fn create_skill(
             return err(StatusCode::BAD_REQUEST, "skill upload has no SKILL.md file");
         };
         let version = build_version(&state, &content);
+        // Deliver under the skill's name so the runtime offers it on threads.
+        let _ = state.host.skill_store_put(&version.name, &content);
         let n = state.skill_seq.fetch_add(1, Ordering::SeqCst);
         let id = format!("skill_{n:016}");
         let record = SkillRecord {
@@ -242,10 +244,26 @@ async fn create_skill(
     }
 }
 
-/// `GET /v1/skills` — the registered skills as a cursor page.
+/// `GET /v1/skills` — the registered skills as a cursor page. Includes durable
+/// delivered skills the in-memory registry does not track (e.g. after a restart,
+/// when the registry is empty but the durable catalog persists), so a skill
+/// uploaded before a restart still lists.
 async fn list_skills(State(state): State<Arc<SkillsApi>>) -> impl IntoResponse {
     let registry = state.registry.lock().unwrap();
-    let data: Vec<Value> = registry.iter().map(|(id, r)| r.project(id)).collect();
+    let mut data: Vec<Value> = registry.iter().map(|(id, r)| r.project(id)).collect();
+    for id in state.host.skill_store_list() {
+        if !registry.contains_key(&id) {
+            data.push(json!({
+                "id": id,
+                "type": "skill",
+                "created_at": OBJECT_AT,
+                "updated_at": OBJECT_AT,
+                "display_title": null,
+                "latest_version": null,
+                "source": "api",
+            }));
+        }
+    }
     (
         StatusCode::OK,
         Json(json!({ "data": data, "has_more": false, "next_page": null })),
@@ -300,6 +318,8 @@ async fn create_version(
         );
     };
     let version = build_version(&state, &content);
+    // Deliver the new version's content under the skill's name.
+    let _ = state.host.skill_store_put(&version.name, &content);
     let projected = version.project(&id);
     let mut registry = state.registry.lock().unwrap();
     registry.get_mut(&id).unwrap().versions.push(version);
