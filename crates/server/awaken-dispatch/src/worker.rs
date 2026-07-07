@@ -78,6 +78,17 @@ impl<S: Dispatch> DispatchWorker<S> {
         self
     }
 
+    /// Attach the durable interrupted-stream checkpoint store to every attempt, so
+    /// a dispatch re-executed after a crash resumes its in-flight step (Phase 3).
+    #[must_use]
+    pub fn with_stream_checkpoint(
+        mut self,
+        store: Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>,
+    ) -> Self {
+        self.exec = self.exec.with_stream_checkpoint(store);
+        self
+    }
+
     /// Override the lease duration.
     #[must_use]
     pub fn with_lease_ms(mut self, lease_ms: u64) -> Self {

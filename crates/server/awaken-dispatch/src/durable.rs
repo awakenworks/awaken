@@ -43,7 +43,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
     {
-        Self::with_owner(runtime, store, commit, "durable-run-ingress")
+        Self::with_owner(runtime, store, commit, "durable-run-ingress", None)
     }
 
     /// Like [`new`](Self::new) but with an explicit claim `owner`. Each process in
@@ -56,12 +56,19 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         store: Arc<S>,
         commit: Arc<C>,
         owner: impl Into<String>,
+        stream_checkpoint: Option<
+            Arc<dyn awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore>,
+        >,
     ) -> Self
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
     {
+        let mut worker = DispatchWorker::new(runtime, store, commit, owner);
+        if let Some(store) = stream_checkpoint {
+            worker = worker.with_stream_checkpoint(store);
+        }
         Self {
-            worker: Arc::new(DispatchWorker::new(runtime, store, commit, owner)),
+            worker: Arc::new(worker),
         }
     }
 
