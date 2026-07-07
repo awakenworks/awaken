@@ -466,9 +466,11 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
  "blake3",
  "futures",
  "object_store",
+ "rusqlite",
  "sqlx",
  "tempfile",
  "thiserror 2.0.18",

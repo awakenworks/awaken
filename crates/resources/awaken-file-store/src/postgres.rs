@@ -3,36 +3,13 @@
 //! the immutable/dedup contract. Compile-verified; running needs a database.
 
 use async_trait::async_trait;
-use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use sqlx::{PgPool, Row};
 
+use crate::schema::{NS, file_store_bundle};
 use crate::{FileStore, FileStoreError, content_id};
 
 fn e(x: impl ToString) -> FileStoreError {
     FileStoreError(x.to_string())
-}
-
-/// Table namespace (bundle prefix): tables are `file_store_*`, the ledger is
-/// `file_store_schema_migrations` — scoped so the blob store coexists with other
-/// schemas in a shared database.
-const NS: &str = "file_store";
-
-/// The versioned schema bundle (ADR-0043 scoped migration; foundation's
-/// `awaken-scoped-migration`). One migration: the content-addressed `file_store_blob`
-/// table. All schema changes are additive migrations here, never a raw CREATE TABLE.
-fn file_store_bundle() -> Result<MigrationBundle, MigrationError> {
-    MigrationBundle::new(
-        "awaken.file_store",
-        vec![Migration::new(
-            1,
-            "content-addressed blobs: one row per BLAKE3 content id",
-            "CREATE TABLE {prefix}_blob (\
-                 id TEXT PRIMARY KEY, \
-                 bytes BYTEA NOT NULL, \
-                 size BIGINT NOT NULL, \
-                 created_at TIMESTAMPTZ NOT NULL DEFAULT now())",
-        )?],
-    )
 }
 
 /// A Postgres-backed [`FileStore`] over a `file_store_blob(id, bytes, size, created_at)` table.
