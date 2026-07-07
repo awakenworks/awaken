@@ -8,6 +8,9 @@
 
 #[tokio::main]
 async fn main() {
+    // Install the tracing subscriber + optional OTLP / AWAKEN_TRACE_FILE span export
+    // and the W3C traceparent propagator before serving.
+    awaken_observability::init();
     let addr =
         std::env::var("AWAKEN_STANDALONE_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let shutdown = async {
@@ -16,4 +19,6 @@ async fn main() {
     awaken_standalone::run(&addr, shutdown, awaken_standalone::print_banner)
         .await
         .expect("serve the standalone");
+    // Flush any buffered spans before exit.
+    awaken_observability::shutdown();
 }

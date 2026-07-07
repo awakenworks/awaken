@@ -13,6 +13,9 @@ path = "src/main.rs"
 # admin-config-api write plane, no iam-server, no distributed store. The zero-BuSL
 # invariant is asserted in CI (check_crate_boundaries.py, license tier).
 awaken-runtime-host.workspace = true
+# Cross-cutting telemetry (open-tier, zero-BuSL leaf): tracing subscriber + OTLP /
+# AWAKEN_TRACE_FILE span export + W3C traceparent propagator + ingress middleware.
+awaken-observability.workspace = true
 awaken-protocol-managed.workspace = true
 # The sibling protocol adapters over the same host — the standalone serves the
 # whole open protocol surface (Managed + AI SDK + AG-UI + A2A), all behind the guard.

@@ -37,6 +37,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # no store-postgres). Adding a BuSL dep here should fail review.
     "awaken-standalone": {
         "awaken-runtime-host",
+        "awaken-observability",
         "awaken-protocol-managed",
         "awaken-protocol-ai-sdk",
         "awaken-protocol-ag-ui",
@@ -53,6 +54,21 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # Tenancy scope tree (Org⊃Workspace⊃Project) vendored serde-only from
     # awaken-flow's awaken-flow-work; a foundation leaf, names no iam/store/wire.
     "awaken-scope": {"serde"},
+    # Cross-cutting telemetry infrastructure (NOT an `ext-*`): the process-global
+    # tracing subscriber + OTLP / AWAKEN_TRACE_FILE span export + W3C traceparent
+    # propagator + the axum ingress span middleware. A foundation leaf consumed by
+    # the service binaries; external deps only, names no domain capability.
+    "awaken-observability": {
+        "serde_json",
+        "axum",
+        "futures",
+        "tracing",
+        "tracing-subscriber",
+        "tracing-opentelemetry",
+        "opentelemetry",
+        "opentelemetry_sdk",
+        "opentelemetry-otlp",
+    },
     # Host-side credential vocabulary (Credential / AuthChallenge /
     # CredentialRefresher) shared by the outbound wire clients (awaken-ext-mcp,
     # awaken-protocol-a2a). A leaf like the contracts: names no wire, store, or
@@ -743,6 +759,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # modes; it names no runtime/ext/store crate directly. Nothing depends on it.
     "awaken-server-local": {
         "awaken-runtime-host",
+        "awaken-observability",
         "awaken-authz-enforce",
         "awaken-run-executor-acp",
         "awaken-protocol-managed",

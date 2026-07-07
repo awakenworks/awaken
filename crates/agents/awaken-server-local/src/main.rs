@@ -10,6 +10,10 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Install the tracing subscriber + optional OTLP / AWAKEN_TRACE_FILE span export
+    // and the W3C traceparent propagator before any request is served, so every
+    // `#[instrument]` span in the request path is captured on one trace.
+    awaken_observability::init();
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
     // Connect the shared Postgres dispatch pool once, before serving, when durable
     // ingress is backed by Postgres (a multi-node fleet sharing one queue). Doing it
@@ -50,6 +54,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("compaction") => awaken_server_local::build_compaction_router(),
         _ => awaken_server_local::build_echo_router(),
     };
+    // Root every request span in the ingress middleware (extracts the inbound
+    // `traceparent`); the whole direct request→inference path nests under it.
+    let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     eprintln!("awaken-server-local listening on http://{addr}");
     axum::serve(listener, app)
@@ -57,5 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await?;
+    // Flush any buffered spans (OTLP batch / trace-file) before exit.
+    awaken_observability::shutdown();
     Ok(())
 }

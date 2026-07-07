@@ -12,6 +12,9 @@ path = "src/main.rs"
 # The extracted service layer: SharedHost / ManagedHost / ProtocolHost and all
 # host modules live here; this bin only composes them into router modes.
 awaken-runtime-host = { workspace = true }
+# Cross-cutting telemetry: the tracing subscriber + OTLP/AWAKEN_TRACE_FILE span
+# export + W3C traceparent propagator + ingress span middleware (not an ext).
+awaken-observability = { workspace = true }
 # Open enforcement (S1): the session-axis guard + RequestTenancy the project
 # ingress stamps. The standalone wraps the session router with it.
 awaken-authz-enforce = { workspace = true }
