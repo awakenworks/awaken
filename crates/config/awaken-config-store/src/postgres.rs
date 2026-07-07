@@ -101,6 +101,22 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         }
     }
 
+    async fn list_configs_scoped(&self, scope: &ScopeId) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT data FROM {NS}_agent WHERE scope_id = $1 ORDER BY id ASC"
+        ))
+        .bind(&scope.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        let mut configs = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Json(config): Json<AgentConfig> = row.try_get("data").map_err(reject)?;
+            configs.push(config);
+        }
+        Ok(configs)
+    }
+
     async fn put_publication_scoped(
         &self,
         scope: &ScopeId,
@@ -158,6 +174,10 @@ impl ConfigRegistry for PostgresConfigStore {
     async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
         self.get_config_scoped(&ScopeId::from(DEFAULT_SCOPE), id)
             .await
+    }
+
+    async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        self.list_configs_scoped(&ScopeId::from(DEFAULT_SCOPE)).await
     }
 
     async fn put_publication(

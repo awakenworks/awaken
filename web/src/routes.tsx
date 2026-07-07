@@ -11,6 +11,7 @@ import McpServersSurface from "./surfaces/mcp-servers";
 import MemorySurface from "./surfaces/memory";
 import ModelsSurface from "./surfaces/models";
 import SkillsSurface from "./surfaces/skills";
+import AgentEditorSurface from "./surfaces/agent-editor";
 import ProjectAgentsSurface from "./surfaces/project-agents";
 import ProjectOverviewSurface from "./surfaces/project-overview";
 import ProjectSettingsSurface from "./surfaces/project-settings";
@@ -31,6 +32,7 @@ export const router = createBrowserRouter([
       { path: "p/:pid/sessions", element: <SessionsSurface /> },
       { path: "p/:pid/sessions/:sid", element: <SessionDetailSurface /> },
       { path: "p/:pid/agents", element: <ProjectAgentsSurface /> },
+      { path: "p/:pid/agents/:id", element: <AgentEditorSurface /> },
       { path: "p/:pid/environments", element: <EnvironmentsSurface /> },
       { path: "p/:pid/vaults", element: <VaultsSurface /> },
       { path: "p/:pid/memory", element: <MemorySurface /> },

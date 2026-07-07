@@ -9,7 +9,7 @@ import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
 import { api } from "../lib/api/client";
 import type {
-  Agent,
+  AgentConfigList,
   CreateSessionRequest,
   Environment,
   ListSessionsResponse,
@@ -45,8 +45,11 @@ function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void })
   const [vaultIds, setVaultIds] = useState("");
   const [mcp, setMcp] = useState<{ name: string; url: string }[]>([]);
   const [manage, setManage] = useState<"agents" | "environments" | null>(null);
-  // Inline pickers over the workspace catalog (IA: reference, don't relocate).
-  const agents = useQuery({ queryKey: ["agents"], queryFn: () => api.get<Page<Agent>>("/v1/agents") });
+  // Inline pickers over the config plane (published agents) + environments.
+  const agents = useQuery({
+    queryKey: ["config-agents"],
+    queryFn: () => api.get<AgentConfigList>("/v1/config/agents"),
+  });
   const envs = useQuery({
     queryKey: ["environments"],
     queryFn: () => api.get<Page<Environment>>("/v1/environments"),
@@ -75,7 +78,8 @@ function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void })
             <option value="">{app.t("— select an agent —", "— 选择 agent —")}</option>
             {(agents.data?.data ?? []).map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name} · {a.id}
+                {a.id}
+                {a.published ? "" : app.t(" (draft)", "(草稿)")}
               </option>
             ))}
           </select>

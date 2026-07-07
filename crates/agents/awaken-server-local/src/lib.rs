@@ -1434,6 +1434,10 @@ struct ManagementStores {
     /// Durable home for the Managed session aggregate (its own `sessions.db`), so a
     /// rehydrated session reports its real config across a restart / peer process.
     sessions: Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
+    /// The config authoring plane (`config.db`): the rich `AgentConfig` drafts the
+    /// management console authors directly, and their publications. Distinct from
+    /// the SDK-facing `/v1/agents` registry — this is the console's agent source.
+    config: Arc<dyn awaken_config_store::ConfigRegistry>,
 }
 
 /// Ephemeral management stores: everything in process memory (dev / e2e default).
@@ -1445,6 +1449,9 @@ fn in_memory_management_stores() -> ManagementStores {
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
         sessions: Arc::new(awaken_protocol_managed::InMemorySessionRepository::default()),
+        config: Arc::new(
+            awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
+        ),
     }
 }
 
@@ -1495,6 +1502,12 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
         sessions: Arc::new(
             awaken_runtime_host::SqliteManagedSessionRepository::open(&db("sessions.db"))
                 .expect("open sessions.db under AWAKEN_MGMT_DIR"),
+        ),
+        // The config authoring plane persists agent drafts/publications under its
+        // own `config.db` (ADR-0029/0031 `config` namespace).
+        config: Arc::new(
+            awaken_config_store::SqliteConfigStore::open(&db("config.db"))
+                .expect("open config.db under AWAKEN_MGMT_DIR"),
         ),
     }
 }
@@ -1623,6 +1636,7 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         profiles,
         mcp: mcp_store,
         sessions,
+        config,
     } = stores;
     // ONE MCP store across the admin router and the ManagedHost, and ONE
     // credential repo + secret store across admin, vaults, and sessions: a
@@ -1680,6 +1694,16 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // networking policy (egress on/off) at creation.
     let env_state = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
     let environments = awaken_protocol_managed::environments_router(env_state.clone());
+    // The config authoring plane (`/v1/config/agents/*`): the console authors the
+    // rich `AgentConfig` here (basics + tools + plugins + plugin_config policy +
+    // context) and `publish` compiles + installs it so sessions run that config.
+    // The same service is wired into the host below, so a session for a published
+    // agent resolves its installed config.
+    let config_service = Arc::new(ConfigService::new(
+        config,
+        advertised_tools(&HashSet::new(), &HashSet::new(), &[]),
+    ));
+    let config_plane = config_router(config_service.clone());
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging
@@ -1692,7 +1716,8 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
         .merge(user_profiles)
         .merge(agents)
         .merge(deployments)
-        .merge(environments);
+        .merge(environments)
+        .merge(config_plane);
     if let Some(iam) = iam {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
         mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
@@ -1705,7 +1730,7 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // conversation through ext-mcp (`add a b` → mcp__calc__add → `result: …`);
     // non-`add` turns still echo, preserving the prior expectations.
     let (model, model_ref) = scenario_model(Arc::new(McpToolModel), "management");
-    let host = Arc::new(SharedHost::new(model, model_ref));
+    let host = Arc::new(SharedHost::new(model, model_ref).with_config_service(config_service.clone()));
     let managed_state = Arc::new(
         ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
             .with_vaults(vault_state)

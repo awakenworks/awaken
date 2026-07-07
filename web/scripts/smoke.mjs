@@ -94,6 +94,25 @@ await step("bind project agent mcp", "PUT", "/v1/config/projects/demo/agents/def
 });
 await step("read project agent mcp", "GET", "/v1/config/projects/demo/agents/default/mcp", undefined, (s, p) => s === 200 && p.mcp_server_ids.includes("docs-search"));
 
+// ---- Project · Agents authoring via config plane (surfaces/agent-editor.tsx) ----
+// The console authors the rich AgentConfig against our own management API, then
+// publishes (compile + install). Publish/compile is inference-agnostic.
+const cfgAgent = {
+  id: "smoke-agent",
+  instructions: "You are a smoke-test agent.",
+  max_steps: 8,
+  model_binding: { provider_instance_ref: "anthropic", model_ref: "claude", backend_ref: "anthropic_messages" },
+  tool_ids: [],
+  plugin_ids: [],
+  plugin_config: {},
+  context_policy: { kind: "keep_all" },
+};
+await step("author config agent", "PUT", "/v1/config/agents/smoke-agent", cfgAgent, (s, p) => s === 200 && p.id === "smoke-agent");
+await step("validate config agent", "POST", "/v1/config/agents/smoke-agent/validate", cfgAgent, (s, p) => s === 200 && p.valid === true);
+await step("list config agents (draft)", "GET", "/v1/config/agents", undefined, (s, p) => s === 200 && p.data.some((a) => a.id === "smoke-agent" && a.published === false));
+await step("publish config agent", "POST", "/v1/config/agents/smoke-agent/publish", undefined, (s, p) => s === 200 && p.installed === true);
+await step("list config agents (published)", "GET", "/v1/config/agents", undefined, (s, p) => s === 200 && p.data.some((a) => a.id === "smoke-agent" && a.published === true));
+
 // ---- Project · Vaults (surfaces/vaults.tsx; bare face until §7.10) ----
 const vault = await step("create vault", "POST", "/v1/vaults", { display_name: "smoke" });
 await step("vault credential (static_bearer)", "POST", `/v1/vaults/${vault.id}/credentials`, {

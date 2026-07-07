@@ -331,6 +331,43 @@ export interface Agent {
   updated_at: string;
 }
 
+// ---- config-plane agent authoring (/v1/config/agents) ----
+// The rich AgentConfig the console authors directly, distinct from the SDK-facing
+// /v1/agents registry above. `publish` compiles + installs it so sessions run it.
+
+export interface ModelBinding {
+  provider_instance_ref: string;
+  model_ref: string;
+  backend_ref: string;
+}
+/** Internally tagged on `kind` (snake_case), mirroring the Rust ContextPolicy. */
+export type ContextPolicy = { kind: "keep_all" } | { kind: "keep_last"; keep_last: number };
+
+export interface AgentConfig {
+  id: string;
+  instructions: string;
+  max_steps: number;
+  model_binding: ModelBinding;
+  tool_ids: string[];
+  plugin_ids: string[];
+  /** Per-plugin config sections, keyed by plugin id (permission / state_machine /
+   * deferred-tools / generative-ui all live here as JSON). */
+  plugin_config: Record<string, unknown>;
+  context_policy: ContextPolicy;
+}
+/** A list/get item: the stored config plus a live `published` flag (a compiled
+ * config is currently installed in the runtime catalog). */
+export type AgentConfigItem = AgentConfig & { published?: boolean };
+export interface AgentConfigList {
+  data: AgentConfigItem[];
+}
+export interface PublishResult {
+  publication_id: string;
+  fingerprint: string;
+  agent_id: string;
+  installed: boolean;
+}
+
 // ---- vaults ----
 
 export interface Vault {
