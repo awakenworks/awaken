@@ -770,6 +770,10 @@ impl ManagedState {
 
     /// `POST /v1/sessions/{id}` — update `title` and/or PATCH `metadata`
     /// (string upserts, null deletes, omitted preserves).
+    /// `POST /v1/sessions/{id}` — update only `title` / `metadata`. `environment_id`
+    /// is pinned at session creation and is not accepted here (Managed Agents
+    /// contract: the container's environment is fixed for the session's lifetime —
+    /// to change it, create a new session), so a caller sending it is ignored.
     pub fn update_session(
         &self,
         id: &str,
