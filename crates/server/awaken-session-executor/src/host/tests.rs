@@ -577,3 +577,37 @@ async fn attach_resource_stages_the_mount_and_evicts_the_cached_sandbox() {
             .contains("data.txt")
     );
 }
+
+/// The environment's egress policy reaches the sandbox: a `deny_egress` SessionInit
+/// stages the thread so its rebuilt sandbox spec denies network egress; an
+/// unrestricted one leaves the host network shared.
+#[tokio::test]
+async fn prepare_session_stages_egress_into_the_sandbox_spec() {
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = crate::ManagedHost::new(host.clone());
+    let init = |deny: bool| SessionInit {
+        agent_id: "a".into(),
+        mcp_servers: Vec::new(),
+        resources: Vec::new(),
+        project_id: None,
+        model: None,
+        runtime: None,
+        deny_egress: deny,
+    };
+
+    managed.prepare_session("t-deny", init(true)).await.unwrap();
+    assert!(
+        host.sandbox_spec("t-deny").deny_egress,
+        "a deny_egress session stages into the sandbox spec"
+    );
+
+    managed
+        .prepare_session("t-open", init(false))
+        .await
+        .unwrap();
+    assert!(
+        !host.sandbox_spec("t-open").deny_egress,
+        "an unrestricted session keeps the host network"
+    );
+}

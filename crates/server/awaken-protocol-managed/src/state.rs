@@ -128,6 +128,10 @@ pub struct SessionInit {
     /// The session's requested runtime adapter (R3): `"acp:*"` routes to an ACP
     /// CLI; `None`/`"awaken"` → native.
     pub runtime: Option<String>,
+    /// Deny network egress for the session's sandbox, resolved from its environment's
+    /// networking policy (a non-`unrestricted` policy → `true`). The host runs the
+    /// `bash` tool under a `bwrap --unshare-net` namespace. `false` = host network.
+    pub deny_egress: bool,
 }
 
 /// One session-mounted resource (ADR-0038), parsed from a wire `resources[]` entry.
@@ -576,6 +580,10 @@ pub struct ManagedState {
     /// session's `mcp_servers` are bound to vault credentials through it at
     /// creation. `None` means every binding resolves to no credential.
     vaults: Option<Arc<VaultState>>,
+    /// The environments surface, when the server mounts one: a session's
+    /// `environment_id` is resolved to its networking policy (egress on/off) at
+    /// creation. `None` → every session gets host network (unrestricted).
+    environments: Option<Arc<crate::environments::EnvironmentState>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
     /// Durable-config source of truth for the session aggregate: `create` writes
     /// it, rehydration reads it so a restored session reports its real
@@ -591,6 +599,10 @@ pub struct ManagedState {
 pub enum StateError {
     #[error("session not found")]
     NotFound,
+    /// A write was sent to an archived (terminated, read-only) session; the router
+    /// maps it to 409 `invalid_request_error`.
+    #[error("session is archived and is read-only")]
+    Archived,
     /// A session create named a vault that does not exist (`vault_ids`); the
     /// router maps it to the standard 404 envelope naming the vault id.
     #[error("vault `{0}` not found")]
@@ -608,11 +620,25 @@ impl ManagedState {
         Self {
             runtime: Box::new(runtime),
             vaults: None,
+            environments: None,
             sessions: Mutex::new(HashMap::new()),
             sessions_repo: Arc::new(InMemorySessionRepository::default()),
             session_seq: AtomicU64::new(0),
             event_seq: AtomicU64::new(0),
         }
+    }
+
+    /// Wire the environments surface, so `POST /v1/sessions` resolves the session's
+    /// `environment_id` to its networking policy (egress on/off). Share the same
+    /// `EnvironmentState` with [`crate::environments_router`], or the sessions and the
+    /// environment routes see different environments.
+    #[must_use]
+    pub fn with_environments(
+        mut self,
+        environments: Arc<crate::environments::EnvironmentState>,
+    ) -> Self {
+        self.environments = Some(environments);
+        self
     }
 
     /// Wire a durable session repository (e.g. SQLite alongside the transcript
@@ -710,6 +736,17 @@ impl ManagedState {
             .enumerate()
             .map(|(n, r)| resource_dto(&id, n, r))
             .collect();
+        // Resolve the session's environment (defaulting to the local one) and its
+        // networking policy once, for both the SessionInit (staged before the first
+        // turn) and the echoed Session object.
+        let environment_id = req
+            .environment_id
+            .clone()
+            .unwrap_or_else(|| "env_local".to_string());
+        let deny_egress = self
+            .environments
+            .as_ref()
+            .is_some_and(|e| e.deny_egress(&environment_id));
         self.runtime
             .prepare_session(
                 &id,
@@ -720,6 +757,7 @@ impl ManagedState {
                     project_id,
                     model: req.agent.model().map(str::to_string),
                     runtime: req.agent.runtime().map(str::to_string),
+                    deny_egress,
                 },
             )
             .await
@@ -754,9 +792,7 @@ impl ManagedState {
                 skills: project::agent_skills(&caps),
                 multiagent: project::agent_multiagent(&caps),
             },
-            environment_id: req
-                .environment_id
-                .unwrap_or_else(|| "env_local".to_string()),
+            environment_id: environment_id.clone(),
             created_at: PROCESSED_AT.to_string(),
             updated_at: PROCESSED_AT.to_string(),
             archived_at: None,
@@ -952,12 +988,24 @@ impl ManagedState {
             .ok_or(StateError::NotFound)
     }
 
-    /// `POST /v1/sessions/{id}/archive` — soft-delete (stamp `archived_at`).
+    /// `POST /v1/sessions/{id}/archive` — terminate the session: stamp
+    /// `archived_at`, move `status` to `terminated`, and commit a
+    /// `session.status_terminated` event so a streaming/listing client observes the
+    /// terminal transition (not just the mutated status field). Idempotent: a
+    /// re-archive returns the same terminal record without a second event.
     pub fn archive_session(&self, id: &str) -> Result<Session, StateError> {
+        let terminated_id = self.next_event_id();
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        record.session.archived_at = Some(PROCESSED_AT.to_string());
-        record.session.status = "terminated";
+        if record.session.archived_at.is_none() {
+            record.session.archived_at = Some(PROCESSED_AT.to_string());
+            record.session.status = "terminated";
+            record.events.push(Event {
+                id: terminated_id,
+                kind: OutboundKind::SessionStatusTerminated {},
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
+        }
         Ok(record.session.clone())
     }
 
@@ -1290,13 +1338,16 @@ impl ManagedState {
         // (a process restart) before resolving the agent — so a resume continues
         // the parked run instead of failing closed (ADR-0039).
         self.ensure_session(session_id).await?;
+        // An archived session is terminal and read-only: refuse every inbound write
+        // (message, resume, interrupt, outcome) with a 409, before touching the
+        // runtime — the contract makes an archived session read-only.
         let agent_id = {
             let sessions = self.sessions.lock().unwrap();
-            sessions
-                .get(session_id)
-                .ok_or(StateError::NotFound)?
-                .agent_id
-                .clone()
+            let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+            if record.session.archived_at.is_some() {
+                return Err(StateError::Archived);
+            }
+            record.agent_id.clone()
         };
 
         let mut receipts = Vec::new();

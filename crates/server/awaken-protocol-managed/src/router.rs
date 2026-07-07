@@ -116,6 +116,13 @@ fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
             "not_found_error",
             "session not found".to_string(),
         ),
+        // Writing to an archived (terminated, read-only) session conflicts with the
+        // session's terminal state — 409 in the shared error envelope.
+        err @ StateError::Archived => (
+            StatusCode::CONFLICT,
+            "invalid_request_error",
+            err.to_string(),
+        ),
         // A create naming a nonexistent vault fails closed; the message names
         // the offending vault id (the Display impl carries it).
         err @ StateError::VaultNotFound(_) => {

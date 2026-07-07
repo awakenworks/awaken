@@ -109,6 +109,26 @@ impl EnvironmentState {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Whether `env_id`'s networking policy denies egress. `true` for an explicit
+    /// `limited` or `none` policy — bwrap enforces on/off egress only, so a `limited`
+    /// host allowlist is not honorable locally and fails closed to no egress. An
+    /// `unrestricted` policy, absent networking (incl. `self_hosted`), or an unknown
+    /// environment → `false` (the sandbox shares the host network).
+    #[must_use]
+    pub fn deny_egress(&self, env_id: &str) -> bool {
+        let envs = self.envs.lock().unwrap();
+        let Some(rec) = envs.get(env_id) else {
+            return false;
+        };
+        matches!(
+            rec.config
+                .get("networking")
+                .and_then(|n| n.get("type"))
+                .and_then(|t| t.as_str()),
+            Some("limited") | Some("none")
+        )
+    }
 }
 
 /// Mount the environments + work routes.

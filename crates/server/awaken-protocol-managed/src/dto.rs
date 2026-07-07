@@ -308,6 +308,12 @@ pub enum OutboundKind {
     SessionStatusRunning {},
     #[serde(rename = "session.status_idle")]
     SessionStatusIdle { stop_reason: StopReason },
+    /// The session reached its irreversible terminal state (emitted when the
+    /// session is archived — this server models archive as termination, stamping
+    /// `archived_at` and `status: "terminated"`). A client streaming or listing
+    /// the session sees this as the last event; no further turns are accepted.
+    #[serde(rename = "session.status_terminated")]
+    SessionStatusTerminated {},
     #[serde(rename = "span.outcome_evaluation_start")]
     SpanOutcomeEvaluationStart { outcome_id: String, iteration: u32 },
     #[serde(rename = "span.outcome_evaluation_end")]
@@ -329,6 +335,7 @@ impl OutboundKind {
             OutboundKind::AgentCustomToolUse { .. } => "agent.custom_tool_use",
             OutboundKind::SessionStatusRunning {} => "session.status_running",
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
+            OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
             OutboundKind::SpanOutcomeEvaluationStart { .. } => "span.outcome_evaluation_start",
             OutboundKind::SpanOutcomeEvaluationEnd { .. } => "span.outcome_evaluation_end",
         }
