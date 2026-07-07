@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::process::Stdio as ProcStdio;
 
 use async_trait::async_trait;
+use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_provisioning_contract as pc;
 use serde_json::json;
 use tokio::process::Command as TokioCommand;
@@ -248,6 +249,45 @@ impl pc::SandboxProvider for NamespaceProvider {
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(self.create_sandbox(spec).await?))
+    }
+
+    async fn adopt(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        let outputs_path = handle
+            .extra
+            .as_ref()
+            .and_then(|v| v.get("outputs_path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("/mnt/session/outputs")
+            .to_string();
+        let root = IsolatedRoot::new(self.base.join(&handle.sandbox_id));
+        let host_workspace = root.resolve("/workspace").map_err(err)?;
+        let host_outputs = root.resolve(&outputs_path).map_err(err)?;
+        Ok(Box::new(NamespaceSandbox {
+            id: handle.sandbox_id.clone(),
+            root,
+            outputs_path,
+            host_workspace,
+            host_outputs,
+            base_env: Vec::new(),
+            network: pc::NetworkPolicy::Unrestricted,
+            layout: Vec::new(),
+            realized: Vec::new(),
+        }))
+    }
+}
+
+impl NamespaceProvider {
+    /// Realize a sandbox and return the concrete [`NamespaceSandbox`], so a caller
+    /// can use the tool-transparent [`NamespaceSandbox::spawn_agent`] capability.
+    /// The trait `create` delegates here and boxes the result.
+    pub async fn create_sandbox(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<NamespaceSandbox, pc::SandboxError> {
         pc::prepare_environment(spec, &Self::caps()).map_err(err)?;
         // bwrap can share or unshare the net namespace, but cannot enforce a
         // host allowlist; refuse it rather than silently blocking all egress.
@@ -279,7 +319,7 @@ impl pc::SandboxProvider for NamespaceProvider {
             }
         };
 
-        Ok(Box::new(NamespaceSandbox {
+        Ok(NamespaceSandbox {
             id: spec.scope.clone(),
             root,
             outputs_path: spec.outputs_path.clone(),
@@ -289,34 +329,7 @@ impl pc::SandboxProvider for NamespaceProvider {
             network: spec.network.clone(),
             layout,
             realized,
-        }))
-    }
-
-    async fn adopt(
-        &self,
-        handle: &pc::SandboxHandle,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        let outputs_path = handle
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("outputs_path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("/mnt/session/outputs")
-            .to_string();
-        let root = IsolatedRoot::new(self.base.join(&handle.sandbox_id));
-        let host_workspace = root.resolve("/workspace").map_err(err)?;
-        let host_outputs = root.resolve(&outputs_path).map_err(err)?;
-        Ok(Box::new(NamespaceSandbox {
-            id: handle.sandbox_id.clone(),
-            root,
-            outputs_path,
-            host_workspace,
-            host_outputs,
-            base_env: Vec::new(),
-            network: pc::NetworkPolicy::Unrestricted,
-            layout: Vec::new(),
-            realized: Vec::new(),
-        }))
+        })
     }
 }
 
@@ -333,22 +346,9 @@ pub struct NamespaceSandbox {
     realized: Vec<pc::RealizedMount>,
 }
 
-#[async_trait]
-impl pc::Sandbox for NamespaceSandbox {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn handle(&self) -> pc::SandboxHandle {
-        let mut h = pc::SandboxHandle::new("bwrap", &self.id);
-        h.extra = Some(json!({ "outputs_path": self.outputs_path }));
-        h
-    }
-
-    async fn spawn(
-        &self,
-        command: pc::Command,
-    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+impl NamespaceSandbox {
+    /// The rendered launcher argv for `command` (bwrap wrapping the program).
+    fn render_argv(&self, command: &pc::Command) -> Result<Vec<String>, pc::SandboxError> {
         if command.argv.is_empty() {
             return Err(err("command argv is empty"));
         }
@@ -368,7 +368,57 @@ impl pc::Sandbox for NamespaceSandbox {
             cwd: &command.cwd,
             argv: &command.argv,
         };
-        let argv = bubblewrap_argv(&input);
+        Ok(bubblewrap_argv(&input))
+    }
+
+    /// The tool-transparent agent launch (ADR-0041 amendment), namespace-tier twin
+    /// of [`crate::LocalSandbox::spawn_agent`]: run an opaque agent under bwrap
+    /// with piped stdio and hand back its [`pc::ProcessHandle`] plus a duplex
+    /// [`AgentChannel`] (its stdout+stdin). The bridge drives ACP over the channel
+    /// while the supervisor polls the handle; the OS confines the process — and,
+    /// under [`pc::NetworkPolicy::None`], unshares its network namespace —
+    /// regardless of what the agent does.
+    pub async fn spawn_agent(
+        &self,
+        command: pc::Command,
+    ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
+        let argv = self.render_argv(&command)?;
+        let mut cmd = TokioCommand::new(&argv[0]);
+        cmd.args(&argv[1..])
+            .stdin(ProcStdio::piped())
+            .stdout(ProcStdio::piped())
+            .stderr(ProcStdio::null());
+        let mut child = cmd.spawn().map_err(err)?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| err("agent stdin was not piped"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| err("agent stdout was not piped"))?;
+        let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
+        Ok((Box::new(LocalProcess::spawned(child)), channel))
+    }
+}
+
+#[async_trait]
+impl pc::Sandbox for NamespaceSandbox {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn handle(&self) -> pc::SandboxHandle {
+        let mut h = pc::SandboxHandle::new("bwrap", &self.id);
+        h.extra = Some(json!({ "outputs_path": self.outputs_path }));
+        h
+    }
+
+    async fn spawn(
+        &self,
+        command: pc::Command,
+    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+        let argv = self.render_argv(&command)?;
         let mut cmd = TokioCommand::new(&argv[0]);
         cmd.args(&argv[1..]);
         let (out, e) = match command.stdio {

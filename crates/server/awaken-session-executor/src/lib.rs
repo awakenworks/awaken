@@ -34,6 +34,7 @@ mod memory_store_api;
 mod model_route;
 mod models;
 mod provisioning;
+mod sandbox_source;
 mod session_store;
 mod skills;
 mod skills_api;
@@ -62,7 +63,10 @@ use crate::host::{HostError, HostErrorKind, PendingTool, TurnResult};
 // The neutral session substrate and its resume vocabulary.
 pub use crate::dispatch_backend::init_shared_postgres_dispatch;
 pub use crate::host::{HostResume, SharedHost};
+// The sandboxed ACP channel source (bwrap-confined agent launch) and the shared
+// per-thread egress handle a composition root wires it with.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
+pub use crate::sandbox_source::{SandboxChannelSource, ThreadEgress};
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
 pub use crate::acp_provision::EnvLaunchResolver;
