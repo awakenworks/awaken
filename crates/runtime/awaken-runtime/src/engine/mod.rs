@@ -1203,6 +1203,8 @@ impl CheckpointCtx<'_> {
         gen_ai.response.finish_reasons = tracing::field::Empty,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
     )
 )]
 async fn infer_with_retry(
@@ -1228,16 +1230,24 @@ async fn infer_with_retry(
     if let Some(ctx) = checkpoint {
         ctx.store.delete(&ctx.run_id).await;
     }
-    if let Ok(response) = &result {
-        if let Some(usage) = &response.usage {
-            span.record("gen_ai.usage.input_tokens", usage.prompt_tokens as i64);
-            span.record("gen_ai.usage.output_tokens", usage.completion_tokens as i64);
+    match &result {
+        Ok(response) => {
+            if let Some(usage) = &response.usage {
+                span.record("gen_ai.usage.input_tokens", usage.prompt_tokens as i64);
+                span.record("gen_ai.usage.output_tokens", usage.completion_tokens as i64);
+            }
+            if let Some(reason) = &response.stop_reason {
+                span.record(
+                    "gen_ai.response.finish_reasons",
+                    format!("{reason:?}").as_str(),
+                );
+            }
         }
-        if let Some(reason) = &response.stop_reason {
-            span.record(
-                "gen_ai.response.finish_reasons",
-                format!("{reason:?}").as_str(),
-            );
+        // OTel: on a failed inference, tag `error.type` (the neutral taxonomy code)
+        // and mark the span status ERROR so the trace surfaces the failure.
+        Err(err) => {
+            span.record("error.type", err.code());
+            span.record("otel.status_code", "ERROR");
         }
     }
     result
@@ -1773,6 +1783,8 @@ async fn run_delegation(
         gen_ai.operation.name = "execute_tool",
         gen_ai.tool.name = %call.tool_id,
         gen_ai.tool.call.id = %call.call_id,
+        error.type = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
     )
 )]
 async fn execute_tool(
@@ -1780,20 +1792,28 @@ async fn execute_tool(
     env: Option<&ResolvedExecutionEnv>,
     call: &ToolCall,
 ) -> ToolOutput {
-    tracing::Span::current().record(
+    let span = tracing::Span::current();
+    span.record(
         "otel.name",
         format!("execute_tool {}", call.tool_id).as_str(),
     );
     let tool = env
         .and_then(|env| env.dynamic_tool(&call.tool_id))
         .or_else(|| runtime.tool(&call.tool_id).cloned());
-    match tool {
+    let output = match tool {
         Some(tool) => match tool.invoke(call.clone()).await {
             Ok(output) => output,
             Err(err) => ToolOutput::error(&call.call_id, err.to_string()),
         },
         None => ToolOutput::error(&call.call_id, format!("unknown tool: {}", call.tool_id)),
+    };
+    // OTel: a tool that returned an error (unknown tool, invocation failure, or a
+    // model-visible error result) marks the span ERROR with a `gen_ai`-shaped type.
+    if output.is_error {
+        span.record("error.type", "tool_error");
+        span.record("otel.status_code", "ERROR");
     }
+    output
 }
 
 /// Best-effort live emission. A sink failure is swallowed: committed truth is
