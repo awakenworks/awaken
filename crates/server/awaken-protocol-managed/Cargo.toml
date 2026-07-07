@@ -10,6 +10,10 @@ awaken-agent-contract.workspace = true
 # and the ACL that maps its rows ⇄ the Anthropic Managed wire tags.
 awaken-credential-vault.workspace = true
 awaken-managed-bridge.workspace = true
+# Neutral sandbox egress vocabulary (`NetworkPolicy`): the environments ACL maps
+# the Anthropic `BetaEnvironment.networking` wire config onto this typed policy, so
+# the egress decision is a shared neutral fact rather than an inline string match.
+awaken-provisioning-contract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true

@@ -677,16 +677,26 @@ impl ManagedState {
     /// silent no-binding whose 401 only surfaces at the first turn. (Without a
     /// wired vault surface there is nothing to validate against and every
     /// binding resolves to no credential, as before.)
-    pub async fn create_session(
-        &self,
-        req: CreateSessionRequest,
-        project_id: Option<String>,
-    ) -> Result<Session, StateError> {
+    /// Fail-closed bind-time legality check, shared by session creation and any
+    /// pre-flight bind check: every vault a session references must exist. This is
+    /// the one validation that must hold *before* an id is minted or a thread is
+    /// prepared, so it lives in a single method rather than inline — a dry-run
+    /// bind check calls exactly this, and gets exactly the error create would.
+    pub fn check_bind(&self, req: &CreateSessionRequest) -> Result<(), StateError> {
         if let Some(vaults) = &self.vaults
             && let Some(unknown) = req.vault_ids.iter().find(|v| !vaults.has_vault(v))
         {
             return Err(StateError::VaultNotFound(unknown.clone()));
         }
+        Ok(())
+    }
+
+    pub async fn create_session(
+        &self,
+        req: CreateSessionRequest,
+        project_id: Option<String>,
+    ) -> Result<Session, StateError> {
+        self.check_bind(&req)?;
         // Mint an id no durable thread already owns: a fresh process restarts
         // the sequence at 0, but the store dir may hold committed truth from a
         // previous process (ADR-0039). Adopting such a thread would graft the
