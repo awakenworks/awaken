@@ -5,9 +5,11 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import Drawer from "../components/ui/Drawer";
 import { api } from "../lib/api/client";
-import type { Agent, Page } from "../lib/api/types";
+import type { Agent, Page, ProviderCatalog } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import ModelsSurface from "./models";
 
 function modelId(m: Agent["model"]): string {
   return typeof m === "string" ? m : m.id;
@@ -17,9 +19,15 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
   const qc = useQueryClient();
   const [name, setName] = useState("");
-  const [model, setModel] = useState("kimi-k2");
+  const [model, setModel] = useState("");
   const [system, setSystem] = useState("You are a helpful coding agent.");
   const [mcp, setMcp] = useState<{ name: string; url: string }[]>([]);
+  const [manageModels, setManageModels] = useState(false);
+  const catalog = useQuery({
+    queryKey: ["catalog"],
+    queryFn: () => api.get<ProviderCatalog>("/v1/config/catalog"),
+  });
+  const models = Array.from(new Set((catalog.data?.offerings ?? []).map((o) => o.model_id)));
   const create = useMutation({
     mutationFn: () =>
       api.post<Agent>("/v1/agents", {
@@ -44,8 +52,29 @@ function CreateModal({ onClose }: { onClose: () => void }) {
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Coding Assistant" />
         </div>
         <div className="field">
-          <label>{app.t("Model (references workspace catalog)", "模型(引用工作区 catalog)")}</label>
-          <input className="input mono" value={model} onChange={(e) => setModel(e.target.value)} />
+          <label className="row" style={{ justifyContent: "space-between" }}>
+            <span>{app.t("Model (references workspace catalog)", "模型(引用工作区 catalog)")}</span>
+            <button className="manage-link" onClick={() => setManageModels(true)}>
+              {app.t("Manage ↗", "管理 ↗")}
+            </button>
+          </label>
+          {models.length > 0 ? (
+            <select className="input mono" value={model} onChange={(e) => setModel(e.target.value)}>
+              <option value="">{app.t("— select a model —", "— 选择模型 —")}</option>
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              className="input mono"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="kimi-k2"
+            />
+          )}
         </div>
         <div className="field">
           <label>{app.t("System prompt", "系统提示词")}</label>
@@ -87,6 +116,11 @@ function CreateModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       </div>
+      {manageModels && (
+        <Drawer title={app.t("Models", "模型")} onClose={() => setManageModels(false)}>
+          <ModelsSurface />
+        </Drawer>
+      )}
     </div>
   );
 }
