@@ -592,6 +592,11 @@ impl SessionRuntime for ManagedHost {
         if let Some(runtime) = &init.runtime {
             self.host.register_thread_runtime(thread, runtime);
         }
+        // Stage the session's network-egress policy (from its environment): the first
+        // turn's sandbox runs `bash` under `bwrap --unshare-net` when egress is denied.
+        if init.deny_egress {
+            self.host.register_thread_egress(thread, true);
+        }
         // Stage session resources (ADR-0038): resolve each into a sandbox mount + prompt
         // fragment (A3a) via the shared `stage_one_resource` helper, fold them, and
         // register (replace — correct at create, before the first turn). Independent of

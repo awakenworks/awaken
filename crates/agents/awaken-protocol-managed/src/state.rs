@@ -128,6 +128,10 @@ pub struct SessionInit {
     /// The session's requested runtime adapter (R3): `"acp:*"` routes to an ACP
     /// CLI; `None`/`"awaken"` → native.
     pub runtime: Option<String>,
+    /// Deny network egress for the session's sandbox, resolved from its environment's
+    /// networking policy (a non-`unrestricted` policy → `true`). The host runs the
+    /// `bash` tool under a `bwrap --unshare-net` namespace. `false` = host network.
+    pub deny_egress: bool,
 }
 
 /// One session-mounted resource (ADR-0038), parsed from a wire `resources[]` entry.
@@ -576,6 +580,10 @@ pub struct ManagedState {
     /// session's `mcp_servers` are bound to vault credentials through it at
     /// creation. `None` means every binding resolves to no credential.
     vaults: Option<Arc<VaultState>>,
+    /// The environments surface, when the server mounts one: a session's
+    /// `environment_id` is resolved to its networking policy (egress on/off) at
+    /// creation. `None` → every session gets host network (unrestricted).
+    environments: Option<Arc<crate::environments::EnvironmentState>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
     /// Durable-config source of truth for the session aggregate: `create` writes
     /// it, rehydration reads it so a restored session reports its real
@@ -608,11 +616,25 @@ impl ManagedState {
         Self {
             runtime: Box::new(runtime),
             vaults: None,
+            environments: None,
             sessions: Mutex::new(HashMap::new()),
             sessions_repo: Arc::new(InMemorySessionRepository::default()),
             session_seq: AtomicU64::new(0),
             event_seq: AtomicU64::new(0),
         }
+    }
+
+    /// Wire the environments surface, so `POST /v1/sessions` resolves the session's
+    /// `environment_id` to its networking policy (egress on/off). Share the same
+    /// `EnvironmentState` with [`crate::environments_router`], or the sessions and the
+    /// environment routes see different environments.
+    #[must_use]
+    pub fn with_environments(
+        mut self,
+        environments: Arc<crate::environments::EnvironmentState>,
+    ) -> Self {
+        self.environments = Some(environments);
+        self
     }
 
     /// Wire a durable session repository (e.g. SQLite alongside the transcript
@@ -710,6 +732,17 @@ impl ManagedState {
             .enumerate()
             .map(|(n, r)| resource_dto(&id, n, r))
             .collect();
+        // Resolve the session's environment (defaulting to the local one) and its
+        // networking policy once, for both the SessionInit (staged before the first
+        // turn) and the echoed Session object.
+        let environment_id = req
+            .environment_id
+            .clone()
+            .unwrap_or_else(|| "env_local".to_string());
+        let deny_egress = self
+            .environments
+            .as_ref()
+            .is_some_and(|e| e.deny_egress(&environment_id));
         self.runtime
             .prepare_session(
                 &id,
@@ -720,6 +753,7 @@ impl ManagedState {
                     project_id,
                     model: req.agent.model().map(str::to_string),
                     runtime: req.agent.runtime().map(str::to_string),
+                    deny_egress,
                 },
             )
             .await
@@ -754,9 +788,7 @@ impl ManagedState {
                 skills: project::agent_skills(&caps),
                 multiagent: project::agent_multiagent(&caps),
             },
-            environment_id: req
-                .environment_id
-                .unwrap_or_else(|| "env_local".to_string()),
+            environment_id: environment_id.clone(),
             created_at: PROCESSED_AT.to_string(),
             updated_at: PROCESSED_AT.to_string(),
             archived_at: None,

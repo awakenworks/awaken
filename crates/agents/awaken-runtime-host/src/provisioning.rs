@@ -43,7 +43,14 @@ impl SharedHost {
     /// (ADR-0036); the environment provisions isolation tools plus the session's
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
     pub(crate) fn sandbox_spec(&self, thread: &str) -> SandboxSpec {
-        let mut spec = SandboxSpec::new(thread);
+        let deny_egress = self
+            .thread_egress
+            .lock()
+            .unwrap()
+            .get(thread)
+            .copied()
+            .unwrap_or(false);
+        let mut spec = SandboxSpec::new(thread).with_deny_egress(deny_egress);
         if let Some(staged) = self.thread_resources.lock().unwrap().get(thread) {
             for mount in &staged.mounts {
                 spec = spec.with_mount(mount.clone());

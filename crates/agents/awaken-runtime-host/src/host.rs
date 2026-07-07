@@ -313,6 +313,11 @@ pub struct SharedHost {
     /// session's `prepare_session` and consumed by `sandbox_spec` (mounts) and the
     /// run's system prompt (fragments). A thread with no entry mounts nothing.
     pub(crate) thread_resources: std::sync::Mutex<HashMap<String, StagedResources>>,
+    /// Per-thread network-egress denial, set by a session's `prepare_session` from its
+    /// environment's networking policy and consumed by `sandbox_spec`. A thread with
+    /// no entry (or `false`) shares the host network; `true` runs its `bash` under a
+    /// `bwrap --unshare-net` namespace with no egress.
+    pub(crate) thread_egress: std::sync::Mutex<HashMap<String, bool>>,
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. In-memory by default (one server process).
     pub(crate) file_store: Arc<dyn FileStore>,
@@ -380,6 +385,7 @@ impl SharedHost {
             config_service: None,
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
             thread_resources: std::sync::Mutex::new(HashMap::new()),
+            thread_egress: std::sync::Mutex::new(HashMap::new()),
             file_store: Arc::new(InMemoryFileStore::new()),
             memory_stores,
             gate_override: None,
@@ -552,6 +558,15 @@ impl SharedHost {
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
     pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
         self.model_route.register(thread, model_ref);
+    }
+
+    /// Deny network egress for `thread`'s sandbox (from its environment's networking
+    /// policy), staged before its first turn and consumed by `sandbox_spec`.
+    pub fn register_thread_egress(&self, thread: &str, deny: bool) {
+        self.thread_egress
+            .lock()
+            .unwrap()
+            .insert(thread.to_string(), deny);
     }
 
     /// Stage MCP servers for `thread`, to be connected when the thread's context

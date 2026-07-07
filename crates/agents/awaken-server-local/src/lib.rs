@@ -848,10 +848,11 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     let deployments = awaken_protocol_managed::deployments_router(std::sync::Arc::new(
         awaken_protocol_managed::DeploymentState::new(),
     ));
-    // Environments + work queue (`/v1/environments`, single-worker open cap).
-    let environments = awaken_protocol_managed::environments_router(std::sync::Arc::new(
-        awaken_protocol_managed::EnvironmentState::new(),
-    ));
+    // Environments + work queue (`/v1/environments`, single-worker open cap). Shared
+    // with the session state so `POST /v1/sessions` resolves an environment's
+    // networking policy (egress on/off) at creation.
+    let env_state = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
+    let environments = awaken_protocol_managed::environments_router(env_state.clone());
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging
@@ -885,6 +886,7 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
             projects.clone(),
         ))
         .with_vaults(vault_state)
+        .with_environments(env_state)
         .with_session_repo(sessions),
     );
     // The project ingress (ADR-0042 amendment): the SAME session surface

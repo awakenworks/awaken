@@ -102,6 +102,55 @@ async fn environment_carries_no_scope_and_ignores_a_body_scope() {
     );
 }
 
+/// `deny_egress` reflects the environment's networking policy: a `limited` or `none`
+/// policy denies egress (bwrap enforces on/off only — an allowlist is not honorable
+/// locally, so it fails closed), while `unrestricted`, absent networking, and an
+/// unknown environment share the host network.
+#[tokio::test]
+async fn deny_egress_reflects_the_networking_policy() {
+    let state = Arc::new(EnvironmentState::new());
+    let app = environments_router(state.clone());
+    async fn make(app: &Router, cfg: Value) -> String {
+        let (s, e) = call(
+            app,
+            "POST",
+            "/v1/environments",
+            Some(json!({ "name": "e", "config": cfg })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        e["id"].as_str().unwrap().to_string()
+    }
+
+    let limited = make(
+        &app,
+        json!({ "type": "cloud", "networking": { "type": "limited" } }),
+    )
+    .await;
+    assert!(state.deny_egress(&limited), "limited → egress denied");
+
+    let unrestricted = make(
+        &app,
+        json!({ "type": "cloud", "networking": { "type": "unrestricted" } }),
+    )
+    .await;
+    assert!(
+        !state.deny_egress(&unrestricted),
+        "unrestricted → host network"
+    );
+
+    let self_hosted = make(&app, json!({ "type": "self_hosted" })).await;
+    assert!(
+        !state.deny_egress(&self_hosted),
+        "no networking → host network"
+    );
+
+    assert!(
+        !state.deny_egress("env_nonexistent"),
+        "unknown env → host network"
+    );
+}
+
 #[tokio::test]
 async fn environment_crud_and_work_lifecycle() {
     let app = app();
