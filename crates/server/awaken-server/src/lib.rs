@@ -41,8 +41,8 @@ pub use awaken_session_executor::{
     ConfigService, ExecutorProvider, ExtMcpProbe, HostResume, HttpTransport, ManagedHost,
     PreparedMcpRefresh, ProtocolHost, Response, SharedHost, SkillContext, SkillSpec, ThreadEvent,
     ThreadEventHub, Transport, VaultRefresher, advertised_tools, config_router,
-    content_fingerprint, durable_ops_router, files_router, memory_stores_router, parse_skill_md,
-    skills_router,
+    content_fingerprint, default_models, durable_ops_router, files_router, memory_stores_router,
+    models_router, parse_skill_md, skills_router,
 };
 
 /// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a
@@ -196,6 +196,8 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     let memory_stores = memory_stores_router(host.clone());
     // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.
     let skills = skills_router(host.clone());
+    // The Models API (`/v1/models`) over the deployment's model directory.
+    let models = models_router(std::sync::Arc::new(default_models()));
     managed
         .merge(ai_sdk)
         .merge(ag_ui)
@@ -204,6 +206,7 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
         .merge(files)
         .merge(memory_stores)
         .merge(skills)
+        .merge(models)
 }
 
 /// The composition seam refuses to build an executor from an incomplete or
@@ -833,6 +836,10 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
             .with_probe(Arc::new(ExtMcpProbe)),
     );
     let vaults = awaken_protocol_managed::vault_router(vault_state.clone());
+    // The user-profiles front door (`/v1/user_profiles`) over its own in-mem store.
+    let user_profiles = awaken_protocol_managed::user_profiles_router(std::sync::Arc::new(
+        awaken_protocol_managed::UserProfileState::new(),
+    ));
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging
@@ -840,7 +847,7 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // token-management routes exist ONLY under the guard (they authorize
     // against the same embedded IAM the guard authenticates with), and they
     // are merged before the layer so the guard authenticates them first.
-    let mut mgmt = admin.merge(vaults);
+    let mut mgmt = admin.merge(vaults).merge(user_profiles);
     if let Some(iam) = iam {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
         mgmt = mgmt.layer(axum::middleware::from_fn_with_state(

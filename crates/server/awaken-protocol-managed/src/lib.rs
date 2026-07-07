@@ -12,10 +12,12 @@
 //! `user.interrupt`), `GET /v1/sessions/{id}/events`, and the SSE stream.
 
 pub mod dto;
+pub mod pagination;
 pub mod project;
 mod router;
 mod session_repo;
 mod state;
+pub mod user_profiles;
 pub mod vaults;
 
 pub use router::{ProjectScope, router};
@@ -25,6 +27,7 @@ pub use state::{
     LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,
     RunError, RunErrorKind, SessionInit, SessionResource, SessionRuntime, StateError, TurnOutcome,
 };
+pub use user_profiles::{UserProfileState, user_profiles_router};
 pub use vaults::{
     McpProbe, McpProbeStatus, McpRefreshBinding, TokenEndpointAuthBinding, VaultState, vault_router,
 };
