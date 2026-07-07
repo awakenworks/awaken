@@ -166,9 +166,101 @@ struct ManagedMcp {
     projects: Arc<dyn awaken_config_resolver::ProjectStore>,
 }
 
+/// The system-prompt fragment (ADR-0038 A3a) for a bound resource — the realized
+/// mount path the agent reads (`.mnt/<logical>` for file/memory, the working-tree
+/// path for a repo) plus access + instructions. Deterministic, so the live detach
+/// path can reproduce and remove the exact fragment it staged.
+fn resource_prompt(res: &awaken_protocol_managed::SessionResource) -> String {
+    let logical = res.mount_path.trim_start_matches('/').to_string();
+    let (kind, mount_path) = match res.kind.as_str() {
+        "github_repository" => (
+            awaken_config_resolver::ResourceKind::GithubRepository,
+            logical,
+        ),
+        "memory_store" => (
+            awaken_config_resolver::ResourceKind::MemoryStore,
+            format!(".mnt/{logical}"),
+        ),
+        _ => (
+            awaken_config_resolver::ResourceKind::File,
+            format!(".mnt/{logical}"),
+        ),
+    };
+    awaken_config_resolver::resource_binding_prompt(&awaken_config_resolver::ResourceBinding {
+        kind,
+        resource_id: res.id.clone(),
+        mount_path,
+        access: awaken_config_resolver::ResourceAccess::ReadWrite,
+        instructions: res.instructions.clone(),
+    })
+}
+
 impl ManagedHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
         Self { host, mcp: None }
+    }
+
+    /// Stage ONE resource (ADR-0038) into a partial [`StagedResources`]: resolve its
+    /// seed bytes and realize it as a sandbox mount + prompt fragment (+ memory
+    /// write-back tracking / repo clone stage). Shared by create-time
+    /// `prepare_session` (folded over all resources) and the live `attach_resource`
+    /// path. A `file`/`memory_store` whose backing store is missing fails closed.
+    async fn stage_one_resource(
+        &self,
+        res: &awaken_protocol_managed::SessionResource,
+    ) -> Result<crate::provisioning::StagedResources, RunError> {
+        use awaken_sandbox_local::{Mount, ResourceMount};
+        let mut staged = crate::provisioning::StagedResources::default();
+        let logical = res.mount_path.trim_start_matches('/').to_string();
+        // github_repository is a host-side `git clone` (ADR-0038), not a byte mount —
+        // the token authenticates the clone transport host-side and never enters the jail.
+        if res.kind == "github_repository" {
+            staged.prompts.push(resource_prompt(res));
+            staged.repos.push(crate::provisioning::RepoStage {
+                logical,
+                url: res.id.clone(),
+                git_ref: res.git_ref.clone(),
+                token: res
+                    .auth_token
+                    .clone()
+                    .map(awaken_agent_contract::RedactedString::from),
+            });
+            return Ok(staged);
+        }
+        if res.kind != "file" && res.kind != "memory_store" {
+            return Ok(staged);
+        }
+        staged.prompts.push(resource_prompt(res));
+        // Resolve seed content by family: a file from the content-addressed blob store,
+        // a memory_store from its mutable id-keyed store (tracked for write-back).
+        let content = match res.kind.as_str() {
+            "file" => match self.host.file_store().get(&res.id).await {
+                Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+                _ => {
+                    return Err(RunError::bad_request(format!(
+                        "file resource `{}` not found in the blob store",
+                        res.id
+                    )));
+                }
+            },
+            _ => {
+                let Some(bytes) = self.host.memory_get(&res.id) else {
+                    return Err(RunError::bad_request(format!(
+                        "memory_store resource `{}` does not exist",
+                        res.id
+                    )));
+                };
+                staged.memory_mounts.push((res.id.clone(), logical.clone()));
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
+        };
+        staged.mounts.push(Mount::Resource(ResourceMount {
+            id: res.id.clone(),
+            content_hash: String::new(),
+            logical_path: logical,
+            content,
+        }));
+        Ok(staged)
     }
 
     /// Wire the MCP stores so `prepare_session` materializes a session's MCP
@@ -455,6 +547,37 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
+    async fn attach_resource(
+        &self,
+        thread: &str,
+        resource: awaken_protocol_managed::SessionResource,
+    ) -> Result<(), RunError> {
+        // Flush in-sandbox memory edits before dropping the cached sandbox, then stage
+        // the new resource (fail closed on a missing backing store) and evict so the
+        // next turn rebuilds WITH it.
+        self.host.harvest_thread_memory(thread).await;
+        let one = self.stage_one_resource(&resource).await?;
+        self.host.merge_thread_resources(thread, one);
+        self.host.sessions.lock().await.remove(thread);
+        Ok(())
+    }
+
+    async fn detach_resource(
+        &self,
+        thread: &str,
+        resource: awaken_protocol_managed::SessionResource,
+    ) -> Result<(), RunError> {
+        // Flush write-back while the old sandbox is still live (preserve edits to other
+        // still-mounted memory stores), drop this resource's mount + prompt, then evict
+        // so the next turn rebuilds WITHOUT it.
+        self.host.harvest_thread_memory(thread).await;
+        let logical = resource.mount_path.trim_start_matches('/').to_string();
+        self.host
+            .remove_thread_resource(thread, &logical, &resource_prompt(&resource));
+        self.host.sessions.lock().await.remove(thread);
+        Ok(())
+    }
+
     async fn prepare_session(
         &self,
         thread: &str,
@@ -469,103 +592,20 @@ impl SessionRuntime for ManagedHost {
         if let Some(runtime) = &init.runtime {
             self.host.register_thread_runtime(thread, runtime);
         }
-        // Stage session resources (ADR-0038): resolve file bytes from the blob store,
-        // realize each as a read-only sandbox mount, and collect prompt fragments for
-        // the system prompt (A3a). Independent of MCP, so it runs before the MCP gate.
+        // Stage session resources (ADR-0038): resolve each into a sandbox mount + prompt
+        // fragment (A3a) via the shared `stage_one_resource` helper, fold them, and
+        // register (replace — correct at create, before the first turn). Independent of
+        // MCP, so it runs before the MCP gate.
         if !init.resources.is_empty() {
-            use awaken_sandbox_local::{Mount, ResourceMount};
-            let store = self.host.file_store();
-            let mut mounts = Vec::new();
-            let mut prompts = Vec::new();
-            let mut memory_mounts = Vec::new();
-            let mut repos = Vec::new();
+            let mut all = crate::provisioning::StagedResources::default();
             for res in &init.resources {
-                // github_repository is provisioned by a host-side `git clone` (ADR-0038),
-                // not a byte mount: the token authenticates the clone transport host-side
-                // and never enters the jail. Stage it for a post-create clone and surface
-                // the working-tree path (not `.mnt/`) in the prompt.
-                if res.kind == "github_repository" {
-                    let logical = res.mount_path.trim_start_matches('/').to_string();
-                    prompts.push(awaken_config_resolver::resource_binding_prompt(
-                        &awaken_config_resolver::ResourceBinding {
-                            kind: awaken_config_resolver::ResourceKind::GithubRepository,
-                            resource_id: res.id.clone(),
-                            mount_path: logical.clone(),
-                            access: awaken_config_resolver::ResourceAccess::ReadWrite,
-                            instructions: res.instructions.clone(),
-                        },
-                    ));
-                    repos.push(crate::provisioning::RepoStage {
-                        logical,
-                        url: res.id.clone(),
-                        git_ref: res.git_ref.clone(),
-                        token: res
-                            .auth_token
-                            .clone()
-                            .map(awaken_agent_contract::RedactedString::from),
-                    });
-                    continue;
-                }
-                let kind = match res.kind.as_str() {
-                    "file" => awaken_config_resolver::ResourceKind::File,
-                    "memory_store" => awaken_config_resolver::ResourceKind::MemoryStore,
-                    _ => continue,
-                };
-                // The legacy environment realizes a resource under `.mnt/<logical>`, so
-                // the path the agent actually reads is `.mnt/<logical>` — surface *that*
-                // in the prompt (the client's requested mount_path becomes the logical).
-                let logical = res.mount_path.trim_start_matches('/').to_string();
-                let realized = format!(".mnt/{logical}");
-                prompts.push(awaken_config_resolver::resource_binding_prompt(
-                    &awaken_config_resolver::ResourceBinding {
-                        kind,
-                        resource_id: res.id.clone(),
-                        mount_path: realized,
-                        access: awaken_config_resolver::ResourceAccess::ReadWrite,
-                        instructions: res.instructions.clone(),
-                    },
-                ));
-                // Resolve the mount's seed content by family: a file resolves its bytes
-                // from the content-addressed blob store; a memory_store from its mutable,
-                // id-keyed store (and is tracked for write-back harvest).
-                let content = match res.kind.as_str() {
-                    "file" => match store.get(&res.id).await {
-                        Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
-                        _ => {
-                            return Err(RunError::bad_request(format!(
-                                "file resource `{}` not found in the blob store",
-                                res.id
-                            )));
-                        }
-                    },
-                    "memory_store" => {
-                        let Some(bytes) = self.host.memory_get(&res.id) else {
-                            return Err(RunError::bad_request(format!(
-                                "memory_store resource `{}` does not exist",
-                                res.id
-                            )));
-                        };
-                        memory_mounts.push((res.id.clone(), logical.clone()));
-                        String::from_utf8_lossy(&bytes).into_owned()
-                    }
-                    _ => String::new(),
-                };
-                mounts.push(Mount::Resource(ResourceMount {
-                    id: res.id.clone(),
-                    content_hash: String::new(),
-                    logical_path: logical,
-                    content,
-                }));
+                let one = self.stage_one_resource(res).await?;
+                all.mounts.extend(one.mounts);
+                all.prompts.extend(one.prompts);
+                all.memory_mounts.extend(one.memory_mounts);
+                all.repos.extend(one.repos);
             }
-            self.host.register_thread_resources(
-                thread,
-                crate::provisioning::StagedResources {
-                    mounts,
-                    prompts,
-                    memory_mounts,
-                    repos,
-                },
-            );
+            self.host.register_thread_resources(thread, all);
         }
         let Some(mcp) = &self.mcp else {
             return Ok(());

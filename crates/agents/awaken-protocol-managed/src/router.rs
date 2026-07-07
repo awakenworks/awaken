@@ -367,6 +367,7 @@ async fn create_resource(
 ) -> Result<Json<serde_json::Value>, WireErr> {
     state
         .create_resource(&id, body)
+        .await
         .map(Json)
         .map_err(error_response)
 }
@@ -403,7 +404,10 @@ async fn delete_resource(
     State(state): State<Arc<ManagedState>>,
     Path((id, rid)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, WireErr> {
-    state.delete_resource(&id, &rid).map_err(error_response)?;
+    state
+        .delete_resource(&id, &rid)
+        .await
+        .map_err(error_response)?;
     Ok(Json(
         serde_json::json!({ "id": rid, "type": "session_resource_deleted" }),
     ))

@@ -37,6 +37,30 @@ async function main() {
       betas: BETAS,
     });
     const mem = await client.post('/v1/memory_stores');
+
+    // ── create-time backfill: a session created WITH resources echoes them ──────
+    const seeded = await client.beta.sessions.create({
+      agent: 'assistant',
+      resources: [
+        {
+          type: 'memory_store',
+          memory_store_id: mem.id,
+          mount_path: '/mnt/memory/notes',
+          instructions: 'notes',
+        },
+      ],
+      betas: BETAS,
+    });
+    assert.equal(seeded.resources?.length, 1, 'create-time memory_store is backfilled');
+    assert.equal(seeded.resources[0].type, 'memory_store');
+    assert.equal(seeded.resources[0].memory_store_id, mem.id);
+    assert.ok(
+      seeded.resources[0].id && seeded.resources[0].created_at,
+      'the backfilled entry is SDK-decodable (id + created_at)',
+    );
+    assert.equal((await listResources(client, seeded.id)).length, 1, 'create-time resource is listed');
+    pass('create-time resources are backfilled on the session and listed');
+
     const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
     assert.ok(session.id.startsWith('sesn_'), `session created: ${session.id}`);
 
@@ -49,6 +73,7 @@ async function main() {
     });
     assert.equal(fileRes.type, 'file');
     assert.ok(fileRes.id, 'the attached file mount gets an id');
+    assert.ok(fileRes.created_at && fileRes.updated_at, 'the attached entry carries timestamps');
     pass(`file attached to a live session: ${fileRes.id}`);
 
     // ── github_repository: attach to a live session ────────────────────────────

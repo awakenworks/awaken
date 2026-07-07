@@ -490,3 +490,90 @@ async fn turn_end_fires_background_memory_extraction() {
         std::fs::read_to_string(mem_dir.join("user-prefs.md")).expect("memory file written");
     assert_eq!(saved, "user likes rust");
 }
+
+/// A trivial model for resource-lifecycle turns.
+struct OkModel;
+#[async_trait::async_trait]
+impl LlmExecutor for OkModel {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        Ok(ChatResponse {
+            output: AssistantOutput::text("ok"),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// Hot-attach is realized, not a bookkeeping edit: attaching a file to a live
+/// session stages its mount AND evicts the cached sandbox, so the NEXT turn
+/// rebuilds with the file mounted; detaching reverses it.
+#[tokio::test]
+async fn attach_resource_stages_the_mount_and_evicts_the_cached_sandbox() {
+    use awaken_protocol_managed::SessionRuntime;
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = crate::ManagedHost::new(host.clone());
+    let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
+
+    // A blob to mount, and a first turn that builds + caches the thread's sandbox.
+    let file_id = host
+        .file_store()
+        .put(b"hello-attached")
+        .await
+        .expect("put blob");
+    host.run_turn(None, "t-attach", user("hi"))
+        .await
+        .expect("first turn");
+    assert!(
+        host.sessions.lock().await.contains_key("t-attach"),
+        "the first turn caches the thread's sandbox ctx"
+    );
+    let before = host.sandbox_spec("t-attach").mounts.len();
+
+    // Attach a file resource on the LIVE session.
+    let res = awaken_protocol_managed::SessionResource {
+        kind: "file".into(),
+        id: file_id,
+        mount_path: "/data.txt".into(),
+        instructions: None,
+        auth_token: None,
+        git_ref: None,
+    };
+    managed
+        .attach_resource("t-attach", res.clone())
+        .await
+        .expect("attach");
+
+    // The cached sandbox was evicted (so the next turn rebuilds) ...
+    assert!(
+        !host.sessions.lock().await.contains_key("t-attach"),
+        "attach evicts the cached ctx so the next turn rebuilds with the mount"
+    );
+    // ... and the spec the next turn will build now carries the mount + its bytes.
+    let spec = host.sandbox_spec("t-attach");
+    assert_eq!(spec.mounts.len(), before + 1, "one more mount staged");
+    let dump = serde_json::to_string(&spec.mounts).expect("mounts serialize");
+    assert!(
+        dump.contains("data.txt"),
+        "mount realized at the resource path: {dump}"
+    );
+    assert!(
+        dump.contains("hello-attached"),
+        "mount carries the file's bytes"
+    );
+
+    // Detach removes exactly that mount again.
+    managed
+        .detach_resource("t-attach", res)
+        .await
+        .expect("detach");
+    let spec = host.sandbox_spec("t-attach");
+    assert_eq!(spec.mounts.len(), before, "the mount is dropped on detach");
+    assert!(
+        !serde_json::to_string(&spec.mounts)
+            .unwrap()
+            .contains("data.txt")
+    );
+}

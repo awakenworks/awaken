@@ -26,6 +26,11 @@ use crate::vaults::{McpRefreshBinding, VaultState};
 /// clock port; the wire only needs a valid RFC 3339 value here.
 const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
 
+/// The Managed Agents contract error for a `memory_store` add/remove on a running
+/// session — memory stores bind at session creation only.
+const MEMORY_CREATE_ONLY: &str = "memory stores can only be attached at session creation time; \
+     adding or removing one from a running session is not supported";
+
 /// The tool a run parked on: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
 /// confirmation (`agent.tool_use{ask}`).
@@ -162,6 +167,149 @@ fn repo_name(url: &str) -> String {
     }
 }
 
+/// A wire `resources[]` entry — the official `BetaManagedAgents` resource union,
+/// tagged by `type`. Unknown fields are ignored (tolerant of the full SDK payload);
+/// an unknown `type` is a deserialize error (fail closed), never a silent drop.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum WireResource {
+    File {
+        file_id: String,
+        #[serde(default)]
+        mount_path: Option<String>,
+        #[serde(default)]
+        instructions: Option<String>,
+    },
+    MemoryStore {
+        memory_store_id: String,
+        #[serde(default)]
+        mount_path: Option<String>,
+        #[serde(default)]
+        instructions: Option<String>,
+    },
+    GithubRepository {
+        url: String,
+        #[serde(default)]
+        mount_path: Option<String>,
+        #[serde(default)]
+        instructions: Option<String>,
+        #[serde(default)]
+        authorization_token: Option<String>,
+        #[serde(default)]
+        checkout: Option<WireCheckout>,
+    },
+}
+
+/// A `github_repository` checkout selector. Only `branch` maps to a git ref today
+/// (a `commit` sha clones the default branch, matching the prior behavior).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum WireCheckout {
+    Branch {
+        name: String,
+    },
+    // Accepted so the full SDK payload deserializes, but not yet wired to the clone
+    // (the host checks out a branch ref; a `sha` clones the default branch). Parsed,
+    // deliberately not consumed — see `into_session_resource`.
+    Commit {
+        #[allow(dead_code)]
+        sha: String,
+    },
+}
+
+impl WireResource {
+    /// Lower to the neutral crate-boundary [`SessionResource`], defaulting the mount
+    /// path per kind (mirroring the Managed defaults).
+    fn into_session_resource(self) -> SessionResource {
+        match self {
+            WireResource::File {
+                file_id,
+                mount_path,
+                instructions,
+            } => SessionResource {
+                kind: "file".into(),
+                mount_path: mount_path.unwrap_or_else(|| format!("/mnt/session/uploads/{file_id}")),
+                id: file_id,
+                instructions,
+                auth_token: None,
+                git_ref: None,
+            },
+            WireResource::MemoryStore {
+                memory_store_id,
+                mount_path,
+                instructions,
+            } => SessionResource {
+                kind: "memory_store".into(),
+                mount_path: mount_path.unwrap_or_else(|| "/mnt/memory/store".into()),
+                id: memory_store_id,
+                instructions,
+                auth_token: None,
+                git_ref: None,
+            },
+            WireResource::GithubRepository {
+                url,
+                mount_path,
+                instructions,
+                authorization_token,
+                checkout,
+            } => SessionResource {
+                // Repo default mirrors Managed Agents: /workspace/<repo-name>.
+                mount_path: mount_path.unwrap_or_else(|| format!("/workspace/{}", repo_name(&url))),
+                kind: "github_repository".into(),
+                id: url,
+                instructions,
+                auth_token: authorization_token,
+                git_ref: match checkout {
+                    Some(WireCheckout::Branch { name }) => Some(name),
+                    Some(WireCheckout::Commit { .. }) | None => None,
+                },
+            },
+        }
+    }
+}
+
+/// Parse one wire `resources[]` entry into a neutral [`SessionResource`]. `None` for
+/// a malformed/unknown entry (the caller decides: session-create drops it; the live
+/// `resources.add` path turns it into a 400). Shared by both paths.
+fn parse_session_resource(v: &serde_json::Value) -> Option<SessionResource> {
+    serde_json::from_value::<WireResource>(v.clone())
+        .ok()
+        .map(WireResource::into_session_resource)
+}
+
+/// Project a [`SessionResource`] to an official `BetaManagedAgentsSessionResource`
+/// wire entry with a stable id (`{session}:resource:{n}`), so both create-time
+/// backfill and live `resources.add` emit an SDK-decodable, uniformly-addressable
+/// resource. The auth token is never echoed.
+fn resource_dto(session_id: &str, n: usize, res: &SessionResource) -> serde_json::Value {
+    use serde_json::json;
+    let mut obj = serde_json::Map::new();
+    obj.insert("id".into(), json!(format!("{session_id}:resource:{n}")));
+    obj.insert("type".into(), json!(res.kind));
+    obj.insert("mount_path".into(), json!(res.mount_path));
+    obj.insert("created_at".into(), json!(PROCESSED_AT));
+    obj.insert("updated_at".into(), json!(PROCESSED_AT));
+    match res.kind.as_str() {
+        "file" => {
+            obj.insert("file_id".into(), json!(res.id));
+        }
+        "memory_store" => {
+            obj.insert("memory_store_id".into(), json!(res.id));
+            if let Some(i) = &res.instructions {
+                obj.insert("instructions".into(), json!(i));
+            }
+        }
+        "github_repository" => {
+            obj.insert("url".into(), json!(res.id));
+            if let Some(r) = &res.git_ref {
+                obj.insert("checkout".into(), json!({ "type": "branch", "name": r }));
+            }
+        }
+        _ => {}
+    }
+    serde_json::Value::Object(obj)
+}
+
 /// One session MCP server, bound at creation: the wire name/url plus the vault
 /// credential the URL matched (`None` when no vault credential matches — the
 /// host then connects unauthenticated and the server decides). Consumed by
@@ -266,6 +414,30 @@ pub trait SessionRuntime: Send + Sync {
     /// unaffected; the server impl re-stages the thread's model and evicts the
     /// cached context so the next turn resolves the new executor.
     async fn rebind_model(&self, _thread: &str, _model: &str) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    /// Attach a resource to a LIVE session: stage its mount and make it take effect
+    /// on the thread's next turn (the server impl merges it into the thread's staged
+    /// resources and evicts the cached sandbox so the next turn rebuilds with it).
+    /// The default is a no-op, so a host without resource staging is unaffected.
+    async fn attach_resource(
+        &self,
+        _thread: &str,
+        _resource: SessionResource,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    /// Detach a resource from a LIVE session: flush any write-back (memory) while the
+    /// old sandbox is still live, drop this resource's mount, and evict the cached
+    /// sandbox so the next turn rebuilds without it. Takes the resolved resource (not
+    /// just an id) so the host has its mount path and kind. The default is a no-op.
+    async fn detach_resource(
+        &self,
+        _thread: &str,
+        _resource: SessionResource,
+    ) -> Result<(), RunError> {
         Ok(())
     }
 
@@ -525,53 +697,18 @@ impl ManagedState {
                 }
             })
             .collect();
-        // Parse the wire `resources[]` (ADR-0038): file / memory_store / repo entries,
-        // each addressed by its backing id and a sandbox mount path (defaulted per kind
-        // when the client omits it, mirroring the Managed defaults).
-        let resources = req
+        // Parse the wire `resources[]` (ADR-0038) into staged mounts, and project each
+        // into a DTO entry so the created session echoes its create-time resources —
+        // list/get/delete then address these and any later-attached ones uniformly.
+        let resources: Vec<SessionResource> = req
             .resources
             .iter()
-            .filter_map(|v| {
-                let kind = v.get("type")?.as_str()?.to_string();
-                let id = match kind.as_str() {
-                    "file" => v.get("file_id")?.as_str()?.to_string(),
-                    "memory_store" => v.get("memory_store_id")?.as_str()?.to_string(),
-                    "github_repository" => v.get("url")?.as_str()?.to_string(),
-                    _ => return None,
-                };
-                let mount_path = v
-                    .get("mount_path")
-                    .and_then(|m| m.as_str())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| match kind.as_str() {
-                        "file" => format!("/mnt/session/uploads/{id}"),
-                        "memory_store" => "/mnt/memory/store".to_string(),
-                        // Repo default mirrors Managed Agents: /workspace/<repo-name>.
-                        _ => format!("/workspace/{}", repo_name(&id)),
-                    });
-                let instructions = v
-                    .get("instructions")
-                    .and_then(|s| s.as_str())
-                    .map(str::to_string);
-                // github_repository auth + checkout (ignored for other kinds).
-                let auth_token = v
-                    .get("authorization_token")
-                    .and_then(|t| t.as_str())
-                    .map(str::to_string);
-                let git_ref = v
-                    .get("checkout")
-                    .and_then(|c| c.get("name"))
-                    .and_then(|n| n.as_str())
-                    .map(str::to_string);
-                Some(SessionResource {
-                    kind,
-                    id,
-                    mount_path,
-                    instructions,
-                    auth_token,
-                    git_ref,
-                })
-            })
+            .filter_map(parse_session_resource)
+            .collect();
+        let resource_dtos: Vec<serde_json::Value> = resources
+            .iter()
+            .enumerate()
+            .map(|(n, r)| resource_dto(&id, n, r))
             .collect();
         self.runtime
             .prepare_session(
@@ -625,8 +762,8 @@ impl ManagedState {
             archived_at: None,
             title: req.title,
             metadata: req.metadata,
-            // The host has no Files-API-backed resource to reference on the wire yet.
-            resources: Vec::new(),
+            // The session's create-time mounts, echoed so the client can list/get them.
+            resources: resource_dtos,
             outcome_evaluations: Vec::new(),
             status: "idle",
             stats: serde_json::json!({}),
@@ -703,6 +840,11 @@ impl ManagedState {
             archived_at: None,
             title,
             metadata,
+            // Non-durable: `PersistedSession` does not carry the create-time mounts,
+            // and rehydration does not re-stage them into the host, so a rehydrated
+            // session reports no resources. (Durable resources + restart re-staging
+            // is a separate slice; storing the DTO alone would falsely show mounts
+            // the sandbox no longer has.)
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status: "idle",
@@ -884,26 +1026,40 @@ impl ManagedState {
     /// minting an id. `file` and `github_repository` are attachable here; a
     /// `memory_store` is bound at session creation only (Managed Agents contract),
     /// so adding one to a running session fails closed with a 400.
-    pub fn create_resource(
+    ///
+    /// The mount is realized: the runtime stages it and evicts the thread's cached
+    /// sandbox so the NEXT turn rebuilds with the resource present — not merely a
+    /// record edit. The session record then echoes the resource for list/get/delete.
+    pub async fn create_resource(
         &self,
         id: &str,
-        mut resource: serde_json::Value,
+        body: serde_json::Value,
     ) -> Result<serde_json::Value, StateError> {
+        // The session must exist (checked without holding the lock across the await).
+        {
+            let sessions = self.sessions.lock().unwrap();
+            sessions.get(id).ok_or(StateError::NotFound)?;
+        }
+        if body.get("type").and_then(|t| t.as_str()) == Some("memory_store") {
+            return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
+        }
+        let res = parse_session_resource(&body).ok_or_else(|| {
+            StateError::Run(RunError::bad_request(
+                "resource must be a file or github_repository with its backing id",
+            ))
+        })?;
+        // Make it real before recording it: stage into the host + evict the cached
+        // sandbox. A staging failure fails the request (fail closed, no record edit).
+        self.runtime
+            .attach_resource(id, res.clone())
+            .await
+            .map_err(StateError::Run)?;
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        if resource.get("type").and_then(|t| t.as_str()) == Some("memory_store") {
-            return Err(StateError::Run(RunError::bad_request(
-                "memory stores can only be attached at session creation time; \
-                 adding or removing one from a running session is not supported",
-            )));
-        }
         let n = record.session.resources.len();
-        let resource_id = format!("{id}:resource:{n}");
-        if let Some(obj) = resource.as_object_mut() {
-            obj.insert("id".into(), serde_json::json!(resource_id));
-        }
-        record.session.resources.push(resource.clone());
-        Ok(resource)
+        let dto = resource_dto(id, n, &res);
+        record.session.resources.push(dto.clone());
+        Ok(dto)
     }
 
     /// `GET /v1/sessions/{id}/resources/{resource_id}`.
@@ -950,21 +1106,34 @@ impl ManagedState {
     /// `github_repository` from a live session. A `memory_store` binds at session
     /// creation and cannot be removed from a running session (Managed Agents
     /// contract), so detaching one fails closed with a 400.
-    pub fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
+    pub async fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
+        // Resolve the target (existence + kind) under the lock, dropped before the
+        // await. `memory_store` cannot be detached from a running session.
+        let res = {
+            let sessions = self.sessions.lock().unwrap();
+            let record = sessions.get(id).ok_or(StateError::NotFound)?;
+            let target = record
+                .session
+                .resources
+                .iter()
+                .find(|r| r["id"] == resource_id)
+                .ok_or(StateError::NotFound)?;
+            if target.get("type").and_then(|t| t.as_str()) == Some("memory_store") {
+                return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
+            }
+            parse_session_resource(target)
+        };
+        // The runtime flushes write-back while the old sandbox is still live, drops
+        // this resource's mount, and evicts the cached sandbox so the next turn
+        // rebuilds without it. Then the record drops the entry.
+        if let Some(res) = res {
+            self.runtime
+                .detach_resource(id, res)
+                .await
+                .map_err(StateError::Run)?;
+        }
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        let target = record
-            .session
-            .resources
-            .iter()
-            .find(|r| r["id"] == resource_id)
-            .ok_or(StateError::NotFound)?;
-        if target.get("type").and_then(|t| t.as_str()) == Some("memory_store") {
-            return Err(StateError::Run(RunError::bad_request(
-                "memory stores can only be attached at session creation time; \
-                 adding or removing one from a running session is not supported",
-            )));
-        }
         record.session.resources.retain(|r| r["id"] != resource_id);
         Ok(())
     }

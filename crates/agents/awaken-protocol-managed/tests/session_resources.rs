@@ -90,6 +90,53 @@ async fn app_with_session() -> (Router, String) {
 }
 
 #[tokio::test]
+async fn create_time_resources_are_backfilled_and_addressable() {
+    let app = router(std::sync::Arc::new(ManagedState::new(AcceptingFake)));
+
+    let (s, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [
+                { "type": "file", "file_id": "file_1", "mount_path": "/w/data.csv" },
+                { "type": "memory_store", "memory_store_id": "mem_1", "instructions": "notes" }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let id = session["id"].as_str().unwrap().to_string();
+
+    // The created session echoes its create-time mounts in SDK-decodable shape.
+    let res = session["resources"].as_array().unwrap();
+    assert_eq!(res.len(), 2, "both create-time resources are backfilled");
+    assert_eq!(res[0]["type"], "file");
+    assert_eq!(res[0]["file_id"], "file_1");
+    assert_eq!(res[0]["mount_path"], "/w/data.csv");
+    assert!(res[0]["id"].is_string() && res[0]["created_at"].is_string());
+    assert_eq!(res[1]["type"], "memory_store");
+    assert_eq!(res[1]["memory_store_id"], "mem_1");
+    assert_eq!(res[1]["instructions"], "notes");
+
+    // They are addressable via list/get, uniformly with any later-attached ones.
+    let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(listed["data"].as_array().unwrap().len(), 2);
+    let rid = res[0]["id"].as_str().unwrap();
+    let (s, got) = call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/resources/{rid}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(got["type"], "file");
+}
+
+#[tokio::test]
 async fn file_resource_attaches_to_a_live_session() {
     let (app, id) = app_with_session().await;
 
