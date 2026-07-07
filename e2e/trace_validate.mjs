@@ -128,6 +128,25 @@ export function assertGenAiChain(spans) {
   return chat;
 }
 
+/// (3d) A tool turn produced an OTel GenAI `execute_tool` span: name
+/// `execute_tool {tool}`, `gen_ai.operation.name="execute_tool"`, a well-formed
+/// `gen_ai.tool.call.id`, nested under an `invoke_agent` span on the same trace.
+export function assertToolSpan(spans, toolName) {
+  const { byId } = index(spans);
+  const op = (s) => s.attributes?.['gen_ai.operation.name'];
+  const tool = spans.find(
+    (s) => op(s) === 'execute_tool' && s.attributes?.['gen_ai.tool.name'] === toolName,
+  );
+  assert.ok(tool, `no execute_tool span for tool "${toolName}"`);
+  assert.equal(tool.name, `execute_tool ${toolName}`, `tool span name not templated: ${tool.name}`);
+  assert.ok(tool.attributes['gen_ai.tool.call.id'], 'execute_tool span missing gen_ai.tool.call.id');
+  const chain = ancestors(tool, byId);
+  const invokeAgent = chain.find((s) => op(s) === 'invoke_agent');
+  assert.ok(invokeAgent, `execute_tool not under invoke_agent; chain: ${chain.map((s) => s.name).join(' -> ')}`);
+  assert.equal(tool.trace_id, invokeAgent.trace_id, 'tool span on a different trace than its agent');
+  return tool;
+}
+
 /// (3c) W3C traceparent propagation: the request carrying `00-<tid>-<sid>-01`
 /// produced a root ingress span on trace `<tid>` whose parent is `<sid>`.
 export function assertPropagation(spans, route, tid, sid) {

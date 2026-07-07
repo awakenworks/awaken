@@ -17,6 +17,7 @@ import {
   assertConnected,
   assertRouteCoverage,
   assertGenAiChain,
+  assertToolSpan,
   assertPropagation,
 } from './trace_validate.mjs';
 
@@ -29,28 +30,50 @@ const FILE = `/tmp/awaken-trace-capture-${process.pid}.jsonl`;
 const TID = 'abcdef0123456789abcdef0123456789';
 const SID = '0123456789abcdef';
 
+// Create a session and drive one user-message turn to completion.
+async function createAndTurn(base, text) {
+  const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+  const session = await client.beta.sessions.create({
+    agent: 'assistant',
+    environment_id: 'env_local',
+    betas: BETAS,
+  });
+  const send = await fetch(`${base}/v1/sessions/${session.id}/events`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+    body: JSON.stringify({
+      events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+    }),
+  });
+  assert.equal(send.status, 200, 'turn accepted');
+  return session;
+}
+
+// Spawn `mode` with a collector-free trace file, drive one turn, stop, and return
+// the captured spans (SIGINT force-flushes the SimpleSpanProcessor on shutdown).
+async function captureTurn(mode, port, file, text) {
+  fs.rmSync(file, { force: true });
+  const { server } = spawnServer(mode, port, { AWAKEN_TRACE_FILE: file });
+  try {
+    await waitForPort(port);
+    await createAndTurn(`http://127.0.0.1:${port}`, text);
+    await stopServer(server);
+    return readSpans(file);
+  } finally {
+    await stopServer(server).catch(() => {});
+    fs.rmSync(file, { force: true });
+  }
+}
+
 async function main() {
   fs.rmSync(FILE, { force: true });
   const { server } = spawnServer('echo', PORT, { AWAKEN_TRACE_FILE: FILE });
   try {
     await waitForPort(PORT);
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
 
     // 1) Create a session, then drive a turn (echo model): this is the deep
     //    ingress → sessions.events.send → invoke_agent → chat chain.
-    const session = await client.beta.sessions.create({
-      agent: 'assistant',
-      environment_id: 'env_local',
-      betas: BETAS,
-    });
-    const send = await fetch(`${BASE}/v1/sessions/${session.id}/events`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
-      body: JSON.stringify({
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello trace' }] }],
-      }),
-    });
-    assert.equal(send.status, 200, 'turn accepted');
+    await createAndTurn(BASE, 'hello trace');
     pass('drove a turn through the echo model (ingress → runtime → inference)');
 
     // 2) Propagation probe: a request carrying an upstream traceparent must
@@ -85,6 +108,15 @@ async function main() {
 
     assertPropagation(spans, '/v1/models', TID, SID);
     pass('inbound W3C traceparent continued the upstream trace across the ingress boundary');
+
+    // 3) Tool scenario: a separate server whose model drives the builtin `glob`
+    //    tool inline, so the OTel GenAI `execute_tool {tool}` span is captured
+    //    under `invoke_agent` on the same trace (echo drives no tools).
+    const toolSpans = await captureTurn('statemachine', PORT + 1, `${FILE}.tool`, 'go');
+    assertValidIds(toolSpans);
+    assertConnected(toolSpans);
+    const glob = assertToolSpan(toolSpans, 'glob');
+    pass(`OTel GenAI tool span intact: invoke_agent → "${glob.name}" (call ${glob.attributes['gen_ai.tool.call.id']})`);
 
     console.log('E2E PASS: captured traces match the OTel GenAI conventions and propagate correctly.');
     process.exitCode = 0;
