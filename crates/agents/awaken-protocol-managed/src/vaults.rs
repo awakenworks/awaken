@@ -593,13 +593,18 @@ pub fn vault_router(state: Arc<VaultState>) -> Router {
     Router::new()
         .route("/v1/vaults", post(create_vault).get(list_vaults))
         .route("/v1/vaults/:id", get(retrieve_vault).delete(delete_vault))
+        .route("/v1/vaults/:id/archive", post(archive_vault))
         .route(
             "/v1/vaults/:vault_id/credentials",
             post(create_credential).get(list_credentials),
         )
         .route(
             "/v1/vaults/:vault_id/credentials/:id",
-            get(retrieve_credential),
+            get(retrieve_credential).delete(delete_credential),
+        )
+        .route(
+            "/v1/vaults/:vault_id/credentials/:id/archive",
+            post(archive_credential),
         )
         .route(
             "/v1/vaults/:vault_id/credentials/:id/mcp_oauth_validate",
@@ -692,6 +697,23 @@ async fn delete_vault(
         id,
         object_type: "vault_deleted",
     }))
+}
+
+/// `POST /v1/vaults/:id/archive` — soft-delete (the SDK `beta.vaults.archive`).
+/// Stamps `archived_at` and returns the vault; an already-archived vault is
+/// re-stamped idempotently. The vault's credentials are unaffected (archiving a
+/// vault does not cascade — only `DELETE` cascades).
+async fn archive_vault(
+    State(state): State<Arc<VaultState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vault>, WireError> {
+    let mut store = state.inner.lock().unwrap();
+    let record = store
+        .vaults
+        .get_mut(&id)
+        .ok_or_else(|| not_found("vault"))?;
+    record.archived_at = Some(OBJECT_AT.to_string());
+    Ok(Json(VaultState::project_vault(&id, record)))
 }
 
 async fn create_credential(
@@ -935,6 +957,47 @@ async fn retrieve_credential(
         .get(&id)
         .filter(|c| c.vault_id == vault_id)
         .ok_or_else(|| not_found("credential"))?;
+    Ok(Json(VaultState::project_credential(&id, record)))
+}
+
+/// `DELETE /v1/vaults/:vault_id/credentials/:id` — hard-delete one credential
+/// (the SDK `beta.vaults.credentials.delete`). Drops the wire bookkeeping (the
+/// sealed secrets go inert, as in `delete_vault`); the domain row is orphaned,
+/// never re-referenced. Scoped by `vault_id`: a credential under another vault
+/// 404s rather than deleting across the path scope.
+async fn delete_credential(
+    State(state): State<Arc<VaultState>>,
+    Path((vault_id, id)): Path<(String, String)>,
+) -> Result<Json<DeletedCredential>, WireError> {
+    let mut store = state.inner.lock().unwrap();
+    let matches_vault = store
+        .credentials
+        .get(&id)
+        .is_some_and(|c| c.vault_id == vault_id);
+    if !matches_vault {
+        return Err(not_found("credential"));
+    }
+    store.credentials.remove(&id);
+    Ok(Json(DeletedCredential {
+        id,
+        object_type: "vault_credential_deleted",
+    }))
+}
+
+/// `POST /v1/vaults/:vault_id/credentials/:id/archive` — soft-delete (the SDK
+/// `beta.vaults.credentials.archive`). Stamps `archived_at` and returns the
+/// secret-free credential; scoped by `vault_id`.
+async fn archive_credential(
+    State(state): State<Arc<VaultState>>,
+    Path((vault_id, id)): Path<(String, String)>,
+) -> Result<Json<Credential>, WireError> {
+    let mut store = state.inner.lock().unwrap();
+    let record = store
+        .credentials
+        .get_mut(&id)
+        .filter(|c| c.vault_id == vault_id)
+        .ok_or_else(|| not_found("credential"))?;
+    record.archived_at = Some(OBJECT_AT.to_string());
     Ok(Json(VaultState::project_credential(&id, record)))
 }
 

@@ -772,11 +772,19 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
         // -- the Managed vault front door --
         ["v1", "vaults"] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
         ["v1", "vaults", _] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
+        ["v1", "vaults", _, "archive"] if !read => scoped(APIKEY_WRITE),
         ["v1", "vaults", _, "credentials"] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
-        ["v1", "vaults", _, "credentials", _] if read => scoped(APIKEY_READ),
-        ["v1", "vaults", _, "credentials", _, "mcp_oauth_validate"] if !read => {
-            scoped(APIKEY_WRITE)
+        ["v1", "vaults", _, "credentials", _] => {
+            scoped(if read { APIKEY_READ } else { APIKEY_WRITE })
         }
+        [
+            "v1",
+            "vaults",
+            _,
+            "credentials",
+            _,
+            "mcp_oauth_validate" | "archive",
+        ] if !read => scoped(APIKEY_WRITE),
         _ => None,
     }
 }
@@ -1233,6 +1241,27 @@ mod tests {
         );
         assert_eq!(action_for(&get, "/v1/vaults/v1"), Some(APIKEY_READ));
         assert_eq!(action_for(&delete, "/v1/vaults/v1"), Some(APIKEY_WRITE));
+        // Archive + update + delete on the credential resource all write.
+        assert_eq!(
+            action_for(&post, "/v1/vaults/v1/archive"),
+            Some(APIKEY_WRITE)
+        );
+        assert_eq!(
+            action_for(&delete, "/v1/vaults/v1/credentials/c1"),
+            Some(APIKEY_WRITE)
+        );
+        assert_eq!(
+            action_for(&post, "/v1/vaults/v1/credentials/c1"),
+            Some(APIKEY_WRITE)
+        );
+        assert_eq!(
+            action_for(&post, "/v1/vaults/v1/credentials/c1/archive"),
+            Some(APIKEY_WRITE)
+        );
+        assert_eq!(
+            action_for(&get, "/v1/vaults/v1/credentials/c1"),
+            Some(APIKEY_READ)
+        );
         assert_eq!(
             action_for(&post, "/v1/vaults/v1/credentials"),
             Some(APIKEY_WRITE)

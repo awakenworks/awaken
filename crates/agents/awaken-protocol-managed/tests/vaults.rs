@@ -439,6 +439,151 @@ async fn list_credentials_is_scoped_to_the_vault_and_404s_unknown() {
 }
 
 #[tokio::test]
+async fn archive_vault_soft_deletes_and_hides_from_default_list() {
+    let h = harness();
+    let keep = create_vault(&h, "keep").await;
+    let gone = create_vault(&h, "gone").await;
+
+    // Archive stamps archived_at and returns the vault.
+    let (s, archived) = call(&h.app, "POST", &format!("/v1/vaults/{gone}/archive"), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(archived["type"], "vault");
+    assert!(archived["archived_at"].is_string());
+
+    // Default list excludes the archived vault; include_archived returns both.
+    let (_, page) = call(&h.app, "GET", "/v1/vaults", None).await;
+    let ids: Vec<&str> = page["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![keep.as_str()]);
+    let (_, all) = call(&h.app, "GET", "/v1/vaults?include_archived=true", None).await;
+    assert_eq!(all["data"].as_array().unwrap().len(), 2);
+
+    // Soft-delete: retrieve still works and reports archived_at.
+    let (s, got) = call(&h.app, "GET", &format!("/v1/vaults/{gone}"), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(got["archived_at"].is_string());
+
+    // Archiving an unknown vault is a 404.
+    let (s, _) = call(&h.app, "POST", "/v1/vaults/vlt_missing/archive", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn archive_credential_soft_deletes_and_hides_from_list() {
+    let h = harness();
+    let vault_id = create_vault(&h, "v").await;
+    let keep = create_credential(&h, &vault_id, "KEEP").await;
+    let gone = create_credential(&h, &vault_id, "GONE").await;
+
+    let (s, archived) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials/{gone}/archive"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(archived["type"], "vault_credential");
+    assert!(archived["archived_at"].is_string());
+
+    let (_, page) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        None,
+    )
+    .await;
+    let ids: Vec<&str> = page["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![keep.as_str()]);
+    let (_, all) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/vaults/{vault_id}/credentials?include_archived=true"),
+        None,
+    )
+    .await;
+    assert_eq!(all["data"].as_array().unwrap().len(), 2);
+
+    // Wrong vault + unknown credential both 404.
+    let other = create_vault(&h, "other").await;
+    let (s, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{other}/credentials/{gone}/archive"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_credential_removes_one_and_scopes_by_vault() {
+    let h = harness();
+    let vault_a = create_vault(&h, "a").await;
+    let vault_b = create_vault(&h, "b").await;
+    let c1 = create_credential(&h, &vault_a, "K1").await;
+    let c2 = create_credential(&h, &vault_a, "K2").await;
+
+    // Deleting under the wrong vault 404s (path scope holds), does not remove.
+    let (s, _) = call(
+        &h.app,
+        "DELETE",
+        &format!("/v1/vaults/{vault_b}/credentials/{c1}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert!(h.state.credential_source_id(&vault_a, &c1).is_some());
+
+    // Delete c1 under its own vault: the receipt, then it is gone from the list.
+    let (s, deleted) = call(
+        &h.app,
+        "DELETE",
+        &format!("/v1/vaults/{vault_a}/credentials/{c1}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(deleted["type"], "vault_credential_deleted");
+    assert_eq!(deleted["id"], c1);
+    assert!(h.state.credential_source_id(&vault_a, &c1).is_none());
+
+    let (_, page) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/vaults/{vault_a}/credentials"),
+        None,
+    )
+    .await;
+    let ids: Vec<&str> = page["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![c2.as_str()]);
+
+    // Deleting an already-gone credential is a 404, not an idempotent 200.
+    let (s, _) = call(
+        &h.app,
+        "DELETE",
+        &format!("/v1/vaults/{vault_a}/credentials/{c1}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn retrieve_vault_unknown_is_404() {
     let h = harness();
     let (s, _) = call(&h.app, "GET", "/v1/vaults/vlt_missing", None).await;
