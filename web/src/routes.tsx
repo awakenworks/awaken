@@ -6,7 +6,6 @@ import AccessSurface from "./surfaces/access";
 import AgentsSurface from "./surfaces/agents";
 import CredentialsSurface from "./surfaces/credentials";
 import HomeSurface from "./surfaces/home";
-import InboxSurface from "./surfaces/inbox";
 import McpServersSurface from "./surfaces/mcp-servers";
 import ModelsSurface from "./surfaces/models";
 import ProjectAgentsSurface from "./surfaces/project-agents";
@@ -23,7 +22,6 @@ export const router = createBrowserRouter([
     element: <AppShell />,
     children: [
       { index: true, element: <HomeSurface /> },
-      { path: "inbox", element: <InboxSurface /> },
 
       { path: "p/:pid/overview", element: <ProjectOverviewSurface /> },
       { path: "p/:pid/sessions", element: <SessionsSurface /> },

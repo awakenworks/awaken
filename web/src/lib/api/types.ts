@@ -133,6 +133,8 @@ export interface Session {
   id: string;
   type: "session";
   agent: SessionAgent;
+  /** Extension: the project ingress the session was created through. */
+  project_id?: string | null;
   environment_id?: string | null;
   created_at: string;
   updated_at: string;
@@ -198,6 +200,18 @@ export type InboundEvent =
   | { type: "user.interrupt" }
   | { type: "user.pause" }
   | { type: "user.resume" };
+
+export interface ListSessionsResponse {
+  data: Session[];
+  next_page: string | null;
+  has_more: boolean;
+}
+
+/** POST /v1/sessions/{id} — the session's client-mutable fields. */
+export interface UpdateSessionRequest {
+  title?: string | null;
+  metadata?: Record<string, string>;
+}
 
 export interface CreateSessionRequest {
   agent: string | { id: string; version?: number; model?: string };

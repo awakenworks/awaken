@@ -4,11 +4,13 @@
 
 ## 0. 设计论点(一句话)
 
-采用**「Workspace ▸ Project 两级作用域 + 全局 cockpit(Home/Inbox)」外壳**;功能范围 = **既有管理台全集 ∪ 本仓库管理面**(Session/Project 是超出既有管理台的部分,Eval/Audit/观测/目录/沙箱/助手是超出本分支现状、必须纳入并随后端补齐逐步点亮的部分)。没有对应后端概念的功能一律不发明;后端未备的页面**照常设计、以能力门控置灰**,不因后端进度裁剪 IA。
+采用**「Workspace ▸ Project 两级作用域 + 全局 Home cockpit」外壳**;功能范围 = **既有管理台全集 ∪ 本仓库管理面**(Session/Project 是超出既有管理台的部分,Eval/Audit/观测/目录/沙箱/助手是超出本分支现状、必须纳入并随后端补齐逐步点亮的部分)。没有对应后端概念的功能一律不发明;后端未备的页面**照常设计、以能力门控置灰**,不因后端进度裁剪 IA。
+
+**定位边界**:这是 agent **平台的运营控制台**——供给、治理、观测。终端用户交互(聊天、工具审批、HITL)发生在**客户自己的应用**里(经 SDK 走运行面 wire),控制台不做审批收件箱(无 Inbox);会话转录页的行内交互是运维/调试用途,`requires_action` 在控制台呈现为**观测指标与列表过滤**(「等待客户端动作」),不是待办队列。
 
 ## 1. 关键设计与工程决策
 
-**交互模式(采纳)**:两级作用域侧栏(聚焦式 scope 切换)、Home/Inbox 全局层、statChip 全可点、needs-you hero 行内 Approve、live banner 批量刷新、agent 紫=AI 活动、readiness(Bind & ready)清单、resolved binding 链式 chips、record-before-effect 日志表、编辑器外壳(顶栏版本+Publish / 主区 / 右 rail)、Sandbox 沙箱预览(流式 + 行内审批 + 附件)、assistant 草稿手递编辑器、capabilities 门控、secret 全链路脱敏、URL 同步列表状态、unsaved guard、token modal、⌘K。
+**交互模式(采纳)**:两级作用域侧栏(聚焦式 scope 切换)、Home 全局层、statChip 全可点、live banner 批量刷新、agent 紫=AI 活动、readiness(Bind & ready)清单、resolved binding 链式 chips、record-before-effect 日志表、编辑器外壳(顶栏版本+Publish / 主区 / 右 rail)、Sandbox 沙箱预览(流式 + 行内审批 + 附件)、assistant 草稿手递编辑器、capabilities 门控、secret 全链路脱敏、URL 同步列表状态、unsaved guard、token modal、⌘K。
 
 **工程模式(采纳)**:W3C token 三层流水线 + token-contract 测试;OpenAPI codegen `*:check` 门禁;单出口 fetch + no-raw-fetch 检查;`paths.ts` 导航 SSOT(router/侧栏/palette 共用);append-only 事件日志 reducer(单 query cache 条目,transcript 是纯投影);session-as-query 认证;roster sentinel;structure tests;react-router v7 薄路由包装 Surface 组件。
 
@@ -20,8 +22,8 @@
 |---|---|
 | Workspace(共享供给) | `workspace_id`:catalog、credentials+pools、MCP、A2A、inference profiles、IAM tokens、agents、skills/tools 目录 |
 | Project(运行面容器) | `Project` + `/projects/{id}` ingress;sessions、vaults、per-project agent MCP 绑定 |
-| 工作单元 | **Session**(idle/running/requires_action) |
-| Inbox 审批 | `requires_action` tool confirmation、durable deliver、dead-letters、凭证失效 |
+| 工作单元 | **Session**(idle/running;requires_action 是派生过滤词,不是 wire status) |
+| 需要客户端动作 | `requires_action` 派生过滤(`GET /v1/sessions?status=requires_action`)→ Home KPI + 会话列表过滤;审批本身在客户应用完成 |
 | 编辑器 Publish | Agent config draft → validate → publish(fingerprint) |
 | 自动化触发日志 | Durable dispatch 队列 + dead-letters(record-before-effect) |
 | Resolved binding 链 | 三个 dry-run resolve 端点直接供数 |
@@ -38,7 +40,7 @@ workspace 段较长,用 10px 大写分组标题分成 **Supply / Observe / Gover
 │  └─ 📁 <project>          PROJECT ▾    ││                                    │
 │ [ Search…                        ⌘K ]  ││                                    │
 │ GLOBAL · ALL PROJECTS                  ││                                    │
-│  Home        Inbox ❸(紫)              ││                                    │
+│  Home                                  ││                                    │
 │ ── 按 scope 二选一 ──                   ││                                    │
 │ PROJECT · <id>     │ WORKSPACE · SUPPLY ││                                   │
 │  Overview          │  Agents ❹(紫)     ││                                   │
@@ -67,17 +69,31 @@ workspace 段较长,用 10px 大写分组标题分成 **Supply / Observe / Gover
 
 | 路由 | 内容 | 端点 / 就绪度 |
 |---|---|---|
-| `/` Home | KPI(Projects/Active sessions/Needs you)+ Needs-you 行内 Approve + Projects 表 + 容量/健康摘要 hero | 🔶 projects ✅;会话聚合与 runs summary ⛔ |
-| `/inbox` | Approvals(requires_action 行内 Allow/Deny)/ Attention(dead-letters、凭证失效、MCP 不健康) | 🔶 |
+| `/` Home | KPI(Projects/Active sessions/等待客户端动作)+ Projects 表(每项目活跃会话数) | ✅(`GET /v1/sessions` + `?status=requires_action`);runs summary hero ⛔ |
 | FAB 助手 | 流式对话、工具卡、生成 agent 草稿→跳编辑器;设置(模型/策略 prompt) | ⛔ `/v1/admin/assistant/*` |
 
-### Project scope(运行面容器 = Managed Agents 资源全体)
+(无 `/inbox`:审批交互在客户应用完成,见 §0 定位边界。)
+
+### Project scope(运行面容器 = 运行面 faces 全体)
+
+Project 容器覆盖的不止 Managed Agents 一张 wire——**所有跑在共享 host 上的运行面 faces 都归它,统一 `ScopeRef::Project` 授权 + run-plane 动作集**:
+
+| 运行面 face | 资源 / 路径 | 说明 |
+|---|---|---|
+| Managed Agents | Session `sesn_*`(create/retrieve/**list/update/archive**)、Event `evt_*`(send/list/SSE)、live-inbox、Vault `vlt_*` + VaultCredential `crd_*` | 控制台的主对接 wire |
+| AI SDK | `POST /v1/ai-sdk/agents/:id/runs` | UI Message Stream(编辑器 Sandbox 通道) |
+| AG-UI | `/v1/ag-ui/...` | 同 host 同线程 |
+| A2A | `/v1/delegates/:agent_id/card` + 委托运行 | 对外 delegation 入口 |
+| Durable ops | `/v1/durable/threads/:thread/*`(dispatches/supersede/cancel/wake/deliver/reconcile/reap) | 会话抽屉的运维动词 |
+| Files | `/v1/files(/:id, /:id/content)` | 会话挂载资源(ADR-0038) |
+| Memory stores | `/v1/memory_stores(/:id)` | 同上 |
+| Skills(delivered) | `/v1/skills` | host 的运行期已交付技能目录(技能*编写/注册*在 Workspace) |
 
 | 路由 | 内容 | 端点 / 就绪度 |
 |---|---|---|
-| `/p/:pid/overview` | 项目脉搏:活跃会话、最近 dispatch、绑定健康(resolve chips) | 🔶(会话列表⛔) |
-| `/p/:pid/sessions` | 会话列表 + New session 拆分按钮 | 🔶(列表端点⛔;创建 ✅ `/projects/:pid/v1/sessions`) |
-| `/p/:pid/sessions/:sid` | **§4 核心界面**:转录 + HITL + outcomes + durable 抽屉 | ✅ |
+| `/p/:pid/overview` | 项目脉搏:活跃会话、等待客户端动作、最近会话表 | ✅(project-scoped list) |
+| `/p/:pid/sessions` | 会话列表(All / Awaiting-action 过滤、archive 行动作)+ New session | ✅ `GET/POST /projects/:pid/v1/sessions`、`POST …/:sid(/archive)` |
+| `/p/:pid/sessions/:sid` | **§4 核心界面**:转录 + 行内工具确认(运维/调试)+ outcomes + rename/archive + durable 抽屉 | ✅ |
 | `/p/:pid/vaults` | 运行凭证容器(managed wire 资源,随 session 消费):vault 及其三型 credential、`mcp_oauth_validate`;标注 host-ephemeral | 🔶 vault 面 ✅,挂到 `/projects/{pid}` ingress ⛔(见 §7) |
 | `/p/:pid/agents` | per-project MCP 绑定 + resolve 预览(reference-don't-copy) | ✅ |
 | `/p/:pid/settings` | 项目信息、ingress baseURL、权限说明(project 容器统一 `ScopeRef::Project` 授权) | ✅(guard ⛔) |
@@ -163,8 +179,8 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 ## 7. 后端缺口(按优先级)
 
 **P2 前置(会话面)**:
-1. `GET /v1/sessions`(列表 + status/project 过滤)——Home/Inbox/会话列表的硬前置。
-2. needs-attention 聚合(或列表过滤);session title/archive 更新端点。
+1. ~~`GET /v1/sessions`~~ **已落地**:列表(project ingress 作用域 + `?status=` 派生过滤 idle/running/requires_action;wire status 保持 SDK 忠实)、`POST /v1/sessions/{id}`(title/metadata)、`POST /v1/sessions/{id}/archive`(标记不删除);会话聚合持久化 `project_id`/`archived_at`(SQLite 列迁移 best-effort)。
+2. ~~needs-attention 聚合~~ **已并入 1**(`?status=requires_action` 即聚合查询)。遗留:list 不重放 repo-only 行的转录,重启前 park 的会话在被打开前报 idle。
 
 **功能对齐(Observe/目录/沙箱/助手),按依赖排序**:
 3. ~~OpenAPI 契约~~ **已落地**(`contracts/openapi.generated.json`,19 路径/28 操作;IAM/durable 注册表扩展是后续增量)。
@@ -185,7 +201,7 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 ## 8. 分期
 
 - **P1 地基 + 管理面(零后端改动)**:token 流水线、外壳(paths/⌘K/明暗/i18n/门控框架)、单出口 fetch + codegen;Models、Credentials、MCP、A2A(card 只读)、Access、Agents(publish 面)、Vaults、Sessions(创建 + 详情)+ Settings;Sandbox 对已发布 agent 先行(ai-sdk 端点已备)。
-- **P2 会话面完善**:事件 reducer 强化 + live banner;Inbox;真浏览器 SSE 用例。(前置:缺口 1–2)
+- **P2 会话面完善(已落地)**:会话列表/更新/归档端点 + 列表页(Awaiting-action 过滤、archive)、Home/Overview 会话 KPI、详情页 rename/archive。遗留:真浏览器 SSE 用例。
 - **P3 项目面完善**:roster sentinel、guard 落地后的权限 UI。
 - **P4 Observe/目录对齐**:capabilities 目录(Skills/Tools/Plugins 表单)→ Dashboard/audit → agent 看板 → eval 三页 → 助手 FAB;各页随后端端点落地逐个点亮(门控页先行占位)。
 
@@ -199,11 +215,11 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 ┌ Acme Inc / acme-web / Sessions ──────────────────────────────┬───────────────┐
 │                                                              │ [+ New session]│
 ├──────────────────────────────────────────────────────────────┴───────────────┤
-│ (All) (Running ●) (Needs you ⚠2) (Idle)        [ Search sesn_…        ] [⟳]  │
+│ (All) (Running ●) (Awaiting ⚠2) (Idle)         [ Search sesn_…        ] [⟳]  │
 ├───────────────────────────────────────────────────────────────────────────────┤
 │  STATUS      SESSION            TITLE                AGENT        UPDATED     │
 │  ● running   sesn_01hx…f2a4     Fix flaky auth test  builder@3    2m ago    ▸ │
-│▐ ⚠ needs you sesn_01hx…9c1b     Migrate settings     reviewer@1   18m ago   ▸ │  ← amber 行内标注
+│▐ ⚠ awaiting  sesn_01hx…9c1b     Migrate settings     reviewer@1   18m ago   ▸ │  ← amber 行内标注
 │  ○ idle      sesn_01hx…77d0     Draft ADR summary    docs@1       1h ago    ▸ │     tool: bash 待确认
 │  ○ idle      sesn_01hw…be32     (untitled)           builder@3    3d ago    ▸ │
 ├───────────────────────────────────────────────────────────────────────────────┤

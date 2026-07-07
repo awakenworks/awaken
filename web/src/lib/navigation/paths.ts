@@ -18,7 +18,6 @@ export interface NavItem {
 
 export const NAV: NavItem[] = [
   { key: "home", label: "Home", labelZh: "总览", group: "global", path: "/" },
-  { key: "inbox", label: "Inbox", labelZh: "收件箱", group: "global", path: "/inbox", agentBadge: true },
 
   { key: "overview", label: "Overview", labelZh: "项目概览", group: "project", path: "/p/:pid/overview" },
   { key: "sessions", label: "Sessions", labelZh: "会话", group: "project", path: "/p/:pid/sessions" },
