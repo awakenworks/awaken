@@ -99,6 +99,32 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
     }
 }
 
+/// The shared bind-time check is fail-closed on an unknown vault, and a pre-flight
+/// caller gets exactly the error `create_session` would — without minting a session.
+#[test]
+fn check_bind_is_fail_closed_on_unknown_vault() {
+    let secrets = Arc::new(InMemorySecretStore::new());
+    let credentials = Arc::new(InMemoryCredentialRepo::new());
+    let vaults = Arc::new(VaultState::new(secrets, credentials));
+    let state = ManagedState::new(PreparingFake {
+        captured: Arc::new(Mutex::new(Vec::new())),
+        fail_with: None,
+    })
+    .with_vaults(vaults);
+
+    let bad: awaken_protocol_managed::dto::CreateSessionRequest =
+        serde_json::from_value(json!({ "agent": "a", "vault_ids": ["vlt_missing"] })).unwrap();
+    assert!(matches!(
+        state.check_bind(&bad),
+        Err(awaken_protocol_managed::StateError::VaultNotFound(_))
+    ));
+
+    // No referenced vault → the bind is legal.
+    let ok: awaken_protocol_managed::dto::CreateSessionRequest =
+        serde_json::from_value(json!({ "agent": "a" })).unwrap();
+    assert!(state.check_bind(&ok).is_ok());
+}
+
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
     let mut b = Request::builder().method(method).uri(uri);
     let body = match body {
