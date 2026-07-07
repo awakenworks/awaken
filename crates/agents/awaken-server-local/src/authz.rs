@@ -810,6 +810,24 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
         }),
         ["v1", "agents", _, "versions"] if read => scoped(WORKSPACE_READ),
         ["v1", "agents", _, "archive"] if !read => scoped(WORKSPACE_WRITE),
+        // -- deployments + deployment runs --
+        ["v1", "deployments"] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
+        ["v1", "deployments", _] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
+        [
+            "v1",
+            "deployments",
+            _,
+            "archive" | "pause" | "unpause" | "run",
+        ] if !read => scoped(WORKSPACE_WRITE),
+        ["v1", "deployment_runs"] | ["v1", "deployment_runs", _] if read => scoped(WORKSPACE_READ),
         _ => None,
     }
 }
