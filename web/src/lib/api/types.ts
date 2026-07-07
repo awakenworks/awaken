@@ -229,8 +229,19 @@ export interface Vault {
   type: "vault";
   [k: string]: unknown;
 }
+/** The secret-free credential projection: `type` is the object type
+ * ("vault_credential"); the credential kind + fields are under `auth`. */
+export interface VaultCredentialAuth {
+  type: "environment_variable" | "static_bearer" | "mcp_oauth";
+  mcp_server_url?: string;
+  secret_name?: string;
+  expires_at?: string;
+  [k: string]: unknown;
+}
 export interface VaultCredential {
   id: string;
   type: string;
+  auth?: VaultCredentialAuth;
+  display_name?: string;
   [k: string]: unknown;
 }
