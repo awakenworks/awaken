@@ -59,10 +59,10 @@ impl MemoryBlobStore {
         let mut max = 0u64;
         if let Ok(read_dir) = std::fs::read_dir(&root) {
             for entry in read_dir.flatten() {
-                if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str()) {
-                    if let Some(n) = stem.strip_prefix("memstore_").and_then(|d| d.parse().ok()) {
-                        max = max.max(n);
-                    }
+                if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str())
+                    && let Some(n) = stem.strip_prefix("memstore_").and_then(|d| d.parse().ok())
+                {
+                    max = max.max(n);
                 }
             }
         }

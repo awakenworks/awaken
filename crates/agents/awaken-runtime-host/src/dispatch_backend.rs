@@ -75,11 +75,9 @@ pub(crate) fn open_durable_store(
                 std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
                 let path = dir.join(format!("{}-dispatch.db", sanitize_thread(thread)));
                 AnyDispatchStore::open_sqlite(&path.to_string_lossy())
-                    .map_err(|e| HostError::internal(e))?
+                    .map_err(HostError::internal)?
             }
-            None => {
-                AnyDispatchStore::open_sqlite_in_memory().map_err(|e| HostError::internal(e))?
-            }
+            None => AnyDispatchStore::open_sqlite_in_memory().map_err(HostError::internal)?,
         })),
     }
 }
