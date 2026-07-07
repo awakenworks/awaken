@@ -63,7 +63,7 @@ pub use crate::hub::{ThreadEvent, ThreadEventHub};
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
 pub use crate::config::{advertised_tools, block_text};
-pub use crate::config_plane::{ConfigService, config_router};
+pub use crate::config_plane::{ConfigService, ConfigServiceAgentSource, config_router};
 // The per-plane resource routers the composition root merges over one host.
 pub use crate::durable_ops::durable_ops_router;
 pub use crate::files::files_router;

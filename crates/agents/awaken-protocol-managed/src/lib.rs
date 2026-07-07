@@ -23,7 +23,7 @@ mod state;
 pub mod user_profiles;
 pub mod vaults;
 
-pub use agents_registry::{AgentRegistryState, agents_router};
+pub use agents_registry::{AgentConfigSource, AgentConfigView, AgentRegistryState, agents_router};
 pub use deployments::{DeploymentState, deployments_router};
 pub use environments::{EnvironmentState, environments_router};
 pub use router::{ProjectScope, router};

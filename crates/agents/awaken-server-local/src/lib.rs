@@ -578,7 +578,17 @@ pub fn build_config_router() -> Router {
     let service = Arc::new(ConfigService::new(registry, tools));
     let host = SharedHost::new(Arc::new(InstructionEchoModel), "config")
         .with_config_service(service.clone());
-    mount(Arc::new(host)).merge(config_router(service))
+    // `/v1/agents` over this server projects the config plane it hosts: an agent
+    // published via `/v1/config/agents` is retrievable as a managed-wire projection
+    // of that single truth (no second store).
+    let agents = awaken_protocol_managed::agents_router(std::sync::Arc::new(
+        awaken_protocol_managed::AgentRegistryState::new().with_config_source(std::sync::Arc::new(
+            awaken_runtime_host::ConfigServiceAgentSource(service.clone()),
+        )),
+    ));
+    mount(Arc::new(host))
+        .merge(config_router(service))
+        .merge(agents)
 }
 
 /// The live credential-validation probe port (ADR-0043), backed by provider-genai.

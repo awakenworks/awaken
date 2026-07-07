@@ -66,6 +66,16 @@ async function main() {
     assert.equal(published.body.installed, true, 'installed into the live catalog');
     pass(`published: fingerprint ${published.body.fingerprint.slice(0, 12)}…`);
 
+    // Retreat to projection: the published agent appears on `/v1/agents` as a
+    // managed-wire projection of the config truth — model/system come from the
+    // published config, though it was never created via the agents registry.
+    const projected = await json('GET', `/v1/agents/${AGENT}`, undefined);
+    assert.equal(projected.status, 200, 'published agent is retrievable via /v1/agents');
+    assert.equal(projected.body.id, AGENT);
+    assert.equal(projected.body.model.id, 'config-model', 'model projected from config truth');
+    assert.equal(projected.body.system, GREETING, 'system projected from config instructions');
+    pass('published config agent projects onto /v1/agents');
+
     // Run: a session for the published agent runs with its own instructions.
     const session = await client.beta.sessions.create({ agent: AGENT, environment_id: 'env_local', betas: BETAS });
     await client.beta.sessions.events.send(session.id, {
