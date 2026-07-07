@@ -6,8 +6,12 @@
 
 import http from 'node:http';
 
-export function startFakeAnthropic(apiKey) {
-  const state = { requests: [], unauthorized: 0 };
+// `opts`: `{ failuresBeforeSuccess, alwaysFail, faultStatus }` inject retryable
+// upstream failures so e2e can drive the runtime's retry + circuit-breaker + error
+// paths without a live key. Default (no opts) is the original always-succeed fake.
+export function startFakeAnthropic(apiKey, opts = {}) {
+  const { failuresBeforeSuccess = 0, alwaysFail = false, faultStatus = 503 } = opts;
+  const state = { requests: [], unauthorized: 0, attempts: 0 };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
@@ -22,6 +26,14 @@ export function startFakeAnthropic(apiKey) {
         state.unauthorized += 1;
         res.writeHead(401, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));
+        return;
+      }
+      // Fault injection: fail the first N authenticated attempts (retry recovers)
+      // or every attempt (retries exhausted → the run loop surfaces an error).
+      state.attempts += 1;
+      if (alwaysFail || state.attempts <= failuresBeforeSuccess) {
+        res.writeHead(faultStatus, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'fake upstream is overloaded' } }));
         return;
       }
       const parsed = JSON.parse(body || '{}');
@@ -100,6 +112,9 @@ export function startFakeAnthropic(apiKey) {
         requests: state.requests,
         get unauthorized() {
           return state.unauthorized;
+        },
+        get attempts() {
+          return state.attempts;
         },
         close: () => server.close(),
       });
