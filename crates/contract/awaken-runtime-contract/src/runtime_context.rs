@@ -13,6 +13,7 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use tokio_util::sync::CancellationToken;
 
 use crate::live_inbox::LiveInbox;
+use awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore;
 
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
@@ -20,6 +21,11 @@ pub struct RuntimeRunContext {
     pub stream_sink: Option<Arc<dyn StreamSink>>,
     /// Durable write boundary for this attempt; absent means no persistence.
     pub commit: Option<Arc<dyn CommitCoordinator>>,
+    /// Durable snapshot store for an interrupted inference stream. When set, the
+    /// engine flushes the in-flight partial at an interruption boundary so a
+    /// later process resumes mid-step instead of re-running it; absent means an
+    /// interrupted step is recovered in-process only and lost on a crash.
+    pub stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
     /// Committed-history read port. When set, a fresh run seeds its transcript
     /// with the thread's committed messages, so a new turn continues the
     /// conversation; absent means the run starts from its input alone.
@@ -47,6 +53,14 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_commit(mut self, commit: Arc<dyn CommitCoordinator>) -> Self {
         self.commit = Some(commit);
+        self
+    }
+
+    /// Provide the durable checkpoint store so an interrupted inference stream
+    /// survives a process crash and resumes mid-step in a later process.
+    #[must_use]
+    pub fn with_stream_checkpoint(mut self, store: Arc<dyn StreamCheckpointStore>) -> Self {
+        self.stream_checkpoint = Some(store);
         self
     }
 
