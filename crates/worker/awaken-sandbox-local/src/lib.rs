@@ -37,7 +37,7 @@ mod provider;
 // BLAKE3), re-exported here for existing consumers; the provider resolves mount bytes
 // from a `FileStore` handle injected at config time (ADR-0038 D6).
 pub use awaken_file_store::{FileStore, FileStoreError, FsFileStore, InMemoryFileStore};
-pub use namespace::{NamespaceProvider, bubblewrap_argv, sandbox_exec_argv};
+pub use namespace::{NamespaceProvider, NamespaceSandbox, bubblewrap_argv, sandbox_exec_argv};
 pub use provider::{LocalProcess, LocalProvider, LocalSandbox};
 
 /// A logical path escaped its environment root.

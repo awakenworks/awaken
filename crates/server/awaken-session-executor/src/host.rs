@@ -314,10 +314,11 @@ pub struct SharedHost {
     /// run's system prompt (fragments). A thread with no entry mounts nothing.
     pub(crate) thread_resources: std::sync::Mutex<HashMap<String, StagedResources>>,
     /// Per-thread network-egress denial, set by a session's `prepare_session` from its
-    /// environment's networking policy and consumed by `sandbox_spec`. A thread with
-    /// no entry (or `false`) shares the host network; `true` runs its `bash` under a
-    /// `bwrap --unshare-net` namespace with no egress.
-    pub(crate) thread_egress: std::sync::Mutex<HashMap<String, bool>>,
+    /// environment's networking policy. A thread with no entry (or `false`) shares the
+    /// host network; `true` runs its `bash` under a `bwrap --unshare-net` namespace
+    /// with no egress. A shared handle, so a sandboxed ACP channel source can follow
+    /// the same registrations (see [`crate::SandboxChannelSource`]).
+    pub(crate) thread_egress: crate::sandbox_source::ThreadEgress,
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. In-memory by default (one server process).
     pub(crate) file_store: Arc<dyn FileStore>,
@@ -385,7 +386,7 @@ impl SharedHost {
             config_service: None,
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
             thread_resources: std::sync::Mutex::new(HashMap::new()),
-            thread_egress: std::sync::Mutex::new(HashMap::new()),
+            thread_egress: crate::sandbox_source::ThreadEgress::new(),
             file_store: Arc::new(InMemoryFileStore::new()),
             memory_stores,
             gate_override: None,
@@ -561,12 +562,16 @@ impl SharedHost {
     }
 
     /// Deny network egress for `thread`'s sandbox (from its environment's networking
-    /// policy), staged before its first turn and consumed by `sandbox_spec`.
+    /// policy), staged before its first turn and consumed by `sandbox_spec` (and by a
+    /// sandboxed ACP channel source wired via [`SharedHost::thread_egress`]).
     pub fn register_thread_egress(&self, thread: &str, deny: bool) {
-        self.thread_egress
-            .lock()
-            .unwrap()
-            .insert(thread.to_string(), deny);
+        self.thread_egress.set(thread, deny);
+    }
+
+    /// The shared per-thread egress-registration handle, for wiring a
+    /// [`crate::SandboxChannelSource`] before `with_acp` consumes the builder.
+    pub fn thread_egress(&self) -> crate::sandbox_source::ThreadEgress {
+        self.thread_egress.clone()
     }
 
     /// Stage MCP servers for `thread`, to be connected when the thread's context
