@@ -789,7 +789,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-a2a",
         "async-trait",
         "axum",
+        # Durable ManagedSessionRepository backends (sqlite + postgres) over the
+        # `managed` scoped-migration bundle; the SQL drivers + the shared migrator.
         "rusqlite",
+        "sqlx",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
         "tempfile",
         "base64",
         "form_urlencoded",

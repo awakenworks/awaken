@@ -41,9 +41,13 @@ awaken-protocol-a2a = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true
 # Durable Managed-session repository (sessions.db) — the open home for
-# SqliteManagedSessionRepository, moved here so any bin (standalone/enterprise)
-# gets restart-surviving sessions without the BuSL authoring plane.
+# the sqlite + postgres ManagedSessionRepository backends, moved here so any bin
+# (standalone/enterprise) gets restart-surviving sessions without the BuSL
+# authoring plane. Both back the same `managed` scoped-migration bundle.
 rusqlite = { version = "0.32", features = ["bundled"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", features = ["postgres"] }
+awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 axum = { version = "0.7", features = ["multipart"] }

@@ -1,19 +1,79 @@
-//! A SQLite-backed [`ManagedSessionRepository`]: the durable home for the Managed
-//! session aggregate (agent / model / title / metadata / accepted MCP servers).
+//! Durable [`ManagedSessionRepository`] backends: the home for the Managed
+//! session aggregate (agent / model / title / metadata / accepted MCP servers),
+//! over the store's own `managed` migration scope ([`session_bundle`]). Two
+//! backends — [`SqliteManagedSessionRepository`] (embedded, `sessions.db`) and
+//! [`PostgresManagedSessionRepository`] (network DB) — share the one portable
+//! bundle, exactly like the config/catalog/credential stores.
 //!
-//! It is its OWN database file (`sessions.db`), NOT a table in the authoring-plane
-//! `admin.db`: a live session instance is a different aggregate from the agent/MCP
-//! *definitions* that admin.db holds, so mixing them would cross a bounded-context
-//! line (ADR-0039 "one repository per aggregate"). Secrets never land here — only
-//! the wire-echo MCP `{name,type,url}` values, per the port's contract (G3).
+//! It is its OWN scope (`managed_session` table + `managed_schema_migrations`
+//! ledger), NOT a table in the authoring-plane `admin.db`: a live session
+//! instance is a different aggregate from the agent/MCP *definitions* admin holds,
+//! so mixing them would cross a bounded-context line (ADR-0039 "one repository per
+//! aggregate"). Secrets never land here — only the wire-echo MCP `{name,type,url}`
+//! values, per the port's contract (G3).
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_protocol_managed::{ManagedSessionRepository, PersistedSession};
+use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::Value;
+use sqlx::Row;
+use sqlx::postgres::PgPool;
+
+/// The session store's table namespace / bundle prefix: the table is
+/// `managed_session`, the ledger `managed_schema_migrations`.
+const NS: &str = "managed";
+
+/// The versioned schema bundle (ADR-0043 scoped migration). One migration: the
+/// `managed_session` row. All columns are portable — the JSON payloads live in
+/// `TEXT` columns as serde strings on both backends, so the two adapters read and
+/// write identical rows.
+fn session_bundle() -> Result<MigrationBundle, MigrationError> {
+    MigrationBundle::new(
+        "awaken.managed_session",
+        vec![Migration::new(
+            1,
+            "managed session config: one row per session id (secret-free)",
+            "CREATE TABLE {prefix}_session (\
+                 session_id     TEXT PRIMARY KEY, \
+                 agent_id       TEXT NOT NULL, \
+                 model          TEXT NOT NULL, \
+                 title          TEXT, \
+                 metadata_json  TEXT NOT NULL, \
+                 environment_id TEXT NOT NULL, \
+                 mcp_json       TEXT NOT NULL)",
+        )?],
+    )
+}
+
+fn metadata_str(session: &PersistedSession) -> String {
+    serde_json::to_string(&session.metadata).expect("session metadata serializes")
+}
+
+fn mcp_str(session: &PersistedSession) -> String {
+    serde_json::to_string(&session.mcp_servers).expect("session mcp servers serialize")
+}
+
+fn decode(
+    session_id: String,
+    agent_id: String,
+    model: String,
+    title: Option<String>,
+    metadata_json: &str,
+    environment_id: String,
+    mcp_json: &str,
+) -> PersistedSession {
+    PersistedSession {
+        session_id,
+        agent_id,
+        model,
+        title,
+        metadata: serde_json::from_str(metadata_json).unwrap_or_default(),
+        environment_id,
+        mcp_servers: serde_json::from_str(mcp_json).unwrap_or_default(),
+    }
+}
 
 /// SQLite persistence for [`PersistedSession`]. One row per session, keyed by id.
 pub struct SqliteManagedSessionRepository {
@@ -21,7 +81,7 @@ pub struct SqliteManagedSessionRepository {
 }
 
 impl SqliteManagedSessionRepository {
-    /// Open (or create) `sessions.db` at `path` and apply the schema.
+    /// Open (or create) `sessions.db` at `path` and apply the schema migrations.
     pub fn open(path: &str) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
         Self::from_connection(conn)
@@ -34,19 +94,11 @@ impl SqliteManagedSessionRepository {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, String> {
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS managed_session (
-                session_id     TEXT PRIMARY KEY,
-                agent_id       TEXT NOT NULL,
-                model          TEXT NOT NULL,
-                title          TEXT,
-                metadata_json  TEXT NOT NULL,
-                environment_id TEXT NOT NULL,
-                mcp_json       TEXT NOT NULL
-            )",
-            [],
-        )
-        .map_err(|e| e.to_string())?;
+        let bundle = session_bundle().map_err(|e| e.to_string())?;
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .map_err(|e| e.to_string())?
+            .run_bundle(&conn, &bundle)
+            .map_err(|e| e.to_string())?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -56,10 +108,8 @@ impl SqliteManagedSessionRepository {
 #[async_trait]
 impl ManagedSessionRepository for SqliteManagedSessionRepository {
     async fn save(&self, session: PersistedSession) {
-        let metadata_json =
-            serde_json::to_string(&session.metadata).expect("session metadata serializes");
-        let mcp_json =
-            serde_json::to_string(&session.mcp_servers).expect("session mcp servers serialize");
+        let metadata_json = metadata_str(&session);
+        let mcp_json = mcp_str(&session);
         let conn = self.conn.lock().expect("session store mutex poisoned");
         conn.execute(
             "INSERT INTO managed_session
@@ -94,18 +144,15 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             |row| {
                 let metadata_json: String = row.get(3)?;
                 let mcp_json: String = row.get(5)?;
-                let metadata: BTreeMap<String, String> =
-                    serde_json::from_str(&metadata_json).unwrap_or_default();
-                let mcp_servers: Vec<Value> = serde_json::from_str(&mcp_json).unwrap_or_default();
-                Ok(PersistedSession {
-                    session_id: session_id.to_string(),
-                    agent_id: row.get(0)?,
-                    model: row.get(1)?,
-                    title: row.get(2)?,
-                    metadata,
-                    environment_id: row.get(4)?,
-                    mcp_servers,
-                })
+                Ok(decode(
+                    session_id.to_string(),
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    &metadata_json,
+                    row.get(4)?,
+                    &mcp_json,
+                ))
             },
         )
         .optional()
@@ -113,8 +160,86 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
     }
 }
 
+/// A Postgres-backed [`ManagedSessionRepository`] — the network-DB sibling over
+/// the same `managed` migration scope. The port is async, so this is a plain sqlx
+/// adapter (no sync bridge needed).
+pub struct PostgresManagedSessionRepository {
+    pool: PgPool,
+}
+
+impl PostgresManagedSessionRepository {
+    /// Connect and apply the session migrations under the `managed` namespace.
+    pub async fn connect(url: &str) -> Result<Self, String> {
+        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        Self::with_pool(pool).await
+    }
+
+    /// Build from an existing pool: apply the session migrations.
+    pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
+        let bundle = session_bundle().map_err(|e| e.to_string())?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|e| e.to_string())?
+            .run_bundle(&bundle)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(Self { pool })
+    }
+}
+
+#[async_trait]
+impl ManagedSessionRepository for PostgresManagedSessionRepository {
+    async fn save(&self, session: PersistedSession) {
+        sqlx::query(
+            "INSERT INTO managed_session \
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (session_id) DO UPDATE SET \
+                agent_id = excluded.agent_id, \
+                model = excluded.model, \
+                title = excluded.title, \
+                metadata_json = excluded.metadata_json, \
+                environment_id = excluded.environment_id, \
+                mcp_json = excluded.mcp_json",
+        )
+        .bind(&session.session_id)
+        .bind(&session.agent_id)
+        .bind(&session.model)
+        .bind(&session.title)
+        .bind(metadata_str(&session))
+        .bind(&session.environment_id)
+        .bind(mcp_str(&session))
+        .execute(&self.pool)
+        .await
+        .expect("persist managed session");
+    }
+
+    async fn get(&self, session_id: &str) -> Option<PersistedSession> {
+        let row = sqlx::query(
+            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json \
+             FROM managed_session WHERE session_id = $1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .expect("read managed session")?;
+        let metadata_json: String = row.get("metadata_json");
+        let mcp_json: String = row.get("mcp_json");
+        Some(decode(
+            session_id.to_string(),
+            row.get("agent_id"),
+            row.get("model"),
+            row.get("title"),
+            &metadata_json,
+            row.get("environment_id"),
+            &mcp_json,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     fn sample(id: &str) -> PersistedSession {
@@ -165,5 +290,52 @@ mod tests {
             Some(updated),
             "re-save overwrites"
         );
+    }
+
+    /// Live Postgres round-trip, isolated in its own schema. Skips when no Postgres
+    /// is reachable (`AWAKEN_TEST_DATABASE_URL`), proving the shared portable bundle
+    /// and the same behavior on the network backend.
+    #[tokio::test]
+    async fn postgres_round_trips_and_upserts() {
+        use sqlx::Executor;
+        use sqlx::postgres::{PgPool, PgPoolOptions};
+
+        let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+        });
+        let Ok(admin) = PgPool::connect(&url).await else {
+            println!("[skip] no Postgres reachable");
+            return;
+        };
+        let _ = admin
+            .execute("DROP SCHEMA IF EXISTS t_managed_session CASCADE")
+            .await;
+        admin
+            .execute("CREATE SCHEMA t_managed_session")
+            .await
+            .expect("create schema");
+        admin.close().await;
+        let pool = PgPoolOptions::new()
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    conn.execute("SET search_path = t_managed_session").await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("schema pool");
+        let repo = PostgresManagedSessionRepository::with_pool(pool)
+            .await
+            .expect("store");
+
+        repo.save(sample("sesn_1")).await;
+        assert_eq!(repo.get("sesn_1").await, Some(sample("sesn_1")));
+        assert!(repo.get("sesn_missing").await.is_none());
+
+        let mut updated = sample("sesn_1");
+        updated.title = None; // exercises the nullable title column
+        repo.save(updated.clone()).await;
+        assert_eq!(repo.get("sesn_1").await, Some(updated));
     }
 }
