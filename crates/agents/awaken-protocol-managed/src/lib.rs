@@ -14,6 +14,7 @@
 pub mod agents_registry;
 pub mod deployments;
 pub mod dto;
+pub mod environments;
 pub mod pagination;
 pub mod project;
 mod router;
@@ -24,6 +25,7 @@ pub mod vaults;
 
 pub use agents_registry::{AgentRegistryState, agents_router};
 pub use deployments::{DeploymentState, deployments_router};
+pub use environments::{EnvironmentState, environments_router};
 pub use router::{ProjectScope, router};
 pub use session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 pub use state::{

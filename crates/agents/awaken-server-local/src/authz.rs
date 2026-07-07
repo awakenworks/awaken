@@ -828,6 +828,34 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             "archive" | "pause" | "unpause" | "run",
         ] if !read => scoped(WORKSPACE_WRITE),
         ["v1", "deployment_runs"] | ["v1", "deployment_runs", _] if read => scoped(WORKSPACE_READ),
+        // -- environments + the self-hosted work queue --
+        ["v1", "environments"] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
+        ["v1", "environments", _] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
+        ["v1", "environments", _, "archive"] if !read => scoped(WORKSPACE_WRITE),
+        // Poll + stats + list are reads; ack/heartbeat/stop + work update are writes.
+        ["v1", "environments", _, "work"] if read => scoped(WORKSPACE_READ),
+        ["v1", "environments", _, "work", "poll" | "stats"] if read => scoped(WORKSPACE_READ),
+        ["v1", "environments", _, "work", _] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
+        [
+            "v1",
+            "environments",
+            _,
+            "work",
+            _,
+            "ack" | "heartbeat" | "stop",
+        ] if !read => scoped(WORKSPACE_WRITE),
         _ => None,
     }
 }
