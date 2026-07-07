@@ -125,40 +125,43 @@ export default function SessionsSurface() {
   const { pid = "" } = useParams();
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState("");
-  const [needsYou, setNeedsYou] = useState(false);
+  // Anthropic's ListSessions is not server-filtered; scope by status client-side.
+  const [filter, setFilter] = useState<"all" | "running" | "archived">("all");
 
   const sessions = useQuery({
-    queryKey: ["sessions", pid, needsYou],
-    queryFn: () =>
-      api.get<ListSessionsResponse>(
-        `/projects/${pid}/v1/sessions${needsYou ? "?status=requires_action" : ""}`,
-      ),
+    queryKey: ["sessions", pid],
+    queryFn: () => api.get<ListSessionsResponse>(`/projects/${pid}/v1/sessions`),
     refetchInterval: 15_000,
   });
   const archive = useMutation({
     mutationFn: (sid: string) => api.post<Session>(`/projects/${pid}/v1/sessions/${sid}/archive`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["sessions", pid] }),
   });
-  const rows = sessions.data?.data ?? [];
+  const rows = (sessions.data?.data ?? []).filter((s) =>
+    filter === "all"
+      ? true
+      : filter === "archived"
+        ? !!s.archived_at
+        : s.status === "running" && !s.archived_at,
+  );
 
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span className="row">
-          <button
-            className={`btn ${needsYou ? "" : "primary"}`}
-            style={{ height: 26 }}
-            onClick={() => setNeedsYou(false)}
-          >
-            {app.t("All", "全部")}
-          </button>
-          <button
-            className={`btn ${needsYou ? "primary" : ""}`}
-            style={{ height: 26 }}
-            onClick={() => setNeedsYou(true)}
-          >
-            ⚠ {app.t("Awaiting action", "待客户端动作")}
-          </button>
+          {(["all", "running", "archived"] as const).map((f) => (
+            <button
+              key={f}
+              className={`btn ${filter === f ? "primary" : ""}`}
+              style={{ height: 26 }}
+              onClick={() => setFilter(f)}
+            >
+              {app.t(
+                f === "all" ? "All" : f === "running" ? "Running" : "Archived",
+                f === "all" ? "全部" : f === "running" ? "运行中" : "已归档",
+              )}
+            </button>
+          ))}
           <span className="mut">
             baseURL <code>/projects/{pid}</code>
             <button
@@ -219,9 +222,9 @@ export default function SessionsSurface() {
                 <td colSpan={5} className="mut">
                   {sessions.isLoading
                     ? "…"
-                    : needsYou
-                      ? app.t("Nothing awaiting action.", "没有等待客户端动作的会话。")
-                      : app.t("No sessions yet.", "还没有会话。")}
+                    : filter === "all"
+                      ? app.t("No sessions yet.", "还没有会话。")
+                      : app.t("None in this state.", "该状态下没有会话。")}
                 </td>
               </tr>
             )}

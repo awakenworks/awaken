@@ -14,18 +14,13 @@ export default function ProjectOverviewSurface() {
   const nav = useNavigate();
   const { pid = "" } = useParams();
   const sessions = useQuery({
-    queryKey: ["sessions", pid, false],
+    queryKey: ["sessions", pid],
     queryFn: () => api.get<ListSessionsResponse>(`/projects/${pid}/v1/sessions`),
-    refetchInterval: 15_000,
-  });
-  const awaiting = useQuery({
-    queryKey: ["sessions", pid, "awaiting"],
-    queryFn: () =>
-      api.get<ListSessionsResponse>(`/projects/${pid}/v1/sessions?status=requires_action`),
     refetchInterval: 15_000,
   });
   const rows = sessions.data?.data ?? [];
   const active = rows.filter((s) => !s.archived_at);
+  const running = active.filter((s) => s.status === "running").length;
   const recent = active.slice(0, 5);
 
   return (
@@ -39,13 +34,10 @@ export default function ProjectOverviewSurface() {
           <span className="label">{app.t("Active sessions", "活跃会话")}</span>
         </button>
         <button className="kpi" onClick={() => nav(`/p/${pid}/sessions`)}>
-          <span
-            className="val"
-            style={awaiting.data?.data.length ? { color: "var(--accent-ink)" } : undefined}
-          >
-            {awaiting.data ? awaiting.data.data.length : "—"}
+          <span className="val" style={running ? { color: "var(--agent-ink)" } : undefined}>
+            {sessions.data ? running : "—"}
           </span>
-          <span className="label">{app.t("Awaiting client action", "等待客户端动作")}</span>
+          <span className="label">{app.t("Running now", "正在运行")}</span>
         </button>
         <button className="kpi" onClick={() => nav(`/p/${pid}/vaults`)}>
           <span className="val">→</span>

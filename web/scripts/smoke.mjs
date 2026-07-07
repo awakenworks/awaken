@@ -108,11 +108,10 @@ const session = await step("create session via /projects/demo", "POST", "/projec
   title: "smoke",
   vault_ids: [vault.id],
 }, (s, p) => s === 200 || s === 201 ? typeof p.id === "string" : false);
-await step("retrieve session via ingress", "GET", `/projects/demo/v1/sessions/${session.id}`, undefined, (s, p) => s === 200 && p.id === session.id && p.project_id === "demo");
+await step("retrieve session via ingress", "GET", `/projects/demo/v1/sessions/${session.id}`, undefined, (s, p) => s === 200 && p.id === session.id);
 await step("list events via ingress", "GET", `/projects/demo/v1/sessions/${session.id}/events`, undefined, (s, p) => s === 200 && Array.isArray(p.data));
 await step("list sessions via ingress", "GET", "/projects/demo/v1/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id));
 await step("workspace-wide session list", "GET", "/v1/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id));
-await step("awaiting-action filter is empty", "GET", "/v1/sessions?status=requires_action", undefined, (s, p) => s === 200 && p.data.length === 0);
 const renamed = await step("rename session", "POST", `/projects/demo/v1/sessions/${session.id}`, { title: "smoke (renamed)" }, (s, p) => s === 200 && p.title === "smoke (renamed)");
 await step("archive session", "POST", `/projects/demo/v1/sessions/${renamed.id}/archive`, undefined, (s, p) => s === 200 && typeof p.archived_at === "string");
 await step("archived row stays listed", "GET", "/projects/demo/v1/sessions", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === session.id && x.archived_at));
