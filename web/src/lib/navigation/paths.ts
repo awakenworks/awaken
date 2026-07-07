@@ -18,21 +18,25 @@ export interface NavItem {
 
 export const NAV: NavItem[] = [
   { key: "home", label: "Home", labelZh: "总览", group: "global", path: "/" },
-  { key: "inbox", label: "Inbox", labelZh: "收件箱", group: "global", path: "/inbox", agentBadge: true },
 
+  // Project = the Managed Agents run container: agents, environments, sessions,
+  // vaults, memory stores, deployments, skills — all project-scoped resources.
   { key: "overview", label: "Overview", labelZh: "项目概览", group: "project", path: "/p/:pid/overview" },
   { key: "sessions", label: "Sessions", labelZh: "会话", group: "project", path: "/p/:pid/sessions" },
+  { key: "agents", label: "Agents", labelZh: "Agents", group: "project", path: "/p/:pid/agents" },
+  { key: "environments", label: "Environments", labelZh: "运行环境", group: "project", path: "/p/:pid/environments", gated: true },
   { key: "vaults", label: "Vaults", labelZh: "运行凭证", group: "project", path: "/p/:pid/vaults" },
-  { key: "bindings", label: "Agents", labelZh: "Agent 绑定", group: "project", path: "/p/:pid/agents" },
+  { key: "memory", label: "Memory stores", labelZh: "记忆库", group: "project", path: "/p/:pid/memory", gated: true },
+  { key: "deployments", label: "Deployments", labelZh: "调度部署", group: "project", path: "/p/:pid/deployments", gated: true },
+  { key: "pskills", label: "Skills", labelZh: "技能", group: "project", path: "/p/:pid/skills", gated: true },
   { key: "psettings", label: "Settings", labelZh: "项目设置", group: "project", path: "/p/:pid/settings" },
 
-  { key: "agents", label: "Agents", labelZh: "Agents", group: "supply", path: "/agents" },
-  { key: "skills", label: "Skills", labelZh: "技能", group: "supply", path: "/skills", gated: true },
-  { key: "tools", label: "Tools", labelZh: "工具", group: "supply", path: "/tools", gated: true },
+  // Workspace = shared supply + governance: no Managed Agents wire mapping;
+  // projects reference these by id (reference-don't-copy).
   { key: "models", label: "Models", labelZh: "模型", group: "supply", path: "/models" },
-  { key: "credentials", label: "Credentials", labelZh: "凭证", group: "supply", path: "/credentials" },
-  { key: "mcp", label: "MCP servers", labelZh: "MCP 服务器", group: "supply", path: "/mcp-servers" },
-  { key: "a2a", label: "A2A servers", labelZh: "A2A 服务器", group: "supply", path: "/a2a-servers" },
+  { key: "credentials", label: "Inference credentials", labelZh: "推理凭证", group: "supply", path: "/credentials" },
+  { key: "mcp", label: "MCP catalog", labelZh: "MCP 目录", group: "supply", path: "/mcp-servers" },
+  { key: "a2a", label: "A2A catalog", labelZh: "A2A 目录", group: "supply", path: "/a2a-servers" },
 
   { key: "dashboard", label: "Dashboard", labelZh: "看板", group: "observe", path: "/dashboard", gated: true },
   { key: "evals", label: "Eval runs", labelZh: "评测", group: "observe", path: "/eval-runs", gated: true },
@@ -56,7 +60,6 @@ export function titleForPath(pathname: string): { scope: string; title: string }
   if (pathname.match(/^\/p\/[^/]+\/sessions\/.+/)) {
     return { scope: project ? project[1] : "", title: "Session" };
   }
-  if (pathname.match(/^\/agents\/.+/)) return { scope: "Workspace", title: "Agent editor" };
   if (!hit) return { scope: "", title: "" };
   const scope = hit.group === "global" ? "All projects" : hit.group === "project" ? (project?.[1] ?? "Project") : "Workspace";
   return { scope, title: hit.label };
