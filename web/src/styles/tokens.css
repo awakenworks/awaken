@@ -18,14 +18,14 @@
   --line-strong: #d1d1d1;
   --edge: rgba(20, 20, 18, 0.08);
 
-  /* Primary accent = teal. Sibling-product divergence from Awaken Flow's amber:
-   * we share the neutral chrome, Inter/JetBrains type, hairline elevation, pill
-   * motif and light/dark mechanism, but the primary hue differs. Amber stays as
-   * the needs-human signal (--warn); violet stays as agent activity (--agent). */
-  --accent: oklch(58% 0.11 200);
-  --accent-hover: oklch(52% 0.11 198);
-  --accent-ink: oklch(45% 0.1 197);
-  --accent-tint: oklch(58% 0.11 200 / 0.12);
+  /* Primary accent = indigo (hue 265) — the "Awaken Agents · 开发者" brand from
+   * the design handoff (awaken-theme.js BRANDS.agents). Sibling to Awaken Flow's
+   * amber (BRANDS.flow) over one shared neutral chrome. Amber stays the
+   * needs-human signal (--warn); violet stays agent activity (--agent). */
+  --accent: oklch(56% 0.16 265);
+  --accent-hover: oklch(50% 0.16 263);
+  --accent-ink: oklch(46% 0.15 262);
+  --accent-tint: oklch(56% 0.16 265 / 0.14);
   --accent-fg: #ffffff;
 
   --agent: oklch(56% 0.15 300);
@@ -65,11 +65,11 @@
   --line-strong: #2f2f2f;
   --edge: rgba(255, 255, 255, 0.09);
 
-  --accent: oklch(74% 0.11 200);
-  --accent-hover: oklch(78% 0.11 202);
-  --accent-ink: oklch(84% 0.1 204);
-  --accent-tint: oklch(74% 0.11 200 / 0.16);
-  --accent-fg: #04141a;
+  --accent: oklch(62% 0.16 265);
+  --accent-hover: oklch(66% 0.16 267);
+  --accent-ink: oklch(80% 0.14 269);
+  --accent-tint: oklch(62% 0.16 265 / 0.18);
+  --accent-fg: oklch(98% 0.01 265);
 
   --agent: oklch(70% 0.135 270);
   --agent-ink: oklch(80% 0.11 275);
