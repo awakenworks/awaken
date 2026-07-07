@@ -56,6 +56,89 @@ impl ResolvedSpec {
             "awaken"
         }
     }
+
+    /// The typed execution [`Backend`] this run binds to (R3/R4). The exhaustive
+    /// sum the dispatch matches on — see [`ModelBinding::backend`].
+    #[must_use]
+    pub fn backend(&self) -> Backend {
+        self.model_binding.backend()
+    }
+}
+
+/// The execution backend a resolved agent binds to (R3/R4): the in-process awaken
+/// runtime, or a launched external ACP CLI. A *typed view* over the model binding's
+/// runtime-selection axis — the string `backend_ref` (`"genai"`, `"acp:claude"`)
+/// stays the wire/storage encoding, but every routing decision matches this sum so
+/// the choice is exhaustive and each variant carries only its own data (the ACP
+/// profile). `Backend` owns *only* the runtime axis, never the native provider
+/// (`backend_ref: "genai"` routes a provider inside `Native`, not a fourth kind).
+///
+/// A `Remote` (A2A) variant is intentionally absent until an executor consumes it
+/// — a variant no dispatch arm reads would be a stub (G30/no-stubs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Backend {
+    /// The in-process awaken model+tool loop. Any non-`acp:` backend.
+    Native,
+    /// A launched external ACP CLI (Claude Code, Codex, …). `profile` is the CLI /
+    /// adapter-profile id parsed from `acp:<profile>` (empty for a bare `acp`).
+    Acp { profile: String },
+}
+
+impl Backend {
+    /// Parse the typed backend from a `backend_ref` string. Total: any non-`acp`
+    /// value is [`Backend::Native`] (it names a provider inside the native runtime),
+    /// `acp` / `acp:<profile>` is [`Backend::Acp`].
+    #[must_use]
+    pub fn from_ref(backend_ref: &str) -> Self {
+        if backend_ref == "acp" {
+            Backend::Acp {
+                profile: String::new(),
+            }
+        } else if let Some(profile) = backend_ref.strip_prefix("acp:") {
+            Backend::Acp {
+                profile: profile.to_string(),
+            }
+        } else {
+            Backend::Native
+        }
+    }
+
+    /// Whether this run is served by an external ACP CLI rather than the native loop.
+    #[must_use]
+    pub fn is_acp(&self) -> bool {
+        matches!(self, Backend::Acp { .. })
+    }
+}
+
+impl ModelBinding {
+    /// The typed execution [`Backend`] this binding selects (R3/R4). `Native` for
+    /// any non-`acp:` `backend_ref`; `Acp { profile }` for `acp` / `acp:<profile>`.
+    #[must_use]
+    pub fn backend(&self) -> Backend {
+        Backend::from_ref(&self.backend_ref)
+    }
+
+    /// A binding that routes to a launched ACP CLI (`profile`), preserving the
+    /// provider/model coordinates. The typed constructor a protocol adapter uses
+    /// when a session selects `agent.runtime = "acp:<profile>"`, so the `acp:`
+    /// encoding is produced in one place instead of hand-formatted at call sites.
+    #[must_use]
+    pub fn acp(
+        provider_instance_ref: impl Into<String>,
+        model_ref: impl Into<String>,
+        profile: &str,
+    ) -> Self {
+        let backend_ref = if profile.is_empty() {
+            "acp".to_string()
+        } else {
+            format!("acp:{profile}")
+        };
+        Self {
+            provider_instance_ref: provider_instance_ref.into(),
+            model_ref: model_ref.into(),
+            backend_ref,
+        }
+    }
 }
 
 /// How the model-visible context window is bounded before each inference.
@@ -161,7 +244,47 @@ pub struct ResolvedRun {
 
 #[cfg(test)]
 mod tests {
-    use super::ToolDescriptor;
+    use super::{Backend, ModelBinding, ToolDescriptor};
+
+    #[test]
+    fn backend_typed_view_distinguishes_native_and_acp() {
+        // Any non-`acp` ref is Native — including the provider axis "genai", which
+        // Backend must NOT absorb as a fourth kind.
+        assert_eq!(Backend::from_ref("genai"), Backend::Native);
+        assert_eq!(Backend::from_ref("default"), Backend::Native);
+        assert!(!Backend::from_ref("genai").is_acp());
+
+        // `acp` / `acp:<profile>` carry the launched-CLI profile the string used to
+        // smuggle — now a typed field.
+        assert_eq!(
+            Backend::from_ref("acp"),
+            Backend::Acp {
+                profile: String::new()
+            }
+        );
+        assert_eq!(
+            Backend::from_ref("acp:claude"),
+            Backend::Acp {
+                profile: "claude".to_string()
+            }
+        );
+        assert!(Backend::from_ref("acp:codex").is_acp());
+
+        // The ModelBinding view agrees, and the typed constructor round-trips.
+        assert_eq!(
+            ModelBinding::new("p", "m", "acp:codex").backend(),
+            Backend::Acp {
+                profile: "codex".to_string()
+            }
+        );
+        assert_eq!(
+            ModelBinding::acp("p", "m", "claude").backend(),
+            Backend::Acp {
+                profile: "claude".to_string()
+            }
+        );
+        assert_eq!(ModelBinding::acp("p", "m", "").backend_ref, "acp");
+    }
 
     #[test]
     fn content_hash_covers_id_description_and_schema() {

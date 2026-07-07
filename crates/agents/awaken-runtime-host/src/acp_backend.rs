@@ -33,13 +33,15 @@ impl AcpBackend {
             .insert(thread.to_string(), adapter.to_string());
     }
 
-    /// Whether `thread` runs on an ACP CLI (`acp` / `acp:*`).
+    /// Whether `thread` runs on an ACP CLI (`acp` / `acp:*`). Routes through the
+    /// typed [`Backend`](awaken_runtime_contract::resolved::Backend) so the `acp:`
+    /// parsing lives in one place, not duplicated as a string check here.
     pub(crate) fn is_acp(&self, thread: &str) -> bool {
         self.thread_runtime
             .lock()
             .expect("acp thread-runtime mutex poisoned")
             .get(thread)
-            .is_some_and(|a| a == "acp" || a.starts_with("acp:"))
+            .is_some_and(|a| awaken_runtime_contract::resolved::Backend::from_ref(a).is_acp())
     }
 }
 
