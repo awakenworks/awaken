@@ -93,11 +93,15 @@
 }
 
 :root {
-  --font-sans: "Inter", "Noto Sans SC", system-ui, sans-serif;
+  /* Awaken core (handoff LOCKED): mono-first UI, 4px radius, red spark.
+   * awaken-theme.js CORE — shared across all three products. */
+  --font-sans: "JetBrains Mono", "Noto Sans SC", ui-monospace, monospace;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --r-sm: 4px;
-  --r-md: 6px;
-  --r-lg: 8px;
-  --r-card: 10px;
+  --r-md: 4px;
+  --r-lg: 4px;
+  --r-card: 4px;
   --r-pill: 9999px;
+  /* Awaken Agents density = compact (row-height 34px). */
+  --row-h: 34px;
 }
