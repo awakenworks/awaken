@@ -93,8 +93,8 @@ export default function McpServersSurface() {
         <h2>{app.t("Author MCP server", "作者化 MCP 服务器")}</h2>
         <p className="hint">
           {app.t(
-            "The binding is validated fail-closed on write: an unknown credential source or pool is rejected, never a dangling reference.",
-            "写入时 fail-closed 校验:未知凭证源/池直接拒绝,不会留下悬空引用。",
+            "A catalog entry is {type,name,url} — the shape agents inline directly. The credential binding below is OPTIONAL and deprecated: leave it none and let the project Vault supply the credential by url. It stays only for the central-governance path (validated fail-closed on write).",
+            "目录项就是 {type,name,url}——agent 直接内联的形状。下方的凭证绑定是可选、弃用项:留 none,让 Project Vault 按 url 提供凭证。它仅为集中治理路径保留(写入时 fail-closed 校验)。",
           )}
         </p>
         <div className="row">
@@ -111,7 +111,7 @@ export default function McpServersSurface() {
             <input className="input mono" placeholder="https://" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} />
           </span>
           <span className="field">
-            <label>binding</label>
+            <label>{app.t("binding (optional · deprecated)", "绑定(可选·弃用)")}</label>
             <select className="input" value={form.bindKind} onChange={(e) => setForm({ ...form, bindKind: e.target.value })}>
               <option value="none">none</option>
               <option value="exact">exact</option>
