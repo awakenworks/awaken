@@ -13,7 +13,7 @@ body {
   background: var(--canvas);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
 }
 code,
@@ -79,7 +79,7 @@ a {
 }
 .topbar {
   flex: none;
-  height: 46px;
+  height: 42px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -142,7 +142,7 @@ a {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 32px;
+  height: 30px;
   padding: 0 10px;
   border: 0;
   border-radius: var(--r-md);
@@ -188,7 +188,7 @@ a {
   background: var(--surface);
   border-radius: var(--r-card);
   box-shadow: var(--shadow-card);
-  padding: 18px 20px;
+  padding: 14px 16px;
 }
 .card h2 {
   margin: 0 0 12px;
@@ -245,8 +245,8 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 12px;
+  height: 28px;
+  padding: 0 11px;
   border: 0;
   border-radius: var(--r-md);
   font-family: inherit;
@@ -283,7 +283,7 @@ a {
 .input,
 select.input,
 textarea.input {
-  height: 32px;
+  height: 30px;
   padding: 0 10px;
   border: 0;
   border-radius: var(--r-md);
@@ -328,7 +328,7 @@ textarea.input {
 }
 .table th {
   text-align: left;
-  padding: 7px 10px;
+  padding: 5px 10px;
   border-bottom: 1px solid var(--line);
   color: var(--fg3);
   font-weight: 600;
@@ -337,7 +337,7 @@ textarea.input {
   text-transform: uppercase;
 }
 .table td {
-  padding: 9px 10px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--soft);
   font-size: 13px;
 }
@@ -459,4 +459,55 @@ textarea.input {
 .mut {
   color: var(--fg3);
   font-size: 12px;
+}
+
+/* ---- drawer (IA: pick inline, "Manage ↗" opens without losing your place) ---- */
+.drawer {
+  width: min(640px, 94vw);
+  height: 100%;
+  background: var(--canvas);
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-pop);
+  display: flex;
+  flex-direction: column;
+  animation: drawerIn 180ms ease;
+}
+@keyframes drawerIn {
+  from {
+    transform: translateX(24px);
+    opacity: 0.4;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.drawer-head {
+  flex: none;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+}
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.manage-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--accent-ink);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
 }
