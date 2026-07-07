@@ -844,6 +844,10 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     let agents = awaken_protocol_managed::agents_router(std::sync::Arc::new(
         awaken_protocol_managed::AgentRegistryState::new(),
     ));
+    // Deployments + deployment runs (`/v1/deployments`, `/v1/deployment_runs`).
+    let deployments = awaken_protocol_managed::deployments_router(std::sync::Arc::new(
+        awaken_protocol_managed::DeploymentState::new(),
+    ));
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging
@@ -851,7 +855,11 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // token-management routes exist ONLY under the guard (they authorize
     // against the same embedded IAM the guard authenticates with), and they
     // are merged before the layer so the guard authenticates them first.
-    let mut mgmt = admin.merge(vaults).merge(user_profiles).merge(agents);
+    let mut mgmt = admin
+        .merge(vaults)
+        .merge(user_profiles)
+        .merge(agents)
+        .merge(deployments);
     if let Some(iam) = iam {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
         mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
