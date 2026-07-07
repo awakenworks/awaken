@@ -57,13 +57,43 @@ where
 /// public `/v1/sessions...` surface the SDK expects.
 pub fn router(state: Arc<ManagedState>) -> Router {
     Router::new()
-        .route("/v1/sessions", post(create_session))
-        .route("/v1/sessions/:id", get(retrieve_session))
+        .route("/v1/sessions", post(create_session).get(list_sessions))
+        .route(
+            "/v1/sessions/:id",
+            get(retrieve_session)
+                .post(update_session)
+                .delete(delete_session),
+        )
+        .route("/v1/sessions/:id/archive", post(archive_session))
         .route(
             "/v1/sessions/:id/events",
             post(send_events).get(list_events),
         )
         .route("/v1/sessions/:id/events/stream", get(stream_events))
+        .route("/v1/sessions/:id/threads", get(list_threads))
+        .route("/v1/sessions/:id/threads/:tid", get(get_thread))
+        .route(
+            "/v1/sessions/:id/threads/:tid/archive",
+            post(archive_thread),
+        )
+        .route(
+            "/v1/sessions/:id/threads/:tid/events",
+            get(list_thread_events),
+        )
+        .route(
+            "/v1/sessions/:id/threads/:tid/stream",
+            get(stream_thread_events),
+        )
+        .route(
+            "/v1/sessions/:id/resources",
+            post(create_resource).get(list_resources),
+        )
+        .route(
+            "/v1/sessions/:id/resources/:rid",
+            get(get_resource)
+                .post(update_resource)
+                .delete(delete_resource),
+        )
         .route(
             "/v1/sessions/:id/live-inbox",
             get(live_inbox_snapshot).post(live_inbox_queue),
@@ -220,6 +250,163 @@ async fn retrieve_session(
     Path(id): Path<String>,
 ) -> Result<Json<Session>, (StatusCode, Json<ErrorResponse>)> {
     state.get_session(&id).map(Json).map_err(error_response)
+}
+
+type WireErr = (StatusCode, Json<ErrorResponse>);
+
+fn page(data: Vec<serde_json::Value>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "data": data, "has_more": false, "next_page": null }))
+}
+
+/// `GET /v1/sessions` — one full page of sessions.
+async fn list_sessions(State(state): State<Arc<ManagedState>>) -> Json<serde_json::Value> {
+    let data = state
+        .list_sessions()
+        .into_iter()
+        .map(|s| serde_json::to_value(s).expect("session serializes"))
+        .collect();
+    page(data)
+}
+
+/// `POST /v1/sessions/:id` — update `title` (null clears) + patch `metadata`.
+async fn update_session(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+    ManagedJson(body): ManagedJson<serde_json::Value>,
+) -> Result<Json<Session>, WireErr> {
+    let title = body.get("title").map(|t| t.as_str().map(str::to_string));
+    let metadata = body.get("metadata").and_then(|m| m.as_object()).map(|o| {
+        o.iter()
+            .map(|(k, v)| (k.clone(), v.as_str().map(str::to_string)))
+            .collect()
+    });
+    state
+        .update_session(&id, title, metadata)
+        .map(Json)
+        .map_err(error_response)
+}
+
+/// `DELETE /v1/sessions/:id`.
+async fn delete_session(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, WireErr> {
+    state.delete_session(&id).map_err(error_response)?;
+    Ok(Json(
+        serde_json::json!({ "id": id, "type": "session_deleted" }),
+    ))
+}
+
+/// `POST /v1/sessions/:id/archive`.
+async fn archive_session(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Session>, WireErr> {
+    state.archive_session(&id).map(Json).map_err(error_response)
+}
+
+// -- Threads --
+
+async fn list_threads(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, WireErr> {
+    state.list_threads(&id).map(page).map_err(error_response)
+}
+
+async fn get_thread(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, tid)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, WireErr> {
+    state
+        .get_thread(&id, &tid)
+        .map(Json)
+        .map_err(error_response)
+}
+
+async fn archive_thread(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, tid)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, WireErr> {
+    state
+        .archive_thread(&id, &tid)
+        .map(Json)
+        .map_err(error_response)
+}
+
+/// Thread events == the session's events (the primary thread), after validating
+/// the thread id belongs to the session.
+async fn list_thread_events(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, tid)): Path<(String, String)>,
+) -> Result<Json<ListEventsResponse>, WireErr> {
+    state.get_thread(&id, &tid).map_err(error_response)?;
+    state.list_events(&id).map(Json).map_err(error_response)
+}
+
+async fn stream_thread_events(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, tid)): Path<(String, String)>,
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, WireErr> {
+    state.get_thread(&id, &tid).map_err(error_response)?;
+    let events = state.stream_events(&id).map_err(error_response)?;
+    let frames = events.into_iter().map(|event| {
+        let name = event.type_str();
+        let data = serde_json::to_string(&event).expect("event serializes");
+        Ok(SseEvent::default().event(name).data(data))
+    });
+    Ok(Sse::new(tokio_stream::iter(frames)).keep_alive(KeepAlive::default()))
+}
+
+// -- Resources --
+
+async fn create_resource(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+    ManagedJson(body): ManagedJson<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, WireErr> {
+    state
+        .create_resource(&id, body)
+        .map(Json)
+        .map_err(error_response)
+}
+
+async fn list_resources(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, WireErr> {
+    state.list_resources(&id).map(page).map_err(error_response)
+}
+
+async fn get_resource(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, rid)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, WireErr> {
+    state
+        .get_resource(&id, &rid)
+        .map(Json)
+        .map_err(error_response)
+}
+
+async fn update_resource(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, rid)): Path<(String, String)>,
+    ManagedJson(body): ManagedJson<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, WireErr> {
+    state
+        .update_resource(&id, &rid, body)
+        .map(Json)
+        .map_err(error_response)
+}
+
+async fn delete_resource(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, rid)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, WireErr> {
+    state.delete_resource(&id, &rid).map_err(error_response)?;
+    Ok(Json(
+        serde_json::json!({ "id": rid, "type": "session_resource_deleted" }),
+    ))
 }
 
 async fn send_events(

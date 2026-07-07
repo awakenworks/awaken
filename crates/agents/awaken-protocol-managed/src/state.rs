@@ -629,6 +629,10 @@ impl ManagedState {
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status: "idle",
+            stats: serde_json::json!({}),
+            usage: serde_json::json!({}),
+            vault_ids: req.vault_ids.clone(),
+            deployment_id: None,
         };
         // Persist the session's config (secret-free) so a restart or a peer process
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
@@ -702,6 +706,10 @@ impl ManagedState {
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status: "idle",
+            stats: serde_json::json!({}),
+            usage: serde_json::json!({}),
+            vault_ids: Vec::new(),
+            deployment_id: None,
         }
     }
 
@@ -750,6 +758,192 @@ impl ManagedState {
             .get(id)
             .map(|r| r.session.clone())
             .ok_or(StateError::NotFound)
+    }
+
+    /// `GET /v1/sessions` — every session, ascending id (deterministic).
+    pub fn list_sessions(&self) -> Vec<Session> {
+        let sessions = self.sessions.lock().unwrap();
+        let mut out: Vec<Session> = sessions.values().map(|r| r.session.clone()).collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
+    /// `POST /v1/sessions/{id}` — update `title` and/or PATCH `metadata`
+    /// (string upserts, null deletes, omitted preserves).
+    pub fn update_session(
+        &self,
+        id: &str,
+        title: Option<Option<String>>,
+        metadata: Option<std::collections::BTreeMap<String, Option<String>>>,
+    ) -> Result<Session, StateError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        if let Some(title) = title {
+            record.session.title = title;
+        }
+        if let Some(patch) = metadata {
+            for (key, value) in patch {
+                match value {
+                    Some(v) => {
+                        record.session.metadata.insert(key, v);
+                    }
+                    None => {
+                        record.session.metadata.remove(&key);
+                    }
+                }
+            }
+        }
+        Ok(record.session.clone())
+    }
+
+    /// `DELETE /v1/sessions/{id}` — drop the in-memory record.
+    pub fn delete_session(&self, id: &str) -> Result<(), StateError> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .remove(id)
+            .map(|_| ())
+            .ok_or(StateError::NotFound)
+    }
+
+    /// `POST /v1/sessions/{id}/archive` — soft-delete (stamp `archived_at`).
+    pub fn archive_session(&self, id: &str) -> Result<Session, StateError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        record.session.archived_at = Some(PROCESSED_AT.to_string());
+        record.session.status = "terminated";
+        Ok(record.session.clone())
+    }
+
+    /// The session's primary thread projection (`BetaManagedAgentsSessionThread`).
+    /// A session has one primary thread addressed by `<session_id>:primary`;
+    /// sub-threads spawned by a multiagent turn would extend this list.
+    fn primary_thread(record: &SessionRecord) -> serde_json::Value {
+        let session = &record.session;
+        serde_json::json!({
+            "id": format!("{}:primary", session.id),
+            "type": "session_thread",
+            "session_id": session.id,
+            "parent_thread_id": null,
+            "agent": session.agent,
+            "created_at": session.created_at,
+            "updated_at": session.updated_at,
+            "archived_at": session.archived_at,
+            "status": session.status,
+            "stats": null,
+            "usage": null,
+        })
+    }
+
+    /// `GET /v1/sessions/{id}/threads`.
+    pub fn list_threads(&self, id: &str) -> Result<Vec<serde_json::Value>, StateError> {
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(id).ok_or(StateError::NotFound)?;
+        Ok(vec![Self::primary_thread(record)])
+    }
+
+    /// `GET /v1/sessions/{id}/threads/{thread_id}`.
+    pub fn get_thread(&self, id: &str, thread_id: &str) -> Result<serde_json::Value, StateError> {
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(id).ok_or(StateError::NotFound)?;
+        let thread = Self::primary_thread(record);
+        if thread["id"] == thread_id {
+            Ok(thread)
+        } else {
+            Err(StateError::NotFound)
+        }
+    }
+
+    /// `POST /v1/sessions/{id}/threads/{thread_id}/archive`.
+    pub fn archive_thread(
+        &self,
+        id: &str,
+        thread_id: &str,
+    ) -> Result<serde_json::Value, StateError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        if format!("{id}:primary") != thread_id {
+            return Err(StateError::NotFound);
+        }
+        record.session.archived_at = Some(PROCESSED_AT.to_string());
+        Ok(Self::primary_thread(record))
+    }
+
+    /// `GET /v1/sessions/{id}/resources` — the session's mounted resources.
+    pub fn list_resources(&self, id: &str) -> Result<Vec<serde_json::Value>, StateError> {
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(id).ok_or(StateError::NotFound)?;
+        Ok(record.session.resources.clone())
+    }
+
+    /// `POST /v1/sessions/{id}/resources` — mount a resource, minting an id.
+    pub fn create_resource(
+        &self,
+        id: &str,
+        mut resource: serde_json::Value,
+    ) -> Result<serde_json::Value, StateError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        let n = record.session.resources.len();
+        let resource_id = format!("{id}:resource:{n}");
+        if let Some(obj) = resource.as_object_mut() {
+            obj.insert("id".into(), serde_json::json!(resource_id));
+        }
+        record.session.resources.push(resource.clone());
+        Ok(resource)
+    }
+
+    /// `GET /v1/sessions/{id}/resources/{resource_id}`.
+    pub fn get_resource(
+        &self,
+        id: &str,
+        resource_id: &str,
+    ) -> Result<serde_json::Value, StateError> {
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(id).ok_or(StateError::NotFound)?;
+        record
+            .session
+            .resources
+            .iter()
+            .find(|r| r["id"] == resource_id)
+            .cloned()
+            .ok_or(StateError::NotFound)
+    }
+
+    /// `POST /v1/sessions/{id}/resources/{resource_id}` — merge a JSON patch.
+    pub fn update_resource(
+        &self,
+        id: &str,
+        resource_id: &str,
+        patch: serde_json::Value,
+    ) -> Result<serde_json::Value, StateError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        let resource = record
+            .session
+            .resources
+            .iter_mut()
+            .find(|r| r["id"] == resource_id)
+            .ok_or(StateError::NotFound)?;
+        if let (Some(target), Some(patch)) = (resource.as_object_mut(), patch.as_object()) {
+            for (k, v) in patch {
+                target.insert(k.clone(), v.clone());
+            }
+        }
+        Ok(resource.clone())
+    }
+
+    /// `DELETE /v1/sessions/{id}/resources/{resource_id}`.
+    pub fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        let before = record.session.resources.len();
+        record.session.resources.retain(|r| r["id"] != resource_id);
+        if record.session.resources.len() < before {
+            Ok(())
+        } else {
+            Err(StateError::NotFound)
+        }
     }
 
     /// Append one step's projected events to the session, minting ids where the

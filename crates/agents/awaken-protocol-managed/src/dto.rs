@@ -166,6 +166,15 @@ pub struct Session {
     pub resources: Vec<Value>,
     pub outcome_evaluations: Vec<Value>,
     pub status: &'static str,
+    /// `BetaManagedAgentsSessionStats` — coarse timing (empty on this surface).
+    pub stats: Value,
+    /// `BetaManagedAgentsSessionUsage` — token usage (empty on this surface).
+    pub usage: Value,
+    /// The vaults the session is bound to (`vault_ids`).
+    pub vault_ids: Vec<String>,
+    /// Set when the session was launched by a deployment run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
 }
 
 /// A client's `user.tool_confirmation` decision.
