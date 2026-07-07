@@ -14,12 +14,18 @@ schemars = { version = "1", optional = true }
 # `catalog` migration scope (ADR-0043).
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 tokio = { workspace = true, optional = true }
+# Feature `postgres`: network-DB CatalogRepo backend over the same `catalog`
+# migration scope (ADR-0043).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", features = ["postgres"] }
 awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
 
 [dev-dependencies]
 tokio.workspace = true
 tempfile = "3"
+# The live Postgres conformance test (feature `postgres`) isolates each suite in
+# its own schema via `SET search_path`.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 
 [features]
 default = []
@@ -27,6 +33,8 @@ default = []
 schema = ["dep:schemars"]
 # SQLite-backed CatalogRepo (`sqlite::SqliteCatalogRepo`), ADR-0043 sqlite-repos.
 sqlite = ["dep:rusqlite", "dep:serde_json", "dep:tokio"]
+# Postgres-backed CatalogRepo (`postgres::PostgresCatalogRepo`), ADR-0043.
+postgres = ["dep:sqlx"]
 
 [lints]
 workspace = true

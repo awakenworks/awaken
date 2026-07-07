@@ -120,3 +120,134 @@ async fn sqlite_repo_conforms() {
     use awaken_credential_vault::sqlite::SqliteCredentialRepo;
     run_all(|| Box::new(SqliteCredentialRepo::open_in_memory().unwrap())).await;
 }
+
+/// Live Postgres conformance: the same suites as the other backends, each on a
+/// fresh schema (so the four independent suites never see each other's rows).
+/// Skips when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`).
+#[cfg(feature = "postgres")]
+mod postgres {
+    use super::*;
+    use awaken_credential_vault::postgres::PostgresCredentialRepo;
+    use sqlx::Executor;
+    use sqlx::postgres::{PgPool, PgPoolOptions};
+
+    fn database_url() -> String {
+        std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+        })
+    }
+
+    async fn schema_pool(schema: &'static str) -> Option<PgPool> {
+        let admin = match PgPool::connect(&database_url()).await {
+            Ok(pool) => pool,
+            Err(err) => {
+                println!("[skip] no Postgres reachable: {err}");
+                return None;
+            }
+        };
+        let _ = admin
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .await;
+        admin
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .await
+            .expect("create schema");
+        admin.close().await;
+        PgPoolOptions::new()
+            .after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    conn.execute(format!("SET search_path = {schema}").as_str())
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url())
+            .await
+            .ok()
+    }
+
+    async fn repo(schema: &'static str) -> Option<PostgresCredentialRepo> {
+        let pool = schema_pool(schema).await?;
+        Some(
+            PostgresCredentialRepo::with_pool(pool)
+                .await
+                .expect("store"),
+        )
+    }
+
+    #[tokio::test]
+    async fn postgres_repo_conforms() {
+        let Some(r) = repo("t_cred_sources").await else {
+            return;
+        };
+        sources_round_trip_and_scope_by_workspace(&r).await;
+        pools_round_trip_and_scope_by_workspace(&repo("t_cred_pools").await.unwrap()).await;
+        missing_rows_are_not_found(&repo("t_cred_missing").await.unwrap()).await;
+        put_is_upsert(&repo("t_cred_upsert").await.unwrap()).await;
+    }
+
+    /// The durable secret path on Postgres: AEAD sealing composed over the
+    /// Postgres blob store. Deliberately no bare (plaintext) SecretStore exists.
+    #[cfg(feature = "sealed-aead")]
+    #[tokio::test]
+    async fn postgres_sealed_secret_round_trips_and_never_stores_plaintext() {
+        use std::sync::Arc;
+
+        use awaken_agent_contract::RedactedString;
+        use awaken_credential_vault::postgres::PostgresSealedBlobStore;
+        use awaken_credential_vault::{
+            CredentialCreateParams, SealedAeadSecretStore, SecretStore, create_source, materialize,
+        };
+
+        let Some(pool) = schema_pool("t_cred_sealed").await else {
+            return;
+        };
+        const KEY: [u8; 32] = [7u8; 32];
+        let blob = Arc::new(
+            PostgresSealedBlobStore::with_pool(pool.clone())
+                .await
+                .expect("blob store"),
+        );
+        let store = SealedAeadSecretStore::over(&KEY, blob);
+
+        let row = create_source(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: Some("ANTHROPIC_API_KEY".into()),
+                secret: Some(RedactedString::new("sk-super-secret-value")),
+            },
+            &store,
+        )
+        .await
+        .unwrap();
+
+        // Materializes back through the AEAD layer…
+        assert_eq!(
+            materialize(&row, &store).await.unwrap().expose_secret(),
+            "sk-super-secret-value"
+        );
+
+        // …and the at-rest bytea column never contains the plaintext.
+        let secret_ref = row.material_ref.clone().unwrap();
+        let sealed: Vec<u8> =
+            sqlx::query_scalar("SELECT sealed FROM credential_secret WHERE secret_ref = $1")
+                .bind(&secret_ref.0)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let plaintext = b"sk-super-secret-value";
+        assert!(!sealed.windows(plaintext.len()).any(|w| w == plaintext));
+
+        // A wrong key fails closed.
+        let wrong = SealedAeadSecretStore::over(
+            &[8u8; 32],
+            Arc::new(PostgresSealedBlobStore::with_pool(pool).await.unwrap()),
+        );
+        assert!(matches!(
+            wrong.get(&secret_ref).await,
+            Err(awaken_credential_vault::CredentialError::Seal)
+        ));
+    }
+}
