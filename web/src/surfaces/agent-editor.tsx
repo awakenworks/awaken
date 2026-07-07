@@ -10,9 +10,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
+import { useToast } from "../components/ui/Toast";
 import { api, isAbsent } from "../lib/api/client";
 import type { AgentConfig, ContextPolicy, ProviderCatalog, PublishResult } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
 
 type Tab = "basics" | "context" | "tools" | "plugins";
@@ -92,7 +94,8 @@ export default function AgentEditorSurface() {
   const [cfg, setCfg] = useState<AgentConfig>(BLANK);
   const [dirty, setDirty] = useState(false);
   const [manageModels, setManageModels] = useState(false);
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const toast = useToast();
+  useUnsavedGuard(dirty, app.t("You have unsaved changes. Leave anyway?", "有未保存的更改,仍要离开吗?"));
 
   // Existing agent: hydrate the draft from the config plane (managed object shape).
   const existing = useQuery({
@@ -120,7 +123,6 @@ export default function AgentEditorSurface() {
   const patch = (p: Partial<AgentConfig>) => {
     setCfg((c) => ({ ...c, ...p }));
     setDirty(true);
-    setNote(null);
   };
 
   const targetId = () => (isNew ? cfg.id.trim() : id);
@@ -130,27 +132,27 @@ export default function AgentEditorSurface() {
   const validate = useMutation({
     mutationFn: () => api.post<{ valid: boolean; error?: string }>(`/v1/config/agents/${targetId()}/validate`, body()),
     onSuccess: (r) =>
-      setNote(r.valid ? { ok: true, text: app.t("Config is valid.", "配置有效。") } : { ok: false, text: r.error ?? "invalid" }),
-    onError: (e) => setNote({ ok: false, text: e instanceof Error ? e.message : "error" }),
+      r.valid ? toast.ok(app.t("Config is valid.", "配置有效。")) : toast.err(r.error ?? "invalid"),
+    onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
   const save = useMutation({
     mutationFn: () => api.put<{ id: string }>(`/v1/config/agents/${targetId()}`, body()),
     onSuccess: () => {
       setDirty(false);
-      setNote({ ok: true, text: app.t("Saved.", "已保存。") });
+      toast.ok(app.t("Saved.", "已保存。"));
       void qc.invalidateQueries({ queryKey: ["config-agents"] });
       if (isNew) nav(`/p/${pid}/agents/${targetId()}`, { replace: true });
     },
-    onError: (e) => setNote({ ok: false, text: e instanceof Error ? e.message : "error" }),
+    onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
   const publish = useMutation({
     mutationFn: () => api.post<PublishResult>(`/v1/config/agents/${targetId()}/publish`),
     onSuccess: (r) => {
-      setNote({ ok: true, text: app.t(`Published · ${r.fingerprint.slice(0, 12)}`, `已发布 · ${r.fingerprint.slice(0, 12)}`) });
+      toast.ok(app.t(`Published · ${r.fingerprint.slice(0, 12)}`, `已发布 · ${r.fingerprint.slice(0, 12)}`));
       void qc.invalidateQueries({ queryKey: ["config-agents"] });
       void qc.invalidateQueries({ queryKey: ["config-agent", id] });
     },
-    onError: (e) => setNote({ ok: false, text: e instanceof Error ? e.message : "error" }),
+    onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
 
   const TABS: { key: Tab; label: string; zh: string }[] = [
@@ -187,8 +189,6 @@ export default function AgentEditorSurface() {
           </button>
         </span>
       </div>
-      {note && <div className={note.ok ? "banner info" : "err"}>{note.text}</div>}
-
       <div className="row">
         {TABS.map((t) => (
           <button

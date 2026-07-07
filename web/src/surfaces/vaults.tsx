@@ -6,6 +6,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useConfirm } from "../components/ui/Confirm";
+import { useToast } from "../components/ui/Toast";
 import { api } from "../lib/api/client";
 import type { Page, Vault, VaultCredential } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -73,6 +75,8 @@ function CredentialRow({ vaultId, cred }: { vaultId: string; cred: VaultCredenti
 function VaultCard({ id, name }: { id: string; name?: string }) {
   const app = useApp();
   const qc = useQueryClient();
+  const confirm = useConfirm();
+  const toast = useToast();
   const creds = useQuery({
     queryKey: ["vault-credentials", id],
     queryFn: () => api.get<Page<VaultCredential>>(`/v1/vaults/${id}/credentials`),
@@ -89,8 +93,21 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
   });
   const del = useMutation({
     mutationFn: () => api.del(`/v1/vaults/${id}`),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["vaults"] }),
+    onSuccess: () => {
+      toast.ok(app.t("Vault deleted.", "Vault 已删除。"));
+      void qc.invalidateQueries({ queryKey: ["vaults"] });
+    },
+    onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
   });
+  const confirmDelete = async () => {
+    const ok = await confirm({
+      title: app.t("Delete this vault?", "删除此 Vault?"),
+      body: app.t(`Vault ${id} and its credentials are permanently removed.`, `Vault ${id} 及其凭证将被永久移除。`),
+      danger: true,
+      confirmLabel: app.t("Delete", "删除"),
+    });
+    if (ok) del.mutate();
+  };
   const rows = creds.data?.data ?? [];
   return (
     <div className="card" style={{ padding: 0 }}>
@@ -101,7 +118,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
         <button className="btn ghost" onClick={() => setAdding(true)}>
           + {app.t("Add credential", "添加凭证")}
         </button>
-        <button className="btn danger" onClick={() => del.mutate()}>
+        <button className="btn danger" disabled={del.isPending} onClick={confirmDelete}>
           {app.t("Delete", "删除")}
         </button>
       </div>
