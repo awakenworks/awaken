@@ -21,6 +21,11 @@ schemars = { version = "1", optional = true }
 # Feature `sqlite`: embedded durable InferenceProfileStore + McpStore backend
 # over the crate's own `admin` migration scope (ADR-0043 sqlite-repos).
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+# Feature `postgres`: network-DB admin store over the same `admin` migration
+# scope (ADR-0043). The sync store ports are bridged onto a dedicated runtime the
+# store owns, so `tokio` (multi-thread) is a hard dep of this feature.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"] }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", features = ["postgres"] }
 awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9" }
 
@@ -29,11 +34,16 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3"
+# The live Postgres store test (feature `postgres`) isolates itself in its own
+# schema via `SET search_path`.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 
 [features]
 default = []
 # SQLite-backed admin stores (`sqlite::SqliteAdminStore`), ADR-0043 sqlite-repos.
 sqlite = ["dep:rusqlite"]
+# Postgres-backed admin store (`postgres::PostgresAdminStore`), ADR-0043.
+postgres = ["dep:sqlx", "dep:tokio"]
 # Emit JSON Schema for the admin config DTOs (drives TS-contract generation,
 # ADR-0043). Enables the domains' own `schema` features.
 schema = [

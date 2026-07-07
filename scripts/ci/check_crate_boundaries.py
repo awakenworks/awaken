@@ -158,6 +158,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # backend over the crate's own `admin` migration scope (ADR-0043
         # sqlite-repos).
         "rusqlite",
+        # feature `postgres`: network-DB admin store over the same `admin`
+        # migration scope (ADR-0043); the SQL driver, bridged to the sync ports
+        # via a store-owned runtime.
+        "sqlx",
         # dev-only: reopen-from-file persistence tests.
         "tempfile",
     },
