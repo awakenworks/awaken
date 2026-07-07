@@ -122,7 +122,7 @@ async fn with_owner_drives_a_durable_run_over_any_sqlite() {
     let store = Arc::new(any_in_memory());
     let commit = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("commit"));
     let ingress =
-        DurableRunIngress::with_owner(runtime, store.clone(), commit.clone(), "fleet-node-7");
+        DurableRunIngress::with_owner(runtime, store.clone(), commit.clone(), "fleet-node-7", None);
 
     let phase = ingress
         .submit_background(activation("run-1"))

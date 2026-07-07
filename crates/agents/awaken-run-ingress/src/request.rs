@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::commit::coordinator::Coordinator as CommitCoordinator;
+use awaken_agent_contract::store::stream_checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::store::thread_reader::ThreadReader;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -28,6 +29,7 @@ pub struct RunExecutionContext {
     commit: Arc<dyn CommitCoordinator>,
     reader: Option<Arc<dyn ThreadReader>>,
     stream_sink: Option<Arc<dyn StreamSink>>,
+    stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
 }
 
 impl RunExecutionContext {
@@ -37,6 +39,7 @@ impl RunExecutionContext {
             commit,
             reader: None,
             stream_sink: None,
+            stream_checkpoint: None,
         }
     }
 
@@ -52,6 +55,15 @@ impl RunExecutionContext {
     #[must_use]
     pub fn with_stream_sink(mut self, sink: Arc<dyn StreamSink>) -> Self {
         self.stream_sink = Some(sink);
+        self
+    }
+
+    /// Attach the durable interrupted-stream checkpoint store (Phase 3), so a
+    /// dispatch re-executed after a crash resumes its in-flight step from the
+    /// flushed partial instead of re-running it.
+    #[must_use]
+    pub fn with_stream_checkpoint(mut self, store: Arc<dyn StreamCheckpointStore>) -> Self {
+        self.stream_checkpoint = Some(store);
         self
     }
 
@@ -71,6 +83,9 @@ impl RunExecutionContext {
         }
         if let Some(sink) = &self.stream_sink {
             context = context.with_stream_sink(sink.clone());
+        }
+        if let Some(store) = &self.stream_checkpoint {
+            context = context.with_stream_checkpoint(store.clone());
         }
         context
     }
