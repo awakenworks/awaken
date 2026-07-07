@@ -770,9 +770,9 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             WORKSPACE_WRITE
         }),
         // -- the Managed vault front door --
-        ["v1", "vaults"] if !read => scoped(APIKEY_WRITE),
+        ["v1", "vaults"] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
         ["v1", "vaults", _] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
-        ["v1", "vaults", _, "credentials"] if !read => scoped(APIKEY_WRITE),
+        ["v1", "vaults", _, "credentials"] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
         ["v1", "vaults", _, "credentials", _] if read => scoped(APIKEY_READ),
         ["v1", "vaults", _, "credentials", _, "mcp_oauth_validate"] if !read => {
             scoped(APIKEY_WRITE)
@@ -1225,6 +1225,12 @@ mod tests {
             Some(WORKSPACE_READ)
         );
         assert_eq!(action_for(&post, "/v1/vaults"), Some(APIKEY_WRITE));
+        // Listing (GET) reads; the SDK `beta.vaults.list` / `credentials.list`.
+        assert_eq!(action_for(&get, "/v1/vaults"), Some(APIKEY_READ));
+        assert_eq!(
+            action_for(&get, "/v1/vaults/v1/credentials"),
+            Some(APIKEY_READ)
+        );
         assert_eq!(action_for(&get, "/v1/vaults/v1"), Some(APIKEY_READ));
         assert_eq!(action_for(&delete, "/v1/vaults/v1"), Some(APIKEY_WRITE));
         assert_eq!(

@@ -41,7 +41,7 @@ use awaken_managed_bridge::{
     WireEnvVarCreate, WireMcpOauthCreate, WireStaticBearerCreate, env_var_to_create_params,
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -86,6 +86,45 @@ pub struct DeletedVault {
     pub id: String,
     #[serde(rename = "type")]
     pub object_type: &'static str,
+}
+
+/// `BetaManagedAgentsDeletedCredential` — the `DELETE .../credentials/:id` receipt.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeletedCredential {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub object_type: &'static str,
+}
+
+/// The SDK's cursor page shape (`PageCursor<Item>` = `{ data, has_more,
+/// next_page }`). This single-machine surface returns every row in one page, so
+/// `has_more` is always `false` and `next_page` always `null` — the official
+/// client stops after the first page. `include_archived` (query, default
+/// `false`) is the only list knob.
+#[derive(Debug, Clone, Serialize)]
+pub struct Page<T> {
+    pub data: Vec<T>,
+    pub has_more: bool,
+    pub next_page: Option<String>,
+}
+
+impl<T> Page<T> {
+    /// One full page: every row, no continuation.
+    fn single(data: Vec<T>) -> Self {
+        Self {
+            data,
+            has_more: false,
+            next_page: None,
+        }
+    }
+}
+
+/// `VaultListParams` / `CredentialListParams` query: the only knob is whether
+/// archived rows are included (default `false` = active only).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListQuery {
+    #[serde(default)]
+    pub include_archived: bool,
 }
 
 /// The outbound-host substitution scope of an env-var credential
@@ -322,6 +361,8 @@ pub struct CredentialValidation {
 struct VaultRecord {
     display_name: String,
     metadata: BTreeMap<String, String>,
+    /// `Some(ts)` once archived (soft-delete); excluded from a default list.
+    archived_at: Option<String>,
 }
 
 /// The kind-specific wire-only fields of a stored credential — everything the
@@ -364,6 +405,8 @@ struct CredentialRecord {
     auth: AuthRecord,
     metadata: BTreeMap<String, String>,
     display_name: Option<String>,
+    /// `Some(ts)` once archived (soft-delete); excluded from a default list.
+    archived_at: Option<String>,
 }
 
 #[derive(Default)]
@@ -498,7 +541,7 @@ impl VaultState {
     fn project_vault(id: &str, record: &VaultRecord) -> Vault {
         Vault {
             id: id.to_string(),
-            archived_at: None,
+            archived_at: record.archived_at.clone(),
             created_at: OBJECT_AT.to_string(),
             display_name: record.display_name.clone(),
             metadata: record.metadata.clone(),
@@ -531,7 +574,7 @@ impl VaultState {
         };
         Credential {
             id: id.to_string(),
-            archived_at: None,
+            archived_at: record.archived_at.clone(),
             auth,
             created_at: OBJECT_AT.to_string(),
             metadata: record.metadata.clone(),
@@ -548,9 +591,12 @@ impl VaultState {
 /// The Managed vault/credential routes. Mount alongside the session router.
 pub fn vault_router(state: Arc<VaultState>) -> Router {
     Router::new()
-        .route("/v1/vaults", post(create_vault))
+        .route("/v1/vaults", post(create_vault).get(list_vaults))
         .route("/v1/vaults/:id", get(retrieve_vault).delete(delete_vault))
-        .route("/v1/vaults/:vault_id/credentials", post(create_credential))
+        .route(
+            "/v1/vaults/:vault_id/credentials",
+            post(create_credential).get(list_credentials),
+        )
         .route(
             "/v1/vaults/:vault_id/credentials/:id",
             get(retrieve_credential),
@@ -593,6 +639,7 @@ async fn create_vault(
     let record = VaultRecord {
         display_name: params.display_name,
         metadata: params.metadata,
+        archived_at: None,
     };
     let vault = VaultState::project_vault(&id, &record);
     state.inner.lock().unwrap().vaults.insert(id, record);
@@ -606,6 +653,29 @@ async fn retrieve_vault(
     let store = state.inner.lock().unwrap();
     let record = store.vaults.get(&id).ok_or_else(|| not_found("vault"))?;
     Ok(Json(VaultState::project_vault(&id, record)))
+}
+
+/// `GET /v1/vaults` — one full page of vaults (the SDK `beta.vaults.list`).
+/// Deterministic order: ascending wire id (`vlt_…` is zero-padded, so
+/// lexicographic == creation order). Archived vaults are excluded unless
+/// `?include_archived=true`.
+async fn list_vaults(
+    State(state): State<Arc<VaultState>>,
+    Query(query): Query<ListQuery>,
+) -> Json<Page<Vault>> {
+    let store = state.inner.lock().unwrap();
+    let mut ids: Vec<&String> = store
+        .vaults
+        .iter()
+        .filter(|(_, r)| query.include_archived || r.archived_at.is_none())
+        .map(|(id, _)| id)
+        .collect();
+    ids.sort();
+    let data = ids
+        .into_iter()
+        .map(|id| VaultState::project_vault(id, &store.vaults[id]))
+        .collect();
+    Json(Page::single(data))
 }
 
 async fn delete_vault(
@@ -820,10 +890,39 @@ async fn create_credential(
         auth,
         metadata,
         display_name,
+        archived_at: None,
     };
     let credential = VaultState::project_credential(&id, &record);
     state.inner.lock().unwrap().credentials.insert(id, record);
     Ok((StatusCode::OK, Json(credential)))
+}
+
+/// `GET /v1/vaults/:vault_id/credentials` — one full page of a vault's
+/// credentials (the SDK `beta.vaults.credentials.list`). An unknown vault is a
+/// `404` (not an empty page), matching retrieve. Deterministic order: ascending
+/// wire id. Archived credentials are excluded unless `?include_archived=true`.
+async fn list_credentials(
+    State(state): State<Arc<VaultState>>,
+    Path(vault_id): Path<String>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Page<Credential>>, WireError> {
+    let store = state.inner.lock().unwrap();
+    if !store.vaults.contains_key(&vault_id) {
+        return Err(not_found("vault"));
+    }
+    let mut ids: Vec<&String> = store
+        .credentials
+        .iter()
+        .filter(|(_, c)| c.vault_id == vault_id)
+        .filter(|(_, c)| query.include_archived || c.archived_at.is_none())
+        .map(|(id, _)| id)
+        .collect();
+    ids.sort();
+    let data = ids
+        .into_iter()
+        .map(|id| VaultState::project_credential(id, &store.credentials[id]))
+        .collect();
+    Ok(Json(Page::single(data)))
 }
 
 async fn retrieve_credential(

@@ -376,6 +376,69 @@ async fn delete_vault_cascades_credentials() {
 }
 
 #[tokio::test]
+async fn list_vaults_returns_one_full_page_sorted_by_id() {
+    let h = harness();
+    let a = create_vault(&h, "alpha").await;
+    let b = create_vault(&h, "bravo").await;
+
+    let (s, page) = call(&h.app, "GET", "/v1/vaults", None).await;
+    assert_eq!(s, StatusCode::OK);
+    // The SDK `PageCursor` shape: data + has_more + next_page (single page here).
+    assert_eq!(page["has_more"], false);
+    assert!(page["next_page"].is_null());
+    let data = page["data"].as_array().unwrap();
+    assert_eq!(data.len(), 2);
+    assert_eq!(data[0]["type"], "vault");
+    // Deterministic ascending-id order (`vlt_` is zero-padded == creation order).
+    assert_eq!(data[0]["id"], a);
+    assert_eq!(data[1]["id"], b);
+}
+
+#[tokio::test]
+async fn list_credentials_is_scoped_to_the_vault_and_404s_unknown() {
+    let h = harness();
+    let vault_a = create_vault(&h, "a").await;
+    let vault_b = create_vault(&h, "b").await;
+    let c1 = create_credential(&h, &vault_a, "K1").await;
+    let c2 = create_credential(&h, &vault_a, "K2").await;
+    create_credential(&h, &vault_b, "K3").await;
+
+    let (s, page) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/vaults/{vault_a}/credentials"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(page["has_more"], false);
+    assert!(page["next_page"].is_null());
+    let ids: Vec<&str> = page["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![c1.as_str(), c2.as_str()]);
+    // Every listed row is the secret-free projection.
+    assert_eq!(page["data"][0]["type"], "vault_credential");
+
+    // Vault B sees only its own credential (path scope holds).
+    let (_, page_b) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/vaults/{vault_b}/credentials"),
+        None,
+    )
+    .await;
+    assert_eq!(page_b["data"].as_array().unwrap().len(), 1);
+
+    // An unknown vault is a 404, not an empty page.
+    let (s, _) = call(&h.app, "GET", "/v1/vaults/vlt_missing/credentials", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn retrieve_vault_unknown_is_404() {
     let h = harness();
     let (s, _) = call(&h.app, "GET", "/v1/vaults/vlt_missing", None).await;
