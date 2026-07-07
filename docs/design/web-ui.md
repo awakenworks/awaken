@@ -43,9 +43,9 @@
 | **推理凭证** | 模型 provider API key(喂 model catalog / inference profile) | **Workspace 供给**(CredentialSource/Pool) | 无(Anthropic 自跑模型;我们不锁模型,这是独有的) |
 | **运行/工具凭证** | MCP OAuth / static bearer / env-var 密钥 | **Project Vault(自管)** | 有 |
 
-- **MCP/A2A 默认内联**:agent/session 直接携带 `mcp_servers:[{type,name,url}]`(无 auth),与 Anthropic wire 同构、agent 自包含。workspace MCP 目录降为**可选复用层**(要集中治理/复用的团队再启用);A2A delegate 名册是 agent config,catalog 同为可选。
+- **MCP/A2A 默认内联,wire 兼容**:agent/session 直接携带 `mcp_servers:[{type,name,url}]`(无 auth)——这正是 Anthropic Managed Agents 的 MCP 定义形状(`BetaManagedAgents…URLMCPServer`),我们的 `McpServerWire` 已逐字节一致。**`credential_binding` 从来不在 wire 上**,只在自有 config 对象 `McpServerDef` 上,stock SDK 碰不到。workspace MCP 目录降为**可选复用层**(集中治理再启用);A2A delegate 名册是 agent config,catalog 同为可选。
 - **Vault 是 managed 自管资源**:project 作用域、走 managed wire CRUD;运行时**自动续 OAuth**、**egress 处替换** env-var、按 MCP `url` 匹配注入——沙箱永不见明文。secretless 因此从"resolve-and-hand-off"变为"**egress 注入**",更贴 ADR-0008 网关本意。
-- 结果:MCP 鉴权不再走 workspace CredentialSource + `credential_binding`,**Vault 成为运行期凭证唯一家**(仓里 `VaultState` 已按 url 键 + 带 refresh;`McpServerDef.credential_binding` 是待删的冗余并行路径,见 §7)。
+- 结果:**默认** MCP 鉴权走 Vault(按 url,仓里 `VaultState` 已就位),不再经 CredentialSource。`McpServerDef.credential_binding` **保留为可选**(默认 `none`、标弃用**不删除**),兜住可选目录的集中治理路径,保持我们 config API 向后兼容(见 §7)。
 
 ## 2. 信息架构与导航外壳
 
@@ -126,7 +126,7 @@ Project 容器覆盖 Managed Agents 的资源全体 + 跑在共享 host 上的�
 |---|---|---|
 | `/models` | Catalog 三层(Provider/Endpoint/Offering)+ Inference profiles + resolve 试算链 chips + Test model(经 credential validate) | ✅ |
 | `/credentials`(**Inference credentials**) | **推理凭证**(仅喂模型):Sources(enter/validate/archive)、Pools(ordinal failover)。运行/工具凭证在 Project Vault | ✅ |
-| `/mcp-servers` + `/:id` | **可选复用目录**(默认内联在 agent):定义 CRUD + Bound-by 反查;运行凭证由 Vault 按 url 提供,`credential_binding` 为待删遗留;状态/健康点 + Restart | 🔶 CRUD ✅;credential_binding 去除、status/restart ⛔ |
+| `/mcp-servers` + `/:id` | **可选复用目录**(默认内联在 agent):定义 CRUD + Bound-by 反查;运行凭证默认由 Vault 按 url 提供,`credential_binding` 保留为可选集中治理(标弃用不删);状态/健康点 + Restart | 🔶 CRUD ✅;status/restart ⛔(wire 已兼容,不改) |
 | `/a2a-servers` | **可选** delegate 目录(名册是 agent config):delegate card 查看;CRUD | 🔶 card ✅(`/v1/delegates/:id/card`);CRUD ⛔ |
 
 ### Workspace · Observe
@@ -210,7 +210,7 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 
 **managed 资源全面 project 化(新架构决定 — 对齐 Anthropic wire)**:
 9b. **Agent/Environment/Memory store/Deployment/Skill 上 Managed Agents wire,且全部 project 化**:仿 session,每种资源加 durable `project_id`,经 `/projects/{pid}/v1/{agents,environments,memory_stores,deployments,skills}` 寻址,统一 `ScopeRef::Project`;agent config 从 admin plane(`/v1/config/agents`)迁到 managed wire,publish→版本化(每次 update 产生不可变 version,session 按 `{id,version}` 钉)。**agent 内联 `mcp_servers:[{type,name,url}]`**(方案 B):MCP 是 agent 自包含配置,凭证由 Project Vault 按 url 提供。落地顺序:agents(read 面先行)→ environments → memory → deployments。
-9c. **凭证双轴收敛(方案 B)**:`McpServerDef` 去掉 `credential_binding`(只留 url),运行凭证唯一来源是 Vault(仓里 `VaultState` 已按 url 键 + refresh);`CredentialSource/Pool` 收窄为**仅推理**。改动面:config schema + resolver + 契约(openapi 注册表)+ e2e;MCP 目录降为可选复用层。
+9c. **凭证双轴收敛(方案 B,兼容优先)**:managed **wire 不变**(`mcp_servers:{type,name,url}` 已与 Anthropic 一致);默认运行凭证走 Vault(按 url,`VaultState` 已就位)。`McpServerDef.credential_binding` **保留、标弃用、默认 `none`——不移除**(向后兼容 + 兜可选目录集中治理);`CredentialSource/Pool` 主服务推理、兼顾该可选 MCP 路径。改动面因此收窄为:resolver 默认优先 Vault + UI/文档弃用标注,不动 wire、不破 config schema。
 
 **project 容器统一权限(已定的架构决定)**:
 10. vault router 挂进 `/projects/{pid}` ingress(今天 ingress 只转发 session router),vault 创建 stamp `ProjectScope` → vault 归属 project;所有新增 managed 资源 router 同样挂 ingress;
