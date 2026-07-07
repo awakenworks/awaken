@@ -36,13 +36,17 @@ struct EnvRecord {
     metadata: BTreeMap<String, String>,
     /// `BetaCloudConfig | BetaSelfHostedConfig` (defaults to `{type:self_hosted}`).
     config: Value,
-    scope: Option<String>,
     archived_at: Option<String>,
 }
 
 impl EnvRecord {
+    /// Project to the official `BetaEnvironment` shape. The ownership coordinate
+    /// (organization / workspace) is credential-implicit and never a data-plane
+    /// field, so the environment carries no `scope` — workspace scoping is enforced
+    /// by the authz layer from the credential, and any awaken tenancy (Project) is
+    /// an ingress concern (`/projects/{slug}/…`), not part of this object.
     fn project(&self, id: &str) -> Value {
-        let mut obj = json!({
+        json!({
             "id": id,
             "type": "environment",
             "archived_at": self.archived_at,
@@ -52,11 +56,7 @@ impl EnvRecord {
             "description": self.description,
             "metadata": self.metadata,
             "config": self.config,
-        });
-        if let Some(scope) = &self.scope {
-            obj["scope"] = json!(scope);
-        }
-        obj
+        })
     }
 }
 
@@ -191,10 +191,9 @@ async fn create_env(
             .to_string(),
         metadata: metadata_of(&body),
         config,
-        scope: body
-            .get("scope")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        // No `scope` on the wire: ownership is credential-implicit (authz enforces
+        // the workspace from the credential) and any awaken tenancy is an ingress
+        // concern — a `scope` sent in the body is ignored, like any non-official field.
         archived_at: None,
     };
     let n = state.env_seq.fetch_add(1, Ordering::SeqCst);
