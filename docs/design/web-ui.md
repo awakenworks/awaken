@@ -4,11 +4,13 @@
 
 ## 0. 设计论点(一句话)
 
-采用**「Workspace ▸ Project 两级作用域 + 全局 cockpit(Home/Inbox)」外壳**;功能范围 = **既有管理台全集 ∪ 本仓库管理面**(Session/Project 是超出既有管理台的部分,Eval/Audit/观测/目录/沙箱/助手是超出本分支现状、必须纳入并随后端补齐逐步点亮的部分)。没有对应后端概念的功能一律不发明;后端未备的页面**照常设计、以能力门控置灰**,不因后端进度裁剪 IA。
+采用**「Workspace ▸ Project 两级作用域 + 全局 Home cockpit」外壳**;功能范围 = **既有管理台全集 ∪ 本仓库管理面**(Session/Project 是超出既有管理台的部分,Eval/Audit/观测/目录/沙箱/助手是超出本分支现状、必须纳入并随后端补齐逐步点亮的部分)。没有对应后端概念的功能一律不发明;后端未备的页面**照常设计、以能力门控置灰**,不因后端进度裁剪 IA。
+
+**定位边界**:这是 agent **平台的运营控制台**——供给、治理、观测。终端用户交互(聊天、工具审批、HITL)发生在**客户自己的应用**里(经 SDK 走运行面 wire),控制台不做审批收件箱(无 Inbox);会话转录页的行内交互是运维/调试用途,`requires_action` 在控制台呈现为**观测指标与列表过滤**(「等待客户端动作」),不是待办队列。
 
 ## 1. 关键设计与工程决策
 
-**交互模式(采纳)**:两级作用域侧栏(聚焦式 scope 切换)、Home/Inbox 全局层、statChip 全可点、needs-you hero 行内 Approve、live banner 批量刷新、agent 紫=AI 活动、readiness(Bind & ready)清单、resolved binding 链式 chips、record-before-effect 日志表、编辑器外壳(顶栏版本+Publish / 主区 / 右 rail)、Sandbox 沙箱预览(流式 + 行内审批 + 附件)、assistant 草稿手递编辑器、capabilities 门控、secret 全链路脱敏、URL 同步列表状态、unsaved guard、token modal、⌘K。
+**交互模式(采纳)**:两级作用域侧栏(聚焦式 scope 切换)、Home 全局层、statChip 全可点、live banner 批量刷新、agent 紫=AI 活动、readiness(Bind & ready)清单、resolved binding 链式 chips、record-before-effect 日志表、编辑器外壳(顶栏版本+Publish / 主区 / 右 rail)、Sandbox 沙箱预览(流式 + 行内审批 + 附件)、assistant 草稿手递编辑器、capabilities 门控、secret 全链路脱敏、URL 同步列表状态、unsaved guard、token modal、⌘K。
 
 **工程模式(采纳)**:W3C token 三层流水线 + token-contract 测试;OpenAPI codegen `*:check` 门禁;单出口 fetch + no-raw-fetch 检查;`paths.ts` 导航 SSOT(router/侧栏/palette 共用);append-only 事件日志 reducer(单 query cache 条目,transcript 是纯投影);session-as-query 认证;roster sentinel;structure tests;react-router v7 薄路由包装 Surface 组件。
 
@@ -18,15 +20,32 @@
 
 | 外壳概念 | 我们的实体 |
 |---|---|
-| Workspace(共享供给) | `workspace_id`:catalog、credentials+pools、MCP、A2A、inference profiles、IAM tokens、agents、skills/tools 目录 |
-| Project(运行面容器) | `Project` + `/projects/{id}` ingress;sessions、vaults、per-project agent MCP 绑定 |
-| 工作单元 | **Session**(idle/running/requires_action) |
-| Inbox 审批 | `requires_action` tool confirmation、durable deliver、dead-letters、凭证失效 |
+| **Project(运行面容器 = Managed Agents 资源全体)** | `Project` + `/projects/{id}` ingress:**Agent `agent_*`**、**Environment `env_*`**、Session `sesn_*` + Event `evt_*`、Vault `vlt_*` + Credential `crd_*`、**Memory store `memstore_*`**、**Deployment `depl_*` + Run `drun_*`**、Skill(delivered)、Files。全部按 `project_id` 落库,统一 `ScopeRef::Project` 授权 |
+| **Workspace(共享供给 + 治理)** | 无 Managed Agents wire 映射、被项目按 id 引用的一切:catalog(Provider/Endpoint/Offering)、**推理凭证** CredentialSource + Pool、InferenceProfile、IAM tokens、Project 注册表;MCP/A2A 目录降为**可选复用层**(默认内联,见下) |
+| 工作单元 | **Session**(idle/running;requires_action 是派生过滤词,不是 wire status) |
+| 需要客户端动作 | `requires_action` 派生过滤(`GET /v1/sessions?status=requires_action`)→ Home KPI + 会话列表过滤;审批本身在客户应用完成 |
 | 编辑器 Publish | Agent config draft → validate → publish(fingerprint) |
 | 自动化触发日志 | Durable dispatch 队列 + dead-letters(record-before-effect) |
 | Resolved binding 链 | 三个 dry-run resolve 端点直接供数 |
 | Bind & ready | fail-closed resolve |
 | Observe 组 | Dashboard / Audit / Datasets / Evals(workspace 观测分组) |
+
+**数据架构原则(关键决定)**:Managed Agents wire 把 agent/environment/session/vault/memory-store/deployment/skill/file 全部挂在**运行容器**下(Anthropic 的 workspace 即我们的 **project**)。据此:
+
+1. **Project 拥有运行实例**——上述每种资源都durable 落库并 stamp `project_id`(与 session 的 `project_id`/`archived_at` 同款),经 `/projects/{pid}/…` 寻址,统一 `ScopeRef::Project` 授权 + run-plane 动作集(`run.read`/`run.write`)。裸 `/v1/…` 面保留 stock-SDK 兼容(project-bound key 隐含其 project)。
+2. **Workspace 拥有共享供给**——catalog、credential sources/pools、inference profile、MCP/A2A 定义、IAM 是跨项目复用的供给,无 managed wire,治理留在 workspace IAM。
+3. **Reference-don't-copy**——agent 的 `model` 按 id **引用** workspace 供给(模型 catalog),供给不进 project、运行时 resolve;单份供给服务多个 project,版本与轮换只改一处。
+
+**凭证收敛为双轴(方案 B,对齐 Anthropic-literal)**:凭证按"哪个模型跑" vs "连外部工具用什么身份"分两条轴,天然不重叠——
+
+| 凭证 | 是什么 | 归属 | Anthropic 对应 |
+|---|---|---|---|
+| **推理凭证** | 模型 provider API key(喂 model catalog / inference profile) | **Workspace 供给**(CredentialSource/Pool) | 无(Anthropic 自跑模型;我们不锁模型,这是独有的) |
+| **运行/工具凭证** | MCP OAuth / static bearer / env-var 密钥 | **Project Vault(自管)** | 有 |
+
+- **MCP/A2A 默认内联**:agent/session 直接携带 `mcp_servers:[{type,name,url}]`(无 auth),与 Anthropic wire 同构、agent 自包含。workspace MCP 目录降为**可选复用层**(要集中治理/复用的团队再启用);A2A delegate 名册是 agent config,catalog 同为可选。
+- **Vault 是 managed 自管资源**:project 作用域、走 managed wire CRUD;运行时**自动续 OAuth**、**egress 处替换** env-var、按 MCP `url` 匹配注入——沙箱永不见明文。secretless 因此从"resolve-and-hand-off"变为"**egress 注入**",更贴 ADR-0008 网关本意。
+- 结果:MCP 鉴权不再走 workspace CredentialSource + `credential_binding`,**Vault 成为运行期凭证唯一家**(仓里 `VaultState` 已按 url 键 + 带 refresh;`McpServerDef.credential_binding` 是待删的冗余并行路径,见 §7)。
 
 ## 2. 信息架构与导航外壳
 
@@ -38,19 +57,18 @@ workspace 段较长,用 10px 大写分组标题分成 **Supply / Observe / Gover
 │  └─ 📁 <project>          PROJECT ▾    ││                                    │
 │ [ Search…                        ⌘K ]  ││                                    │
 │ GLOBAL · ALL PROJECTS                  ││                                    │
-│  Home        Inbox ❸(紫)              ││                                    │
+│  Home                                  ││                                    │
 │ ── 按 scope 二选一 ──                   ││                                    │
 │ PROJECT · <id>     │ WORKSPACE · SUPPLY ││                                   │
-│  Overview          │  Agents ❹(紫)     ││                                   │
-│  Sessions          │  Skills(ro) Tools  ││                                   │
-│  Vaults            │  Models Credentials││                                   │
-│  Agents(绑定)      │  MCP  A2A          ││                                   │
-│  Settings          │ · OBSERVE          ││                                   │
-│                    │  Dashboard         ││                                   │
-│                    │  Evals  Datasets   ││                                   │
-│                    │  Audit log         ││                                   │
-│                    │ · GOVERN           ││                                   │
-│                    │  Access  Settings  ││                                   │
+│  Overview          │  Models            ││                                   │
+│  Sessions          │  Credentials       ││                                   │
+│  Agents            │  MCP  A2A          ││                                   │
+│  Environments ◌    │ · OBSERVE          ││                                   │
+│  Vaults            │  Dashboard         ││                                   │
+│  Memory stores ◌   │  Evals  Datasets   ││                                   │
+│  Deployments ◌     │  Audit log         ││                                   │
+│  Skills ◌          │ · GOVERN           ││                                   │
+│  Settings          │  Access  Settings  ││                                   │
 │ footer: EN/中 · ☀/☾ · 头像   [✦ 助手 FAB 右下角常驻]                          │
 └────────────────────────────────────────┘└───────────────────────────────────┘
 ```
@@ -67,34 +85,49 @@ workspace 段较长,用 10px 大写分组标题分成 **Supply / Observe / Gover
 
 | 路由 | 内容 | 端点 / 就绪度 |
 |---|---|---|
-| `/` Home | KPI(Projects/Active sessions/Needs you)+ Needs-you 行内 Approve + Projects 表 + 容量/健康摘要 hero | 🔶 projects ✅;会话聚合与 runs summary ⛔ |
-| `/inbox` | Approvals(requires_action 行内 Allow/Deny)/ Attention(dead-letters、凭证失效、MCP 不健康) | 🔶 |
+| `/` Home | KPI(Projects/Active sessions/等待客户端动作)+ Projects 表(每项目活跃会话数) | ✅(`GET /v1/sessions` + `?status=requires_action`);runs summary hero ⛔ |
 | FAB 助手 | 流式对话、工具卡、生成 agent 草稿→跳编辑器;设置(模型/策略 prompt) | ⛔ `/v1/admin/assistant/*` |
+
+(无 `/inbox`:审批交互在客户应用完成,见 §0 定位边界。)
 
 ### Project scope(运行面容器 = Managed Agents 资源全体)
 
+Project 容器覆盖 Managed Agents 的资源全体 + 跑在共享 host 上的所有运行面 faces,统一 `ScopeRef::Project` 授权 + run-plane 动作集:
+
+| 运行面 face / 资源 | 资源 / 路径 | 说明 |
+|---|---|---|
+| **Agent** | `agent_*`:create/list/get/update(版本化)/archive + versions | 项目容器资源;对齐 Anthropic `/v1/agents` wire。当前 config 面在 admin plane(见 §7) |
+| **Environment** | `env_*`:容器模板(cloud/self-hosted、networking) | 项目容器资源;会话按 `environment_id` 引用 |
+| Managed Agents · Session | Session `sesn_*`(create/retrieve/**list/update/archive**)、Event `evt_*`(send/list/SSE)、live-inbox | 控制台主对接 wire |
+| Vault | `vlt_*` + VaultCredential `crd_*`、`mcp_oauth_validate` | 运行凭证,随 session 消费 |
+| **Memory store** | `memstore_*` + memories/versions | 项目容器资源;跨 session 持久记忆 |
+| **Deployment** | `depl_*` + Run `drun_*`:cron 调度、pause/unpause/archive | 项目容器资源;每次触发建一个 session |
+| AI SDK / AG-UI | `POST /v1/ai-sdk/agents/:id/runs`、`/v1/ag-ui/...` | UI Message Stream(Sandbox 通道)、同 host 同线程 |
+| A2A | `/v1/delegates/:agent_id/card` + 委托运行 | 对外 delegation 入口 |
+| Durable ops | `/v1/durable/threads/:thread/*`(dispatches/supersede/cancel/wake/deliver/reconcile/reap) | 会话抽屉的运维动词 |
+| Files / Skills(delivered) | `/v1/files(/:id,/content)`、`/v1/skills` | 会话挂载资源(ADR-0038)、运行期已交付技能目录 |
+
 | 路由 | 内容 | 端点 / 就绪度 |
 |---|---|---|
-| `/p/:pid/overview` | 项目脉搏:活跃会话、最近 dispatch、绑定健康(resolve chips) | 🔶(会话列表⛔) |
-| `/p/:pid/sessions` | 会话列表 + New session 拆分按钮 | 🔶(列表端点⛔;创建 ✅ `/projects/:pid/v1/sessions`) |
-| `/p/:pid/sessions/:sid` | **§4 核心界面**:转录 + HITL + outcomes + durable 抽屉 | ✅ |
-| `/p/:pid/vaults` | 运行凭证容器(managed wire 资源,随 session 消费):vault 及其三型 credential、`mcp_oauth_validate`;标注 host-ephemeral | 🔶 vault 面 ✅,挂到 `/projects/{pid}` ingress ⛔(见 §7) |
-| `/p/:pid/agents` | per-project MCP 绑定 + resolve 预览(reference-don't-copy) | ✅ |
+| `/p/:pid/overview` | 项目脉搏:活跃会话、等待客户端动作、最近会话表 | ✅(project-scoped list) |
+| `/p/:pid/sessions` | 会话列表(All / Awaiting-action 过滤、archive 行动作)+ New session | ✅ `GET/POST /projects/:pid/v1/sessions`、`POST …/:sid(/archive)` |
+| `/p/:pid/sessions/:sid` | **§4 核心界面**:转录 + 行内工具确认(运维/调试)+ outcomes + rename/archive + durable 抽屉 | ✅ |
+| `/p/:pid/agents` | Agent config draft→validate→**publish** + per-project MCP 绑定 + resolve 预览(reference-don't-copy);全 tab 编辑器/版本历史/Sandbox 随 wire 落地 | 🔶 publish + 项目绑定 ✅;list/meta/history、managed wire CRUD ⛔(§7) |
+| `/p/:pid/environments` | 容器模板 CRUD(cloud/self-hosted、networking) | ⛔ `/projects/{pid}/v1/environments` |
+| `/p/:pid/vaults` | **运行期凭证唯一家(managed 自管)**:MCP OAuth(自动续期)/ static bearer / env-var 三型 credential、`mcp_oauth_validate`;egress 注入、按 url 匹配、写入即只写 | 🔶 vault 面 ✅,挂到 `/projects/{pid}` ingress ⛔(§7) |
+| `/p/:pid/memory` | Memory store CRUD + memories/versions/redact | ⛔ `/projects/{pid}/v1/memory_stores` |
+| `/p/:pid/deployments` | 调度部署列表 + run 记录(cron、pause/unpause/archive) | ⛔ `/projects/{pid}/v1/deployments` |
+| `/p/:pid/skills` | 项目运行期已交付技能目录(ro) | ⛔ `/projects/{pid}/v1/skills` |
 | `/p/:pid/settings` | 项目信息、ingress baseURL、权限说明(project 容器统一 `ScopeRef::Project` 授权) | ✅(guard ⛔) |
 
-### Workspace · Supply
+### Workspace · Supply(共享供给,无 managed wire,按 id 被项目引用)
 
 | 路由 | 内容 | 端点 / 就绪度 |
 |---|---|---|
-| `/agents` | 列表(model、能力徽章、来源徽章、运行统计列);删除 | 🔶 list/meta ⛔,publish 面 ✅ |
-| `/agents/:id`(编辑器) | 全 tab 集:**Basics / Tools / Skills / Plugins(JSON-Schema 配置表单)/ Delegates / Permissions(模式编辑 + 预览)/ Advanced(原始 JSON,CodeMirror)/ History(审计历史 + restore)**;顶栏 draft→Validate→**Publish**(fingerprint);diff 弹窗、unsaved guard、readiness 清单;右侧 **Sandbox**(§4b) | 🔶 validate/publish ✅;meta/history/restore、permission-preview ⛔ |
-| `/agents/:id/dashboard` | per-agent 运行看板:推理延迟分布、生命周期事件、工具调用延迟 | ⛔ runtime-stats |
-| `/skills` + `/skills/:id` | 技能目录(ro):context、user/model-invocable、allowed_tools、arguments | ⛔ capability catalog(plugin-configuration.md 已规划) |
-| `/tools` + `/tools/:id` | 工具目录 + 工具编辑器(overrides) | ⛔ 同上 |
 | `/models` | Catalog 三层(Provider/Endpoint/Offering)+ Inference profiles + resolve 试算链 chips + Test model(经 credential validate) | ✅ |
-| `/credentials` | **供给侧凭证**:Sources(enter/validate/archive)、Pools(ordinal failover)。Vault 属运行面,页面在 Project scope | ✅ |
-| `/mcp-servers` + `/:id` | 定义 CRUD + Bound-by 反查;状态/健康点 + Restart;nav 健康点 | 🔶 CRUD ✅;status/restart ⛔(ExtMcpProbe 可扩) |
-| `/a2a-servers` | 远程委托服务器目录:delegate card 查看;CRUD | 🔶 card ✅(`/v1/delegates/:id/card`);CRUD ⛔ |
+| `/credentials`(**Inference credentials**) | **推理凭证**(仅喂模型):Sources(enter/validate/archive)、Pools(ordinal failover)。运行/工具凭证在 Project Vault | ✅ |
+| `/mcp-servers` + `/:id` | **可选复用目录**(默认内联在 agent):定义 CRUD + Bound-by 反查;运行凭证由 Vault 按 url 提供,`credential_binding` 为待删遗留;状态/健康点 + Restart | 🔶 CRUD ✅;credential_binding 去除、status/restart ⛔ |
+| `/a2a-servers` | **可选** delegate 目录(名册是 agent config):delegate card 查看;CRUD | 🔶 card ✅(`/v1/delegates/:id/card`);CRUD ⛔ |
 
 ### Workspace · Observe
 
@@ -163,20 +196,24 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 ## 7. 后端缺口(按优先级)
 
 **P2 前置(会话面)**:
-1. `GET /v1/sessions`(列表 + status/project 过滤)——Home/Inbox/会话列表的硬前置。
-2. needs-attention 聚合(或列表过滤);session title/archive 更新端点。
+1. ~~`GET /v1/sessions`~~ **已落地**:列表(project ingress 作用域 + `?status=` 派生过滤 idle/running/requires_action;wire status 保持 SDK 忠实)、`POST /v1/sessions/{id}`(title/metadata)、`POST /v1/sessions/{id}/archive`(标记不删除);会话聚合持久化 `project_id`/`archived_at`(SQLite 列迁移 best-effort)。
+2. ~~needs-attention 聚合~~ **已并入 1**(`?status=requires_action` 即聚合查询)。遗留:list 不重放 repo-only 行的转录,重启前 park 的会话在被打开前报 idle。
 
 **功能对齐(Observe/目录/沙箱/助手),按依赖排序**:
 3. ~~OpenAPI 契约~~ **已落地**(`contracts/openapi.generated.json`,19 路径/28 操作;IAM/durable 注册表扩展是后续增量)。
-4. `GET /v1/capabilities`(能力目录:skills/tools/插件 schema)——Skills/Tools 页 + Plugins 配置表单 + 全局门控的共同前提。
-5. Agent 管理读面:list/meta/history/restore、permission-preview——编辑器 History/Permissions tab。
+4. `GET /v1/capabilities`(能力目录:skills/tools/插件 schema)——项目 Skills 页 + agent 编辑器 Tools/Plugins 配置表单 + 全局门控的共同前提(Tools 不再单列导航,是 agent 配置的一部分)。
+5. Agent 管理读面:list/meta/history/restore、permission-preview——project Agents 编辑器 History/Permissions tab(见 9b,与 managed wire CRUD 一并)。
 6. 运行观测:runs summary、per-agent runtime-stats——Dashboard + agent 看板。
 7. `GET /v1/audit-log`——审计页。
 8. Eval 面:datasets/eval-runs/reports CRUD(observability-eval-dataset-boundary.md 已界定)。
 9. MCP status/restart、A2A servers CRUD、agent-preview 端点(对草稿沙箱)、admin assistant 面。
 
+**managed 资源全面 project 化(新架构决定 — 对齐 Anthropic wire)**:
+9b. **Agent/Environment/Memory store/Deployment/Skill 上 Managed Agents wire,且全部 project 化**:仿 session,每种资源加 durable `project_id`,经 `/projects/{pid}/v1/{agents,environments,memory_stores,deployments,skills}` 寻址,统一 `ScopeRef::Project`;agent config 从 admin plane(`/v1/config/agents`)迁到 managed wire,publish→版本化(每次 update 产生不可变 version,session 按 `{id,version}` 钉)。**agent 内联 `mcp_servers:[{type,name,url}]`**(方案 B):MCP 是 agent 自包含配置,凭证由 Project Vault 按 url 提供。落地顺序:agents(read 面先行)→ environments → memory → deployments。
+9c. **凭证双轴收敛(方案 B)**:`McpServerDef` 去掉 `credential_binding`(只留 url),运行凭证唯一来源是 Vault(仓里 `VaultState` 已按 url 键 + refresh);`CredentialSource/Pool` 收窄为**仅推理**。改动面:config schema + resolver + 契约(openapi 注册表)+ e2e;MCP 目录降为可选复用层。
+
 **project 容器统一权限(已定的架构决定)**:
-10. vault router 挂进 `/projects/{pid}` ingress(今天 ingress 只转发 session router),vault 创建 stamp `ProjectScope` → vault 归属 project;
+10. vault router 挂进 `/projects/{pid}` ingress(今天 ingress 只转发 session router),vault 创建 stamp `ProjectScope` → vault 归属 project;所有新增 managed 资源 router 同样挂 ingress;
 11. managed 运行面纳入 IAM guard:按路径 project 段做 `ScopeRef::Project{workspace_id, project_id}` 校验(词汇已在 awaken-iam-contract),动作词汇为 sessions/vaults 扩展;裸 `/v1/sessions` 保留 stock-SDK 兼容(project-bound key 或默认 project)。
 12. **managed API key 绑定 project 层级(已定)**:runtime key 与平台/管理 key 同一 IAM 机制、同一 wire(`x-api-key` `sk-ant-…`),差别只在绑定 scope 与动作集——管理 key 绑 Workspace/Global + `workspace.*`/`apikey.*`;**runtime key 绑 `ScopeRef::Project` + 仅 run-plane 动作(`run.read`/`run.write`,覆盖 sessions/events/vaults)**。授权规则:经 `/projects/{pid}` 进入时 key 的 scope 必须覆盖该 project(workspace key 经 scope 图祖先关系覆盖其下所有 project);裸 `/v1/sessions` 时 project-bound key 隐含其绑定的 project(寻址从 key 推出,stock-SDK 零改动)。治理仍在 workspace IAM(key 注册表不搬家,project 只是绑定 scope——reference-don't-copy);Console 上 Project ▸ Settings 增设「API keys」段铸造/吊销本项目 runtime key(明文一次),Workspace ▸ Access 继续管管理 key。对齐 Anthropic:其 Console API key 即绑定在 workspace(运行容器)而非组织——我们的 project 正是该运行容器的对应物。
 
@@ -185,7 +222,7 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 ## 8. 分期
 
 - **P1 地基 + 管理面(零后端改动)**:token 流水线、外壳(paths/⌘K/明暗/i18n/门控框架)、单出口 fetch + codegen;Models、Credentials、MCP、A2A(card 只读)、Access、Agents(publish 面)、Vaults、Sessions(创建 + 详情)+ Settings;Sandbox 对已发布 agent 先行(ai-sdk 端点已备)。
-- **P2 会话面完善**:事件 reducer 强化 + live banner;Inbox;真浏览器 SSE 用例。(前置:缺口 1–2)
+- **P2 会话面完善(已落地)**:会话列表/更新/归档端点 + 列表页(Awaiting-action 过滤、archive)、Home/Overview 会话 KPI、详情页 rename/archive。遗留:真浏览器 SSE 用例。
 - **P3 项目面完善**:roster sentinel、guard 落地后的权限 UI。
 - **P4 Observe/目录对齐**:capabilities 目录(Skills/Tools/Plugins 表单)→ Dashboard/audit → agent 看板 → eval 三页 → 助手 FAB;各页随后端端点落地逐个点亮(门控页先行占位)。
 
@@ -199,11 +236,11 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 ┌ Acme Inc / acme-web / Sessions ──────────────────────────────┬───────────────┐
 │                                                              │ [+ New session]│
 ├──────────────────────────────────────────────────────────────┴───────────────┤
-│ (All) (Running ●) (Needs you ⚠2) (Idle)        [ Search sesn_…        ] [⟳]  │
+│ (All) (Running ●) (Awaiting ⚠2) (Idle)         [ Search sesn_…        ] [⟳]  │
 ├───────────────────────────────────────────────────────────────────────────────┤
 │  STATUS      SESSION            TITLE                AGENT        UPDATED     │
 │  ● running   sesn_01hx…f2a4     Fix flaky auth test  builder@3    2m ago    ▸ │
-│▐ ⚠ needs you sesn_01hx…9c1b     Migrate settings     reviewer@1   18m ago   ▸ │  ← amber 行内标注
+│▐ ⚠ awaiting  sesn_01hx…9c1b     Migrate settings     reviewer@1   18m ago   ▸ │  ← amber 行内标注
 │  ○ idle      sesn_01hx…77d0     Draft ADR summary    docs@1       1h ago    ▸ │     tool: bash 待确认
 │  ○ idle      sesn_01hw…be32     (untitled)           builder@3    3d ago    ▸ │
 ├───────────────────────────────────────────────────────────────────────────────┤

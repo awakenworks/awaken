@@ -1,7 +1,10 @@
-// Project · Vaults: the run-plane credential container consumed via
-// `vault_ids` at session create. No list endpoint exists (host-ephemeral), so
-// this keeps a local registry of vaults created in this browser. The routes
-// are the bare /v1/vaults face until the project ingress mounts it (§7.10).
+// Project · Vaults: the SINGLE home for runtime/tool credentials (design/web-ui.md
+// §1, option B) — MCP OAuth (auto-refreshed), static bearer, and env-var secrets,
+// self-managed on the managed wire and injected at egress (the sandbox never sees
+// them). Consumed via `vault_ids` at session create, matched to MCP servers by url.
+// No list endpoint exists (host-ephemeral), so this keeps a local registry of
+// vaults created in this browser; the routes are the bare /v1/vaults face until
+// the project ingress mounts it (§7.10).
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -165,8 +168,8 @@ export default function VaultsSurface() {
           <span>ⓘ</span>
           <span>
             {app.t(
-              "Vault views are host-ephemeral (rebuilt per process). Project-ingress mounting is roadmap §7.10; this page talks to the bare /v1/vaults face.",
-              "Vault 视图随进程重建;挂到项目 ingress 是路线 §7.10,本页暂走裸 /v1/vaults 面。",
+              "The single home for runtime/tool credentials — MCP OAuth (auto-refreshed), static bearer, env-var — injected at egress, matched to MCP servers by url. Views are host-ephemeral; project-ingress mounting is roadmap §7.10 (bare /v1/vaults face for now).",
+              "运行/工具凭证的唯一家——MCP OAuth(自动续期)、static bearer、env-var——egress 注入、按 url 匹配 MCP。视图随进程重建;挂到项目 ingress 是路线 §7.10(暂走裸 /v1/vaults 面)。",
             )}
           </span>
         </span>

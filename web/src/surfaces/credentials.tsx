@@ -1,5 +1,7 @@
-// Workspace · Credentials: the SUPPLY-side credential sources and pools
-// (secret-in / secret-free-out). Run-plane vaults live under the project.
+// Workspace · Inference credentials: the SUPPLY-side sources and pools that
+// authenticate the MODEL PROVIDER (secret-in / secret-free-out). This is one of
+// two credential axes (design/web-ui.md §1): inference lives here; runtime/tool
+// credentials (MCP OAuth, static bearer, env-var) live in the project Vault.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -97,6 +99,15 @@ export default function CredentialsSurface() {
   });
   return (
     <>
+      <div className="banner info">
+        <span>ⓘ</span>
+        <span>
+          {app.t(
+            "Inference credentials only — these authenticate the model provider. Runtime/tool credentials (MCP OAuth, static bearer, env-var) live in the project Vault.",
+            "仅推理凭证——用于模型供应商鉴权。运行/工具凭证(MCP OAuth、static bearer、env-var)在 Project Vault。",
+          )}
+        </span>
+      </div>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span className="mut">
           {app.t("Supply-side sources — never echoed; validation is a live provider probe.", "供给侧凭证——永不回显;验证是真实的供应商探针。")}

@@ -1,28 +1,29 @@
-// Project · Sessions. There is no list endpoint yet (design/web-ui.md §7.1),
-// so the list is a local registry of sessions created/opened in this browser,
-// plus open-by-id — honest about the gap while the create/detail flow is real.
+// Project · Sessions: the project container's session list (GET
+// /projects/{pid}/v1/sessions), Anthropic-console style — mono ids, status
+// pills, one primary action. "Needs you" filters on the server's derived
+// status; archive marks a row without removing it.
 
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { api } from "../lib/api/client";
-import type { CreateSessionRequest, Session } from "../lib/api/types";
+import type { CreateSessionRequest, ListSessionsResponse, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
-export function sessionRegistry(pid: string): { id: string; title: string }[] {
-  try {
-    return JSON.parse(localStorage.getItem(`awaken.console.sessions.${pid}`) ?? "[]") as {
-      id: string;
-      title: string;
-    }[];
-  } catch {
-    return [];
+export function StatusPill({ session }: { session: Session }) {
+  const app = useApp();
+  if (session.archived_at) {
+    return <span className="pill neutral">{app.t("archived", "已归档")}</span>;
   }
-}
-export function rememberSession(pid: string, id: string, title: string) {
-  const list = sessionRegistry(pid).filter((s) => s.id !== id);
-  list.unshift({ id, title });
-  localStorage.setItem(`awaken.console.sessions.${pid}`, JSON.stringify(list.slice(0, 50)));
+  if (session.status === "running") {
+    return (
+      <span className="pill agent">
+        <span className="dot pulse" style={{ background: "var(--agent)" }} />
+        {app.t("running", "运行中")}
+      </span>
+    );
+  }
+  return <span className="pill ok">idle</span>;
 }
 
 function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void }) {
@@ -36,7 +37,6 @@ function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void })
     mutationFn: (body: CreateSessionRequest) =>
       api.post<Session>(`/projects/${pid}/v1/sessions`, body),
     onSuccess: (session) => {
-      rememberSession(pid, session.id, session.title ?? "");
       nav(`/p/${pid}/sessions/${session.id}`);
     },
   });
@@ -121,57 +121,107 @@ function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void })
 export default function SessionsSurface() {
   const app = useApp();
   const nav = useNavigate();
+  const qc = useQueryClient();
   const { pid = "" } = useParams();
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState("");
-  const known = sessionRegistry(pid);
+  const [needsYou, setNeedsYou] = useState(false);
+
+  const sessions = useQuery({
+    queryKey: ["sessions", pid, needsYou],
+    queryFn: () =>
+      api.get<ListSessionsResponse>(
+        `/projects/${pid}/v1/sessions${needsYou ? "?status=requires_action" : ""}`,
+      ),
+    refetchInterval: 15_000,
+  });
+  const archive = useMutation({
+    mutationFn: (sid: string) => api.post<Session>(`/projects/${pid}/v1/sessions/${sid}/archive`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["sessions", pid] }),
+  });
+  const rows = sessions.data?.data ?? [];
+
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <span className="mut">
-          baseURL <code>/projects/{pid}</code>
+        <span className="row">
           <button
-            className="btn ghost"
-            style={{ height: 22, marginLeft: 6 }}
-            onClick={() => navigator.clipboard.writeText(`${location.origin}/projects/${pid}`)}
+            className={`btn ${needsYou ? "" : "primary"}`}
+            style={{ height: 26 }}
+            onClick={() => setNeedsYou(false)}
           >
-            copy
+            {app.t("All", "全部")}
           </button>
+          <button
+            className={`btn ${needsYou ? "primary" : ""}`}
+            style={{ height: 26 }}
+            onClick={() => setNeedsYou(true)}
+          >
+            ⚠ {app.t("Awaiting action", "待客户端动作")}
+          </button>
+          <span className="mut">
+            baseURL <code>/projects/{pid}</code>
+            <button
+              className="btn ghost"
+              style={{ height: 22, marginLeft: 6 }}
+              onClick={() => navigator.clipboard.writeText(`${location.origin}/projects/${pid}`)}
+            >
+              copy
+            </button>
+          </span>
         </span>
         <button className="btn primary" onClick={() => setCreating(true)}>
           + {app.t("New session", "新建会话")}
         </button>
       </div>
-      <div className="banner gate">
-        <span>◌</span>
-        <span>
-          {app.t(
-            "Session listing needs GET /v1/sessions (roadmap §7.1) — below are sessions known to this browser.",
-            "会话枚举需要 GET /v1/sessions(路线 §7.1)——下方为本浏览器已知的会话。",
-          )}
-        </span>
-      </div>
+      {sessions.error instanceof Error && <div className="err">{sessions.error.message}</div>}
       <div className="card" style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
               <th>Session</th>
               <th>{app.t("Title", "标题")}</th>
+              <th>Agent</th>
+              <th>{app.t("Status", "状态")}</th>
               <th />
             </tr>
           </thead>
           <tbody>
-            {known.map((s) => (
+            {rows.map((s) => (
               <tr key={s.id} data-click="true" onClick={() => nav(`/p/${pid}/sessions/${s.id}`)}>
                 <td className="mono">{s.id}</td>
                 <td>{s.title || <span className="mut">(untitled)</span>}</td>
-                <td style={{ textAlign: "right", color: "var(--fg3)" }}>▸</td>
+                <td>
+                  <span className="pill agent">{s.agent.id}</span>
+                </td>
+                <td>
+                  <StatusPill session={s} />
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  {!s.archived_at && (
+                    <button
+                      className="btn ghost"
+                      style={{ height: 22 }}
+                      disabled={archive.isPending}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        archive.mutate(s.id);
+                      }}
+                    >
+                      {app.t("Archive", "归档")}
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
-            {known.length === 0 && (
+            {rows.length === 0 && (
               <tr>
-                <td colSpan={3} className="mut">
-                  {app.t("No sessions yet.", "还没有会话。")}
+                <td colSpan={5} className="mut">
+                  {sessions.isLoading
+                    ? "…"
+                    : needsYou
+                      ? app.t("Nothing awaiting action.", "没有等待客户端动作的会话。")
+                      : app.t("No sessions yet.", "还没有会话。")}
                 </td>
               </tr>
             )}

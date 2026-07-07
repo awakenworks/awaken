@@ -3,10 +3,8 @@ import AppShell from "./components/app/AppShell";
 import GatedPage from "./components/app/GatedPage";
 import A2aSurface from "./surfaces/a2a";
 import AccessSurface from "./surfaces/access";
-import AgentsSurface from "./surfaces/agents";
 import CredentialsSurface from "./surfaces/credentials";
 import HomeSurface from "./surfaces/home";
-import InboxSurface from "./surfaces/inbox";
 import McpServersSurface from "./surfaces/mcp-servers";
 import ModelsSurface from "./surfaces/models";
 import ProjectAgentsSurface from "./surfaces/project-agents";
@@ -23,16 +21,20 @@ export const router = createBrowserRouter([
     element: <AppShell />,
     children: [
       { index: true, element: <HomeSurface /> },
-      { path: "inbox", element: <InboxSurface /> },
 
+      // Project scope = the Managed Agents run container.
       { path: "p/:pid/overview", element: <ProjectOverviewSurface /> },
       { path: "p/:pid/sessions", element: <SessionsSurface /> },
       { path: "p/:pid/sessions/:sid", element: <SessionDetailSurface /> },
-      { path: "p/:pid/vaults", element: <VaultsSurface /> },
       { path: "p/:pid/agents", element: <ProjectAgentsSurface /> },
+      { path: "p/:pid/environments", element: <GatedPage title="Environments" endpoint="/projects/{pid}/v1/environments" /> },
+      { path: "p/:pid/vaults", element: <VaultsSurface /> },
+      { path: "p/:pid/memory", element: <GatedPage title="Memory stores" endpoint="/projects/{pid}/v1/memory_stores" /> },
+      { path: "p/:pid/deployments", element: <GatedPage title="Deployments" endpoint="/projects/{pid}/v1/deployments" /> },
+      { path: "p/:pid/skills", element: <GatedPage title="Skills" endpoint="/projects/{pid}/v1/skills" /> },
       { path: "p/:pid/settings", element: <ProjectSettingsSurface /> },
 
-      { path: "agents", element: <AgentsSurface /> },
+      // Workspace scope = shared supply + governance.
       { path: "models", element: <ModelsSurface /> },
       { path: "credentials", element: <CredentialsSurface /> },
       { path: "mcp-servers", element: <McpServersSurface /> },
@@ -40,8 +42,6 @@ export const router = createBrowserRouter([
       { path: "access", element: <AccessSurface /> },
       { path: "settings", element: <SettingsSurface /> },
 
-      { path: "skills", element: <GatedPage title="Skills" endpoint="GET /v1/capabilities" /> },
-      { path: "tools", element: <GatedPage title="Tools" endpoint="GET /v1/capabilities" /> },
       { path: "dashboard", element: <GatedPage title="Dashboard" endpoint="/v1/runs/summary · /v1/system/info" /> },
       { path: "audit-log", element: <GatedPage title="Audit log" endpoint="GET /v1/audit-log" /> },
       { path: "datasets", element: <GatedPage title="Datasets" endpoint="/v1/eval/datasets" /> },

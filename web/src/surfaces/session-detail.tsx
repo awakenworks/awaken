@@ -189,6 +189,20 @@ export default function SessionDetailSurface() {
       void session.refetch();
     },
   });
+  const rename = useMutation({
+    mutationFn: (title: string) => api.post<Session>(base, { title }),
+    onSuccess: (s) => {
+      qc.setQueryData(["session", pid, sid], s);
+      void qc.invalidateQueries({ queryKey: ["sessions", pid] });
+    },
+  });
+  const archive = useMutation({
+    mutationFn: () => api.post<Session>(`${base}/archive`),
+    onSuccess: (s) => {
+      qc.setQueryData(["session", pid, sid], s);
+      void qc.invalidateQueries({ queryKey: ["sessions", pid] });
+    },
+  });
 
   // Pair tool_use events with their results; find ids awaiting confirmation.
   const resultsFor = new Map<string, SessionEvent>();
@@ -214,8 +228,27 @@ export default function SessionDetailSurface() {
           <Link to={`/p/${pid}/sessions`}>‹ Sessions</Link>{" "}
           <code style={{ marginLeft: 8 }}>{sid}</code>{" "}
           {session.data?.title && <strong style={{ marginLeft: 6 }}>{session.data.title}</strong>}
+          {session.data?.archived_at && (
+            <span className="pill neutral" style={{ marginLeft: 8 }}>
+              {app.t("archived", "已归档")}
+            </span>
+          )}
         </span>
         <span className="row">
+          <button
+            className="btn ghost"
+            onClick={() => {
+              const next = prompt(app.t("Session title", "会话标题"), session.data?.title ?? "");
+              if (next !== null) rename.mutate(next);
+            }}
+          >
+            ✎ {app.t("rename", "重命名")}
+          </button>
+          {!session.data?.archived_at && (
+            <button className="btn ghost" onClick={() => archive.mutate()}>
+              ⌫ {app.t("archive", "归档")}
+            </button>
+          )}
           <button className="btn ghost" onClick={() => send.mutate([{ type: "user.pause" }])}>
             ⏸ pause
           </button>
