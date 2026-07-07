@@ -89,6 +89,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # feature `sqlite`: embedded durable CatalogRepo backend over the crate's
         # own `catalog` migration scope (ADR-0043 sqlite-repos).
         "rusqlite",
+        # feature `postgres`: network-DB CatalogRepo backend over the same
+        # `catalog` migration scope (ADR-0043); the SQL driver, as config-store.
+        "sqlx",
         # dev-only: reopen-from-file persistence tests.
         "tempfile",
     },
@@ -109,6 +112,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # backends over the crate's own `credential` migration scope (ADR-0043
         # sqlite-repos); the durable secret path stays sealed-only.
         "rusqlite",
+        # feature `postgres`: network-DB CredentialRepo + SealedBlobStore backends
+        # over the same `credential` migration scope (ADR-0043); the SQL driver.
+        "sqlx",
         # dev-only: reopen-from-file persistence tests.
         "tempfile",
     },

@@ -17,6 +17,9 @@ chacha20poly1305 = { version = "0.10", optional = true }
 # Feature `sqlite`: embedded durable CredentialRepo/SealedBlobStore backends over
 # the crate's own `credential` migration scope (ADR-0043).
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+# Feature `postgres`: network-DB CredentialRepo/SealedBlobStore backends over the
+# same `credential` migration scope (ADR-0043).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
 # Feature `oauth-command`: refresh OAuth access tokens by running a helper
 # (e.g. `gcloud auth print-access-token`) — needs tokio's process API.
 tokio = { workspace = true, optional = true, features = ["process"] }
@@ -27,6 +30,9 @@ awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process"] }
 tempfile = "3"
+# The live Postgres conformance test (feature `postgres`) isolates each suite in
+# its own schema via `SET search_path`.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 
 [features]
 default = []
@@ -35,6 +41,9 @@ sealed-aead = ["dep:chacha20poly1305"]
 # SQLite-backed CredentialRepo + SealedBlobStore (`sqlite::*`); the durable secret
 # path stays sealed-only — compose with `sealed-aead` (no plaintext SecretStore).
 sqlite = ["dep:rusqlite", "dep:serde_json", "dep:tokio"]
+# Postgres-backed CredentialRepo + SealedBlobStore (`postgres::*`); same
+# sealed-only durable secret path — compose with `sealed-aead`.
+postgres = ["dep:sqlx"]
 oauth-command = ["dep:tokio"]
 
 [lints]
