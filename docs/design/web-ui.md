@@ -195,6 +195,8 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 
 ## 7. 后端缺口(按优先级)
 
+> **rebase 至 `p2-runtime-persistence` 后的实况(检查结论)**:p2 已独立实现几乎整套 Managed Agents 后端 SDK 面——**Agent 注册表**(create/retrieve/update/list/archive + versions)、**Environments** CRUD + self-hosted 工作队列、**Memory stores**(store/memories/versions)、**Deployments**(CRUD + pause/unpause/run/archive + deployment_runs)、**Skills**(multipart create/versions/download)、**Files**(delete + Models API)、**Vault 全家**(List/Update/Archive/Delete + **ListCredentials**)、**Session** update/list/delete/archive/threads/resources,外加 durable stream-checkpoint 恢复。本分支的后端 session 提交(list/update/archive)被 p2 的更完整版本取代;我们在其上 graft 了 session 的 **project 作用域 + `?status=` 派生过滤 + wire `project_id`**(前端 needs-attention / 按项目聚合所需)。下列缺口据此重标。
+
 **P2 前置(会话面)**:
 1. ~~`GET /v1/sessions`~~ **已落地**:列表(project ingress 作用域 + `?status=` 派生过滤 idle/running/requires_action;wire status 保持 SDK 忠实)、`POST /v1/sessions/{id}`(title/metadata)、`POST /v1/sessions/{id}/archive`(标记不删除);会话聚合持久化 `project_id`/`archived_at`(SQLite 列迁移 best-effort)。
 2. ~~needs-attention 聚合~~ **已并入 1**(`?status=requires_action` 即聚合查询)。遗留:list 不重放 repo-only 行的转录,重启前 park 的会话在被打开前报 idle。
@@ -209,11 +211,11 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 9. MCP status/restart、A2A servers CRUD、agent-preview 端点(对草稿沙箱)、admin assistant 面。
 
 **managed 资源全面 project 化(新架构决定 — 对齐 Anthropic wire)**:
-9b. **Agent/Environment/Memory store/Deployment/Skill 上 Managed Agents wire,且全部 project 化**:仿 session,每种资源加 durable `project_id`,经 `/projects/{pid}/v1/{agents,environments,memory_stores,deployments,skills}` 寻址,统一 `ScopeRef::Project`;agent config 从 admin plane(`/v1/config/agents`)迁到 managed wire,publish→版本化(每次 update 产生不可变 version,session 按 `{id,version}` 钉)。**agent 内联 `mcp_servers:[{type,name,url}]`**(方案 B):MCP 是 agent 自包含配置,凭证由 Project Vault 按 url 提供。落地顺序:agents(read 面先行)→ environments → memory → deployments。
+9b. ~~Agent/Environment/Memory store/Deployment/Skill 上 Managed Agents wire~~ **SDK 面已由 p2 落地**(见上 rebase 实况);剩:①每种资源加 durable `project_id` 并经 `/projects/{pid}/v1/…` 寻址(仿 session graft,现只有 session 做了);②统一挂 `/projects` ingress(见 10);③agent config 从 admin plane 收敛到 managed agent 注册表(目前二者并存——`/v1/config/agents` 的 publish/版本化 vs p2 的 `/v1/agents` 注册表);④agent 内联 `mcp_servers:[{type,name,url}]` 已是 wire 形状(方案 B),前端已用内联模板。前端各资源页(Environments/Memory/Deployments/Skills)可从门控占位切到真实 SDK 面(P4)。
 9c. **凭证双轴收敛(方案 B,兼容优先)**:managed **wire 不变**(`mcp_servers:{type,name,url}` 已与 Anthropic 一致);默认运行凭证走 Vault(按 url,`VaultState` 已就位)。`McpServerDef.credential_binding` **保留、标弃用、默认 `none`——不移除**(向后兼容 + 兜可选目录集中治理);`CredentialSource/Pool` 主服务推理、兼顾该可选 MCP 路径。改动面因此收窄为:resolver 默认优先 Vault + UI/文档弃用标注,不动 wire、不破 config schema。
 
 **project 容器统一权限(已定的架构决定)**:
-10. vault router 挂进 `/projects/{pid}` ingress(今天 ingress 只转发 session router),vault 创建 stamp `ProjectScope` → vault 归属 project;所有新增 managed 资源 router 同样挂 ingress;补 `GET /v1/vaults/:id/credentials` 列表(今天只有 create/get-by-id/delete/archive,控制台只能显示本会话内新建的凭证);
+10. vault router 挂进 `/projects/{pid}` ingress(今天 ingress 只转发 session router),vault 创建 stamp `ProjectScope` → vault 归属 project;所有 p2 新增的 managed 资源 router 同样挂 ingress。~~补 `GET /v1/vaults/:id/credentials` 列表~~ **p2 已落**(ListCredentials + Update/Archive/Delete 全家);前端 Vault 页可从"本会话乐观列表"切到真实 ListCredentials。
 11. managed 运行面纳入 IAM guard:按路径 project 段做 `ScopeRef::Project{workspace_id, project_id}` 校验(词汇已在 awaken-iam-contract),动作词汇为 sessions/vaults 扩展;裸 `/v1/sessions` 保留 stock-SDK 兼容(project-bound key 或默认 project)。
 12. **managed API key 绑定 project 层级(已定)**:runtime key 与平台/管理 key 同一 IAM 机制、同一 wire(`x-api-key` `sk-ant-…`),差别只在绑定 scope 与动作集——管理 key 绑 Workspace/Global + `workspace.*`/`apikey.*`;**runtime key 绑 `ScopeRef::Project` + 仅 run-plane 动作(`run.read`/`run.write`,覆盖 sessions/events/vaults)**。授权规则:经 `/projects/{pid}` 进入时 key 的 scope 必须覆盖该 project(workspace key 经 scope 图祖先关系覆盖其下所有 project);裸 `/v1/sessions` 时 project-bound key 隐含其绑定的 project(寻址从 key 推出,stock-SDK 零改动)。治理仍在 workspace IAM(key 注册表不搬家,project 只是绑定 scope——reference-don't-copy);Console 上 Project ▸ Settings 增设「API keys」段铸造/吊销本项目 runtime key(明文一次),Workspace ▸ Access 继续管管理 key。对齐 Anthropic:其 Console API key 即绑定在 workspace(运行容器)而非组织——我们的 project 正是该运行容器的对应物。
 
