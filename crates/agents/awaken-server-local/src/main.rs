@@ -48,6 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("vision") => awaken_server_local::build_vision_router(),
         Ok("model-route") => awaken_server_local::build_model_route_router(),
         Ok("acp") => awaken_server_local::build_acp_router(),
+        Ok("acp-sandboxed") => awaken_server_local::build_acp_sandboxed_router(),
         Ok("memory") => awaken_server_local::build_memory_router(),
         Ok("memory-resource") => awaken_server_local::build_memory_resource_router(),
         Ok("git-repo") => awaken_server_local::build_git_repo_router(),

@@ -25,6 +25,9 @@ awaken-memory-store = { workspace = true }
 # skill added via /v1/skills survives a restart; awaken-ext-skills stays store-unaware.
 awaken-skill-store = { workspace = true }
 awaken-sandbox-local = { workspace = true }
+# The neutral sandbox vocabulary the sandboxed ACP channel source speaks
+# (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
+awaken-provisioning-contract = { workspace = true }
 awaken-store-sqlite = { workspace = true }
 awaken-store-fs = { workspace = true }
 awaken-config-store = { workspace = true }
@@ -58,3 +61,6 @@ tracing = "0.1"
 [dev-dependencies]
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.
 tempfile = "3"
+# The sandboxed-channel-source integration test observes what the bwrap-confined
+# agent said through the in-memory commit boundary.
+awaken-store-inmem = { workspace = true }

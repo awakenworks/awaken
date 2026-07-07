@@ -164,6 +164,68 @@ pub fn build_acp_router() -> Router {
     ))
 }
 
+/// [`FAKE_ACP_SCRIPT`]'s sandboxed twin (bash, for `/dev/tcp`), with an OS-egress
+/// probe: when `AWAKEN_ACP_PROBE_PORT` names a host-loopback listener (the e2e's),
+/// the reply reports whether the sandbox could reach it (`net=UP` / `net=DOWN`).
+/// Under a deny-egress environment bwrap unshares the network namespace, so even
+/// the host loopback is unreachable. Without the probe env the reply is bare.
+const SANDBOXED_FAKE_ACP_SCRIPT: &str = "read _p; net=''; \
+    if [ -n \"$AWAKEN_ACP_PROBE_PORT\" ]; then \
+      if (exec 3<>\"/dev/tcp/127.0.0.1/$AWAKEN_ACP_PROBE_PORT\") 2>/dev/null; \
+      then net=' net=UP'; else net=' net=DOWN'; fi; \
+    fi; \
+    printf '%s\\n' \"{\\\"type\\\":\\\"message\\\",\\\"text\\\":\\\"acp-runtime reply$net\\\"}\"; \
+    printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+
+/// [`build_acp_router`]'s isolated twin: `acp:*` sessions launch the ACP CLI
+/// inside a bubblewrap (namespace-tier) sandbox via
+/// [`awaken_runtime_host::SandboxChannelSource`], so the agent process is
+/// OS-confined regardless of what it does. Egress follows each session's
+/// environment networking policy through the host's shared
+/// [`awaken_runtime_host::ThreadEgress`] registrations — a deny-egress
+/// session's CLI runs under `--unshare-net`.
+/// `AWAKEN_MODEL_MODE=acp-sandboxed`; the sandbox roots live under
+/// `AWAKEN_SANDBOX_DIR` (a per-process temp dir when unset).
+pub fn build_acp_sandboxed_router() -> Router {
+    // The launch env is the ONLY env projected into the agent command; the probe
+    // port (when the e2e sets one) must cross into the sandbox explicitly.
+    let mut env = Vec::new();
+    if let Ok(port) = std::env::var("AWAKEN_ACP_PROBE_PORT") {
+        env.push(("AWAKEN_ACP_PROBE_PORT".to_string(), port));
+    }
+    let launch = awaken_run_executor_acp::AcpLaunch::custom(
+        vec![
+            "/bin/bash".to_string(),
+            "-c".to_string(),
+            SANDBOXED_FAKE_ACP_SCRIPT.to_string(),
+        ],
+        env,
+    );
+    let base = std::env::var("AWAKEN_SANDBOX_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
+        });
+    let host = SharedHost::new(Arc::new(EchoModel), "awaken");
+    let source = awaken_runtime_host::SandboxChannelSource::new(base, launch)
+        .with_thread_egress(host.thread_egress());
+    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(Arc::new(
+        source,
+    )));
+    let host = Arc::new(host.with_acp(acp));
+    // Mount `/v1/environments` and share its state with the session surface, so a
+    // session's environment networking policy reaches `register_thread_egress` —
+    // the same registrations the sandboxed launch reads (unlike the plain `mount`,
+    // whose managed state carries no environment resolver).
+    let env_state = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
+    let environments = awaken_protocol_managed::environments_router(env_state.clone());
+    let managed_state =
+        Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_environments(env_state));
+    mount_with_managed(host, managed_state).merge(environments)
+}
+
 // ── Router assembly ─────────────────────────────────────────────────────────
 
 /// Mount every public protocol adapter over one shared host. Managed Agents, AI

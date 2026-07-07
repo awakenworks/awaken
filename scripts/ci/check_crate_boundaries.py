@@ -375,6 +375,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-permission",
         # dev-dep: `hello_agent` borrows the config domain's pure `compile()`.
         "awaken-config-store",
+        # dev-deps: `memory_skills_combo` is the bare-Runtime assembly recipe for
+        # the two extensions together — it proves their PUBLIC exports suffice to
+        # wire memory + skills without the host's private wiring.
+        "awaken-ext-memory",
+        "awaken-ext-skills",
         # coding-agent example (feature-gated): built-in tools, a real model, a TUI.
         "awaken-ext-builtin-tools",
         "awaken-provider-genai",
@@ -749,6 +754,13 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-goal",
         "awaken-ext-state-machine",
         "awaken-sandbox-local",
+        # The neutral sandbox vocabulary (SandboxSpec/Command/NetworkPolicy) the
+        # sandboxed ACP channel source speaks when realizing the namespace tier —
+        # already in the closure via awaken-sandbox-local; named directly here.
+        "awaken-provisioning-contract",
+        # dev-dep: the sandboxed-channel-source integration test observes what the
+        # bwrap-confined agent said through the in-memory commit boundary.
+        "awaken-store-inmem",
         "awaken-memory-store",
         "awaken-skill-store",
         "awaken-store-sqlite",
