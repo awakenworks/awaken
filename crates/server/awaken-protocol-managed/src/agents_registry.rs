@@ -68,11 +68,33 @@ impl Record {
     }
 }
 
+/// The config-plane projection of an agent: the runtime-authoritative fields the
+/// managed wire shows. A neutral view so `/v1/agents` presents an agent authored on
+/// the config plane (`/v1/config/agents`) as a *projection* of that single truth
+/// rather than a second copy — the "retreat to projection" direction (ADR-0043).
+pub struct AgentConfigView {
+    pub model: Option<String>,
+    pub system: Option<String>,
+    pub tool_ids: Vec<String>,
+}
+
+/// A source of config-plane agent projections. A **port**: the host implements it
+/// over its `ConfigService` (the managed crate cannot depend on the host), so the
+/// managed adapter reads the neutral config truth without naming it.
+pub trait AgentConfigSource: Send + Sync {
+    /// The config-plane view of `agent_id`, if it is published there.
+    fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView>;
+}
+
 /// The agent-registry state.
 #[derive(Default)]
 pub struct AgentRegistryState {
     inner: Mutex<BTreeMap<String, Record>>,
     seq: AtomicU64,
+    /// When wired, `/v1/agents` reads projections from the config plane: an agent
+    /// published there is retrievable here even if it was never created via this
+    /// registry, and the config is authoritative for model/system/tools.
+    config_source: Option<Arc<dyn AgentConfigSource>>,
 }
 
 impl AgentRegistryState {
@@ -80,6 +102,42 @@ impl AgentRegistryState {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Wire the config-plane projection source (see [`AgentConfigSource`]).
+    #[must_use]
+    pub fn with_config_source(mut self, source: Arc<dyn AgentConfigSource>) -> Self {
+        self.config_source = Some(source);
+        self
+    }
+}
+
+/// Present tool ids in the managed wire's tool shape.
+fn tools_wire(ids: &[String]) -> Vec<Value> {
+    ids.iter()
+        .map(|id| json!({ "type": "custom", "name": id }))
+        .collect()
+}
+
+/// Project a config-plane view to the `BetaManagedAgent` wire shape. The agent has
+/// no registry record, so presentation fields default (name = id, version = 1).
+fn project_config_view(id: &str, view: &AgentConfigView) -> Value {
+    json!({
+        "id": id,
+        "type": "agent",
+        "archived_at": null,
+        "created_at": OBJECT_AT,
+        "updated_at": OBJECT_AT,
+        "name": id,
+        "description": null,
+        "model": { "id": view.model.clone().unwrap_or_default() },
+        "system": view.system,
+        "metadata": {},
+        "mcp_servers": [],
+        "skills": [],
+        "tools": tools_wire(&view.tool_ids),
+        "multiagent": null,
+        "version": 1,
+    })
 }
 
 /// Mount the agent-registry routes.
@@ -177,9 +235,19 @@ async fn retrieve_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, WireError> {
-    let store = state.inner.lock().unwrap();
-    let record = store.get(&id).ok_or_else(not_found)?;
-    Ok(Json(record.project(&id)))
+    // A registry record (an agent created via this API) wins.
+    {
+        let store = state.inner.lock().unwrap();
+        if let Some(record) = store.get(&id) {
+            return Ok(Json(record.project(&id)));
+        }
+    }
+    // Otherwise an agent published on the config plane is retrievable here as a pure
+    // projection of that single truth (never created via this registry).
+    if let Some(view) = state.config_source.as_ref().and_then(|s| s.agent_view(&id)) {
+        return Ok(Json(project_config_view(&id, &view)));
+    }
+    Err(not_found())
 }
 
 /// `GET /v1/agents` — one full page, ascending id order.
@@ -273,4 +341,56 @@ async fn list_versions(
     let store = state.inner.lock().unwrap();
     let record = store.get(&id).ok_or_else(not_found)?;
     Ok(Json(Page::single(record.history.clone())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    /// A config plane that has published exactly one agent, `assistant`.
+    struct OneAgent;
+    impl AgentConfigSource for OneAgent {
+        fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView> {
+            (agent_id == "assistant").then(|| AgentConfigView {
+                model: Some("kimi-k2".to_string()),
+                system: Some("be helpful".to_string()),
+                tool_ids: vec!["fs_read".to_string()],
+            })
+        }
+    }
+
+    async fn get(app: &Router, uri: &str) -> (StatusCode, Value) {
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn config_plane_agent_is_retrievable_as_a_projection() {
+        let state = Arc::new(AgentRegistryState::new().with_config_source(Arc::new(OneAgent)));
+        let app = agents_router(state);
+
+        // `assistant` was never created via /v1/agents — it is projected from the
+        // config plane (the "retreat to projection" direction).
+        let (status, body) = get(&app, "/v1/agents/assistant").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["id"], "assistant");
+        assert_eq!(body["model"]["id"], "kimi-k2");
+        assert_eq!(body["system"], "be helpful");
+        assert_eq!(body["tools"][0]["name"], "fs_read");
+
+        // An id in neither the registry nor the config plane is still 404.
+        let (status, _) = get(&app, "/v1/agents/ghost").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
 }
