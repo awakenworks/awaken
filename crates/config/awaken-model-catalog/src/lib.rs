@@ -12,11 +12,15 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "postgres")]
+pub mod postgres;
 pub mod repo;
 pub mod schema;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
+#[cfg(feature = "postgres")]
+pub use postgres::PostgresCatalogRepo;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteCatalogRepo;
 

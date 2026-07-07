@@ -89,6 +89,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # feature `sqlite`: embedded durable CatalogRepo backend over the crate's
         # own `catalog` migration scope (ADR-0043 sqlite-repos).
         "rusqlite",
+        # feature `postgres`: network-DB CatalogRepo backend over the same
+        # `catalog` migration scope (ADR-0043); the SQL driver, as config-store.
+        "sqlx",
         # dev-only: reopen-from-file persistence tests.
         "tempfile",
     },

@@ -92,8 +92,10 @@ fn row_exists(conn: &Connection, table: &str, id: &str) -> Result<bool, RepoErro
     .map_err(storage)
 }
 
-/// Reload the full catalog projection from the tables (offerings in insertion
-/// order, so `resolve_offering`'s first-match semantics survive a reopen).
+/// Reload the full catalog projection from the tables. Offerings come back in a
+/// deterministic order keyed on `(model_id, protocol_endpoint_id)` — the same
+/// order the Postgres backend uses, so `resolve_offering`'s first-match is
+/// reproducible and identical on both backends (portable, not rowid-dependent).
 fn load_catalog(conn: &Connection, p: &str) -> Result<ProviderCatalog, RepoError> {
     let mut cat = ProviderCatalog::default();
     for data in select_data(conn, &format!("SELECT data FROM {p}_provider"))? {
@@ -106,7 +108,7 @@ fn load_catalog(conn: &Connection, p: &str) -> Result<ProviderCatalog, RepoError
     }
     for data in select_data(
         conn,
-        &format!("SELECT data FROM {p}_offering ORDER BY rowid"),
+        &format!("SELECT data FROM {p}_offering ORDER BY model_id, protocol_endpoint_id"),
     )? {
         cat.offerings
             .push(serde_json::from_str(&data).map_err(storage)?);

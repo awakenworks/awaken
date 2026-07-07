@@ -175,6 +175,72 @@ async fn in_memory_repo_conforms() {
     run_all(|| Box::new(InMemoryCatalogRepo::new())).await;
 }
 
+/// Live Postgres conformance: the same suites as the other backends, each on a
+/// fresh schema (so the six independent suites never see each other's rows).
+/// Skips when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`).
+#[cfg(feature = "postgres")]
+mod postgres {
+    use super::*;
+    use awaken_model_catalog::postgres::PostgresCatalogRepo;
+    use sqlx::Executor;
+    use sqlx::postgres::{PgPool, PgPoolOptions};
+
+    fn database_url() -> String {
+        std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+        })
+    }
+
+    async fn schema_pool(schema: &'static str) -> Option<PgPool> {
+        let admin = match PgPool::connect(&database_url()).await {
+            Ok(pool) => pool,
+            Err(err) => {
+                println!("[skip] no Postgres reachable: {err}");
+                return None;
+            }
+        };
+        let _ = admin
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .await;
+        admin
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .await
+            .expect("create schema");
+        admin.close().await;
+        PgPoolOptions::new()
+            .after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    conn.execute(format!("SET search_path = {schema}").as_str())
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url())
+            .await
+            .ok()
+    }
+
+    async fn repo(schema: &'static str) -> Option<PostgresCatalogRepo> {
+        let pool = schema_pool(schema).await?;
+        Some(PostgresCatalogRepo::with_pool(pool).await.expect("store"))
+    }
+
+    #[tokio::test]
+    async fn postgres_repo_conforms() {
+        // Each suite gets its own schema — the runner's per-schema ledger keeps the
+        // migrations isolated, and an empty schema is a fresh repo.
+        let Some(r) = repo("t_cat_crud").await else {
+            return;
+        };
+        crud_round_trip_and_snapshot(&r).await;
+        missing_rows_are_not_found(&repo("t_cat_missing").await.unwrap()).await;
+        endpoint_needs_existing_provider(&repo("t_cat_ep").await.unwrap()).await;
+        offering_needs_existing_endpoint(&repo("t_cat_off").await.unwrap()).await;
+        rejected_offering_leaves_no_trace(&repo("t_cat_reject").await.unwrap()).await;
+        put_is_upsert(&repo("t_cat_upsert").await.unwrap()).await;
+    }
+}
+
 #[cfg(feature = "sqlite")]
 mod sqlite {
     use super::*;
