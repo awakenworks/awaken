@@ -56,13 +56,6 @@ impl ResolvedSpec {
             "awaken"
         }
     }
-
-    /// The typed execution [`Backend`] this run binds to (R3/R4). The exhaustive
-    /// sum the dispatch matches on — see [`ModelBinding::backend`].
-    #[must_use]
-    pub fn backend(&self) -> Backend {
-        self.model_binding.backend()
-    }
 }
 
 /// The execution backend a resolved agent binds to (R3/R4): the in-process awaken
@@ -107,37 +100,6 @@ impl Backend {
     #[must_use]
     pub fn is_acp(&self) -> bool {
         matches!(self, Backend::Acp { .. })
-    }
-}
-
-impl ModelBinding {
-    /// The typed execution [`Backend`] this binding selects (R3/R4). `Native` for
-    /// any non-`acp:` `backend_ref`; `Acp { profile }` for `acp` / `acp:<profile>`.
-    #[must_use]
-    pub fn backend(&self) -> Backend {
-        Backend::from_ref(&self.backend_ref)
-    }
-
-    /// A binding that routes to a launched ACP CLI (`profile`), preserving the
-    /// provider/model coordinates. The typed constructor a protocol adapter uses
-    /// when a session selects `agent.runtime = "acp:<profile>"`, so the `acp:`
-    /// encoding is produced in one place instead of hand-formatted at call sites.
-    #[must_use]
-    pub fn acp(
-        provider_instance_ref: impl Into<String>,
-        model_ref: impl Into<String>,
-        profile: &str,
-    ) -> Self {
-        let backend_ref = if profile.is_empty() {
-            "acp".to_string()
-        } else {
-            format!("acp:{profile}")
-        };
-        Self {
-            provider_instance_ref: provider_instance_ref.into(),
-            model_ref: model_ref.into(),
-            backend_ref,
-        }
     }
 }
 
@@ -270,20 +232,13 @@ mod tests {
         );
         assert!(Backend::from_ref("acp:codex").is_acp());
 
-        // The ModelBinding view agrees, and the typed constructor round-trips.
+        // The binding's stored `backend_ref` parses to the same typed backend.
         assert_eq!(
-            ModelBinding::new("p", "m", "acp:codex").backend(),
+            Backend::from_ref(&ModelBinding::new("p", "m", "acp:codex").backend_ref),
             Backend::Acp {
                 profile: "codex".to_string()
             }
         );
-        assert_eq!(
-            ModelBinding::acp("p", "m", "claude").backend(),
-            Backend::Acp {
-                profile: "claude".to_string()
-            }
-        );
-        assert_eq!(ModelBinding::acp("p", "m", "").backend_ref, "acp");
     }
 
     #[test]
