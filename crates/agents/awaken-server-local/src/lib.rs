@@ -41,8 +41,8 @@ pub use awaken_runtime_host::{
     ConfigService, ExecutorProvider, ExtMcpProbe, HostResume, HttpTransport, ManagedHost,
     PreparedMcpRefresh, ProtocolHost, Response, SharedHost, SkillContext, SkillSpec, ThreadEvent,
     ThreadEventHub, Transport, VaultRefresher, advertised_tools, config_router,
-    content_fingerprint, durable_ops_router, files_router, memory_stores_router, parse_skill_md,
-    skills_router,
+    content_fingerprint, default_models, durable_ops_router, files_router, memory_stores_router,
+    models_router, parse_skill_md, skills_router,
 };
 
 /// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a
@@ -196,6 +196,8 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
     let memory_stores = memory_stores_router(host.clone());
     // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.
     let skills = skills_router(host.clone());
+    // The Models API (`/v1/models`) over the deployment's model directory.
+    let models = models_router(std::sync::Arc::new(default_models()));
     managed
         .merge(ai_sdk)
         .merge(ag_ui)
@@ -204,6 +206,7 @@ fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -
         .merge(files)
         .merge(memory_stores)
         .merge(skills)
+        .merge(models)
 }
 
 /// The composition seam refuses to build an executor from an incomplete or

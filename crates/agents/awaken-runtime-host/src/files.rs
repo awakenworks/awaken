@@ -19,7 +19,7 @@ use crate::host::SharedHost;
 pub fn files_router(host: Arc<SharedHost>) -> Router {
     Router::new()
         .route("/v1/files", post(upload_file).get(list_files))
-        .route("/v1/files/:id", get(get_file))
+        .route("/v1/files/:id", get(get_file).delete(delete_file))
         .route("/v1/files/:id/content", get(download_file))
         .with_state(host)
 }
@@ -122,6 +122,34 @@ async fn get_file(
         )
             .into_response(),
         Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("file `{id}` not found") })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// `DELETE /v1/files/{id}` — drop the blob (what `client.beta.files.delete`
+/// calls). Returns the `DeletedFile` receipt (`{id, type:"file_deleted"}`) when
+/// the blob existed, `404` when the id is unknown. The store is content-addressed,
+/// so this removes the bytes for that id; a later re-upload of equal bytes mints
+/// the same id afresh.
+async fn delete_file(
+    State(host): State<Arc<SharedHost>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match host.file_store().delete(&id).await {
+        Ok(true) => (
+            StatusCode::OK,
+            Json(json!({ "id": id, "type": "file_deleted" })),
+        )
+            .into_response(),
+        Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": format!("file `{id}` not found") })),
         )

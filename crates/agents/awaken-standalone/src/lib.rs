@@ -26,8 +26,8 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
 use awaken_runtime_host::{
-    ManagedHost, ProtocolHost, SharedHost, SqliteManagedSessionRepository, durable_ops_router,
-    files_router, memory_stores_router, skills_router,
+    ManagedHost, ProtocolHost, SharedHost, SqliteManagedSessionRepository, default_models,
+    durable_ops_router, files_router, memory_stores_router, models_router, skills_router,
 };
 use axum::Router;
 use axum::extract::{Path, Request, State};
@@ -129,6 +129,7 @@ fn session_surface(managed_state: &Arc<ManagedState>, host: &Arc<SharedHost>) ->
         .merge(memory_stores_router(host.clone()))
         .merge(skills_router(host.clone()))
         .merge(durable_ops_router(host.clone()))
+        .merge(models_router(Arc::new(default_models())))
 }
 
 /// The durable storage root, when configured. `SharedHost::new` reads the same

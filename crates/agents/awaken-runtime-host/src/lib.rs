@@ -29,6 +29,7 @@ mod mcp;
 mod memory;
 mod memory_store_api;
 mod model_route;
+mod models;
 mod provisioning;
 mod session_store;
 mod skills;
@@ -67,6 +68,7 @@ pub use crate::config_plane::{ConfigService, config_router};
 pub use crate::durable_ops::durable_ops_router;
 pub use crate::files::files_router;
 pub use crate::memory_store_api::memory_stores_router;
+pub use crate::models::{ModelEntry, default_models, models_router};
 pub use crate::session_store::SqliteManagedSessionRepository;
 pub use crate::skills_api::skills_router;
 // The model-route seam (R1/R2/R5): a composition root supplies its own
