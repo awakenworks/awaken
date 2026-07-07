@@ -54,11 +54,39 @@ impl SharedHost {
 
     /// Stage a thread's resources (mounts + prompt fragments); consumed by
     /// `sandbox_spec` and injected into the run's system prompt. From `prepare_session`.
+    /// REPLACES the thread's set (correct at create time, before any first turn).
     pub(crate) fn register_thread_resources(&self, thread: &str, staged: StagedResources) {
         self.thread_resources
             .lock()
             .unwrap()
             .insert(thread.to_string(), staged);
+    }
+
+    /// Append one resource's staging to `thread`'s existing set (the live
+    /// `resources.add` path). Unlike the create-time replace, this preserves the
+    /// resources already staged, so the next rebuilt sandbox carries all of them.
+    pub(crate) fn merge_thread_resources(&self, thread: &str, staged: StagedResources) {
+        let mut all = self.thread_resources.lock().unwrap();
+        let entry = all.entry(thread.to_string()).or_default();
+        entry.mounts.extend(staged.mounts);
+        entry.prompts.extend(staged.prompts);
+        entry.memory_mounts.extend(staged.memory_mounts);
+        entry.repos.extend(staged.repos);
+    }
+
+    /// Drop one resource from `thread`'s staged set by its realized `logical` path
+    /// and its exact prompt fragment (the live `resources.delete` path). The rest
+    /// stay staged, so the next rebuilt sandbox carries everything but this one.
+    pub(crate) fn remove_thread_resource(&self, thread: &str, logical: &str, prompt: &str) {
+        let mut all = self.thread_resources.lock().unwrap();
+        if let Some(entry) = all.get_mut(thread) {
+            entry.mounts.retain(|m| match m {
+                Mount::Resource(rm) => rm.logical_path != logical,
+            });
+            entry.repos.retain(|r| r.logical != logical);
+            entry.memory_mounts.retain(|(_, l)| l != logical);
+            entry.prompts.retain(|p| p != prompt);
+        }
     }
 
     /// The prompt fragments staged for `thread`'s bound resources (ADR-0038 A3a).
