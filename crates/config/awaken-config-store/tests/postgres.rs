@@ -57,6 +57,7 @@ fn agent_config() -> AgentConfig {
         plugin_ids: Vec::new(),
         plugin_config: Default::default(),
         context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        tool_patterns: Vec::new(),
     }
 }
 

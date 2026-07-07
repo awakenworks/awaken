@@ -187,6 +187,7 @@ mod resource_prompt_tests {
             plugin_ids: vec![],
             plugin_config: Default::default(),
             context_policy: ContextPolicy::KeepAll,
+            tool_patterns: Vec::new(),
         }
     }
 

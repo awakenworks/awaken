@@ -46,6 +46,8 @@ pub fn compile_with_resource_prompts(
     resource_prompts: &[String],
 ) -> Result<RunnableConfig, CompileError> {
     let mut descriptors = Vec::with_capacity(config.tool_ids.len());
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Exact tool ids: each must resolve (unknown references are rejected, fail-closed).
     for id in &config.tool_ids {
         let descriptor =
             tools
@@ -56,6 +58,23 @@ pub fn compile_with_resource_prompts(
                     tool: id.clone(),
                 })?;
         descriptors.push(descriptor.clone());
+        seen.insert(id.clone());
+    }
+    // Glob patterns: permissively add catalog tools whose id matches, in catalog
+    // order, skipping any already selected. A pattern that matches nothing is not
+    // an error — it is a filter over the catalog, not a reference to a tool.
+    for descriptor in tools {
+        if seen.contains(&descriptor.id) {
+            continue;
+        }
+        if config
+            .tool_patterns
+            .iter()
+            .any(|pattern| glob_match(pattern, &descriptor.id))
+        {
+            descriptors.push(descriptor.clone());
+            seen.insert(descriptor.id.clone());
+        }
     }
 
     Ok(RunnableConfig::builder(&config.id)
@@ -68,6 +87,21 @@ pub fn compile_with_resource_prompts(
         .context_policy(config.context_policy.clone())
         .fingerprint(fingerprint_of(config, resource_prompts)?)
         .build())
+}
+
+/// Match a tool id against a glob `pattern` whose only metacharacter is `*` (each
+/// `*` matches any run of characters, including empty). Anchored at both ends, so
+/// `fs_*` matches `fs_read` but not `net_fs`. Byte-wise ASCII matching — tool ids
+/// are ASCII identifiers.
+fn glob_match(pattern: &str, id: &str) -> bool {
+    fn go(p: &[u8], s: &[u8]) -> bool {
+        match p.first() {
+            None => s.is_empty(),
+            Some(b'*') => go(&p[1..], s) || (!s.is_empty() && go(p, &s[1..])),
+            Some(&c) => !s.is_empty() && s[0] == c && go(&p[1..], &s[1..]),
+        }
+    }
+    go(pattern.as_bytes(), id.as_bytes())
 }
 
 /// The agent's **effective** system prompt: its base `instructions` followed by one
@@ -120,6 +154,7 @@ mod tests {
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
             context_policy: awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+            tool_patterns: Vec::new(),
         }
     }
 
@@ -170,6 +205,39 @@ mod tests {
             .0
             .clone();
         assert_ne!(compiled.snapshot().fingerprint.0, default_fp);
+    }
+
+    #[test]
+    fn tool_patterns_select_matching_catalog_tools_and_enter_the_fingerprint() {
+        let catalog = vec![tool("fs_read"), tool("fs_write"), tool("net_get")];
+
+        let mut cfg = config(&["net_get"]); // one exact id
+        cfg.tool_patterns = vec!["fs_*".to_string()]; // plus a glob
+        let spec = compile(&cfg, &catalog).unwrap();
+        let ids: Vec<String> = spec
+            .snapshot()
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .map(|d| d.id.clone())
+            .collect();
+        // Exact id kept, both fs_* tools selected, net_get not double-added.
+        assert_eq!(ids, vec!["net_get", "fs_read", "fs_write"]);
+
+        // A pattern matching nothing is not an error (unlike an unknown tool_id).
+        let mut nomatch = config(&[]);
+        nomatch.tool_patterns = vec!["zzz_*".to_string()];
+        assert!(compile(&nomatch, &catalog).is_ok());
+
+        // Empty patterns keep the fingerprint byte-identical to before the field.
+        let plain_fp = compile(&config(&["net_get"]), &catalog)
+            .unwrap()
+            .snapshot()
+            .fingerprint
+            .0
+            .clone();
+        // A non-empty pattern set enters the content address.
+        assert_ne!(spec.snapshot().fingerprint.0, plain_fp);
     }
 
     #[test]
