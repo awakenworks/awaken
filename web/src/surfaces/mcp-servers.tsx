@@ -1,8 +1,10 @@
 // Workspace · MCP catalog: an OPTIONAL reusable-definition layer. The default
 // (design/web-ui.md §1, option B) is inline MCP on the agent — {type,name,url}
-// with no auth; the runtime credential comes from the project Vault by url
-// match. `credential_binding` here is legacy and slated for removal (§7.9c);
-// keep it only for the optional central-governance path.
+// with no auth (byte-identical to the Anthropic Managed Agents wire; our
+// McpServerWire already matches). The runtime credential comes from the project
+// Vault by url match. `credential_binding` lives ONLY on this config object
+// (never on the wire), so it stays — deprecated + optional — as the central
+// governance path; it does not affect SDK compatibility (§7.9c).
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
