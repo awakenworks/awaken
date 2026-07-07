@@ -13,7 +13,7 @@ body {
   background: var(--canvas);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
 }
 code,
@@ -79,7 +79,7 @@ a {
 }
 .topbar {
   flex: none;
-  height: 46px;
+  height: 42px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -142,7 +142,7 @@ a {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 32px;
+  height: 30px;
   padding: 0 10px;
   border: 0;
   border-radius: var(--r-md);
@@ -188,7 +188,7 @@ a {
   background: var(--surface);
   border-radius: var(--r-card);
   box-shadow: var(--shadow-card);
-  padding: 18px 20px;
+  padding: 14px 16px;
 }
 .card h2 {
   margin: 0 0 12px;
@@ -216,7 +216,7 @@ a {
   background: var(--ok-tint);
 }
 .pill.warn {
-  color: var(--accent-ink);
+  color: var(--warn-ink);
   background: var(--warn-tint);
 }
 .pill.danger {
@@ -245,8 +245,8 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 12px;
+  height: 28px;
+  padding: 0 11px;
   border: 0;
   border-radius: var(--r-md);
   font-family: inherit;
@@ -283,7 +283,7 @@ a {
 .input,
 select.input,
 textarea.input {
-  height: 32px;
+  height: 30px;
   padding: 0 10px;
   border: 0;
   border-radius: var(--r-md);
@@ -328,7 +328,7 @@ textarea.input {
 }
 .table th {
   text-align: left;
-  padding: 7px 10px;
+  padding: 5px 10px;
   border-bottom: 1px solid var(--line);
   color: var(--fg3);
   font-weight: 600;
@@ -337,7 +337,7 @@ textarea.input {
   text-transform: uppercase;
 }
 .table td {
-  padding: 9px 10px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--soft);
   font-size: 13px;
 }
@@ -459,4 +459,158 @@ textarea.input {
 .mut {
   color: var(--fg3);
   font-size: 12px;
+}
+
+/* ---- drawer (IA: pick inline, "Manage ↗" opens without losing your place) ---- */
+.drawer {
+  width: min(640px, 94vw);
+  height: 100%;
+  background: var(--canvas);
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-pop);
+  display: flex;
+  flex-direction: column;
+  animation: drawerIn 180ms ease;
+}
+@keyframes drawerIn {
+  from {
+    transform: translateX(24px);
+    opacity: 0.4;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.drawer-head {
+  flex: none;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+}
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.manage-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--accent-ink);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* ---- toast ---- */
+.toast-stack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 420px;
+  padding: 9px 13px;
+  border-radius: var(--r-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  font-size: 12.5px;
+  cursor: pointer;
+  animation: toastIn 160ms ease;
+}
+@keyframes toastIn {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.toast-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.toast.ok .toast-dot {
+  background: var(--ok);
+}
+.toast.err .toast-dot {
+  background: var(--danger);
+}
+.toast.info .toast-dot {
+  background: var(--accent);
+}
+.toast.err {
+  box-shadow: inset 0 0 0 1px var(--danger-tint), var(--shadow-pop);
+}
+
+/* ---- empty state ---- */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 36px 16px;
+  text-align: center;
+}
+.empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg2);
+}
+
+/* ---- skeleton ---- */
+.skeleton {
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--soft) 25%, var(--muted) 37%, var(--soft) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* ---- json inspector ---- */
+.json-inspector {
+  border-radius: var(--r-md);
+  background: var(--soft);
+  padding: 6px 8px;
+}
+.json-body {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 340px;
+  overflow: auto;
+  background: var(--surface);
+  border-radius: var(--r-md);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre;
 }

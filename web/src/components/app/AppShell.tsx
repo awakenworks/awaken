@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import { getToken, setToken } from "../../lib/api/client";
+import { ConfirmProvider } from "../ui/Confirm";
+import { ToastProvider } from "../ui/Toast";
 import { useApp } from "../../lib/app-state";
 import { NAV, navPath, titleForPath } from "../../lib/navigation/paths";
 import type { NavGroup } from "../../lib/navigation/paths";
@@ -289,28 +291,32 @@ export default function AppShell() {
   const location = useLocation();
   const crumbs = titleForPath(location.pathname);
   return (
-    <div className="shell">
-      <div className="dawn" />
-      <Sidebar />
-      <main className="main">
-        <header className="topbar">
-          <span>Awaken</span>
-          {crumbs.scope && <span style={{ color: "var(--line-strong)" }}>/</span>}
-          <span>{crumbs.scope}</span>
-          {crumbs.title && <span style={{ color: "var(--line-strong)" }}>/</span>}
-          <span className="crumb-title">{crumbs.title}</span>
-          <span style={{ flex: 1 }} />
-          <kbd className="mono mut" style={{ fontSize: 10.5 }}>
-            ⌘K
-          </kbd>
-        </header>
-        <div className="content">
-          <div className="content-inner">
-            <Outlet />
-          </div>
+    <ToastProvider>
+      <ConfirmProvider>
+        <div className="shell">
+          <div className="dawn" />
+          <Sidebar />
+          <main className="main">
+            <header className="topbar">
+              <span>Awaken</span>
+              {crumbs.scope && <span style={{ color: "var(--line-strong)" }}>/</span>}
+              <span>{crumbs.scope}</span>
+              {crumbs.title && <span style={{ color: "var(--line-strong)" }}>/</span>}
+              <span className="crumb-title">{crumbs.title}</span>
+              <span style={{ flex: 1 }} />
+              <kbd className="mono mut" style={{ fontSize: 10.5 }}>
+                ⌘K
+              </kbd>
+            </header>
+            <div className="content">
+              <div className="content-inner">
+                <Outlet />
+              </div>
+            </div>
+          </main>
+          <CommandPalette />
         </div>
-      </main>
-      <CommandPalette />
-    </div>
+      </ConfirmProvider>
+    </ToastProvider>
   );
 }

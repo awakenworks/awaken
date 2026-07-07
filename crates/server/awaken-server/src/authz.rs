@@ -771,6 +771,15 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             WORKSPACE_WRITE
         }),
         ["v1", "config", "agents", _, "mcp", "resolve"] if !read => scoped(WORKSPACE_READ),
+        // -- the config authoring plane: rich AgentConfig drafts + lifecycle. The
+        //    console authors here directly (distinct from the /v1/agents registry). --
+        ["v1", "config", "agents"] if read => scoped(WORKSPACE_READ),
+        ["v1", "config", "agents", _, "validate" | "publish"] if !read => scoped(WORKSPACE_WRITE),
+        ["v1", "config", "agents", _] => scoped(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
         // -- projects (consumption-side addressing + per-project agent bindings) --
         ["v1", "config", "projects"] if read => scoped(WORKSPACE_READ),
         ["v1", "config", "projects", _] => scoped(if read {

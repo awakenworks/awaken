@@ -6,9 +6,19 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import Drawer from "../components/ui/Drawer";
 import { api } from "../lib/api/client";
-import type { CreateSessionRequest, ListSessionsResponse, Session } from "../lib/api/types";
+import type {
+  AgentConfigList,
+  CreateSessionRequest,
+  Environment,
+  ListSessionsResponse,
+  Page,
+  Session,
+} from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import EnvironmentsSurface from "./environments";
+import ProjectAgentsSurface from "./project-agents";
 
 export function StatusPill({ session }: { session: Session }) {
   const app = useApp();
@@ -29,10 +39,21 @@ export function StatusPill({ session }: { session: Session }) {
 function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void }) {
   const app = useApp();
   const nav = useNavigate();
-  const [agent, setAgent] = useState("default");
+  const [agent, setAgent] = useState("");
+  const [environmentId, setEnvironmentId] = useState("");
   const [title, setTitle] = useState("");
   const [vaultIds, setVaultIds] = useState("");
   const [mcp, setMcp] = useState<{ name: string; url: string }[]>([]);
+  const [manage, setManage] = useState<"agents" | "environments" | null>(null);
+  // Inline pickers over the config plane (published agents) + environments.
+  const agents = useQuery({
+    queryKey: ["config-agents"],
+    queryFn: () => api.get<AgentConfigList>("/v1/config/agents"),
+  });
+  const envs = useQuery({
+    queryKey: ["environments"],
+    queryFn: () => api.get<Page<Environment>>("/v1/environments"),
+  });
   const create = useMutation({
     mutationFn: (body: CreateSessionRequest) =>
       api.post<Session>(`/projects/${pid}/v1/sessions`, body),
@@ -47,8 +68,41 @@ function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void })
           {app.t("New session", "新建会话")} · {pid}
         </h3>
         <div className="field">
-          <label>Agent</label>
-          <input className="input mono" value={agent} onChange={(e) => setAgent(e.target.value)} />
+          <label className="row" style={{ justifyContent: "space-between" }}>
+            <span>Agent</span>
+            <button className="manage-link" onClick={() => setManage("agents")}>
+              {app.t("Manage ↗", "管理 ↗")}
+            </button>
+          </label>
+          <select className="input mono" value={agent} onChange={(e) => setAgent(e.target.value)}>
+            <option value="">{app.t("— select an agent —", "— 选择 agent —")}</option>
+            {(agents.data?.data ?? []).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.id}
+                {a.published ? "" : app.t(" (draft)", "(草稿)")}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label className="row" style={{ justifyContent: "space-between" }}>
+            <span>{app.t("Environment", "运行环境")}</span>
+            <button className="manage-link" onClick={() => setManage("environments")}>
+              {app.t("Manage ↗", "管理 ↗")}
+            </button>
+          </label>
+          <select
+            className="input mono"
+            value={environmentId}
+            onChange={(e) => setEnvironmentId(e.target.value)}
+          >
+            <option value="">{app.t("— default —", "— 默认 —")}</option>
+            {(envs.data?.data ?? []).map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name} · {e.id}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="field">
           <label>{app.t("Title", "标题")}</label>
@@ -97,10 +151,11 @@ function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void })
           </button>
           <button
             className="btn primary"
-            disabled={create.isPending}
+            disabled={create.isPending || !agent}
             onClick={() =>
               create.mutate({
                 agent,
+                environment_id: environmentId || undefined,
                 title: title || undefined,
                 vault_ids: vaultIds
                   .split(",")
@@ -114,6 +169,16 @@ function NewSessionModal({ pid, onClose }: { pid: string; onClose: () => void })
           </button>
         </div>
       </div>
+      {manage === "agents" && (
+        <Drawer title={app.t("Agents", "Agents")} onClose={() => setManage(null)}>
+          <ProjectAgentsSurface />
+        </Drawer>
+      )}
+      {manage === "environments" && (
+        <Drawer title={app.t("Environments", "运行环境")} onClose={() => setManage(null)}>
+          <EnvironmentsSurface />
+        </Drawer>
+      )}
     </div>
   );
 }
@@ -125,40 +190,43 @@ export default function SessionsSurface() {
   const { pid = "" } = useParams();
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState("");
-  const [needsYou, setNeedsYou] = useState(false);
+  // Anthropic's ListSessions is not server-filtered; scope by status client-side.
+  const [filter, setFilter] = useState<"all" | "running" | "archived">("all");
 
   const sessions = useQuery({
-    queryKey: ["sessions", pid, needsYou],
-    queryFn: () =>
-      api.get<ListSessionsResponse>(
-        `/projects/${pid}/v1/sessions${needsYou ? "?status=requires_action" : ""}`,
-      ),
+    queryKey: ["sessions", pid],
+    queryFn: () => api.get<ListSessionsResponse>(`/projects/${pid}/v1/sessions`),
     refetchInterval: 15_000,
   });
   const archive = useMutation({
     mutationFn: (sid: string) => api.post<Session>(`/projects/${pid}/v1/sessions/${sid}/archive`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["sessions", pid] }),
   });
-  const rows = sessions.data?.data ?? [];
+  const rows = (sessions.data?.data ?? []).filter((s) =>
+    filter === "all"
+      ? true
+      : filter === "archived"
+        ? !!s.archived_at
+        : s.status === "running" && !s.archived_at,
+  );
 
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span className="row">
-          <button
-            className={`btn ${needsYou ? "" : "primary"}`}
-            style={{ height: 26 }}
-            onClick={() => setNeedsYou(false)}
-          >
-            {app.t("All", "全部")}
-          </button>
-          <button
-            className={`btn ${needsYou ? "primary" : ""}`}
-            style={{ height: 26 }}
-            onClick={() => setNeedsYou(true)}
-          >
-            ⚠ {app.t("Awaiting action", "待客户端动作")}
-          </button>
+          {(["all", "running", "archived"] as const).map((f) => (
+            <button
+              key={f}
+              className={`btn ${filter === f ? "primary" : ""}`}
+              style={{ height: 26 }}
+              onClick={() => setFilter(f)}
+            >
+              {app.t(
+                f === "all" ? "All" : f === "running" ? "Running" : "Archived",
+                f === "all" ? "全部" : f === "running" ? "运行中" : "已归档",
+              )}
+            </button>
+          ))}
           <span className="mut">
             baseURL <code>/projects/{pid}</code>
             <button
@@ -219,9 +287,9 @@ export default function SessionsSurface() {
                 <td colSpan={5} className="mut">
                   {sessions.isLoading
                     ? "…"
-                    : needsYou
-                      ? app.t("Nothing awaiting action.", "没有等待客户端动作的会话。")
-                      : app.t("No sessions yet.", "还没有会话。")}
+                    : filter === "all"
+                      ? app.t("No sessions yet.", "还没有会话。")
+                      : app.t("None in this state.", "该状态下没有会话。")}
                 </td>
               </tr>
             )}
