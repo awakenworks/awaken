@@ -733,6 +733,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "form_urlencoded",
         "reqwest",
         "serde_json",
+        "sha2",
         "thiserror",
         "tokio",
     },
