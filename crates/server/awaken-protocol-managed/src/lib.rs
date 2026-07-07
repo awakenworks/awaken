@@ -12,6 +12,7 @@
 //! `user.interrupt`), `GET /v1/sessions/{id}/events`, and the SSE stream.
 
 pub mod agents_registry;
+pub mod deployments;
 pub mod dto;
 pub mod pagination;
 pub mod project;
@@ -22,6 +23,7 @@ pub mod user_profiles;
 pub mod vaults;
 
 pub use agents_registry::{AgentRegistryState, agents_router};
+pub use deployments::{DeploymentState, deployments_router};
 pub use router::{ProjectScope, router};
 pub use session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 pub use state::{
