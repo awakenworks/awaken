@@ -14,6 +14,8 @@
 
 #[cfg(feature = "oauth-command")]
 pub mod oauth;
+#[cfg(feature = "postgres")]
+pub mod postgres;
 pub mod repo;
 pub mod schema;
 #[cfg(feature = "sealed-aead")]
@@ -23,6 +25,8 @@ pub mod sqlite;
 
 #[cfg(feature = "oauth-command")]
 pub use oauth::{CommandTokenSource, TokenSource};
+#[cfg(feature = "postgres")]
+pub use postgres::{PostgresCredentialRepo, PostgresSealedBlobStore};
 #[cfg(feature = "sealed-aead")]
 pub use sealed::SealedAeadSecretStore;
 #[cfg(feature = "sqlite")]
