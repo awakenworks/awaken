@@ -216,7 +216,7 @@ a {
   background: var(--ok-tint);
 }
 .pill.warn {
-  color: var(--accent-ink);
+  color: var(--warn-ink);
   background: var(--warn-tint);
 }
 .pill.danger {
