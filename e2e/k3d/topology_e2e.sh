@@ -20,7 +20,7 @@ LOCAL_PORT="${TOPO_LOCAL_PORT:-38601}"
 MARKER="REMOTE-HAND-OK-9f31"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
 NODE="k3d-$CLUSTER-server-0"
-WHICH="${1:-both}"
+WHICH="${1:-all}"
 PF_PID=""
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
@@ -52,6 +52,13 @@ run_topology() {
   kubectl create namespace "$NS" >/dev/null
   kubectl -n "$NS" apply -f "$DEPLOY_DIR/$manifest" >/dev/null
   echo "waiting for rollouts (brain readiness proves the $name channel)..."
+  # Relay: the hand has no listening port (it dials the broker), so wait for its
+  # pod to be Running and give it a moment to subscribe before the first request.
+  if [ "$name" = relay ]; then
+    kubectl -n "$NS" rollout status deploy/nats --timeout=120s || true
+    kubectl -n "$NS" wait --for=condition=Ready pod -l app=hand --timeout=120s || true
+    sleep 5
+  fi
   if ! kubectl -n "$NS" rollout status deploy/brain --timeout=120s; then
     err "topology '$name': brain never became ready"
     kubectl -n "$NS" get pods -o wide || true
@@ -124,6 +131,7 @@ COREDNS_IMG=${COREDNS_IMG:-rancher/mirrored-coredns-coredns:1.10.1}
 load_image "$PAUSE_IMG"
 load_image "$COREDNS_IMG"
 load_image "$IMAGE"
+load_image nats:2   # the Relay topology's broker
 kubectl -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
 kubectl -n kube-system rollout status deploy/coredns --timeout=90s
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
@@ -133,8 +141,12 @@ FAILED=0
 case "$WHICH" in
   direct)  run_topology direct  topology-direct.yaml  || FAILED=1 ;;
   reverse) run_topology reverse topology-reverse.yaml || FAILED=1 ;;
-  *)       run_topology direct  topology-direct.yaml  || FAILED=1
+  relay)   run_topology relay   topology-relay.yaml   || FAILED=1 ;;
+  both)    run_topology direct  topology-direct.yaml  || FAILED=1
            run_topology reverse topology-reverse.yaml || FAILED=1 ;;
+  *)       run_topology direct  topology-direct.yaml  || FAILED=1
+           run_topology reverse topology-reverse.yaml || FAILED=1
+           run_topology relay   topology-relay.yaml   || FAILED=1 ;;
 esac
 
 if [ "$FAILED" = 0 ]; then

@@ -849,6 +849,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-tool-relay",
         "awaken-connection-plan",
         "awaken-ext-builtin-tools",
+        # Relay topology (ADR-0045): the NATS broker transport for brain↔hand.
+        "async-nats",
+        "bytes",
+        "futures",
         "awaken-observability",
         "awaken-authz-enforce",
         "awaken-run-executor-acp",
