@@ -141,6 +141,35 @@ pub fn build_git_repo_router() -> Router {
     mount(Arc::new(host))
 }
 
+/// The combined-chain router (native full-chain e2e): one session configures a
+/// memory_store + github_repository resource, is offered a skill, and has out-of-band
+/// memory extraction — so a single conversation exercises skill use → memory-store
+/// write-back → git commit/push → output-artifact harvest end to end on the native
+/// backend. Driven over the real wire by the `fullChain` behavior (this in-process
+/// `EchoModel` is only the non-http fallback, never run by the e2e).
+/// `AWAKEN_MODEL_MODE=full-chain` with `AWAKEN_MODEL_SOURCE=http`.
+pub fn build_full_chain_router() -> Router {
+    let mem_dir = std::env::var("AWAKEN_MEMORY_DIR")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("AWAKEN_STORAGE_DIR")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(awaken_memory_store::memory_scope_root)
+        })
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-fullchain-e2e-{}", std::process::id()))
+        });
+    std::fs::create_dir_all(&mem_dir).expect("create memory dir");
+    let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
+    let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
+    let host = SharedHost::new(model, model_ref)
+        .with_memory(mem_dir)
+        .with_skills(vec![greet]);
+    mount(Arc::new(host))
+}
+
 /// A router with context compaction (the compaction e2e): a low threshold folds
 /// the older transcript into a summary after a few turns. The deterministic
 /// model returns a fixed summary on the `compactor` sub-run and otherwise
