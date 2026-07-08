@@ -58,6 +58,40 @@ async fn unix_direct_dial_round_trips() {
 }
 
 #[tokio::test]
+async fn tcp_direct_dial_round_trips() {
+    use awaken_connection_plan::{bind_tcp, connect_with_retry};
+    // Bind on an ephemeral port, then dial it back (the Direct-over-network case).
+    let listener = bind_tcp(&ConnectionPlan::tcp_listen("127.0.0.1:0"))
+        .await
+        .expect("bind tcp");
+    let addr = listener.local_addr().expect("addr");
+    let accept = tokio::spawn(async move {
+        let mut hand = listener.accept().await.expect("accept");
+        let mut buf = [0u8; 4];
+        hand.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+        hand.write_all(b"pong").await.unwrap();
+        hand.flush().await.unwrap();
+    });
+
+    let plan = ConnectionPlan::tcp_dial(addr.to_string());
+    let mut brain = connect_with_retry(
+        &TokioChannelFactory,
+        &plan,
+        20,
+        std::time::Duration::from_millis(25),
+    )
+    .await
+    .expect("dial tcp");
+    brain.write_all(b"ping").await.unwrap();
+    brain.flush().await.unwrap();
+    let mut back = [0u8; 4];
+    brain.read_exact(&mut back).await.unwrap();
+    assert_eq!(&back, b"pong");
+    accept.await.unwrap();
+}
+
+#[tokio::test]
 async fn connect_rejects_a_listen_plan() {
     let plan = ConnectionPlan::unix_listen("/tmp/never.sock");
     match TokioChannelFactory.connect(&plan).await {

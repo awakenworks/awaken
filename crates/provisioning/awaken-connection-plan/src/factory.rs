@@ -8,7 +8,9 @@
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
-use tokio::net::{UnixListener, UnixStream};
+use std::time::Duration;
+
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 use crate::plan::{ConnectionPlan, DialAddr, DialPolicy};
 
@@ -51,12 +53,44 @@ impl ChannelFactory for TokioChannelFactory {
                     .map_err(|e| ConnectError::Io(e.to_string()))?;
                 Ok(Box::new(stream))
             }
+            DialAddr::Tcp(addr) => {
+                // Direct topology over the network: the brain dials the hand's
+                // host:port (e.g. a Kubernetes Service). Disable Nagle so a small
+                // framed request is not delayed behind the ACK timer.
+                let stream = TcpStream::connect(addr)
+                    .await
+                    .map_err(|e| ConnectError::Io(e.to_string()))?;
+                let _ = stream.set_nodelay(true);
+                Ok(Box::new(stream))
+            }
             DialAddr::InProcess => Err(ConnectError::Unsupported(
                 "in_process: obtain both ends from in_process_pair()".to_string(),
             )),
             other => Err(ConnectError::Unsupported(format!("{other:?}"))),
         }
     }
+}
+
+/// Dial a plan, retrying while the peer is not yet listening (up to `attempts`
+/// tries spaced `delay` apart). Useful when a hand pod may still be starting when
+/// the brain dials it — the network Direct/Reverse cases in a cluster.
+pub async fn connect_with_retry(
+    factory: &TokioChannelFactory,
+    plan: &ConnectionPlan,
+    attempts: u32,
+    delay: Duration,
+) -> Result<Box<dyn AgentChannel>, ConnectError> {
+    let mut last = ConnectError::Io("no attempts".to_string());
+    for _ in 0..attempts.max(1) {
+        match factory.connect(plan).await {
+            Ok(ch) => return Ok(ch),
+            Err(e) => {
+                last = e;
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+    Err(last)
 }
 
 /// The degenerate topology (ADR-0045 D3): both ends of an in-memory duplex, no
@@ -95,6 +129,48 @@ pub fn bind_unix(plan: &ConnectionPlan) -> Result<UnixHandListener, ConnectError
         }
         other => Err(ConnectError::Unsupported(format!(
             "bind_unix requires a Unix transport, got {other:?}"
+        ))),
+    }
+}
+
+/// A bound TCP listener that accepts channels — the hand's side of a Direct plan
+/// (the brain dials in), or the brain's rendezvous for a Reverse plan (the hand
+/// dials out). Serves repeatedly, so a long-lived hand pod accepts reconnects.
+pub struct TcpHandListener {
+    listener: TcpListener,
+}
+
+impl TcpHandListener {
+    /// Accept one inbound connection (Nagle disabled for framed traffic).
+    pub async fn accept(&self) -> Result<Box<dyn AgentChannel>, ConnectError> {
+        let (stream, _addr) = self
+            .listener
+            .accept()
+            .await
+            .map_err(|e| ConnectError::Io(e.to_string()))?;
+        let _ = stream.set_nodelay(true);
+        Ok(Box::new(stream))
+    }
+
+    /// The bound local address (useful when the plan asked for port 0).
+    pub fn local_addr(&self) -> Result<std::net::SocketAddr, ConnectError> {
+        self.listener
+            .local_addr()
+            .map_err(|e| ConnectError::Io(e.to_string()))
+    }
+}
+
+/// Bind a TCP listener for a plan whose transport is [`DialAddr::Tcp`].
+pub async fn bind_tcp(plan: &ConnectionPlan) -> Result<TcpHandListener, ConnectError> {
+    match &plan.transport {
+        DialAddr::Tcp(addr) => {
+            let listener = TcpListener::bind(addr)
+                .await
+                .map_err(|e| ConnectError::Io(e.to_string()))?;
+            Ok(TcpHandListener { listener })
+        }
+        other => Err(ConnectError::Unsupported(format!(
+            "bind_tcp requires a Tcp transport, got {other:?}"
         ))),
     }
 }

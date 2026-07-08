@@ -17,6 +17,7 @@ mod plan;
 
 pub use credential::{AppliedAuth, CredentialError, CredentialResolver, NoAuth};
 pub use factory::{
-    bind_unix, in_process_pair, ChannelFactory, ConnectError, TokioChannelFactory, UnixHandListener,
+    bind_tcp, bind_unix, connect_with_retry, in_process_pair, ChannelFactory, ConnectError,
+    TcpHandListener, TokioChannelFactory, UnixHandListener,
 };
 pub use plan::{ConnectionPlan, CredentialRef, DialAddr, DialPolicy, Wiring};

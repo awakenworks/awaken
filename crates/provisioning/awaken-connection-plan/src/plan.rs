@@ -104,6 +104,28 @@ impl ConnectionPlan {
         }
     }
 
+    /// Brain dials a hand at a TCP `host:port` (remote Direct — e.g. a Kubernetes
+    /// Service across pods).
+    pub fn tcp_dial(addr: impl Into<String>) -> Self {
+        Self {
+            transport: DialAddr::Tcp(addr.into()),
+            wiring: Wiring::Direct,
+            dial: DialPolicy::Dial,
+            credential: None,
+        }
+    }
+
+    /// This end listens on a TCP `host:port`; the peer dials in — the hand's side
+    /// of a Direct plan, or a brain rendezvous for a Reverse (NAT) plan.
+    pub fn tcp_listen(addr: impl Into<String>) -> Self {
+        Self {
+            transport: DialAddr::Tcp(addr.into()),
+            wiring: Wiring::Direct,
+            dial: DialPolicy::Listen,
+            credential: None,
+        }
+    }
+
     /// Attach the credential reference the host will resolve before dialing.
     #[must_use]
     pub fn with_credential(mut self, credential: CredentialRef) -> Self {

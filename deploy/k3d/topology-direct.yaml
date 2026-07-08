@@ -1,0 +1,93 @@
+# Direct topology (ADR-0045): a BRAIN pod dials a HAND pod over the cluster
+# network. Every tool call in a brain's run leaves the brain pod, crosses the
+# framed executor channel to the `hand` Service, runs in the hand pod, and the
+# result round-trips back — 手腦分離 across the network.
+#
+#   [brain pod] --TCP:9000 (Service "hand")--> [hand pod: serve_hand + builtin tools]
+#
+# Loaded into a k3d cluster with `imagePullPolicy: Never` (never pulled).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hand
+  labels: { app: hand }
+spec:
+  selector: { app: hand }
+  ports:
+    - { name: exec, port: 9000, targetPort: 9000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hand
+  labels: { app: hand }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: hand }
+  template:
+    metadata:
+      labels: { app: hand }
+    spec:
+      containers:
+        - name: hand
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            # Hand role: bind the executor channel on all interfaces so the brain
+            # pod can reach it via the `hand` Service.
+            - { name: AWAKEN_HAND_LISTEN, value: "0.0.0.0:9000" }
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            tcpSocket: { port: 9000 }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+          livenessProbe:
+            tcpSocket: { port: 9000 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  selector: { app: brain }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: brain }
+  template:
+    metadata:
+      labels: { app: brain }
+    spec:
+      containers:
+        - name: brain
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            # Brain role: the managed HTTP surface, routing tool calls to the hand
+            # Service over the cluster network (Direct topology). It dials the hand
+            # at startup, retrying while the hand pod comes up.
+            - { name: AWAKEN_MODEL_MODE, value: remote-hand }
+            - { name: AWAKEN_REMOTE_HAND, value: "hand:9000" }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            # Ready only once the HTTP surface binds, which happens after the brain
+            # has connected to the hand — so readiness proves the Direct link is up.
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 2

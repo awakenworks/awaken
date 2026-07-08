@@ -651,16 +651,29 @@ pub fn build_remote_hand_router() -> Router {
 
     let (model, model_ref) = scenario_model(Arc::new(crate::models::RemoteHandModel), "remote-hand");
 
-    // Spawn the hand: a value-returning tool server over one end of an in-process
-    // duplex, serving the built-in hand tools and nothing else (G33). The tool
-    // calls leave the run loop, cross the framed channel, run here, and return.
-    let (brain_end, hand_end) = awaken_connection_plan::in_process_pair();
-    let session = HandSession::new(awaken_ext_builtin_tools::executable_hand_tools());
-    tokio::spawn(serve_hand(hand_end, session));
+    // Where the hand runs is a topology choice (ADR-0045):
+    //   - AWAKEN_REMOTE_HAND=host:port (or tcp://host:port) → Direct-over-network:
+    //     dial a hand serving the executor channel on TCP (e.g. a k8s Service in
+    //     another pod). The tool calls leave the brain pod entirely.
+    //   - unset → the degenerate in-process hand: a framed duplex to a serve_hand
+    //     task in this same process.
+    let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
+        match std::env::var("AWAKEN_REMOTE_HAND") {
+            Ok(remote) if !remote.is_empty() => {
+                let addr = remote.strip_prefix("tcp://").unwrap_or(&remote).to_string();
+                Arc::new(RemoteToolExecutor::new(connect_tcp_blocking(&addr)))
+            }
+            _ => {
+                let (brain_end, hand_end) = awaken_connection_plan::in_process_pair();
+                let session = HandSession::new(awaken_ext_builtin_tools::executable_hand_tools());
+                tokio::spawn(serve_hand(hand_end, session));
+                Arc::new(RemoteToolExecutor::new(brain_end))
+            }
+        };
 
     let host = SharedHost::new(model, model_ref)
         .with_gate_override(Arc::new(AllowAllGate))
-        .with_remote_hand(Arc::new(RemoteToolExecutor::new(brain_end)));
+        .with_remote_hand(executor);
     mount(Arc::new(host))
 }
 
@@ -676,6 +689,52 @@ impl awaken_runtime_contract::permission::ToolGateHook for AllowAllGate {
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> awaken_runtime_contract::permission::GateOutcome {
         awaken_runtime_contract::permission::GateOutcome::Allow
+    }
+}
+
+/// Blocking TCP dial with retry (the hand pod may still be starting when the brain
+/// boots), converted to a tokio stream for the `RemoteToolExecutor`. Called once
+/// at startup, before serving, so briefly blocking the runtime is acceptable.
+fn connect_tcp_blocking(addr: &str) -> tokio::net::TcpStream {
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..120 {
+        match std::net::TcpStream::connect(addr) {
+            Ok(s) => {
+                s.set_nonblocking(true).expect("set_nonblocking");
+                let _ = s.set_nodelay(true);
+                return tokio::net::TcpStream::from_std(s).expect("std->tokio TcpStream");
+            }
+            Err(e) => {
+                last = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    }
+    panic!("could not reach remote hand at {addr}: {last:?}");
+}
+
+/// Run this binary as a HAND (ADR-0044/0045): bind a TCP listener and serve the
+/// neutral executor channel — the built-in hand tools, and nothing else (G33) — to
+/// every brain that dials in. A pod running this is a remote execution endpoint;
+/// this is the hand side of the Direct topology. Loops until killed.
+pub async fn run_hand_server(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use awaken_tool_relay::{HandSession, serve_hand};
+
+    let plan = awaken_connection_plan::ConnectionPlan::tcp_listen(addr);
+    let listener = awaken_connection_plan::bind_tcp(&plan)
+        .await
+        .map_err(|e| format!("hand failed to bind {addr}: {e}"))?;
+    eprintln!("awaken hand: serving the executor channel on tcp://{addr}");
+    loop {
+        match listener.accept().await {
+            Ok(channel) => {
+                let session = HandSession::new(awaken_ext_builtin_tools::executable_hand_tools());
+                tokio::spawn(async move {
+                    let _ = serve_hand(channel, session).await;
+                });
+            }
+            Err(e) => eprintln!("awaken hand: accept error: {e}"),
+        }
     }
 }
 
