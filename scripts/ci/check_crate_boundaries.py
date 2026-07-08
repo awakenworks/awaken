@@ -501,6 +501,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: build a `plugin_config` JSON value in the compaction-window test.
         "serde_json",
     },
+    # A2A executor: a remote A2A agent (Coze / A2A HTTP) as a peer RunExecutor.
+    # Runtime plane; foundation contracts + the A2A protocol crate only, like the
+    # ACP executor — it constructs no config and names no secret.
+    "awaken-run-executor-a2a": {
+        "awaken-runtime-contract",
+        "awaken-agent-contract",
+        "awaken-protocol-a2a",
+        "async-trait",
+        "tokio",
+    },
     # AI SDK v6 protocol adapter: the anti-corruption boundary between the Vercel
     # AI SDK UI Message Stream wire and the neutral runtime. Like the managed
     # adapter it owns public DTOs + the axum router, depends only on the

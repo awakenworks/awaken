@@ -1,0 +1,14 @@
+[package]
+name = "awaken-run-executor-a2a"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-runtime-contract.workspace = true
+awaken-agent-contract.workspace = true
+awaken-protocol-a2a.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
