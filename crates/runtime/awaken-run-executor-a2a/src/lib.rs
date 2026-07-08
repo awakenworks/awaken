@@ -15,8 +15,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
-use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_protocol_a2a::client::send_message;
 use awaken_protocol_a2a::{HttpTransport, Task, Transport};
 use awaken_runtime_contract::activation::RunActivation;
@@ -162,22 +160,15 @@ async fn finish(
     phase: Phase,
 ) -> Result<Phase> {
     if let Some(coordinator) = &context.commit {
-        let commit = ThreadCommit {
-            thread_id: activation.thread_id.clone(),
-            run_fact: RunFact {
-                run_id: activation.run_id.clone(),
-                phase: phase.clone(),
-            },
+        awaken_agent_contract::commit::commit_run_turn(
+            coordinator.as_ref(),
+            &activation.thread_id,
+            &activation.run_id,
             messages,
-            state: Vec::new(),
-            events: Vec::new(),
-            outbox: Vec::new(),
-            waiting: None,
-        };
-        coordinator
-            .commit(commit)
-            .await
-            .map_err(|e| Error::Commit(e.to_string()))?;
+            phase.clone(),
+        )
+        .await
+        .map_err(|e| Error::Commit(e.to_string()))?;
     }
     Ok(phase)
 }
@@ -188,7 +179,7 @@ mod tests {
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::commit::coordinator::{Coordinator, Error as CommitError};
-    use awaken_agent_contract::commit::staged::CommitRecord;
+    use awaken_agent_contract::commit::staged::{CommitRecord, ThreadCommit};
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,

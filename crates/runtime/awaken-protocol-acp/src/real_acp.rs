@@ -3,7 +3,7 @@
 //! The anti-corruption layer's core: map the official `agent-client-protocol`
 //! `SessionUpdate` / `StopReason` onto this crate's neutral [`AgentEvent`] /
 //! [`TerminationReason`]. Substituting this for the newline-JSON stand-in leaves the
-//! projection + [`crate::RunEventSink`] contract unchanged — the store never sees
+//! projection + [`crate::RunFactAppender`] contract unchanged — the store never sees
 //! ACP vocabulary. Pure data mapping, so it is unit-tested without a live agent.
 
 use agent_client_protocol::{ContentBlock, SessionUpdate, StopReason};

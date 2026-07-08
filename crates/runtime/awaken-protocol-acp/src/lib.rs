@@ -2,7 +2,7 @@
 //!
 //! An **anti-corruption layer** over an opaque agent's protocol stream. It reads
 //! the agent's events off an [`AgentChannel`], projects them into neutral
-//! [`AgentEvent`]s, and commits them through the [`RunEventSink`] binding seam —
+//! [`AgentEvent`]s, and commits them through the [`RunFactAppender`] binding seam —
 //! the sole path by which projected truth reaches the runtime store (G13: the
 //! bridge appends, it never owns the commit). The [`Supervisor`] drives one turn
 //! and reaps the process on cancel, mapping the outcome to a [`TerminationReason`].
@@ -118,7 +118,7 @@ struct PromptFrame<'a> {
 
 /// Why appending a projected event to the runtime store failed.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum SinkError {
+pub enum AppendError {
     /// Event sequence must be strictly increasing (ADR-0042 monotonicity).
     #[error("non-monotonic event seq: got {got}, last committed {last}")]
     NonMonotonic { got: u64, last: u64 },
@@ -130,10 +130,15 @@ pub enum SinkError {
 /// The binding seam (ADR-0041 amendment): the sole port through which projected
 /// events reach runtime-core. Implemented by the one runtime-facing crate; the
 /// bridge depends on this abstraction, never on the store.
+///
+/// Named an *appender*, not a "sink": each call durably commits one fact at a
+/// strictly increasing `seq` and may fail (unlike this repo's ephemeral,
+/// best-effort stream sinks). Appended facts land in the same fact log the native
+/// and A2A executors commit through the one boundary (`commit_run_turn`).
 #[async_trait]
-pub trait RunEventSink: Send {
+pub trait RunFactAppender: Send {
     /// Commit one projected event at `seq` (strictly increasing per run).
-    async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), SinkError>;
+    async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), AppendError>;
 }
 
 /// Which stage of bringing an ACP agent online a lifecycle notification marks.
@@ -187,7 +192,7 @@ impl AcpLaunchEvent {
 
 /// The seam a host wires to observe an ACP agent's bring-up (install → launch →
 /// initialize → ready), so it can publish progress to a UI. Injected like
-/// [`RunEventSink`]; the driver depends on this abstraction, never on the
+/// [`RunFactAppender`]; the driver depends on this abstraction, never on the
 /// transport. `scope` identifies the run/thread the event belongs to (so a
 /// per-thread UI channel can route it). Fire-and-forget (sync, non-blocking) so
 /// emitting never stalls the launch — a slow observer must buffer internally.
@@ -232,9 +237,9 @@ pub enum AcpError {
     /// A frame from the agent was not valid JSON / not an `AgentEvent`.
     #[error("malformed agent frame: {0}")]
     Frame(String),
-    /// The sink rejected an event.
-    #[error("sink: {0}")]
-    Sink(#[from] SinkError),
+    /// The fact appender rejected a projected event.
+    #[error("append: {0}")]
+    Append(#[from] AppendError),
     /// The agent stream ended before emitting a `TurnEnd`.
     #[error("agent stream ended before turn end")]
     Truncated,
@@ -246,12 +251,12 @@ pub struct AcpBridge;
 impl AcpBridge {
     /// Drive one turn over `channel`, dispatching on the wire [`Codec`]: the
     /// newline stand-in (fixtures) or the official JSON-RPC ACP driver. Both
-    /// project into the same [`RunEventSink`] and return the same
+    /// project into the same [`RunFactAppender`] and return the same
     /// [`TerminationReason`], so nothing downstream depends on the wire.
     pub async fn run_turn(
         channel: &mut dyn AgentChannel,
         prompt: &str,
-        sink: &mut dyn RunEventSink,
+        sink: &mut dyn RunFactAppender,
         codec: Codec,
         launch_sink: Option<LaunchSink<'_>>,
     ) -> Result<TerminationReason, AcpError> {
@@ -263,7 +268,7 @@ impl AcpBridge {
     }
 
     /// Send `prompt` to the agent, then read its newline-JSON event frames until
-    /// `TurnEnd`, projecting each into the [`RunEventSink`] with a strictly
+    /// `TurnEnd`, projecting each into the [`RunFactAppender`] with a strictly
     /// increasing seq.
     ///
     /// Cancel-safe at frame boundaries: a dropped future may leave events already
@@ -271,7 +276,7 @@ impl AcpBridge {
     async fn run_turn_newline(
         channel: &mut dyn AgentChannel,
         prompt: &str,
-        sink: &mut dyn RunEventSink,
+        sink: &mut dyn RunFactAppender,
         launch_sink: Option<LaunchSink<'_>>,
     ) -> Result<TerminationReason, AcpError> {
         // The newline stand-in has no handshake; writing the prompt is the point the
@@ -352,7 +357,7 @@ impl Supervisor {
         channel: &mut dyn AgentChannel,
         process: &dyn pc::ProcessHandle,
         prompt: &str,
-        sink: &mut dyn RunEventSink,
+        sink: &mut dyn RunFactAppender,
         cancel: impl std::future::Future<Output = ()>,
         injections: &mut tokio::sync::mpsc::Receiver<Injection>,
         policy: SupervisePolicy,
@@ -399,15 +404,15 @@ mod tests {
     }
 
     #[async_trait]
-    impl RunEventSink for RecordingSink {
-        async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), SinkError> {
+    impl RunFactAppender for RecordingSink {
+        async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), AppendError> {
             if let Some(f) = self.fail_at
                 && seq == f
             {
-                return Err(SinkError::Append("store down".into()));
+                return Err(AppendError::Append("store down".into()));
             }
             if seq <= self.last {
-                return Err(SinkError::NonMonotonic {
+                return Err(AppendError::NonMonotonic {
                     got: seq,
                     last: self.last,
                 });
@@ -536,7 +541,7 @@ mod tests {
         let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, AcpError::Sink(SinkError::Append(_))));
+        assert!(matches!(err, AcpError::Append(AppendError::Append(_))));
         agent.abort();
     }
 

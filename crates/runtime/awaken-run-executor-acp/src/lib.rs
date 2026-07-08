@@ -22,11 +22,9 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::commit::staged::ThreadCommit;
-use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_protocol_acp::{
-    AcpError, AcpFailure, AgentEvent, Injection, LaunchSink, RawAcpError, RunEventSink, SinkError,
-    Stage, SupervisePolicy, Supervisor, TerminationReason, classify_error,
+    AcpError, AcpFailure, AgentEvent, AppendError, Injection, LaunchSink, RawAcpError,
+    RunFactAppender, Stage, SupervisePolicy, Supervisor, TerminationReason, classify_error,
 };
 // Re-exported (not just `use`d) so a host composition root selects the wire and
 // observes agent bring-up without a direct dependency on the protocol crate. The
@@ -224,7 +222,7 @@ impl RunExecutor for AcpRunExecutor {
         };
 
         let prompt = prompt_of(&activation.input);
-        let mut sink = CollectingSink::default();
+        let mut appender = CollectingAppender::default();
         let (_tx, mut injections) = tokio::sync::mpsc::channel::<Injection>(1);
         let cancel = async {
             match &context.cancellation {
@@ -238,7 +236,7 @@ impl RunExecutor for AcpRunExecutor {
             session.channel.as_mut(),
             process.as_ref(),
             &prompt,
-            &mut sink,
+            &mut appender,
             cancel,
             &mut injections,
             self.policy,
@@ -254,7 +252,7 @@ impl RunExecutor for AcpRunExecutor {
                     &context,
                     &activation.thread_id,
                     activation.run_id,
-                    sink.messages,
+                    appender.messages,
                     &phase,
                 )
                 .await?;
@@ -264,7 +262,7 @@ impl RunExecutor for AcpRunExecutor {
             // its prompt. No retry/reschedule — that is a host concern above us.
             Err(err) => {
                 let failure = classify_from_acp_error(&err);
-                let mut messages = sink.messages;
+                let mut messages = appender.messages;
                 messages.push(Message::text(
                     MessageId(format!("acp-err-{}", messages.len() + 1)),
                     Role::Assistant,
@@ -325,40 +323,33 @@ async fn commit(
     phase: &Phase,
 ) -> Result<()> {
     if let Some(coordinator) = &context.commit {
-        let commit = ThreadCommit {
-            thread_id: thread_id.clone(),
-            run_fact: RunFact {
-                run_id,
-                phase: phase.clone(),
-            },
+        awaken_agent_contract::commit::commit_run_turn(
+            coordinator.as_ref(),
+            thread_id,
+            &run_id,
             messages,
-            state: Vec::new(),
-            events: Vec::new(),
-            outbox: Vec::new(),
-            waiting: None,
-        };
-        coordinator
-            .commit(commit)
-            .await
-            .map_err(|e| Error::Commit(e.to_string()))?;
+            phase.clone(),
+        )
+        .await
+        .map_err(|e| Error::Commit(e.to_string()))?;
     }
     Ok(())
 }
 
-/// A [`RunEventSink`] that collects projected assistant text into committable
+/// A [`RunFactAppender`] that collects projected assistant text into committable
 /// messages, enforcing the monotonic-seq contract. Tool calls are not committed
 /// as messages in this slice; `TurnEnd` is carried by the returned reason.
 #[derive(Default)]
-struct CollectingSink {
+struct CollectingAppender {
     last: u64,
     messages: Vec<Message>,
 }
 
 #[async_trait]
-impl RunEventSink for CollectingSink {
-    async fn append(&mut self, seq: u64, event: &AgentEvent) -> std::result::Result<(), SinkError> {
+impl RunFactAppender for CollectingAppender {
+    async fn append(&mut self, seq: u64, event: &AgentEvent) -> std::result::Result<(), AppendError> {
         if seq <= self.last {
-            return Err(SinkError::NonMonotonic {
+            return Err(AppendError::NonMonotonic {
                 got: seq,
                 last: self.last,
             });
