@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -50,10 +50,11 @@ async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-mgmt-e2e-'));
   const env = { AWAKEN_MGMT_DIR: dir, AWAKEN_MGMT_SEAL_KEY: SEAL_KEY };
   const fixture = await startCalcFixture(CALC_TOKEN);
+  const upstream = await startUpstream('mcp');
   let server = null;
   try {
     // ---- lifetime A: author everything ------------------------------------
-    let { server: a, baseUrl: base } = spawnServer('management', PORT, env);
+    let { server: a, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
     server = a;
     await waitForPort(PORT);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
@@ -122,7 +123,7 @@ async function main() {
     // ---- restart: kill the process, respawn over the same dir + key -------
     await stopServer(server);
     server = null;
-    ({ server, baseUrl: base } = spawnServer('management', PORT, env));
+    ({ server, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) }));
     await waitForPort(PORT);
     const client2 = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
     pass('server killed and respawned on the same port with the same AWAKEN_MGMT_DIR/key');
@@ -201,6 +202,7 @@ async function main() {
   } finally {
     if (server) await stopServer(server);
     await fixture.close();
+    upstream.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
