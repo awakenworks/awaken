@@ -52,6 +52,26 @@ impl crate::host::SharedHost {
         self
     }
 
+    /// Serve `acp:*` sessions on a projecting executor for `cli` (R3/R4): each run's
+    /// model is resolved from the environment + the thread's [`ConfigHome`], and the
+    /// [`AcpCli`] row projects it onto the launch. `store_dir` is the durable root for
+    /// the config home. This is the composition-root path for a real ACP CLI — it
+    /// assembles the catalog projection, the host resolver, and the executor into one.
+    #[must_use]
+    pub fn with_projected_acp(
+        self,
+        cli: awaken_run_executor_acp::AcpCli,
+        store_dir: Option<std::path::PathBuf>,
+    ) -> Self {
+        let resolver = Arc::new(crate::acp_provision::EnvLaunchResolver::from_process_env(
+            cli, store_dir,
+        ));
+        let source = Arc::new(awaken_run_executor_acp::ProjectingChannelSource::new(
+            cli, resolver,
+        ));
+        self.with_acp(Arc::new(AcpRunExecutor::new(source)))
+    }
+
     /// Stage `thread`'s runtime adapter (R3): `"acp:*"` routes it to the ACP CLI.
     pub fn register_thread_runtime(&self, thread: &str, adapter: &str) {
         if let Some(acp) = &self.acp {
