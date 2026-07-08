@@ -11,13 +11,13 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function main() {
   try {
-    await withServer('management', 38166, async (base) => {
+    await withScenarioServer('management', 'mcp', 38166, async (base) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
       // -- environment networking policy → session binds (egress resolved) -----

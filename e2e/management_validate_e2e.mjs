@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONTRACT = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'contracts', 'model-schemas.json'), 'utf8'));
@@ -39,7 +39,7 @@ async function main() {
   const model = process.env.ANTHROPIC_MODEL || process.env.KIMI_MODEL || 'claude-3-5-haiku-latest';
 
   try {
-    await withServer('management', 38160, async (base) => {
+    await withScenarioServer('management', 'mcp', 38160, async (base) => {
       // Author a provider + endpoint (the live base URL) + offering for `model`.
       await req(base, 'PUT', '/v1/config/providers/anthropic', {
         id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1,
