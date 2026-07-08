@@ -79,3 +79,31 @@ impl crate::host::SharedHost {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::SharedHost;
+
+    struct NoLlm;
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
+        async fn infer(
+            &self,
+            _r: awaken_runtime_contract::llm::ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>
+        {
+            unreachable!("the builder test never runs a turn")
+        }
+    }
+
+    #[test]
+    fn with_projected_acp_wires_an_acp_backend_that_routes_acp_threads() {
+        let cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
+        let host = SharedHost::new(Arc::new(NoLlm), "test").with_projected_acp(cli, None);
+        host.register_thread_runtime("t", "acp:claude");
+        let acp = host.acp.as_ref().expect("acp backend wired");
+        assert!(acp.is_acp("t"));
+        assert!(!acp.is_acp("native-thread"));
+    }
+}
