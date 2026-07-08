@@ -537,8 +537,22 @@ pub fn map_assistant_output(content: &MessageContent) -> AssistantOutput {
 }
 
 pub fn map_usage(usage: &Usage) -> TokenUsage {
+    // The prompt-cache breakdown (Anthropic cache_read/cache_creation), when the
+    // provider reports it; absent for providers/turns without prompt caching.
+    let (cache_read_tokens, cache_creation_tokens) = usage
+        .prompt_tokens_details
+        .as_ref()
+        .map(|d| {
+            (
+                d.cached_tokens.unwrap_or(0).max(0) as u64,
+                d.cache_creation_tokens.unwrap_or(0).max(0) as u64,
+            )
+        })
+        .unwrap_or((0, 0));
     TokenUsage {
         prompt_tokens: usage.prompt_tokens.unwrap_or(0).max(0) as u64,
         completion_tokens: usage.completion_tokens.unwrap_or(0).max(0) as u64,
+        cache_read_tokens,
+        cache_creation_tokens,
     }
 }
