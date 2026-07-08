@@ -111,36 +111,34 @@ impl AgentChannelSource for SubprocessChannelSource {
     }
 }
 
-/// Resolves a run's model coordinates (base URL, model name, materialized key) from
-/// the host — the config-plane + vault lookup the ACP executor must not do itself.
+/// Resolves the host-provided inputs for one ACP run: the model coordinates (base
+/// URL, model name, materialized key — the config-plane + vault lookup the executor
+/// must not do itself) and any per-run non-secret env (e.g. the thread's config-home
+/// path, which depends on `activation.thread_id` and so cannot be fixed up front).
 /// The one seam between the neutral projection and the host's config/secret world.
-pub trait ModelResolver: Send + Sync {
-    fn resolve(&self, activation: &RunActivation) -> std::result::Result<ResolvedModel, OpenError>;
+pub trait LaunchResolver: Send + Sync {
+    fn model(&self, activation: &RunActivation) -> std::result::Result<ResolvedModel, OpenError>;
+
+    /// Host-provided non-secret env for this run (config-home path, passthrough).
+    /// Merged under the typed model delivery — it can never shadow the model or key.
+    fn extra_env(&self, _activation: &RunActivation) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// An [`AgentChannelSource`] that projects a run onto a launch via its [`AcpCli`]
-/// row (R4): it reads the run's model through a host [`ModelResolver`] and hands the
-/// data to [`AcpCli::project`], so *which* CLI and *how* the model is delivered are
-/// data, not a branch. `extra_env` carries host-provided non-secret env (e.g. the
-/// config-home path) merged under the typed model delivery.
+/// row (R4): it reads the run's inputs through a host [`LaunchResolver`] and hands
+/// the data to [`AcpCli::project`], so *which* CLI and *how* the model is delivered
+/// are data, not a branch.
 pub struct ProjectingChannelSource {
     cli: AcpCli,
-    resolver: Arc<dyn ModelResolver>,
-    extra_env: Vec<(String, String)>,
+    resolver: Arc<dyn LaunchResolver>,
 }
 
 impl ProjectingChannelSource {
     #[must_use]
-    pub fn new(
-        cli: AcpCli,
-        resolver: Arc<dyn ModelResolver>,
-        extra_env: Vec<(String, String)>,
-    ) -> Self {
-        Self {
-            cli,
-            resolver,
-            extra_env,
-        }
+    pub fn new(cli: AcpCli, resolver: Arc<dyn LaunchResolver>) -> Self {
+        Self { cli, resolver }
     }
 
     /// Project this run onto a concrete [`AcpLaunch`] (no spawn). The compaction
@@ -150,8 +148,9 @@ impl ProjectingChannelSource {
         &self,
         activation: &RunActivation,
     ) -> std::result::Result<AcpLaunch, OpenError> {
-        let model = self.resolver.resolve(activation)?;
-        Ok(self.cli.project(&model, None, &self.extra_env))
+        let model = self.resolver.model(activation)?;
+        let extra_env = self.resolver.extra_env(activation);
+        Ok(self.cli.project(&model, None, &extra_env))
     }
 }
 

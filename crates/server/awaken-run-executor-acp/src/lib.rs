@@ -343,7 +343,7 @@ impl RunExecutor for DispatchRunExecutor {
 mod acp_cli;
 mod subprocess;
 pub use acp_cli::{AcpCli, McpInterface, ModelDelivery, ResolvedModel, acp_cli, known_acp_clis};
-pub use subprocess::{AcpLaunch, ModelResolver, ProjectingChannelSource, SubprocessChannelSource};
+pub use subprocess::{AcpLaunch, LaunchResolver, ProjectingChannelSource, SubprocessChannelSource};
 
 #[cfg(test)]
 mod tests;
