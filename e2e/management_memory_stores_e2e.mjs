@@ -98,6 +98,34 @@ async function main() {
       assert.ok(memIds.includes(mem.id));
       pass('beta.memoryStores.memories.list');
 
+      // A second memory in a subtree so path_prefix has something to filter.
+      const subMem = await client.beta.memoryStores.memories.create(store.id, {
+        path: '/archive/old.md',
+        content: 'archived',
+        betas: BETAS,
+      });
+
+      // path_prefix drills into the subtree, excluding /notes.md.
+      const drilled = await drain(
+        client.beta.memoryStores.memories.list(store.id, { path_prefix: '/archive', betas: BETAS }),
+      );
+      assert.deepEqual(
+        drilled.map((m) => m.id),
+        [subMem.id],
+        'path_prefix returns only memories under the prefix',
+      );
+
+      // view=basic elides content (content is populated only under the default full view).
+      const basic = await drain(
+        client.beta.memoryStores.memories.list(store.id, { view: 'basic', betas: BETAS }),
+      );
+      assert.ok(basic.length >= 2, 'view=basic still lists every memory');
+      assert.ok(
+        basic.every((m) => m.content === null || m.content === undefined),
+        'view=basic omits content',
+      );
+      pass('beta.memoryStores.memories.list -> path_prefix + view=basic');
+
       // -- Versions ----------------------------------------------------------
       const versions = await drain(client.beta.memoryStores.memoryVersions.list(store.id, { betas: BETAS }));
       const ops = versions.map((v) => v.operation);
