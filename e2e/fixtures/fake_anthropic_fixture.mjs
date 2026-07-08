@@ -185,6 +185,18 @@ export const BEHAVIORS = {
     }
     return text(`Echo: ${t}`);
   },
+  // SkillDrivingModel: on the user turn call `list_skills`; given the catalog
+  // activate `greet` via the `Skill` tool; given the activation instructions reply
+  // `USED-SKILL: <instructions>` — discover → activate → use.
+  skills(parsed) {
+    const msgs = parsed.messages ?? [];
+    const last = msgs[msgs.length - 1];
+    const results = last && Array.isArray(last.content) ? last.content.filter((b) => b.type === 'tool_result') : [];
+    if (results.length === 0) return tool('l', 'list_skills', {});
+    const lastText = results.map(toolResultText).join('');
+    if (lastText.includes('"skills"')) return tool('s', 'Skill', { skill: 'greet' });
+    return text(`USED-SKILL: ${lastText}`);
+  },
   // DelegatingModel: with `agent_run` it delegates (to `researcher`, or `ghost` if
   // asked) and reports the delegate's result; without it, it answers plainly (so the
   // same behavior serves as the delegate sub-agent).
