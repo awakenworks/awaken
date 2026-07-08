@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 import {
   readSpans,
   assertValidIds,
@@ -34,6 +34,9 @@ const FILE = `/tmp/awaken-trace-capture-${process.pid}.jsonl`;
 const TID = 'abcdef0123456789abcdef0123456789';
 const SID = '0123456789abcdef';
 
+// One fake 'echo' upstream, shared by every server spawn/restart in this file.
+let upstream;
+
 // Create a session and drive one user-message turn to completion.
 async function createAndTurn(base, text) {
   const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
@@ -53,13 +56,29 @@ async function createAndTurn(base, text) {
   return session;
 }
 
+// The wire behavior reproducing each capture mode's model: the `statemachine`
+// scenario drives the builtin `glob` tool, the `memory` scenario drives a
+// background extraction sub-run — neither of which an `echo` reply produces.
+const CAPTURE_BEHAVIOR = { echo: 'echo', statemachine: 'stateMachine', memory: 'memory' };
+
 // Spawn `mode` with a collector-free trace file, drive one turn, stop, and return
 // the captured spans (SIGINT force-flushes the SimpleSpanProcessor on shutdown).
+// The MODEL runs over the real wire: `echo` is plain-mount (real mode), other modes
+// keep their `AWAKEN_MODEL_MODE=<mode>` host config with the model swapped to the
+// wire. Each call runs its own fake upstream reproducing that mode's behavior.
 // `settleMs` waits for detached background work (e.g. memory extraction) to finish
 // before stopping, so its spans are captured.
 async function captureTurn(mode, port, file, text, { extraEnv = {}, settleMs = 0 } = {}) {
   fs.rmSync(file, { force: true });
-  const { server } = spawnServer(mode, port, { AWAKEN_TRACE_FILE: file, ...extraEnv });
+  const behavior = CAPTURE_BEHAVIOR[mode] ?? 'echo';
+  const up = await startUpstream(behavior);
+  const realEnv =
+    mode === 'echo' ? realServerEnv(behavior, up) : realServerEnv(behavior, up, { mode });
+  const { server } = spawnServer(mode === 'echo' ? 'real' : mode, port, {
+    AWAKEN_TRACE_FILE: file,
+    ...extraEnv,
+    ...realEnv,
+  });
   try {
     await waitForPort(port);
     await createAndTurn(`http://127.0.0.1:${port}`, text);
@@ -68,6 +87,7 @@ async function captureTurn(mode, port, file, text, { extraEnv = {}, settleMs = 0
     return readSpans(file);
   } finally {
     await stopServer(server).catch(() => {});
+    up.close();
     fs.rmSync(file, { force: true });
   }
 }
@@ -79,11 +99,12 @@ async function captureDurable(port, file, storeDir) {
   fs.rmSync(file, { force: true });
   fs.rmSync(storeDir, { recursive: true, force: true });
   fs.mkdirSync(storeDir, { recursive: true });
-  const { server } = spawnServer('echo', port, {
+  const { server } = spawnServer('real', port, {
     AWAKEN_TRACE_FILE: file,
     AWAKEN_INGRESS: 'durable',
     AWAKEN_DISPATCH_DAEMON: '1',
     AWAKEN_STORAGE_DIR: storeDir,
+    ...realServerEnv('echo', upstream),
   });
   const base = `http://127.0.0.1:${port}`;
   try {
@@ -112,7 +133,8 @@ async function captureDurable(port, file, storeDir) {
 
 async function main() {
   fs.rmSync(FILE, { force: true });
-  const { server } = spawnServer('echo', PORT, { AWAKEN_TRACE_FILE: FILE });
+  upstream = await startUpstream('echo');
+  const { server } = spawnServer('real', PORT, { AWAKEN_TRACE_FILE: FILE, ...realServerEnv('echo', upstream) });
   try {
     await waitForPort(PORT);
 
@@ -188,6 +210,7 @@ async function main() {
     process.exitCode = 1;
   } finally {
     await stopServer(server).catch(() => {});
+    upstream.close();
     fs.rmSync(FILE, { force: true });
   }
 }
