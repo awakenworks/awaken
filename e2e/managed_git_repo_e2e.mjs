@@ -21,6 +21,7 @@ const PORT = Number(process.env.E2E_PORT ?? 38217);
 const BETAS = ['managed-agents-2026-04-01'];
 const TMP = `/tmp/awaken-gitrepo-e2e-${process.pid}`;
 const README = 'SEED_README_CONTENT_7742';
+const FEATURE_README = 'FEATURE_BRANCH_CONTENT_5521';
 const MARKER = 'AGENT_REPO_MARKER_3390'; // must match GitRepoModel
 
 let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
@@ -38,6 +39,12 @@ function seedRemote() {
   fs.writeFileSync(`${work}/README.md`, README);
   git(['add', '-A'], work);
   git(['commit', '-q', '-m', 'seed'], work);
+  // A second branch whose README differs, so a `checkout: {branch}` mount is
+  // provably distinct from the default branch.
+  git(['checkout', '-q', '-b', 'feature'], work);
+  fs.writeFileSync(`${work}/README.md`, FEATURE_README);
+  git(['commit', '-q', '-am', 'feature readme'], work);
+  git(['checkout', '-q', 'main'], work);
   const bare = `${TMP}/remote.git`;
   git(['clone', '-q', '--bare', work, bare]);
   return bare;
@@ -73,11 +80,13 @@ async function harvest(sid) {
 
 // Drive a session: read the cloned README (proving the clone), write NEW.txt (parks
 // for approval), then reply. Returns the joined text of all tool results.
-async function driveRepoSession(bare) {
+async function driveRepoSession(bare, checkout) {
+  const repo = { type: 'github_repository', url: bare, mount_path: '/workspace/repo' };
+  if (checkout) repo.checkout = checkout;
   const session = await client.beta.sessions.create({
     agent: 'assistant',
     environment_id: 'env_local',
-    resources: [{ type: 'github_repository', url: bare, mount_path: '/workspace/repo' }],
+    resources: [repo],
     betas: BETAS,
   });
   await client.beta.sessions.events.send(session.id, {
@@ -112,6 +121,15 @@ async function main() {
     const s1 = await driveRepoSession(bare);
     assert.ok(s1.toolText.includes(README), `agent read the host-cloned repo file: ${s1.toolText}`);
     pass('repo cloned host-side; agent read the seeded file from the jail');
+
+    // ---- checkout: {type:"branch"} clones that ref, not the default branch ----
+    const sf = await driveRepoSession(bare, { type: 'branch', name: 'feature' });
+    assert.ok(
+      sf.toolText.includes(FEATURE_README),
+      `checkout:{branch:"feature"} put the feature README in the jail: ${sf.toolText}`,
+    );
+    assert.ok(!sf.toolText.includes(README), 'the feature checkout did not clone the default branch');
+    pass('checkout:{type:"branch"} mounts the requested ref');
 
     // The host committed + pushed the agent's NEW.txt back to the bare remote.
     const pushed = git(['show', `main:NEW.txt`], bare).trim();
