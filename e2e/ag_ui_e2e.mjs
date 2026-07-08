@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { HttpAgent } from '@ag-ui/client';
-import { withServer, pass, RED_PNG_B64 } from './harness.mjs';
+import { withRealServer, pass, RED_PNG_B64 } from './harness.mjs';
 
 function newAgent(base) {
   return new HttpAgent({ url: `${base}/v1/ag-ui/agents/assistant` });
@@ -24,7 +24,7 @@ async function reply(agent) {
 
 async function main() {
   // --- multi-turn: the same agent instance keeps its threadId across runs ---
-  await withServer('echo', 38121, async (base) => {
+  await withRealServer('echo', 38121, async (base) => {
     const agent = newAgent(base);
     agent.messages = [{ id: 'u1', role: 'user', content: 'first message' }];
     const r1 = await reply(agent);
@@ -36,7 +36,7 @@ async function main() {
   });
 
   // --- multimodal: an image input part travels to the model ---
-  await withServer('vision', 38122, async (base) => {
+  await withRealServer('vision', 38122, async (base) => {
     const agent = newAgent(base);
     agent.messages = [
       {
@@ -55,7 +55,7 @@ async function main() {
 
   // --- HITL: a tool needing approval parks; delivering its result (approval) as a
   // `role: "tool"` message resumes the run to completion ---
-  await withServer('probe', 38123, async (base) => {
+  await withRealServer('probe', 38123, async (base) => {
     const agent = newAgent(base);
     agent.messages = [{ id: 'u1', role: 'user', content: 'remember this note' }];
     const r1 = await agent.runAgent();
@@ -78,7 +78,7 @@ async function main() {
   // --- streaming tool calls: a tool call is delivered mid-run as the AG-UI
   // streaming sequence TOOL_CALL_START -> TOOL_CALL_ARGS -> TOOL_CALL_END (not
   // buffered to the end), captured live through the client's event subscriber ---
-  await withServer('probe', 38125, async (base) => {
+  await withRealServer('probe', 38125, async (base) => {
     const agent = newAgent(base);
     agent.messages = [{ id: 'u1', role: 'user', content: 'remember' }];
     const seen = [];
