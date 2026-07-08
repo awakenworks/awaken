@@ -72,24 +72,27 @@ async function main() {
       // --- turn 1: the agent calls the MCP tool and reports the sum ---
       await sendMessage(client, session.id, 'add 2 3');
       let events = await listEvents(client, session.id);
-      const toolUse = events.find((e) => e.type === 'agent.tool_use');
-      assert.ok(toolUse, `an agent.tool_use event: ${JSON.stringify(events.map((e) => e.type))}`);
+      // An MCP tool call projects as the distinct agent.mcp_tool_use/result events.
+      const toolUse = events.find((e) => e.type === 'agent.mcp_tool_use');
+      assert.ok(toolUse, `an agent.mcp_tool_use event: ${JSON.stringify(events.map((e) => e.type))}`);
       assert.equal(toolUse.name, 'mcp__calc__add');
-      const toolResult = events.find((e) => e.type === 'agent.tool_result');
-      assert.ok(toolResult, 'an agent.tool_result event');
+      assert.equal(toolUse.mcp_server_name, 'calc');
+      const toolResult = events.find((e) => e.type === 'agent.mcp_tool_result');
+      assert.ok(toolResult, 'an agent.mcp_tool_result event');
+      assert.equal(toolResult.mcp_tool_use_id, toolUse.id);
       assert.equal(toolResult.content[0].text, '5');
       assert.ok(
         agentMessages(events).some((m) => m.includes('result: 5')),
         `final message reports result: 5 — got ${JSON.stringify(agentMessages(events))}`,
       );
-      pass('turn 1: add 2 3 -> mcp__calc__add tool_use, tool_result 5, "result: 5"');
+      pass('turn 1: add 2 3 -> mcp__calc__add mcp_tool_use, mcp_tool_result 5, "result: 5"');
 
       // --- turn 2 on the SAME session: the connection serves the next turn ---
       await sendMessage(client, session.id, 'add 40 2');
       events = await listEvents(client, session.id);
       assert.ok(
-        events.some((e) => e.type === 'agent.tool_result' && e.content[0].text === '42'),
-        'second turn tool result is 42',
+        events.some((e) => e.type === 'agent.mcp_tool_result' && e.content[0].text === '42'),
+        'second turn mcp tool result is 42',
       );
       assert.ok(
         agentMessages(events).some((m) => m.includes('result: 42')),

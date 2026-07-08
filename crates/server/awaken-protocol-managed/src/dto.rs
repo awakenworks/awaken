@@ -133,15 +133,38 @@ impl Serialize for McpServerWire {
     }
 }
 
-/// The agent object echoed inside a session response.
+/// The `BetaManagedAgentsModelConfig` object: `{ id, speed? }`. A session/agent's
+/// `model` is this object on the wire, never a bare string (the SDK reads
+/// `agent.model.id`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelConfig {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+}
+
+impl ModelConfig {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            speed: None,
+        }
+    }
+}
+
+/// The agent object echoed inside a session response
+/// (`BetaManagedAgentsSessionAgent`).
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionAgent {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub version: u32,
-    pub model: String,
+    pub model: ModelConfig,
     pub name: String,
+    /// SDK-required (nullable) fields; emitted as `null` when the host has none.
+    pub description: Option<String>,
+    pub system: Option<String>,
     pub tools: Vec<Value>,
     pub mcp_servers: Vec<Value>,
     pub skills: Vec<Value>,
@@ -317,6 +340,25 @@ pub enum OutboundKind {
     },
     #[serde(rename = "agent.custom_tool_use")]
     AgentCustomToolUse { name: String, input: Value },
+    /// An MCP tool call (`agent.mcp_tool_use`): a host-executed tool from an MCP
+    /// server, distinguished from a built-in `agent.tool_use` by the `mcp__` name.
+    #[serde(rename = "agent.mcp_tool_use")]
+    AgentMcpToolUse {
+        name: String,
+        mcp_server_name: String,
+        input: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        evaluated_permission: Option<String>,
+    },
+    /// The result of an MCP tool call (`agent.mcp_tool_result`), keyed by
+    /// `mcp_tool_use_id`.
+    #[serde(rename = "agent.mcp_tool_result")]
+    AgentMcpToolResult {
+        mcp_tool_use_id: String,
+        content: Vec<ContentBlock>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
     #[serde(rename = "session.status_running")]
     SessionStatusRunning {},
     #[serde(rename = "session.status_idle")]
@@ -408,6 +450,8 @@ impl OutboundKind {
             OutboundKind::AgentToolUse { .. } => "agent.tool_use",
             OutboundKind::AgentToolResult { .. } => "agent.tool_result",
             OutboundKind::AgentCustomToolUse { .. } => "agent.custom_tool_use",
+            OutboundKind::AgentMcpToolUse { .. } => "agent.mcp_tool_use",
+            OutboundKind::AgentMcpToolResult { .. } => "agent.mcp_tool_result",
             OutboundKind::SessionStatusRunning {} => "session.status_running",
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
             OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
