@@ -107,10 +107,15 @@ impl AcpCli {
     }
 }
 
+// Claude Code does NOT speak ACP natively (there is no `claude --acp`). It is
+// fronted by the official adapter package `@agentclientprotocol/claude-agent-acp`,
+// launched via `npx`. The version is pinned to a MAJOR.MINOR (never `@latest`,
+// mirroring oversight-next's `is_floating_version` guardrail) so a launch is
+// reproducible and the wire codec stays a known quantity.
 const CLAUDE: AcpCli = AcpCli {
     id: "claude",
-    command: "claude",
-    args: &["--acp"],
+    command: "npx",
+    args: &["-y", "@agentclientprotocol/claude-agent-acp@0.44"],
     model_delivery: ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
@@ -129,10 +134,21 @@ const CLAUDE: AcpCli = AcpCli {
     env: &[],
 };
 
+// Codex is likewise fronted by an adapter package (`@zed-industries/codex-acp`),
+// not a native `codex acp` subcommand. The extra `-c` flags disable Codex's own
+// approval prompts and set it to workspace-write — our layer owns the gate and the
+// jail, so the CLI must not block on its own confirmations.
 const CODEX: AcpCli = AcpCli {
     id: "codex",
-    command: "codex",
-    args: &["acp"],
+    command: "npx",
+    args: &[
+        "-y",
+        "@zed-industries/codex-acp@0.4",
+        "-c",
+        "approval_policy=\"never\"",
+        "-c",
+        "sandbox_mode=\"workspace-write\"",
+    ],
     model_delivery: ModelDelivery {
         base_url: "OPENAI_BASE_URL",
         model: "OPENAI_MODEL",
@@ -149,6 +165,8 @@ const CODEX: AcpCli = AcpCli {
     env: &[],
 };
 
+// Gemini CLI speaks ACP natively via `--experimental-acp` (no npm wrapper), so it
+// is a Direct launch with no dynamic-install step.
 const GEMINI: AcpCli = AcpCli {
     id: "gemini",
     command: "gemini",
@@ -166,6 +184,14 @@ const GEMINI: AcpCli = AcpCli {
     context_window_env: None,
     env: &[],
 };
+
+/// Whether a launch command dynamically installs its agent on first run (an `npx`
+/// wrapper pulls the pinned package into the npm cache), so a caller can surface an
+/// "installing…" phase before the process is usable. A native CLI (Gemini) is not.
+#[must_use]
+pub fn is_dynamic_install(cli: &AcpCli) -> bool {
+    cli.command == "npx"
+}
 
 /// The known ACP CLIs. Adding one is a row here — never a branch elsewhere.
 #[must_use]
@@ -209,11 +235,51 @@ mod tests {
     }
 
     #[test]
+    fn claude_launches_via_pinned_npx_adapter_not_a_native_flag() {
+        // Claude Code has no native ACP mode; it is fronted by the npx adapter,
+        // pinned to a MAJOR.MINOR (never `@latest`).
+        let cli = acp_cli("claude").unwrap();
+        assert_eq!(cli.command, "npx");
+        assert_eq!(
+            cli.args,
+            &["-y", "@agentclientprotocol/claude-agent-acp@0.44"]
+        );
+        assert!(
+            is_dynamic_install(cli),
+            "an npx wrapper installs on first run"
+        );
+    }
+
+    #[test]
+    fn codex_launches_via_pinned_npx_adapter_with_non_interactive_flags() {
+        let cli = acp_cli("codex").unwrap();
+        assert_eq!(cli.command, "npx");
+        assert!(cli.args.contains(&"@zed-industries/codex-acp@0.4"));
+        // Our layer owns approval + jail, so the CLI must not block on its own.
+        assert!(cli.args.contains(&"approval_policy=\"never\""));
+        assert!(is_dynamic_install(cli));
+    }
+
+    #[test]
+    fn gemini_speaks_acp_natively_and_needs_no_install() {
+        let cli = acp_cli("gemini").unwrap();
+        assert_eq!(cli.command, "gemini");
+        assert_eq!(cli.args, &["--experimental-acp"]);
+        assert!(
+            !is_dynamic_install(cli),
+            "a native CLI has no dynamic-install step"
+        );
+    }
+
+    #[test]
     fn claude_projects_model_base_url_tier_aliases_and_compact_window() {
         let cli = acp_cli("claude").unwrap();
         let launch = cli.project(&resolved(), Some(1_000_000), &[]);
 
-        assert_eq!(launch.argv, vec!["claude", "--acp"]);
+        assert_eq!(
+            launch.argv,
+            vec!["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"]
+        );
         assert_eq!(
             env_of(&launch, "ANTHROPIC_BASE_URL").as_deref(),
             Some("https://api.minimaxi.com/anthropic")
