@@ -56,14 +56,24 @@ fn compaction_marker(run_id: &str) -> Command {
     )
 }
 
-/// Whether `run_id` folded its context (committed a compaction marker). The single
-/// read-back seam for a protocol adapter that projects the compaction event: it
-/// owns the key so no consumer duplicates it.
-pub fn compacted(state: &[Command], run_id: &str) -> bool {
-    let key = compaction_key(run_id);
-    state.iter().any(|cmd| {
-        matches!(cmd.action, Action::Set(_)) && cmd.scope == Scope::Thread && cmd.key.0 == key
-    })
+/// The number of distinct folds recorded in `state` — one `compaction/<run_id>`
+/// key per fold. A protocol adapter projects the compaction event when this count
+/// grows across a turn (compare a turn-start baseline to the terminal-step value).
+/// Run-id-agnostic, so it works identically for direct and durable ingress — the
+/// durable worker mints its own run id, which a run-id match would miss.
+pub fn compaction_count(state: &[Command]) -> usize {
+    state
+        .iter()
+        .filter_map(|cmd| match &cmd.action {
+            Action::Set(_)
+                if cmd.scope == Scope::Thread && cmd.key.0.starts_with(COMPACTION_KEY_PREFIX) =>
+            {
+                Some(cmd.key.0.as_str())
+            }
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
 }
 
 /// Summarizes the older part of a conversation. Implemented by the host over a
@@ -298,7 +308,7 @@ mod tests {
         // The fold stages exactly one thread-scoped compaction marker, which the
         // read-back helper resolves to `true`.
         assert_eq!(reaction.state.len(), 1);
-        assert!(compacted(&reaction.state, "r"));
+        assert_eq!(compaction_count(&reaction.state), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -314,7 +324,7 @@ mod tests {
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &convo(5)).await;
         assert!(reaction.state.is_empty());
-        assert!(!compacted(&reaction.state, "r"));
+        assert_eq!(compaction_count(&reaction.state), 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -355,7 +365,7 @@ mod tests {
             1,
             "the token budget folded the older slice"
         );
-        assert!(compacted(&reaction.state, "r"));
+        assert_eq!(compaction_count(&reaction.state), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -372,7 +382,7 @@ mod tests {
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
         assert!(reaction.context.is_empty());
-        assert!(!compacted(&reaction.state, "r"));
+        assert_eq!(compaction_count(&reaction.state), 0);
     }
 
     #[test]
