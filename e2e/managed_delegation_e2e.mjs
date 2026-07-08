@@ -70,6 +70,16 @@ async function main() {
     });
     assert.equal(gotChild.id, child.id, 'the child thread is retrievable');
 
+    // The child thread's inline run is bracketed: created → running → idle.
+    const childEvents = okEvents.filter((e) => e.session_thread_id === child.id);
+    assert.deepEqual(
+      childEvents.map((e) => e.type),
+      ['session.thread_created', 'session.thread_status_running', 'session.thread_status_idle'],
+      `child thread lifecycle: ${childEvents.map((e) => e.type)}`,
+    );
+    const childIdle = childEvents.find((e) => e.type === 'session.thread_status_idle');
+    assert.equal(childIdle.stop_reason.type, 'end_turn');
+
     // Fail closed: `ghost` is not in the roster; no sub-run runs.
     const bad = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     const badEvents = await turn(client, bad.id, 'use the ghost agent');

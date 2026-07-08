@@ -1282,20 +1282,34 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
         }
-        // Register a child thread per delegate call and announce each with
-        // `session.thread_created` (so the thread API enumerates subagent threads).
+        // Register a child thread per delegate call and bracket its inline run with
+        // the thread lifecycle: `created` → `status_running` → `status_idle`, so the
+        // thread API enumerates subagent threads and reports their status.
         for agent_name in delegate_names {
             let thread_id = format!("{}:thread:{}", session_id, record.child_threads.len());
             let thread = Self::child_thread(&record.session, &thread_id, &agent_name);
             record.child_threads.push(thread);
-            record.events.push(Event {
-                id: self.next_event_id(),
-                kind: OutboundKind::SessionThreadCreated {
-                    session_thread_id: thread_id,
-                    agent_name,
+            for kind in [
+                OutboundKind::SessionThreadCreated {
+                    session_thread_id: thread_id.clone(),
+                    agent_name: agent_name.clone(),
                 },
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
+                OutboundKind::SessionThreadStatusRunning {
+                    session_thread_id: thread_id.clone(),
+                    agent_name: agent_name.clone(),
+                },
+                OutboundKind::SessionThreadStatusIdle {
+                    session_thread_id: thread_id.clone(),
+                    agent_name: agent_name.clone(),
+                    stop_reason: StopReason::EndTurn,
+                },
+            ] {
+                record.events.push(Event {
+                    id: self.next_event_id(),
+                    kind,
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                });
+            }
         }
         Ok(())
     }

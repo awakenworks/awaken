@@ -335,6 +335,20 @@ pub enum OutboundKind {
         session_thread_id: String,
         agent_name: String,
     },
+    /// A subagent child thread started running (`session.thread_status_running`).
+    #[serde(rename = "session.thread_status_running")]
+    SessionThreadStatusRunning {
+        session_thread_id: String,
+        agent_name: String,
+    },
+    /// A subagent child thread went idle (`session.thread_status_idle`), carrying
+    /// the same `stop_reason` shape as the session's own idle.
+    #[serde(rename = "session.thread_status_idle")]
+    SessionThreadStatusIdle {
+        session_thread_id: String,
+        agent_name: String,
+        stop_reason: StopReason,
+    },
     /// The conversation history was summarized to fit context (the compact plugin
     /// folded older turns). A pure marker: its shape matches the installed SDK's
     /// `BetaManagedAgentsAgentThreadContextCompactedEvent` — `{id, type,
@@ -364,6 +378,8 @@ impl OutboundKind {
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
             OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
             OutboundKind::SessionThreadCreated { .. } => "session.thread_created",
+            OutboundKind::SessionThreadStatusRunning { .. } => "session.thread_status_running",
+            OutboundKind::SessionThreadStatusIdle { .. } => "session.thread_status_idle",
             OutboundKind::ThreadContextCompacted { .. } => "agent.thread_context_compacted",
             OutboundKind::SpanOutcomeEvaluationStart { .. } => "span.outcome_evaluation_start",
             OutboundKind::SpanOutcomeEvaluationEnd { .. } => "span.outcome_evaluation_end",
