@@ -126,6 +126,69 @@ mod tests {
     }
 
     #[test]
+    fn from_process_env_builds_a_usable_resolver() {
+        let base = std::env::temp_dir().join(format!("awaken-fpe-{}", std::process::id()));
+        let r = EnvLaunchResolver::from_process_env(claude(), Some(base.clone()));
+        let env = r.config_home_env("thr");
+        assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn empty_run_model_falls_back_to_the_env_model_key() {
+        let r = resolver_with(
+            &[
+                ("ANTHROPIC_BASE_URL", "u"),
+                ("ANTHROPIC_API_KEY", "k"), // awaken-allow: secret
+                ("ANTHROPIC_MODEL", "env-model"),
+            ],
+            None,
+        );
+        assert_eq!(r.resolve_model("").unwrap().model, "env-model");
+    }
+
+    #[test]
+    fn launch_resolver_trait_reads_the_run_model_and_thread() {
+        use awaken_agent_contract::agent::run::Id as RunId;
+        use awaken_agent_contract::agent::thread::Id as ThreadId;
+        use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+        use awaken_runtime_contract::snapshot::{
+            AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+        };
+        let base = std::env::temp_dir().join(format!("awaken-lrt-{}", std::process::id()));
+        let r = resolver_with(
+            &[("ANTHROPIC_BASE_URL", "u"), ("ANTHROPIC_API_KEY", "k")], // awaken-allow: secret
+            Some(base.clone()),
+        );
+        let act = RunActivation {
+            run_id: RunId("r".into()),
+            thread_id: ThreadId("th".into()),
+            snapshot: ExecutableAgentSnapshot {
+                id: ExecutableAgentSnapshotId("s".into()),
+                root_agent_id: AgentId("a".into()),
+                resolved_spec: ResolvedSpec {
+                    catalog_fingerprint: CatalogFingerprint("fp".into()),
+                    instructions: String::new(),
+                    max_steps: 4,
+                    model_binding: ModelBinding::new("p", "run-model", "acp:claude"),
+                    tool_descriptors: Vec::new(),
+                    plugin_ids: Vec::new(),
+                    plugin_config: Default::default(),
+                    context_policy: Default::default(),
+                },
+                fingerprint: CatalogFingerprint("fp".into()),
+            },
+            input: Vec::new(),
+            trace: Default::default(),
+        };
+        assert_eq!(r.model(&act).unwrap().model, "run-model");
+        let env = r.extra_env(&act);
+        assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
+        assert!(env[0].1.contains("th"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn extra_env_points_the_cli_at_the_threads_config_home() {
         let base = std::env::temp_dir().join(format!("awaken-aclr-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
