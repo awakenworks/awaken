@@ -4,7 +4,7 @@
 // CI-safe.
 
 import assert from 'node:assert/strict';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 async function req(base, uri, body, raw = false) {
   const res = await fetch(`${base}${uri}`, {
@@ -16,7 +16,7 @@ async function req(base, uri, body, raw = false) {
 }
 
 async function main() {
-  await withServer('management', 38267, async (base) => {
+  await withScenarioServer('management', 'mcp', 38267, async (base) => {
     // Resolve an unauthored model → fail closed.
     let r = await req(base, '/v1/config/inference/resolve', {
       workspace_id: 'ws',

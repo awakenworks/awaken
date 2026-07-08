@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT_A = Number(process.env.E2E_PORT ?? 38184);
 const PORT_B = PORT_A + 1;
@@ -25,10 +25,17 @@ const listEvents = async (sessionId) => {
 };
 
 async function main() {
+  // Two real upstreams: B runs the echo peer, A runs the delegating coordinator —
+  // each server's model crosses the real provider wire.
+  const upstreamB = await startUpstream('echo');
+  const upstreamA = await startUpstream('delegating');
   // Server B: the remote A2A agent (echo). Every server mounts the A2A adapter.
-  const b = spawnServer('echo', PORT_B, {});
+  const b = spawnServer('real', PORT_B, { ...realServerEnv('echo', upstreamB) });
   // Server A: delegates `researcher` to B over A2A.
-  const a = spawnServer('delegate-remote', PORT_A, { AWAKEN_REMOTE_AGENT_URL: `http://127.0.0.1:${PORT_B}` });
+  const a = spawnServer('delegate-remote', PORT_A, {
+    AWAKEN_REMOTE_AGENT_URL: `http://127.0.0.1:${PORT_B}`,
+    ...realServerEnv('delegating', upstreamA, { mode: 'delegate-remote' }),
+  });
   await waitForPort(PORT_B);
   await waitForPort(PORT_A);
   try {
@@ -68,6 +75,8 @@ async function main() {
   } finally {
     await stopServer(a.server);
     await stopServer(b.server);
+    upstreamA.close();
+    upstreamB.close();
   }
 }
 

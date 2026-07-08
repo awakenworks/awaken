@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38170);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -59,8 +59,12 @@ async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
 
+  // One fake upstream survives the restart, so both processes dial the same wire.
+  const upstream = await startUpstream('echo');
+  const realEnv = { ...DURABLE_ENV, ...realServerEnv('echo', upstream) };
+
   // ---- server A: a turn delivered through the durable dispatch queue ----
-  const a = spawnServer('echo', PORT, DURABLE_ENV);
+  const a = spawnServer('real', PORT, realEnv);
   await waitForPort(PORT);
 
   const session = await client.beta.sessions.create({
@@ -80,7 +84,7 @@ async function main() {
 
   // ---- kill A, start a fresh server B over the SAME storage directory ----
   await stopServer(a.server);
-  const b = spawnServer('echo', PORT, DURABLE_ENV);
+  const b = spawnServer('real', PORT, realEnv);
   await waitForPort(PORT);
   client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
@@ -101,6 +105,7 @@ async function main() {
     console.log('E2E PASS: durable run-ingress dispatch + cross-restart recovery via TS SDK.');
   } finally {
     await stopServer(b.server);
+    upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
 }

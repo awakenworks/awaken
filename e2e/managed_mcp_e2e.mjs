@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -37,7 +37,7 @@ const agentMessages = (events) =>
 async function main() {
   const fixture = await startCalcFixture(CALC_TOKEN);
   try {
-    await withServer('management', 38190, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', 38190, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // --- vault + mcp_oauth credential (secret write-only) ---

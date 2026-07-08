@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38217);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -102,9 +102,10 @@ async function main() {
   fs.mkdirSync(TMP, { recursive: true });
   const bare = seedRemote();
   const servers = [];
+  const upstream = await startUpstream('gitRepo');
   try {
     // ---- server A: clone → agent reads seed → agent writes → host pushes back ----
-    const a = spawnServer('git-repo', PORT);
+    const a = spawnServer('git-repo', PORT, realServerEnv('gitRepo', upstream, { mode: 'git-repo' }));
     servers.push(a.server);
     await waitForPort(PORT);
 
@@ -120,7 +121,7 @@ async function main() {
     // ---- restart: a fresh process re-clones the remote and sees the pushed change ----
     await stopServer(a.server);
     servers.pop();
-    const b = spawnServer('git-repo', PORT);
+    const b = spawnServer('git-repo', PORT, realServerEnv('gitRepo', upstream, { mode: 'git-repo' }));
     servers.push(b.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
@@ -135,6 +136,7 @@ async function main() {
     console.log('E2E PASS: ADR-0038 github_repository clone + agent edit + host push-back.');
   } finally {
     for (const srv of servers) await stopServer(srv);
+    upstream.close();
     fs.rmSync(TMP, { recursive: true, force: true });
   }
 }

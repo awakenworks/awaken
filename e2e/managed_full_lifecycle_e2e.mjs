@@ -20,7 +20,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
@@ -52,7 +52,7 @@ const agentMessages = (events) =>
 async function main() {
   const fixture = await startCalcFixture(CALC_TOKEN);
   try {
-    await withServer('management', PORT, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', PORT, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // ── 1. CREATE RESOURCES ────────────────────────────────────────────────

@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38211);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -74,9 +74,10 @@ async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const servers = [];
+  const upstream = await startUpstream('memoryResource');
   try {
     // ---- server A: write into a mounted memory store; host harvests it ----
-    const a = spawnServer('memory-resource', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR });
+    const a = spawnServer('memory-resource', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('memoryResource', upstream, { mode: 'memory-resource' }) });
     servers.push(a.server);
     await waitForPort(PORT);
 
@@ -113,7 +114,7 @@ async function main() {
     // ---- restart: kill A, start B over the SAME storage dir ----
     await stopServer(a.server);
     servers.pop();
-    const b = spawnServer('memory-resource', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR });
+    const b = spawnServer('memory-resource', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('memoryResource', upstream, { mode: 'memory-resource' }) });
     servers.push(b.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
@@ -127,6 +128,7 @@ async function main() {
     console.log('E2E PASS: ADR-0038 memory_store resource is durable across restart.');
   } finally {
     for (const s of servers) await stopServer(s);
+    upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
 }

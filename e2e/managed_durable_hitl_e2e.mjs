@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = 38275;
@@ -31,7 +31,8 @@ async function until(fn) {
 
 async function main() {
   fs.rmSync(STORE, { recursive: true, force: true });
-  const srv = spawnServer('probe', PORT, { AWAKEN_INGRESS: 'durable', AWAKEN_STORAGE_DIR: STORE });
+  const upstream = await startUpstream('probe');
+  const srv = spawnServer('real', PORT, { AWAKEN_INGRESS: 'durable', AWAKEN_STORAGE_DIR: STORE, ...realServerEnv('probe', upstream) });
   await waitForPort(PORT);
   const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
   try {
@@ -65,6 +66,7 @@ async function main() {
     process.exitCode = 1;
   } finally {
     await stopServer(srv.server);
+    upstream.close();
     fs.rmSync(STORE, { recursive: true, force: true });
   }
 }

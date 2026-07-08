@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38182);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -36,10 +36,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
-  const srv = spawnServer('probe', PORT, {
+  const upstream = await startUpstream('probe');
+  const srv = spawnServer('real', PORT, {
     AWAKEN_STORAGE_DIR: STORE_DIR,
     AWAKEN_INGRESS: 'durable',
     AWAKEN_DISPATCH_DAEMON: '1',
+    ...realServerEnv('probe', upstream),
   });
   await waitForPort(PORT);
   try {
@@ -100,6 +102,7 @@ async function main() {
     console.log('E2E PASS: durable live-control cancel + fail-closed wake (ADR-0018).');
   } finally {
     await stopServer(srv.server);
+    upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
 }

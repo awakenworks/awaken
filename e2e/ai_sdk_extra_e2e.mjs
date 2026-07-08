@@ -6,7 +6,7 @@
 // Run: (from e2e/)  node ai_sdk_extra_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38186);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -28,7 +28,8 @@ const postStream = async (path, payload) => {
 };
 
 async function main() {
-  const { server } = spawnServer('echo', PORT);
+  const upstream = await startUpstream('echo');
+  const { server } = spawnServer('real', PORT, { ...realServerEnv('echo', upstream) });
   await waitForPort(PORT);
   try {
     // Agent-scoped run route: `/v1/ai-sdk/agents/:agent_id/runs` sets the agent id
@@ -67,6 +68,7 @@ async function main() {
     console.log('E2E PASS: ai-sdk extra endpoints and error paths.');
   } finally {
     await stopServer(server);
+    upstream.close();
   }
 }
 

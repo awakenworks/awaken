@@ -3,7 +3,7 @@
 // router's error arms the happy-path vault e2e does not reach. CI-safe.
 
 import assert from 'node:assert/strict';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = 'managed-agents-2026-04-01';
 
@@ -20,7 +20,7 @@ async function req(base, method, uri, body) {
 }
 
 async function main() {
-  await withServer('management', 38263, async (base) => {
+  await withScenarioServer('management', 'mcp', 38263, async (base) => {
     // Create a real vault.
     let r = await req(base, 'POST', '/v1/vaults', { display_name: 'edge vault' });
     assert.ok([200, 201].includes(r.status), `create vault -> 2xx (got ${r.status})`);

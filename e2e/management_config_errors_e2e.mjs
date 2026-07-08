@@ -3,7 +3,7 @@
 // arms that the happy-path admin e2e does not reach. Deterministic, CI-safe.
 
 import assert from 'node:assert/strict';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 async function req(base, method, uri, rawBody, json = true) {
   const res = await fetch(`${base}${uri}`, {
@@ -16,7 +16,7 @@ async function req(base, method, uri, rawBody, json = true) {
 }
 
 async function main() {
-  await withServer('management', 38251, async (base) => {
+  await withScenarioServer('management', 'mcp', 38251, async (base) => {
     // Missing rows across namespaces → 404.
     for (const uri of [
       '/v1/config/providers/ghost',
