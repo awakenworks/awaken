@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38213);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -66,9 +66,10 @@ async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const servers = [];
+  const upstream = await startUpstream('memory');
   try {
     // ---- server A: save a memory, confirm it recalls in-process ----
-    const a = spawnServer('memory', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR });
+    const a = spawnServer('memory', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('memory', upstream, { mode: 'memory' }) });
     servers.push(a.server);
     await waitForPort(PORT);
 
@@ -80,7 +81,7 @@ async function main() {
     // ---- restart: kill A, start B over the SAME storage dir ----
     await stopServer(a.server);
     servers.pop();
-    const b = spawnServer('memory', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR });
+    const b = spawnServer('memory', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('memory', upstream, { mode: 'memory' }) });
     servers.push(b.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
@@ -93,6 +94,7 @@ async function main() {
     console.log('E2E PASS: cross-session extraction memory is durable across restart.');
   } finally {
     for (const srv of servers) await stopServer(srv);
+    upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
 }

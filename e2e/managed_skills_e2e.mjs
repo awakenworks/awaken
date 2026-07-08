@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38183);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -25,7 +25,8 @@ const listEvents = async (sessionId) => {
 };
 
 async function main() {
-  const { server } = spawnServer('skills', PORT);
+  const upstream = await startUpstream('skills');
+  const { server } = spawnServer('skills', PORT, realServerEnv('skills', upstream, { mode: 'skills' }));
   await waitForPort(PORT);
   try {
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
@@ -54,6 +55,7 @@ async function main() {
     console.log('E2E PASS: skill discovery → activation → use via TS SDK (ADR-0036).');
   } finally {
     await stopServer(server);
+    upstream.close();
   }
 }
 

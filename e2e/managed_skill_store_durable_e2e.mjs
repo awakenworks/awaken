@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38215);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -75,9 +75,10 @@ async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const servers = [];
+  const upstream = await startUpstream('skills');
   try {
     // ---- server A: upload a durable skill, then use it ----
-    const a = spawnServer('skills-durable', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR });
+    const a = spawnServer('skills-durable', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('skills', upstream, { mode: 'skills-durable' }) });
     servers.push(a.server);
     await waitForPort(PORT);
 
@@ -98,7 +99,7 @@ async function main() {
     // ---- restart: kill A, start B over the SAME storage dir ----
     await stopServer(a.server);
     servers.pop();
-    const b = spawnServer('skills-durable', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR });
+    const b = spawnServer('skills-durable', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('skills', upstream, { mode: 'skills-durable' }) });
     servers.push(b.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
@@ -114,7 +115,7 @@ async function main() {
     // closed rather than pretending to persist — the store is required, not optional.
     await stopServer(b.server);
     servers.pop();
-    const noStore = spawnServer('skills', PORT);
+    const noStore = spawnServer('skills', PORT, realServerEnv('skills', upstream, { mode: 'skills' }));
     servers.push(noStore.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
@@ -127,6 +128,7 @@ async function main() {
     console.log('E2E PASS: ADR-0036 delivered-skill catalog is durable across restart.');
   } finally {
     for (const s of servers) await stopServer(s);
+    upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
 }

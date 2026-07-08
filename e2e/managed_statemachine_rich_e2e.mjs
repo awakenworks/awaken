@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38188);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -19,7 +19,8 @@ const BETAS = ['managed-agents-2026-04-01'];
 const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
 
 async function main() {
-  const { server } = spawnServer('statemachine-rich', PORT);
+  const upstream = await startUpstream('stateMachine');
+  const { server } = spawnServer('statemachine-rich', PORT, realServerEnv('stateMachine', upstream, { mode: 'statemachine-rich' }));
   await waitForPort(PORT);
   try {
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
@@ -49,6 +50,7 @@ async function main() {
     console.log('E2E PASS: result-gated + keyed tool state machine (result matchers + key template).');
   } finally {
     await stopServer(server);
+    upstream.close();
   }
 }
 

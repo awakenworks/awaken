@@ -16,14 +16,15 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38151);
 const BETAS = ['managed-agents-2026-04-01'];
 const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
 async function main() {
-  const { server } = spawnServer('statemachine', PORT);
+  const upstream = await startUpstream('stateMachine');
+  const { server } = spawnServer('statemachine', PORT, realServerEnv('stateMachine', upstream, { mode: 'statemachine' }));
   await waitForPort(PORT);
   try {
     const session = await client.beta.sessions.create({
@@ -64,6 +65,7 @@ async function main() {
     console.log('E2E PASS: tool state machine gate + advance + emit + violation via TS SDK.');
   } finally {
     await stopServer(server);
+    upstream.close();
   }
 }
 
