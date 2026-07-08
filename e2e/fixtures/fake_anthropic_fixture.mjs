@@ -185,6 +185,39 @@ export const BEHAVIORS = {
     }
     return text(`Echo: ${t}`);
   },
+  // FullChainModel (the native combined-chain e2e): one conversation that drives the
+  // whole ADR-0038/0036 loop — discover+use a skill, write into the mounted memory
+  // store, write into the cloned git repo, and produce an output artifact — plus its
+  // out-of-band extractor sub-run that saves a memory. Sequenced by tool-result count
+  // so it needs no transcript parsing; every write is host-gated and harvested.
+  fullChain(parsed) {
+    // The extraction sub-run (out-of-band): save one memory, then finish. It is seeded
+    // with the whole main-turn transcript (which carries tool results), so we can't key
+    // off a tool-result *count*; instead write_memory unless the LAST message is our
+    // write_memory result (i.e. the tool just ran) — then finish.
+    if (systemText(parsed).includes('memory extraction sub-agent')) {
+      const msgs = parsed.messages ?? [];
+      const last = msgs[msgs.length - 1];
+      const lastIsToolResult = last && Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result');
+      if (lastIsToolResult) return text('memory saved');
+      return tool('mx', 'write_memory', {
+        name: 'session-note',
+        kind: 'project',
+        content: 'remember: the full chain ran end to end',
+      });
+    }
+    switch (toolResults(parsed).length) {
+      case 0: return tool('ls', 'list_skills', {});
+      case 1: return tool('sk', 'Skill', { skill: 'greet' });
+      // Write into the mounted memory store (mount_path /notes.txt → .mnt/notes.txt).
+      case 2: return tool('wm', 'write', { path: '.mnt/notes.txt', content: 'MEMO_FULLCHAIN_5521' });
+      // Write into the cloned repo working tree (host commits + pushes on harvest).
+      case 3: return tool('wr', 'write', { path: 'workspace/repo/CHAIN.txt', content: 'REPO_FULLCHAIN_8830' });
+      // Produce an output artifact (harvested into the blob store, listed by /v1/files).
+      case 4: return tool('wa', 'write', { path: 'outputs/result.txt', content: 'ARTIFACT_FULLCHAIN_9142' });
+      default: return text('done: used skill greet, wrote memory + repo + artifact');
+    }
+  },
   // SkillDrivingModel: on the user turn call `list_skills`; given the catalog
   // activate `greet` via the `Skill` tool; given the activation instructions reply
   // `USED-SKILL: <instructions>` — discover → activate → use.
