@@ -92,6 +92,48 @@ async fn tcp_direct_dial_round_trips() {
 }
 
 #[tokio::test]
+async fn credential_resolver_and_applied_auth() {
+    use awaken_connection_plan::{AppliedAuth, CredentialResolver, NoAuth};
+    // NoAuth (the loopback default) grants nothing.
+    let applied = NoAuth
+        .resolve(&CredentialRef("vault://x".into()))
+        .await
+        .expect("resolve");
+    assert!(applied.is_empty());
+    assert!(applied.headers().is_empty());
+    // Bearer material presents an authorization header.
+    let bearer = AppliedAuth::bearer("tok-123");
+    assert!(!bearer.is_empty());
+    assert_eq!(bearer.headers()[0].0, "authorization");
+    assert!(bearer.headers()[0].1.contains("Bearer tok-123"));
+    // none() is the empty material.
+    assert!(AppliedAuth::none().is_empty());
+}
+
+#[tokio::test]
+async fn factory_and_bind_error_paths() {
+    use awaken_connection_plan::{bind_tcp, bind_unix, connect_with_retry};
+    // InProcess must be established via in_process_pair(), not connect().
+    assert!(TokioChannelFactory
+        .connect(&ConnectionPlan::in_process())
+        .await
+        .is_err());
+    // Transport/binder mismatches fail closed.
+    assert!(bind_tcp(&ConnectionPlan::unix_dial("/x")).await.is_err());
+    assert!(bind_unix(&ConnectionPlan::tcp_dial("127.0.0.1:1")).is_err());
+    // connect_with_retry to an address nothing listens on errors after its budget
+    // (and does not hang, per the per-attempt timeout).
+    let r = connect_with_retry(
+        &TokioChannelFactory,
+        &ConnectionPlan::tcp_dial("127.0.0.1:1"),
+        2,
+        std::time::Duration::from_millis(10),
+    )
+    .await;
+    assert!(r.is_err());
+}
+
+#[tokio::test]
 async fn connect_rejects_a_listen_plan() {
     let plan = ConnectionPlan::unix_listen("/tmp/never.sock");
     match TokioChannelFactory.connect(&plan).await {
