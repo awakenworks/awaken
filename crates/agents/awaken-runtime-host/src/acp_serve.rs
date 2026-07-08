@@ -55,6 +55,15 @@ impl AcpServeHost {
         self.runtime.model()
     }
 
+    /// The served session's accumulated token usage `(input_tokens, output_tokens)`.
+    /// Serving as an ACP agent runs our *native* engine to answer prompts, so a turn
+    /// served over ACP records token usage exactly like a native turn — this is the
+    /// one ACP direction where usage is real (driving an *external* ACP CLI cannot be,
+    /// since the ACP wire carries no token counts). Zero until a turn has run.
+    pub async fn usage(&self, session: &str) -> (u64, u64) {
+        self.runtime.usage(session).await
+    }
+
     /// ACP `session/new`: mint a fresh session id (a thread) for a served session.
     #[must_use]
     pub fn new_session(&self) -> String {
@@ -98,10 +107,13 @@ mod tests {
     use super::*;
     use crate::ProtocolHost;
     use crate::host::SharedHost;
-    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+    use awaken_runtime_contract::llm::{
+        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, TokenUsage,
+    };
 
     /// A deterministic model (the external model dependency): the runtime it drives
-    /// is the real `ProtocolHost`/`SharedHost` engine loop, not a double.
+    /// is the real `ProtocolHost`/`SharedHost` engine loop, not a double. It reports a
+    /// fixed token usage, standing for what a real provider returns.
     struct DeterministicModel;
     #[async_trait::async_trait]
     impl LlmExecutor for DeterministicModel {
@@ -111,7 +123,11 @@ mod tests {
         ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
             Ok(ChatResponse {
                 output: AssistantOutput::text("served reply"),
-                usage: None,
+                usage: Some(TokenUsage {
+                    prompt_tokens: 13,
+                    completion_tokens: 9,
+                    ..Default::default()
+                }),
                 stop_reason: None,
             })
         }
@@ -143,6 +159,16 @@ mod tests {
                 .map(Message::text_content)
                 .collect::<Vec<_>>()
         );
+
+        // Serving over ACP ran the native engine, so the turn's token usage was
+        // recorded on the served session exactly like a native turn.
+        assert_eq!(
+            serve.usage(&s1).await,
+            (13, 9),
+            "a turn served over ACP records native-engine token usage"
+        );
+        // A session that never ran a turn has zero usage.
+        assert_eq!(serve.usage(&s2).await, (0, 0));
     }
 
     #[test]
