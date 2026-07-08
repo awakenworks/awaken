@@ -75,101 +75,82 @@ impl AcpServeHost {
             text.to_string(),
         );
         let outcome = self.runtime.run_turn(session, agent, vec![user]).await?;
-        let stop = if outcome.waiting {
-            AcpStop::RequiresAction
-        } else if outcome.exhausted {
-            AcpStop::MaxTurns
-        } else {
-            AcpStop::EndTurn
-        };
         Ok(AcpTurn {
+            stop: map_stop(outcome.waiting, outcome.exhausted),
             messages: outcome.new_messages,
-            stop,
         })
+    }
+}
+
+/// Map a run's terminal flags onto the ACP stop reason (a pure decision).
+fn map_stop(waiting: bool, exhausted: bool) -> AcpStop {
+    if waiting {
+        AcpStop::RequiresAction
+    } else if exhausted {
+        AcpStop::MaxTurns
+    } else {
+        AcpStop::EndTurn
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_protocol_transport::{Pending, Resume, StepOutcome};
+    use crate::ProtocolHost;
+    use crate::host::SharedHost;
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 
-    /// A fake ProtocolRuntime: echoes the prompt, or parks/exhausts on command.
-    struct FakeRt {
-        waiting: bool,
-        exhausted: bool,
-    }
+    /// A deterministic model (the external model dependency): the runtime it drives
+    /// is the real `ProtocolHost`/`SharedHost` engine loop, not a double.
+    struct DeterministicModel;
     #[async_trait::async_trait]
-    impl ProtocolRuntime for FakeRt {
-        async fn run_turn(
+    impl LlmExecutor for DeterministicModel {
+        async fn infer(
             &self,
-            _thread: &str,
-            _agent: Option<String>,
-            messages: Vec<Message>,
-        ) -> Result<StepOutcome, DriverError> {
-            Ok(StepOutcome {
-                new_messages: vec![Message::text(
-                    MessageId("a".into()),
-                    Role::Assistant,
-                    format!("echo: {}", messages[0].text_content()),
-                )],
-                waiting: self.waiting,
-                exhausted: self.exhausted,
-                pending: None,
+            _request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("served reply"),
+                usage: None,
+                stop_reason: None,
             })
         }
-        async fn resume(
-            &self,
-            _t: &str,
-            _id: &str,
-            _r: Resume,
-        ) -> Result<StepOutcome, DriverError> {
-            unreachable!()
-        }
-        async fn pending(&self, _t: &str) -> Option<Pending> {
-            None
-        }
-        async fn history(&self, _t: &str) -> Vec<Message> {
-            Vec::new()
-        }
-        fn model(&self) -> String {
-            "served-model".into()
-        }
     }
 
-    #[tokio::test]
-    async fn serves_a_prompt_turn_and_maps_the_stop_reason() {
-        let host = AcpServeHost::new(Arc::new(FakeRt {
-            waiting: false,
-            exhausted: false,
-        }));
-        assert_eq!(host.model(), "served-model");
-        let s1 = host.new_session();
-        let s2 = host.new_session();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serves_a_real_turn_over_the_real_protocol_host() {
+        // The real production runtime: ProtocolHost over a real SharedHost.
+        let host = Arc::new(SharedHost::new(
+            Arc::new(DeterministicModel),
+            "served-model",
+        ));
+        let serve = AcpServeHost::new(Arc::new(ProtocolHost::new(host)));
+
+        assert_eq!(serve.model(), "served-model");
+        let s1 = serve.new_session();
+        let s2 = serve.new_session();
         assert_ne!(s1, s2);
 
-        let turn = host.prompt(&s1, None, "hi brain").await.unwrap();
+        let turn = serve.prompt(&s1, None, "hi brain").await.unwrap();
         assert_eq!(turn.stop, AcpStop::EndTurn);
-        assert_eq!(turn.messages[0].text_content(), "echo: hi brain");
+        assert!(
+            turn.messages
+                .iter()
+                .any(|m| m.text_content().contains("served reply")),
+            "the real brain's reply is surfaced: {:?}",
+            turn.messages
+                .iter()
+                .map(Message::text_content)
+                .collect::<Vec<_>>()
+        );
     }
 
-    #[tokio::test]
-    async fn maps_waiting_and_exhausted_to_acp_stops() {
-        let waiting = AcpServeHost::new(Arc::new(FakeRt {
-            waiting: true,
-            exhausted: false,
-        }));
-        assert_eq!(
-            waiting.prompt("t", None, "x").await.unwrap().stop,
-            AcpStop::RequiresAction
-        );
-        let exhausted = AcpServeHost::new(Arc::new(FakeRt {
-            waiting: false,
-            exhausted: true,
-        }));
-        assert_eq!(
-            exhausted.prompt("t", None, "x").await.unwrap().stop,
-            AcpStop::MaxTurns
-        );
+    #[test]
+    fn stop_reason_mapping_is_total() {
+        assert_eq!(map_stop(false, false), AcpStop::EndTurn);
+        assert_eq!(map_stop(true, false), AcpStop::RequiresAction);
+        assert_eq!(map_stop(false, true), AcpStop::MaxTurns);
+        // waiting takes precedence over exhausted.
+        assert_eq!(map_stop(true, true), AcpStop::RequiresAction);
     }
 }
