@@ -732,9 +732,16 @@ impl SessionRuntime for ManagedHost {
         self.host.committed_messages(thread).await
     }
 
-    async fn session_usage(&self, thread: &str) -> (u64, u64) {
-        let usage = self.host.thread_usage(thread).await;
-        (usage.prompt_tokens, usage.completion_tokens)
+    async fn session_usage(&self, thread: &str) -> awaken_protocol_managed::SessionUsage {
+        // Map the runtime's per-model tally onto the managed wire's session-level total
+        // (the host is the context boundary; the managed crate never sees TokenUsage).
+        let total = self.host.thread_usage(thread).await.total();
+        awaken_protocol_managed::SessionUsage {
+            input_tokens: total.prompt_tokens,
+            output_tokens: total.completion_tokens,
+            cache_read_tokens: total.cache_read_tokens,
+            cache_creation_tokens: total.cache_creation_tokens,
+        }
     }
 
     fn model(&self) -> String {
@@ -864,7 +871,7 @@ impl ProtocolRuntime for ProtocolHost {
     }
 
     async fn usage(&self, thread: &str) -> (u64, u64) {
-        let usage = self.host.thread_usage(thread).await;
+        let usage = self.host.thread_usage(thread).await.total();
         (usage.prompt_tokens, usage.completion_tokens)
     }
 }

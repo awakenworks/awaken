@@ -965,21 +965,22 @@ impl SharedHost {
         }
     }
 
-    /// A thread's accumulated token usage (the run loop records it as committed thread
-    /// state under [`THREAD_USAGE_STATE_KEY`]; each write is the running cumulative, so
-    /// the last `Set` is the total). Zero for a thread that has never run a real turn or
-    /// whose provider reported no usage (the deterministic models).
-    pub async fn thread_usage(&self, thread: &str) -> awaken_runtime_contract::llm::TokenUsage {
+    /// A thread's accumulated token usage, attributed per model (the run loop records
+    /// it as committed thread state under [`THREAD_USAGE_STATE_KEY`]; each write is the
+    /// running cumulative, so the last `Set` is the whole tally). Empty for a thread
+    /// that has never run a real turn or whose provider reported no usage (the
+    /// deterministic models). Callers use `.total()` for the session-level sum.
+    pub async fn thread_usage(&self, thread: &str) -> awaken_runtime_contract::llm::ThreadUsage {
         use awaken_agent_contract::agent::state::{Action, Scope};
-        use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, TokenUsage};
+        use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage};
         let Ok(ctx) = self.ctx_for(thread, None).await else {
-            return TokenUsage::default();
+            return ThreadUsage::default();
         };
-        let mut usage = TokenUsage::default();
+        let mut usage = ThreadUsage::default();
         for cmd in ctx.commit.committed_state(&ctx.thread_id) {
             if cmd.scope == Scope::Thread && cmd.key.0 == THREAD_USAGE_STATE_KEY {
                 if let Action::Set(value) = &cmd.action {
-                    if let Ok(parsed) = serde_json::from_value::<TokenUsage>(value.clone()) {
+                    if let Ok(parsed) = serde_json::from_value::<ThreadUsage>(value.clone()) {
                         usage = parsed;
                     }
                 }

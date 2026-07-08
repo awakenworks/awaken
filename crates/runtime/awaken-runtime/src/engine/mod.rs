@@ -29,7 +29,7 @@ use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, ChatRole, DeltaSink, StopReason,
-    THREAD_USAGE_STATE_KEY, TokenUsage, ToolCall,
+    THREAD_USAGE_STATE_KEY, ThreadUsage, ToolCall,
 };
 use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
 use awaken_runtime_contract::plugin::{
@@ -653,24 +653,22 @@ async fn drive(
             }
         };
 
-        // Record this step's token usage as committed thread truth, accumulated across
-        // steps and turns, so an adapter can surface a session's usage by reading thread
-        // state — the runtime records the fact without naming any wire, and it survives
-        // a restart. A step whose provider reported no usage records nothing.
+        // Record this step's token usage as committed thread truth, attributed to the
+        // bound model and accumulated across steps and turns, so an adapter can surface
+        // a session's usage (total or per-model) by reading thread state — the runtime
+        // records the fact without naming any wire, and it survives a restart. A step
+        // whose provider reported no usage records nothing.
         if let Some(step_usage) = response.usage {
-            let prior: TokenUsage = store
+            let mut usage: ThreadUsage = store
                 .get(Scope::Thread, &StateKey(THREAD_USAGE_STATE_KEY.to_string()))
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
-            let total = TokenUsage {
-                prompt_tokens: prior.prompt_tokens + step_usage.prompt_tokens,
-                completion_tokens: prior.completion_tokens + step_usage.completion_tokens,
-            };
+            usage.record(&resolved.spec.model_binding.model_ref, step_usage);
             let usage_cmd = StateCommand::set(
                 Scope::Thread,
                 MergePolicy::Commutative,
                 THREAD_USAGE_STATE_KEY,
-                serde_json::to_value(total).expect("token usage serializes"),
+                serde_json::to_value(usage).expect("thread usage serializes"),
             );
             store.apply(&usage_cmd);
             staged_state.push(usage_cmd);

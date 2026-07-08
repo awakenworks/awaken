@@ -139,17 +139,70 @@ impl AssistantOutput {
     }
 }
 
+/// One model invocation's token usage. `cache_read`/`cache_creation` are the
+/// prompt-cache breakdown a provider may report (Anthropic `cache_read_input_tokens`
+/// / `cache_creation_input_tokens`); `0` when the provider reports none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+}
+
+impl TokenUsage {
+    /// Field-wise saturating sum, used to accumulate usage across steps/turns.
+    #[must_use]
+    pub fn saturating_add(self, other: Self) -> Self {
+        Self {
+            prompt_tokens: self.prompt_tokens.saturating_add(other.prompt_tokens),
+            completion_tokens: self
+                .completion_tokens
+                .saturating_add(other.completion_tokens),
+            cache_read_tokens: self
+                .cache_read_tokens
+                .saturating_add(other.cache_read_tokens),
+            cache_creation_tokens: self
+                .cache_creation_tokens
+                .saturating_add(other.cache_creation_tokens),
+        }
+    }
+}
+
+/// A thread's accumulated token usage **attributed per model** (a session may span
+/// several models — per-turn overrides, sub-agents, native vs an external runtime).
+/// The neutral truth the runtime records; adapters project the [`total`](Self::total)
+/// (or the per-model breakdown) onto their wire. Stored under [`THREAD_USAGE_STATE_KEY`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadUsage {
+    /// `model_ref -> usage on that model`.
+    pub by_model: std::collections::BTreeMap<String, TokenUsage>,
+}
+
+impl ThreadUsage {
+    /// Add one step's usage to `model`'s running total.
+    pub fn record(&mut self, model: &str, usage: TokenUsage) {
+        let entry = self.by_model.entry(model.to_string()).or_default();
+        *entry = entry.saturating_add(usage);
+    }
+
+    /// The session-level total across every model (what a session-usage field reports).
+    #[must_use]
+    pub fn total(&self) -> TokenUsage {
+        self.by_model
+            .values()
+            .copied()
+            .fold(TokenUsage::default(), TokenUsage::saturating_add)
+    }
 }
 
 /// The thread-scoped committed-state key under which the run loop accumulates a
-/// thread's total [`TokenUsage`] (a serialized `TokenUsage`). Committed truth, so an
-/// adapter surfaces a session's usage by reading thread state — the runtime records
-/// the fact without naming any wire, and it survives a restart. Internal (the `__`
-/// prefix keeps it out of any agent-authored state namespace).
+/// thread's [`ThreadUsage`] (serialized). Committed truth, so an adapter surfaces a
+/// session's usage by reading thread state — the runtime records the fact without
+/// naming any wire, and it survives a restart. Internal (the `__` prefix keeps it out
+/// of any agent-authored state namespace).
 pub const THREAD_USAGE_STATE_KEY: &str = "__usage";
 
 /// A classified inference failure. The variant is the classification: it
@@ -292,5 +345,61 @@ pub trait LlmExecutor: Send + Sync {
                 .await;
         }
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::{ThreadUsage, TokenUsage};
+
+    fn u(p: u64, c: u64) -> TokenUsage {
+        TokenUsage {
+            prompt_tokens: p,
+            completion_tokens: c,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn saturating_add_is_field_wise() {
+        let a = TokenUsage {
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            cache_read_tokens: 3,
+            cache_creation_tokens: 4,
+        };
+        let b = TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 20,
+            cache_read_tokens: 30,
+            cache_creation_tokens: 40,
+        };
+        assert_eq!(
+            a.saturating_add(b),
+            TokenUsage {
+                prompt_tokens: 11,
+                completion_tokens: 22,
+                cache_read_tokens: 33,
+                cache_creation_tokens: 44
+            }
+        );
+    }
+
+    #[test]
+    fn thread_usage_attributes_per_model_and_totals() {
+        let mut tally = ThreadUsage::default();
+        tally.record("fast", u(10, 5));
+        tally.record("slow", u(100, 50));
+        tally.record("fast", u(1, 1)); // a second turn on the same model accumulates
+        assert_eq!(tally.by_model.get("fast").copied(), Some(u(11, 6)));
+        assert_eq!(tally.by_model.get("slow").copied(), Some(u(100, 50)));
+        // The session-level total sums across every model.
+        assert_eq!(tally.total(), u(111, 56));
+    }
+
+    #[test]
+    fn total_of_empty_is_zero() {
+        assert_eq!(ThreadUsage::default().total(), TokenUsage::default());
     }
 }

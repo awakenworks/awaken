@@ -15,10 +15,16 @@
 
 import http from 'node:http';
 
-// Distinctive per-inference token usage the fake reports, so a usage e2e can assert
-// exact accumulated counts. Each model call reports these; an N-step turn accumulates
-// N× them. Exported so tests import the expected values rather than hard-coding.
-export const FAKE_USAGE = { input_tokens: 11, output_tokens: 7 };
+// Distinctive per-inference token usage the fake reports (Anthropic wire field names,
+// incl. the prompt-cache breakdown that genai maps to cache_read/cache_creation), so a
+// usage e2e can assert exact accumulated counts. Each model call reports these; an
+// N-step turn accumulates N× them. Exported so tests import the expected values.
+export const FAKE_USAGE = {
+  input_tokens: 11,
+  output_tokens: 7,
+  cache_read_input_tokens: 3,
+  cache_creation_input_tokens: 2,
+};
 
 // ---- wire accessors: read the Anthropic request the way the neutral model read
 // the ChatRequest (system field, user text, tool-result count, images, tools). ----
@@ -350,7 +356,12 @@ function emitStream(res, { id, model, reply }) {
     message: {
       id, type: 'message', role: 'assistant', model,
       content: [], stop_reason: null, stop_sequence: null,
-      usage: { input_tokens: FAKE_USAGE.input_tokens, output_tokens: 0 },
+      usage: {
+        input_tokens: FAKE_USAGE.input_tokens,
+        output_tokens: 0,
+        cache_read_input_tokens: FAKE_USAGE.cache_read_input_tokens,
+        cache_creation_input_tokens: FAKE_USAGE.cache_creation_input_tokens,
+      },
     },
   });
   if (reply.tool) {
