@@ -33,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             awaken_server::build_router(Arc::new(awaken_server::ReviseModel), "revise")
         }
         Ok("custom") => awaken_server::build_custom_router(),
+        Ok("remote-hand") => awaken_server::build_remote_hand_router(),
         Ok("delegate") => awaken_server::build_delegation_router(),
         Ok("statemachine") => awaken_server::build_statemachine_router(),
         Ok("statemachine-rich") => awaken_server::build_statemachine_rich_router(),

@@ -16,7 +16,7 @@ holds the rule), and the **Validation** (the test kind that proves it).
   - **Active** (enforcer type and a test or CI hook exist now): G1, G3, G4, G5,
     G6, G8, G9, G13, G14, G15, G16, G18 (live-control seam only; config-publication
     coordinator and registry compiler remain target), G21, G23, G27, G28, G29,
-    G30, G31, G32.
+    G30, G31, G32, G33, G34.
   - **Target** (the rule is accepted, but its enforcer is not yet built here, so
     it holds vacuously until the subsystem lands): G10/G19/G26 (public protocol
     adapters), G11 (`ContinuationGuard`), G18 (config-publication coordinator and
@@ -24,10 +24,11 @@ holds the rule), and the **Validation** (the test kind that proves it).
     `LiveRunControlService`), G22 (backend-binding negotiation), G25
     (observability/eval). A Target guardrail must gain a real enforcer and test in
     the same change that first builds its subsystem.
-  - **Retired**: G7 (`ExecutionBackend`/`BackendProfile`). The runtime executes
-    tools in-process (ADR-0007); remote/out-of-process agent execution is out of
-    scope until a future ADR introduces it with a concrete driver and tests. The
-    row is kept as a tombstone so G8–G32 references stay stable.
+  - **Retired**: G7 (`ExecutionBackend`/`BackendProfile`). That god-seam stays
+    retired. Remote tool execution returned in ADR-0044 as the narrow `ToolExecutor`
+    port with a concrete driver and tests (G33), not as `ExecutionBackend`; the
+    runtime still executes tools in-process by default (ADR-0007). The row is kept
+    as a tombstone so G8–G34 references stay stable.
 - The rationale (problem, decision, consequence) behind these guardrails is owned
   by [key-design-decisions.md](design/key-design-decisions.md) (D1–D22); this
   index records only the enforceable statement, enforcer, and validation, and
@@ -67,6 +68,8 @@ holds the rule), and the **Validation** (the test kind that proves it).
 | G31 | A terminal run stores one authority: the committed run `Phase` (`Waiting \| Ended(EndCause)`). Run status, the published outcome, and the error flag are derived projections, never stored; the fault kind lives in `EndCause::Error(Failure)`, not a status string. Every run end funnels through one commit boundary that writes the `Phase` and emits the finish event once. | single `finish` boundary writes one `RunFact { phase }`; `Phase`/`EndCause`/`Failure` typing makes a second stored end-notion unrepresentable; `End` makes pause/terminus mutually exclusive | terminal projection tests (committed fault cause in fact + event; `MaxSteps` terminus; cancelled and state-conflict causes); public API snapshot of the `run` module (ADR-0005) |
 | G32 | A run's authoritative current phase is the latest run-projection fact in the thread's append-only fact log; the `RunRecord` run-store read is a derived cache that equals the latest fact and is never an independent authority. The append fence is the committed fact count, not a cache row count. | replay reads the fact log (`replay_latest_phase`); `RunStore::get` projects the latest fact; `CommitRecord.sequence` is the monotonic committed count | projection test (cache equals replay-from-log); waiting test (Waiting→Ended progression retained in order, latest fact wins) (ADR-0006) |
 | G30 | A plugin's actual `Contributions` are a subset of its declared `CapabilityBound`, enforced fail-closed at resolve and at catalog registration; contribution identity (registration key, `ToolDescriptor` id, and bound reference) is one value by construction. Every id-bearing kind is bounded (tools, state keys, guards, effects, scheduled actions). A dynamically discovered family declares a coarse `Namespace` ceiling and submits a resolve-time tightened sub-bound from the same snapshot, enforced `contributions ⊆ tightened ⊆ static ceiling` (`within`). `CapabilityBound` is a contribution ceiling, never authorization, and shares no type with any permission decision. | `Plugin::resolve` returns `Contributions`; `ResolvedExecutionEnv` merge runs `enforce_bound` and cross-plugin uniqueness; `Contributions::tighten_bound` + `IdBound::within`; catalog boot self-check | undeclared-contribution fail-closed tests; tightened-bound-escapes-ceiling fails closed; cross-plugin clash names both plugins; register-time self-check; identity-equivalence compile check |
+| G33 | Tool execution runs behind the `ToolExecutor` port (ADR-0044): the kernel calls the port, `LocalToolExecutor` is the in-process degenerate default, and a remote hand (`awaken-tool-relay`) is a value-returning tool server that links no model client, no `CommitCoordinator`, and no store — it returns serializable `ToolOutput`; the brain commits. Indeterminate remote outcomes are explicit and idempotently re-drivable. | kernel routes `execute_tool` through `context.tool_executor` or `LocalToolExecutor`; `awaken-tool-relay` depends on `awaken-runtime-contract` only — its absence from the `awaken-runtime`/`awaken-store-*`/`awaken-provider-genai` wrapper lists in `deny.toml` makes any kernel/store/model dependency a build failure | `cargo deny check bans` (deny.toml direction); `awaken-tool-relay` relay tests (out-of-process run, unknown-tool parity, Indeterminate, idempotent re-drive, fingerprint fail-closed); `awaken-runtime` seam test (wired executor replaces in-process path); `awaken-runtime-examples` `remote_hand_e2e` (Runtime brain commits a hand's output) |
+| G34 | Network topology is a serializable `ConnectionPlan` value object (ADR-0045) over the connection mechanism; it carries a `CredentialRef` only, never resolved secret material, and no product-hosting vocabulary. `ChannelFactory` maps a plan to a live channel with `InProcess` as the zero-cost degenerate arm, so one brain/hand code path spans laptop to fleet. | `awaken-connection-plan` `ConnectionPlan`/`DialAddr`/`Wiring`/`DialPolicy`/`CredentialRef`; material resolved host-side via `CredentialResolver` just before dial; `lefthook.yml` neutral-vocabulary deny-list covers the crate | no-secret-serialization test (plan serializes a ref, no `authorization`/`bearer` material); InProcess + Unix round-trip tests; `connect` fail-closed on a `Listen` plan |
 
 ## DDD Review Checklist
 

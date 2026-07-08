@@ -40,7 +40,7 @@ use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
-use awaken_runtime_contract::tool::ToolOutput;
+use awaken_runtime_contract::tool::{ToolError, ToolExecutor, ToolOutput};
 
 use crate::runtime::Runtime;
 
@@ -249,7 +249,7 @@ pub(crate) async fn resume_run(
     let mut transcript = reader.committed_messages(&thread_id);
     let mut store = store_from_commands(reader.committed_state(&thread_id));
     let (resumed, seed_state) =
-        resume_into_messages(runtime, &env, &ticket, command.result, &store).await;
+        resume_into_messages(runtime, &env, &ticket, command.result, &store, &context).await;
     for command in &seed_state {
         store.apply(command);
     }
@@ -801,7 +801,7 @@ async fn drive(
                         break;
                     }
                     Some(Err(err)) => ToolOutput::error(&call.call_id, err.to_string()),
-                    None => execute_tool(runtime, Some(env), &call).await,
+                    None => execute_tool(runtime, Some(env), &call, context).await,
                 },
                 GateOutcome::Block { reason } => {
                     ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
@@ -1603,7 +1603,8 @@ async fn resume_delegation(
 
     let mut transcript = reader.committed_messages(thread_id);
     let mut store = store_from_commands(reader.committed_state(thread_id));
-    let (resumed, seed_state) = resume_into_messages(runtime, env, ticket, synthetic, &store).await;
+    let (resumed, seed_state) =
+        resume_into_messages(runtime, env, ticket, synthetic, &store, context).await;
     for command in &seed_state {
         store.apply(command);
     }
@@ -1634,6 +1635,7 @@ async fn resume_into_messages(
     ticket: &WaitingTicket,
     result: ResumeResult,
     store: &Store,
+    context: &RuntimeRunContext,
 ) -> (Vec<Message>, Vec<StateCommand>) {
     let call_id = ticket.call_id.clone().unwrap_or_default();
     // The pending call, when the ticket carries one, so a tool-outcome hook can
@@ -1668,7 +1670,7 @@ async fn resume_into_messages(
                     tool_id: pending.tool_id.clone(),
                     arguments: pending.arguments.clone(),
                 };
-                let output = execute_tool(runtime, None, &call).await;
+                let output = execute_tool(runtime, None, &call, context).await;
                 let mut state = output.state.clone();
                 let mut messages = vec![tool_result_message_from(&call_id, &output.content)];
                 let mut work = store.clone();
@@ -1814,21 +1816,27 @@ async fn execute_tool(
     runtime: &Runtime,
     env: Option<&ResolvedExecutionEnv>,
     call: &ToolCall,
+    context: &RuntimeRunContext,
 ) -> ToolOutput {
     let span = tracing::Span::current();
     span.record(
         "otel.name",
         format!("execute_tool {}", call.tool_id).as_str(),
     );
-    let tool = env
-        .and_then(|env| env.dynamic_tool(&call.tool_id))
-        .or_else(|| runtime.tool(&call.tool_id).cloned());
-    let output = match tool {
-        Some(tool) => match tool.invoke(call.clone()).await {
-            Ok(output) => output,
-            Err(err) => ToolOutput::error(&call.call_id, err.to_string()),
-        },
-        None => ToolOutput::error(&call.call_id, format!("unknown tool: {}", call.tool_id)),
+    // ADR-0044 D1: the kernel calls a `ToolExecutor`; where the call runs is the
+    // executor's concern. Absent a wired executor, the degenerate in-process
+    // `LocalToolExecutor` reproduces the historical behavior exactly.
+    let local;
+    let executor: &dyn ToolExecutor = match context.tool_executor.as_deref() {
+        Some(executor) => executor,
+        None => {
+            local = LocalToolExecutor { runtime, env };
+            &local
+        }
+    };
+    let output = match executor.invoke(call).await {
+        Ok(output) => output,
+        Err(err) => ToolOutput::error(&call.call_id, err.to_string()),
     };
     // OTel: a tool that returned an error (unknown tool, invocation failure, or a
     // model-visible error result) marks the span ERROR with a `gen_ai`-shaped type.
@@ -1837,6 +1845,30 @@ async fn execute_tool(
         span.record("otel.status_code", "ERROR");
     }
     output
+}
+
+/// The in-process `ToolExecutor` (ADR-0044 D1): the degenerate case where the
+/// hand runs in the brain's own process. It resolves the call by id against the
+/// run's dynamic tools and the runtime registry — the historical lookup — and is
+/// used whenever a run wires no remote executor. Borrowing keeps it allocation-
+/// free per call; it is invoked directly, never as a stored `dyn`.
+struct LocalToolExecutor<'a> {
+    runtime: &'a Runtime,
+    env: Option<&'a ResolvedExecutionEnv>,
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor for LocalToolExecutor<'_> {
+    async fn invoke(&self, call: &ToolCall) -> std::result::Result<ToolOutput, ToolError> {
+        let tool = self
+            .env
+            .and_then(|env| env.dynamic_tool(&call.tool_id))
+            .or_else(|| self.runtime.tool(&call.tool_id).cloned());
+        match tool {
+            Some(tool) => tool.invoke(call.clone()).await,
+            None => Err(ToolError::Unknown(call.tool_id.clone())),
+        }
+    }
 }
 
 /// Best-effort live emission. A sink failure is swallowed: committed truth is
