@@ -35,7 +35,7 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::tool::ToolOutput;
+use awaken_runtime_contract::tool::{ToolExecutor, ToolOutput};
 use awaken_sandbox_local::{
     Environment, FileStore, InMemoryFileStore, LocalSandboxProvider, SandboxProvider,
 };
@@ -205,6 +205,9 @@ pub(crate) struct SessionCtx {
     /// This thread's interrupted-stream checkpoint store (Phase 3), wired into
     /// every run context so an inference drop flushes durably at its boundary.
     pub(crate) stream_checkpoint: Arc<dyn StreamCheckpointStore>,
+    /// The host's remote hand (ADR-0044), cloned from `SharedHost::remote_hand` at
+    /// session creation. When set, every run context routes tool calls to it.
+    pub(crate) remote_hand: Option<Arc<dyn ToolExecutor>>,
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build a goal-enabled runtime
     /// for `define_outcome` (same tools, same environment).
@@ -232,11 +235,17 @@ impl SessionCtx {
     pub(crate) fn context(&self) -> RuntimeRunContext {
         let token = CancellationToken::new();
         *self.cancel.lock().expect("cancel mutex poisoned") = Some(token.clone());
-        RuntimeRunContext::new()
+        let mut ctx = RuntimeRunContext::new()
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
             .with_stream_checkpoint(self.stream_checkpoint.clone())
-            .with_cancellation(token)
+            .with_cancellation(token);
+        // ADR-0044: route this run's tool calls to the host's remote hand, if one
+        // is wired; otherwise the kernel's in-process LocalToolExecutor runs them.
+        if let Some(hand) = &self.remote_hand {
+            ctx = ctx.with_tool_executor(hand.clone());
+        }
+        ctx
     }
 }
 
@@ -339,6 +348,11 @@ pub struct SharedHost {
     /// nudge/timer and reaps + relays autonomously, so background-submitted runs
     /// complete without a foreground request driving them (slice E follow-up).
     pub(crate) dispatch_daemon: bool,
+    /// When set (ADR-0044), every run's tool calls are routed through this remote
+    /// hand instead of the in-process registry. The host owns no placement policy:
+    /// a caller connects a hand and injects the executor via [`with_remote_hand`].
+    /// `None` is the in-process default (`LocalToolExecutor`), untouched.
+    pub(crate) remote_hand: Option<Arc<dyn ToolExecutor>>,
 }
 
 impl SharedHost {
@@ -391,6 +405,7 @@ impl SharedHost {
             memory_stores,
             gate_override: None,
             dispatch_daemon: std::env::var("AWAKEN_DISPATCH_DAEMON").is_ok_and(|v| v == "1"),
+            remote_hand: None,
         }
     }
 
@@ -604,6 +619,14 @@ impl SharedHost {
     /// Register a delegate agent fulfilled over A2A: `agent_run` calls naming it
     /// are routed to `transport` (a remote agent). The id joins the advertised
     /// roster so the model can delegate to it.
+    /// Route every run's tool calls through `hand` — a remote `ToolExecutor`
+    /// (ADR-0044) — instead of the in-process registry. The brain still commits
+    /// the hand's returned output. `None` (the default) keeps in-process execution.
+    pub fn with_remote_hand(mut self, hand: Arc<dyn ToolExecutor>) -> Self {
+        self.remote_hand = Some(hand);
+        self
+    }
+
     pub fn with_remote_a2a(
         mut self,
         agent_id: impl Into<String>,
@@ -926,6 +949,7 @@ impl SharedHost {
             config,
             commit,
             stream_checkpoint,
+            remote_hand: self.remote_hand.clone(),
             thread_id,
             env,
             skill_registry,

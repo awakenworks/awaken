@@ -134,5 +134,7 @@ wrappers = [
     "awaken-run-ingress",
     "awaken-runtime-examples",
     "awaken-sandbox-local",
+    # ADR-0044 remote-hand mode: server-local builds the hand's toolset directly.
+    "awaken-server-local",
 ]
 reason = "extensions sit on top; the runtime core must stay extension-agnostic (G2)"
