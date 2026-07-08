@@ -498,6 +498,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "thiserror",
         "tokio",
+        # dev-only: build a `plugin_config` JSON value in the compaction-window test.
+        "serde_json",
     },
     # AI SDK v6 protocol adapter: the anti-corruption boundary between the Vercel
     # AI SDK UI Message Stream wire and the neutral runtime. Like the managed
