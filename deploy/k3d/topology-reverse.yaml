@@ -1,0 +1,89 @@
+# Reverse topology (ADR-0045): the HAND has no inbound reachability (NAT /
+# outbound-only), so it DIALS OUT to the BRAIN's rendezvous. The brain remains the
+# requester — only the dial direction flips. This is the topology for hands behind
+# a firewall that can reach the control plane but cannot be reached.
+#
+#   [hand pod] --dials--> brain:9000 (rendezvous Service) --> [brain pod accepts,
+#                                                              then drives the hand]
+#
+# The brain exposes two ports: 3000 (managed HTTP) and 9000 (the hand rendezvous).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  selector: { app: brain }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }
+---
+# The rendezvous the hand dials. It MUST publish the not-ready brain pod: the brain
+# only becomes Ready after the hand connects and its HTTP surface binds, so a
+# normal Service (ready-only endpoints) would give the hand no endpoint to dial —
+# a deadlock. publishNotReadyAddresses lets the hand reach the rendezvous first.
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain-rendezvous
+  labels: { app: brain }
+spec:
+  selector: { app: brain }
+  publishNotReadyAddresses: true
+  ports:
+    - { name: rendezvous, port: 9000, targetPort: 9000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+  labels: { app: brain }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: brain }
+  template:
+    metadata:
+      labels: { app: brain }
+    spec:
+      containers:
+        - name: brain
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            - { name: AWAKEN_MODEL_MODE, value: remote-hand }
+            # Reverse: bind a rendezvous and wait for the hand to dial in; the
+            # accepted connection becomes the executor channel.
+            - { name: AWAKEN_REMOTE_HAND_LISTEN, value: "0.0.0.0:9000" }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+          ports:
+            - containerPort: 3000
+            - containerPort: 9000
+          readinessProbe:
+            # Ready only once the HTTP surface binds — which happens after the hand
+            # has reverse-dialed and the executor channel is established.
+            tcpSocket: { port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hand
+  labels: { app: hand }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: hand }
+  template:
+    metadata:
+      labels: { app: hand }
+    spec:
+      containers:
+        - name: hand
+          image: awaken-topology:latest
+          imagePullPolicy: Never
+          env:
+            # Reverse: dial the brain's rendezvous Service (retrying while it comes
+            # up) and serve the executor channel over that outbound connection.
+            - { name: AWAKEN_HAND_DIAL, value: "brain-rendezvous:9000" }
