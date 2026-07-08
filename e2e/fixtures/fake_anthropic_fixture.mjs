@@ -1,23 +1,229 @@
-// A minimal fake Anthropic-compatible upstream: POST …/messages answers the
-// Messages shape with a deterministic `FAKE:<last user text>` reply when the
-// caller presents the expected key, and the Anthropic 401 error envelope
-// otherwise. Lets e2e drive the REAL provider path (provider-genai over the
-// wire) and the credential-validation probe without a live key.
+// A fake Anthropic-compatible upstream: POST …/messages answers the Messages
+// shape over the REAL wire, so e2e drive the REAL provider path (provider-genai
+// over HTTP) without a live key. It presents the Anthropic 401 envelope on a bad
+// key, injects retryable faults on demand, and — the point of the `behavior`
+// option — reproduces each deterministic scenario model's reply *on the wire*, so
+// an e2e that used to boot an in-process stub model now runs the same scenario
+// through GenaiExecutor + a real socket. `behavior` names the reproduced model
+// (default = the historic `FAKE:<text>` echo + `use-tool:` round-trip).
+//
+// The behaviors read the Anthropic *wire* request (`system` top-level field,
+// `messages` with user/assistant roles, tool results as `tool_result` blocks
+// inside user messages, `tools` list), which is what GenaiExecutor emits from the
+// neutral `ChatRequest` — so each behavior is a faithful port of the matching
+// `awaken-server-local` model reading the neutral request.
 
 import http from 'node:http';
 
-// `opts`: `{ failuresBeforeSuccess, alwaysFail, faultStatus }` inject retryable
-// upstream failures so e2e can drive the runtime's retry + circuit-breaker + error
-// paths without a live key. Default (no opts) is the original always-succeed fake.
+// ---- wire accessors: read the Anthropic request the way the neutral model read
+// the ChatRequest (system field, user text, tool-result count, images, tools). ----
+
+function blockText(content) {
+  if (typeof content === 'string') return content;
+  return (content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('');
+}
+
+function systemText(parsed) {
+  return blockText(parsed.system);
+}
+
+function userMessages(parsed) {
+  // A tool result rides on a `user` message as a `tool_result` block; it is not a
+  // user turn. A user turn is a user message carrying text (not just tool_result).
+  return (parsed.messages ?? []).filter(
+    (m) => m.role === 'user' && (typeof m.content === 'string' || (m.content ?? []).some((b) => b.type === 'text')),
+  );
+}
+
+function lastUserText(parsed) {
+  const users = userMessages(parsed);
+  return users.length ? blockText(users[users.length - 1].content) : '';
+}
+
+function firstUserText(parsed) {
+  const users = userMessages(parsed);
+  return users.length ? blockText(users[0].content) : '';
+}
+
+function allUserText(parsed) {
+  return userMessages(parsed).map((m) => blockText(m.content)).join(' ');
+}
+
+// Every `tool_result` block across the transcript — one per prior tool-role turn.
+function toolResults(parsed) {
+  const out = [];
+  for (const m of parsed.messages ?? []) {
+    if (!Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b.type === 'tool_result') out.push(b);
+    }
+  }
+  return out;
+}
+
+function toolResultText(block) {
+  if (typeof block?.content === 'string') return block.content;
+  return (block?.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('');
+}
+
+function lastUserImages(parsed) {
+  const users = (parsed.messages ?? []).filter((m) => m.role === 'user');
+  const last = users[users.length - 1];
+  if (!last || !Array.isArray(last.content)) return [];
+  return last.content
+    .filter((b) => b.type === 'image')
+    .map((b) => (b.source?.type === 'url' ? 'image/url' : b.source?.media_type ?? 'image/*'));
+}
+
+function hasTool(parsed, name) {
+  return (parsed.tools ?? []).some((t) => t.name === name);
+}
+
+// A reply is either `{ text }` (end_turn) or `{ tool: { id, name, input } }`
+// (tool_use). The named behaviors below each port one `awaken-server-local` model.
+const text = (t) => ({ text: t });
+const tool = (id, name, input) => ({ tool: { id, name, input } });
+
+export const BEHAVIORS = {
+  // The historic default: echo the last user text, and drive one tool round-trip
+  // on `use-tool:<name>` (kept so the fault-injection / real-wire e2e are unchanged).
+  default(parsed) {
+    const t = lastUserText(parsed);
+    // The tool round-trip stays on the streaming path only (its historic home), so
+    // a non-streamed `use-tool:` still echoes as text exactly as before.
+    const m = parsed.stream && toolResults(parsed).length === 0 && /^use-tool:(\S+)/.exec(t);
+    if (m) return tool(`toolu_${m[1]}`, m[1], { pattern: '*.md' });
+    return text(`FAKE:${t}`);
+  },
+  // EchoModel: `Echo: <last user text>`.
+  echo: (parsed) => text(`Echo: ${lastUserText(parsed)}`),
+  // LabelModel(<label>): `model=<label>: <user>` — the label rides in via the model
+  // name the caller set (ANTHROPIC_MODEL), which the wire echoes back as `parsed.model`.
+  label: (parsed) => text(`model=${parsed.model ?? 'fake-model'}: ${lastUserText(parsed)}`),
+  // InstructionEchoModel: `instructions: <system prompt>`.
+  instruction: (parsed) => text(`instructions: ${systemText(parsed)}`),
+  // ReviseModel: a draft, then FINAL once it sees the goal loop's feedback.
+  revise: (parsed) => text(allUserText(parsed).includes('did not meet the goal') ? 'FINAL answer' : 'a rough draft'),
+  // VisionProbeModel: report the media types on the last user turn.
+  vision(parsed) {
+    const medias = lastUserImages(parsed);
+    const t = blockText(((parsed.messages ?? []).filter((m) => m.role === 'user').pop() ?? {}).content);
+    return text(medias.length ? `saw ${medias.join(',')}; text: ${t}` : `saw no media; text: ${t}`);
+  },
+  // CompactionModel: the compactor sub-run returns a fixed summary; a main turn
+  // prefixes its reply with the system/context text it received.
+  compaction(parsed) {
+    const sys = systemLines(parsed);
+    if (allUserText(parsed).includes('summarize') || sys.includes('summar')) return text('SUMMARY: earlier turns folded');
+    return text(`ctx:[${sys}] echo:${lastUserText(parsed)}`);
+  },
+  // MemoryProbeModel: the extractor sub-run saves one memory via `write_memory`
+  // (named after a `fact-<tag>` token when present); a main turn prefixes its echo
+  // with the system/context lines so recall injection is observable.
+  memory(parsed) {
+    const sys = systemLines(parsed);
+    if (sys.includes('memory extraction sub-agent')) {
+      if (toolResults(parsed).length > 0) return text('memory saved');
+      const tag = allUserText(parsed).split(/\s+/).find((w) => w.startsWith('fact-'));
+      const [name, content] = tag ? [tag, `remember ${tag}`] : ['sky-color', 'the sky is green today'];
+      return tool('memwrite-1', 'write_memory', { name, kind: 'project', content });
+    }
+    return text(`recall:[${sys}] echo:${lastUserText(parsed)}`);
+  },
+  // MemoryResourceModel: write the user's text into the mounted store, then (once a
+  // tool result is present) reply `memory persisted`.
+  memoryResource(parsed) {
+    if (toolResults(parsed).length > 0) return text('memory persisted');
+    return tool('memres-1', 'write', { path: '.mnt/notes.txt', content: lastUserText(parsed) });
+  },
+  // GitRepoModel: read the seed file, write a new file, then finish (sequenced off
+  // the tool-result count).
+  gitRepo(parsed) {
+    switch (toolResults(parsed).length) {
+      case 0: return tool('r', 'read', { path: 'workspace/repo/README.md' });
+      case 1: return tool('w', 'write', { path: 'workspace/repo/NEW.txt', content: 'AGENT_REPO_MARKER_3390' });
+      default: return text('repo turn done');
+    }
+  },
+  // StateMachineModel: call `glob` twice (walk s0->s1, then an out-of-order call the
+  // gate rejects), then end.
+  stateMachine(parsed) {
+    switch (toolResults(parsed).length) {
+      case 0: return tool('g1', 'glob', { pattern: '*.txt' });
+      case 1: return tool('g2', 'glob', { pattern: '*.txt' });
+      default: return text('done');
+    }
+  },
+  // ProbeModel (HITL): write the user's text to probe.txt, read it back, then reply.
+  probe(parsed) {
+    switch (toolResults(parsed).length) {
+      case 0: return tool('w', 'write', { path: 'probe.txt', content: firstUserText(parsed) });
+      case 1: return tool('r', 'read', { path: 'probe.txt' });
+      default: return text('done');
+    }
+  },
+  // CustomToolModel: call the client-executed `submit_answer`, then reply with the
+  // result the client returned.
+  custom(parsed) {
+    const results = toolResults(parsed);
+    if (results.length === 0) return tool('c1', 'submit_answer', { question: 'what is 6 x 7?' });
+    return text(`got: ${toolResultText(results[results.length - 1])}`);
+  },
+  // McpToolModel: `add <a> <b>` calls the namespaced MCP tool; a tool result is
+  // reported as `result: <text>`; anything else echoes like EchoModel.
+  mcp(parsed) {
+    const results = toolResults(parsed);
+    const msgs = parsed.messages ?? [];
+    const last = msgs[msgs.length - 1];
+    if (last && Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result')) {
+      return text(`result: ${toolResultText(results[results.length - 1])}`);
+    }
+    const t = lastUserText(parsed);
+    const p = t.split(/\s+/);
+    if (p.length === 3 && p[0] === 'add' && /^-?\d+$/.test(p[1]) && /^-?\d+$/.test(p[2])) {
+      return tool(`mcp-${msgs.length}`, 'mcp__calc__add', { a: Number(p[1]), b: Number(p[2]) });
+    }
+    return text(`Echo: ${t}`);
+  },
+  // DelegatingModel: with `agent_run` it delegates (to `researcher`, or `ghost` if
+  // asked) and reports the delegate's result; without it, it answers plainly (so the
+  // same behavior serves as the delegate sub-agent).
+  delegating(parsed) {
+    if (!hasTool(parsed, 'agent_run')) return text('researched: 42');
+    const results = toolResults(parsed);
+    if (results.length === 0) {
+      const agentId = firstUserText(parsed).includes('ghost') ? 'ghost' : 'researcher';
+      return tool('d1', 'agent_run', { agent_id: agentId, input: 'do the research' });
+    }
+    return text(`delegate said: ${toolResultText(results[results.length - 1])}`);
+  },
+};
+
+// System messages arrive as the top-level `system` field; the compaction/memory
+// models joined multiple System lines with " | ", but the wire concatenates them —
+// so match on the concatenated text (a `contains` check, which is all they do).
+function systemLines(parsed) {
+  return systemText(parsed);
+}
+
+// `opts`: `{ behavior, failuresBeforeSuccess, alwaysFail, faultStatus, delayMs }`.
+// `behavior` (default `'default'`) selects the reproduced scenario model; the
+// fault-injection knobs drive the runtime's retry + circuit-breaker + error paths.
 export function startFakeAnthropic(apiKey, opts = {}) {
-  const { failuresBeforeSuccess = 0, alwaysFail = false, faultStatus = 503, delayMs = 0 } = opts;
+  const {
+    behavior = 'default',
+    failuresBeforeSuccess = 0,
+    alwaysFail = false,
+    faultStatus = 503,
+    delayMs = 0,
+  } = opts;
+  const reply_of = BEHAVIORS[behavior];
+  if (!reply_of) throw new Error(`unknown fake-anthropic behavior: ${behavior}`);
   const state = { requests: [], unauthorized: 0, attempts: 0 };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
-      // Hold the response so a turn stays in flight (lets e2e drive the live-inbox
-      // while a turn is running). Only the authenticated success path is delayed.
       if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
       const presented = req.headers['x-api-key'] ?? (req.headers.authorization ?? '').replace(/^Bearer /, '');
       if (req.method !== 'POST' || !req.url.endsWith('/messages')) {
@@ -31,8 +237,6 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));
         return;
       }
-      // Fault injection: fail the first N authenticated attempts (retry recovers)
-      // or every attempt (retries exhausted → the run loop surfaces an error).
       state.attempts += 1;
       if (alwaysFail || state.attempts <= failuresBeforeSuccess) {
         res.writeHead(faultStatus, { 'content-type': 'application/json' });
@@ -41,70 +245,15 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       }
       const parsed = JSON.parse(body || '{}');
       state.requests.push({ url: req.url, model: parsed.model, stream: !!parsed.stream });
-      const lastUser = [...(parsed.messages ?? [])].reverse().find((m) => m.role === 'user');
-      const text =
-        typeof lastUser?.content === 'string'
-          ? lastUser.content
-          : (lastUser?.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('');
-      const reply = `FAKE:${text}`;
+      const reply = reply_of(parsed);
       const id = `msg_${state.requests.length}`;
       const model = parsed.model ?? 'fake-model';
-      // `use-tool:<name>` drives one tool round-trip: first call answers with a
-      // tool_use block, the follow-up (carrying the tool_result) answers text.
-      const hasToolResult = (parsed.messages ?? []).some(
-        (m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'),
-      );
-      const toolMatch = !hasToolResult && /^use-tool:(\S+)/.exec(text);
-      if (parsed.stream && toolMatch) {
-        const tool = toolMatch[1];
-        res.writeHead(200, { 'content-type': 'text/event-stream' });
-        const ev = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-        ev('message_start', {
-          type: 'message_start',
-          message: {
-            id, type: 'message', role: 'assistant', model,
-            content: [], stop_reason: null, stop_sequence: null,
-            usage: { input_tokens: 1, output_tokens: 0 },
-          },
-        });
-        ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: `toolu_${id}`, name: tool, input: {} } });
-        ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"pattern":"*.md"}' } });
-        ev('content_block_stop', { type: 'content_block_stop', index: 0 });
-        ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 1 } });
-        ev('message_stop', { type: 'message_stop' });
-        res.end();
-        return;
-      }
+
       if (parsed.stream) {
-        // The Anthropic streaming wire: the fixed event ladder around one text block.
-        res.writeHead(200, { 'content-type': 'text/event-stream' });
-        const ev = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-        ev('message_start', {
-          type: 'message_start',
-          message: {
-            id, type: 'message', role: 'assistant', model,
-            content: [], stop_reason: null, stop_sequence: null,
-            usage: { input_tokens: 1, output_tokens: 0 },
-          },
-        });
-        ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
-        ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: reply } });
-        ev('content_block_stop', { type: 'content_block_stop', index: 0 });
-        ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } });
-        ev('message_stop', { type: 'message_stop' });
-        res.end();
+        emitStream(res, { id, model, reply });
         return;
       }
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          id, type: 'message', role: 'assistant', model,
-          content: [{ type: 'text', text: reply }],
-          stop_reason: 'end_turn',
-          stop_sequence: null,
-          usage: { input_tokens: 1, output_tokens: 1 },
-        }),
-      );
+      emitJson(res, { id, model, reply });
     });
   });
   return new Promise((resolve) => {
@@ -123,4 +272,48 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       });
     });
   });
+}
+
+// The Anthropic non-streaming response: one text or one tool_use content block.
+function emitJson(res, { id, model, reply }) {
+  const content = reply.tool
+    ? [{ type: 'tool_use', id: reply.tool.id, name: reply.tool.name, input: reply.tool.input }]
+    : [{ type: 'text', text: reply.text }];
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(
+    JSON.stringify({
+      id, type: 'message', role: 'assistant', model, content,
+      stop_reason: reply.tool ? 'tool_use' : 'end_turn',
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }),
+  );
+}
+
+// The Anthropic streaming wire: the fixed event ladder around one text or tool_use
+// block, so GenaiExecutor's streaming path assembles the same response as `infer`.
+function emitStream(res, { id, model, reply }) {
+  res.writeHead(200, { 'content-type': 'text/event-stream' });
+  const ev = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  ev('message_start', {
+    type: 'message_start',
+    message: {
+      id, type: 'message', role: 'assistant', model,
+      content: [], stop_reason: null, stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 0 },
+    },
+  });
+  if (reply.tool) {
+    ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: reply.tool.id, name: reply.tool.name, input: {} } });
+    ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(reply.tool.input) } });
+    ev('content_block_stop', { type: 'content_block_stop', index: 0 });
+    ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 1 } });
+  } else {
+    ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: reply.text } });
+    ev('content_block_stop', { type: 'content_block_stop', index: 0 });
+    ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } });
+  }
+  ev('message_stop', { type: 'message_stop' });
+  res.end();
 }

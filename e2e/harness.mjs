@@ -8,6 +8,7 @@ import net from 'node:net';
 import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -79,6 +80,47 @@ export async function withServer(mode, port, fn) {
     return await fn(`http://${addr}`);
   } finally {
     server.kill('SIGINT');
+  }
+}
+
+const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow: secret
+
+// The REAL-provider equivalent of `withServer`: instead of an in-process stub
+// model, start a fake Anthropic upstream reproducing `behavior`'s scenario replies,
+// point the server's GenaiExecutor at it (`AWAKEN_MODEL_MODE=real`), run `fn`, then
+// tear both down. This is how an e2e drops its model stub: the same scenario now
+// runs through the real provider adapter + a real socket + the real Anthropic wire.
+// `scenario`, when set, selects the server's host-config (client tools / delegate
+// roster / skills / memory dir) via `AWAKEN_SCENARIO` for the modes whose config is
+// not the plain default. `extraEnv` layers on (e.g. `AWAKEN_MEMORY_DIR`).
+export async function withRealServer(behavior, port, fn, { scenario, extraEnv = {} } = {}) {
+  const bin = ensureBuilt();
+  const addr = `127.0.0.1:${port}`;
+  const upstream = await startFakeAnthropic(FAKE_KEY, { behavior });
+  const server = spawn(bin, {
+    env: {
+      ...process.env,
+      AWAKEN_HTTP_ADDR: addr,
+      AWAKEN_MODEL_MODE: 'real',
+      ANTHROPIC_API_KEY: FAKE_KEY,
+      ANTHROPIC_BASE_URL: `${upstream.url}/v1/`,
+      ANTHROPIC_MODEL: 'fake-haiku',
+      ...(scenario ? { AWAKEN_SCENARIO: scenario } : {}),
+      ...extraEnv,
+    },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  let exitedEarly = false;
+  server.on('exit', (code) => {
+    if (code !== null && code !== 0) exitedEarly = true;
+  });
+  try {
+    await waitForPort(port);
+    if (exitedEarly) throw new Error('server exited before it listened');
+    return await fn(`http://${addr}`, upstream);
+  } finally {
+    server.kill('SIGINT');
+    upstream.close();
   }
 }
 
