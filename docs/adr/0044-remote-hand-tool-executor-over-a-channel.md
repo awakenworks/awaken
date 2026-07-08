@@ -1,7 +1,10 @@
 # ADR-0044: Remote Hand — Tool Execution Over a Channel
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-08
+- Implemented: 2026-07-08 — `awaken-tool-relay` (`RemoteToolExecutor`, `serve_hand`,
+  `HandSession`, wire types); kernel seam in `awaken-runtime` (`LocalToolExecutor`,
+  `RuntimeRunContext::tool_executor`); guardrail G33. First slice green.
 - Depends on: [ADR-0007](0007-runtime-owns-tool-execution.md) (this is the "future
   ADR" that D3 deferred), [ADR-0041](0041-sandbox-execution-environment-provider.md)
   (process-level provider seam that hosts a hand)

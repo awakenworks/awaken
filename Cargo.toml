@@ -79,6 +79,8 @@ awaken-store-postgres = { path = "crates/runtime/awaken-store-postgres" }
 awaken-config-store = { path = "crates/config/awaken-config-store" }
 awaken-provisioning-contract = { path = "crates/provisioning/awaken-provisioning-contract" }
 awaken-agent-channel = { path = "crates/provisioning/awaken-agent-channel" }
+awaken-connection-plan = { path = "crates/provisioning/awaken-connection-plan" }
+awaken-tool-relay = { path = "crates/agents/awaken-tool-relay" }
 awaken-file-store = { path = "crates/resources/awaken-file-store" }
 awaken-sandbox-local = { path = "crates/runtime/awaken-sandbox-local" }
 awaken-sandbox-container = { path = "crates/provisioning/awaken-sandbox-container" }

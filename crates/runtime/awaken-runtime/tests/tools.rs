@@ -26,7 +26,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutor, ToolOutput};
 
 /// First inference asks for a tool call; the second ends with text.
 struct ToolThenText {
@@ -261,6 +261,64 @@ impl LlmExecutor for CallsTool {
             stop_reason: None,
         })
     }
+}
+
+/// A `ToolExecutor` that records it ran and returns a canned output, standing in
+/// for a remote hand (ADR-0044 D1). Placement is invisible to the kernel.
+struct RecordingExecutor {
+    ran: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor for RecordingExecutor {
+    async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
+        self.ran.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolOutput::ok(&call.call_id, "from remote executor"))
+    }
+}
+
+#[tokio::test]
+async fn a_wired_tool_executor_replaces_the_in_process_path() {
+    // The echo tool is registered and visible, but a run that wires a
+    // `ToolExecutor` must route every call through it and never touch the
+    // in-process registry (ADR-0044 D1).
+    let local_ran = Arc::new(AtomicUsize::new(0));
+    let remote_ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenText::new()))
+        .with_tool(Arc::new(EchoTool {
+            ran: local_ran.clone(),
+        }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_tool_executor(Arc::new(RecordingExecutor {
+            ran: remote_ran.clone(),
+        }));
+
+    let outcome = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        local_ran.load(Ordering::SeqCst),
+        0,
+        "the in-process tool must NOT run when an executor is wired"
+    );
+    assert_eq!(
+        remote_ran.load(Ordering::SeqCst),
+        1,
+        "the wired executor handled the call"
+    );
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text_content().contains("from remote executor")),
+        "the executor's output is committed as the tool result"
+    );
 }
 
 #[tokio::test]

@@ -167,6 +167,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | Hosted product adapters | Downstream product package or repository | Implement public DTOs/events behind anti-corruption adapters; product hosting vocabulary does not enter neutral runtime/protocol/config code |
 | Credentials/vaults | Credential domain / Product | Opaque refs into runtime; no grant from selection/probe |
 | Observability/eval | Analytics/DX package or repository | Consume committed facts or normal runtime ports; never become runtime truth |
+| Brain–hand execution | `awaken-tool-relay` (hand) + `awaken-connection-plan` (topology) | Tool execution runs behind the `ToolExecutor` port ([ADR-0044](adr/0044-remote-hand-tool-executor-over-a-channel.md)); `LocalToolExecutor` is the in-process default, `RemoteToolExecutor`/`serve_hand` split the hand out over a `ConnectionPlan` channel ([ADR-0045](adr/0045-connection-plan-and-network-topology.md)); the hand links no model/commit/store (G33), plans carry a `CredentialRef` not material (G34). Shipped: InProcess + Unix; deferred: Tcp/Nats, foundation-transport adoption, pooled-worker placement |
 
 ## Not Ready Without More Detail
 

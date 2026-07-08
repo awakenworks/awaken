@@ -16,6 +16,8 @@
 #   awaken-store-postgres     -> contracts + schema; durable commit-store adapter (sqlx)
 #   awaken-store-sqlite       -> contracts + schema; durable commit-store adapter (rusqlite)
 #   awaken-run-ingress        -> kernel + store adapter; the durable run host (ADR-0009)
+#   awaken-connection-plan    -> agent-channel only; topology value object (ADR-0045, no kernel)
+#   awaken-tool-relay         -> runtime-contract only; the remote hand (ADR-0044, no kernel/store/model — G33)
 #
 # Each rule denies a crate, then lists via `wrappers` the ONLY crates allowed to
 # depend on it (its legitimate upper layers). A depender not in the list is a
@@ -100,6 +102,11 @@ wrappers = [
     "awaken-config-resolver",
     "awaken-run-executor-acp",
     "awaken-run-executor-a2a",
+    # ADR-0044: the remote-hand relay. It depends on the contract for ToolCall/
+    # ToolOutput/ToolExecutor/RawTool ONLY. Its absence from the awaken-runtime,
+    # awaken-store-*, and awaken-provider-genai wrapper lists is the G33 enforcer:
+    # adding a kernel/store/model dep to the hand crate fails `cargo deny check bans`.
+    "awaken-tool-relay",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
 

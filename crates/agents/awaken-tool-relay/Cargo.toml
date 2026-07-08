@@ -1,0 +1,25 @@
+[package]
+name = "awaken-tool-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-runtime-contract.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "sync"] }
+tokio-util = { workspace = true, features = ["codec"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+bytes = "1"
+
+# The crate stays minimal: no kernel, model, store, or connection-plan even in
+# tests (G33). The composition end-to-end test lives in awaken-runtime-examples.
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "sync", "time"] }
+
+[lints]
+workspace = true

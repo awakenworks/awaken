@@ -284,6 +284,33 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         "tokio",
     },
+    # Connection plan (ADR-0045): the topology value object (ConnectionPlan /
+    # DialAddr / Wiring / DialPolicy / CredentialRef) + ChannelFactory over the
+    # agent-channel duplex. A provisioning leaf — names no runtime, model, or
+    # store type; carries a CredentialRef, never resolved material (G34).
+    "awaken-connection-plan": {
+        "awaken-agent-channel",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tokio",
+    },
+    # Remote hand (ADR-0044): RemoteToolExecutor + serve_hand + the HandRequest/
+    # HandReply wire over the neutral ToolCall/ToolOutput value objects. It depends
+    # on the runtime CONTRACT only — no kernel, model, commit, or store (G33). The
+    # composition end-to-end test lives in awaken-runtime-examples, not here.
+    "awaken-tool-relay": {
+        "awaken-runtime-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tokio",
+        "tokio-util",
+        "futures-util",
+        "bytes",
+    },
     # Builtin tools extension: owns concrete tool ids and runs them in-process
     # (ADR-0007). It implements the async `Tool`/`RawTool` ports (`async-trait`,
     # `tokio`), hand tools touch the filesystem (`glob`, `regex`, `tempfile` for
@@ -394,6 +421,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # wire memory + skills without the host's private wiring.
         "awaken-ext-memory",
         "awaken-ext-skills",
+        # dev-deps: `remote_hand_e2e` composes the brain (Runtime) with a remote
+        # hand (awaken-tool-relay) over a topology plan (awaken-connection-plan) —
+        # the ADR-0044/0045 composition root lives here, not in the leaf crates.
+        "awaken-tool-relay",
+        "awaken-connection-plan",
         # coding-agent example (feature-gated): built-in tools, a real model, a TUI.
         "awaken-ext-builtin-tools",
         "awaken-provider-genai",

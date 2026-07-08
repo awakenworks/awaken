@@ -37,6 +37,11 @@ pub struct RuntimeRunContext {
     /// attempt accepts no mid-run input. Best-effort like the sink — the
     /// durable pending-input path stays the at-least-once channel.
     pub live_inbox: Option<LiveInbox>,
+    /// Where this attempt's tool calls run (ADR-0044). Absent means the runtime
+    /// executes tools in-process by id (the `LocalToolExecutor` degenerate case);
+    /// present routes every already-gated call through this port — e.g. a remote
+    /// hand. The kernel never learns placement; it calls the port either way.
+    pub tool_executor: Option<Arc<dyn crate::tool::ToolExecutor>>,
 }
 
 impl RuntimeRunContext {
@@ -81,6 +86,14 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_live_inbox(mut self, inbox: LiveInbox) -> Self {
         self.live_inbox = Some(inbox);
+        self
+    }
+
+    /// Route this attempt's tool calls through `executor` (e.g. a remote hand)
+    /// instead of the in-process registry (ADR-0044 D1).
+    #[must_use]
+    pub fn with_tool_executor(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
+        self.tool_executor = Some(executor);
         self
     }
 

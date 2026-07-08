@@ -46,6 +46,10 @@ awaken-config-store = { workspace = true }
 awaken-ext-memory = { workspace = true }
 awaken-ext-skills = { workspace = true }
 awaken-ext-builtin-tools = { workspace = true }
+# `remote_hand_e2e` composes the brain (Runtime) with a remote hand
+# (awaken-tool-relay) over a topology plan (awaken-connection-plan) — ADR-0044/0045.
+awaken-tool-relay = { workspace = true }
+awaken-connection-plan = { workspace = true }
 
 [[example]]
 name = "coding_agent"
