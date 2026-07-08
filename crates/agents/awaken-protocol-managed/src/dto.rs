@@ -349,6 +349,13 @@ pub enum OutboundKind {
         agent_name: String,
         stop_reason: StopReason,
     },
+    /// A subagent child thread terminated (`session.thread_status_terminated`),
+    /// e.g. when archived.
+    #[serde(rename = "session.thread_status_terminated")]
+    SessionThreadStatusTerminated {
+        session_thread_id: String,
+        agent_name: String,
+    },
     /// The coordinator sent the delegate its input (`agent.thread_message_sent`).
     #[serde(rename = "agent.thread_message_sent")]
     AgentThreadMessageSent {
@@ -394,6 +401,9 @@ impl OutboundKind {
             OutboundKind::SessionThreadCreated { .. } => "session.thread_created",
             OutboundKind::SessionThreadStatusRunning { .. } => "session.thread_status_running",
             OutboundKind::SessionThreadStatusIdle { .. } => "session.thread_status_idle",
+            OutboundKind::SessionThreadStatusTerminated { .. } => {
+                "session.thread_status_terminated"
+            }
             OutboundKind::AgentThreadMessageSent { .. } => "agent.thread_message_sent",
             OutboundKind::AgentThreadMessageReceived { .. } => "agent.thread_message_received",
             OutboundKind::ThreadContextCompacted { .. } => "agent.thread_context_compacted",

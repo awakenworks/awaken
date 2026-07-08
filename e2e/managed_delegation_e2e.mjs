@@ -100,6 +100,19 @@ async function main() {
     const childIdle = childEvents.find((e) => e.type === 'session.thread_status_idle');
     assert.equal(childIdle.stop_reason.type, 'end_turn');
 
+    // Archiving the child thread terminates it (session.thread_status_terminated).
+    const archived = await client.beta.sessions.threads.archive(child.id, {
+      session_id: ok.id,
+      betas: BETAS,
+    });
+    assert.ok(archived.archived_at, 'the child thread carries archived_at');
+    const afterEvents = await listEvents(client, ok.id);
+    const terminated = afterEvents.find(
+      (e) => e.type === 'session.thread_status_terminated' && e.session_thread_id === child.id,
+    );
+    assert.ok(terminated, 'archiving the child emits session.thread_status_terminated');
+    assert.equal(terminated.agent_name, 'researcher');
+
     // Fail closed: `ghost` is not in the roster; no sub-run runs.
     const bad = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     const badEvents = await turn(client, bad.id, 'use the ghost agent');

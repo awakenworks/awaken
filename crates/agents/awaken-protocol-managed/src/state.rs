@@ -1104,7 +1104,9 @@ impl ManagedState {
             .ok_or(StateError::NotFound)
     }
 
-    /// `POST /v1/sessions/{id}/threads/{thread_id}/archive`.
+    /// `POST /v1/sessions/{id}/threads/{thread_id}/archive`. Archiving the primary
+    /// thread archives the session; archiving a subagent child thread terminates
+    /// that thread (emitting `session.thread_status_terminated`).
     pub fn archive_thread(
         &self,
         id: &str,
@@ -1112,11 +1114,33 @@ impl ManagedState {
     ) -> Result<serde_json::Value, StateError> {
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        if format!("{id}:primary") != thread_id {
-            return Err(StateError::NotFound);
+        if format!("{id}:primary") == thread_id {
+            record.session.archived_at = Some(PROCESSED_AT.to_string());
+            return Ok(Self::primary_thread(record));
         }
-        record.session.archived_at = Some(PROCESSED_AT.to_string());
-        Ok(Self::primary_thread(record))
+        let Some(child) = record
+            .child_threads
+            .iter_mut()
+            .find(|t| t["id"] == thread_id)
+        else {
+            return Err(StateError::NotFound);
+        };
+        child["archived_at"] = serde_json::json!(PROCESSED_AT);
+        child["status"] = serde_json::json!("terminated");
+        let agent_name = child["agent"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let archived = child.clone();
+        record.events.push(Event {
+            id: self.next_event_id(),
+            kind: OutboundKind::SessionThreadStatusTerminated {
+                session_thread_id: thread_id.to_string(),
+                agent_name,
+            },
+            processed_at: Some(PROCESSED_AT.to_string()),
+        });
+        Ok(archived)
     }
 
     /// `GET /v1/sessions/{id}/resources` — the session's mounted resources.
