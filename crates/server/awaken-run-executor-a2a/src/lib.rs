@@ -189,25 +189,11 @@ mod tests {
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::commit::coordinator::{Coordinator, Error as CommitError};
     use awaken_agent_contract::commit::staged::CommitRecord;
-    use awaken_protocol_a2a::Response;
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     use std::sync::Mutex;
-
-    struct Mock(&'static str);
-    #[async_trait]
-    impl Transport for Mock {
-        async fn request(
-            &self,
-            _m: &str,
-            _p: &str,
-            _b: Option<Vec<u8>>,
-        ) -> std::result::Result<Response, String> {
-            Ok(Response::new(200, self.0.as_bytes().to_vec()))
-        }
-    }
 
     #[derive(Default)]
     struct Rec(Mutex<Vec<ThreadCommit>>);
@@ -243,22 +229,36 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn dials_remote_and_commits_the_task_reply() {
-        let reply = r#"{"task":{"id":"t-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"hi from remote"}]}}}}"#;
-        let exec = A2aRunExecutor::new(Arc::new(move |_url: &str| {
-            Arc::new(Mock(reply)) as Arc<dyn Transport>
-        }));
+    /// Drives the real executor against a **real A2A HTTP server** over a real TCP
+    /// socket (no mock transport): `over_http()` dials the endpoint on
+    /// `Backend::Remote`, the server answers a real A2A task, and the reply is
+    /// committed. The server's fixed reply stands for the external remote agent —
+    /// the transport, socket, and parse path are all real.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dials_a_real_http_a2a_server_and_commits_the_reply() {
+        const REPLY: &str = r#"{"task":{"id":"t-1","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"real remote reply"}]}}}}"#;
+
+        // A real HTTP server on an ephemeral port; a fallback answers the A2A
+        // `message:send` POST (the `:` in the path is a matchit param char, so a
+        // fallback is simpler than a literal route and just as real).
+        let app = axum::Router::new().fallback(|| async { REPLY });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        // The production executor dials it over the real `HttpTransport` (ureq).
+        let exec = A2aRunExecutor::over_http();
         let rec = Arc::new(Rec::default());
         let phase = exec
             .execute(
-                activation("a2a:https://host/a2a"),
+                activation(&format!("a2a:http://{addr}")),
                 RuntimeRunContext::new().with_commit(rec.clone()),
             )
             .await
             .unwrap();
+
         assert_eq!(phase, Phase::Ended(EndCause::NaturalEnd));
         let commits = rec.0.lock().unwrap();
-        assert_eq!(commits[0].messages[0].text_content(), "hi from remote");
+        assert_eq!(commits[0].messages[0].text_content(), "real remote reply");
     }
 }

@@ -529,6 +529,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-a2a",
         "async-trait",
         "tokio",
+        # dev-only: a real localhost HTTP server the executor dials over real TCP.
+        "axum",
     },
     # AI SDK v6 protocol adapter: the anti-corruption boundary between the Vercel
     # AI SDK UI Message Stream wire and the neutral runtime. Like the managed
