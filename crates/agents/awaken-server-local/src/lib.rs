@@ -52,20 +52,26 @@ struct RouteProvider;
 
 impl ExecutorProvider for RouteProvider {
     fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
-        match model_ref {
-            "fast" => Some(Arc::new(LabelModel("fast"))),
-            "slow" => Some(Arc::new(LabelModel("slow"))),
-            _ => None,
-        }
+        let labeled: Arc<dyn LlmExecutor> = match model_ref {
+            "fast" => Arc::new(LabelModel("fast")),
+            "slow" => Arc::new(LabelModel("slow")),
+            _ => return None,
+        };
+        // Over the real wire the label rides in the model name the session bound
+        // (GenaiExecutor sends `model_binding.model_ref`), which the fake upstream's
+        // `label` behavior echoes back — so we keep the route's ref and only swap the
+        // executor. `scenario_model`'s ref (the env model name) is intentionally
+        // discarded here; the routing ref is the observable, not the wire model.
+        Some(scenario_model(labeled, model_ref).0)
     }
 }
 
 /// A router whose per-session/per-turn model selection routes to distinct labeled
 /// executors (R1/R2/R5/R6). `AWAKEN_MODEL_MODE=model-route`.
 pub fn build_model_route_router() -> Router {
+    let (default_model, _) = scenario_model(Arc::new(LabelModel("default")), "default");
     mount(Arc::new(
-        SharedHost::new(Arc::new(LabelModel("default")), "default")
-            .with_executor_provider(Arc::new(RouteProvider)),
+        SharedHost::new(default_model, "default").with_executor_provider(Arc::new(RouteProvider)),
     ))
 }
 
@@ -200,9 +206,11 @@ pub fn build_acp_router() -> Router {
         launch,
     ));
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    mount(Arc::new(
-        SharedHost::new(Arc::new(EchoModel), "awaken").with_acp(acp),
-    ))
+    // The native fallback model runs over the real wire when the harness asks
+    // (`AWAKEN_MODEL_SOURCE=http`); the ACP `runtime:"acp:*"` path is unaffected — it
+    // runs on the real CLI subprocess either way.
+    let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
+    mount(Arc::new(SharedHost::new(model, model_ref).with_acp(acp)))
 }
 
 /// [`FAKE_ACP_SCRIPT`]'s sandboxed twin (bash, for `/dev/tcp`), with an OS-egress
