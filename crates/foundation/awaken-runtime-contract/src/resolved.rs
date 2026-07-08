@@ -72,9 +72,9 @@ impl ResolvedSpec {
 pub enum Backend {
     /// The in-process awaken model+tool loop. Any non-`acp:` backend.
     Native,
-    /// A launched external ACP CLI (Claude Code, Codex, …). `profile` is the CLI /
-    /// adapter-profile id parsed from `acp:<profile>` (empty for a bare `acp`).
-    Acp { profile: String },
+    /// A launched external ACP CLI (Claude Code, Codex, …). `cli` is the catalog id
+    /// (`AcpCli::id`) parsed from `acp:<cli>` (empty for a bare `acp`).
+    Acp { cli: String },
 }
 
 impl Backend {
@@ -84,12 +84,10 @@ impl Backend {
     #[must_use]
     pub fn from_ref(backend_ref: &str) -> Self {
         if backend_ref == "acp" {
+            Backend::Acp { cli: String::new() }
+        } else if let Some(cli) = backend_ref.strip_prefix("acp:") {
             Backend::Acp {
-                profile: String::new(),
-            }
-        } else if let Some(profile) = backend_ref.strip_prefix("acp:") {
-            Backend::Acp {
-                profile: profile.to_string(),
+                cli: cli.to_string(),
             }
         } else {
             Backend::Native
@@ -220,14 +218,12 @@ mod tests {
         // smuggle — now a typed field.
         assert_eq!(
             Backend::from_ref("acp"),
-            Backend::Acp {
-                profile: String::new()
-            }
+            Backend::Acp { cli: String::new() }
         );
         assert_eq!(
             Backend::from_ref("acp:claude"),
             Backend::Acp {
-                profile: "claude".to_string()
+                cli: "claude".to_string()
             }
         );
         assert!(Backend::from_ref("acp:codex").is_acp());
@@ -236,7 +232,7 @@ mod tests {
         assert_eq!(
             Backend::from_ref(&ModelBinding::new("p", "m", "acp:codex").backend_ref),
             Backend::Acp {
-                profile: "codex".to_string()
+                cli: "codex".to_string()
             }
         );
     }
