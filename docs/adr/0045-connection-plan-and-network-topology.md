@@ -1,7 +1,12 @@
 # ADR-0045: Connection Plan — Network Topology as a Value Object
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-08
+- Implemented: 2026-07-08 — `awaken-connection-plan` (`ConnectionPlan`,
+  `DialAddr`/`Wiring`/`DialPolicy`/`CredentialRef`, `ChannelFactory`,
+  `in_process_pair`, `bind_unix`, `CredentialResolver`/`NoAuth`); guardrail G34.
+  InProcess + Unix arms green; Tcp/Nats and the foundation-transport adoption
+  (D1/D5) remain follow-on slices.
 - Depends on: [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md) (the
   first consumer that needs a channel), foundation crate `awaken-connection`
   (already a transitive dependency of this workspace)

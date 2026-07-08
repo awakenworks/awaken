@@ -315,6 +315,45 @@ impl LlmExecutor for GitRepoModel {
 /// (`glob` is only defined from `s0`), so the machine gate rejects it as a
 /// violation. Then it ends. This exercises the tool state machine's gate, advance,
 /// emit, and violation paths end to end. Stateless.
+/// Drives the remote-hand e2e (ADR-0044). Turn 1 calls the `bash` hand tool to
+/// echo a fixed marker; turn 2 reads the tool result the hand returned and answers
+/// with it. When the host wires a remote hand, `bash` runs OUT of the run loop,
+/// across the framed channel, in a separate hand task — the final answer carrying
+/// the marker proves the whole brain→hand→brain path end to end. Stateless.
+pub struct RemoteHandModel;
+
+/// The marker the hand's `bash echo` emits; the e2e asserts it round-trips.
+pub const REMOTE_HAND_MARKER: &str = "REMOTE-HAND-OK-9f31";
+
+#[async_trait::async_trait]
+impl LlmExecutor for RemoteHandModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        // The most recent tool result the (remote) hand returned, if any.
+        let hand_said = request.messages.iter().rev().find_map(|m| {
+            m.content.iter().find_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => Some(block_text(content)),
+                _ => None,
+            })
+        });
+        let output = match hand_said {
+            None => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "bash-1".into(),
+                tool_id: "bash".into(),
+                arguments: serde_json::json!({ "command": format!("echo {REMOTE_HAND_MARKER}") }),
+            }]),
+            Some(text) => AssistantOutput::text(format!("hand said: {}", text.trim())),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 pub struct StateMachineModel;
 
 #[async_trait::async_trait]

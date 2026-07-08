@@ -24,6 +24,12 @@ awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 awaken-protocol-transport = { workspace = true }
 awaken-config-store = { workspace = true }
+# Remote hand (ADR-0044): the `remote-hand` scenario mode routes a run's tools to
+# a hand task over a framed channel. tool-relay = the RemoteToolExecutor/serve_hand;
+# connection-plan = the in-process channel; ext-builtin-tools = the hand's toolset.
+awaken-tool-relay = { workspace = true }
+awaken-connection-plan = { workspace = true }
+awaken-ext-builtin-tools = { workspace = true }
 # Durable memory persistence (resources plane): the memory-extraction mode roots its
 # store under AWAKEN_STORAGE_DIR via `memory_scope_root` so it survives a restart.
 awaken-memory-store = { workspace = true }

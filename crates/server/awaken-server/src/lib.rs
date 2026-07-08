@@ -640,6 +640,45 @@ pub fn build_custom_router() -> Router {
     mount(Arc::new(host))
 }
 
+/// A router whose runs execute their tools on a REMOTE HAND (ADR-0044) instead of
+/// the in-process registry. A hand task serving the built-in hand tools is spawned
+/// over an in-process framed channel; the host routes every run's tool calls to it
+/// via `with_remote_hand`. The driving model calls `bash` to echo a marker, so the
+/// e2e proves the whole brain→(framed channel)→hand→brain path through the served
+/// binary. `AWAKEN_MODEL_MODE=remote-hand`.
+pub fn build_remote_hand_router() -> Router {
+    use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
+
+    let (model, model_ref) = scenario_model(Arc::new(crate::models::RemoteHandModel), "remote-hand");
+
+    // Spawn the hand: a value-returning tool server over one end of an in-process
+    // duplex, serving the built-in hand tools and nothing else (G33). The tool
+    // calls leave the run loop, cross the framed channel, run here, and return.
+    let (brain_end, hand_end) = awaken_connection_plan::in_process_pair();
+    let session = HandSession::new(awaken_ext_builtin_tools::executable_hand_tools());
+    tokio::spawn(serve_hand(hand_end, session));
+
+    let host = SharedHost::new(model, model_ref)
+        .with_gate_override(Arc::new(AllowAllGate))
+        .with_remote_hand(Arc::new(RemoteToolExecutor::new(brain_end)));
+    mount(Arc::new(host))
+}
+
+/// Auto-allows every tool call, so an action tool (`bash`) runs without a HITL
+/// pause — the remote-hand e2e asserts the hand's execution, not the gate.
+struct AllowAllGate;
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::permission::ToolGateHook for AllowAllGate {
+    async fn gate(
+        &self,
+        _ctx: &awaken_runtime_contract::permission::PermissionContext,
+        _state: &awaken_agent_contract::agent::state::Store,
+    ) -> awaken_runtime_contract::permission::GateOutcome {
+        awaken_runtime_contract::permission::GateOutcome::Allow
+    }
+}
+
 /// A router whose agent can delegate to a `researcher` sub-agent via `agent_run`
 /// (the multi-agent e2e). `ghost` is deliberately absent from the roster so the
 /// fail-closed path can be exercised.
