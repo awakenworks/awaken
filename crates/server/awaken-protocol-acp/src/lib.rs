@@ -24,6 +24,23 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(feature = "real-acp")]
 pub mod real_acp;
 
+/// The official JSON-RPC 2.0 ACP client driver (`real-acp` feature).
+#[cfg(feature = "real-acp")]
+pub mod jsonrpc;
+
+/// Which wire the bridge speaks to the agent. A per-session datum (each ACP CLI
+/// row declares its own), not a build-time global: a test/fixture agent speaks the
+/// newline stand-in; a real `claude --acp`/`codex acp` speaks official JSON-RPC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Codec {
+    /// The minimal newline-delimited `{type,text}` stand-in (fixtures, tests).
+    #[default]
+    Newline,
+    /// The official `agent-client-protocol` JSON-RPC 2.0 wire (`real-acp`).
+    #[cfg(feature = "real-acp")]
+    Acp,
+}
+
 /// ACP turn-failure classification + error prompts (ported from oversight-next,
 /// minus its rescheduling/retry).
 pub mod error;
@@ -140,12 +157,30 @@ pub enum AcpError {
 pub struct AcpBridge;
 
 impl AcpBridge {
-    /// Send `prompt` to the agent, then read its event frames until `TurnEnd`,
-    /// projecting each into the [`RunEventSink`] with a strictly increasing seq.
+    /// Drive one turn over `channel`, dispatching on the wire [`Codec`]: the
+    /// newline stand-in (fixtures) or the official JSON-RPC ACP driver. Both
+    /// project into the same [`RunEventSink`] and return the same
+    /// [`TerminationReason`], so nothing downstream depends on the wire.
+    pub async fn run_turn(
+        channel: &mut dyn AgentChannel,
+        prompt: &str,
+        sink: &mut dyn RunEventSink,
+        codec: Codec,
+    ) -> Result<TerminationReason, AcpError> {
+        match codec {
+            Codec::Newline => Self::run_turn_newline(channel, prompt, sink).await,
+            #[cfg(feature = "real-acp")]
+            Codec::Acp => crate::jsonrpc::run_turn(channel, prompt, sink).await,
+        }
+    }
+
+    /// Send `prompt` to the agent, then read its newline-JSON event frames until
+    /// `TurnEnd`, projecting each into the [`RunEventSink`] with a strictly
+    /// increasing seq.
     ///
     /// Cancel-safe at frame boundaries: a dropped future may leave events already
     /// committed, which is correct (they happened) — the supervisor maps the miss.
-    pub async fn run_turn(
+    async fn run_turn_newline(
         channel: &mut dyn AgentChannel,
         prompt: &str,
         sink: &mut dyn RunEventSink,
@@ -229,6 +264,7 @@ impl Supervisor {
         cancel: impl std::future::Future<Output = ()>,
         injections: &mut tokio::sync::mpsc::Receiver<Injection>,
         policy: SupervisePolicy,
+        codec: Codec,
     ) -> Result<TerminationReason, AcpError> {
         let deadline = async {
             match policy.turn_deadline {
@@ -238,7 +274,7 @@ impl Supervisor {
         };
         tokio::select! {
             biased;
-            outcome = AcpBridge::run_turn(channel, prompt, sink) => outcome,
+            outcome = AcpBridge::run_turn(channel, prompt, sink, codec) => outcome,
             Some(Injection::Interrupt) = injections.recv() => {
                 Self::reap(process, policy.reap_grace).await?;
                 Ok(TerminationReason::Cancelled)
@@ -328,7 +364,7 @@ mod tests {
         ));
 
         let mut sink = RecordingSink::default();
-        let reason = AcpBridge::run_turn(ours.as_mut(), "do it", &mut sink)
+        let reason = AcpBridge::run_turn(ours.as_mut(), "do it", &mut sink, Codec::Newline)
             .await
             .unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
@@ -355,7 +391,7 @@ mod tests {
             let (mut ours, theirs) = combined();
             let agent = tokio::spawn(fake_agent(theirs, vec![frame.into()], false));
             let mut sink = RecordingSink::default();
-            let got = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink)
+            let got = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline)
                 .await
                 .unwrap();
             assert_eq!(got, want);
@@ -368,7 +404,7 @@ mod tests {
         let (mut ours, theirs) = combined();
         let agent = tokio::spawn(fake_agent(theirs, vec!["not json".into()], true));
         let mut sink = RecordingSink::default();
-        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink)
+        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline)
             .await
             .unwrap_err();
         assert!(matches!(err, AcpError::Frame(_)));
@@ -385,7 +421,7 @@ mod tests {
             false,
         ));
         let mut sink = RecordingSink::default();
-        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink)
+        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline)
             .await
             .unwrap_err();
         assert!(matches!(err, AcpError::Truncated));
@@ -404,7 +440,7 @@ mod tests {
             fail_at: Some(1),
             ..Default::default()
         };
-        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink)
+        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline)
             .await
             .unwrap_err();
         assert!(matches!(err, AcpError::Sink(SinkError::Append(_))));
@@ -508,6 +544,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(30)),
             &mut rx,
             fast_policy(),
+            Codec::Newline,
         )
         .await
         .unwrap();
@@ -545,6 +582,7 @@ mod tests {
             std::future::pending::<()>(),
             &mut rx,
             policy,
+            Codec::Newline,
         )
         .await
         .unwrap();
@@ -574,6 +612,7 @@ mod tests {
             std::future::pending::<()>(),
             &mut rx,
             fast_policy(),
+            Codec::Newline,
         )
         .await
         .unwrap();
@@ -601,6 +640,7 @@ mod tests {
             std::future::pending::<()>(),
             &mut rx,
             SupervisePolicy::default(),
+            Codec::Newline,
         )
         .await
         .unwrap();

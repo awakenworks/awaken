@@ -59,17 +59,20 @@ pub struct SandboxChannelSource {
     provider: NamespaceProvider,
     launch: AcpLaunch,
     egress: ThreadEgress,
+    codec: awaken_run_executor_acp::Codec,
 }
 
 impl SandboxChannelSource {
     /// A source realizing its sandboxes under `base` (one root per thread scope).
     /// The provider is constructed here so a composition root names only this
-    /// crate, not the sandbox tier.
+    /// crate, not the sandbox tier. Defaults to the newline stand-in wire (the
+    /// in-tree fixture agent); a real CLI sets [`Self::with_codec`] to `Codec::Acp`.
     pub fn new(base: impl Into<std::path::PathBuf>, launch: AcpLaunch) -> Self {
         Self {
             provider: NamespaceProvider::new(base),
             launch,
             egress: ThreadEgress::default(),
+            codec: awaken_run_executor_acp::Codec::Newline,
         }
     }
 
@@ -78,6 +81,13 @@ impl SandboxChannelSource {
     #[must_use]
     pub fn with_thread_egress(mut self, egress: ThreadEgress) -> Self {
         self.egress = egress;
+        self
+    }
+
+    /// The wire the sandboxed agent speaks (a real `claude --acp` → `Codec::Acp`).
+    #[must_use]
+    pub fn with_codec(mut self, codec: awaken_run_executor_acp::Codec) -> Self {
+        self.codec = codec;
         self
     }
 
@@ -142,6 +152,7 @@ impl AgentChannelSource for SandboxChannelSource {
         Ok(AgentSession {
             channel,
             process: Arc::from(process),
+            codec: self.codec,
         })
     }
 }
