@@ -18,6 +18,11 @@ import { FAKE_USAGE } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
+// The provider adapter (genai) normalizes `input_tokens` to the TOTAL input incl. the
+// prompt-cache tokens, so per inference the reported input = raw + cache_read + cache_creation.
+const PER_TURN_INPUT =
+  FAKE_USAGE.input_tokens + FAKE_USAGE.cache_read_input_tokens + FAKE_USAGE.cache_creation_input_tokens;
+
 async function turn(client, id, text) {
   await client.beta.sessions.events.send(id, {
     betas: BETAS,
@@ -37,18 +42,23 @@ async function main() {
     assert.ok(!fresh.input_tokens && !fresh.output_tokens, `fresh session has no usage: ${JSON.stringify(fresh)}`);
     pass('fresh session reports empty usage');
 
-    // One turn → exactly one inference's worth of tokens.
+    // One turn → exactly one inference's worth of tokens, incl. the prompt-cache
+    // breakdown (input/output/cache_read/cache_creation).
     await turn(client, session.id, 'first');
     let u = await usageOf(client, session.id);
-    assert.equal(u.input_tokens, FAKE_USAGE.input_tokens, `1 turn input_tokens: ${JSON.stringify(u)}`);
+    assert.equal(u.input_tokens, PER_TURN_INPUT, `1 turn input_tokens: ${JSON.stringify(u)}`);
     assert.equal(u.output_tokens, FAKE_USAGE.output_tokens, `1 turn output_tokens: ${JSON.stringify(u)}`);
-    pass(`session.usage after 1 turn = ${JSON.stringify(u)} (exact)`);
+    assert.equal(u.cache_read_input_tokens, FAKE_USAGE.cache_read_input_tokens, `1 turn cache_read: ${JSON.stringify(u)}`);
+    assert.equal(u.cache_creation_input_tokens, FAKE_USAGE.cache_creation_input_tokens, `1 turn cache_creation: ${JSON.stringify(u)}`);
+    pass(`session.usage after 1 turn = ${JSON.stringify(u)} (exact, incl. cache)`);
 
-    // Second turn → the counts accumulate across turns.
+    // Second turn → every field accumulates across turns.
     await turn(client, session.id, 'second');
     u = await usageOf(client, session.id);
-    assert.equal(u.input_tokens, FAKE_USAGE.input_tokens * 2, `2 turns input_tokens accumulate: ${JSON.stringify(u)}`);
+    assert.equal(u.input_tokens, PER_TURN_INPUT * 2, `2 turns input_tokens accumulate: ${JSON.stringify(u)}`);
     assert.equal(u.output_tokens, FAKE_USAGE.output_tokens * 2, `2 turns output_tokens accumulate: ${JSON.stringify(u)}`);
+    assert.equal(u.cache_read_input_tokens, FAKE_USAGE.cache_read_input_tokens * 2, `2 turns cache_read accumulate: ${JSON.stringify(u)}`);
+    assert.equal(u.cache_creation_input_tokens, FAKE_USAGE.cache_creation_input_tokens * 2, `2 turns cache_creation accumulate: ${JSON.stringify(u)}`);
     pass(`session.usage accumulates across turns = ${JSON.stringify(u)}`);
   });
 

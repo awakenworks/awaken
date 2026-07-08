@@ -462,11 +462,11 @@ pub trait SessionRuntime: Send + Sync {
         Vec::new()
     }
 
-    /// The session's accumulated token usage `(input_tokens, output_tokens)` across
-    /// all turns, surfaced on the session's `usage` field. The default `(0, 0)` is for
-    /// a runtime that does not report usage (the deterministic in-process models).
-    async fn session_usage(&self, _thread: &str) -> (u64, u64) {
-        (0, 0)
+    /// The session's accumulated token usage across all turns, surfaced on the
+    /// session's `usage` field. The default is empty — a runtime that reports no usage
+    /// (the deterministic in-process models).
+    async fn session_usage(&self, _thread: &str) -> SessionUsage {
+        SessionUsage::default()
     }
 
     /// Buffer a system message; it is prepended to the next turn's input.
@@ -1447,9 +1447,9 @@ impl ManagedState {
         }
         // Refresh the session's accumulated token usage from the runtime's committed
         // tally, so a subsequent GET /v1/sessions reflects the tokens this turn spent.
-        let (input_tokens, output_tokens) = self.runtime.session_usage(session_id).await;
+        let usage = self.runtime.session_usage(session_id).await;
         if let Some(record) = self.sessions.lock().unwrap().get_mut(session_id) {
-            record.session.usage = session_usage_value(input_tokens, output_tokens);
+            record.session.usage = session_usage_value(usage);
         }
         Ok(SendEventsResponse { data: receipts })
     }
@@ -1486,10 +1486,26 @@ fn rubric_text(rubric: &serde_json::Value) -> String {
     }
 }
 
+/// The session-level token usage the managed wire reports (the port's neutral shape;
+/// the runtime's per-model `TokenUsage` totals are mapped onto this by the host, so
+/// this crate needs no runtime-plane type). Cumulative across all turns and models.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+}
+
 /// The session's `usage` object (`BetaManagedAgentsSessionUsage`): cumulative input +
-/// output token counts across all turns. Emitted whenever a turn has run.
-fn session_usage_value(input_tokens: u64, output_tokens: u64) -> serde_json::Value {
-    serde_json::json!({ "input_tokens": input_tokens, "output_tokens": output_tokens })
+/// output (+ prompt-cache) token counts across all turns. Emitted whenever a turn ran.
+fn session_usage_value(usage: SessionUsage) -> serde_json::Value {
+    serde_json::json!({
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read_input_tokens": usage.cache_read_tokens,
+        "cache_creation_input_tokens": usage.cache_creation_tokens,
+    })
 }
 
 /// Concatenate the text of a content-block list.
