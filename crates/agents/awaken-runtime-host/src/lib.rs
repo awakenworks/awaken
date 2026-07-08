@@ -154,7 +154,7 @@ fn to_turn_outcome(result: TurnResult) -> TurnOutcome {
         stop: phase_to_stop(&result.phase),
         messages: result.new_messages,
         pending: to_pending(result.pending),
-        compaction: result.compaction,
+        compacted: result.compacted,
     }
 }
 

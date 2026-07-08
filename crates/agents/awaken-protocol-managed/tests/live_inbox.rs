@@ -90,7 +90,7 @@ impl SessionRuntime for QueueFake {
             messages: vec![Message::text(Id("a".into()), Role::Assistant, "ok")],
             stop: StopReason::EndTurn,
             pending: None,
-            compaction: None,
+            compacted: false,
         })
     }
 

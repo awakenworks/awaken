@@ -315,13 +315,11 @@ pub enum OutboundKind {
     #[serde(rename = "session.status_terminated")]
     SessionStatusTerminated {},
     /// The conversation history was summarized to fit context (the compact plugin
-    /// folded older turns). `pre_compaction_tokens` is a best-effort estimate of the
-    /// slice folded away; absent when unknown.
+    /// folded older turns). A pure marker: its shape matches the installed SDK's
+    /// `BetaManagedAgentsAgentThreadContextCompactedEvent` — `{id, type,
+    /// processed_at}`, no payload (aligned to `@anthropic-ai/sdk`, not guessed).
     #[serde(rename = "agent.thread_context_compacted")]
-    ThreadContextCompacted {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pre_compaction_tokens: Option<u64>,
-    },
+    ThreadContextCompacted {},
     #[serde(rename = "span.outcome_evaluation_start")]
     SpanOutcomeEvaluationStart { outcome_id: String, iteration: u32 },
     #[serde(rename = "span.outcome_evaluation_end")]

@@ -36,33 +36,26 @@ fn compaction_key(run_id: &str) -> String {
     format!("{COMPACTION_KEY_PREFIX}{run_id}")
 }
 
-/// The neutral fact a completed fold commits to thread state.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct CompactionFact {
-    /// Best-effort token estimate of the older slice that was folded away.
-    pre_compaction_tokens: u64,
+/// The state command a completed fold stages: a presence marker under
+/// `compaction/<run_id>`. The wire event `agent.thread_context_compacted` carries
+/// no payload (aligned to `@anthropic-ai/sdk`), so the marker is a bare `true`.
+fn compaction_marker(run_id: &str) -> Command {
+    Command::set(
+        Scope::Thread,
+        MergePolicy::Commutative,
+        compaction_key(run_id),
+        serde_json::Value::Bool(true),
+    )
 }
 
-/// The pre-compaction token count `run_id` committed, or `None` if that run did
-/// not fold. The single read-back seam for a protocol adapter that projects the
-/// compaction event: it owns the key + payload shape so no consumer duplicates them.
-pub fn compaction_pre_tokens(state: &[Command], run_id: &str) -> Option<u64> {
+/// Whether `run_id` folded its context (committed a compaction marker). The single
+/// read-back seam for a protocol adapter that projects the compaction event: it
+/// owns the key so no consumer duplicates it.
+pub fn compacted(state: &[Command], run_id: &str) -> bool {
     let key = compaction_key(run_id);
-    state.iter().rev().find_map(|cmd| match &cmd.action {
-        Action::Set(value) if cmd.scope == Scope::Thread && cmd.key.0 == key => {
-            serde_json::from_value::<CompactionFact>(value.clone())
-                .ok()
-                .map(|f| f.pre_compaction_tokens)
-        }
-        _ => None,
+    state.iter().any(|cmd| {
+        matches!(cmd.action, Action::Set(_)) && cmd.scope == Scope::Thread && cmd.key.0 == key
     })
-}
-
-/// A rough, deterministic token estimate (~4 chars/token) over a message slice —
-/// enough to populate `pre_compaction_tokens` without a real tokenizer.
-fn estimate_tokens(messages: &[Message]) -> u64 {
-    let chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
-    (chars / 4) as u64
 }
 
 /// Summarizes the older part of a conversation. Implemented by the host over a
@@ -146,34 +139,24 @@ struct CompactHook {
     cache: Mutex<HashMap<RunId, Vec<Message>>>,
 }
 
-/// A completed fold: the request-only summary block plus the token estimate of
-/// the slice it replaced.
-struct Folded {
-    summary: Vec<Message>,
-    pre_compaction_tokens: u64,
-}
-
 impl CompactHook {
-    async fn compute(&self, conversation: &[Message]) -> Option<Folded> {
+    /// The request-only summary block for a fold, or `None` when nothing folds.
+    async fn compute(&self, conversation: &[Message]) -> Option<Vec<Message>> {
         let summarizer = self.summarizer.as_ref()?;
         let fold_to = fold_point(
             conversation.len(),
             self.config.threshold,
             self.config.keep_last,
         )?;
-        let older = &conversation[..fold_to];
-        let summary = summarizer.summarize(older).await?;
+        let summary = summarizer.summarize(&conversation[..fold_to]).await?;
         if summary.trim().is_empty() {
             return None;
         }
-        Some(Folded {
-            summary: vec![Message::text(
-                MessageId("compact-summary".into()),
-                Role::System,
-                format!("Summary of earlier conversation: {summary}"),
-            )],
-            pre_compaction_tokens: estimate_tokens(older),
-        })
+        Some(vec![Message::text(
+            MessageId("compact-summary".into()),
+            Role::System,
+            format!("Summary of earlier conversation: {summary}"),
+        )])
     }
 }
 
@@ -189,26 +172,17 @@ impl PhaseHook for CompactHook {
             // the fact — it was committed on the folding step (emit-once per run).
             return PhaseReaction::context(hit.clone());
         }
-        let folded = self.compute(conversation).await;
-        let block = folded
-            .as_ref()
-            .map(|f| f.summary.clone())
-            .unwrap_or_default();
-        self.cache.lock().unwrap().insert(ctx.run_id.clone(), block);
-        match folded {
+        let summary = self.compute(conversation).await;
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(ctx.run_id.clone(), summary.clone().unwrap_or_default());
+        match summary {
             // A fold happened: inject the summary request-only *and* stage the
-            // durable, protocol-neutral fact the adapter projects into the event.
-            Some(f) => PhaseReaction {
-                state: vec![Command::set(
-                    Scope::Thread,
-                    MergePolicy::Commutative,
-                    compaction_key(&ctx.run_id.0),
-                    serde_json::to_value(CompactionFact {
-                        pre_compaction_tokens: f.pre_compaction_tokens,
-                    })
-                    .expect("compaction fact serializes"),
-                )],
-                context: f.summary,
+            // durable, protocol-neutral marker the adapter projects into the event.
+            Some(block) => PhaseReaction {
+                state: vec![compaction_marker(&ctx.run_id.0)],
+                context: block,
             },
             None => PhaseReaction::default(),
         }
@@ -289,7 +263,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn a_fold_stages_a_readable_compaction_fact() {
+    async fn a_fold_stages_a_readable_compaction_marker() {
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 4,
             keep_last: 2,
@@ -299,18 +273,14 @@ mod tests {
         }));
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
-        // The fold stages exactly one thread-scoped compaction command, which the
-        // read-back helper resolves to a positive pre-compaction token estimate.
+        // The fold stages exactly one thread-scoped compaction marker, which the
+        // read-back helper resolves to `true`.
         assert_eq!(reaction.state.len(), 1);
-        let tokens = compaction_pre_tokens(&reaction.state, "r");
-        assert!(
-            tokens.is_some_and(|t| t > 0),
-            "pre_compaction_tokens: {tokens:?}"
-        );
+        assert!(compacted(&reaction.state, "r"));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn a_short_conversation_stages_no_fact() {
+    async fn a_short_conversation_stages_no_marker() {
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 40,
             keep_last: 8,
@@ -321,7 +291,7 @@ mod tests {
         let hook = &plugin.resolve().phase_hooks[0];
         let reaction = hook.on_phase(&phase_ctx(), &convo(5)).await;
         assert!(reaction.state.is_empty());
-        assert_eq!(compaction_pre_tokens(&reaction.state, "r"), None);
+        assert!(!compacted(&reaction.state, "r"));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -52,17 +52,21 @@ async function main() {
     );
     pass('compaction: older turns fold into a summary injected on later turns');
 
-    // The fold is projected onto the event stream as `agent.thread_context_compacted`.
+    // The fold is projected onto the event stream, decoded by the official SDK as
+    // BetaManagedAgentsAgentThreadContextCompactedEvent (`{id, type, processed_at}`).
     const evs = await allEvents(client, s.id);
     const types = evs.map((e) => e.type);
     const at = types.indexOf('agent.thread_context_compacted');
     assert.ok(at >= 0, `the stream carries a compaction event: ${types.join(',')}`);
 
-    // It carries a positive best-effort token estimate of the folded slice.
-    const tokens = evs[at].pre_compaction_tokens;
+    // Its shape matches the SDK type exactly: a plain marker with an id + timestamp
+    // and no payload (aligned to @anthropic-ai/sdk, not a guessed field).
+    const ev = evs[at];
+    assert.equal(typeof ev.id, 'string', `event has an id: ${JSON.stringify(ev)}`);
+    assert.equal(typeof ev.processed_at, 'string', `event has processed_at: ${JSON.stringify(ev)}`);
     assert.ok(
-      typeof tokens === 'number' && tokens > 0,
-      `pre_compaction_tokens is a positive estimate: ${JSON.stringify(evs[at])}`,
+      !('pre_compaction_tokens' in ev),
+      `no fields beyond the SDK type: ${JSON.stringify(ev)}`,
     );
 
     // It runs at BeforeInference, so the marker precedes its turn's agent.message.
@@ -71,7 +75,7 @@ async function main() {
       followingMessage > at,
       `the compaction marker precedes a following agent.message: ${types.join(',')}`,
     );
-    pass('compaction: agent.thread_context_compacted projected before the folded turn message');
+    pass('compaction: agent.thread_context_compacted (SDK shape) precedes the folded turn message');
   });
   console.log('E2E PASS: context compaction (fold + summarize + inject) across turns.');
 }

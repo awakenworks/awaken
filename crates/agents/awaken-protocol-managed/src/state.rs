@@ -47,9 +47,9 @@ pub struct TurnOutcome {
     pub messages: Vec<Message>,
     pub stop: StopReason,
     pub pending: Option<Pending>,
-    /// `Some(pre_compaction_tokens)` when this turn folded its context — projected
-    /// as an `agent.thread_context_compacted` event ahead of the turn's messages.
-    pub compaction: Option<u64>,
+    /// `true` when this turn folded its context — projected as an
+    /// `agent.thread_context_compacted` event ahead of the turn's messages.
+    pub compacted: bool,
 }
 
 /// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
@@ -1217,13 +1217,11 @@ impl ManagedState {
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         // Compaction ran at BeforeInference, so its marker precedes the turn's
-        // message events. `Some` ⇒ this terminal step folded (emit-once upstream).
-        if let Some(pre_compaction_tokens) = outcome.compaction {
+        // message events. `true` ⇒ this terminal step folded (emit-once upstream).
+        if outcome.compacted {
             record.events.push(Event {
                 id: self.next_event_id(),
-                kind: OutboundKind::ThreadContextCompacted {
-                    pre_compaction_tokens: Some(pre_compaction_tokens),
-                },
+                kind: OutboundKind::ThreadContextCompacted {},
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
         }
