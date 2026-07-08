@@ -12,6 +12,7 @@
 //! it exposes (config / files / memory-stores / durable-ops).
 
 mod acp_backend;
+mod acp_provision;
 mod agent_catalog;
 mod background;
 mod compact;
@@ -63,6 +64,7 @@ pub use crate::host::{HostResume, SharedHost};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
+pub use crate::acp_provision::EnvLaunchResolver;
 pub use crate::config::{advertised_tools, block_text};
 pub use crate::config_home::ConfigHome;
 pub use crate::config_plane::{ConfigService, ConfigServiceAgentSource, config_router};

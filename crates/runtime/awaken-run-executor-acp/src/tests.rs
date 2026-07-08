@@ -287,9 +287,15 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
 /// A host model resolver that returns fixed coordinates (stands in for the
 /// config-plane + vault lookup).
 struct FixedModel(ResolvedModel);
-impl ModelResolver for FixedModel {
-    fn resolve(&self, _a: &RunActivation) -> std::result::Result<ResolvedModel, OpenError> {
+impl LaunchResolver for FixedModel {
+    fn model(&self, _a: &RunActivation) -> std::result::Result<ResolvedModel, OpenError> {
         Ok(self.0.clone())
+    }
+    fn extra_env(&self, _a: &RunActivation) -> Vec<(String, String)> {
+        vec![(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            "/run/agent/.claude".to_string(),
+        )]
     }
 }
 
@@ -301,15 +307,8 @@ fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
         model: "kimi-k2".to_string(),
         api_key: "materialized-by-host".to_string(), // awaken-allow: secret
     }));
-    // The host provides the config-home path as non-secret extra env.
-    let source = ProjectingChannelSource::new(
-        cli,
-        resolver,
-        vec![(
-            "CLAUDE_CONFIG_DIR".to_string(),
-            "/run/agent/.claude".to_string(),
-        )],
-    );
+    // The resolver supplies the config-home path as non-secret per-run env.
+    let source = ProjectingChannelSource::new(cli, resolver);
     let launch = source.plan(&activation()).expect("plan");
     let env = |k: &str| {
         launch
