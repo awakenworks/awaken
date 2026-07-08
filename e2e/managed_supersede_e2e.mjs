@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38176);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -38,7 +38,8 @@ const post = async (path, body) => {
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
-  const srv = spawnServer('probe', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable' });
+  const upstream = await startUpstream('probe');
+  const srv = spawnServer('real', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable', ...realServerEnv('probe', upstream) });
   await waitForPort(PORT);
   try {
     // A first turn parks on a tool confirmation — its dispatch is `parked`.
@@ -75,6 +76,7 @@ async function main() {
     console.log('E2E PASS: epoch supersession (ADR-0022) via the durable operations surface.');
   } finally {
     await stopServer(srv.server);
+    upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
 }

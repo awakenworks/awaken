@@ -14,7 +14,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38232);
@@ -42,8 +42,8 @@ async function listEvents(c, id) {
 const newSession = (c) =>
   c.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
-async function resilientPaths() {
-  const a = spawnServer('echo', PORT);
+async function resilientPaths(echoUp) {
+  const a = spawnServer('real', PORT, { ...realServerEnv('echo', echoUp) });
   try {
     await waitForPort(PORT);
     const c = client(a.baseUrl);
@@ -114,8 +114,8 @@ async function resilientPaths() {
   }
 }
 
-async function duplicateConfirmation() {
-  const a = spawnServer('probe', PORT + 1);
+async function duplicateConfirmation(probeUp) {
+  const a = spawnServer('real', PORT + 1, { ...realServerEnv('probe', probeUp) });
   try {
     await waitForPort(PORT + 1);
     const c = client(a.baseUrl);
@@ -152,9 +152,16 @@ async function duplicateConfirmation() {
 }
 
 async function main() {
-  await resilientPaths();
-  await duplicateConfirmation();
-  console.log('E2E PASS: managed resilience / fault paths behave correctly.');
+  const echoUp = await startUpstream('echo');
+  const probeUp = await startUpstream('probe');
+  try {
+    await resilientPaths(echoUp);
+    await duplicateConfirmation(probeUp);
+    console.log('E2E PASS: managed resilience / fault paths behave correctly.');
+  } finally {
+    echoUp.close();
+    probeUp.close();
+  }
 }
 
 main().catch((err) => {

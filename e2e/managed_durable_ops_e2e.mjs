@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38177);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -31,7 +31,8 @@ async function main() {
   fs.mkdirSync(STORE_DIR, { recursive: true });
 
   // ---- durable server: the ops verbs operate on a live durable thread ----
-  const durable = spawnServer('echo', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable' });
+  const upstream = await startUpstream('echo');
+  const durable = spawnServer('real', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable', ...realServerEnv('echo', upstream) });
   await waitForPort(PORT);
   try {
     // A normal turn creates the session and its durable dispatch queue.
@@ -68,7 +69,7 @@ async function main() {
   }
 
   // ---- non-durable server: every ops verb fails closed (400) ----
-  const direct = spawnServer('echo', PORT, {});
+  const direct = spawnServer('real', PORT, { ...realServerEnv('echo', upstream) });
   await waitForPort(PORT);
   try {
     for (const [method, path] of [
@@ -85,6 +86,7 @@ async function main() {
     console.log('E2E PASS: durable operations surface (ADR-0011 reconcile / ADR-0015 dead-letter GC) via HTTP.');
   } finally {
     await stopServer(direct.server);
+    upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
 }
