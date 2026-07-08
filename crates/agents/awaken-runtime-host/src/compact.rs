@@ -3,9 +3,11 @@
 //! The policy half — when to fold ([`fold_point`]), the compactor agent's config
 //! and prompts, and the recall-symmetric [`CompactPlugin`] that injects the summary
 //! as request-only context — lives in `awaken-ext-compact` (a bounded context).
-//! This module wires that onto the host's aux-agent substrate: an [`AgentSummarizer`]
-//! that summarizes the older slice through an ordinary `compactor` sub-agent, run at
-//! `BeforeInference` (once per run, cached by the plugin), the same shape as memory's
+//! This module wires that onto the host's aux-agent substrate: [`compact_runner`]
+//! builds a [`SubagentRunner`](awaken_runtime_contract::subagent_runner::SubagentRunner)
+//! over an ordinary `compactor` sub-agent (the shared aux-run port, ADR-0047 D5,
+//! also used by the goal judge). The plugin seeds it with the older slice at
+//! `BeforeInference` (once per run, cached), the same shape as memory's
 //! [`AgentSelector`](crate::memory::AgentSelector).
 //!
 //! Compaction is non-destructive: the committed transcript is never rewritten (G13).
