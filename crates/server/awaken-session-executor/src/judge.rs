@@ -10,10 +10,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_ext_goal::{DelegateError, DelegateReply, DelegateRequest, DelegateRunner};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::runnable::RunnableConfig;
+use awaken_runtime_contract::subagent_runner::{
+    SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
+};
 use awaken_sandbox_local::LocalSandboxProvider;
 
 use crate::agent_catalog::AgentCatalog;
@@ -41,35 +43,35 @@ pub fn default_judge_agent(model_ref: &str, agent_id: &str, instructions: &str) 
 /// over the same model, driven to completion; its last assistant line is the
 /// judge's reply. The judge sees only its prompt (a fresh window), so its
 /// verdict is not biased by the doer's working state.
-pub(crate) struct KernelJudgeRunner {
+pub(crate) struct HostSubagentRunner {
     pub(crate) llm: Arc<dyn LlmExecutor>,
     pub(crate) provider: LocalSandboxProvider,
-    /// The judge is resolved by id from here, so its model/instructions/window are
-    /// configured per-agent rather than hard-coded (like memory and compact).
+    /// Aux agents (judge, and — as D5 lands — compactor/memory) are resolved by id
+    /// from here, so their model/instructions/window are configured per-agent.
     pub(crate) catalog: Arc<AgentCatalog>,
     pub(crate) seq: AtomicU64,
 }
 
 #[async_trait::async_trait]
-impl DelegateRunner for KernelJudgeRunner {
-    async fn run(&self, request: DelegateRequest) -> Result<DelegateReply, DelegateError> {
+impl SubagentRunner for HostSubagentRunner {
+    async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
-        // The judge sees only its prompt (a fresh window); its cancellation is the
-        // parent run's, so cancelling the outcome cancels the judge too.
-        let name = format!("{}-judge-{n}", request.agent_id);
+        // The sub-agent sees only its seed (a fresh window); its cancellation is the
+        // parent run's, so cancelling the parent cancels the sub-run too.
+        let name = format!("{}-sub-{n}", request.agent_id);
         let text = crate::subagent::run_configured_subrun(
             &self.catalog,
             &self.provider,
             self.llm.clone(),
             &request.agent_id,
             &name,
-            request.prompt,
+            request.seed,
             Vec::new(),
             request.cancellation,
         )
         .await
-        .map_err(DelegateError)?;
-        Ok(DelegateReply { text: Some(text) })
+        .map_err(SubagentError)?;
+        Ok(SubagentReply { text: Some(text) })
     }
 }
 
