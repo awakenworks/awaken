@@ -16,3 +16,4 @@ tokio = { workspace = true, features = ["sync", "macros", "time", "process", "io
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "time", "sync"] }
+serde_json.workspace = true
