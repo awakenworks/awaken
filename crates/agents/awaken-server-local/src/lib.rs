@@ -658,7 +658,14 @@ pub fn build_remote_hand_router() -> Router {
     //   - unset → the degenerate in-process hand: a framed duplex to a serve_hand
     //     task in this same process.
     let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
-        if let Some(listen) = std::env::var("AWAKEN_REMOTE_HAND_LISTEN").ok().filter(|v| !v.is_empty()) {
+        if let Some(nats_url) = std::env::var("AWAKEN_REMOTE_HAND_NATS").ok().filter(|v| !v.is_empty()) {
+            // Relay topology (ADR-0045): neither end reaches the other directly;
+            // both meet at a NATS broker. The brain publishes each HandRequest on
+            // the shared subject and awaits the reply (NATS request/reply).
+            let subject = std::env::var("AWAKEN_HAND_SUBJECT")
+                .unwrap_or_else(|_| "awaken.hand.exec".to_string());
+            Arc::new(connect_nats_executor_blocking(&nats_url, subject))
+        } else if let Some(listen) = std::env::var("AWAKEN_REMOTE_HAND_LISTEN").ok().filter(|v| !v.is_empty()) {
             // Reverse topology (ADR-0045): the hand has no inbound reachability
             // (NAT / outbound-only), so it dials US. We bind a rendezvous and use
             // the accepted connection as the executor channel — the brain stays
@@ -738,6 +745,115 @@ fn accept_hand_blocking(addr: &str) -> tokio::net::TcpStream {
     s.set_nonblocking(true).expect("set_nonblocking");
     let _ = s.set_nodelay(true);
     tokio::net::TcpStream::from_std(s).expect("std->tokio TcpStream")
+}
+
+/// A `ToolExecutor` that relays each call to a hand through a NATS broker (ADR-0045
+/// Relay topology): publish the `HandRequest` on the shared subject, await the
+/// `HandReply`. Reuses tool-relay's wire types + result mapping.
+struct NatsToolExecutor {
+    client: async_nats::Client,
+    subject: String,
+    next_id: std::sync::atomic::AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::tool::ToolExecutor for NatsToolExecutor {
+    async fn invoke(
+        &self,
+        call: &awaken_runtime_contract::llm::ToolCall,
+    ) -> Result<
+        awaken_runtime_contract::tool::ToolOutput,
+        awaken_runtime_contract::tool::ToolError,
+    > {
+        use awaken_runtime_contract::tool::ToolError;
+        use awaken_tool_relay::wire::{HandErrorKind, HandReply, HandRequest, HandResult};
+
+        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let req = HandRequest::new(id, call.clone());
+        let bytes = serde_json::to_vec(&req)
+            .map_err(|e| ToolError::Execution(format!("encode hand request: {e}")))?;
+        let msg = self
+            .client
+            .request(self.subject.clone(), bytes.into())
+            .await
+            .map_err(|e| {
+                // The request may have run on a hand but the reply was lost.
+                ToolError::Execution(format!("indeterminate: nats relay request failed: {e}"))
+            })?;
+        let reply: HandReply = serde_json::from_slice(&msg.payload)
+            .map_err(|e| ToolError::Execution(format!("decode hand reply: {e}")))?;
+        match reply.result {
+            HandResult::Ok { output } => Ok(output),
+            HandResult::Err { error } => match error.kind {
+                HandErrorKind::UnknownTool => Err(ToolError::Unknown(call.tool_id.clone())),
+                _ => Err(ToolError::Execution(error.message)),
+            },
+            HandResult::Indeterminate => Err(ToolError::Execution(
+                "indeterminate: hand connection lost".to_string(),
+            )),
+        }
+    }
+}
+
+/// Connect the brain to the NATS broker at startup (retrying while the broker pod
+/// comes up), returning a relay executor. Blocking, before serving.
+fn connect_nats_executor_blocking(url: &str, subject: String) -> NatsToolExecutor {
+    let url = url.to_string();
+    let client = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            for _ in 0..120 {
+                match async_nats::connect(&url).await {
+                    Ok(c) => return c,
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+                }
+            }
+            panic!("could not reach NATS broker at {url}");
+        })
+    });
+    NatsToolExecutor {
+        client,
+        subject,
+        next_id: std::sync::atomic::AtomicU64::new(1),
+    }
+}
+
+/// Run this binary as a HAND over NATS (ADR-0045 Relay): connect to the broker,
+/// subscribe the shared subject, and reply to each `HandRequest` with the built-in
+/// hand tools' result (G33). Loops until killed.
+pub async fn run_hand_server_nats(url: &str, subject: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use awaken_tool_relay::{HandSession, wire::HandRequest};
+    use futures::StreamExt;
+
+    // Retry while the broker pod comes up.
+    let mut client = None;
+    for _ in 0..120 {
+        match async_nats::connect(url).await {
+            Ok(c) => {
+                client = Some(c);
+                break;
+            }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+        }
+    }
+    let client = client.ok_or_else(|| format!("hand failed to reach NATS {url}"))?;
+    let mut sub = client.subscribe(subject.to_string()).await?;
+    let mut session = HandSession::new(awaken_ext_builtin_tools::executable_hand_tools());
+    eprintln!("awaken hand: serving the executor channel over NATS {url} subject '{subject}'");
+    while let Some(msg) = sub.next().await {
+        let Some(reply_to) = msg.reply else { continue };
+        let request: HandRequest = match serde_json::from_slice(&msg.payload) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("awaken hand: bad request over NATS: {e}");
+                continue;
+            }
+        };
+        let reply = session.handle(request).await;
+        let bytes = serde_json::to_vec(&reply)?;
+        client.publish(reply_to, bytes.into()).await?;
+        client.flush().await?;
+    }
+    Ok(())
 }
 
 /// Run this binary as a HAND (ADR-0044/0045): serve the neutral executor channel —

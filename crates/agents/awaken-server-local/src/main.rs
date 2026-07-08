@@ -18,6 +18,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // serves the executor channel on TCP and never starts the HTTP surface.
     //   - AWAKEN_HAND_LISTEN=host:port → listen; brains dial in (Direct).
     //   - AWAKEN_HAND_DIAL=host:port   → dial the brain rendezvous (Reverse / NAT).
+    //   - AWAKEN_HAND_NATS=url    → serve over a NATS broker (Relay).
+    if let Some(nats_url) = std::env::var("AWAKEN_HAND_NATS").ok().filter(|v| !v.is_empty()) {
+        let subject = std::env::var("AWAKEN_HAND_SUBJECT")
+            .unwrap_or_else(|_| "awaken.hand.exec".to_string());
+        return awaken_server_local::run_hand_server_nats(&nats_url, &subject).await;
+    }
     if let Some(dial_addr) = std::env::var("AWAKEN_HAND_DIAL").ok().filter(|v| !v.is_empty()) {
         return awaken_server_local::run_hand_server(&dial_addr, true).await;
     }

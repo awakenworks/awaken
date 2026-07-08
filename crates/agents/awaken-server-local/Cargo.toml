@@ -30,6 +30,11 @@ awaken-config-store = { workspace = true }
 awaken-tool-relay = { workspace = true }
 awaken-connection-plan = { workspace = true }
 awaken-ext-builtin-tools = { workspace = true }
+# Relay topology (ADR-0045): brain + hand meet at a NATS broker. NATS request/reply
+# carries the HandRequest/HandReply wire; futures drives the subscriber stream.
+async-nats = "0.38"
+bytes = "1"
+futures = "0.3"
 # Durable memory persistence (resources plane): the memory-extraction mode roots its
 # store under AWAKEN_STORAGE_DIR via `memory_scope_root` so it survives a restart.
 awaken-memory-store = { workspace = true }
