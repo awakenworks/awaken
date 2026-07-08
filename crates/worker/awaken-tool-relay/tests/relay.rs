@@ -123,6 +123,36 @@ async fn re_drive_with_same_correlation_id_runs_the_effect_at_most_once() {
     assert!(matches!(first.result, HandResult::Ok { .. }));
 }
 
+/// A tool whose own `invoke` returns an error — the hand reports it as an
+/// execution `HandError`, and the brain maps it back to a `ToolError`.
+struct FailingTool;
+
+#[async_trait]
+impl RawTool for FailingTool {
+    fn id(&self) -> &str {
+        "fail"
+    }
+    async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+        Err(ToolError::Execution("boom".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn a_tool_execution_error_round_trips_as_a_tool_error() {
+    let session = HandSession::new([Arc::new(FailingTool) as Arc<dyn RawTool>]);
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    let hand = tokio::spawn(serve_hand(hand_end, session));
+
+    let executor = RemoteToolExecutor::new(brain_end);
+    let err = executor
+        .invoke(&call("c1", "fail", "x"))
+        .await
+        .expect_err("execution error surfaces");
+    assert!(err.to_string().contains("boom"), "got: {err}");
+    drop(executor);
+    let _ = hand.await;
+}
+
 #[tokio::test]
 async fn catalog_fingerprint_mismatch_fails_closed() {
     let tool = Arc::new(CountingEcho {
