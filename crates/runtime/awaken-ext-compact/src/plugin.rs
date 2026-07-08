@@ -2,7 +2,7 @@
 //!
 //! [`CompactPlugin`] contributes a `BeforeInference` [`PhaseHook`] symmetric with
 //! memory recall: on a long conversation it summarizes the older messages through
-//! an injected [`Summarizer`] sub-agent and injects the summary as **request-only**
+//! an injected [`SubagentRunner`] sub-agent and injects the summary as **request-only**
 //! context (never committed, G13). The main agent's `ContextPolicy::KeepLast` drops
 //! the older raw turns from the model view, so summary + kept tail cover the whole
 //! conversation. Summarization runs at most once per run (cached by `run_id`).
@@ -18,7 +18,9 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, PhaseContext, PhaseHook, PhaseHookPoint, PhaseReaction, Plugin,
     PluginConfigError, PluginManifest,
 };
+use awaken_runtime_contract::subagent_runner::{SubagentRequest, SubagentRunner};
 
+use crate::agent::{COMPACT_AGENT_ID, SUMMARIZE_PROMPT};
 use crate::config::CompactConfig;
 use crate::fold::{fold_point, token_fold_point};
 
@@ -76,32 +78,25 @@ pub fn compaction_count(state: &[Command]) -> usize {
         .len()
 }
 
-/// Summarizes the older part of a conversation. Implemented by the host over a
-/// `compactor` sub-agent, so this crate stays free of the aux-agent substrate.
-#[async_trait]
-pub trait Summarizer: Send + Sync {
-    /// Summarize `older` into a short block, or `None` when nothing useful results.
-    async fn summarize(&self, older: &[Message]) -> Option<String>;
-}
-
 /// Contributes the compaction hook. Constructed with the config and — to actually
-/// summarize — a [`Summarizer`]; without one the hook is inert.
+/// summarize — a [`SubagentRunner`] (the neutral aux-run port, ADR-0047 D5, shared
+/// with the goal judge); without one the hook is inert.
 pub struct CompactPlugin {
     config: CompactConfig,
-    summarizer: Option<Arc<dyn Summarizer>>,
+    runner: Option<Arc<dyn SubagentRunner>>,
 }
 
 impl CompactPlugin {
     pub fn new(config: CompactConfig) -> Self {
         Self {
             config,
-            summarizer: None,
+            runner: None,
         }
     }
 
     #[must_use]
-    pub fn with_summarizer(mut self, summarizer: Arc<dyn Summarizer>) -> Self {
-        self.summarizer = Some(summarizer);
+    pub fn with_runner(mut self, runner: Arc<dyn SubagentRunner>) -> Self {
+        self.runner = Some(runner);
         self
     }
 
@@ -109,7 +104,7 @@ impl CompactPlugin {
         let mut contributions = Contributions::new(COMPACT_PLUGIN_ID);
         contributions.phase_hooks.push(Arc::new(CompactHook {
             config,
-            summarizer: self.summarizer.clone(),
+            runner: self.runner.clone(),
             cache: Mutex::new(HashMap::new()),
         }));
         contributions
@@ -153,14 +148,14 @@ pub fn config_schema() -> serde_json::Value {
 
 struct CompactHook {
     config: CompactConfig,
-    summarizer: Option<Arc<dyn Summarizer>>,
+    runner: Option<Arc<dyn SubagentRunner>>,
     cache: Mutex<HashMap<RunId, Vec<Message>>>,
 }
 
 impl CompactHook {
     /// The request-only summary block for a fold, or `None` when nothing folds.
     async fn compute(&self, conversation: &[Message]) -> Option<Vec<Message>> {
-        let summarizer = self.summarizer.as_ref()?;
+        let runner = self.runner.as_ref()?;
         // Token-aware when the model's window is known (fold at `trigger_ratio` of
         // it), else the message-count `threshold`.
         let fold_to = match self.config.max_tokens {
@@ -177,7 +172,23 @@ impl CompactHook {
                 self.config.keep_last,
             )?,
         };
-        let summary = summarizer.summarize(&conversation[..fold_to]).await?;
+        // Seed the `compactor` sub-agent with the older slice plus the summarize
+        // prompt, through the shared aux-run port.
+        let mut seed = conversation[..fold_to].to_vec();
+        seed.push(Message::text(
+            MessageId("compact-prompt".into()),
+            Role::User,
+            SUMMARIZE_PROMPT,
+        ));
+        let reply = runner
+            .run(SubagentRequest {
+                agent_id: COMPACT_AGENT_ID.to_string(),
+                seed,
+                cancellation: None,
+            })
+            .await
+            .ok()?;
+        let summary = reply.text?;
         if summary.trim().is_empty() {
             return None;
         }
@@ -236,14 +247,20 @@ mod tests {
         }
     }
 
+    use awaken_runtime_contract::subagent_runner::{SubagentError, SubagentReply};
+
+    /// A stub aux-runner: records the seed length it was handed (the folded slice
+    /// plus the appended summarize prompt) and returns a fixed summary.
     struct FixedSummarizer {
         seen_len: std::sync::Mutex<usize>,
     }
     #[async_trait]
-    impl Summarizer for FixedSummarizer {
-        async fn summarize(&self, older: &[Message]) -> Option<String> {
-            *self.seen_len.lock().unwrap() = older.len();
-            Some("earlier: X".to_string())
+    impl SubagentRunner for FixedSummarizer {
+        async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
+            *self.seen_len.lock().unwrap() = request.seed.len();
+            Ok(SubagentReply {
+                text: Some("earlier: X".to_string()),
+            })
         }
     }
 
@@ -262,7 +279,7 @@ mod tests {
             keep_last: 8,
             ..Default::default()
         })
-        .with_summarizer(Arc::new(FixedSummarizer {
+        .with_runner(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -280,11 +297,11 @@ mod tests {
             keep_last: 2,
             ..Default::default()
         })
-        .with_summarizer(summarizer.clone());
+        .with_runner(summarizer.clone());
         let hook = &plugin.resolve().phase_hooks[0];
         // 10 messages, keep_last 2 → summarize the first 8.
         let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
-        assert_eq!(*summarizer.seen_len.lock().unwrap(), 8);
+        assert_eq!(*summarizer.seen_len.lock().unwrap(), 9); // 8 folded + summarize prompt
         assert_eq!(reaction.context.len(), 1);
         assert!(
             reaction.context[0]
@@ -300,7 +317,7 @@ mod tests {
             keep_last: 2,
             ..Default::default()
         })
-        .with_summarizer(Arc::new(FixedSummarizer {
+        .with_runner(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -318,7 +335,7 @@ mod tests {
             keep_last: 8,
             ..Default::default()
         })
-        .with_summarizer(Arc::new(FixedSummarizer {
+        .with_runner(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -334,7 +351,7 @@ mod tests {
             keep_last: 2,
             ..Default::default()
         })
-        .with_summarizer(Arc::new(FixedSummarizer {
+        .with_runner(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -354,7 +371,7 @@ mod tests {
             max_tokens: Some(10), // budget = 0.8 * 10 = 8 tokens
             trigger_ratio: 0.8,
         })
-        .with_summarizer(Arc::new(FixedSummarizer {
+        .with_runner(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -376,7 +393,7 @@ mod tests {
             max_tokens: Some(1_000_000), // budget far beyond a tiny conversation
             trigger_ratio: 0.8,
         })
-        .with_summarizer(Arc::new(FixedSummarizer {
+        .with_runner(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
