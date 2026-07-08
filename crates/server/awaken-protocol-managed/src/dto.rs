@@ -218,6 +218,18 @@ pub enum InboundEvent {
         #[serde(default)]
         is_error: bool,
     },
+    /// The generic client-provided result for a parked tool, keyed by the
+    /// `agent.tool_use` id from a `requires_action` `event_ids` — the SDK's
+    /// `user.tool_result`. Handled like `user.custom_tool_result` (delivers a
+    /// client tool's result), keyed by `tool_use_id` rather than `custom_tool_use_id`.
+    #[serde(rename = "user.tool_result")]
+    UserToolResult {
+        tool_use_id: String,
+        #[serde(default)]
+        content: Option<Vec<ContentBlock>>,
+        #[serde(default)]
+        is_error: bool,
+    },
     #[serde(rename = "user.define_outcome")]
     UserDefineOutcome {
         description: String,
@@ -244,6 +256,7 @@ impl InboundEvent {
             InboundEvent::SystemMessage { .. } => "system.message",
             InboundEvent::UserToolConfirmation { .. } => "user.tool_confirmation",
             InboundEvent::UserCustomToolResult { .. } => "user.custom_tool_result",
+            InboundEvent::UserToolResult { .. } => "user.tool_result",
             InboundEvent::UserDefineOutcome { .. } => "user.define_outcome",
             InboundEvent::UserInterrupt { .. } => "user.interrupt",
             InboundEvent::UserPause {} => "user.pause",
@@ -314,6 +327,58 @@ pub enum OutboundKind {
     /// the session sees this as the last event; no further turns are accepted.
     #[serde(rename = "session.status_terminated")]
     SessionStatusTerminated {},
+    /// A subagent (multiagent delegate) thread was spawned within the session —
+    /// the SDK's `session.thread_created`. `agent_name` is the callable delegate
+    /// the child thread runs.
+    #[serde(rename = "session.thread_created")]
+    SessionThreadCreated {
+        session_thread_id: String,
+        agent_name: String,
+    },
+    /// A subagent child thread started running (`session.thread_status_running`).
+    #[serde(rename = "session.thread_status_running")]
+    SessionThreadStatusRunning {
+        session_thread_id: String,
+        agent_name: String,
+    },
+    /// A subagent child thread went idle (`session.thread_status_idle`), carrying
+    /// the same `stop_reason` shape as the session's own idle.
+    #[serde(rename = "session.thread_status_idle")]
+    SessionThreadStatusIdle {
+        session_thread_id: String,
+        agent_name: String,
+        stop_reason: StopReason,
+    },
+    /// The session's `metadata`/`title` changed (`session.updated`), carrying the
+    /// title (when the update set it) and the full metadata bag (when non-empty).
+    #[serde(rename = "session.updated")]
+    SessionUpdated {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        metadata: std::collections::BTreeMap<String, String>,
+    },
+    /// A subagent child thread terminated (`session.thread_status_terminated`),
+    /// e.g. when archived.
+    #[serde(rename = "session.thread_status_terminated")]
+    SessionThreadStatusTerminated {
+        session_thread_id: String,
+        agent_name: String,
+    },
+    /// The coordinator sent the delegate its input (`agent.thread_message_sent`).
+    #[serde(rename = "agent.thread_message_sent")]
+    AgentThreadMessageSent {
+        to_session_thread_id: String,
+        to_agent_name: String,
+        content: Vec<ContentBlock>,
+    },
+    /// The coordinator received the delegate's reply (`agent.thread_message_received`).
+    #[serde(rename = "agent.thread_message_received")]
+    AgentThreadMessageReceived {
+        from_session_thread_id: String,
+        from_agent_name: String,
+        content: Vec<ContentBlock>,
+    },
     /// The conversation history was summarized to fit context (the compact plugin
     /// folded older turns). A pure marker: its shape matches the installed SDK's
     /// `BetaManagedAgentsAgentThreadContextCompactedEvent` — `{id, type,
@@ -322,6 +387,10 @@ pub enum OutboundKind {
     ThreadContextCompacted {},
     #[serde(rename = "span.outcome_evaluation_start")]
     SpanOutcomeEvaluationStart { outcome_id: String, iteration: u32 },
+    /// A progress ping while a revision cycle is being graded
+    /// (`span.outcome_evaluation_ongoing`), between the start and end spans.
+    #[serde(rename = "span.outcome_evaluation_ongoing")]
+    SpanOutcomeEvaluationOngoing { outcome_id: String, iteration: u32 },
     #[serde(rename = "span.outcome_evaluation_end")]
     SpanOutcomeEvaluationEnd {
         outcome_id: String,
@@ -342,8 +411,18 @@ impl OutboundKind {
             OutboundKind::SessionStatusRunning {} => "session.status_running",
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
             OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
+            OutboundKind::SessionThreadCreated { .. } => "session.thread_created",
+            OutboundKind::SessionThreadStatusRunning { .. } => "session.thread_status_running",
+            OutboundKind::SessionThreadStatusIdle { .. } => "session.thread_status_idle",
+            OutboundKind::SessionUpdated { .. } => "session.updated",
+            OutboundKind::SessionThreadStatusTerminated { .. } => {
+                "session.thread_status_terminated"
+            }
+            OutboundKind::AgentThreadMessageSent { .. } => "agent.thread_message_sent",
+            OutboundKind::AgentThreadMessageReceived { .. } => "agent.thread_message_received",
             OutboundKind::ThreadContextCompacted { .. } => "agent.thread_context_compacted",
             OutboundKind::SpanOutcomeEvaluationStart { .. } => "span.outcome_evaluation_start",
+            OutboundKind::SpanOutcomeEvaluationOngoing { .. } => "span.outcome_evaluation_ongoing",
             OutboundKind::SpanOutcomeEvaluationEnd { .. } => "span.outcome_evaluation_end",
         }
     }
