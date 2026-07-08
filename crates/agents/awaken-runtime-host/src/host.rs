@@ -42,11 +42,12 @@ use awaken_sandbox_local::{
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
-use awaken_ext_compact::{CompactConfig, CompactPlugin, Summarizer};
+use awaken_ext_compact::{CompactConfig, CompactPlugin};
+use awaken_runtime_contract::subagent_runner::SubagentRunner;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
-use crate::compact::AgentSummarizer;
+use crate::compact::compact_runner as build_compact_runner;
 use crate::config::{build_runtime, server_config};
 use crate::delegate::DelegationResolver;
 use crate::hub::{ThreadEvent, ThreadEventHub};
@@ -318,7 +319,7 @@ pub struct SharedHost {
     /// is a `compactor` sub-agent the plugin calls to fold the older slice. The main
     /// agent runs a matching `KeepLast` window so those raw turns leave the model view.
     compact_config: Option<CompactConfig>,
-    compact_summarizer: Option<Arc<dyn Summarizer>>,
+    compact_runner: Option<Arc<dyn SubagentRunner>>,
     /// The config data plane, when the server exposes `/v1/config/*`. A thread's
     /// runtime config is the installed (published) config for its agent, if any,
     /// else the built-in default (slice A).
@@ -405,7 +406,7 @@ impl SharedHost {
             memory: None,
             memory_selector: None,
             compact_config: None,
-            compact_summarizer: None,
+            compact_runner: None,
             config_service: None,
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
             thread_resources: std::sync::Mutex::new(HashMap::new()),
@@ -455,10 +456,7 @@ impl SharedHost {
     /// Install a resolved `CompactConfig` and wire the `compactor` sub-agent.
     fn enable_compaction(mut self, config: CompactConfig) -> Self {
         self.compact_config = Some(config);
-        self.compact_summarizer = Some(Arc::new(AgentSummarizer::new(
-            self.llm.clone(),
-            &self.model_ref,
-        )));
+        self.compact_runner = Some(build_compact_runner(self.llm.clone(), &self.model_ref));
         self
     }
 
@@ -895,10 +893,10 @@ impl SharedHost {
         // slice into a summary and injects it request-only. The main agent runs a
         // rolling window matching the config's `keep_last`, so summarized older turns
         // leave the model view.
-        let context_policy = match (&self.compact_config, &self.compact_summarizer) {
-            (Some(config), Some(summarizer)) => {
+        let context_policy = match (&self.compact_config, &self.compact_runner) {
+            (Some(config), Some(runner)) => {
                 let keep_last = config.keep_last;
-                let plugin = CompactPlugin::new(config.clone()).with_summarizer(summarizer.clone());
+                let plugin = CompactPlugin::new(config.clone()).with_runner(runner.clone());
                 runtime = runtime.with_plugin(Arc::new(plugin));
                 plugin_ids.push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
                 awaken_runtime_contract::resolved::ContextPolicy::KeepLast { keep_last }
