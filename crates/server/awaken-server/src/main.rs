@@ -14,6 +14,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and the W3C traceparent propagator before any request is served, so every
     // `#[instrument]` span in the request path is captured on one trace.
     awaken_observability::init();
+    // Hand role (ADR-0044/0045): this binary is a remote execution endpoint that
+    // serves the executor channel on TCP and never starts the HTTP surface.
+    //   - AWAKEN_HAND_LISTEN=host:port → listen; brains dial in (Direct).
+    //   - AWAKEN_HAND_DIAL=host:port   → dial the brain rendezvous (Reverse / NAT).
+    if let Some(dial_addr) = std::env::var("AWAKEN_HAND_DIAL").ok().filter(|v| !v.is_empty()) {
+        return awaken_server::run_hand_server(&dial_addr, true).await;
+    }
+    if let Some(hand_addr) = std::env::var("AWAKEN_HAND_LISTEN").ok().filter(|v| !v.is_empty()) {
+        return awaken_server::run_hand_server(&hand_addr, false).await;
+    }
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
     // Connect the shared Postgres dispatch pool once, before serving, when durable
     // ingress is backed by Postgres (a multi-node fleet sharing one queue). Doing it
