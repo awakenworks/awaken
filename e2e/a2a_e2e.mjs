@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { A2AClient } from '@a2a-js/sdk/client';
-import { withServer, pass, RED_PNG_B64 } from './harness.mjs';
+import { withRealServer, pass, RED_PNG_B64 } from './harness.mjs';
 
 function replyText(res) {
   // `message/send` returns a Task; the agent's turn is its status message.
@@ -18,7 +18,7 @@ function replyText(res) {
 
 async function main() {
   // --- multi-turn: a shared contextId threads the conversation ---
-  await withServer('echo', 38151, async (base) => {
+  await withRealServer('echo', 38151, async (base) => {
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const r1 = await client.sendMessage({
       message: {
@@ -45,7 +45,7 @@ async function main() {
 
   // --- HITL: a tool needing approval parks the task (input-required); a follow-up
   // message on the same context approves it and the task completes ---
-  await withServer('probe', 38153, async (base) => {
+  await withRealServer('probe', 38153, async (base) => {
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const parked = await client.sendMessage({
       message: {
@@ -76,7 +76,7 @@ async function main() {
   });
 
   // --- multimodal: a `file` image part travels to the model ---
-  await withServer('vision', 38152, async (base) => {
+  await withRealServer('vision', 38152, async (base) => {
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const res = await client.sendMessage({
       message: {

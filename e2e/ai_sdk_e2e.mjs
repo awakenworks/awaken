@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import { Chat } from '@ai-sdk/react';
-import { withServer, pass, RED_PNG_DATA_URI } from './harness.mjs';
+import { withRealServer, pass, RED_PNG_DATA_URI } from './harness.mjs';
 
 function newChat(base, thread, extra = {}) {
   return new Chat({
@@ -34,7 +34,7 @@ async function settle(chat) {
 
 async function main() {
   // --- multi-turn: the Chat threads history across native sendMessage calls ---
-  await withServer('echo', 38141, async (base) => {
+  await withRealServer('echo', 38141, async (base) => {
     const chat = newChat(base, 'sdk-mt');
     await chat.sendMessage({ text: 'first message' });
     assert.ok(replyText(chat).includes('first message'), `turn 1: ${replyText(chat)}`);
@@ -44,7 +44,7 @@ async function main() {
   });
 
   // --- multimodal: an image attached via the native `files` param reaches the model ---
-  await withServer('vision', 38142, async (base) => {
+  await withRealServer('vision', 38142, async (base) => {
     const chat = newChat(base, 'sdk-img');
     await chat.sendMessage({
       text: 'what color is this',
@@ -56,7 +56,7 @@ async function main() {
 
   // --- streaming tool calls: the model's tool call arrives as a `tool-*` part in
   // the Chat's message state (state `input-available`), delivered mid-stream ---
-  await withServer('probe', 38144, async (base) => {
+  await withRealServer('probe', 38144, async (base) => {
     const chat = newChat(base, 'sdk-stream');
     await chat.sendMessage({ text: 'remember' });
     const toolPart = (chat.lastMessage?.parts ?? []).find((p) => p.toolCallId);
@@ -69,7 +69,7 @@ async function main() {
 
   // --- HITL: a tool needing approval parks; `Chat.addToolResult` submits the
   // decision and (via sendAutomaticallyWhen) auto-resends, completing the run ---
-  await withServer('probe', 38143, async (base) => {
+  await withRealServer('probe', 38143, async (base) => {
     const chat = newChat(base, 'sdk-hitl', {
       sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     });
