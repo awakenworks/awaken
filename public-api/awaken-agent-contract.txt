@@ -243,6 +243,7 @@ pub mod awaken_agent_contract::agent::run
 pub enum awaken_agent_contract::agent::run::EndCause
 pub awaken_agent_contract::agent::run::EndCause::Cancelled
 pub awaken_agent_contract::agent::run::EndCause::Error(awaken_agent_contract::agent::run::Failure)
+pub awaken_agent_contract::agent::run::EndCause::Indeterminate
 pub awaken_agent_contract::agent::run::EndCause::MaxSteps
 pub awaken_agent_contract::agent::run::EndCause::NaturalEnd
 pub awaken_agent_contract::agent::run::EndCause::Stopped(alloc::string::String)

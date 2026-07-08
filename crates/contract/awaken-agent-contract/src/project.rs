@@ -272,6 +272,12 @@ pub fn terminal(phase: &Phase, pending: Option<(&str, bool)>) -> AgentEvent {
             code: failure.code().to_string(),
             message: failure.message(),
         },
+        // G26: indeterminate remote execution is explicit; it is never silently
+        // converted to success.
+        Phase::Ended(EndCause::Indeterminate) => AgentEvent::RunFailed {
+            code: "indeterminate".to_string(),
+            message: "execution outcome could not be determined".to_string(),
+        },
         Phase::Ended(_) => AgentEvent::RunFinished { exhausted: false },
     }
 }
@@ -335,5 +341,25 @@ mod tests {
             events.last(),
             Some(&AgentEvent::RunFinished { exhausted: false })
         );
+    }
+
+    // G26: indeterminate remote execution is explicit; it is never silently
+    // projected as success.
+    #[test]
+    fn indeterminate_projects_as_run_failed_not_run_finished() {
+        let phase = Phase::Ended(EndCause::Indeterminate);
+        let event = terminal(&phase, None);
+        assert!(
+            matches!(&event, AgentEvent::RunFailed { code, .. } if code == "indeterminate"),
+            "Indeterminate must project to RunFailed, got {event:?}"
+        );
+    }
+
+    #[test]
+    fn indeterminate_round_trips_through_serde() {
+        let cause = EndCause::Indeterminate;
+        let json = serde_json::to_string(&cause).unwrap();
+        let parsed: EndCause = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, EndCause::Indeterminate);
     }
 }
