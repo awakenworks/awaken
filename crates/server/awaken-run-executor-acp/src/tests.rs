@@ -333,3 +333,28 @@ fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
         Some("/run/agent/.claude")
     );
 }
+
+#[test]
+fn projecting_source_reads_the_cli_compact_window_from_config() {
+    let cli = *acp_cli("claude").expect("claude in the catalog");
+    let resolver = Arc::new(FixedModel(ResolvedModel {
+        base_url: "u".to_string(),
+        model: "m".to_string(),
+        api_key: "k".to_string(), // awaken-allow: secret
+    }));
+    let source = ProjectingChannelSource::new(cli, resolver);
+
+    // The run carries an ACP-scoped compaction window in plugin_config.
+    let mut act = activation();
+    act.snapshot.resolved_spec.plugin_config.insert(
+        "acp".to_string(),
+        serde_json::json!({ "compact_window": 262144 }),
+    );
+    let launch = source.plan(&act).expect("plan");
+    let window = launch
+        .env
+        .iter()
+        .find(|(k, _)| k == "CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+        .map(|(_, v)| v.clone());
+    assert_eq!(window.as_deref(), Some("262144"));
+}

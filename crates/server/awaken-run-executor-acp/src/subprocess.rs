@@ -141,17 +141,30 @@ impl ProjectingChannelSource {
         Self { cli, resolver }
     }
 
-    /// Project this run onto a concrete [`AcpLaunch`] (no spawn). The compaction
-    /// window is host-injected via `extra_env` until the context/compact projection
-    /// lands, so this stays a pure model + env projection.
+    /// Project this run onto a concrete [`AcpLaunch`] (no spawn): resolve the model +
+    /// per-run env, read the compaction window from the run's config, and hand all of
+    /// it to the CLI's [`AcpCli::project`] row.
     pub(crate) fn plan(
         &self,
         activation: &RunActivation,
     ) -> std::result::Result<AcpLaunch, OpenError> {
         let model = self.resolver.model(activation)?;
         let extra_env = self.resolver.extra_env(activation);
-        Ok(self.cli.project(&model, None, &extra_env))
+        let window = compact_window(&activation.snapshot.resolved_spec);
+        Ok(self.cli.project(&model, window, &extra_env))
     }
+}
+
+/// The launched CLI's own auto-compaction window, from the run's config. Read from
+/// the neutral `plugin_config["acp"]["compact_window"]` (a token count) — an
+/// ACP-scoped setting, kept separate from the native compactor's message-count
+/// [`ContextPolicy`](awaken_runtime_contract::resolved::ContextPolicy) since a CLI's
+/// window is tokens, not messages. Absent → the CLI keeps its own default.
+fn compact_window(spec: &awaken_runtime_contract::resolved::ResolvedSpec) -> Option<u64> {
+    spec.plugin_config
+        .get("acp")?
+        .get("compact_window")?
+        .as_u64()
 }
 
 #[async_trait]
