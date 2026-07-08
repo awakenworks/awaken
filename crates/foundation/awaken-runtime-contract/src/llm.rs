@@ -145,6 +145,13 @@ pub struct TokenUsage {
     pub completion_tokens: u64,
 }
 
+/// The thread-scoped committed-state key under which the run loop accumulates a
+/// thread's total [`TokenUsage`] (a serialized `TokenUsage`). Committed truth, so an
+/// adapter surfaces a session's usage by reading thread state — the runtime records
+/// the fact without naming any wire, and it survives a restart. Internal (the `__`
+/// prefix keeps it out of any agent-authored state namespace).
+pub const THREAD_USAGE_STATE_KEY: &str = "__usage";
+
 /// A classified inference failure. The variant is the classification: it
 /// decides both the retry policy (`is_retryable`) and the stable code
 /// (`code`) a run that cannot recover reports in its terminal failure.

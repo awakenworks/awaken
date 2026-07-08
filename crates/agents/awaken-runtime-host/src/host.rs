@@ -965,6 +965,29 @@ impl SharedHost {
         }
     }
 
+    /// A thread's accumulated token usage (the run loop records it as committed thread
+    /// state under [`THREAD_USAGE_STATE_KEY`]; each write is the running cumulative, so
+    /// the last `Set` is the total). Zero for a thread that has never run a real turn or
+    /// whose provider reported no usage (the deterministic models).
+    pub async fn thread_usage(&self, thread: &str) -> awaken_runtime_contract::llm::TokenUsage {
+        use awaken_agent_contract::agent::state::{Action, Scope};
+        use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, TokenUsage};
+        let Ok(ctx) = self.ctx_for(thread, None).await else {
+            return TokenUsage::default();
+        };
+        let mut usage = TokenUsage::default();
+        for cmd in ctx.commit.committed_state(&ctx.thread_id) {
+            if cmd.scope == Scope::Thread && cmd.key.0 == THREAD_USAGE_STATE_KEY {
+                if let Action::Set(value) = &cmd.action {
+                    if let Ok(parsed) = serde_json::from_value::<TokenUsage>(value.clone()) {
+                        usage = parsed;
+                    }
+                }
+            }
+        }
+        usage
+    }
+
     /// True when `thread` has a run parked awaiting a decision.
     pub async fn is_parked(&self, thread: &str) -> bool {
         let ctx = match self.ctx_for(thread, None).await {

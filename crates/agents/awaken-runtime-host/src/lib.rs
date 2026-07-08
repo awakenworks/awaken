@@ -732,6 +732,11 @@ impl SessionRuntime for ManagedHost {
         self.host.committed_messages(thread).await
     }
 
+    async fn session_usage(&self, thread: &str) -> (u64, u64) {
+        let usage = self.host.thread_usage(thread).await;
+        (usage.prompt_tokens, usage.completion_tokens)
+    }
+
     fn model(&self) -> String {
         self.host.model()
     }
