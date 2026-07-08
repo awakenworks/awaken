@@ -1441,6 +1441,13 @@ impl ManagedState {
                 );
                 push(
                     None,
+                    OutboundKind::SpanOutcomeEvaluationOngoing {
+                        outcome_id: round.outcome_id.clone(),
+                        iteration: round.iteration,
+                    },
+                );
+                push(
+                    None,
                     OutboundKind::SpanOutcomeEvaluationEnd {
                         outcome_id: round.outcome_id,
                         iteration: round.iteration,

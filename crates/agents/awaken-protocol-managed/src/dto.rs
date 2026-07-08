@@ -387,6 +387,10 @@ pub enum OutboundKind {
     ThreadContextCompacted {},
     #[serde(rename = "span.outcome_evaluation_start")]
     SpanOutcomeEvaluationStart { outcome_id: String, iteration: u32 },
+    /// A progress ping while a revision cycle is being graded
+    /// (`span.outcome_evaluation_ongoing`), between the start and end spans.
+    #[serde(rename = "span.outcome_evaluation_ongoing")]
+    SpanOutcomeEvaluationOngoing { outcome_id: String, iteration: u32 },
     #[serde(rename = "span.outcome_evaluation_end")]
     SpanOutcomeEvaluationEnd {
         outcome_id: String,
@@ -418,6 +422,7 @@ impl OutboundKind {
             OutboundKind::AgentThreadMessageReceived { .. } => "agent.thread_message_received",
             OutboundKind::ThreadContextCompacted { .. } => "agent.thread_context_compacted",
             OutboundKind::SpanOutcomeEvaluationStart { .. } => "span.outcome_evaluation_start",
+            OutboundKind::SpanOutcomeEvaluationOngoing { .. } => "span.outcome_evaluation_ongoing",
             OutboundKind::SpanOutcomeEvaluationEnd { .. } => "span.outcome_evaluation_end",
         }
     }

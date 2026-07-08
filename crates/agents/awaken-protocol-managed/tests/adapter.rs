@@ -535,9 +535,11 @@ async fn outcome_loop_projects_evaluations() {
         vec![
             "session.status_running",
             "span.outcome_evaluation_start",
+            "span.outcome_evaluation_ongoing",
             "span.outcome_evaluation_end",
             "agent.message",
             "span.outcome_evaluation_start",
+            "span.outcome_evaluation_ongoing",
             "span.outcome_evaluation_end",
             "session.status_idle"
         ]
