@@ -267,7 +267,7 @@ fn detail_str(detail: &serde_json::Value, key: &str) -> String {
         .to_string()
 }
 
-use crate::judge::KernelJudgeRunner;
+use crate::judge::HostSubagentRunner;
 use crate::provisioning::StagedResources;
 
 /// The protocol-neutral, thread-keyed session substrate shared by every adapter.
@@ -577,7 +577,7 @@ impl SharedHost {
             &id,
             DEFAULT_JUDGE_INSTRUCTIONS,
         )));
-        let runner = Arc::new(KernelJudgeRunner {
+        let runner = Arc::new(HostSubagentRunner {
             llm: self.llm.clone(),
             provider: LocalSandboxProvider::new(sub_base("judge")),
             catalog,
