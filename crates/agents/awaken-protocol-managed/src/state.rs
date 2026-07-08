@@ -1426,6 +1426,21 @@ impl ManagedState {
                         .await?;
                     self.append_turn(session_id, outcome)?;
                 }
+                // The generic `user.tool_result`: a client-provided result for a
+                // parked tool, keyed by `tool_use_id`. Same delivery as a custom
+                // tool result (the id addresses the parked tool either way).
+                InboundEvent::UserToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => {
+                    let text = content.as_deref().map(content_text).unwrap_or_default();
+                    let outcome = self
+                        .runtime
+                        .resume_custom(session_id, tool_use_id, &text, *is_error)
+                        .await?;
+                    self.append_turn(session_id, outcome)?;
+                }
                 InboundEvent::UserDefineOutcome {
                     description,
                     rubric,

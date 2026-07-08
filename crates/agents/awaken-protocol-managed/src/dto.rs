@@ -218,6 +218,18 @@ pub enum InboundEvent {
         #[serde(default)]
         is_error: bool,
     },
+    /// The generic client-provided result for a parked tool, keyed by the
+    /// `agent.tool_use` id from a `requires_action` `event_ids` — the SDK's
+    /// `user.tool_result`. Handled like `user.custom_tool_result` (delivers a
+    /// client tool's result), keyed by `tool_use_id` rather than `custom_tool_use_id`.
+    #[serde(rename = "user.tool_result")]
+    UserToolResult {
+        tool_use_id: String,
+        #[serde(default)]
+        content: Option<Vec<ContentBlock>>,
+        #[serde(default)]
+        is_error: bool,
+    },
     #[serde(rename = "user.define_outcome")]
     UserDefineOutcome {
         description: String,
@@ -244,6 +256,7 @@ impl InboundEvent {
             InboundEvent::SystemMessage { .. } => "system.message",
             InboundEvent::UserToolConfirmation { .. } => "user.tool_confirmation",
             InboundEvent::UserCustomToolResult { .. } => "user.custom_tool_result",
+            InboundEvent::UserToolResult { .. } => "user.tool_result",
             InboundEvent::UserDefineOutcome { .. } => "user.define_outcome",
             InboundEvent::UserInterrupt { .. } => "user.interrupt",
             InboundEvent::UserPause {} => "user.pause",
