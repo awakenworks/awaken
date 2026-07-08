@@ -181,6 +181,11 @@ struct SessionState {
     /// has already been handed to the extractor, so each turn extracts only the
     /// new messages instead of re-processing (and re-billing) the whole history.
     last_extracted_len: usize,
+    /// The distinct compaction-fold count at the current turn's start. A fold
+    /// during the turn grows it; the terminal step compares against this baseline
+    /// to surface the `agent.thread_context_compacted` marker once (spanning a
+    /// parked→resumed turn, which shares this baseline).
+    compactions_before: usize,
 }
 
 /// One thread's live state: an isolated runtime, its config, its commit
@@ -420,11 +425,36 @@ impl SharedHost {
     /// window so those older raw turns drop from the model view. Non-destructive:
     /// committed truth is never rewritten (G13). The bounds are also exposed as the
     /// `compact` config section, so a per-run `plugin_config` can override them.
-    pub fn with_compaction(mut self, threshold: usize, keep_last: usize) -> Self {
-        self.compact_config = Some(CompactConfig {
+    pub fn with_compaction(self, threshold: usize, keep_last: usize) -> Self {
+        self.enable_compaction(CompactConfig {
             threshold,
             keep_last,
-        });
+            ..CompactConfig::default()
+        })
+    }
+
+    /// Enable **token-aware** context compaction: fold once the estimated context
+    /// reaches `trigger_ratio` of the model's `max_tokens` window (the "auto-compact
+    /// at N% of the window" behavior), keeping the last `keep_last` messages. This
+    /// is how compaction becomes aware of the model's max token instead of a bare
+    /// message count. The main agent still runs a matching `KeepLast(keep_last)`.
+    pub fn with_compaction_tokens(
+        self,
+        max_tokens: u32,
+        trigger_ratio: f64,
+        keep_last: usize,
+    ) -> Self {
+        self.enable_compaction(CompactConfig {
+            max_tokens: Some(max_tokens),
+            trigger_ratio,
+            keep_last,
+            ..CompactConfig::default()
+        })
+    }
+
+    /// Install a resolved `CompactConfig` and wire the `compactor` sub-agent.
+    fn enable_compaction(mut self, config: CompactConfig) -> Self {
+        self.compact_config = Some(config);
         self.compact_summarizer = Some(Arc::new(AgentSummarizer::new(
             self.llm.clone(),
             &self.model_ref,
@@ -1124,6 +1154,11 @@ impl SharedHost {
         };
         messages.extend(input);
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
+        // Baseline the compaction-fold count at the turn's start; a fold during the
+        // turn grows it and the terminal step surfaces the marker. Set here (not on
+        // resume) so it spans a parked→resumed turn.
+        st.compactions_before =
+            awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id));
         // Prepare the activation (install catalog + register snapshot + mint ids),
         // then deliver it through the ingress seam. Direct ingress executes inline,
         // so this is behavior-identical to the former `start_turn` call.
@@ -1531,15 +1566,14 @@ impl SharedHost {
                 .publish(thread, ThreadEvent::Committed(new_messages.clone()));
         }
         self.hub.publish(thread, ThreadEvent::StepEnded { waiting });
-        // A fold commits a marker keyed by this run's id; read it back only at the
-        // terminal step so a parked→resumed turn surfaces it once (never on the
-        // parking step and again on resume, which share the run id). The compact
-        // extension owns the key (G16).
+        // A fold grows the committed compaction-marker count; compare the turn's
+        // start baseline (set in `deliver_turn`, spanning a parked→resumed turn) to
+        // the terminal-step count so the marker surfaces exactly once. Count-based,
+        // not run-id-based, so it works under durable ingress (where the worker
+        // mints its own run id). The compact extension owns the key (G16).
         let compacted = !waiting
-            && awaken_ext_compact::compacted(
-                &ctx.commit.committed_state(&ctx.thread_id),
-                &run_id.0,
-            );
+            && awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id))
+                > st.compactions_before;
         TurnResult {
             new_messages,
             phase,
