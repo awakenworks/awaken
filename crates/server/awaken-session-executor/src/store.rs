@@ -111,6 +111,17 @@ impl ThreadReader for HostCommit {
             HostCommit::Fs(inner) => inner.waiting_ticket(run_id),
         }
     }
+
+    fn committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Vec<awaken_agent_contract::agent::state::Command> {
+        match self {
+            HostCommit::Memory(inner) => inner.committed_state(thread_id),
+            HostCommit::Sqlite(inner) => inner.committed_state(thread_id),
+            HostCommit::Fs(inner) => inner.committed_state(thread_id),
+        }
+    }
 }
 
 impl RunStore for HostCommit {
