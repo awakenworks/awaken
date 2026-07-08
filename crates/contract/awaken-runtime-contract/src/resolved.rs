@@ -66,15 +66,16 @@ impl ResolvedSpec {
 /// profile). `Backend` owns *only* the runtime axis, never the native provider
 /// (`backend_ref: "genai"` routes a provider inside `Native`, not a fourth kind).
 ///
-/// A `Remote` (A2A) variant is intentionally absent until an executor consumes it
-/// — a variant no dispatch arm reads would be a stub (G30/no-stubs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Backend {
-    /// The in-process awaken model+tool loop. Any non-`acp:` backend.
+    /// The in-process awaken model+tool loop. Any non-`acp:`/`a2a:` backend.
     Native,
     /// A launched external ACP CLI (Claude Code, Codex, …). `cli` is the catalog id
     /// (`AcpCli::id`) parsed from `acp:<cli>` (empty for a bare `acp`).
     Acp { cli: String },
+    /// A remote agent reached over A2A HTTP (no local process). `endpoint` is the
+    /// dial URL parsed from `a2a:<endpoint>`; the A2A executor consumes it.
+    Remote { endpoint: String },
 }
 
 impl Backend {
@@ -89,8 +90,21 @@ impl Backend {
             Backend::Acp {
                 cli: cli.to_string(),
             }
+        } else if let Some(endpoint) = backend_ref.strip_prefix("a2a:") {
+            Backend::Remote {
+                endpoint: endpoint.to_string(),
+            }
         } else {
             Backend::Native
+        }
+    }
+
+    /// The remote dial endpoint if this is an A2A backend.
+    #[must_use]
+    pub fn remote_endpoint(&self) -> Option<&str> {
+        match self {
+            Backend::Remote { endpoint } => Some(endpoint),
+            _ => None,
         }
     }
 
@@ -235,6 +249,19 @@ mod tests {
                 cli: "codex".to_string()
             }
         );
+
+        // `a2a:<endpoint>` is a remote A2A backend.
+        assert_eq!(
+            Backend::from_ref("a2a:https://host/a2a"),
+            Backend::Remote {
+                endpoint: "https://host/a2a".to_string()
+            }
+        );
+        assert_eq!(
+            Backend::from_ref("a2a:https://host/a2a").remote_endpoint(),
+            Some("https://host/a2a")
+        );
+        assert!(!Backend::from_ref("a2a:x").is_acp());
     }
 
     #[test]

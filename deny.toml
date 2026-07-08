@@ -68,6 +68,7 @@ wrappers = [
     "awaken-managed-bridge",
     "awaken-admin-config-api",
     "awaken-run-executor-acp",
+    "awaken-run-executor-a2a",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
 
@@ -98,6 +99,7 @@ wrappers = [
     "awaken-standalone",
     "awaken-config-resolver",
     "awaken-run-executor-acp",
+    "awaken-run-executor-a2a",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
 
