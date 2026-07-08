@@ -28,6 +28,9 @@ use awaken_protocol_acp::{
     AcpError, AcpFailure, AgentEvent, Injection, RawAcpError, RunEventSink, SinkError, Stage,
     SupervisePolicy, Supervisor, TerminationReason, classify_error,
 };
+// Re-exported (not just `use`d) so a host composition root selects the wire without
+// a direct dependency on the protocol crate.
+pub use awaken_protocol_acp::Codec;
 use awaken_provisioning_contract::ProcessHandle;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
@@ -41,6 +44,10 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 pub struct AgentSession {
     pub channel: Box<dyn AgentChannel>,
     pub process: Arc<dyn ProcessHandle>,
+    /// Which wire to speak to this agent. The source declares it: a fixture/test
+    /// agent speaks the newline stand-in ([`Codec::Newline`], the default); a real
+    /// CLI opened by [`ProjectingChannelSource`] speaks official ACP JSON-RPC.
+    pub codec: Codec,
 }
 
 /// Opens an [`AgentSession`] for a run. The one seam the host wires: local =
@@ -179,6 +186,7 @@ impl RunExecutor for AcpRunExecutor {
             cancel,
             &mut injections,
             self.policy,
+            session.codec,
         )
         .await;
 

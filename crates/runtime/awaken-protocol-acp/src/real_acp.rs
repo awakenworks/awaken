@@ -20,7 +20,13 @@ pub fn project_update(update: &SessionUpdate) -> Option<AgentEvent> {
         }
         SessionUpdate::ToolCall(tool_call) => Some(AgentEvent::ToolCall {
             name: tool_call.title.clone(),
-            input: serde_json::Value::Null,
+            // Carry the tool's raw arguments through the ACL (the model's request).
+            // The agent runs the tool inside its own OS jail, so the tool *result*
+            // is its internal state, not surfaced to our transcript.
+            input: tool_call
+                .raw_input
+                .clone()
+                .unwrap_or(serde_json::Value::Null),
         }),
         // Thoughts, tool-call updates, plans, mode/config/session-info and user echoes
         // have no runtime AgentEvent projection.

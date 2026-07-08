@@ -56,18 +56,35 @@ impl AcpLaunch {
 /// no ambient leak), piping its stdio into an [`AgentChannel`].
 pub struct SubprocessChannelSource {
     launch: AcpLaunch,
+    codec: awaken_protocol_acp::Codec,
 }
 
 impl SubprocessChannelSource {
+    /// A source that launches `launch` and speaks the newline stand-in — the wire
+    /// the in-tree fixture agents use. A trusted real CLI over this source sets
+    /// [`Self::with_codec`] to `Codec::Acp`.
     #[must_use]
     pub fn new(launch: AcpLaunch) -> Self {
-        Self { launch }
+        Self {
+            launch,
+            codec: awaken_protocol_acp::Codec::Newline,
+        }
+    }
+
+    /// Override the wire this source's launched agent speaks.
+    #[must_use]
+    pub fn with_codec(mut self, codec: awaken_protocol_acp::Codec) -> Self {
+        self.codec = codec;
+        self
     }
 }
 
 /// Spawn an ACP CLI child from a resolved [`AcpLaunch`] and pipe its stdio into an
 /// [`AgentChannel`]. `env_clear` + only the projected env, so no ambient leak.
-fn spawn(launch: &AcpLaunch) -> std::result::Result<AgentSession, OpenError> {
+fn spawn(
+    launch: &AcpLaunch,
+    codec: awaken_protocol_acp::Codec,
+) -> std::result::Result<AgentSession, OpenError> {
     let (program, args) = launch
         .argv
         .split_first()
@@ -98,8 +115,25 @@ fn spawn(launch: &AcpLaunch) -> std::result::Result<AgentSession, OpenError> {
     let process: Arc<dyn ProcessHandle> = Arc::new(ChildProcess {
         child: Mutex::new(child),
     });
-    Ok(AgentSession { channel, process })
+    Ok(AgentSession {
+        channel,
+        process,
+        codec,
+    })
 }
+
+/// The wire a real ACP CLI (`claude --acp`, `codex acp`) speaks: official
+/// JSON-RPC when the `real-acp` codec is compiled in, else the newline stand-in.
+pub(crate) const CLI_CODEC: awaken_protocol_acp::Codec = {
+    #[cfg(feature = "real-acp")]
+    {
+        awaken_protocol_acp::Codec::Acp
+    }
+    #[cfg(not(feature = "real-acp"))]
+    {
+        awaken_protocol_acp::Codec::Newline
+    }
+};
 
 #[async_trait]
 impl AgentChannelSource for SubprocessChannelSource {
@@ -107,7 +141,7 @@ impl AgentChannelSource for SubprocessChannelSource {
         &self,
         _activation: &RunActivation,
     ) -> std::result::Result<AgentSession, OpenError> {
-        spawn(&self.launch)
+        spawn(&self.launch, self.codec)
     }
 }
 
@@ -173,7 +207,8 @@ impl AgentChannelSource for ProjectingChannelSource {
         &self,
         activation: &RunActivation,
     ) -> std::result::Result<AgentSession, OpenError> {
-        spawn(&self.plan(activation)?)
+        // A real CLI (`claude --acp`, `codex acp`) speaks official ACP JSON-RPC.
+        spawn(&self.plan(activation)?, CLI_CODEC)
     }
 }
 

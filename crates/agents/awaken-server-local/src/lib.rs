@@ -143,6 +143,44 @@ pub fn build_compaction_router() -> Router {
     mount(Arc::new(host))
 }
 
+/// A fake ACP agent speaking the OFFICIAL JSON-RPC 2.0 wire (shell builtins only,
+/// so it survives `env_clear`): answer `initialize` (id 1) and `session/new`
+/// (id 2), then on `session/prompt` (id 3) stream one `session/update`
+/// agent-message chunk and reply with `stopReason:"end_turn"`. Stands in for a real
+/// `claude --acp` to exercise the [`awaken_run_executor_acp::Codec::Acp`] driver.
+const FAKE_ACP_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
+      case \"$line\" in \
+        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
+        *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
+        *'\"id\":3'*) \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-jsonrpc reply\"}}}}'; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
+          exit 0;; \
+      esac; \
+    done";
+
+/// [`build_acp_router`]'s official-wire twin: `acp:*` sessions drive the fake agent
+/// over real ACP JSON-RPC (the [`awaken_run_executor_acp::Codec::Acp`] driver),
+/// proving the production codec end-to-end. `AWAKEN_MODEL_MODE=acp-jsonrpc`.
+pub fn build_acp_jsonrpc_router() -> Router {
+    let launch = awaken_run_executor_acp::AcpLaunch::custom(
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            FAKE_ACP_JSONRPC_SCRIPT.to_string(),
+        ],
+        vec![],
+    );
+    let source = Arc::new(
+        awaken_run_executor_acp::SubprocessChannelSource::new(launch)
+            .with_codec(awaken_run_executor_acp::Codec::Acp),
+    );
+    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+    mount(Arc::new(
+        SharedHost::new(Arc::new(EchoModel), "awaken").with_acp(acp),
+    ))
+}
+
 /// A router where a session can select `runtime: "acp:*"` to run on an external
 /// ACP CLI (here the fake agent), else the native echo model (R3/R4/R7).
 /// `AWAKEN_MODEL_MODE=acp`.
