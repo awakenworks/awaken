@@ -138,16 +138,16 @@ impl EnvironmentState {
         Self::default()
     }
 
-    /// Whether `env_id`'s networking policy denies egress for the local sandbox.
-    /// Routes the wire config through the neutral [`NetworkPolicy`] and asks whether
-    /// a binary (on/off) enforcer must deny it: `limited` (an allowlist bwrap can't
-    /// honor, so it fails closed) and `none` deny; `unrestricted`, absent networking
-    /// (incl. `self_hosted`), or an unknown environment share the host network.
+    /// Whether the local bwrap sandbox must deny egress for `env_id`. bwrap is a
+    /// binary (on/off) enforcer, so any restricted policy collapses to full deny:
+    /// `limited` (an allowlist bwrap cannot honor → fails closed) and `none` deny;
+    /// `unrestricted`, absent networking (incl. `self_hosted`), or an unknown
+    /// environment share the host network.
     #[must_use]
     pub fn deny_egress(&self, env_id: &str) -> bool {
         let envs = self.envs.lock().unwrap();
         envs.get(env_id)
-            .is_some_and(|rec| rec.network_policy().denies_under_binary_enforcer())
+            .is_some_and(|rec| rec.network_policy().is_restricted())
     }
 }
 
@@ -520,7 +520,7 @@ mod tests {
         // unrestricted → shares host network
         let open = env_with(json!({ "networking": { "type": "unrestricted" } }));
         assert_eq!(open.network_policy(), NetworkPolicy::Unrestricted);
-        assert!(!open.network_policy().denies_under_binary_enforcer());
+        assert!(!open.network_policy().is_restricted());
 
         // limited{allowed_hosts} → typed Allowlist, denies under bwrap (fail-closed)
         let limited = env_with(json!({
@@ -532,17 +532,17 @@ mod tests {
                 hosts: vec!["api.anthropic.com".to_string()],
             }
         );
-        assert!(limited.network_policy().denies_under_binary_enforcer());
+        assert!(limited.network_policy().is_restricted());
 
         // none → no egress
         let none = env_with(json!({ "networking": { "type": "none" } }));
         assert_eq!(none.network_policy(), NetworkPolicy::None);
-        assert!(none.network_policy().denies_under_binary_enforcer());
+        assert!(none.network_policy().is_restricted());
 
         // absent networking / self_hosted / unknown → Unrestricted (shares host)
         let self_hosted = env_with(json!({ "type": "self_hosted" }));
         assert_eq!(self_hosted.network_policy(), NetworkPolicy::Unrestricted);
-        assert!(!self_hosted.network_policy().denies_under_binary_enforcer());
+        assert!(!self_hosted.network_policy().is_restricted());
     }
 
     #[test]

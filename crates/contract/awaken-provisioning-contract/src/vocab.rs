@@ -175,12 +175,11 @@ impl NetworkPolicy {
         }
     }
 
-    /// Whether a *binary* (on/off) egress enforcer — one that can only allow or
-    /// deny all egress, e.g. bwrap `--unshare-net` — must deny to satisfy this
-    /// policy. `Unrestricted` allows; `Allowlist` and `None` deny — an allowlist
-    /// cannot be honored by an on/off enforcer, so it fails closed to no egress.
+    /// Whether this policy restricts egress at all — anything other than
+    /// `Unrestricted`. A neutral fact about the policy; how an enforcer realizes it
+    /// (an on/off sandbox vs an allowlist-capable gateway) is the caller's concern.
     #[must_use]
-    pub fn denies_under_binary_enforcer(&self) -> bool {
+    pub fn is_restricted(&self) -> bool {
         !matches!(self, NetworkPolicy::Unrestricted)
     }
 }
@@ -219,15 +218,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn binary_enforcer_denies_all_but_unrestricted() {
-        assert!(!NetworkPolicy::Unrestricted.denies_under_binary_enforcer());
+    fn is_restricted_is_true_for_all_but_unrestricted() {
+        assert!(!NetworkPolicy::Unrestricted.is_restricted());
         assert!(
             NetworkPolicy::Allowlist {
                 hosts: vec!["api.example.com".into()],
             }
-            .denies_under_binary_enforcer()
+            .is_restricted()
         );
-        assert!(NetworkPolicy::None.denies_under_binary_enforcer());
+        assert!(NetworkPolicy::None.is_restricted());
     }
 
     fn req(source: MountSource, access: MountAccess, lifetime: MountLifetime) -> MountRequirement {
