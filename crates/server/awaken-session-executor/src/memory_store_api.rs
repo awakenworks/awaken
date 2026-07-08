@@ -366,12 +366,28 @@ async fn create_memory(
 async fn list_memories(
     State(state): State<Arc<MemoryStoreApi>>,
     Path(id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
     let registry = state.registry.lock().unwrap();
     let Some(meta) = registry.get(&id) else {
         return not_found("memory_store");
     };
-    let data: Vec<Value> = meta.memories.values().map(|m| m.project(&id)).collect();
+    // `path_prefix` drills into a subtree; `view` gates whether `content` is
+    // populated (`full`, the default) or elided (`basic`) — SDK memory-list params.
+    let prefix = q.get("path_prefix").map(String::as_str);
+    let basic = q.get("view").map(String::as_str) == Some("basic");
+    let data: Vec<Value> = meta
+        .memories
+        .values()
+        .filter(|m| prefix.is_none_or(|p| m.path.starts_with(p)))
+        .map(|m| {
+            let mut projected = m.project(&id);
+            if basic {
+                projected["content"] = Value::Null;
+            }
+            projected
+        })
+        .collect();
     (
         StatusCode::OK,
         Json(json!({ "data": data, "has_more": false, "next_page": null })),
