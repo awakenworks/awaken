@@ -9,32 +9,11 @@
 // Run: (from e2e/)  npm install && node managed_outcome_e2e.mjs
 
 import assert from 'node:assert/strict';
-import net from 'node:net';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
+import { withRealServer } from './harness.mjs';
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38103);
-const ADDR = `127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
-
-function waitForPort(port, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const sock = net.createConnection({ port, host: '127.0.0.1' });
-      sock.once('connect', () => { sock.destroy(); resolve(); });
-      sock.once('error', () => {
-        sock.destroy();
-        if (Date.now() > deadline) reject(new Error(`server did not listen on ${port}`));
-        else setTimeout(attempt, 200);
-      });
-    };
-    attempt();
-  });
-}
 
 async function outcomeEnds(client, sessionId) {
   const events = [];
@@ -56,18 +35,8 @@ async function draftThenOutcome(client, rubric, maxIterations) {
 }
 
 async function main() {
-  const server = spawn('cargo', ['run', '--quiet', '-p', 'awaken-server-local'], {
-    cwd: REPO_ROOT,
-    env: { ...process.env, AWAKEN_HTTP_ADDR: ADDR, AWAKEN_MODEL_MODE: 'revise' },
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
-  server.on('exit', (code) => {
-    if (code !== null && code !== 0) { console.error(`server exited early: ${code}`); process.exit(1); }
-  });
-
-  try {
-    await waitForPort(PORT, 180_000);
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${ADDR}` });
+  await withRealServer('revise', PORT, async (baseUrl) => {
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
     // Satisfied: the revision contains "FINAL" -> satisfied.
     const satisfied = await draftThenOutcome(client, 'FINAL', 3);
@@ -82,13 +51,10 @@ async function main() {
     console.log('  ok: unsatisfiable rubric -> max_iterations_reached');
 
     console.log('E2E PASS: define_outcome satisfied + max_iterations paths via TS SDK.');
-    process.exitCode = 0;
-  } catch (err) {
-    console.error('E2E FAIL:', err);
-    process.exitCode = 1;
-  } finally {
-    server.kill('SIGINT');
-  }
+  });
 }
 
-main();
+main().catch((err) => {
+  console.error('E2E FAIL:', err);
+  process.exit(1);
+});

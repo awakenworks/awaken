@@ -9,32 +9,11 @@
 // Run: (from e2e/)  npm install && node managed_delegation_e2e.mjs
 
 import assert from 'node:assert/strict';
-import net from 'node:net';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
+import { withScenarioServer } from './harness.mjs';
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38105);
-const ADDR = `127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
-
-function waitForPort(port, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const sock = net.createConnection({ port, host: '127.0.0.1' });
-      sock.once('connect', () => { sock.destroy(); resolve(); });
-      sock.once('error', () => {
-        sock.destroy();
-        if (Date.now() > deadline) reject(new Error(`server did not listen on ${port}`));
-        else setTimeout(attempt, 200);
-      });
-    };
-    attempt();
-  });
-}
 
 async function listEvents(client, sessionId) {
   const events = [];
@@ -55,18 +34,8 @@ function messages(events) {
 }
 
 async function main() {
-  const server = spawn('cargo', ['run', '--quiet', '-p', 'awaken-server-local'], {
-    cwd: REPO_ROOT,
-    env: { ...process.env, AWAKEN_HTTP_ADDR: ADDR, AWAKEN_MODEL_MODE: 'delegate' },
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
-  server.on('exit', (code) => {
-    if (code !== null && code !== 0) { console.error(`server exited early: ${code}`); process.exit(1); }
-  });
-
-  try {
-    await waitForPort(PORT, 180_000);
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${ADDR}` });
+  await withScenarioServer('delegate', 'delegating', PORT, async (baseUrl) => {
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
     // Happy path: delegate to `researcher`, whose result flows back.
     const ok = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
@@ -91,13 +60,10 @@ async function main() {
     assert.ok(!badText.includes('researched: 42'), `no sub-run output leaked: ${badText}`);
 
     console.log('E2E PASS: multi-agent delegation (happy + fail-closed) via TS SDK.');
-    process.exitCode = 0;
-  } catch (err) {
-    console.error('E2E FAIL:', err);
-    process.exitCode = 1;
-  } finally {
-    server.kill('SIGINT');
-  }
+  });
 }
 
-main();
+main().catch((err) => {
+  console.error('E2E FAIL:', err);
+  process.exit(1);
+});

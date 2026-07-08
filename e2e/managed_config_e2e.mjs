@@ -11,12 +11,10 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38160);
-const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
-const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
 
 const AGENT = 'greeter';
 const GREETING = 'HELLO-FROM-CONFIG';
@@ -33,19 +31,18 @@ const agentConfig = {
   plugin_config: {},
 };
 
-const json = async (method, path, body) => {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  return { status: res.status, body: await res.json().catch(() => ({})) };
-};
-
 async function main() {
-  const { server } = spawnServer('config', PORT);
-  await waitForPort(PORT);
-  try {
+  await withScenarioServer('config', 'instruction', PORT, async (baseUrl) => {
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+    const json = async (method, path, body) => {
+      const res = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      return { status: res.status, body: await res.json().catch(() => ({})) };
+    };
+
     // Author.
     const put = await json('PUT', `/v1/config/agents/${AGENT}`, agentConfig);
     assert.equal(put.status, 200, 'config stored');
@@ -93,12 +90,10 @@ async function main() {
     pass('published agent ran with its own instructions');
 
     console.log('E2E PASS: config author→validate→publish→run loop via HTTP + TS SDK.');
-  } finally {
-    await stopServer(server);
-  }
+  });
 }
 
 main().catch((err) => {
   console.error('E2E FAIL:', err);
-  process.exitCode = 1;
+  process.exit(1);
 });

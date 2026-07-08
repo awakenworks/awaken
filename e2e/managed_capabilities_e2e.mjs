@@ -8,46 +8,24 @@
 // Run: (from e2e/)  npm install && node managed_capabilities_e2e.mjs
 
 import assert from 'node:assert/strict';
-import net from 'node:net';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
+import { withRealServer, withScenarioServer } from './harness.mjs';
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BETAS = ['managed-agents-2026-04-01'];
 
-function waitForPort(port, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const sock = net.createConnection({ port, host: '127.0.0.1' });
-      sock.once('connect', () => { sock.destroy(); resolve(); });
-      sock.once('error', () => {
-        sock.destroy();
-        if (Date.now() > deadline) reject(new Error(`server did not listen on ${port}`));
-        else setTimeout(attempt, 200);
-      });
-    };
-    attempt();
-  });
-}
+// The scenario's host config is what these assertions read (client tools, delegate
+// roster); the model runs for real over the wire. Each mode maps to the behavior
+// reproducing its model — irrelevant here (no turns) but kept faithful.
+const BEHAVIOR = { echo: 'echo', custom: 'custom', delegate: 'delegating' };
 
-// Spawn the server in `mode` on `port`, run `fn(client)`, then stop it.
+// Boot the server in `mode` (its host config) with the model on the real wire, then
+// run `fn(client)`. `echo` is a plain-mount scenario (real mode); the others keep
+// their `AWAKEN_MODEL_MODE=<mode>` router with the model swapped to the real wire.
 async function withServer(mode, port, fn) {
-  const addr = `127.0.0.1:${port}`;
-  const server = spawn('cargo', ['run', '--quiet', '-p', 'awaken-server-local'], {
-    cwd: REPO_ROOT,
-    env: { ...process.env, AWAKEN_HTTP_ADDR: addr, AWAKEN_MODEL_MODE: mode },
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
-  try {
-    await waitForPort(port, 180_000);
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
-    await fn(client);
-  } finally {
-    server.kill('SIGINT');
-  }
+  const wrap = (baseUrl) => fn(new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl }));
+  return mode === 'echo'
+    ? withRealServer('echo', port, wrap)
+    : withScenarioServer(mode, BEHAVIOR[mode], port, wrap);
 }
 
 function toolset(session) {
