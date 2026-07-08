@@ -6,12 +6,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function main() {
-  await withServer('echo', 38272, async (base) => {
+  await withRealServer('echo', 38272, async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
     // Supply: a content-addressed file + a memory store.

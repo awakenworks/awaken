@@ -83,31 +83,41 @@ export async function withServer(mode, port, fn) {
   }
 }
 
-const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow: secret
+// The fake-upstream key the real-wire harness authenticates with, exported so a
+// test that spawns the server itself (restart/durability suites) can build the same
+// env via `realServerEnv`.
+export const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow: secret
 
 // The REAL-provider equivalent of `withServer`: instead of an in-process stub
 // model, start a fake Anthropic upstream reproducing `behavior`'s scenario replies,
-// point the server's GenaiExecutor at it (`AWAKEN_MODEL_MODE=real`), run `fn`, then
-// tear both down. This is how an e2e drops its model stub: the same scenario now
-// runs through the real provider adapter + a real socket + the real Anthropic wire.
-// `scenario`, when set, selects the server's host-config (client tools / delegate
-// roster / skills / memory dir) via `AWAKEN_SCENARIO` for the modes whose config is
-// not the plain default. `extraEnv` layers on (e.g. `AWAKEN_MEMORY_DIR`).
-export async function withRealServer(behavior, port, fn, { scenario, extraEnv = {} } = {}) {
+// point the server's GenaiExecutor at it, run `fn`, then tear both down. This is how
+// an e2e drops its model stub: the same scenario runs through the real provider
+// adapter + a real socket + the real Anthropic wire.
+//
+// Two axes (see the server's `scenario_model`): the MODEL is always real here; the
+// server's HOST CONFIG is chosen by `opts.mode`. A plain-mount scenario (echo /
+// vision / probe / …) needs no host config, so the default `mode: 'real'` boots the
+// bare real-model router. A scenario with host config (custom tools, delegate
+// roster, skills, state machine, compaction, memory, config plane) keeps its
+// `AWAKEN_MODEL_MODE=<mode>` router and sets `AWAKEN_MODEL_SOURCE=http` so only its
+// MODEL swaps to the real wire. `opts.extraEnv` layers on (e.g. `AWAKEN_MEMORY_DIR`).
+export function realServerEnv(behavior, upstream, { mode = 'real', extraEnv = {} } = {}) {
+  return {
+    AWAKEN_MODEL_MODE: mode,
+    ...(mode === 'real' ? {} : { AWAKEN_MODEL_SOURCE: 'http' }),
+    ANTHROPIC_API_KEY: FAKE_KEY,
+    ANTHROPIC_BASE_URL: `${upstream.url}/v1/`,
+    ANTHROPIC_MODEL: 'fake-haiku',
+    ...extraEnv,
+  };
+}
+
+export async function withRealServer(behavior, port, fn, opts = {}) {
   const bin = ensureBuilt();
   const addr = `127.0.0.1:${port}`;
   const upstream = await startFakeAnthropic(FAKE_KEY, { behavior });
   const server = spawn(bin, {
-    env: {
-      ...process.env,
-      AWAKEN_HTTP_ADDR: addr,
-      AWAKEN_MODEL_MODE: 'real',
-      ANTHROPIC_API_KEY: FAKE_KEY,
-      ANTHROPIC_BASE_URL: `${upstream.url}/v1/`,
-      ANTHROPIC_MODEL: 'fake-haiku',
-      ...(scenario ? { AWAKEN_SCENARIO: scenario } : {}),
-      ...extraEnv,
-    },
+    env: { ...process.env, AWAKEN_HTTP_ADDR: addr, ...realServerEnv(behavior, upstream, opts) },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   let exitedEarly = false;
