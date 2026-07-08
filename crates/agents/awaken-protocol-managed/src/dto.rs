@@ -317,6 +317,25 @@ pub enum OutboundKind {
     },
     #[serde(rename = "agent.custom_tool_use")]
     AgentCustomToolUse { name: String, input: Value },
+    /// An MCP tool call (`agent.mcp_tool_use`): a host-executed tool from an MCP
+    /// server, distinguished from a built-in `agent.tool_use` by the `mcp__` name.
+    #[serde(rename = "agent.mcp_tool_use")]
+    AgentMcpToolUse {
+        name: String,
+        mcp_server_name: String,
+        input: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        evaluated_permission: Option<String>,
+    },
+    /// The result of an MCP tool call (`agent.mcp_tool_result`), keyed by
+    /// `mcp_tool_use_id`.
+    #[serde(rename = "agent.mcp_tool_result")]
+    AgentMcpToolResult {
+        mcp_tool_use_id: String,
+        content: Vec<ContentBlock>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
     #[serde(rename = "session.status_running")]
     SessionStatusRunning {},
     #[serde(rename = "session.status_idle")]
@@ -408,6 +427,8 @@ impl OutboundKind {
             OutboundKind::AgentToolUse { .. } => "agent.tool_use",
             OutboundKind::AgentToolResult { .. } => "agent.tool_result",
             OutboundKind::AgentCustomToolUse { .. } => "agent.custom_tool_use",
+            OutboundKind::AgentMcpToolUse { .. } => "agent.mcp_tool_use",
+            OutboundKind::AgentMcpToolResult { .. } => "agent.mcp_tool_result",
             OutboundKind::SessionStatusRunning {} => "session.status_running",
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
             OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
