@@ -82,13 +82,14 @@ pub async fn connect_with_retry(
 ) -> Result<Box<dyn AgentChannel>, ConnectError> {
     let mut last = ConnectError::Io("no attempts".to_string());
     for _ in 0..attempts.max(1) {
-        match factory.connect(plan).await {
-            Ok(ch) => return Ok(ch),
-            Err(e) => {
-                last = e;
-                tokio::time::sleep(delay).await;
-            }
+        // Bound each attempt so a momentarily-slow DNS resolution retries instead
+        // of hanging the dial indefinitely.
+        match tokio::time::timeout(Duration::from_secs(2), factory.connect(plan)).await {
+            Ok(Ok(ch)) => return Ok(ch),
+            Ok(Err(e)) => last = e,
+            Err(_) => last = ConnectError::Io("connect attempt timed out".to_string()),
         }
+        tokio::time::sleep(delay).await;
     }
     Err(last)
 }
