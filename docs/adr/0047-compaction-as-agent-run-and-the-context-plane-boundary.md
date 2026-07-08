@@ -119,32 +119,37 @@ with D4.
 
 The compaction hook already returns a `PhaseReaction { state, context }`
 (`awaken-runtime-contract/src/plugin.rs:82`) and today fills only `context` (the
-request-only summary), leaving `state` empty. On a fold it also stages a durable,
-serializable fact (G3) via the generic KV command it is already allowed to use
-(`awaken-agent-contract/src/agent/state.rs:62`, `Command::set`):
+request-only summary), leaving `state` empty. On a fold it also stages a durable
+marker (G3) via the generic KV command it is already allowed to use
+(`awaken-agent-contract/src/agent/state.rs:62`, `Command::set`), keyed by the
+turn's `run_id` so the host reads it back exactly once:
 
 ```
 Command::set(Scope::Thread, MergePolicy::Commutative,
-             format!("compaction/{step}"),
-             json!({ "pre_compaction_tokens": N }))
+             format!("compaction/{run_id}"), json!(true))
 ```
 
 Carriage and projection are symmetric to the outcome-eval precedent:
 
-- `TurnOutcome` (`state.rs:46`) gains `compactions: Vec<CompactionFact>` (neutral).
-- `SessionRuntime::run_turn`'s host impl reconstructs those facts from durable
-  thread state committed during the turn (as `define_outcome` reconstructs rounds
-  from continuation payloads).
-- `append_turn` (`state.rs:1208`) pushes an
-  `OutboundKind::ThreadContextCompacted { pre_compaction_tokens }` **before** the
-  turn's message events (compaction runs `BeforeInference`), then the existing
-  `project_turn`.
-- `dto.rs` adds the variant (`OutboundKind`, `:288`) + `type_str`
-  (`"agent.thread_context_compacted"`, `:331`). The `AgentEvent` transcoder
-  (`project.rs:126`) is **not** touched — compaction is not a committed message.
+- `TurnOutcome` (`state.rs:46`) gains `compacted: bool` (neutral).
+- `SessionRuntime::run_turn`'s host impl reads that marker back from durable
+  thread state at the **terminal** step only (`finish_step`), so a parked→resumed
+  turn — which shares one `run_id` — surfaces it exactly once.
+- `append_turn` (`state.rs:1208`) pushes an `OutboundKind::ThreadContextCompacted {}`
+  **before** the turn's message events (compaction runs `BeforeInference`), then
+  the existing `project_turn`.
+- `dto.rs` adds the variant + `type_str` (`"agent.thread_context_compacted"`). The
+  `AgentEvent` transcoder (`project.rs:126`) is **not** touched — compaction is
+  not a committed message.
 
-No new mechanism, no new trait, no wire leak below the adapter. `pre_compaction_tokens`
-is `Option<u64>`, best-effort (see Risks).
+**Wire shape — aligned to the installed SDK, not the prose.** `@anthropic-ai/sdk@0.105.0`
+types `BetaManagedAgentsAgentThreadContextCompactedEvent` as exactly
+`{ id, type, processed_at }` — **no `pre_compaction_tokens`**, despite the events
+reference mentioning it. Per the standing "align to the installed SDK, never
+guess" constraint, the event is a payload-free marker; the field is dropped until
+an SDK release types it. This also collapses the whole path to a single `bool`
+(no token estimator, no fact struct). No new mechanism, no new trait, no wire leak
+below the adapter.
 
 ### D4: North-star (deferred) — promote aux sub-runs to durable child session threads
 
@@ -210,10 +215,10 @@ Change list, each additive:
 
 ### Risks
 
-- `pre_compaction_tokens` provenance: the extension has message text, not model
-  usage. Ship it as a best-effort estimate (`Option<u64>`), or thread real usage
-  through `PhaseContext` later (a foundation-contract change). The reference's
-  minimal JSON omits the field, so an absent value is contract-valid.
+- `pre_compaction_tokens`: the events reference mentions it but the installed SDK
+  (`0.105.0`) does not type it, so it is **not** emitted (align-to-SDK). If a
+  future SDK adds it, revisit — the extension would then estimate it (message
+  text ≈ 4 chars/token) or thread real model usage through `PhaseContext`.
 - Multiple folds per session: `Scope::Thread` + per-step key
   `compaction/<step>` + `Commutative` merge yields one event per fold and
   replays idempotently across restart (rebuilt from durable keys).

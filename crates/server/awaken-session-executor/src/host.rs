@@ -99,6 +99,10 @@ pub struct TurnResult {
     pub new_messages: Vec<Message>,
     pub phase: Phase,
     pub pending: Option<PendingTool>,
+    /// `true` when this turn folded its context (the compact plugin summarized
+    /// older turns). Read from durable thread state at the terminal step, so a
+    /// parked→resumed turn reports it exactly once.
+    pub compacted: bool,
 }
 
 /// The neutral resume command: answer a built-in tool's permission gate, or
@@ -1527,10 +1531,20 @@ impl SharedHost {
                 .publish(thread, ThreadEvent::Committed(new_messages.clone()));
         }
         self.hub.publish(thread, ThreadEvent::StepEnded { waiting });
+        // A fold commits a marker keyed by this run's id; read it back only at the
+        // terminal step so a parked→resumed turn surfaces it once (never on the
+        // parking step and again on resume, which share the run id). The compact
+        // extension owns the key (G16).
+        let compacted = !waiting
+            && awaken_ext_compact::compacted(
+                &ctx.commit.committed_state(&ctx.thread_id),
+                &run_id.0,
+            );
         TurnResult {
             new_messages,
             phase,
             pending,
+            compacted,
         }
     }
 
