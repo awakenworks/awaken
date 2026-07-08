@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = 38253;
 const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100';
@@ -42,9 +42,10 @@ const ROUTES = [
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-authz-routes-'));
   const env = { AWAKEN_MGMT_DIR: dir, AWAKEN_MGMT_SEAL_KEY: SEAL_KEY, AWAKEN_MGMT_IAM: 'embedded' };
+  const upstream = await startUpstream('mcp');
   let server;
   try {
-    ({ server } = spawnServer('management', PORT, env));
+    ({ server } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) }));
     await waitForPort(PORT);
     const base = `http://127.0.0.1:${PORT}`;
     const token = fs.readFileSync(path.join(dir, 'admin-token'), 'utf8').trim();
@@ -72,6 +73,7 @@ async function main() {
     console.log('E2E PASS: authz route->action mapping + fencing across the config surface.');
   } finally {
     if (server) await stopServer(server);
+    upstream.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
   process.exitCode = 0;

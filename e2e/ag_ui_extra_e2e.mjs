@@ -6,13 +6,14 @@
 // Run: (from e2e/)  node ag_ui_extra_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38187);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 async function main() {
-  const { server } = spawnServer('echo', PORT);
+  const upstream = await startUpstream('echo');
+  const { server } = spawnServer('real', PORT, { ...realServerEnv('echo', upstream) });
   await waitForPort(PORT);
   try {
     // Non-scoped `/v1/ag-ui` run with plain-string message content.
@@ -43,6 +44,7 @@ async function main() {
     console.log('E2E PASS: ag-ui extra endpoints and error paths.');
   } finally {
     await stopServer(server);
+    upstream.close();
   }
 }
 

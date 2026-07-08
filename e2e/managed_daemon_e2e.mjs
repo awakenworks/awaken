@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38179);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -34,10 +34,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
-  const srv = spawnServer('echo', PORT, {
+  const upstream = await startUpstream('echo');
+  const srv = spawnServer('real', PORT, {
     AWAKEN_STORAGE_DIR: STORE_DIR,
     AWAKEN_INGRESS: 'durable',
     AWAKEN_DISPATCH_DAEMON: '1',
+    ...realServerEnv('echo', upstream),
   });
   await waitForPort(PORT);
   try {
@@ -72,6 +74,7 @@ async function main() {
     console.log('E2E PASS: autonomous dispatch daemon drains a background-submitted run (ADR-0011).');
   } finally {
     await stopServer(srv.server);
+    upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
 }

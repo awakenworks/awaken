@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONTRACT = JSON.parse(
@@ -49,7 +49,7 @@ async function main() {
   // server inherits so the resolver can read it back (covers the Env branch).
   process.env.AWAKEN_E2E_ENVKEY = 'sk-env-e2e-value'; // awaken-allow: secret
   try {
-    await withServer('management', 38150, async (base) => {
+    await withScenarioServer('management', 'mcp', 38150, async (base) => {
       // --- author provider / endpoint / offering (path id is authoritative) ---
       let r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
         id: 'anthropic',

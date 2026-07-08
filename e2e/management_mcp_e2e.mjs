@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -85,7 +85,7 @@ function assertAddTurn(events, sum) {
 async function main() {
   const fixture = await startCalcFixture(CALC_TOKEN);
   try {
-    await withServer('management', 38191, async (base) => {
+    await withScenarioServer('management', 'mcp', 38191, async (base) => {
       // --- author the binding through the admin config plane ---
       let r = await req(base, 'POST', '/v1/config/credentials', {
         workspace_id: 'ws',

@@ -11,7 +11,7 @@
 // Run: (from e2e/)  node trace_backends_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const COLLECTOR = 'http://127.0.0.1:4318/v1/traces';
 const JAEGER = 'http://127.0.0.1:16686';
@@ -55,10 +55,12 @@ async function poll(label, fn, { tries = 30, delay = 1000 } = {}) {
 }
 
 async function driveTraffic() {
+  const upstream = await startUpstream('stateMachine');
   const { server } = spawnServer('statemachine', PORT, {
     OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: COLLECTOR,
     OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: 'http/protobuf',
     OTEL_SERVICE_NAME: SVC,
+    ...realServerEnv('stateMachine', upstream, { mode: 'statemachine' }),
   });
   await waitForPort(PORT);
   // A turn drives invoke_agent -> chat + execute_tool (glob, inline).
@@ -84,6 +86,7 @@ async function driveTraffic() {
   assert.equal(models.status, 200, 'models listed');
   // Stop so the batch span processor force-flushes on shutdown.
   await stopServer(server);
+  upstream.close();
 }
 
 // ---- Jaeger --------------------------------------------------------------

@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38215);
@@ -40,10 +40,11 @@ async function main() {
     AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
     AWAKEN_STORAGE_DIR: storeDir,
   };
+  const upstream = await startUpstream('mcp');
   let server = null;
   try {
     // ---- lifetime A: create a session with config, commit a turn ----
-    const a = spawnServer('management', PORT, env);
+    const a = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
     server = a.server;
     await waitForPort(PORT);
     let c = client(a.baseUrl);
@@ -69,7 +70,7 @@ async function main() {
 
     // ---- kill A, respawn B over the SAME dirs (fresh in-memory cache) ----
     await stopServer(a.server);
-    const b = spawnServer('management', PORT, env);
+    const b = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
     server = b.server;
     await waitForPort(PORT);
     c = client(b.baseUrl);
@@ -97,6 +98,7 @@ async function main() {
     console.log('E2E PASS: managed session config survives a real restart.');
   } finally {
     if (server) await stopServer(server);
+    upstream.close();
     fs.rmSync(mgmtDir, { recursive: true, force: true });
     fs.rmSync(storeDir, { recursive: true, force: true });
   }

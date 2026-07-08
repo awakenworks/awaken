@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const SKILL_MD_V1 = '---\nname: greeter\ndescription: says hi\n---\nSay hi to the user.';
@@ -22,7 +22,7 @@ async function drain(pagePromise) {
 
 async function main() {
   try {
-    await withServer('management', 38142, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', 38142, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // Create a skill via a multipart SKILL.md upload.

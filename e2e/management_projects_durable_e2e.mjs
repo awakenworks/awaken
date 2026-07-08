@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = 38231;
 const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100';
@@ -34,11 +34,12 @@ async function req(base, method, uri, body) {
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-projects-durable-'));
   const env = { AWAKEN_MGMT_DIR: dir, AWAKEN_MGMT_SEAL_KEY: SEAL_KEY };
+  const upstream = await startUpstream('mcp');
   let ok = false;
   let server;
   try {
     // Boot 1: author two projects + a project-agent MCP binding (durable).
-    ({ server } = spawnServer('management', PORT, env));
+    ({ server } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) }));
     await waitForPort(PORT);
     let base = `http://127.0.0.1:${PORT}`;
 
@@ -83,7 +84,7 @@ async function main() {
 
     // Restart over the same dir.
     await stopServer(server);
-    ({ server } = spawnServer('management', PORT, env));
+    ({ server } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) }));
     await waitForPort(PORT);
     base = `http://127.0.0.1:${PORT}`;
 
@@ -108,6 +109,7 @@ async function main() {
     ok = true;
   } finally {
     if (server) await stopServer(server);
+    upstream.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
   process.exitCode = ok ? 0 : 1;

@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38178);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -33,7 +33,8 @@ const listEvents = async (sessionId) => {
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
-  const srv = spawnServer('schedule', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable' });
+  const upstream = await startUpstream('probe');
+  const srv = spawnServer('schedule', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, AWAKEN_INGRESS: 'durable', ...realServerEnv('probe', upstream, { mode: 'schedule' }) });
   await waitForPort(PORT);
   try {
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
@@ -70,6 +71,7 @@ async function main() {
     console.log('E2E PASS: scheduled action performed by the durable worker (ADR-0020).');
   } finally {
     await stopServer(srv.server);
+    upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
 }
