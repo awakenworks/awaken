@@ -2,8 +2,8 @@
 //! plan carrying a credential reference serializes without any secret material.
 
 use awaken_connection_plan::{
-    bind_unix, in_process_pair, ChannelFactory, ConnectionPlan, CredentialRef, DialAddr,
-    DialPolicy, TokioChannelFactory,
+    ChannelFactory, ConnectionPlan, CredentialRef, DialAddr, DialPolicy, TokioChannelFactory,
+    bind_unix, in_process_pair,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -114,10 +114,12 @@ async fn credential_resolver_and_applied_auth() {
 async fn factory_and_bind_error_paths() {
     use awaken_connection_plan::{bind_tcp, bind_unix, connect_with_retry};
     // InProcess must be established via in_process_pair(), not connect().
-    assert!(TokioChannelFactory
-        .connect(&ConnectionPlan::in_process())
-        .await
-        .is_err());
+    assert!(
+        TokioChannelFactory
+            .connect(&ConnectionPlan::in_process())
+            .await
+            .is_err()
+    );
     // Transport/binder mismatches fail closed.
     assert!(bind_tcp(&ConnectionPlan::unix_dial("/x")).await.is_err());
     assert!(bind_unix(&ConnectionPlan::tcp_dial("127.0.0.1:1")).is_err());

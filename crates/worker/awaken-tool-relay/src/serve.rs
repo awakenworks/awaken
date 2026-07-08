@@ -29,10 +29,7 @@ pub struct HandSession {
 impl HandSession {
     /// A session over `tools`, keyed by each tool's id.
     pub fn new(tools: impl IntoIterator<Item = Arc<dyn RawTool>>) -> Self {
-        let registry = tools
-            .into_iter()
-            .map(|t| (t.id().to_string(), t))
-            .collect();
+        let registry = tools.into_iter().map(|t| (t.id().to_string(), t)).collect();
         Self {
             registry,
             catalog_fingerprint: None,

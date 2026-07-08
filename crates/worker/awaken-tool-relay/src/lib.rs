@@ -21,7 +21,5 @@ mod serve;
 pub mod wire;
 
 pub use executor::RemoteToolExecutor;
-pub use serve::{serve_hand, HandSession, ServeError};
-pub use wire::{
-    CorrelationId, HandError, HandErrorKind, HandReply, HandRequest, HandResult,
-};
+pub use serve::{HandSession, ServeError, serve_hand};
+pub use wire::{CorrelationId, HandError, HandErrorKind, HandReply, HandRequest, HandResult};

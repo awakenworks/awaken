@@ -62,7 +62,11 @@ async fn remote_tool_runs_out_of_process_and_returns_output() {
 
     assert_eq!(output.content, "hello from the hand");
     assert!(!output.is_error);
-    assert_eq!(runs.load(Ordering::SeqCst), 1, "the effect ran exactly once");
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "the effect ran exactly once"
+    );
 
     drop(executor);
     let _ = hand.await;
@@ -119,7 +123,11 @@ async fn re_drive_with_same_correlation_id_runs_the_effect_at_most_once() {
     let second = session.handle(request).await;
 
     assert_eq!(first, second, "a re-drive returns the recorded reply");
-    assert_eq!(runs.load(Ordering::SeqCst), 1, "the effect ran at most once");
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "the effect ran at most once"
+    );
     assert!(matches!(first.result, HandResult::Ok { .. }));
 }
 
