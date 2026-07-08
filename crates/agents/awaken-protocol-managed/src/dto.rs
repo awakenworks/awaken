@@ -327,6 +327,14 @@ pub enum OutboundKind {
     /// the session sees this as the last event; no further turns are accepted.
     #[serde(rename = "session.status_terminated")]
     SessionStatusTerminated {},
+    /// A subagent (multiagent delegate) thread was spawned within the session —
+    /// the SDK's `session.thread_created`. `agent_name` is the callable delegate
+    /// the child thread runs.
+    #[serde(rename = "session.thread_created")]
+    SessionThreadCreated {
+        session_thread_id: String,
+        agent_name: String,
+    },
     /// The conversation history was summarized to fit context (the compact plugin
     /// folded older turns). A pure marker: its shape matches the installed SDK's
     /// `BetaManagedAgentsAgentThreadContextCompactedEvent` — `{id, type,
@@ -355,6 +363,7 @@ impl OutboundKind {
             OutboundKind::SessionStatusRunning {} => "session.status_running",
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
             OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
+            OutboundKind::SessionThreadCreated { .. } => "session.thread_created",
             OutboundKind::ThreadContextCompacted { .. } => "agent.thread_context_compacted",
             OutboundKind::SpanOutcomeEvaluationStart { .. } => "span.outcome_evaluation_start",
             OutboundKind::SpanOutcomeEvaluationEnd { .. } => "span.outcome_evaluation_end",

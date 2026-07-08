@@ -49,6 +49,27 @@ async function main() {
     const okIdle = [...okEvents].reverse().find((e) => e.type === 'session.status_idle');
     assert.equal(okIdle.stop_reason.type, 'end_turn');
 
+    // D4: the delegate call spawned a subagent child thread — announced by
+    // `session.thread_created` and enumerable via the threads API.
+    const created = okEvents.find((e) => e.type === 'session.thread_created');
+    assert.ok(created, `expected session.thread_created, got: ${okEvents.map((e) => e.type)}`);
+    assert.equal(created.agent_name, 'researcher');
+
+    const threads = [];
+    for await (const t of client.beta.sessions.threads.list(ok.id, { betas: BETAS })) threads.push(t);
+    assert.equal(threads.length, 2, `primary + researcher child: ${threads.map((t) => t.id)}`);
+    const primary = threads.find((t) => t.parent_thread_id === null);
+    const child = threads.find((t) => t.id === created.session_thread_id);
+    assert.ok(child, 'the created child thread is enumerated');
+    assert.equal(child.parent_thread_id, primary.id, 'child links to the primary thread');
+    assert.equal(child.agent.name, 'researcher');
+
+    const gotChild = await client.beta.sessions.threads.retrieve(child.id, {
+      session_id: ok.id,
+      betas: BETAS,
+    });
+    assert.equal(gotChild.id, child.id, 'the child thread is retrievable');
+
     // Fail closed: `ghost` is not in the roster; no sub-run runs.
     const bad = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     const badEvents = await turn(client, bad.id, 'use the ghost agent');
