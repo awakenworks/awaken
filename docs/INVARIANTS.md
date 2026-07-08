@@ -15,15 +15,21 @@ holds the rule), and the **Validation** (the test kind that proves it).
   current split, by whether the named enforcer exists in the workspace today:
   - **Active** (enforcer type and a test or CI hook exist now): G1, G3, G4, G5,
     G6, G8, G9, G13, G14, G15, G16, G18 (live-control seam only; config-publication
-    coordinator and registry compiler remain target), G21, G23, G27, G28, G29,
-    G30, G31, G32.
+    coordinator and registry compiler remain target), G20 (executor result side;
+    wait/resume channel values land with the durable channel impl), G21, G23, G26
+    (indeterminate-result side; error-mapping adapters remain target), G27, G28,
+    G29, G30, G31, G32.
   - **Target** (the rule is accepted, but its enforcer is not yet built here, so
-    it holds vacuously until the subsystem lands): G10/G19/G26 (public protocol
+    it holds vacuously until the subsystem lands): G10/G19 (public protocol
     adapters), G11 (`ContinuationGuard`), G18 (config-publication coordinator and
     registry compiler — the live-control seam of G18 is now active via
-    `LiveRunControlService`), G22 (backend-binding negotiation), G25
-    (observability/eval). A Target guardrail must gain a real enforcer and test in
-    the same change that first builds its subsystem.
+    `LiveRunControlService`), G20 (wait/resume channel values — the executor result
+    side is now active; land wait/resume types here when the durable channel impl
+    arrives), G22 (backend-binding negotiation), G25 (observability/eval), G26
+    (error-mapping adapters and public DTO dependency checks — the
+    indeterminate-result side is now active via `EndCause::Indeterminate` and
+    `terminal()` projection tests). A Target guardrail must gain a real enforcer
+    and test in the same change that first builds its subsystem.
   - **Retired**: G7 (`ExecutionBackend`/`BackendProfile`). The runtime executes
     tools in-process (ADR-0007); remote/out-of-process agent execution is out of
     scope until a future ADR introduces it with a concrete driver and tests. The
@@ -56,6 +62,7 @@ holds the rule), and the **Validation** (the test kind that proves it).
 | G16 | Neutral runtime, protocol, config, and ordinary extension code does not use product-hosting vocabulary such as `managed`; those names are restricted to product adapters or explicit boundary mapping docs. | `lefthook.yml` vocabulary deny-list over neutral crates | grep/deny-list checks; adapter boundary review |
 | G18 | Configuration publication, live control, and execution stay on separate runtime-facing ports. No API may own config authoring/publication, active-run steering, loop execution, durable commit, and public projection as one controller. | separate seams: `RunResolver` / `LiveRunControl` / `RunExecutor` / `CommitCoordinatorSource`; live-control seam now enforced by `LiveRunControlService` (cancel/wake fail-closed by correlation-id, separate from `RunIngress` submission) | `cargo deny check bans` (deny.toml dependency-direction); `LiveRunControlService` fail-closed tests (`awaken-run-ingress`: cancel NotFound, wake NoSubscriber on unknown id) |
 | G19 | Public protocol adapters own public DTOs, event names, headers, replay cursors, and public errors; runtime core receives only neutral activation, control, resume, and projection-source values. | protocol adapters own public DTOs; runtime gets neutral activation/control/resume values | adapter conformance tests; DTO leak snapshot tests |
+| G20 | Executor and wait/resume channel values are plain serializable data; no live handle, `Arc<dyn ...>`, channel, or process handle crosses the executor result or resume channel boundaries. | executor result type (`Phase` + `EndCause` + `Failure`) satisfies `Serialize + DeserializeOwned`; durable live-command and wait/resume channel value types will be constrained at their landing | `assert_boundary` serde assertions in `crates/foundation/awaken-runtime-contract/tests/serde_boundary.rs` |
 | G21 | Permission policy is the only authorization path for protected runtime operations; visibility, selection, health, compatibility, and successful resource realization carry no grant. | permission policy is the sole grant path; visibility/selection/health carry no grant | no-hidden-grant tests; permission decision API checks; audit commit tests |
 | G22 | Model, provider, and backend bindings are selected before execution by config or adapter policy; runtime validates the selected binding and fails closed on mismatch instead of searching for replacements. | binding selected in `ResolvedSpec`; runtime validates, fails closed, never searches | binding snapshot tests; backend negotiation tests; provider-search dependency checks |
 | G23 | Config publication and runtime projection use versioned, atomic handoffs: incomplete registry installs do not replace active catalogs, and public durable projections derive from committed runtime truth. | All pre-swap validation branches in `install_catalog` return `Err` before the `active_catalog` swap; `active_catalog_is_unchanged_on_rejected_install` and `fingerprint_catalog_capabilities_mismatch_is_rejected` tests | `awaken-runtime/tests/catalog.rs` rollback and mismatch tests |
