@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -30,7 +30,7 @@ async function send(client, sessionId, text) {
 
 async function main() {
   try {
-    await withServer('acp', 38170, async (baseUrl) => {
+    await withScenarioServer('acp', 'echo', 38170, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // R3/R4: a session selecting an ACP runtime runs on the external CLI.

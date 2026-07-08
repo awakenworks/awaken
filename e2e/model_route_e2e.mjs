@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -30,7 +30,7 @@ async function ask(client, sessionId, text, model) {
 
 async function main() {
   try {
-    await withServer('model-route', 38160, async (baseUrl) => {
+    await withScenarioServer('model-route', 'label', 38160, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // R1/R2/R6: a session bound to `fast` resolves the fast executor and echoes it.
