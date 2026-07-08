@@ -6,9 +6,29 @@
 
 /// How many leading messages to summarize, or `None` when the conversation is too
 /// short to compact. Folds everything but the last `keep_last` messages, and only
-/// once the length passes `threshold`.
+/// once the length passes `threshold` (message-count mode).
 pub fn fold_point(committed_len: usize, threshold: usize, keep_last: usize) -> Option<usize> {
-    if committed_len <= threshold {
+    fold_prefix(committed_len, keep_last, committed_len > threshold)
+}
+
+/// The token-aware fold point: fold everything but the last `keep_last` messages
+/// once the estimated context reaches `trigger_ratio` of the model's `max_tokens`
+/// window (the "auto-compact at N% of the window" trigger).
+pub fn token_fold_point(
+    est_tokens: u64,
+    max_tokens: u32,
+    trigger_ratio: f64,
+    committed_len: usize,
+    keep_last: usize,
+) -> Option<usize> {
+    let budget = trigger_ratio * f64::from(max_tokens);
+    fold_prefix(committed_len, keep_last, est_tokens as f64 >= budget)
+}
+
+/// Shared prefix decision: once `triggered`, fold everything but the last
+/// `keep_last` messages (or nothing when that leaves an empty prefix).
+fn fold_prefix(committed_len: usize, keep_last: usize, triggered: bool) -> Option<usize> {
+    if !triggered {
         return None;
     }
     let fold_to = committed_len.saturating_sub(keep_last);
@@ -34,5 +54,19 @@ mod tests {
     #[test]
     fn keep_last_covering_everything_folds_nothing() {
         assert_eq!(fold_point(5, 1, 5), None);
+    }
+
+    #[test]
+    fn token_trigger_folds_only_at_the_ratio() {
+        // max 1000, ratio 0.8 → budget 800 tokens.
+        assert_eq!(token_fold_point(799, 1000, 0.8, 10, 2), None);
+        assert_eq!(token_fold_point(800, 1000, 0.8, 10, 2), Some(8));
+        assert_eq!(token_fold_point(5000, 1000, 0.8, 12, 4), Some(8));
+    }
+
+    #[test]
+    fn token_trigger_respects_keep_last() {
+        // Over budget, but keep_last covers the whole (short) conversation.
+        assert_eq!(token_fold_point(9999, 1000, 0.8, 3, 5), None);
     }
 }

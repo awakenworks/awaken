@@ -177,7 +177,24 @@ pub fn build_full_chain_router() -> Router {
 /// summary being injected on a later turn. `AWAKEN_MODEL_MODE=compaction`.
 pub fn build_compaction_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::CompactionModel), "compaction");
-    let host = SharedHost::new(model, model_ref).with_compaction(2, 1);
+    let host = SharedHost::new(model, model_ref);
+    // Token-aware when the model's context window is configured
+    // (`AWAKEN_COMPACT_MAX_TOKENS`): fold at `AWAKEN_COMPACT_TRIGGER_RATIO` of it
+    // (default 0.8), keeping `AWAKEN_COMPACT_KEEP_LAST` (default 2) messages. This
+    // is the real-model path (a small window trips compaction on large input).
+    // Without it, the deterministic message-count trigger (fold after 2 messages).
+    let env_u = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
+    let host = match env_u("AWAKEN_COMPACT_MAX_TOKENS") {
+        Some(max_tokens) => {
+            let ratio = std::env::var("AWAKEN_COMPACT_TRIGGER_RATIO")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.8);
+            let keep_last = env_u("AWAKEN_COMPACT_KEEP_LAST").unwrap_or(2) as usize;
+            host.with_compaction_tokens(max_tokens, ratio, keep_last)
+        }
+        None => host.with_compaction(2, 1),
+    };
     mount(Arc::new(host))
 }
 

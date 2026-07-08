@@ -20,7 +20,15 @@ use awaken_runtime_contract::plugin::{
 };
 
 use crate::config::CompactConfig;
-use crate::fold::fold_point;
+use crate::fold::{fold_point, token_fold_point};
+
+/// A rough, deterministic token estimate (~4 chars/token) over a message slice.
+/// Cheap enough to run every `BeforeInference` without a real tokenizer; it drives
+/// the token-aware compaction trigger (`max_tokens` × `trigger_ratio`).
+fn estimate_tokens(messages: &[Message]) -> u64 {
+    let chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
+    (chars / 4) as u64
+}
 
 /// The plugin id under which compaction is activated (G30).
 pub const COMPACT_PLUGIN_ID: &str = "compact";
@@ -143,11 +151,22 @@ impl CompactHook {
     /// The request-only summary block for a fold, or `None` when nothing folds.
     async fn compute(&self, conversation: &[Message]) -> Option<Vec<Message>> {
         let summarizer = self.summarizer.as_ref()?;
-        let fold_to = fold_point(
-            conversation.len(),
-            self.config.threshold,
-            self.config.keep_last,
-        )?;
+        // Token-aware when the model's window is known (fold at `trigger_ratio` of
+        // it), else the message-count `threshold`.
+        let fold_to = match self.config.max_tokens {
+            Some(max_tokens) => token_fold_point(
+                estimate_tokens(conversation),
+                max_tokens,
+                self.config.trigger_ratio,
+                conversation.len(),
+                self.config.keep_last,
+            )?,
+            None => fold_point(
+                conversation.len(),
+                self.config.threshold,
+                self.config.keep_last,
+            )?,
+        };
         let summary = summarizer.summarize(&conversation[..fold_to]).await?;
         if summary.trim().is_empty() {
             return None;
@@ -231,6 +250,7 @@ mod tests {
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 40,
             keep_last: 8,
+            ..Default::default()
         })
         .with_summarizer(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
@@ -248,6 +268,7 @@ mod tests {
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 4,
             keep_last: 2,
+            ..Default::default()
         })
         .with_summarizer(summarizer.clone());
         let hook = &plugin.resolve().phase_hooks[0];
@@ -267,6 +288,7 @@ mod tests {
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 4,
             keep_last: 2,
+            ..Default::default()
         })
         .with_summarizer(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
@@ -284,6 +306,7 @@ mod tests {
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 40,
             keep_last: 8,
+            ..Default::default()
         })
         .with_summarizer(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
@@ -299,6 +322,7 @@ mod tests {
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 4,
             keep_last: 2,
+            ..Default::default()
         })
         .with_summarizer(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
@@ -310,6 +334,45 @@ mod tests {
         let second = hook.on_phase(&phase_ctx(), &convo(10)).await;
         assert!(second.state.is_empty(), "emit-once per run");
         assert_eq!(second.context.len(), 1, "the summary still replays");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn token_budget_triggers_the_fold_despite_a_huge_message_threshold() {
+        let plugin = CompactPlugin::new(CompactConfig {
+            threshold: 9999, // message mode would never fire
+            keep_last: 2,
+            max_tokens: Some(10), // budget = 0.8 * 10 = 8 tokens
+            trigger_ratio: 0.8,
+        })
+        .with_summarizer(Arc::new(FixedSummarizer {
+            seen_len: std::sync::Mutex::new(0),
+        }));
+        let hook = &plugin.resolve().phase_hooks[0];
+        // 10 short messages (~15 est. tokens) exceed the 8-token budget.
+        let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
+        assert_eq!(
+            reaction.context.len(),
+            1,
+            "the token budget folded the older slice"
+        );
+        assert!(compacted(&reaction.state, "r"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_wide_token_window_does_not_fold_a_small_conversation() {
+        let plugin = CompactPlugin::new(CompactConfig {
+            threshold: 9999,
+            keep_last: 2,
+            max_tokens: Some(1_000_000), // budget far beyond a tiny conversation
+            trigger_ratio: 0.8,
+        })
+        .with_summarizer(Arc::new(FixedSummarizer {
+            seen_len: std::sync::Mutex::new(0),
+        }));
+        let hook = &plugin.resolve().phase_hooks[0];
+        let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
+        assert!(reaction.context.is_empty());
+        assert!(!compacted(&reaction.state, "r"));
     }
 
     #[test]

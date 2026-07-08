@@ -420,11 +420,36 @@ impl SharedHost {
     /// window so those older raw turns drop from the model view. Non-destructive:
     /// committed truth is never rewritten (G13). The bounds are also exposed as the
     /// `compact` config section, so a per-run `plugin_config` can override them.
-    pub fn with_compaction(mut self, threshold: usize, keep_last: usize) -> Self {
-        self.compact_config = Some(CompactConfig {
+    pub fn with_compaction(self, threshold: usize, keep_last: usize) -> Self {
+        self.enable_compaction(CompactConfig {
             threshold,
             keep_last,
-        });
+            ..CompactConfig::default()
+        })
+    }
+
+    /// Enable **token-aware** context compaction: fold once the estimated context
+    /// reaches `trigger_ratio` of the model's `max_tokens` window (the "auto-compact
+    /// at N% of the window" behavior), keeping the last `keep_last` messages. This
+    /// is how compaction becomes aware of the model's max token instead of a bare
+    /// message count. The main agent still runs a matching `KeepLast(keep_last)`.
+    pub fn with_compaction_tokens(
+        self,
+        max_tokens: u32,
+        trigger_ratio: f64,
+        keep_last: usize,
+    ) -> Self {
+        self.enable_compaction(CompactConfig {
+            max_tokens: Some(max_tokens),
+            trigger_ratio,
+            keep_last,
+            ..CompactConfig::default()
+        })
+    }
+
+    /// Install a resolved `CompactConfig` and wire the `compactor` sub-agent.
+    fn enable_compaction(mut self, config: CompactConfig) -> Self {
+        self.compact_config = Some(config);
         self.compact_summarizer = Some(Arc::new(AgentSummarizer::new(
             self.llm.clone(),
             &self.model_ref,
