@@ -987,6 +987,7 @@ impl ManagedState {
     ) -> Result<Session, StateError> {
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        let title_in_request = title.is_some();
         if let Some(title) = title {
             record.session.title = title;
         }
@@ -1002,6 +1003,18 @@ impl ManagedState {
                 }
             }
         }
+        // Announce the mutation on the event stream (`session.updated`): the new
+        // title when the update set one, plus the full metadata bag.
+        record.events.push(Event {
+            id: self.next_event_id(),
+            kind: OutboundKind::SessionUpdated {
+                title: title_in_request
+                    .then(|| record.session.title.clone())
+                    .flatten(),
+                metadata: record.session.metadata.clone(),
+            },
+            processed_at: Some(PROCESSED_AT.to_string()),
+        });
         Ok(record.session.clone())
     }
 

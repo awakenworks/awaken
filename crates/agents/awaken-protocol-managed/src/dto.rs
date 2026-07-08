@@ -349,6 +349,15 @@ pub enum OutboundKind {
         agent_name: String,
         stop_reason: StopReason,
     },
+    /// The session's `metadata`/`title` changed (`session.updated`), carrying the
+    /// title (when the update set it) and the full metadata bag (when non-empty).
+    #[serde(rename = "session.updated")]
+    SessionUpdated {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        metadata: std::collections::BTreeMap<String, String>,
+    },
     /// A subagent child thread terminated (`session.thread_status_terminated`),
     /// e.g. when archived.
     #[serde(rename = "session.thread_status_terminated")]
@@ -401,6 +410,7 @@ impl OutboundKind {
             OutboundKind::SessionThreadCreated { .. } => "session.thread_created",
             OutboundKind::SessionThreadStatusRunning { .. } => "session.thread_status_running",
             OutboundKind::SessionThreadStatusIdle { .. } => "session.thread_status_idle",
+            OutboundKind::SessionUpdated { .. } => "session.updated",
             OutboundKind::SessionThreadStatusTerminated { .. } => {
                 "session.thread_status_terminated"
             }
