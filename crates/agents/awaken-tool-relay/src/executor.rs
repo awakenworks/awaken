@@ -67,10 +67,12 @@ where
             Ok(b) => b,
             // A serialization failure is a local, pre-dispatch fault: the call
             // never left, so it is a definite error, not indeterminate.
-            Err(e) => return HandResult::err(crate::wire::HandError::new(
-                HandErrorKind::Execution,
-                format!("failed to encode hand request: {e}"),
-            )),
+            Err(e) => {
+                return HandResult::err(crate::wire::HandError::new(
+                    HandErrorKind::Execution,
+                    format!("failed to encode hand request: {e}"),
+                ));
+            }
         };
 
         let mut framed = self.framed.lock().await;

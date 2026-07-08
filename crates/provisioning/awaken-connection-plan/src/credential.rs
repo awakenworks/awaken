@@ -25,7 +25,10 @@ impl AppliedAuth {
     /// A bearer token presented as an `authorization` header.
     pub fn bearer(token: impl Into<String>) -> Self {
         Self {
-            headers: vec![("authorization".to_string(), format!("Bearer {}", token.into()))],
+            headers: vec![(
+                "authorization".to_string(),
+                format!("Bearer {}", token.into()),
+            )],
         }
     }
 

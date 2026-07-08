@@ -10,19 +10,23 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Phase};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_connection_plan::{ConnectionPlan, ChannelFactory, TokioChannelFactory, bind_unix};
+use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory, bind_unix};
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall};
+use awaken_runtime_contract::llm::{
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
+};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
+use awaken_runtime_contract::snapshot::{
+    AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+};
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 
@@ -33,7 +37,10 @@ struct ToolThenText {
 
 #[async_trait::async_trait]
 impl LlmExecutor for ToolThenText {
-    async fn infer(&self, _request: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let output = if n == 0 {
             AssistantOutput::from_tool_calls(vec![ToolCall {
@@ -44,7 +51,11 @@ impl LlmExecutor for ToolThenText {
         } else {
             AssistantOutput::text("all done".to_string())
         };
-        Ok(ChatResponse { output, usage: None, stop_reason: None })
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
     }
 }
 
@@ -74,14 +85,20 @@ impl RawTool for HandEcho {
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         self.ran.fetch_add(1, Ordering::SeqCst);
-        let text = call.arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let text = call
+            .arguments
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         Ok(ToolOutput::ok(call.call_id, format!("hand echoed: {text}")))
     }
 }
 
 fn brain() -> Runtime {
     let runtime = Runtime::new()
-        .with_llm(Arc::new(ToolThenText { calls: AtomicUsize::new(0) }))
+        .with_llm(Arc::new(ToolThenText {
+            calls: AtomicUsize::new(0),
+        }))
         .with_tool(Arc::new(BrainSideTrap));
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     runtime
@@ -158,7 +175,11 @@ async fn brain_runs_its_tool_on_an_in_process_hand() {
 
     let outcome = brain().execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, Phase::Ended(EndCause::NaturalEnd));
-    assert_eq!(ran.load(Ordering::SeqCst), 1, "the hand ran the tool exactly once");
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the hand ran the tool exactly once"
+    );
 
     let committed = commit.committed();
     assert!(

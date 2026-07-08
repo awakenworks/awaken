@@ -19,15 +19,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   - AWAKEN_HAND_LISTEN=host:port → listen; brains dial in (Direct).
     //   - AWAKEN_HAND_DIAL=host:port   → dial the brain rendezvous (Reverse / NAT).
     //   - AWAKEN_HAND_NATS=url    → serve over a NATS broker (Relay).
-    if let Some(nats_url) = std::env::var("AWAKEN_HAND_NATS").ok().filter(|v| !v.is_empty()) {
-        let subject = std::env::var("AWAKEN_HAND_SUBJECT")
-            .unwrap_or_else(|_| "awaken.hand.exec".to_string());
+    if let Some(nats_url) = std::env::var("AWAKEN_HAND_NATS")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        let subject =
+            std::env::var("AWAKEN_HAND_SUBJECT").unwrap_or_else(|_| "awaken.hand.exec".to_string());
         return awaken_server_local::run_hand_server_nats(&nats_url, &subject).await;
     }
-    if let Some(dial_addr) = std::env::var("AWAKEN_HAND_DIAL").ok().filter(|v| !v.is_empty()) {
+    if let Some(dial_addr) = std::env::var("AWAKEN_HAND_DIAL")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
         return awaken_server_local::run_hand_server(&dial_addr, true).await;
     }
-    if let Some(hand_addr) = std::env::var("AWAKEN_HAND_LISTEN").ok().filter(|v| !v.is_empty()) {
+    if let Some(hand_addr) = std::env::var("AWAKEN_HAND_LISTEN")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
         return awaken_server_local::run_hand_server(&hand_addr, false).await;
     }
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());

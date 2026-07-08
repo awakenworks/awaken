@@ -89,7 +89,10 @@ impl HandError {
     pub fn unknown_tool(tool_id: &str) -> Self {
         // Matches the runtime's in-process `ToolError::Unknown` display so a
         // remote unknown-tool reads identically to a local one.
-        Self::new(HandErrorKind::UnknownTool, format!("unknown tool: {tool_id}"))
+        Self::new(
+            HandErrorKind::UnknownTool,
+            format!("unknown tool: {tool_id}"),
+        )
     }
 }
 

@@ -649,7 +649,8 @@ pub fn build_custom_router() -> Router {
 pub fn build_remote_hand_router() -> Router {
     use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 
-    let (model, model_ref) = scenario_model(Arc::new(crate::models::RemoteHandModel), "remote-hand");
+    let (model, model_ref) =
+        scenario_model(Arc::new(crate::models::RemoteHandModel), "remote-hand");
 
     // Where the hand runs is a topology choice (ADR-0045):
     //   - AWAKEN_REMOTE_HAND=host:port (or tcp://host:port) → Direct-over-network:
@@ -657,31 +658,40 @@ pub fn build_remote_hand_router() -> Router {
     //     another pod). The tool calls leave the brain pod entirely.
     //   - unset → the degenerate in-process hand: a framed duplex to a serve_hand
     //     task in this same process.
-    let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
-        if let Some(nats_url) = std::env::var("AWAKEN_REMOTE_HAND_NATS").ok().filter(|v| !v.is_empty()) {
-            // Relay topology (ADR-0045): neither end reaches the other directly;
-            // both meet at a NATS broker. The brain publishes each HandRequest on
-            // the shared subject and awaits the reply (NATS request/reply).
-            let subject = std::env::var("AWAKEN_HAND_SUBJECT")
-                .unwrap_or_else(|_| "awaken.hand.exec".to_string());
-            Arc::new(connect_nats_executor_blocking(&nats_url, subject))
-        } else if let Some(listen) = std::env::var("AWAKEN_REMOTE_HAND_LISTEN").ok().filter(|v| !v.is_empty()) {
-            // Reverse topology (ADR-0045): the hand has no inbound reachability
-            // (NAT / outbound-only), so it dials US. We bind a rendezvous and use
-            // the accepted connection as the executor channel — the brain stays
-            // the requester; only the dial direction flips.
-            Arc::new(RemoteToolExecutor::new(accept_hand_blocking(&listen)))
-        } else if let Some(remote) = std::env::var("AWAKEN_REMOTE_HAND").ok().filter(|v| !v.is_empty()) {
-            // Direct topology: the brain dials the hand's host:port (a k8s Service).
-            let addr = remote.strip_prefix("tcp://").unwrap_or(&remote).to_string();
-            Arc::new(RemoteToolExecutor::new(connect_tcp_blocking(&addr)))
-        } else {
-            // InProcess degenerate: a framed duplex to a serve_hand task in-process.
-            let (brain_end, hand_end) = awaken_connection_plan::in_process_pair();
-            let session = HandSession::new(awaken_ext_builtin_tools::executable_hand_tools());
-            tokio::spawn(serve_hand(hand_end, session));
-            Arc::new(RemoteToolExecutor::new(brain_end))
-        };
+    let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> = if let Some(nats_url) =
+        std::env::var("AWAKEN_REMOTE_HAND_NATS")
+            .ok()
+            .filter(|v| !v.is_empty())
+    {
+        // Relay topology (ADR-0045): neither end reaches the other directly;
+        // both meet at a NATS broker. The brain publishes each HandRequest on
+        // the shared subject and awaits the reply (NATS request/reply).
+        let subject =
+            std::env::var("AWAKEN_HAND_SUBJECT").unwrap_or_else(|_| "awaken.hand.exec".to_string());
+        Arc::new(connect_nats_executor_blocking(&nats_url, subject))
+    } else if let Some(listen) = std::env::var("AWAKEN_REMOTE_HAND_LISTEN")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        // Reverse topology (ADR-0045): the hand has no inbound reachability
+        // (NAT / outbound-only), so it dials US. We bind a rendezvous and use
+        // the accepted connection as the executor channel — the brain stays
+        // the requester; only the dial direction flips.
+        Arc::new(RemoteToolExecutor::new(accept_hand_blocking(&listen)))
+    } else if let Some(remote) = std::env::var("AWAKEN_REMOTE_HAND")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        // Direct topology: the brain dials the hand's host:port (a k8s Service).
+        let addr = remote.strip_prefix("tcp://").unwrap_or(&remote).to_string();
+        Arc::new(RemoteToolExecutor::new(connect_tcp_blocking(&addr)))
+    } else {
+        // InProcess degenerate: a framed duplex to a serve_hand task in-process.
+        let (brain_end, hand_end) = awaken_connection_plan::in_process_pair();
+        let session = HandSession::new(awaken_ext_builtin_tools::executable_hand_tools());
+        tokio::spawn(serve_hand(hand_end, session));
+        Arc::new(RemoteToolExecutor::new(brain_end))
+    };
 
     let host = SharedHost::new(model, model_ref)
         .with_gate_override(Arc::new(AllowAllGate))
@@ -761,14 +771,14 @@ impl awaken_runtime_contract::tool::ToolExecutor for NatsToolExecutor {
     async fn invoke(
         &self,
         call: &awaken_runtime_contract::llm::ToolCall,
-    ) -> Result<
-        awaken_runtime_contract::tool::ToolOutput,
-        awaken_runtime_contract::tool::ToolError,
-    > {
+    ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
+    {
         use awaken_runtime_contract::tool::ToolError;
         use awaken_tool_relay::wire::{HandErrorKind, HandReply, HandRequest, HandResult};
 
-        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let req = HandRequest::new(id, call.clone());
         let bytes = serde_json::to_vec(&req)
             .map_err(|e| ToolError::Execution(format!("encode hand request: {e}")))?;
@@ -820,7 +830,10 @@ fn connect_nats_executor_blocking(url: &str, subject: String) -> NatsToolExecuto
 /// Run this binary as a HAND over NATS (ADR-0045 Relay): connect to the broker,
 /// subscribe the shared subject, and reply to each `HandRequest` with the built-in
 /// hand tools' result (G33). Loops until killed.
-pub async fn run_hand_server_nats(url: &str, subject: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_hand_server_nats(
+    url: &str,
+    subject: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     use awaken_tool_relay::{HandSession, wire::HandRequest};
     use futures::StreamExt;
 
