@@ -6,7 +6,9 @@
 
 use super::*;
 use awaken_runtime_contract::plugin::{ResolvedExecutionEnv, enforce_bound};
-use awaken_runtime_contract::{MessageId, RunId};
+use awaken_runtime_contract::{
+    MessageId, RunId, SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
+};
 
 // ── Test graders ────────────────────────────────────────────────────────────
 
@@ -394,13 +396,13 @@ impl StubRunner {
 }
 
 #[async_trait]
-impl DelegateRunner for StubRunner {
-    async fn run(&self, request: DelegateRequest) -> Result<DelegateReply, DelegateError> {
+impl SubagentRunner for StubRunner {
+    async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
         *self.seen_agent.lock().unwrap() = Some(request.agent_id);
         if self.fail {
-            return Err(DelegateError("backend exploded".into()));
+            return Err(SubagentError("backend exploded".into()));
         }
-        Ok(DelegateReply {
+        Ok(SubagentReply {
             text: self.reply.clone(),
         })
     }
@@ -530,10 +532,10 @@ async fn delegate_grader_forwards_cancellation_into_the_judge() {
         saw_cancellation: std::sync::Mutex<bool>,
     }
     #[async_trait]
-    impl DelegateRunner for CancelCapturingRunner {
-        async fn run(&self, request: DelegateRequest) -> Result<DelegateReply, DelegateError> {
+    impl SubagentRunner for CancelCapturingRunner {
+        async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
             *self.saw_cancellation.lock().unwrap() = request.cancellation.is_some();
-            Ok(DelegateReply {
+            Ok(SubagentReply {
                 text: Some(r#"{"result": "satisfied", "explanation": "ok"}"#.into()),
             })
         }

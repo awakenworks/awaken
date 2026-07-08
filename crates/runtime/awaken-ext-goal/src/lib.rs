@@ -6,7 +6,7 @@
 //!
 //! The grader is async: [`KeywordGrader`] is a deterministic offline judge, while
 //! [`DelegateGrader`] runs a real judge sub-agent through a host-supplied
-//! [`DelegateRunner`]. This crate depends only on the runtime contract; the host
+//! [`SubagentRunner`]. This crate depends only on the runtime contract; the host
 //! wires the concrete delegation.
 
 use std::sync::Arc;
@@ -16,7 +16,10 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, Plugin, PluginConfigError, PluginManifest, RunEndContext,
     RunEndDecision, RunEndGuard,
 };
-use awaken_runtime_contract::{CancellationToken, Message, Role};
+use awaken_runtime_contract::{
+    CancellationToken, Message, MessageId, Role, SubagentError, SubagentReply, SubagentRequest,
+    SubagentRunner,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -191,49 +194,22 @@ impl Grader for KeywordGrader {
     }
 }
 
-/// A request to run one judge sub-agent: the judge agent id, the prompt, and the
-/// parent run's cancellation token (forwarded so the judge sub-run cancels with
-/// the run rather than being orphaned).
-pub struct DelegateRequest {
-    /// The agent that grades this deliverable.
-    pub agent_id: String,
-    /// The judge prompt (goal + rubric + deliverable, asking for a JSON verdict).
-    pub prompt: String,
-    /// Parent run cancellation, forwarded into the judge sub-run.
-    pub cancellation: Option<CancellationToken>,
-}
-
-/// A judge sub-run's reply: the judge's last assistant text, if any.
-pub struct DelegateReply {
-    pub text: Option<String>,
-}
-
-/// A judge sub-run failed to execute (backend/transport error).
-#[derive(Debug, Clone)]
-pub struct DelegateError(pub String);
-
-/// Runs a judge sub-agent and returns its reply. This crate declares the
-/// capability it needs; the host implements it over the kernel's delegation, so
-/// `awaken-ext-goal` stays a single-contract extension with no kernel dependency.
-#[async_trait]
-pub trait DelegateRunner: Send + Sync {
-    async fn run(&self, request: DelegateRequest) -> Result<DelegateReply, DelegateError>;
-}
-
-/// A grader backed by a real judge sub-agent. It routes to the judge named by the
-/// goal's [`GraderRef`] (`Default` → the configured default judge, `Agent` → a
-/// specific one), runs it in its own child context, and parses a structured
-/// [`Verdict`] from the reply. A run/parse failure is a [`GraderError`]; the
-/// fail-open policy lives in the guard, so this stays a faithful judge.
+/// A grader backed by a real judge sub-agent, run through the neutral
+/// [`SubagentRunner`] (ADR-0047 D5 — the shared aux-run port, not a per-extension
+/// one). It routes to the judge named by the goal's [`GraderRef`] (`Default` → the
+/// configured default judge, `Agent` → a specific one), runs it in its own child
+/// context, and parses a structured [`Verdict`] from the reply. A run/parse
+/// failure is a [`GraderError`]; the fail-open policy lives in the guard, so this
+/// stays a faithful judge.
 pub struct DelegateGrader {
-    runner: Arc<dyn DelegateRunner>,
+    runner: Arc<dyn SubagentRunner>,
     default_judge_agent_id: String,
 }
 
 impl DelegateGrader {
     /// Grade through `runner`, defaulting to `default_judge_agent_id` when a goal
     /// selects [`GraderRef::Default`].
-    pub fn new(runner: Arc<dyn DelegateRunner>, default_judge_agent_id: impl Into<String>) -> Self {
+    pub fn new(runner: Arc<dyn SubagentRunner>, default_judge_agent_id: impl Into<String>) -> Self {
         Self {
             runner,
             default_judge_agent_id: default_judge_agent_id.into(),
@@ -299,17 +275,21 @@ impl Grader for DelegateGrader {
         deliverable: &str,
         cancellation: Option<&CancellationToken>,
     ) -> Result<Verdict, GraderError> {
-        let request = DelegateRequest {
+        let request = SubagentRequest {
             agent_id: self.judge_agent_id(goal).to_string(),
-            prompt: judge_prompt(goal, deliverable),
+            seed: vec![Message::text(
+                MessageId("judge-prompt".into()),
+                Role::User,
+                judge_prompt(goal, deliverable),
+            )],
             cancellation: cancellation.cloned(),
         };
-        let reply = self
+        let SubagentReply { text } = self
             .runner
             .run(request)
             .await
-            .map_err(|DelegateError(reason)| GraderError(format!("judge run failed: {reason}")))?;
-        parse_verdict(reply.text.as_deref())
+            .map_err(|SubagentError(reason)| GraderError(format!("judge run failed: {reason}")))?;
+        parse_verdict(text.as_deref())
     }
 }
 
