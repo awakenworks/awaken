@@ -11,4 +11,5 @@ awaken-protocol-a2a.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"] }
+axum = "0.7"

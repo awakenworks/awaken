@@ -756,6 +756,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-protocol-a2a",
  "awaken-runtime-contract",
+ "axum 0.7.9",
  "tokio",
 ]
 
