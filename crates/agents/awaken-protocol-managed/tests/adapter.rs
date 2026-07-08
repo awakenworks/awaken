@@ -78,6 +78,7 @@ impl SessionRuntime for EchoFake {
             )],
             stop: StopReason::EndTurn,
             pending: None,
+            compaction: None,
         })
     }
     async fn resume(
@@ -388,6 +389,7 @@ impl SessionRuntime for ParkingFake {
                 input: serde_json::json!({ "path": "x.txt" }),
                 client_executed: false,
             }),
+            compaction: None,
         })
     }
     async fn resume(
@@ -411,6 +413,7 @@ impl SessionRuntime for ParkingFake {
             ],
             stop: StopReason::EndTurn,
             pending: None,
+            compaction: None,
         })
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
@@ -670,6 +673,7 @@ impl SessionRuntime for CustomToolFake {
                 input: serde_json::json!({ "question": "6x7" }),
                 client_executed: true,
             }),
+            compaction: None,
         })
     }
     async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
@@ -696,6 +700,7 @@ impl SessionRuntime for CustomToolFake {
             ],
             stop: StopReason::EndTurn,
             pending: None,
+            compaction: None,
         })
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {

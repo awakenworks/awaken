@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::state::{Action, Command, MergePolicy, Scope};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, PhaseContext, PhaseHook, PhaseHookPoint, PhaseReaction, Plugin,
     PluginConfigError, PluginManifest,
@@ -23,6 +24,46 @@ use crate::fold::fold_point;
 
 /// The plugin id under which compaction is activated (G30).
 pub const COMPACT_PLUGIN_ID: &str = "compact";
+
+/// Thread-state key prefix under which a completed fold records its fact
+/// (`compaction/<run_id>`). Neutral runtime vocabulary — the wire event
+/// `agent.thread_context_compacted` is projected from this by a protocol adapter,
+/// never named here (G16). Keyed by `run_id` so each turn's fold is a distinct,
+/// idempotent fact the host reads back exactly once.
+const COMPACTION_KEY_PREFIX: &str = "compaction/";
+
+fn compaction_key(run_id: &str) -> String {
+    format!("{COMPACTION_KEY_PREFIX}{run_id}")
+}
+
+/// The neutral fact a completed fold commits to thread state.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CompactionFact {
+    /// Best-effort token estimate of the older slice that was folded away.
+    pre_compaction_tokens: u64,
+}
+
+/// The pre-compaction token count `run_id` committed, or `None` if that run did
+/// not fold. The single read-back seam for a protocol adapter that projects the
+/// compaction event: it owns the key + payload shape so no consumer duplicates them.
+pub fn compaction_pre_tokens(state: &[Command], run_id: &str) -> Option<u64> {
+    let key = compaction_key(run_id);
+    state.iter().rev().find_map(|cmd| match &cmd.action {
+        Action::Set(value) if cmd.scope == Scope::Thread && cmd.key.0 == key => {
+            serde_json::from_value::<CompactionFact>(value.clone())
+                .ok()
+                .map(|f| f.pre_compaction_tokens)
+        }
+        _ => None,
+    })
+}
+
+/// A rough, deterministic token estimate (~4 chars/token) over a message slice —
+/// enough to populate `pre_compaction_tokens` without a real tokenizer.
+fn estimate_tokens(messages: &[Message]) -> u64 {
+    let chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
+    (chars / 4) as u64
+}
 
 /// Summarizes the older part of a conversation. Implemented by the host over a
 /// `compactor` sub-agent, so this crate stays free of the aux-agent substrate.
@@ -105,26 +146,34 @@ struct CompactHook {
     cache: Mutex<HashMap<RunId, Vec<Message>>>,
 }
 
+/// A completed fold: the request-only summary block plus the token estimate of
+/// the slice it replaced.
+struct Folded {
+    summary: Vec<Message>,
+    pre_compaction_tokens: u64,
+}
+
 impl CompactHook {
-    async fn compute(&self, conversation: &[Message]) -> Vec<Message> {
-        let Some(summarizer) = &self.summarizer else {
-            return Vec::new();
-        };
-        let Some(fold_to) = fold_point(
+    async fn compute(&self, conversation: &[Message]) -> Option<Folded> {
+        let summarizer = self.summarizer.as_ref()?;
+        let fold_to = fold_point(
             conversation.len(),
             self.config.threshold,
             self.config.keep_last,
-        ) else {
-            return Vec::new();
-        };
-        match summarizer.summarize(&conversation[..fold_to]).await {
-            Some(summary) if !summary.trim().is_empty() => vec![Message::text(
+        )?;
+        let older = &conversation[..fold_to];
+        let summary = summarizer.summarize(older).await?;
+        if summary.trim().is_empty() {
+            return None;
+        }
+        Some(Folded {
+            summary: vec![Message::text(
                 MessageId("compact-summary".into()),
                 Role::System,
                 format!("Summary of earlier conversation: {summary}"),
             )],
-            _ => Vec::new(),
-        }
+            pre_compaction_tokens: estimate_tokens(older),
+        })
     }
 }
 
@@ -136,14 +185,33 @@ impl PhaseHook for CompactHook {
 
     async fn on_phase(&self, ctx: &PhaseContext, conversation: &[Message]) -> PhaseReaction {
         if let Some(hit) = self.cache.lock().unwrap().get(&ctx.run_id) {
+            // A later step of the same run: replay the summary, but do not re-stage
+            // the fact — it was committed on the folding step (emit-once per run).
             return PhaseReaction::context(hit.clone());
         }
-        let block = self.compute(conversation).await;
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(ctx.run_id.clone(), block.clone());
-        PhaseReaction::context(block)
+        let folded = self.compute(conversation).await;
+        let block = folded
+            .as_ref()
+            .map(|f| f.summary.clone())
+            .unwrap_or_default();
+        self.cache.lock().unwrap().insert(ctx.run_id.clone(), block);
+        match folded {
+            // A fold happened: inject the summary request-only *and* stage the
+            // durable, protocol-neutral fact the adapter projects into the event.
+            Some(f) => PhaseReaction {
+                state: vec![Command::set(
+                    Scope::Thread,
+                    MergePolicy::Commutative,
+                    compaction_key(&ctx.run_id.0),
+                    serde_json::to_value(CompactionFact {
+                        pre_compaction_tokens: f.pre_compaction_tokens,
+                    })
+                    .expect("compaction fact serializes"),
+                )],
+                context: f.summary,
+            },
+            None => PhaseReaction::default(),
+        }
     }
 }
 
@@ -218,6 +286,60 @@ mod tests {
                 .text_content()
                 .contains("Summary of earlier conversation: earlier: X")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_fold_stages_a_readable_compaction_fact() {
+        let plugin = CompactPlugin::new(CompactConfig {
+            threshold: 4,
+            keep_last: 2,
+        })
+        .with_summarizer(Arc::new(FixedSummarizer {
+            seen_len: std::sync::Mutex::new(0),
+        }));
+        let hook = &plugin.resolve().phase_hooks[0];
+        let reaction = hook.on_phase(&phase_ctx(), &convo(10)).await;
+        // The fold stages exactly one thread-scoped compaction command, which the
+        // read-back helper resolves to a positive pre-compaction token estimate.
+        assert_eq!(reaction.state.len(), 1);
+        let tokens = compaction_pre_tokens(&reaction.state, "r");
+        assert!(
+            tokens.is_some_and(|t| t > 0),
+            "pre_compaction_tokens: {tokens:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_short_conversation_stages_no_fact() {
+        let plugin = CompactPlugin::new(CompactConfig {
+            threshold: 40,
+            keep_last: 8,
+        })
+        .with_summarizer(Arc::new(FixedSummarizer {
+            seen_len: std::sync::Mutex::new(0),
+        }));
+        let hook = &plugin.resolve().phase_hooks[0];
+        let reaction = hook.on_phase(&phase_ctx(), &convo(5)).await;
+        assert!(reaction.state.is_empty());
+        assert_eq!(compaction_pre_tokens(&reaction.state, "r"), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_run_stages_the_fact_at_most_once() {
+        let plugin = CompactPlugin::new(CompactConfig {
+            threshold: 4,
+            keep_last: 2,
+        })
+        .with_summarizer(Arc::new(FixedSummarizer {
+            seen_len: std::sync::Mutex::new(0),
+        }));
+        let hook = &plugin.resolve().phase_hooks[0];
+        let first = hook.on_phase(&phase_ctx(), &convo(10)).await;
+        assert_eq!(first.state.len(), 1);
+        // A later step of the same run replays the summary but stages no new fact.
+        let second = hook.on_phase(&phase_ctx(), &convo(10)).await;
+        assert!(second.state.is_empty(), "emit-once per run");
+        assert_eq!(second.context.len(), 1, "the summary still replays");
     }
 
     #[test]

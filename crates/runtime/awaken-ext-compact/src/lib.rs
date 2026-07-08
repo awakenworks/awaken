@@ -21,5 +21,6 @@ pub use agent::{
 pub use config::CompactConfig;
 pub use fold::fold_point;
 pub use plugin::{
-    COMPACT_PLUGIN_ID, CompactPlugin, Summarizer, config_schema as compact_config_schema,
+    COMPACT_PLUGIN_ID, CompactPlugin, Summarizer, compaction_pre_tokens,
+    config_schema as compact_config_schema,
 };
