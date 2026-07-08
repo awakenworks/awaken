@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass, RED_PNG_B64 } from './harness.mjs';
+import { withRealServer, pass, RED_PNG_B64 } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -19,7 +19,7 @@ async function lastAgentText(client, sessionId) {
 }
 
 async function main() {
-  await withServer('vision', 38160, async (base) => {
+  await withRealServer('vision', 38160, async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
     const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
     await client.beta.sessions.events.send(session.id, {

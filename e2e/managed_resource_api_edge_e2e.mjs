@@ -4,7 +4,7 @@
 // CI-safe (echo model, no key).
 
 import assert from 'node:assert/strict';
-import { withServer, pass } from './harness.mjs';
+import { withRealServer, pass } from './harness.mjs';
 
 async function req(base, method, uri, rawBody) {
   const res = await fetch(`${base}${uri}`, {
@@ -16,7 +16,7 @@ async function req(base, method, uri, rawBody) {
 }
 
 async function main() {
-  await withServer('echo', 38265, async (base) => {
+  await withRealServer('echo', 38265, async (base) => {
     for (const uri of [
       '/v1/files/file_ghost',
       '/v1/files/file_ghost/content',

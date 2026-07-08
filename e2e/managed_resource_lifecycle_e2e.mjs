@@ -18,7 +18,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 
@@ -29,7 +29,7 @@ async function listResources(client, sessionId) {
 }
 
 async function main() {
-  await withServer('echo', 38291, async (base) => {
+  await withRealServer('echo', 38291, async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
     const file = await client.beta.files.upload({
