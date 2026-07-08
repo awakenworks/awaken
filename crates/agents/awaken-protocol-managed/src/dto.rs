@@ -349,6 +349,20 @@ pub enum OutboundKind {
         agent_name: String,
         stop_reason: StopReason,
     },
+    /// The coordinator sent the delegate its input (`agent.thread_message_sent`).
+    #[serde(rename = "agent.thread_message_sent")]
+    AgentThreadMessageSent {
+        to_session_thread_id: String,
+        to_agent_name: String,
+        content: Vec<ContentBlock>,
+    },
+    /// The coordinator received the delegate's reply (`agent.thread_message_received`).
+    #[serde(rename = "agent.thread_message_received")]
+    AgentThreadMessageReceived {
+        from_session_thread_id: String,
+        from_agent_name: String,
+        content: Vec<ContentBlock>,
+    },
     /// The conversation history was summarized to fit context (the compact plugin
     /// folded older turns). A pure marker: its shape matches the installed SDK's
     /// `BetaManagedAgentsAgentThreadContextCompactedEvent` — `{id, type,
@@ -380,6 +394,8 @@ impl OutboundKind {
             OutboundKind::SessionThreadCreated { .. } => "session.thread_created",
             OutboundKind::SessionThreadStatusRunning { .. } => "session.thread_status_running",
             OutboundKind::SessionThreadStatusIdle { .. } => "session.thread_status_idle",
+            OutboundKind::AgentThreadMessageSent { .. } => "agent.thread_message_sent",
+            OutboundKind::AgentThreadMessageReceived { .. } => "agent.thread_message_received",
             OutboundKind::ThreadContextCompacted { .. } => "agent.thread_context_compacted",
             OutboundKind::SpanOutcomeEvaluationStart { .. } => "span.outcome_evaluation_start",
             OutboundKind::SpanOutcomeEvaluationEnd { .. } => "span.outcome_evaluation_end",

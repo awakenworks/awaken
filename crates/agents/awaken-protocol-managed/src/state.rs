@@ -1251,18 +1251,53 @@ impl ManagedState {
             .map(|p| (p.tool_use_id.as_str(), p.client_executed));
         let projected = project_turn(&outcome.messages, outcome.stop, pending);
         // Delegation runs inline as an `agent_run` tool call; each one spawns a
-        // subagent child thread (ADR-0047 D4). Collect the delegate names before
-        // the projected events are consumed.
-        let delegate_names: Vec<String> = projected
+        // subagent child thread (ADR-0047 D4). Collect each delegate's name, the
+        // input it was sent, and the reply it returned (matched by tool-use id),
+        // before the projected events are consumed.
+        struct DelegateCall {
+            agent_name: String,
+            tool_use_id: Option<String>,
+            sent: Vec<ContentBlock>,
+            received: Vec<ContentBlock>,
+        }
+        let mut delegates: Vec<DelegateCall> = projected
             .iter()
             .filter_map(|e| match &e.kind {
-                OutboundKind::AgentToolUse { name, input, .. } if name == "agent_run" => input
-                    .get("agent_id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
+                OutboundKind::AgentToolUse { name, input, .. } if name == "agent_run" => {
+                    Some(DelegateCall {
+                        agent_name: input
+                            .get("agent_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        tool_use_id: e.id.clone(),
+                        sent: vec![ContentBlock::text(
+                            input
+                                .get("input")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default(),
+                        )],
+                        received: Vec::new(),
+                    })
+                }
                 _ => None,
             })
             .collect();
+        for e in &projected {
+            if let OutboundKind::AgentToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = &e.kind
+            {
+                if let Some(d) = delegates
+                    .iter_mut()
+                    .find(|d| d.tool_use_id.as_deref() == Some(tool_use_id.as_str()))
+                {
+                    d.received = content.clone();
+                }
+            }
+        }
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         // Compaction ran at BeforeInference, so its marker precedes the turn's
@@ -1282,25 +1317,40 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
         }
-        // Register a child thread per delegate call and bracket its inline run with
-        // the thread lifecycle: `created` → `status_running` → `status_idle`, so the
-        // thread API enumerates subagent threads and reports their status.
-        for agent_name in delegate_names {
+        // Register a child thread per delegate call and project its full inline
+        // lifecycle: `created` → `status_running` → the input sent to the delegate →
+        // the reply received → `status_idle`. The thread API enumerates subagent
+        // threads and the stream carries their messages and status.
+        for d in delegates {
             let thread_id = format!("{}:thread:{}", session_id, record.child_threads.len());
-            let thread = Self::child_thread(&record.session, &thread_id, &agent_name);
-            record.child_threads.push(thread);
+            record.child_threads.push(Self::child_thread(
+                &record.session,
+                &thread_id,
+                &d.agent_name,
+            ));
+            let name = d.agent_name;
             for kind in [
                 OutboundKind::SessionThreadCreated {
                     session_thread_id: thread_id.clone(),
-                    agent_name: agent_name.clone(),
+                    agent_name: name.clone(),
                 },
                 OutboundKind::SessionThreadStatusRunning {
                     session_thread_id: thread_id.clone(),
-                    agent_name: agent_name.clone(),
+                    agent_name: name.clone(),
+                },
+                OutboundKind::AgentThreadMessageSent {
+                    to_session_thread_id: thread_id.clone(),
+                    to_agent_name: name.clone(),
+                    content: d.sent,
+                },
+                OutboundKind::AgentThreadMessageReceived {
+                    from_session_thread_id: thread_id.clone(),
+                    from_agent_name: name.clone(),
+                    content: d.received,
                 },
                 OutboundKind::SessionThreadStatusIdle {
                     session_thread_id: thread_id.clone(),
-                    agent_name: agent_name.clone(),
+                    agent_name: name.clone(),
                     stop_reason: StopReason::EndTurn,
                 },
             ] {

@@ -70,12 +70,32 @@ async function main() {
     });
     assert.equal(gotChild.id, child.id, 'the child thread is retrievable');
 
-    // The child thread's inline run is bracketed: created → running → idle.
-    const childEvents = okEvents.filter((e) => e.session_thread_id === child.id);
+    // The child thread's inline run projects its full lifecycle: created → running →
+    // the message sent to it → the reply received → idle.
+    const childEvents = okEvents.filter(
+      (e) =>
+        e.session_thread_id === child.id ||
+        e.to_session_thread_id === child.id ||
+        e.from_session_thread_id === child.id,
+    );
     assert.deepEqual(
       childEvents.map((e) => e.type),
-      ['session.thread_created', 'session.thread_status_running', 'session.thread_status_idle'],
+      [
+        'session.thread_created',
+        'session.thread_status_running',
+        'agent.thread_message_sent',
+        'agent.thread_message_received',
+        'session.thread_status_idle',
+      ],
       `child thread lifecycle: ${childEvents.map((e) => e.type)}`,
+    );
+    const sent = childEvents.find((e) => e.type === 'agent.thread_message_sent');
+    assert.equal(sent.to_agent_name, 'researcher');
+    const recv = childEvents.find((e) => e.type === 'agent.thread_message_received');
+    assert.equal(recv.from_agent_name, 'researcher');
+    assert.ok(
+      recv.content.map((b) => b.text ?? '').join('').includes('researched: 42'),
+      `the received reply carries the delegate output: ${JSON.stringify(recv.content)}`,
     );
     const childIdle = childEvents.find((e) => e.type === 'session.thread_status_idle');
     assert.equal(childIdle.stop_reason.type, 'end_turn');
