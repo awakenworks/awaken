@@ -42,6 +42,11 @@ pub enum EndCause {
     Stopped(String),
     /// An execution fault ended the run.
     Error(Failure),
+    /// External execution dispatched work asynchronously; the actual outcome
+    /// cannot be determined at the point of return. Callers should poll or
+    /// wait for a subsequent status update rather than treating the run as
+    /// successfully completed. Never silently projected as success (G26).
+    Indeterminate,
 }
 
 /// The classified cause of an [`EndCause::Error`]. The runtime owns these

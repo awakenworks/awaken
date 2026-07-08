@@ -10,6 +10,7 @@
 //! for free by `cargo check --workspace --all-targets` (pre-commit, `rust`) and
 //! `cargo test --workspace` (pre-push); no separate hook is needed.
 //!
+//! G20 executor result side: `Phase`/`EndCause`/`Failure` are asserted below.
 //! When durable live-command delivery and wait/resume exec request/result
 //! channels land (G20), add their value types here — that is the point at which
 //! serde becomes a hard requirement for them.
@@ -32,6 +33,13 @@ fn boundary_values_are_plain_serializable_data() {
 
     // Run activation crosses adapter -> ingress -> runtime as data.
     assert_boundary::<rc::activation::RunActivation>();
+
+    // G20 (executor result side): `RunExecutor::execute` returns `Phase`; the
+    // terminal cause variants (`EndCause`, `Failure`) must be plain data so the
+    // result can cross a channel boundary without carrying a live handle.
+    assert_boundary::<awaken_agent_contract::agent::run::Phase>();
+    assert_boundary::<awaken_agent_contract::agent::run::EndCause>();
+    assert_boundary::<awaken_agent_contract::agent::run::Failure>();
 
     // G29: the complete catalog install request handed to the runtime.
     assert_boundary::<rc::catalog::RuntimeCatalogInstall>();
