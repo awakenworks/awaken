@@ -8,7 +8,7 @@
 //! crate's `ClientSideConnection`, whose `!Send` `LocalBoxFuture` driver would
 //! force a dedicated-thread `LocalSet` and break the `Send` `RunExecutor`).
 //!
-//! Projection and the [`RunEventSink`] contract are identical to the newline
+//! Projection and the [`RunFactAppender`] contract are identical to the newline
 //! stand-in ([`crate::AcpBridge`]) — a `session/update` becomes the same
 //! [`AgentEvent`], so nothing downstream (the store, the executor) sees ACP
 //! vocabulary. Agent→client requests are answered fail-closed: `session/
@@ -27,7 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
-    AcpError, AcpLaunchEvent, AcpLaunchStage, AgentEvent, LaunchSink, RunEventSink,
+    AcpError, AcpLaunchEvent, AcpLaunchStage, AgentEvent, LaunchSink, RunFactAppender,
     TerminationReason, notify_launch,
 };
 
@@ -159,7 +159,7 @@ impl<'a> Wire<'a> {
 pub async fn run_turn(
     channel: &mut dyn AgentChannel,
     prompt: &str,
-    sink: &mut dyn RunEventSink,
+    sink: &mut dyn RunFactAppender,
     launch_sink: Option<LaunchSink<'_>>,
 ) -> Result<TerminationReason, AcpError> {
     let mut wire = Wire::new(channel);
@@ -220,7 +220,7 @@ pub async fn run_turn(
 async fn pump_to_response(
     wire: &mut Wire<'_>,
     target_id: u64,
-    sink: &mut dyn RunEventSink,
+    sink: &mut dyn RunFactAppender,
     seq: &mut u64,
 ) -> Result<serde_json::Value, AcpError> {
     loop {
@@ -256,7 +256,7 @@ async fn pump_to_response(
 /// runtime projection: user echoes, thoughts, plans, tool-call updates).
 async fn project_notification(
     params: Option<serde_json::Value>,
-    sink: &mut dyn RunEventSink,
+    sink: &mut dyn RunFactAppender,
     seq: &mut u64,
 ) -> Result<(), AcpError> {
     let Some(params) = params else {
@@ -334,7 +334,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
-    use crate::SinkError;
+    use crate::AppendError;
 
     #[derive(Default)]
     struct RecordingSink {
@@ -343,10 +343,10 @@ mod tests {
     }
 
     #[async_trait]
-    impl RunEventSink for RecordingSink {
-        async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), SinkError> {
+    impl RunFactAppender for RecordingSink {
+        async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), AppendError> {
             if seq <= self.last {
-                return Err(SinkError::NonMonotonic {
+                return Err(AppendError::NonMonotonic {
                     got: seq,
                     last: self.last,
                 });
