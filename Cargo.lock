@@ -989,6 +989,7 @@ dependencies = [
 name = "awaken-server-local"
 version = "1.0.0-dev"
 dependencies = [
+ "async-nats",
  "async-trait",
  "awaken-admin-config-api",
  "awaken-agent-contract",
@@ -1019,6 +1020,8 @@ dependencies = [
  "awaken-tool-relay",
  "axum 0.7.9",
  "base64 0.22.1",
+ "bytes",
+ "futures",
  "http-body-util",
  "rusqlite",
  "serde_json",
