@@ -126,6 +126,28 @@ mod tests {
     }
 
     #[test]
+    fn from_process_env_builds_a_usable_resolver() {
+        let base = std::env::temp_dir().join(format!("awaken-fpe-{}", std::process::id()));
+        let r = EnvLaunchResolver::from_process_env(claude(), Some(base.clone()));
+        let env = r.config_home_env("thr");
+        assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn empty_run_model_falls_back_to_the_env_model_key() {
+        let r = resolver_with(
+            &[
+                ("ANTHROPIC_BASE_URL", "u"),
+                ("ANTHROPIC_API_KEY", "k"), // awaken-allow: secret
+                ("ANTHROPIC_MODEL", "env-model"),
+            ],
+            None,
+        );
+        assert_eq!(r.resolve_model("").unwrap().model, "env-model");
+    }
+
+    #[test]
     fn extra_env_points_the_cli_at_the_threads_config_home() {
         let base = std::env::temp_dir().join(format!("awaken-aclr-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);

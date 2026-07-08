@@ -175,6 +175,15 @@ mod tests {
     }
 
     #[test]
+    fn ephemeral_config_home_without_a_storage_dir_works() {
+        let home = ConfigHome::open(None, "eph-thread").unwrap();
+        assert!(home.root().to_string_lossy().contains("eph-thread"));
+        home.write("x", b"y").unwrap();
+        assert_eq!(home.read("x").unwrap().as_deref(), Some(&b"y"[..]));
+        let _ = fs::remove_dir_all(home.root());
+    }
+
+    #[test]
     fn write_creates_nested_parents_and_read_missing_is_none() {
         let base = temp_root("nested");
         let _ = fs::remove_dir_all(&base);
