@@ -117,11 +117,27 @@ impl ProjectedEvent {
     }
 }
 
+/// The MCP tool-name prefix (`mcp__<server>__<tool>`). A call whose tool name
+/// carries it projects as the distinct `agent.mcp_tool_use`/`agent.mcp_tool_result`
+/// events rather than the generic `agent.tool_use`/`agent.tool_result`.
+const MCP_TOOL_PREFIX: &str = "mcp__";
+
+/// The MCP server segment of an `mcp__<server>__<tool>` name (`""` when absent).
+fn mcp_server_name(name: &str) -> String {
+    name.strip_prefix(MCP_TOOL_PREFIX)
+        .and_then(|rest| rest.split("__").next())
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// The Managed Agents transcoder: neutral projection events to public
 /// `OutboundKind`. `RunStarted` is dropped (Managed has no per-step start event);
-/// terminal events become `session.status_idle`.
+/// terminal events become `session.status_idle`. Stateful within one turn: it
+/// remembers `mcp__` tool-use ids so their results project as MCP results too.
 #[derive(Default)]
-pub struct ManagedEncoder;
+pub struct ManagedEncoder {
+    mcp_ids: std::collections::HashSet<String>,
+}
 
 impl Transcoder for ManagedEncoder {
     type Output = ProjectedEvent;
@@ -133,6 +149,29 @@ impl Transcoder for ManagedEncoder {
                 vec![ProjectedEvent::minted(OutboundKind::AgentMessage {
                     content: content.clone(),
                 })]
+            }
+            // An MCP tool call (`mcp__server__tool`) is host-executed like a
+            // built-in; project it as the distinct MCP events.
+            AgentEvent::ToolCall {
+                id,
+                name,
+                input,
+                disposition,
+            } if name.starts_with(MCP_TOOL_PREFIX) => {
+                self.mcp_ids.insert(id.clone());
+                let evaluated_permission = match disposition {
+                    ToolDisposition::PendingBuiltin => Some("ask".to_string()),
+                    _ => Some("allow".to_string()),
+                };
+                vec![ProjectedEvent::with_id(
+                    id.clone(),
+                    OutboundKind::AgentMcpToolUse {
+                        name: name.clone(),
+                        mcp_server_name: mcp_server_name(name),
+                        input: input.clone(),
+                        evaluated_permission,
+                    },
+                )]
             }
             AgentEvent::ToolCall {
                 id,
@@ -157,6 +196,13 @@ impl Transcoder for ManagedEncoder {
                     },
                 };
                 vec![ProjectedEvent::with_id(id.clone(), kind)]
+            }
+            AgentEvent::ToolResult { id, content, .. } if self.mcp_ids.contains(id) => {
+                vec![ProjectedEvent::minted(OutboundKind::AgentMcpToolResult {
+                    mcp_tool_use_id: id.clone(),
+                    content: content.clone(),
+                    is_error: None,
+                })]
             }
             AgentEvent::ToolResult { id, content, .. } => {
                 vec![ProjectedEvent::minted(OutboundKind::AgentToolResult {
@@ -201,7 +247,7 @@ pub fn project_messages(
     messages: &[awaken_agent_contract::agent::message::Message],
     pending: Option<(&str, bool)>,
 ) -> Vec<ProjectedEvent> {
-    ManagedEncoder.transcode_all(&fold(messages, pending))
+    ManagedEncoder::default().transcode_all(&fold(messages, pending))
 }
 
 /// Project the messages committed during one step, then a terminal
@@ -214,7 +260,7 @@ pub fn project_turn(
 ) -> Vec<ProjectedEvent> {
     let mut events = fold(messages, pending);
     events.push(terminal_event(stop, pending));
-    ManagedEncoder.transcode_all(&events)
+    ManagedEncoder::default().transcode_all(&events)
 }
 
 /// The neutral terminal event for a Managed `stop_reason`. `RequiresAction`'s

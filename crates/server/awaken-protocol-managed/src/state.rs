@@ -16,7 +16,8 @@ use awaken_credential_vault::CredentialSourceId;
 
 use crate::dto::{
     ConfirmResult, CreateSessionRequest, Event, EventReceipt, InboundEvent, ListEventsResponse,
-    OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent, StopReason,
+    ModelConfig, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
+    StopReason,
 };
 use crate::project::{self, project_messages, project_turn};
 use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
@@ -801,12 +802,15 @@ impl ManagedState {
                 version: 1,
                 // R6: echo the session's actual model — the requested override, else
                 // the host default — so the client sees which model the session runs.
-                model: req
-                    .agent
-                    .model()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| self.runtime.model()),
+                model: ModelConfig::new(
+                    req.agent
+                        .model()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| self.runtime.model()),
+                ),
                 name: agent_id.clone(),
+                description: None,
+                system: None,
                 tools: project::agent_tools(&caps),
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
                 mcp_servers: req
@@ -838,7 +842,7 @@ impl ManagedState {
             .save(PersistedSession {
                 session_id: id.clone(),
                 agent_id: agent_id.clone(),
-                model: session.agent.model.clone(),
+                model: session.agent.model.id.clone(),
                 title: session.title.clone(),
                 metadata: session.metadata.clone(),
                 environment_id: session.environment_id.clone(),
@@ -889,8 +893,10 @@ impl ManagedState {
                 id: agent_id.clone(),
                 kind: "agent",
                 version: 1,
-                model,
+                model: ModelConfig::new(model),
                 name: agent_id,
+                description: None,
+                system: None,
                 tools: project::agent_tools(&caps),
                 mcp_servers,
                 skills: project::agent_skills(&caps),
@@ -1809,7 +1815,7 @@ mod tests {
         let state = ManagedState::new(RehydrateFake);
         let session = state.rehydrated_session("sesn_1", Some(sample_persisted("sesn_1")));
         assert_eq!(session.agent.id, "coder");
-        assert_eq!(session.agent.model, "kimi-k2");
+        assert_eq!(session.agent.model.id, "kimi-k2");
         assert_eq!(session.title.as_deref(), Some("My session"));
         assert_eq!(
             session.metadata.get("team").map(String::as_str),
@@ -1827,7 +1833,7 @@ mod tests {
         let state = ManagedState::new(RehydrateFake);
         let session = state.rehydrated_session("sesn_1", None);
         assert_eq!(session.agent.id, "assistant");
-        assert_eq!(session.agent.model, "host-default-model");
+        assert_eq!(session.agent.model.id, "host-default-model");
         assert!(session.title.is_none());
         assert!(session.agent.mcp_servers.is_empty());
     }
