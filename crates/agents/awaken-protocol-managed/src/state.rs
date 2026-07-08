@@ -1337,6 +1337,13 @@ impl ManagedState {
         }
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        // Each processing segment is bracketed `running` … `idle`; the running
+        // marker leads before any fold or message.
+        record.events.push(Event {
+            id: self.next_event_id(),
+            kind: OutboundKind::SessionStatusRunning {},
+            processed_at: Some(PROCESSED_AT.to_string()),
+        });
         // Compaction ran at BeforeInference, so its marker precedes the turn's
         // message events. `true` ⇒ this terminal step folded (emit-once upstream).
         if outcome.compacted {
@@ -1419,6 +1426,7 @@ impl ManagedState {
                     processed_at: Some(PROCESSED_AT.to_string()),
                 });
             };
+            push(None, OutboundKind::SessionStatusRunning {});
             for round in report.iterations {
                 for event in project_messages(&round.messages, None) {
                     push(event.id, event.kind);

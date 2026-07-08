@@ -200,7 +200,14 @@ async fn happy_path_projects_message_and_idle() {
         serde_json::Value::Null,
     )
     .await;
-    assert_eq!(types(&list), vec!["agent.message", "session.status_idle"]);
+    assert_eq!(
+        types(&list),
+        vec![
+            "session.status_running",
+            "agent.message",
+            "session.status_idle"
+        ]
+    );
 }
 
 /// A runtime that reports a provisioned surface, exercised by session creation.
@@ -526,6 +533,7 @@ async fn outcome_loop_projects_evaluations() {
     assert_eq!(
         types(&list),
         vec![
+            "session.status_running",
             "span.outcome_evaluation_start",
             "span.outcome_evaluation_end",
             "agent.message",
@@ -594,7 +602,14 @@ async fn hitl_park_confirm_resume() {
         serde_json::Value::Null,
     )
     .await;
-    assert_eq!(types(&list), vec!["agent.tool_use", "session.status_idle"]);
+    assert_eq!(
+        types(&list),
+        vec![
+            "session.status_running",
+            "agent.tool_use",
+            "session.status_idle"
+        ]
+    );
 
     let tool_use = list["data"]
         .as_array()
@@ -631,8 +646,10 @@ async fn hitl_park_confirm_resume() {
     assert_eq!(
         types(&list),
         vec![
+            "session.status_running",
             "agent.tool_use",
             "session.status_idle",
+            "session.status_running",
             "agent.tool_result",
             "agent.message",
             "session.status_idle"
@@ -742,7 +759,11 @@ async fn custom_tool_use_park_and_result() {
     .await;
     assert_eq!(
         types(&list),
-        vec!["agent.custom_tool_use", "session.status_idle"]
+        vec![
+            "session.status_running",
+            "agent.custom_tool_use",
+            "session.status_idle"
+        ]
     );
     let custom = list["data"]
         .as_array()
