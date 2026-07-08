@@ -49,6 +49,70 @@ async function main() {
     const okIdle = [...okEvents].reverse().find((e) => e.type === 'session.status_idle');
     assert.equal(okIdle.stop_reason.type, 'end_turn');
 
+    // D4: the delegate call spawned a subagent child thread — announced by
+    // `session.thread_created` and enumerable via the threads API.
+    const created = okEvents.find((e) => e.type === 'session.thread_created');
+    assert.ok(created, `expected session.thread_created, got: ${okEvents.map((e) => e.type)}`);
+    assert.equal(created.agent_name, 'researcher');
+
+    const threads = [];
+    for await (const t of client.beta.sessions.threads.list(ok.id, { betas: BETAS })) threads.push(t);
+    assert.equal(threads.length, 2, `primary + researcher child: ${threads.map((t) => t.id)}`);
+    const primary = threads.find((t) => t.parent_thread_id === null);
+    const child = threads.find((t) => t.id === created.session_thread_id);
+    assert.ok(child, 'the created child thread is enumerated');
+    assert.equal(child.parent_thread_id, primary.id, 'child links to the primary thread');
+    assert.equal(child.agent.name, 'researcher');
+
+    const gotChild = await client.beta.sessions.threads.retrieve(child.id, {
+      session_id: ok.id,
+      betas: BETAS,
+    });
+    assert.equal(gotChild.id, child.id, 'the child thread is retrievable');
+
+    // The child thread's inline run projects its full lifecycle: created → running →
+    // the message sent to it → the reply received → idle.
+    const childEvents = okEvents.filter(
+      (e) =>
+        e.session_thread_id === child.id ||
+        e.to_session_thread_id === child.id ||
+        e.from_session_thread_id === child.id,
+    );
+    assert.deepEqual(
+      childEvents.map((e) => e.type),
+      [
+        'session.thread_created',
+        'session.thread_status_running',
+        'agent.thread_message_sent',
+        'agent.thread_message_received',
+        'session.thread_status_idle',
+      ],
+      `child thread lifecycle: ${childEvents.map((e) => e.type)}`,
+    );
+    const sent = childEvents.find((e) => e.type === 'agent.thread_message_sent');
+    assert.equal(sent.to_agent_name, 'researcher');
+    const recv = childEvents.find((e) => e.type === 'agent.thread_message_received');
+    assert.equal(recv.from_agent_name, 'researcher');
+    assert.ok(
+      recv.content.map((b) => b.text ?? '').join('').includes('researched: 42'),
+      `the received reply carries the delegate output: ${JSON.stringify(recv.content)}`,
+    );
+    const childIdle = childEvents.find((e) => e.type === 'session.thread_status_idle');
+    assert.equal(childIdle.stop_reason.type, 'end_turn');
+
+    // Archiving the child thread terminates it (session.thread_status_terminated).
+    const archived = await client.beta.sessions.threads.archive(child.id, {
+      session_id: ok.id,
+      betas: BETAS,
+    });
+    assert.ok(archived.archived_at, 'the child thread carries archived_at');
+    const afterEvents = await listEvents(client, ok.id);
+    const terminated = afterEvents.find(
+      (e) => e.type === 'session.thread_status_terminated' && e.session_thread_id === child.id,
+    );
+    assert.ok(terminated, 'archiving the child emits session.thread_status_terminated');
+    assert.equal(terminated.agent_name, 'researcher');
+
     // Fail closed: `ghost` is not in the roster; no sub-run runs.
     const bad = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     const badEvents = await turn(client, bad.id, 'use the ghost agent');

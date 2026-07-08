@@ -581,6 +581,11 @@ struct SessionRecord {
     agent_id: String,
     session: Session,
     events: Vec<Event>,
+    /// Subagent (multiagent delegate) child threads spawned in the session, each a
+    /// projected `session_thread` object (parent = the primary thread). Enumerated
+    /// by `list_threads`/`get_thread`; each is announced by a `session.thread_created`
+    /// event (ADR-0047 D4, first slice).
+    child_threads: Vec<serde_json::Value>,
 }
 
 /// The adapter's in-memory session store plus the runtime port.
@@ -846,6 +851,7 @@ impl ManagedState {
                 agent_id,
                 session: session.clone(),
                 events: Vec::new(),
+                child_threads: Vec::new(),
             },
         );
         Ok(session)
@@ -940,6 +946,7 @@ impl ManagedState {
             agent_id,
             session: self.rehydrated_session(id, persisted),
             events,
+            child_threads: Vec::new(),
         };
         self.sessions
             .lock()
@@ -980,6 +987,7 @@ impl ManagedState {
     ) -> Result<Session, StateError> {
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
+        let title_in_request = title.is_some();
         if let Some(title) = title {
             record.session.title = title;
         }
@@ -995,6 +1003,18 @@ impl ManagedState {
                 }
             }
         }
+        // Announce the mutation on the event stream (`session.updated`): the new
+        // title when the update set one, plus the full metadata bag.
+        record.events.push(Event {
+            id: self.next_event_id(),
+            kind: OutboundKind::SessionUpdated {
+                title: title_in_request
+                    .then(|| record.session.title.clone())
+                    .flatten(),
+                metadata: record.session.metadata.clone(),
+            },
+            processed_at: Some(PROCESSED_AT.to_string()),
+        });
         Ok(record.session.clone())
     }
 
@@ -1049,26 +1069,57 @@ impl ManagedState {
         })
     }
 
-    /// `GET /v1/sessions/{id}/threads`.
+    /// A subagent child thread: a `session_thread` whose parent is the primary and
+    /// whose `agent` is a minimal snapshot of the delegate `agent_name`.
+    fn child_thread(session: &Session, thread_id: &str, agent_name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": thread_id,
+            "type": "session_thread",
+            "session_id": session.id,
+            "parent_thread_id": format!("{}:primary", session.id),
+            "agent": {
+                "id": agent_name, "type": "agent", "name": agent_name, "version": 1,
+                "model": "", "description": null, "system": null,
+                "tools": [], "mcp_servers": [], "skills": [],
+            },
+            "created_at": session.created_at,
+            "updated_at": session.updated_at,
+            "archived_at": null,
+            "status": session.status,
+            "stats": null,
+            "usage": null,
+        })
+    }
+
+    /// `GET /v1/sessions/{id}/threads` — the primary thread plus any subagent
+    /// child threads spawned by delegation.
     pub fn list_threads(&self, id: &str) -> Result<Vec<serde_json::Value>, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
-        Ok(vec![Self::primary_thread(record)])
+        let mut threads = vec![Self::primary_thread(record)];
+        threads.extend(record.child_threads.iter().cloned());
+        Ok(threads)
     }
 
-    /// `GET /v1/sessions/{id}/threads/{thread_id}`.
+    /// `GET /v1/sessions/{id}/threads/{thread_id}` — the primary or a child thread.
     pub fn get_thread(&self, id: &str, thread_id: &str) -> Result<serde_json::Value, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
-        let thread = Self::primary_thread(record);
-        if thread["id"] == thread_id {
-            Ok(thread)
-        } else {
-            Err(StateError::NotFound)
+        let primary = Self::primary_thread(record);
+        if primary["id"] == thread_id {
+            return Ok(primary);
         }
+        record
+            .child_threads
+            .iter()
+            .find(|t| t["id"] == thread_id)
+            .cloned()
+            .ok_or(StateError::NotFound)
     }
 
-    /// `POST /v1/sessions/{id}/threads/{thread_id}/archive`.
+    /// `POST /v1/sessions/{id}/threads/{thread_id}/archive`. Archiving the primary
+    /// thread archives the session; archiving a subagent child thread terminates
+    /// that thread (emitting `session.thread_status_terminated`).
     pub fn archive_thread(
         &self,
         id: &str,
@@ -1076,11 +1127,33 @@ impl ManagedState {
     ) -> Result<serde_json::Value, StateError> {
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        if format!("{id}:primary") != thread_id {
-            return Err(StateError::NotFound);
+        if format!("{id}:primary") == thread_id {
+            record.session.archived_at = Some(PROCESSED_AT.to_string());
+            return Ok(Self::primary_thread(record));
         }
-        record.session.archived_at = Some(PROCESSED_AT.to_string());
-        Ok(Self::primary_thread(record))
+        let Some(child) = record
+            .child_threads
+            .iter_mut()
+            .find(|t| t["id"] == thread_id)
+        else {
+            return Err(StateError::NotFound);
+        };
+        child["archived_at"] = serde_json::json!(PROCESSED_AT);
+        child["status"] = serde_json::json!("terminated");
+        let agent_name = child["agent"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let archived = child.clone();
+        record.events.push(Event {
+            id: self.next_event_id(),
+            kind: OutboundKind::SessionThreadStatusTerminated {
+                session_thread_id: thread_id.to_string(),
+                agent_name,
+            },
+            processed_at: Some(PROCESSED_AT.to_string()),
+        });
+        Ok(archived)
     }
 
     /// `GET /v1/sessions/{id}/resources` — the session's mounted resources.
@@ -1214,8 +1287,63 @@ impl ManagedState {
             .as_ref()
             .map(|p| (p.tool_use_id.as_str(), p.client_executed));
         let projected = project_turn(&outcome.messages, outcome.stop, pending);
+        // Delegation runs inline as an `agent_run` tool call; each one spawns a
+        // subagent child thread (ADR-0047 D4). Collect each delegate's name, the
+        // input it was sent, and the reply it returned (matched by tool-use id),
+        // before the projected events are consumed.
+        struct DelegateCall {
+            agent_name: String,
+            tool_use_id: Option<String>,
+            sent: Vec<ContentBlock>,
+            received: Vec<ContentBlock>,
+        }
+        let mut delegates: Vec<DelegateCall> = projected
+            .iter()
+            .filter_map(|e| match &e.kind {
+                OutboundKind::AgentToolUse { name, input, .. } if name == "agent_run" => {
+                    Some(DelegateCall {
+                        agent_name: input
+                            .get("agent_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        tool_use_id: e.id.clone(),
+                        sent: vec![ContentBlock::text(
+                            input
+                                .get("input")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default(),
+                        )],
+                        received: Vec::new(),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        for e in &projected {
+            if let OutboundKind::AgentToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = &e.kind
+            {
+                if let Some(d) = delegates
+                    .iter_mut()
+                    .find(|d| d.tool_use_id.as_deref() == Some(tool_use_id.as_str()))
+                {
+                    d.received = content.clone();
+                }
+            }
+        }
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        // Each processing segment is bracketed `running` … `idle`; the running
+        // marker leads before any fold or message.
+        record.events.push(Event {
+            id: self.next_event_id(),
+            kind: OutboundKind::SessionStatusRunning {},
+            processed_at: Some(PROCESSED_AT.to_string()),
+        });
         // Compaction ran at BeforeInference, so its marker precedes the turn's
         // message events. `true` ⇒ this terminal step folded (emit-once upstream).
         if outcome.compacted {
@@ -1232,6 +1360,50 @@ impl ManagedState {
                 kind: event.kind,
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
+        }
+        // Register a child thread per delegate call and project its full inline
+        // lifecycle: `created` → `status_running` → the input sent to the delegate →
+        // the reply received → `status_idle`. The thread API enumerates subagent
+        // threads and the stream carries their messages and status.
+        for d in delegates {
+            let thread_id = format!("{}:thread:{}", session_id, record.child_threads.len());
+            record.child_threads.push(Self::child_thread(
+                &record.session,
+                &thread_id,
+                &d.agent_name,
+            ));
+            let name = d.agent_name;
+            for kind in [
+                OutboundKind::SessionThreadCreated {
+                    session_thread_id: thread_id.clone(),
+                    agent_name: name.clone(),
+                },
+                OutboundKind::SessionThreadStatusRunning {
+                    session_thread_id: thread_id.clone(),
+                    agent_name: name.clone(),
+                },
+                OutboundKind::AgentThreadMessageSent {
+                    to_session_thread_id: thread_id.clone(),
+                    to_agent_name: name.clone(),
+                    content: d.sent,
+                },
+                OutboundKind::AgentThreadMessageReceived {
+                    from_session_thread_id: thread_id.clone(),
+                    from_agent_name: name.clone(),
+                    content: d.received,
+                },
+                OutboundKind::SessionThreadStatusIdle {
+                    session_thread_id: thread_id.clone(),
+                    agent_name: name.clone(),
+                    stop_reason: StopReason::EndTurn,
+                },
+            ] {
+                record.events.push(Event {
+                    id: self.next_event_id(),
+                    kind,
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                });
+            }
         }
         Ok(())
     }
@@ -1254,6 +1426,7 @@ impl ManagedState {
                     processed_at: Some(PROCESSED_AT.to_string()),
                 });
             };
+            push(None, OutboundKind::SessionStatusRunning {});
             for round in report.iterations {
                 for event in project_messages(&round.messages, None) {
                     push(event.id, event.kind);
@@ -1262,6 +1435,13 @@ impl ManagedState {
                 push(
                     None,
                     OutboundKind::SpanOutcomeEvaluationStart {
+                        outcome_id: round.outcome_id.clone(),
+                        iteration: round.iteration,
+                    },
+                );
+                push(
+                    None,
+                    OutboundKind::SpanOutcomeEvaluationOngoing {
                         outcome_id: round.outcome_id.clone(),
                         iteration: round.iteration,
                     },
@@ -1423,6 +1603,21 @@ impl ManagedState {
                     let outcome = self
                         .runtime
                         .resume_custom(session_id, custom_tool_use_id, &text, *is_error)
+                        .await?;
+                    self.append_turn(session_id, outcome)?;
+                }
+                // The generic `user.tool_result`: a client-provided result for a
+                // parked tool, keyed by `tool_use_id`. Same delivery as a custom
+                // tool result (the id addresses the parked tool either way).
+                InboundEvent::UserToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => {
+                    let text = content.as_deref().map(content_text).unwrap_or_default();
+                    let outcome = self
+                        .runtime
+                        .resume_custom(session_id, tool_use_id, &text, *is_error)
                         .await?;
                     self.append_turn(session_id, outcome)?;
                 }

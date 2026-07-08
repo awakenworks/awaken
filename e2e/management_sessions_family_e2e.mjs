@@ -8,7 +8,7 @@
 // Run: (from e2e/)  node management_sessions_family_e2e.mjs
 
 import assert from 'node:assert/strict';
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -39,6 +39,14 @@ async function main() {
       assert.equal(updated.metadata.team, 'core');
       pass('beta.sessions.update -> title + metadata');
 
+      // The update is announced on the event stream as `session.updated`.
+      const updEvents = await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }));
+      const updatedEv = updEvents.find((e) => e.type === 'session.updated');
+      assert.ok(updatedEv, `session.updated projected: ${updEvents.map((e) => e.type)}`);
+      assert.equal(updatedEv.title, 'my session');
+      assert.equal(updatedEv.metadata.team, 'core');
+      pass('session.updated on the event stream');
+
       const listed = (await drain(client.beta.sessions.list({ betas: BETAS }))).map((s) => s.id);
       assert.ok(listed.includes(session.id));
       pass('beta.sessions.list -> PageCursor<BetaManagedAgentsSession>');
@@ -57,14 +65,20 @@ async function main() {
       pass('beta.sessions.threads.list / retrieve');
 
       // -- resources ---------------------------------------------------------
+      // Upload a real file first so the attach resolves it in the blob store.
+      const file = await client.beta.files.upload({
+        file: await toFile(Buffer.from('resource contents'), 'in.txt'),
+        purpose: 'agent',
+        betas: BETAS,
+      });
       const res = await client.beta.sessions.resources.add(session.id, {
         type: 'file',
-        file_id: 'file_abc',
+        file_id: file.id,
         mount_path: '/workspace/in.txt',
         betas: BETAS,
       });
       assert.equal(res.type, 'file');
-      assert.equal(res.file_id, 'file_abc');
+      assert.equal(res.file_id, file.id);
       assert.ok(res.id, 'resource gets an id');
       pass('beta.sessions.resources.add -> BetaManagedAgentsFileResource');
 
