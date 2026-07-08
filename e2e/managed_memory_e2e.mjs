@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -28,7 +28,7 @@ async function turn(client, sessionId, text) {
 }
 
 async function main() {
-  await withServer('memory', 38197, async (baseUrl) => {
+  await withScenarioServer('memory', 'memory', 38197, async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
     // Session A: the first turn has nothing to recall; its natural end fires

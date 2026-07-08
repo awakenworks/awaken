@@ -88,6 +88,15 @@ export async function withServer(mode, port, fn) {
 // env via `realServerEnv`.
 export const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow: secret
 
+// A scenario with host config (custom tools / delegates / skills / state machine /
+// compaction / memory / config plane / MCP): keep its `mode` router but run the
+// model for real (`behavior` on the wire). `mode` and `behavior` are named
+// separately because they often differ (mode `delegate` ↔ behavior `delegating`,
+// mode `management` ↔ behavior `mcp`, mode `git-repo` ↔ behavior `gitRepo`).
+export function withScenarioServer(mode, behavior, port, fn, extraEnv = {}) {
+  return withRealServer(behavior, port, fn, { mode, extraEnv });
+}
+
 // The REAL-provider equivalent of `withServer`: instead of an in-process stub
 // model, start a fake Anthropic upstream reproducing `behavior`'s scenario replies,
 // point the server's GenaiExecutor at it, run `fn`, then tear both down. This is how
