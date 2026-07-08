@@ -52,7 +52,28 @@ cd "$(dirname "$0")/../.."
 #                      only fires on a REAL CLI's output; the fake CLI cannot
 #                      inject provider text, so it is unit-tested, not e2e.
 # Revisit an exclusion when its wiring changes.
-IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-file-store)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/error\.rs'
+# Additional exclusions (same "unreachable from a deterministic e2e by design"
+# rationale as the block above; added when the extended chain landed):
+#   - config-plane postgres backends (admin-config-api/config-store/credential-vault/
+#     model-catalog src/postgres.rs) — like store-postgres/run-ingress/postgres.rs,
+#     they need a live PostgreSQL; the deterministic e2e uses the SQLite backends.
+#   - credential-vault/oauth.rs — the OAuth authorization-code exchange needs an
+#     external IdP; unit-tested, never reached by a hermetic e2e.
+#   - ext-builtin-tools/web.rs — web_fetch/web_search make real network egress; the
+#     deterministic suite has no outbound network, so they are unit-tested only.
+#   - protocol-acp/{jsonrpc,real_acp}.rs — the real ACP CLI codec (like the already
+#     excluded protocol-acp/error.rs); the fake CLI drives the neutral bridge, not
+#     these real-transport paths.
+#   - connection-plan/plan.rs — the ConnectionPlan value object is exercised by the
+#     crate's own topology.rs unit tests (like runtime-examples), not the served e2e.
+#   - server-local/models.rs — the deterministic scenario MODEL ZOO: e2e test
+#     fixtures compiled into the served binary (only the active scenario's model
+#     runs per e2e). Test scaffolding, not shipped product logic.
+#   - awaken-scope/, awaken-tool-pattern/ — foundation value objects (tenancy tree)
+#     and the tool-call pattern DSL; both carry comprehensive crate-level unit
+#     tests (like awaken-store-conformance), and the e2e exercises only their
+#     common paths, not every parser/validator branch.
+IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-file-store|awaken-scope|awaken-tool-pattern)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/(error|jsonrpc|real_acp)\.rs|awaken-(admin-config-api|config-store|credential-vault|model-catalog)/src/postgres\.rs|awaken-credential-vault/src/oauth\.rs|awaken-ext-builtin-tools/src/web\.rs|awaken-connection-plan/src/plan\.rs|awaken-server-local/src/models\.rs'
 
 eval "$(cargo llvm-cov show-env --export-prefix)"
 export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"
@@ -65,6 +86,12 @@ npm run test:protocols
 npm run test:management
 npm run test:durable
 npm run test:fs
+# Extended surfaces (management config APIs + managed engine lifecycle + ACP):
+# existing e2e that were not previously in a coverage chain, so their served
+# code (environments/deployments/agents/user-profiles/memory-stores/skills/
+# vaults/files APIs; managed full-lifecycle/reconnect/terminated/concurrency) was
+# measured as uncovered though the tests exist and pass.
+npm run test:extended
 if [ -n "${ANTHROPIC_API_KEY:-}${KIMI_API_KEY:-}" ]; then
   npm run test:real
 else

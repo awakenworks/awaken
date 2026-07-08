@@ -15,7 +15,8 @@
     "test:k6": "bash k6/run.sh smoke",
     "test:k6:stress": "bash k6/run.sh stress",
     "test:durable": "sh -c 'export AWAKEN_STORAGE_DIR=\"${AWAKEN_STORAGE_DIR:-$(mktemp -d)}\"; node managed_e2e.mjs && node managed_hitl_e2e.mjs && node managed_restart_e2e.mjs && node managed_durable_e2e.mjs'",
-    "test:fs": "sh -c 'export AWAKEN_STORAGE_DIR=\"${AWAKEN_STORAGE_DIR:-$(mktemp -d)}\"; export AWAKEN_STORE=fs; node managed_statemachine_e2e.mjs && node ai_sdk_e2e.mjs && node ag_ui_e2e.mjs && node a2a_e2e.mjs && node managed_restart_e2e.mjs'"
+    "test:fs": "sh -c 'export AWAKEN_STORAGE_DIR=\"${AWAKEN_STORAGE_DIR:-$(mktemp -d)}\"; export AWAKEN_STORE=fs; node managed_statemachine_e2e.mjs && node ai_sdk_e2e.mjs && node ag_ui_e2e.mjs && node a2a_e2e.mjs && node managed_restart_e2e.mjs'",
+    "test:extended": "E2E_PORT=38401 node management_environments_e2e.mjs && E2E_PORT=38402 node management_deployments_e2e.mjs && E2E_PORT=38403 node management_agents_e2e.mjs && E2E_PORT=38404 node management_user_profiles_e2e.mjs && E2E_PORT=38405 node management_memory_stores_e2e.mjs && E2E_PORT=38406 node management_skills_e2e.mjs && E2E_PORT=38407 node management_vaults_family_e2e.mjs && E2E_PORT=38408 node management_files_models_e2e.mjs && E2E_PORT=38409 node management_egress_bind_e2e.mjs && E2E_PORT=38410 node managed_full_lifecycle_e2e.mjs && E2E_PORT=38411 node managed_system_message_e2e.mjs && E2E_PORT=38412 node managed_terminated_e2e.mjs && E2E_PORT=38413 node managed_reconnect_e2e.mjs && E2E_PORT=38414 node managed_concurrency_e2e.mjs && E2E_PORT=38415 node managed_contract_guard_e2e.mjs && E2E_PORT=38416 node managed_processed_at_e2e.mjs && E2E_PORT=38417 node managed_post_idle_race_e2e.mjs && E2E_PORT=38418 node acp_jsonrpc_e2e.mjs && E2E_PORT=38419 node acp_sandboxed_e2e.mjs"
   },
   "dependencies": {
     "@a2a-js/sdk": "^0.3.13",
