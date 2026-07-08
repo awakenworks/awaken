@@ -862,4 +862,9 @@ impl ProtocolRuntime for ProtocolHost {
     fn model(&self) -> String {
         self.host.model()
     }
+
+    async fn usage(&self, thread: &str) -> (u64, u64) {
+        let usage = self.host.thread_usage(thread).await;
+        (usage.prompt_tokens, usage.completion_tokens)
+    }
 }

@@ -82,4 +82,11 @@ pub trait ProtocolRuntime: Send + Sync {
 
     /// The model id echoed in adapter metadata (AI SDK / AG-UI) or the A2A card.
     fn model(&self) -> String;
+
+    /// The thread's accumulated token usage `(input_tokens, output_tokens)` across all
+    /// turns, for an adapter that surfaces usage in its wire (e.g. the AI SDK `finish`
+    /// part). Default `(0, 0)` — a runtime whose provider reports no usage.
+    async fn usage(&self, _thread: &str) -> (u64, u64) {
+        (0, 0)
+    }
 }
