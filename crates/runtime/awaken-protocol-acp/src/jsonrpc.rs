@@ -26,7 +26,10 @@ use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
-use crate::{AcpError, AgentEvent, RunEventSink, TerminationReason};
+use crate::{
+    AcpError, AcpLaunchEvent, AcpLaunchStage, AgentEvent, LaunchSink, RunEventSink,
+    TerminationReason, notify_launch,
+};
 
 const JSONRPC: &str = "2.0";
 const ID_INITIALIZE: u64 = 1;
@@ -157,9 +160,16 @@ pub async fn run_turn(
     channel: &mut dyn AgentChannel,
     prompt: &str,
     sink: &mut dyn RunEventSink,
+    launch_sink: Option<LaunchSink<'_>>,
 ) -> Result<TerminationReason, AcpError> {
     let mut wire = Wire::new(channel);
     let mut seq = 0u64;
+
+    // The process is up; the ACP handshake (initialize + session/new) begins now.
+    notify_launch(
+        launch_sink,
+        AcpLaunchEvent::stage(AcpLaunchStage::Initializing),
+    );
 
     // 1. initialize — advertise the latest protocol version and no fs/terminal
     //    capabilities (default `ClientCapabilities`), so those agent requests are
@@ -184,6 +194,9 @@ pub async fn run_turn(
     .await?;
     let new_session: NewSessionResponse =
         parse(pump_to_response(&mut wire, ID_NEW_SESSION, sink, &mut seq).await?)?;
+
+    // Handshake complete — the agent is live and about to accept the prompt.
+    notify_launch(launch_sink, AcpLaunchEvent::stage(AcpLaunchStage::Ready));
 
     // 3. session/prompt — the user turn as one text content block.
     wire.send_request(
@@ -428,7 +441,9 @@ mod tests {
         let agent = tokio::spawn(scripted_agent(theirs, updates, "end_turn"));
 
         let mut sink = RecordingSink::default();
-        let reason = run_turn(ours.as_mut(), "do it", &mut sink).await.unwrap();
+        let reason = run_turn(ours.as_mut(), "do it", &mut sink, None)
+            .await
+            .unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
         // One projected message + the synthetic TurnEnd, in seq order.
         assert!(matches!(
@@ -451,7 +466,7 @@ mod tests {
         let (mut ours, theirs) = channel();
         let agent = tokio::spawn(scripted_agent(theirs, vec![], "refusal"));
         let mut sink = RecordingSink::default();
-        let reason = run_turn(ours.as_mut(), "p", &mut sink).await.unwrap();
+        let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
         assert_eq!(reason, TerminationReason::Refusal);
         agent.await.unwrap();
     }
@@ -464,7 +479,7 @@ mod tests {
         ];
         let agent = tokio::spawn(scripted_agent(theirs, updates, "end_turn"));
         let mut sink = RecordingSink::default();
-        run_turn(ours.as_mut(), "p", &mut sink).await.unwrap();
+        run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
         let tool = sink
             .events
             .iter()
@@ -508,7 +523,7 @@ mod tests {
         });
 
         let mut sink = RecordingSink::default();
-        let reason = run_turn(ours.as_mut(), "p", &mut sink).await.unwrap();
+        let reason = run_turn(ours.as_mut(), "p", &mut sink, None).await.unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
         agent.await.unwrap();
         let reply = seen.lock().unwrap().clone();
@@ -537,7 +552,9 @@ mod tests {
             io.read().await; // prompt request, then drop without responding
         });
         let mut sink = RecordingSink::default();
-        let err = run_turn(ours.as_mut(), "p", &mut sink).await.unwrap_err();
+        let err = run_turn(ours.as_mut(), "p", &mut sink, None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, AcpError::Truncated));
         agent.await.unwrap();
     }

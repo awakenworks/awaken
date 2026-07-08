@@ -123,6 +123,78 @@ fn exec(frames: Vec<String>) -> AcpRunExecutor {
     }))
 }
 
+/// Records every lifecycle event the executor emits during bring-up.
+#[derive(Default)]
+struct RecordingObserver {
+    stages: Mutex<Vec<AcpLaunchStage>>,
+}
+
+impl LaunchObserver for RecordingObserver {
+    fn on_launch(&self, _scope: &str, event: &AcpLaunchEvent) {
+        self.stages.lock().unwrap().push(event.stage);
+    }
+}
+
+#[tokio::test]
+async fn observer_sees_install_launch_and_ready_for_a_dynamic_install_backend() {
+    // The fixture activation's backend_ref is `acp:claude` (an npx adapter), so the
+    // executor surfaces an Installing phase before launch, then Ready once the
+    // (newline-fixture) agent is live.
+    let observer = Arc::new(RecordingObserver::default());
+    let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
+        frames: vec![
+            r#"{"type":"message","text":"hi"}"#.into(),
+            r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+        ],
+        open_error: None,
+    }))
+    .with_launch_observer(observer.clone());
+
+    e.execute(activation(), RuntimeRunContext::new())
+        .await
+        .unwrap();
+
+    let stages = observer.stages.lock().unwrap().clone();
+    assert_eq!(
+        stages,
+        vec![
+            AcpLaunchStage::Installing,
+            AcpLaunchStage::Launching,
+            AcpLaunchStage::Ready,
+        ],
+        "install → launch → ready, in order"
+    );
+}
+
+#[tokio::test]
+async fn observer_sees_failed_when_the_launch_faults() {
+    let observer = Arc::new(RecordingObserver::default());
+    let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
+        frames: vec![],
+        open_error: Some("spawn npx: No such file or directory".into()),
+    }))
+    .with_launch_observer(observer.clone());
+
+    // A launch fault is committed as a classified failure (not an Err).
+    e.execute(
+        activation(),
+        RuntimeRunContext::new().with_commit(Arc::new(RecordingCoordinator::default())),
+    )
+    .await
+    .unwrap();
+
+    let stages = observer.stages.lock().unwrap().clone();
+    assert_eq!(
+        stages,
+        vec![
+            AcpLaunchStage::Installing,
+            AcpLaunchStage::Launching,
+            AcpLaunchStage::Failed,
+        ],
+        "a spawn fault surfaces a Failed phase"
+    );
+}
+
 #[tokio::test]
 async fn drives_a_turn_commits_messages_and_returns_natural_end() {
     let e = exec(vec![
@@ -328,7 +400,10 @@ fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
             .find(|(kk, _)| kk == k)
             .map(|(_, v)| v.clone())
     };
-    assert_eq!(launch.argv, vec!["claude", "--acp"]);
+    assert_eq!(
+        launch.argv,
+        vec!["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"]
+    );
     assert_eq!(env("ANTHROPIC_MODEL").as_deref(), Some("kimi-k2"));
     assert_eq!(
         env("ANTHROPIC_BASE_URL").as_deref(),

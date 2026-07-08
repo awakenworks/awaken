@@ -136,6 +136,93 @@ pub trait RunEventSink: Send {
     async fn append(&mut self, seq: u64, event: &AgentEvent) -> Result<(), SinkError>;
 }
 
+/// Which stage of bringing an ACP agent online a lifecycle notification marks.
+/// Ordered install → launch → initialize → ready, aligning to oversight-next's
+/// probe stages so a UI renders a consistent progress affordance. `Failed` is the
+/// terminal error stage; the accompanying [`AcpLaunchEvent::detail`] says why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcpLaunchStage {
+    /// Dynamically installing the adapter — an `npx` wrapper is pulling its pinned
+    /// package into the npm cache. The slow step: seconds to minutes on a cold
+    /// cache, near-instant when already cached. A native CLI never emits this.
+    Installing,
+    /// Spawning the agent process.
+    Launching,
+    /// ACP handshake in progress (`initialize` + `session/new`).
+    Initializing,
+    /// The agent is live: handshake done, about to accept the prompt turn.
+    Ready,
+    /// Bring-up failed at some stage (detail carries the cause).
+    Failed,
+}
+
+/// One lifecycle notification for an ACP agent's bring-up — the neutral event a UI
+/// renders as "installing… / launching… / ready". `detail` optionally carries
+/// human-facing context (the adapter package id, a spawn error message).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AcpLaunchEvent {
+    pub stage: AcpLaunchStage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl AcpLaunchEvent {
+    #[must_use]
+    pub fn stage(stage: AcpLaunchStage) -> Self {
+        Self {
+            stage,
+            detail: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_detail(stage: AcpLaunchStage, detail: impl Into<String>) -> Self {
+        Self {
+            stage,
+            detail: Some(detail.into()),
+        }
+    }
+}
+
+/// The seam a host wires to observe an ACP agent's bring-up (install → launch →
+/// initialize → ready), so it can publish progress to a UI. Injected like
+/// [`RunEventSink`]; the driver depends on this abstraction, never on the
+/// transport. `scope` identifies the run/thread the event belongs to (so a
+/// per-thread UI channel can route it). Fire-and-forget (sync, non-blocking) so
+/// emitting never stalls the launch — a slow observer must buffer internally.
+pub trait LaunchObserver: Send + Sync {
+    fn on_launch(&self, scope: &str, event: &AcpLaunchEvent);
+}
+
+/// A scoped handle to a [`LaunchObserver`]: the observer plus the run/thread scope
+/// its events belong to. Cheap to copy, so it threads through the driver stack
+/// (executor → supervisor → wire) without cloning the `Arc`.
+#[derive(Clone, Copy)]
+pub struct LaunchSink<'a> {
+    observer: &'a dyn LaunchObserver,
+    scope: &'a str,
+}
+
+impl<'a> LaunchSink<'a> {
+    #[must_use]
+    pub fn new(observer: &'a dyn LaunchObserver, scope: &'a str) -> Self {
+        Self { observer, scope }
+    }
+
+    /// Emit one lifecycle event to the scoped observer.
+    pub fn emit(&self, event: AcpLaunchEvent) {
+        self.observer.on_launch(self.scope, &event);
+    }
+}
+
+/// Emit a lifecycle event to an optional sink (no-op when none is wired).
+pub(crate) fn notify_launch(launch_sink: Option<LaunchSink<'_>>, event: AcpLaunchEvent) {
+    if let Some(sink) = launch_sink {
+        sink.emit(event);
+    }
+}
+
 /// Why the bridge could not complete a turn.
 #[derive(Debug, thiserror::Error)]
 pub enum AcpError {
@@ -166,11 +253,12 @@ impl AcpBridge {
         prompt: &str,
         sink: &mut dyn RunEventSink,
         codec: Codec,
+        launch_sink: Option<LaunchSink<'_>>,
     ) -> Result<TerminationReason, AcpError> {
         match codec {
-            Codec::Newline => Self::run_turn_newline(channel, prompt, sink).await,
+            Codec::Newline => Self::run_turn_newline(channel, prompt, sink, launch_sink).await,
             #[cfg(feature = "real-acp")]
-            Codec::Acp => crate::jsonrpc::run_turn(channel, prompt, sink).await,
+            Codec::Acp => crate::jsonrpc::run_turn(channel, prompt, sink, launch_sink).await,
         }
     }
 
@@ -184,7 +272,11 @@ impl AcpBridge {
         channel: &mut dyn AgentChannel,
         prompt: &str,
         sink: &mut dyn RunEventSink,
+        launch_sink: Option<LaunchSink<'_>>,
     ) -> Result<TerminationReason, AcpError> {
+        // The newline stand-in has no handshake; writing the prompt is the point the
+        // agent becomes live for this turn.
+        notify_launch(launch_sink, AcpLaunchEvent::stage(AcpLaunchStage::Ready));
         let frame =
             serde_json::to_string(&PromptFrame { prompt }).expect("PromptFrame always serializes");
         channel
@@ -265,6 +357,7 @@ impl Supervisor {
         injections: &mut tokio::sync::mpsc::Receiver<Injection>,
         policy: SupervisePolicy,
         codec: Codec,
+        launch_sink: Option<LaunchSink<'_>>,
     ) -> Result<TerminationReason, AcpError> {
         let deadline = async {
             match policy.turn_deadline {
@@ -274,7 +367,7 @@ impl Supervisor {
         };
         tokio::select! {
             biased;
-            outcome = AcpBridge::run_turn(channel, prompt, sink, codec) => outcome,
+            outcome = AcpBridge::run_turn(channel, prompt, sink, codec, launch_sink) => outcome,
             Some(Injection::Interrupt) = injections.recv() => {
                 Self::reap(process, policy.reap_grace).await?;
                 Ok(TerminationReason::Cancelled)
@@ -364,7 +457,7 @@ mod tests {
         ));
 
         let mut sink = RecordingSink::default();
-        let reason = AcpBridge::run_turn(ours.as_mut(), "do it", &mut sink, Codec::Newline)
+        let reason = AcpBridge::run_turn(ours.as_mut(), "do it", &mut sink, Codec::Newline, None)
             .await
             .unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
@@ -391,7 +484,7 @@ mod tests {
             let (mut ours, theirs) = combined();
             let agent = tokio::spawn(fake_agent(theirs, vec![frame.into()], false));
             let mut sink = RecordingSink::default();
-            let got = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline)
+            let got = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline, None)
                 .await
                 .unwrap();
             assert_eq!(got, want);
@@ -404,7 +497,7 @@ mod tests {
         let (mut ours, theirs) = combined();
         let agent = tokio::spawn(fake_agent(theirs, vec!["not json".into()], true));
         let mut sink = RecordingSink::default();
-        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline)
+        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline, None)
             .await
             .unwrap_err();
         assert!(matches!(err, AcpError::Frame(_)));
@@ -421,7 +514,7 @@ mod tests {
             false,
         ));
         let mut sink = RecordingSink::default();
-        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline)
+        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline, None)
             .await
             .unwrap_err();
         assert!(matches!(err, AcpError::Truncated));
@@ -440,7 +533,7 @@ mod tests {
             fail_at: Some(1),
             ..Default::default()
         };
-        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline)
+        let err = AcpBridge::run_turn(ours.as_mut(), "p", &mut sink, Codec::Newline, None)
             .await
             .unwrap_err();
         assert!(matches!(err, AcpError::Sink(SinkError::Append(_))));
@@ -545,6 +638,7 @@ mod tests {
             &mut rx,
             fast_policy(),
             Codec::Newline,
+            None,
         )
         .await
         .unwrap();
@@ -583,6 +677,7 @@ mod tests {
             &mut rx,
             policy,
             Codec::Newline,
+            None,
         )
         .await
         .unwrap();
@@ -613,6 +708,7 @@ mod tests {
             &mut rx,
             fast_policy(),
             Codec::Newline,
+            None,
         )
         .await
         .unwrap();
@@ -641,6 +737,7 @@ mod tests {
             &mut rx,
             SupervisePolicy::default(),
             Codec::Newline,
+            None,
         )
         .await
         .unwrap();

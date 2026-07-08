@@ -25,12 +25,13 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::commit::staged::ThreadCommit;
 use awaken_agent_contract::fact::run::Fact as RunFact;
 use awaken_protocol_acp::{
-    AcpError, AcpFailure, AgentEvent, Injection, RawAcpError, RunEventSink, SinkError, Stage,
-    SupervisePolicy, Supervisor, TerminationReason, classify_error,
+    AcpError, AcpFailure, AgentEvent, Injection, LaunchSink, RawAcpError, RunEventSink, SinkError,
+    Stage, SupervisePolicy, Supervisor, TerminationReason, classify_error,
 };
-// Re-exported (not just `use`d) so a host composition root selects the wire without
-// a direct dependency on the protocol crate.
-pub use awaken_protocol_acp::Codec;
+// Re-exported (not just `use`d) so a host composition root selects the wire and
+// observes agent bring-up without a direct dependency on the protocol crate. The
+// executor also uses these names internally to emit lifecycle events.
+pub use awaken_protocol_acp::{AcpLaunchEvent, AcpLaunchStage, Codec, LaunchObserver};
 use awaken_provisioning_contract::ProcessHandle;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
@@ -88,6 +89,7 @@ pub enum ModelSwitch {
 pub struct AcpRunExecutor {
     source: Arc<dyn AgentChannelSource>,
     policy: SupervisePolicy,
+    observer: Option<Arc<dyn LaunchObserver>>,
 }
 
 impl AcpRunExecutor {
@@ -103,6 +105,7 @@ impl AcpRunExecutor {
         Self {
             source,
             policy: SupervisePolicy::default(),
+            observer: None,
         }
     }
 
@@ -110,6 +113,39 @@ impl AcpRunExecutor {
     pub fn with_policy(mut self, policy: SupervisePolicy) -> Self {
         self.policy = policy;
         self
+    }
+
+    /// Observe this executor's agent bring-up (install → launch → initialize →
+    /// ready → failed), so a host can publish progress to a UI. Without one, the
+    /// lifecycle notifications are dropped (no behavior change).
+    #[must_use]
+    pub fn with_launch_observer(mut self, observer: Arc<dyn LaunchObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    /// A scoped lifecycle sink for one run (`None` without a wired observer): the
+    /// observer plus the thread scope, so a UI channel can route the events.
+    fn launch_sink<'a>(&'a self, scope: &'a str) -> Option<LaunchSink<'a>> {
+        self.observer
+            .as_ref()
+            .map(|observer| LaunchSink::new(observer.as_ref(), scope))
+    }
+}
+
+/// Emit a lifecycle event to an optional scoped sink (no-op without an observer).
+fn notify(sink: Option<LaunchSink<'_>>, event: AcpLaunchEvent) {
+    if let Some(sink) = sink {
+        sink.emit(event);
+    }
+}
+
+/// Whether the run's ACP backend installs dynamically on launch (an `npx` adapter),
+/// so the executor can surface an `Installing` phase before the process is usable.
+fn dynamic_install_backend(activation: &RunActivation) -> bool {
+    match Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref) {
+        Backend::Acp { cli } => acp_cli(&cli).is_some_and(is_dynamic_install),
+        _ => false,
     }
 }
 
@@ -157,11 +193,31 @@ impl RunExecutor for AcpRunExecutor {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<Phase> {
+        // Lifecycle bring-up (observed for UI progress): an npx-wrapped adapter may
+        // dynamically install on a cold cache (the slow step) before it launches.
+        // Scope events to the thread so a per-session UI channel routes them.
+        let scope = activation.thread_id.0.clone();
+        let launch_sink = self.launch_sink(&scope);
+        if dynamic_install_backend(&activation) {
+            notify(
+                launch_sink,
+                AcpLaunchEvent::stage(AcpLaunchStage::Installing),
+            );
+        }
+        notify(
+            launch_sink,
+            AcpLaunchEvent::stage(AcpLaunchStage::Launching),
+        );
+
         // The host opens the channel (sandbox launch / remote dial). A failure here
         // is a launch/config fault → classify at the Initialize stage.
         let mut session = match self.source.open(&activation).await {
             Ok(session) => session,
             Err(open) => {
+                notify(
+                    launch_sink,
+                    AcpLaunchEvent::with_detail(AcpLaunchStage::Failed, open.0.clone()),
+                );
                 let failure = classify_error(Stage::Initialize, &RawAcpError::message(open.0));
                 return finish_failure(&context, &activation, &failure).await;
             }
@@ -187,6 +243,7 @@ impl RunExecutor for AcpRunExecutor {
             &mut injections,
             self.policy,
             session.codec,
+            launch_sink,
         )
         .await;
 
@@ -360,7 +417,9 @@ impl RunExecutor for DispatchRunExecutor {
 
 mod acp_cli;
 mod subprocess;
-pub use acp_cli::{AcpCli, McpInterface, ModelDelivery, ResolvedModel, acp_cli, known_acp_clis};
+pub use acp_cli::{
+    AcpCli, McpInterface, ModelDelivery, ResolvedModel, acp_cli, is_dynamic_install, known_acp_clis,
+};
 pub use subprocess::{AcpLaunch, LaunchResolver, ProjectingChannelSource, SubprocessChannelSource};
 
 #[cfg(test)]
