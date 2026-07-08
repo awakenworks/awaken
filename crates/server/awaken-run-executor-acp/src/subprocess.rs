@@ -30,13 +30,19 @@ pub struct AcpLaunch {
 }
 
 impl AcpLaunch {
-    /// The Claude Code (`claude --acp`) launch projected from resolved model
-    /// config (R4): base URL, model name, and key land in the Anthropic env the
-    /// CLI reads. `api_key` is the already-materialized secret the host injects.
+    /// The Claude Code launch projected from resolved model config (R4): base URL,
+    /// model name, and key land in the Anthropic env the adapter reads. Claude Code
+    /// has no native ACP flag; it is fronted by `@agentclientprotocol/claude-agent-acp`
+    /// via `npx` (see the [`AcpCli`] catalog — this helper mirrors that CLI row).
+    /// `api_key` is the already-materialized secret the host injects.
     #[must_use]
     pub fn claude(base_url: &str, model: &str, api_key: &str) -> Self {
         Self {
-            argv: vec!["claude".to_string(), "--acp".to_string()],
+            argv: vec![
+                "npx".to_string(),
+                "-y".to_string(),
+                "@agentclientprotocol/claude-agent-acp@0.44".to_string(),
+            ],
             env: vec![
                 ("ANTHROPIC_BASE_URL".to_string(), base_url.to_string()),
                 ("ANTHROPIC_MODEL".to_string(), model.to_string()),
@@ -50,6 +56,30 @@ impl AcpLaunch {
     pub fn custom(argv: Vec<String>, env: Vec<(String, String)>) -> Self {
         Self { argv, env }
     }
+}
+
+/// Host env keys passed through into the otherwise-cleared child env (the
+/// `["PATH","HOME"]` allowlist awaken-next uses): `PATH` so the launcher resolves
+/// `npx`/`node`/the CLI binary, `HOME` so `npx` finds its package cache and the CLI
+/// its user config. Everything else stays cleared — no ambient leak (G22). A key
+/// already set by the projection (a modeled value) is never overridden.
+const HOST_PASSTHROUGH_ENV: &[&str] = &["PATH", "HOME"];
+
+/// Add the [`HOST_PASSTHROUGH_ENV`] allowlist to a launch's env, reading each from
+/// `lookup` (the host env at spawn). Pure so the allowlist is unit-testable without
+/// spawning; a projected key is not shadowed.
+fn with_host_passthrough(
+    mut env: Vec<(String, String)>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    for key in HOST_PASSTHROUGH_ENV {
+        if !env.iter().any(|(k, _)| k == key) {
+            if let Some(value) = lookup(key) {
+                env.push(((*key).to_string(), value));
+            }
+        }
+    }
+    env
 }
 
 /// Launches an ACP CLI as a local child (`env_clear` + only the projected env, so
@@ -97,7 +127,10 @@ fn spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
-    for (key, value) in &launch.env {
+    // Projected model/secret env plus the PATH/HOME allowlist, so `npx`/`node`/the
+    // CLI resolve and `npx` finds its cache — everything else stays cleared.
+    let env = with_host_passthrough(launch.env.clone(), |k| std::env::var(k).ok());
+    for (key, value) in &env {
         command.env(key, value);
     }
     let mut child = command
@@ -270,9 +303,52 @@ mod tests {
     use crate::tests::activation;
 
     #[test]
+    fn host_passthrough_adds_path_and_home_without_shadowing_projected_env() {
+        let projected = vec![
+            ("ANTHROPIC_API_KEY".to_string(), "secret".to_string()),
+            ("HOME".to_string(), "/projected/home".to_string()),
+        ];
+        let env = with_host_passthrough(projected, |k| match k {
+            "PATH" => Some("/usr/local/bin:/usr/bin".to_string()),
+            "HOME" => Some("/host/home".to_string()),
+            _ => None,
+        });
+        // PATH added from the host (so npx/node resolve).
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "PATH" && v == "/usr/local/bin:/usr/bin")
+        );
+        // HOME already set by the projection is NOT overridden by the host value.
+        let homes: Vec<&str> = env
+            .iter()
+            .filter(|(k, _)| k == "HOME")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(homes, vec!["/projected/home"], "projected HOME wins");
+        // The secret survives untouched.
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "ANTHROPIC_API_KEY" && v == "secret")
+        );
+    }
+
+    #[test]
+    fn host_passthrough_omits_a_key_absent_from_the_host() {
+        let env = with_host_passthrough(Vec::new(), |k| (k == "PATH").then(|| "/bin".to_string()));
+        assert!(env.iter().any(|(k, _)| k == "PATH"));
+        assert!(
+            !env.iter().any(|(k, _)| k == "HOME"),
+            "absent host key omitted"
+        );
+    }
+
+    #[test]
     fn claude_projection_puts_model_and_base_in_anthropic_env() {
         let l = AcpLaunch::claude("https://gw/v1/", "kimi-k2", "vault-key");
-        assert_eq!(l.argv, vec!["claude", "--acp"]);
+        assert_eq!(
+            l.argv,
+            vec!["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.44"]
+        );
         assert!(
             l.env
                 .iter()

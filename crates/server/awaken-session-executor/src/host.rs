@@ -281,7 +281,7 @@ pub struct SharedHost {
     pub(crate) plugin_ids: Vec<String>,
     pub(crate) plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
     pub(crate) sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
-    hub: Arc<ThreadEventHub>,
+    pub(crate) hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
     /// `store_dir/<thread>.db`, so a parked run survives a process restart. When
     /// `None`, sessions use an in-memory coordinator (ephemeral).
