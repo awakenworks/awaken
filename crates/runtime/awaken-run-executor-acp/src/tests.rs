@@ -283,3 +283,54 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
         .unwrap();
     assert_eq!(opens.load(Ordering::SeqCst), 2);
 }
+
+/// A host model resolver that returns fixed coordinates (stands in for the
+/// config-plane + vault lookup).
+struct FixedModel(ResolvedModel);
+impl ModelResolver for FixedModel {
+    fn resolve(&self, _a: &RunActivation) -> std::result::Result<ResolvedModel, OpenError> {
+        Ok(self.0.clone())
+    }
+}
+
+#[test]
+fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
+    let cli = *acp_cli("claude").expect("claude in the catalog");
+    let resolver = Arc::new(FixedModel(ResolvedModel {
+        base_url: "https://api.kimi.com/coding/".to_string(),
+        model: "kimi-k2".to_string(),
+        api_key: "materialized-by-host".to_string(), // awaken-allow: secret
+    }));
+    // The host provides the config-home path as non-secret extra env.
+    let source = ProjectingChannelSource::new(
+        cli,
+        resolver,
+        vec![(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            "/run/agent/.claude".to_string(),
+        )],
+    );
+    let launch = source.plan(&activation()).expect("plan");
+    let env = |k: &str| {
+        launch
+            .env
+            .iter()
+            .find(|(kk, _)| kk == k)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(launch.argv, vec!["claude", "--acp"]);
+    assert_eq!(env("ANTHROPIC_MODEL").as_deref(), Some("kimi-k2"));
+    assert_eq!(
+        env("ANTHROPIC_BASE_URL").as_deref(),
+        Some("https://api.kimi.com/coding/")
+    );
+    assert_eq!(
+        env("ANTHROPIC_API_KEY").as_deref(),
+        Some("materialized-by-host")
+    );
+    // The host-provided config-home path threads through as extra env.
+    assert_eq!(
+        env("CLAUDE_CONFIG_DIR").as_deref(),
+        Some("/run/agent/.claude")
+    );
+}

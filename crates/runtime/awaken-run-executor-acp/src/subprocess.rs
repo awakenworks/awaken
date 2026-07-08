@@ -18,7 +18,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
-use crate::{AgentChannelSource, AgentSession, OpenError};
+use crate::{AcpCli, AgentChannelSource, AgentSession, OpenError, ResolvedModel};
 
 /// A resolved launch for an ACP CLI: the argv plus the env to set (model, base
 /// URL, key). Every runtime-specific env-key name lives in a constructor here —
@@ -65,44 +65,103 @@ impl SubprocessChannelSource {
     }
 }
 
+/// Spawn an ACP CLI child from a resolved [`AcpLaunch`] and pipe its stdio into an
+/// [`AgentChannel`]. `env_clear` + only the projected env, so no ambient leak.
+fn spawn(launch: &AcpLaunch) -> std::result::Result<AgentSession, OpenError> {
+    let (program, args) = launch
+        .argv
+        .split_first()
+        .ok_or_else(|| OpenError("empty argv".to_string()))?;
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
+    for (key, value) in &launch.env {
+        command.env(key, value);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| OpenError(format!("spawn `{program}`: {e}")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| OpenError("child has no stdout".to_string()))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| OpenError("child has no stdin".to_string()))?;
+    let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
+    let process: Arc<dyn ProcessHandle> = Arc::new(ChildProcess {
+        child: Mutex::new(child),
+    });
+    Ok(AgentSession { channel, process })
+}
+
 #[async_trait]
 impl AgentChannelSource for SubprocessChannelSource {
     async fn open(
         &self,
         _activation: &RunActivation,
     ) -> std::result::Result<AgentSession, OpenError> {
-        let (program, args) = self
-            .launch
-            .argv
-            .split_first()
-            .ok_or_else(|| OpenError("empty argv".to_string()))?;
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true);
-        for (key, value) in &self.launch.env {
-            command.env(key, value);
+        spawn(&self.launch)
+    }
+}
+
+/// Resolves a run's model coordinates (base URL, model name, materialized key) from
+/// the host — the config-plane + vault lookup the ACP executor must not do itself.
+/// The one seam between the neutral projection and the host's config/secret world.
+pub trait ModelResolver: Send + Sync {
+    fn resolve(&self, activation: &RunActivation) -> std::result::Result<ResolvedModel, OpenError>;
+}
+
+/// An [`AgentChannelSource`] that projects a run onto a launch via its [`AcpCli`]
+/// row (R4): it reads the run's model through a host [`ModelResolver`] and hands the
+/// data to [`AcpCli::project`], so *which* CLI and *how* the model is delivered are
+/// data, not a branch. `extra_env` carries host-provided non-secret env (e.g. the
+/// config-home path) merged under the typed model delivery.
+pub struct ProjectingChannelSource {
+    cli: AcpCli,
+    resolver: Arc<dyn ModelResolver>,
+    extra_env: Vec<(String, String)>,
+}
+
+impl ProjectingChannelSource {
+    #[must_use]
+    pub fn new(
+        cli: AcpCli,
+        resolver: Arc<dyn ModelResolver>,
+        extra_env: Vec<(String, String)>,
+    ) -> Self {
+        Self {
+            cli,
+            resolver,
+            extra_env,
         }
-        let mut child = command
-            .spawn()
-            .map_err(|e| OpenError(format!("spawn `{program}`: {e}")))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| OpenError("child has no stdout".to_string()))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| OpenError("child has no stdin".to_string()))?;
-        let channel: Box<dyn AgentChannel> = Box::new(SplitChannel::new(stdout, stdin));
-        let process: Arc<dyn ProcessHandle> = Arc::new(ChildProcess {
-            child: Mutex::new(child),
-        });
-        Ok(AgentSession { channel, process })
+    }
+
+    /// Project this run onto a concrete [`AcpLaunch`] (no spawn). The compaction
+    /// window is host-injected via `extra_env` until the context/compact projection
+    /// lands, so this stays a pure model + env projection.
+    pub(crate) fn plan(
+        &self,
+        activation: &RunActivation,
+    ) -> std::result::Result<AcpLaunch, OpenError> {
+        let model = self.resolver.resolve(activation)?;
+        Ok(self.cli.project(&model, None, &self.extra_env))
+    }
+}
+
+#[async_trait]
+impl AgentChannelSource for ProjectingChannelSource {
+    async fn open(
+        &self,
+        activation: &RunActivation,
+    ) -> std::result::Result<AgentSession, OpenError> {
+        spawn(&self.plan(activation)?)
     }
 }
 
