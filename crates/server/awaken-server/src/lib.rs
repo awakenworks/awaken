@@ -106,7 +106,8 @@ pub fn build_memory_router() -> Router {
             std::env::temp_dir().join(format!("awaken-memory-e2e-{}", std::process::id()))
         });
     std::fs::create_dir_all(&mem_dir).expect("create memory dir");
-    let host = SharedHost::new(Arc::new(MemoryProbeModel), "memory").with_memory(mem_dir);
+    let (model, model_ref) = scenario_model(Arc::new(MemoryProbeModel), "memory");
+    let host = SharedHost::new(model, model_ref).with_memory(mem_dir);
     mount(Arc::new(host))
 }
 
@@ -117,10 +118,11 @@ pub fn build_memory_router() -> Router {
 /// `resources[{type:"memory_store"}]` mount + write-back + `/v1/memory_stores` API.
 /// `AWAKEN_MODEL_MODE=memory-resource`.
 pub fn build_memory_resource_router() -> Router {
-    let host = SharedHost::new(
+    let (model, model_ref) = scenario_model(
         Arc::new(crate::models::MemoryResourceModel),
         "memory-resource",
     );
+    let host = SharedHost::new(model, model_ref);
     mount(Arc::new(host))
 }
 
@@ -128,7 +130,8 @@ pub fn build_memory_resource_router() -> Router {
 /// reads a host-cloned repo's file and writes a change the host commits + pushes back
 /// to the remote on harvest. `AWAKEN_MODEL_MODE=git-repo`.
 pub fn build_git_repo_router() -> Router {
-    let host = SharedHost::new(Arc::new(crate::models::GitRepoModel), "git-repo");
+    let (model, model_ref) = scenario_model(Arc::new(crate::models::GitRepoModel), "git-repo");
+    let host = SharedHost::new(model, model_ref);
     mount(Arc::new(host))
 }
 
@@ -138,8 +141,8 @@ pub fn build_git_repo_router() -> Router {
 /// reports the compaction context it received, so an e2e can observe the folded
 /// summary being injected on a later turn. `AWAKEN_MODEL_MODE=compaction`.
 pub fn build_compaction_router() -> Router {
-    let host = SharedHost::new(Arc::new(crate::models::CompactionModel), "compaction")
-        .with_compaction(2, 1);
+    let (model, model_ref) = scenario_model(Arc::new(crate::models::CompactionModel), "compaction");
+    let host = SharedHost::new(model, model_ref).with_compaction(2, 1);
     mount(Arc::new(host))
 }
 
@@ -371,6 +374,39 @@ pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> 
     mount(Arc::new(SharedHost::new(llm, model_ref)))
 }
 
+/// The model backing a scenario router, and its advertised ref. Normally the
+/// deterministic in-process model the scenario scripts; but when the e2e harness
+/// sets `AWAKEN_MODEL_SOURCE=http` (alongside a fake Anthropic upstream in
+/// `ANTHROPIC_BASE_URL`), it is the real [`GenaiExecutor`] dialing that upstream —
+/// the *same* seam [`build_real_router`] uses. This keeps a scenario's host config
+/// (client tools / delegate roster / skills / state machine / compaction / memory /
+/// config plane / MCP) intact while every model call crosses the real provider
+/// adapter + a real socket + the Anthropic wire, so an e2e drops its model stub
+/// without losing the scenario. With the real source the ref is the wire model name
+/// (`ANTHROPIC_MODEL`); otherwise it is `default_ref`.
+pub fn scenario_model(
+    in_process: Arc<dyn LlmExecutor>,
+    default_ref: &str,
+) -> (Arc<dyn LlmExecutor>, String) {
+    if std::env::var("AWAKEN_MODEL_SOURCE").as_deref() == Ok("http") {
+        let key = std::env::var("ANTHROPIC_API_KEY")
+            .or_else(|_| std::env::var("KIMI_API_KEY"))
+            .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_API_KEY");
+        let base = std::env::var("ANTHROPIC_BASE_URL")
+            .or_else(|_| std::env::var("KIMI_BASE_URL"))
+            .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_BASE_URL");
+        let model = std::env::var("ANTHROPIC_MODEL")
+            .or_else(|_| std::env::var("KIMI_MODEL"))
+            .unwrap_or_else(|_| "fake-haiku".to_string());
+        (
+            Arc::new(GenaiExecutor::anthropic_compatible(base, key)),
+            model,
+        )
+    } else {
+        (in_process, default_ref.to_string())
+    }
+}
+
 /// A server backed by a **live** Anthropic-compatible model, configured from the
 /// environment: `ANTHROPIC_API_KEY` (or `KIMI_API_KEY`), `ANTHROPIC_BASE_URL` (or
 /// `KIMI_BASE_URL`), `ANTHROPIC_MODEL` (or `KIMI_MODEL`). This is the same
@@ -562,7 +598,8 @@ pub fn build_vision_router() -> Router {
 /// A router with a client-executed tool `submit_answer` (the custom-tool e2e).
 pub fn build_custom_router() -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
-    let host = SharedHost::new(Arc::new(CustomToolModel), "custom").with_client_tools(client_tools);
+    let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "custom");
+    let host = SharedHost::new(model, model_ref).with_client_tools(client_tools);
     mount(Arc::new(host))
 }
 
@@ -571,7 +608,8 @@ pub fn build_custom_router() -> Router {
 /// fail-closed path can be exercised.
 pub fn build_delegation_router() -> Router {
     let roster = HashSet::from(["researcher".to_string()]);
-    let host = SharedHost::new(Arc::new(DelegatingModel), "delegate").with_delegates(roster);
+    let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate");
+    let host = SharedHost::new(model, model_ref).with_delegates(roster);
     mount(Arc::new(host))
 }
 
@@ -594,8 +632,8 @@ pub fn build_statemachine_router() -> Router {
             }]
         }]
     });
-    let host =
-        SharedHost::new(Arc::new(StateMachineModel), "statemachine").with_state_machine(machine);
+    let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine");
+    let host = SharedHost::new(model, model_ref).with_state_machine(machine);
     mount(Arc::new(host))
 }
 
@@ -661,8 +699,8 @@ pub fn build_statemachine_rich_router() -> Router {
             ]
         }]
     });
-    let host = SharedHost::new(Arc::new(StateMachineModel), "statemachine-rich")
-        .with_state_machine(machine);
+    let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine-rich");
+    let host = SharedHost::new(model, model_ref).with_state_machine(machine);
     mount(Arc::new(host))
 }
 
@@ -676,8 +714,8 @@ pub fn build_config_router() -> Router {
     );
     let tools = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
     let service = Arc::new(ConfigService::new(registry, tools));
-    let host = SharedHost::new(Arc::new(InstructionEchoModel), "config")
-        .with_config_service(service.clone());
+    let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
+    let host = SharedHost::new(model, model_ref).with_config_service(service.clone());
     // `/v1/agents` over this server projects the config plane it hosts: an agent
     // published via `/v1/config/agents` is retrievable as a managed-wire projection
     // of that single truth (no second store).
@@ -987,7 +1025,8 @@ fn management_router_over(stores: ManagementStores, iam: Option<Arc<ManagementAu
     // The MCP-driving deterministic model, so an e2e can hold a real multi-turn
     // conversation through ext-mcp (`add a b` → mcp__calc__add → `result: …`);
     // non-`add` turns still echo, preserving the prior expectations.
-    let host = Arc::new(SharedHost::new(Arc::new(McpToolModel), "management"));
+    let (model, model_ref) = scenario_model(Arc::new(McpToolModel), "management");
+    let host = Arc::new(SharedHost::new(model, model_ref));
     let managed_state = Arc::new(
         ManagedState::new(ManagedHost::new(host.clone()).with_mcp(
             credentials,
@@ -1106,8 +1145,8 @@ impl awaken_runtime_contract::permission::ToolGateHook for ScheduleGate {
 /// write→read tool calls are each scheduled and auto-performed, so the run
 /// completes without any human confirmation.
 pub fn build_schedule_router() -> Router {
-    let host = SharedHost::new(Arc::new(ProbeModel), "schedule")
-        .with_gate_override(Arc::new(ScheduleGate));
+    let (model, model_ref) = scenario_model(Arc::new(ProbeModel), "schedule");
+    let host = SharedHost::new(model, model_ref).with_gate_override(Arc::new(ScheduleGate));
     mount(Arc::new(host))
 }
 
@@ -1118,7 +1157,8 @@ pub fn build_schedule_router() -> Router {
 pub fn build_remote_delegation_router() -> Router {
     let url = std::env::var("AWAKEN_REMOTE_AGENT_URL")
         .expect("AWAKEN_REMOTE_AGENT_URL must be set for delegate-remote mode");
-    let host = SharedHost::new(Arc::new(DelegatingModel), "delegate-remote")
+    let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate-remote");
+    let host = SharedHost::new(model, model_ref)
         .with_remote_a2a("researcher", Arc::new(HttpTransport::new(url)));
     mount(Arc::new(host))
 }
@@ -1185,7 +1225,8 @@ impl LlmExecutor for SkillDrivingModel {
 pub fn build_skills_router() -> Router {
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let review = SkillSpec::new("review", "Review", "review code", "REVIEW-BODY");
-    build_router_with_skills(Arc::new(SkillDrivingModel), "skills", vec![greet, review])
+    let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills");
+    build_router_with_skills(model, model_ref, vec![greet, review])
 }
 
 /// A router whose delivered skills come from a DURABLE catalog (`/v1/skills`) instead
@@ -1203,7 +1244,8 @@ pub fn build_skills_durable_router() -> Router {
             std::env::temp_dir().join(format!("awaken-skills-durable-{}", std::process::id()))
         })
         .join("skills_catalog");
+    let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills-durable");
     mount(Arc::new(
-        SharedHost::new(Arc::new(SkillDrivingModel), "skills-durable").with_skill_store(dir),
+        SharedHost::new(model, model_ref).with_skill_store(dir),
     ))
 }
