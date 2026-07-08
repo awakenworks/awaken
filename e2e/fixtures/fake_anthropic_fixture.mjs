@@ -15,6 +15,11 @@
 
 import http from 'node:http';
 
+// Distinctive per-inference token usage the fake reports, so a usage e2e can assert
+// exact accumulated counts. Each model call reports these; an N-step turn accumulates
+// N× them. Exported so tests import the expected values rather than hard-coding.
+export const FAKE_USAGE = { input_tokens: 11, output_tokens: 7 };
+
 // ---- wire accessors: read the Anthropic request the way the neutral model read
 // the ChatRequest (system field, user text, tool-result count, images, tools). ----
 
@@ -330,7 +335,7 @@ function emitJson(res, { id, model, reply }) {
       id, type: 'message', role: 'assistant', model, content,
       stop_reason: reply.tool ? 'tool_use' : 'end_turn',
       stop_sequence: null,
-      usage: { input_tokens: 1, output_tokens: 1 },
+      usage: { ...FAKE_USAGE },
     }),
   );
 }
@@ -345,19 +350,19 @@ function emitStream(res, { id, model, reply }) {
     message: {
       id, type: 'message', role: 'assistant', model,
       content: [], stop_reason: null, stop_sequence: null,
-      usage: { input_tokens: 1, output_tokens: 0 },
+      usage: { input_tokens: FAKE_USAGE.input_tokens, output_tokens: 0 },
     },
   });
   if (reply.tool) {
     ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: reply.tool.id, name: reply.tool.name, input: {} } });
     ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(reply.tool.input) } });
     ev('content_block_stop', { type: 'content_block_stop', index: 0 });
-    ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 1 } });
+    ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: FAKE_USAGE.output_tokens } });
   } else {
     ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
     ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: reply.text } });
     ev('content_block_stop', { type: 'content_block_stop', index: 0 });
-    ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } });
+    ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: FAKE_USAGE.output_tokens } });
   }
   ev('message_stop', { type: 'message_stop' });
   res.end();
