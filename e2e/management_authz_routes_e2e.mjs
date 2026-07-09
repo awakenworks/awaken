@@ -34,9 +34,6 @@ const ROUTES = [
   ['GET', '/v1/config/inference-profiles/ghost'],
   ['GET', '/v1/config/mcp-servers/ghost'],
   ['GET', '/v1/config/mcp-servers'],
-  ['GET', '/v1/config/projects'],
-  ['GET', '/v1/config/projects/ghost'],
-  ['GET', '/v1/config/projects/ghost/agents/x/mcp'],
 ];
 
 async function main() {
