@@ -19,8 +19,8 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::routes::ManagedJson;
-use crate::types::ErrorResponse;
-use crate::types::Page;
+use crate::types::deployment::{Deployment, DeploymentRun};
+use crate::types::{ErrorResponse, Page};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
@@ -43,25 +43,25 @@ struct DeploymentRecord {
 }
 
 impl DeploymentRecord {
-    fn project(&self, id: &str) -> Value {
-        json!({
-            "id": id,
-            "type": "deployment",
-            "agent": self.agent,
-            "archived_at": self.archived_at,
-            "created_at": OBJECT_AT,
-            "updated_at": OBJECT_AT,
-            "description": self.description,
-            "environment_id": self.environment_id,
-            "initial_events": self.initial_events,
-            "metadata": self.metadata,
-            "name": self.name,
-            "paused_reason": self.paused_reason,
-            "resources": self.resources,
-            "schedule": self.schedule,
-            "status": self.status,
-            "vault_ids": self.vault_ids,
-        })
+    fn project(&self, id: &str) -> Deployment {
+        Deployment {
+            id: id.to_string(),
+            object_type: "deployment",
+            agent: self.agent.clone(),
+            archived_at: self.archived_at.clone(),
+            created_at: OBJECT_AT.to_string(),
+            updated_at: OBJECT_AT.to_string(),
+            description: self.description.clone(),
+            environment_id: self.environment_id.clone(),
+            initial_events: self.initial_events.clone(),
+            metadata: self.metadata.clone(),
+            name: self.name.clone(),
+            paused_reason: self.paused_reason.clone(),
+            resources: self.resources.clone(),
+            schedule: self.schedule.clone(),
+            status: self.status,
+            vault_ids: self.vault_ids.clone(),
+        }
     }
 }
 
@@ -72,17 +72,17 @@ struct RunRecord {
 }
 
 impl RunRecord {
-    fn project(&self, id: &str) -> Value {
-        json!({
-            "id": id,
-            "type": "deployment_run",
-            "agent": self.agent,
-            "created_at": OBJECT_AT,
-            "deployment_id": self.deployment_id,
-            "error": null,
-            "session_id": null,
-            "trigger_context": { "type": "manual" },
-        })
+    fn project(&self, id: &str) -> DeploymentRun {
+        DeploymentRun {
+            id: id.to_string(),
+            object_type: "deployment_run",
+            agent: self.agent.clone(),
+            created_at: OBJECT_AT.to_string(),
+            deployment_id: self.deployment_id.clone(),
+            error: None,
+            session_id: None,
+            trigger_context: json!({ "type": "manual" }),
+        }
     }
 }
 
@@ -195,7 +195,7 @@ fn value_metadata(body: &Value, key: &str) -> BTreeMap<String, String> {
 async fn create_deployment(
     State(state): State<Arc<DeploymentState>>,
     ManagedJson(body): ManagedJson<Value>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Deployment>, WireError> {
     let agent = normalize_agent(
         body.get("agent")
             .ok_or_else(|| bad_request("agent is required"))?,
@@ -227,13 +227,13 @@ async fn create_deployment(
 async fn retrieve_deployment(
     State(state): State<Arc<DeploymentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Deployment>, WireError> {
     let store = state.deployments.lock().unwrap();
     let record = store.get(&id).ok_or_else(|| not_found("deployment"))?;
     Ok(Json(record.project(&id)))
 }
 
-async fn list_deployments(State(state): State<Arc<DeploymentState>>) -> Json<Page<Value>> {
+async fn list_deployments(State(state): State<Arc<DeploymentState>>) -> Json<Page<Deployment>> {
     let store = state.deployments.lock().unwrap();
     let data = store.iter().map(|(id, r)| r.project(id)).collect();
     Json(Page::single(data))
@@ -243,7 +243,7 @@ async fn update_deployment(
     State(state): State<Arc<DeploymentState>>,
     Path(id): Path<String>,
     ManagedJson(body): ManagedJson<Value>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Deployment>, WireError> {
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
     if let Some(agent) = body.get("agent") {
@@ -279,7 +279,7 @@ async fn update_deployment(
 async fn archive_deployment(
     State(state): State<Arc<DeploymentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Deployment>, WireError> {
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
     record.archived_at = Some(OBJECT_AT.to_string());
@@ -289,7 +289,7 @@ async fn archive_deployment(
 async fn pause_deployment(
     State(state): State<Arc<DeploymentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Deployment>, WireError> {
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
     record.status = "paused";
@@ -300,7 +300,7 @@ async fn pause_deployment(
 async fn unpause_deployment(
     State(state): State<Arc<DeploymentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Deployment>, WireError> {
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
     record.status = "active";
@@ -313,7 +313,7 @@ async fn unpause_deployment(
 async fn run_deployment(
     State(state): State<Arc<DeploymentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<DeploymentRun>, WireError> {
     let agent = {
         let store = state.deployments.lock().unwrap();
         let record = store.get(&id).ok_or_else(|| not_found("deployment"))?;
@@ -333,7 +333,7 @@ async fn run_deployment(
 async fn retrieve_run(
     State(state): State<Arc<DeploymentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<DeploymentRun>, WireError> {
     let store = state.runs.lock().unwrap();
     let record = store.get(&id).ok_or_else(|| not_found("deployment_run"))?;
     Ok(Json(record.project(&id)))
@@ -344,7 +344,7 @@ async fn retrieve_run(
 async fn list_runs(
     State(state): State<Arc<DeploymentState>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Json<Page<Value>> {
+) -> Json<Page<DeploymentRun>> {
     let filter = q.get("deployment_id");
     let store = state.runs.lock().unwrap();
     let data = store

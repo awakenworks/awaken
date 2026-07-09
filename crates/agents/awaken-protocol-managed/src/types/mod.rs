@@ -8,10 +8,14 @@
 //!
 //! One submodule per SDK resource, plus the shared cursor-page shape:
 //! - [`session`] — sessions, events, and the error envelope.
+//! - [`deployment`] — the `deployments` + `deployment-runs` resources.
+//! - [`environment`] — the `environments` resource + its work queue.
 //! - [`user_profile`] — the `user-profiles` resource.
 //! - [`vault`] — the `vaults` resource (vaults + credentials).
 //! - [`page`] — the SDK cursor-page envelope shared by every CRUD family.
 
+pub mod deployment;
+pub mod environment;
 pub mod page;
 pub mod session;
 pub mod user_profile;
