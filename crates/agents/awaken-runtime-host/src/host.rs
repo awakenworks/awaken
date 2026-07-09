@@ -267,10 +267,10 @@ impl SessionCtx {
     /// [`ToolExecutorProvider`] (ADR-0046). When a provider is installed and
     /// places this run (returns `Some`), its executor overrides the session-wide
     /// `remote_hand`; otherwise this is exactly [`context`](Self::context).
-    pub(crate) fn context_for(&self, activation: &RunActivation) -> RuntimeRunContext {
+    pub(crate) async fn context_for(&self, activation: &RunActivation) -> RuntimeRunContext {
         let mut ctx = self.context();
         if let Some(provider) = &self.tool_executor_provider
-            && let Some(executor) = provider.provide(activation)
+            && let Some(executor) = provider.provide(activation).await
         {
             ctx = ctx.with_tool_executor(executor);
         }

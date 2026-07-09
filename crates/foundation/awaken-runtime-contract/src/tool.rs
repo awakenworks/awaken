@@ -102,11 +102,22 @@ pub trait ToolExecutor: Send + Sync {
 /// type crosses it. The default the runtime ships selects from static config; any
 /// richer (e.g. dynamically scheduling) policy is a host-supplied alternative the
 /// runtime never names. Mirrors the `ExecutorProvider`/`SandboxProvider` seams.
+///
+/// `provide` is **async**: the static default resolves in a trivial ready future,
+/// but a dynamic policy (consult a fleet, lease a worker, dial it) needs to await
+/// I/O before it can name the executor. Making the seam async is what lets a
+/// scheduling driver live behind it without blocking the run loop's thread.
+#[async_trait]
 pub trait ToolExecutorProvider: Send + Sync {
     /// The tool executor for this run. Returning `None` means "use the kernel's
     /// in-process `LocalToolExecutor`" — a deployment that places no hand installs
     /// no provider (or a provider that always returns `None`) and is unaffected.
-    fn provide(
+    ///
+    /// A remote executor returned here owns whatever placement it acquired (e.g. a
+    /// leased worker); it releases that on drop when the run's context is dropped,
+    /// with the lease's own TTL/epoch as the backstop — so the port needs no
+    /// separate release call (keeps it minimal, G16).
+    async fn provide(
         &self,
         activation: &crate::activation::RunActivation,
     ) -> Option<Arc<dyn ToolExecutor>>;

@@ -9,8 +9,11 @@
   for the ACP and native-direct paths); `ConfigToolExecutorProvider` + `PlacementEntry`
   default in `awaken-server-local`; the served `remote-hand` mode is now the
   degenerate one-entry (catch-all) policy through the provider, so
-  `managed_remote_hand_e2e.mjs` exercises the placement seam end to end. Deferred
-  follow-on: the durable/superseding ingress paths build their context inside
+  `managed_remote_hand_e2e.mjs` exercises the placement seam end to end.
+- Amended: 2026-07-09 — `provide` made **async** (G2) so a dynamic scheduling
+  driver can await a fleet/lease/dial behind the port; `context_for` awaits it.
+  Placement release is by drop (G3), no separate port call. Deferred follow-on:
+  the durable/superseding ingress paths build their context inside
   `awaken-run-ingress`, so per-run placement there is wired separately.
 - Depends on: [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md) (the
   `ToolExecutor` port and `LocalToolExecutor`/`RemoteToolExecutor` this ADR
@@ -62,12 +65,26 @@ The forces:
 We add a single port that turns a run into the `ToolExecutor` it should use:
 
 ```rust
+#[async_trait]
 pub trait ToolExecutorProvider: Send + Sync {
     /// Choose the tool executor for this run. May resolve a `ConnectionPlan`
-    /// and return a `RemoteToolExecutor`, or return the in-process default.
-    fn provide(&self, activation: &RunActivation) -> Arc<dyn ToolExecutor>;
+    /// and return a `RemoteToolExecutor`, or `None` for the in-process default.
+    async fn provide(&self, activation: &RunActivation) -> Option<Arc<dyn ToolExecutor>>;
 }
 ```
+
+`provide` is **async** (amended G2): the static default resolves in a ready
+future, but a dynamic driver — consult a fleet, lease a worker, dial it — must
+await I/O before it can name the executor. A sync seam would force the driver to
+block the run loop's thread; async keeps scheduling behind the port.
+
+**Placement lifecycle (G3).** A remote executor returned here *owns* whatever
+placement it acquired (e.g. a leased worker). It releases that **on drop** — when
+the run's `RuntimeRunContext` is dropped at turn end (or park), the executor's
+`Arc` drops and the driver reclaims the lease, with the lease's own TTL/epoch as
+the backstop. The port therefore needs **no** separate `release` call, keeping it
+minimal (G16); park/resume falls out for free (drop on park, a fresh `provide` on
+resume).
 
 This mirrors the runtime's existing provider seams (`ExecutorProvider`,
 `SandboxProvider`) exactly: a run-scoped factory the host wires once. The kernel
