@@ -316,13 +316,39 @@ pub enum CredentialValidationStatus {
     Unknown,
 }
 
+/// The live MCP handshake detail of a credential validation — either a successful
+/// handshake or the auth-challenge HTTP status. Present only when a probe ran.
+#[derive(Debug, Clone, Serialize)]
+pub struct McpProbeResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handshake: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+}
+
+impl McpProbeResult {
+    pub fn ok() -> Self {
+        Self {
+            handshake: Some("ok"),
+            http_status: None,
+        }
+    }
+
+    pub fn invalid(http_status: u16) -> Self {
+        Self {
+            handshake: None,
+            http_status: Some(http_status),
+        }
+    }
+}
+
 /// `BetaManagedAgentsCredentialValidation`.
 #[derive(Debug, Clone, Serialize)]
 pub struct CredentialValidation {
     pub credential_id: String,
     pub has_refresh_token: bool,
-    pub mcp_probe: Option<serde_json::Value>,
-    pub refresh: Option<serde_json::Value>,
+    pub mcp_probe: Option<McpProbeResult>,
+    pub refresh: Option<McpOauthRefreshResponse>,
     pub status: CredentialValidationStatus,
     #[serde(rename = "type")]
     pub object_type: &'static str,

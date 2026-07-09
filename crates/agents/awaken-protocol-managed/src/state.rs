@@ -21,7 +21,7 @@ use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, P
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
     OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
-    SessionCreateParams, SessionError, StopReason,
+    SessionCreateParams, SessionError, SessionStats, StopReason, Usage,
 };
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
@@ -843,8 +843,8 @@ impl ManagedState {
             resources: resource_dtos,
             outcome_evaluations: Vec::new(),
             status: "idle",
-            stats: serde_json::json!({}),
-            usage: serde_json::json!({}),
+            stats: SessionStats::default(),
+            usage: Usage::default(),
             vault_ids: req.vault_ids.clone(),
             deployment_id: None,
         };
@@ -928,8 +928,8 @@ impl ManagedState {
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status: "idle",
-            stats: serde_json::json!({}),
-            usage: serde_json::json!({}),
+            stats: SessionStats::default(),
+            usage: Usage::default(),
             vault_ids: Vec::new(),
             deployment_id: None,
         }
@@ -1745,13 +1745,13 @@ pub struct SessionUsage {
 
 /// The session's `usage` object (`BetaManagedAgentsSessionUsage`): cumulative input +
 /// output (+ prompt-cache) token counts across all turns. Emitted whenever a turn ran.
-fn session_usage_value(usage: SessionUsage) -> serde_json::Value {
-    serde_json::json!({
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "cache_read_input_tokens": usage.cache_read_tokens,
-        "cache_creation_input_tokens": usage.cache_creation_tokens,
-    })
+fn session_usage_value(usage: SessionUsage) -> Usage {
+    Usage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_input_tokens: usage.cache_read_tokens,
+        cache_creation_input_tokens: usage.cache_creation_tokens,
+    }
 }
 
 /// Concatenate the text of a content-block list.

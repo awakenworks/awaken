@@ -50,7 +50,7 @@ use crate::routes::ManagedJson;
 use crate::types::vault::{
     Credential, CredentialAuth, CredentialCreateParams, CredentialNetworking, CredentialUpdateAuth,
     CredentialUpdateParams, CredentialValidation, CredentialValidationStatus, DeletedCredential,
-    DeletedVault, ListQuery, McpOauthRefreshResponse, TokenEndpointAuthParams,
+    DeletedVault, ListQuery, McpOauthRefreshResponse, McpProbeResult, TokenEndpointAuthParams,
     TokenEndpointAuthResponse, TokenEndpointAuthUpdate, Vault, VaultCreateParams,
     VaultUpdateParams,
 };
@@ -1057,11 +1057,11 @@ async fn validate_credential(
             match probe.probe(url, &bearer).await {
                 McpProbeStatus::Valid => {
                     status = CredentialValidationStatus::Valid;
-                    mcp_probe = Some(serde_json::json!({ "handshake": "ok" }));
+                    mcp_probe = Some(McpProbeResult::ok());
                 }
                 McpProbeStatus::Invalid { http_status } => {
                     status = CredentialValidationStatus::Invalid;
-                    mcp_probe = Some(serde_json::json!({ "http_status": http_status }));
+                    mcp_probe = Some(McpProbeResult::invalid(http_status));
                 }
                 McpProbeStatus::Unknown => {}
             }

@@ -161,6 +161,21 @@ pub struct SessionAgent {
     pub multiagent: Option<Value>,
 }
 
+/// `BetaManagedAgentsSessionStats` — coarse per-session timing/counters. Empty on
+/// this surface (serializes as `{}`).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SessionStats {}
+
+/// `BetaManagedAgentsSessionUsage` — a session's accumulated token usage. Zero
+/// until the first turn commits usage.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+}
+
 /// `BetaManagedAgentsSession` response (minimal but SDK-parseable).
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
@@ -177,10 +192,8 @@ pub struct Session {
     pub resources: Vec<Value>,
     pub outcome_evaluations: Vec<Value>,
     pub status: &'static str,
-    /// `BetaManagedAgentsSessionStats` — coarse timing (empty on this surface).
-    pub stats: Value,
-    /// `BetaManagedAgentsSessionUsage` — token usage (empty on this surface).
-    pub usage: Value,
+    pub stats: SessionStats,
+    pub usage: Usage,
     /// The vaults the session is bound to (`vault_ids`).
     pub vault_ids: Vec<String>,
     /// Set when the session was launched by a deployment run.
