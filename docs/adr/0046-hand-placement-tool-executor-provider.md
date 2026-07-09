@@ -1,7 +1,17 @@
 # ADR-0046: Hand Placement — the `ToolExecutorProvider` Seam
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-09
+- Implemented: 2026-07-09 — `ToolExecutorProvider` port in `awaken-runtime-contract`
+  (`provide(&RunActivation) -> Option<Arc<dyn ToolExecutor>>`); host seam
+  `SharedHost::with_tool_executor_provider` + `SessionCtx::context_for` (per-run
+  `provide` overrides the session-wide `remote_hand`, wired into `execute_activation`
+  for the ACP and native-direct paths); `ConfigToolExecutorProvider` + `PlacementEntry`
+  default in `awaken-server-local`; the served `remote-hand` mode is now the
+  degenerate one-entry (catch-all) policy through the provider, so
+  `managed_remote_hand_e2e.mjs` exercises the placement seam end to end. Deferred
+  follow-on: the durable/superseding ingress paths build their context inside
+  `awaken-run-ingress`, so per-run placement there is wired separately.
 - Depends on: [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md) (the
   `ToolExecutor` port and `LocalToolExecutor`/`RemoteToolExecutor` this ADR
   selects between), [ADR-0045](0045-connection-plan-and-network-topology.md) (the
