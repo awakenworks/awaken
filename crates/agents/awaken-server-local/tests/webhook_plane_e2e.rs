@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use awaken_server_local::webhooks;
 use awaken_webhook::{InMemoryWebhookRepository, WebhookRepository, verify};
+use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::routing::post;
-use axum::{Json, Router};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;

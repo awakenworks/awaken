@@ -10,10 +10,7 @@
 
 use std::collections::HashMap;
 
-use crate::{
-    AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef, Project,
-    ProjectAgentConfig,
-};
+use crate::{AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef};
 
 /// A store for authored [`InferenceProfile`]s (an admin-plane aggregate). Sync +
 /// in-memory by default; a durable backend can implement the same port.
@@ -134,67 +131,6 @@ impl ResourceStore for InMemoryResourceStore {
             .lock()
             .expect("agent resource configs")
             .get(agent_id)
-            .cloned()
-    }
-}
-
-/// A store for authored [`Project`]s (by project id) and per-(project, agent)
-/// [`ProjectAgentConfig`] consumption bindings — the project aggregates.
-/// Sync + in-memory by default; a durable backend can implement the same port.
-pub trait ProjectStore: Send + Sync {
-    fn put_project(&self, project: Project);
-    fn get_project(&self, id: &str) -> Option<Project>;
-    fn list_projects(&self) -> Vec<Project>;
-    fn put_project_agent(&self, config: ProjectAgentConfig);
-    fn get_project_agent(&self, project_id: &str, agent_id: &str) -> Option<ProjectAgentConfig>;
-}
-
-/// The default in-memory [`ProjectStore`].
-#[derive(Default)]
-pub struct InMemoryProjectStore {
-    projects: std::sync::Mutex<HashMap<String, Project>>,
-    agents: std::sync::Mutex<HashMap<(String, String), ProjectAgentConfig>>,
-}
-
-impl InMemoryProjectStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl ProjectStore for InMemoryProjectStore {
-    fn put_project(&self, project: Project) {
-        self.projects
-            .lock()
-            .expect("projects")
-            .insert(project.id.0.clone(), project);
-    }
-    fn get_project(&self, id: &str) -> Option<Project> {
-        self.projects.lock().expect("projects").get(id).cloned()
-    }
-    fn list_projects(&self) -> Vec<Project> {
-        let mut projects: Vec<Project> = self
-            .projects
-            .lock()
-            .expect("projects")
-            .values()
-            .cloned()
-            .collect();
-        projects.sort_by(|a, b| a.id.0.cmp(&b.id.0));
-        projects
-    }
-    fn put_project_agent(&self, config: ProjectAgentConfig) {
-        self.agents.lock().expect("project agent configs").insert(
-            (config.project_id.0.clone(), config.agent_id.clone()),
-            config,
-        );
-    }
-    fn get_project_agent(&self, project_id: &str, agent_id: &str) -> Option<ProjectAgentConfig> {
-        self.agents
-            .lock()
-            .expect("project agent configs")
-            .get(&(project_id.to_string(), agent_id.to_string()))
             .cloned()
     }
 }

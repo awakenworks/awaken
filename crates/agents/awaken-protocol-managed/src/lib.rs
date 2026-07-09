@@ -48,7 +48,7 @@ pub use routes::user_profiles::{UserProfileState, user_profiles_router};
 pub use routes::vaults::{
     McpProbe, McpProbeStatus, McpRefreshBinding, TokenEndpointAuthBinding, VaultState, vault_router,
 };
-pub use routes::{ProjectScope, WorkspaceScope, router};
+pub use routes::{WorkspaceScope, router};
 pub use session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,

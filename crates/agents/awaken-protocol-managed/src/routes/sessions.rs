@@ -144,24 +144,16 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
     (status, Json(ErrorResponse::new(kind, message)))
 }
 
-/// The consumption-side project a request arrived through, stamped into the
-/// request extensions by the host's `/projects/{id}` ingress middleware
-/// (ADR-0042 amendment: the URL segment is ADDRESSING only — tenancy and
-/// authority still flow from the API key). Absent on the bare surface.
-#[derive(Debug, Clone)]
-pub struct ProjectScope(pub String);
-
 /// The owning workspace a request resolved to, stamped into the request
-/// extensions by the host ingress from the API key (bare surface) or the
-/// project's workspace (`/projects/{id}`). Recorded as the session's owner
-/// (ADR-0048 D6) so webhooks/usage/audit project from the durable record.
-/// Absent only where no workspace was resolved (the pre-owner bare surface).
+/// extensions by the edge (the guard/ingress) from the API key. Authorization is
+/// a cross-cutting aspect: the core session never stores tenancy, but the edge
+/// hands the resolved workspace to `create_session` so an edge projection
+/// (webhooks/usage) can stamp it. Absent when the edge resolved no workspace.
 #[derive(Debug, Clone)]
 pub struct WorkspaceScope(pub String);
 
 async fn create_session(
     State(state): State<Arc<ManagedState>>,
-    project: Option<axum::Extension<ProjectScope>>,
     workspace: Option<axum::Extension<WorkspaceScope>>,
     ManagedJson(req): ManagedJson<SessionCreateParams>,
 ) -> Result<Json<Session>, (StatusCode, Json<ErrorResponse>)> {
@@ -169,11 +161,7 @@ async fn create_session(
     // RunError to the envelope exactly like a turn's failure, so a failed create
     // is loud rather than a half-provisioned session.
     state
-        .create_session(
-            req,
-            project.map(|p| p.0.0.clone()),
-            workspace.map(|w| w.0.0.clone()),
-        )
+        .create_session(req, workspace.map(|w| w.0.0.clone()))
         .await
         .map(Json)
         .map_err(error_response)

@@ -17,14 +17,14 @@ use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{CredentialBinding, CredentialError, CredentialSource, SecretStore};
 use awaken_model_catalog::{ModelApiCompat, ProviderCatalog};
 
-/// Read ports for the authored aggregates (`ProjectStore`, `McpStore`,
-/// `InferenceProfileStore`, `ResourceStore`) + in-memory reference impls. They
-/// live on the read side so the runtime host reads config without depending on
-/// the authoring HTTP crate (which writes through the same ports).
+/// Read ports for the authored aggregates (`McpStore`, `InferenceProfileStore`,
+/// `ResourceStore`) + in-memory reference impls. They live on the read side so
+/// the runtime host reads config without depending on the authoring HTTP crate
+/// (which writes through the same ports).
 pub mod stores;
 pub use stores::{
-    InMemoryMcpStore, InMemoryProfileStore, InMemoryProjectStore, InMemoryResourceStore,
-    InferenceProfileStore, McpStore, ProjectStore, ResourceStore,
+    InMemoryMcpStore, InMemoryProfileStore, InMemoryResourceStore, InferenceProfileStore, McpStore,
+    ResourceStore,
 };
 
 /// The resolved execution unit: *(model × credential-identity × provider ×
@@ -357,61 +357,6 @@ pub fn resource_prompts_for(config: &AgentResourceConfig) -> Vec<String> {
         .iter()
         .map(resource_binding_prompt)
         .collect()
-}
-
-/// A management-plane project identifier. It doubles as the project's ingress
-/// address segment (`/projects/{id}/…` or a per-project domain label), so it is
-/// constrained to a DNS-safe lowercase slug at authoring time. The rule is the
-/// shared tenancy slug rule [`awaken_scope::scope::slug_is_valid`], so a project
-/// id validates identically here, in the scope tree, and across products.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ProjectId(pub String);
-
-impl ProjectId {
-    /// Parse a project id, enforcing the shared tenancy slug rule. Rejecting the
-    /// invalid form here (rather than letting a bad id reach a store or a URL)
-    /// keeps the invariant on the type, not in the HTTP handler.
-    pub fn parse(raw: impl Into<String>) -> Result<Self, InvalidProjectId> {
-        let raw = raw.into();
-        if awaken_scope::scope::slug_is_valid(&raw) {
-            Ok(Self(raw))
-        } else {
-            Err(InvalidProjectId(raw))
-        }
-    }
-}
-
-/// A rejected project id: not a DNS-safe lowercase slug (see [`ProjectId::parse`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidProjectId(pub String);
-
-/// A consumption-side project under a workspace (ADR-0042 amendment: the URL
-/// carries the project as ADDRESSING only — tenancy and authority still flow
-/// from the API key's workspace). Supply (catalog, credentials, pools, MCP
-/// defs) stays workspace-owned; a project only *selects* from it, so no secret
-/// is ever duplicated per project.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct Project {
-    pub id: ProjectId,
-    pub workspace_id: String,
-    pub display_name: String,
-    pub version: i64,
-}
-
-/// Which MCP servers an agent uses *within one project* — the project-scoped
-/// consumption binding. Shape mirrors [`AgentMcpConfig`] (the workspace-level
-/// default); a session created through `/projects/{id}/…` consults this first
-/// and falls back to the workspace binding when absent, so bare-path behavior
-/// is byte-identical to before projects existed.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ProjectAgentConfig {
-    pub project_id: ProjectId,
-    pub agent_id: String,
-    pub mcp_server_ids: Vec<McpServerId>,
-    pub version: i64,
 }
 
 /// The injection-ready MCP server the resolver hands the runtime: the display
