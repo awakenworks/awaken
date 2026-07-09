@@ -1040,6 +1040,7 @@ dependencies = [
  "awaken-runtime-host",
  "awaken-tool-relay",
  "awaken-webhook",
+ "awaken-webhook-managed",
  "axum 0.7.9",
  "base64 0.22.1",
  "bytes",
@@ -1072,6 +1073,7 @@ dependencies = [
  "awaken-protocol-transport",
  "awaken-runtime-contract",
  "awaken-runtime-host",
+ "awaken-webhook-managed",
  "axum 0.7.9",
  "tokio",
  "tower",
@@ -1192,6 +1194,20 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "subtle",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-webhook-managed"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-authz-enforce",
+ "awaken-protocol-managed",
+ "awaken-webhook",
+ "axum 0.7.9",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

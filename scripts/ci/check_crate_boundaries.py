@@ -54,6 +54,19 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tempfile",
         "hyper",
     },
+    # The managed webhook bridge (ADR-0048 / S10): connects protocol-managed's
+    # SessionLifecycleSink to the neutral dispatcher + subscription CRUD + the
+    # guard→WorkspaceScope map. Open crates only, so the standalone shares it.
+    "awaken-webhook-managed": {
+        "awaken-protocol-managed",
+        "awaken-authz-enforce",
+        "awaken-webhook",
+        "async-trait",
+        "axum",
+        "serde_json",
+        "tokio",
+        "tempfile",
+    },
     # The open single-machine assembly. Composes ONLY open crates — this closure
     # is the zero-BuSL invariant (no admin-config-api write plane, no iam-server,
     # no store-postgres). Adding a BuSL dep here should fail review.
@@ -66,6 +79,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-a2a",
         "awaken-protocol-transport",
         "awaken-authz-enforce",
+        "awaken-webhook-managed",
         "awaken-config-resolver",
         "awaken-runtime-contract",
         "axum",
@@ -915,6 +929,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # The webhook plane (ADR-0048 / S10): the lifecycle-sink bridge + CRUD router
         # over the neutral dispatcher/store. Env-gated by AWAKEN_WEBHOOK_DIR.
         "awaken-webhook",
+        "awaken-webhook-managed",
         # The embedded IAM's durable token/binding rows under
         # <AWAKEN_MGMT_DIR>/iam.sqlite — the same rusqlite generation every
         # other sqlite store in the workspace uses.

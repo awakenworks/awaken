@@ -24,6 +24,9 @@ awaken-protocol-ag-ui.workspace = true
 awaken-protocol-a2a.workspace = true
 awaken-protocol-transport.workspace = true
 awaken-authz-enforce.workspace = true
+# Webhook plane (ADR-0048 / S10): env-gated by AWAKEN_WEBHOOK_DIR; the guarded
+# session surface fans a signed webhook out to the workspace on session lifecycle.
+awaken-webhook-managed.workspace = true
 awaken-config-resolver.workspace = true
 awaken-runtime-contract.workspace = true
 axum = "0.7"

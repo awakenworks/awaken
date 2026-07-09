@@ -1,0 +1,21 @@
+[package]
+name = "awaken-webhook-managed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The bridge between the managed session lifecycle (protocol-managed's
+# SessionLifecycleSink port) and the neutral webhook dispatcher — plus the
+# subscription CRUD surface and the guard→WorkspaceScope mapping. All open
+# crates (no admin-config-api / iam-server), so the standalone can use it too.
+awaken-protocol-managed = { workspace = true }
+awaken-authz-enforce = { workspace = true }
+awaken-webhook = { workspace = true }
+async-trait.workspace = true
+axum = { version = "0.7", features = [] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -73,6 +73,7 @@ awaken-runtime-contract.workspace = true
 # session lifecycle to the neutral dispatcher; the CRUD router manages
 # workspace-scoped subscriptions. Env-gated by AWAKEN_WEBHOOK_DIR.
 awaken-webhook = { workspace = true }
+awaken-webhook-managed = { workspace = true }
 awaken-runtime = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true

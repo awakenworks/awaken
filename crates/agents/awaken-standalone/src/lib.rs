@@ -73,18 +73,37 @@ pub fn build(model: Arc<dyn LlmExecutor>) -> Standalone {
         ),
         None => Arc::new(InMemorySessionRepository::default()),
     };
-    let managed_state =
-        Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_session_repo(session_repo));
+    // The webhook plane (ADR-0048 / S10), when AWAKEN_WEBHOOK_DIR is set: the sink
+    // goes into the managed state (a committed session fact fans out) and the
+    // subscription CRUD is merged into the guarded surface. Unset = no webhooks.
+    let (webhook_sink, webhook_crud) = match awaken_webhook_managed::webhook_plane() {
+        Some((sink, crud)) => (Some(sink), Some(crud)),
+        None => (None, None),
+    };
+    let mut managed =
+        ManagedState::new(ManagedHost::new(host.clone())).with_session_repo(session_repo);
+    if let Some(sink) = webhook_sink {
+        managed = managed.with_lifecycle_sink(sink);
+    }
+    let managed_state = Arc::new(managed);
 
     // The full open protocol surface (Managed + AI SDK + AG-UI + A2A + the file /
-    // memory / skill / durable-ops resource planes), wrapped with the guard so
-    // every protocol is enforced. Tenancy is strictly Org → Workspace, resolved
-    // by the guard from the API key; there is no project addressing.
-    let bare = session_surface(&managed_state, &host)
+    // memory / skill / durable-ops resource planes) + the webhook CRUD, wrapped
+    // with the guard so every route is enforced. Tenancy is strictly Org →
+    // Workspace: the guard resolves it from the API key and `stamp_workspace_scope`
+    // hands it to `create_session`; there is no project addressing.
+    let mut surface = session_surface(&managed_state, &host);
+    if let Some(crud) = webhook_crud {
+        surface = surface.merge(crud);
+    }
+    let router = surface
+        .layer(axum::middleware::from_fn(
+            awaken_webhook_managed::stamp_workspace_scope,
+        ))
         .layer(axum::middleware::from_fn_with_state(engine, guard));
 
     Standalone {
-        router: bare,
+        router,
         admin_token,
         api_token,
     }
