@@ -73,8 +73,8 @@ function startStandalone(bin, port, extraEnv = {}) {
   const keys = {};
   readline.createInterface({ input: server.stderr }).on('line', (line) => {
     process.stderr.write(`${line}\n`);
-    const admin = line.match(/admin key:\s+(sk-ant-\S+)/);
-    const api = line.match(/api key:\s+(sk-ant-\S+)/);
+    const admin = line.match(/admin key:\s+(sk-awaken-\S+)/);
+    const api = line.match(/api key:\s+(sk-awaken-\S+)/);
     if (admin) keys.admin = admin[1];
     if (api) keys.api = api[1];
   });
@@ -90,7 +90,7 @@ function startStandalone(bin, port, extraEnv = {}) {
 async function ready(handle, port) {
   await waitForPort(port);
   for (let i = 0; i < 200 && !handle.keys.api; i++) await sleep(50);
-  assert.ok(handle.keys.api?.startsWith('sk-ant-'), 'captured the seeded api key from the banner');
+  assert.ok(handle.keys.api?.startsWith('sk-awaken-'), 'captured the seeded api key from the banner');
 }
 
 function client(baseUrl, apiToken, { header = 'bearer' } = {}) {
@@ -124,22 +124,19 @@ async function enforcementAndAgentLoop(bin) {
     assert.notEqual(h.keys.api, h.keys.admin, 'the two seeded keys are distinct');
 
     // Every session call needs a credential (the guard answers 401 first).
-    for (const uri of ['/v1/sessions', '/projects/local/v1/sessions']) {
-      const anon = await fetch(`${h.baseUrl}${uri}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ agent: 'assistant' }),
-      });
-      assert.equal(anon.status, 401, `${uri} requires a credential`);
-    }
-    console.log('  ok: unauthenticated session calls -> 401 on both axes');
+    const anon = await fetch(`${h.baseUrl}/v1/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agent: 'assistant' }),
+    });
+    assert.equal(anon.status, 401, '/v1/sessions requires a credential');
+    console.log('  ok: unauthenticated session call -> 401');
 
-    // A full agent turn on the bare surface and under the project prefix.
+    // A full agent turn on the bare surface (tenancy is key-resolved; there is
+    // no project addressing).
     const bare = await converse(client(h.baseUrl, h.keys.api));
     assert.ok(bare.replies.some((t) => t.includes(HELLO)), `bare: ${JSON.stringify(bare.replies)}`);
-    const project = await converse(client(`${h.baseUrl}/projects/local`, h.keys.api));
-    assert.ok(project.replies.some((t) => t.includes(HELLO)), `project: ${JSON.stringify(project.replies)}`);
-    console.log('  ok: full agent turn on the bare surface and the /projects/local prefix');
+    console.log('  ok: full agent turn on the bare surface');
 
     // The x-api-key credential path authenticates too.
     const viaApiKey = await converse(client(h.baseUrl, h.keys.api, { header: 'x-api-key' }));
@@ -154,15 +151,6 @@ async function enforcementAndAgentLoop(bin) {
     for await (const ev of stream) streamedTypes.push(ev.type);
     assert.ok(streamedTypes.includes('agent.message'), `stream types: ${streamedTypes}`);
     console.log('  ok: SSE stream (events.stream) carries the agent turn');
-
-    // An unauthored project is 404.
-    const ghost = await fetch(`${h.baseUrl}/projects/ghost/v1/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${h.keys.api}` },
-      body: JSON.stringify({ agent: 'assistant' }),
-    });
-    assert.equal(ghost.status, 404, 'an unauthored project is not found');
-    console.log('  ok: unknown project -> 404');
   } finally {
     await h.stop();
   }
