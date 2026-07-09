@@ -265,10 +265,6 @@ pub enum InboundEvent {
         #[serde(default)]
         session_thread_id: Option<String>,
     },
-    #[serde(rename = "user.pause")]
-    UserPause {},
-    #[serde(rename = "user.resume")]
-    UserResume {},
 }
 
 impl InboundEvent {
@@ -282,8 +278,6 @@ impl InboundEvent {
             InboundEvent::UserToolResult { .. } => "user.tool_result",
             InboundEvent::UserDefineOutcome { .. } => "user.define_outcome",
             InboundEvent::UserInterrupt { .. } => "user.interrupt",
-            InboundEvent::UserPause {} => "user.pause",
-            InboundEvent::UserResume {} => "user.resume",
         }
     }
 }

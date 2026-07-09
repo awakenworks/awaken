@@ -1653,9 +1653,6 @@ impl ManagedState {
                 InboundEvent::UserInterrupt { .. } => {
                     self.runtime.interrupt(session_id).await?;
                 }
-                // `user.pause`, `user.resume`: accept-only; the receipt is the
-                // acknowledgement.
-                _ => {}
             }
         }
         // Refresh the session's accumulated token usage from the runtime's committed
