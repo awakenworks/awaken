@@ -28,7 +28,7 @@ impl SharedHost {
         if let Some(acp) = &self.acp
             && acp.is_acp(thread)
         {
-            let context = ctx.context_for(&activation);
+            let context = ctx.context_for(&activation).await;
             return acp
                 .executor
                 .execute(activation, context)
@@ -54,6 +54,7 @@ impl SharedHost {
             // unconsumed messages carry over to the thread's next attempt.
             let context = ctx
                 .context_for(&activation)
+                .await
                 .with_live_inbox(ctx.open_live_inbox());
             let result = ctx
                 .ingress
