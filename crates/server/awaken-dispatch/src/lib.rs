@@ -42,7 +42,7 @@ pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 pub use memory::MemoryDispatchStore;
-pub use pool::{DispatchPool, WorkerResolver};
+pub use pool::{CompletionSink, DispatchPool, WorkerResolver};
 pub use postgres::{PostgresDispatchStore, StoreError as PostgresStoreError};
 pub use request::{RunExecutionContext, RunExecutionRequest};
 pub use send_message::OutboxMessageSender;
