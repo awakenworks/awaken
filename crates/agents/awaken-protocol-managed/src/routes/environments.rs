@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use crate::routes::ManagedJson;
 use crate::types::environment::{
     DeletedEnvironment, Environment, EnvironmentCreateParams, EnvironmentUpdateParams, Work,
-    WorkHeartbeat, WorkQueueStats, WorkUpdateParams,
+    WorkData, WorkHeartbeat, WorkQueueStats, WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, Page};
 
@@ -94,8 +94,7 @@ impl EnvRecord {
 #[derive(Clone)]
 struct WorkRecord {
     environment_id: String,
-    /// `BetaSessionWorkData | BetaHealthCheckWorkData`.
-    data: Value,
+    data: WorkData,
     metadata: BTreeMap<String, String>,
     /// `queued` | `starting` | `active` | `stopping` | `stopped`.
     state: &'static str,
@@ -220,7 +219,9 @@ async fn create_env(
         work_id.clone(),
         WorkRecord {
             environment_id: id.clone(),
-            data: json!({ "id": work_id, "type": "healthcheck" }),
+            data: WorkData::HealthCheck {
+                id: work_id.clone(),
+            },
             metadata: BTreeMap::new(),
             state: "queued",
             acknowledged_at: None,

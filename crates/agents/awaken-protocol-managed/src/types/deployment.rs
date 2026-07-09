@@ -63,6 +63,34 @@ pub struct DeploymentUpdateParams {
     pub vault_ids: Option<Vec<String>>,
 }
 
+/// `BetaManagedAgentsTriggerContext` — why a deployment run started. This surface
+/// only mints manual runs; `Schedule` is modeled for wire completeness.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TriggerContext {
+    Manual,
+    Schedule { scheduled_at: String },
+}
+
+/// `BetaManagedAgentsDeploymentPausedReason` — why a deployment is paused. This
+/// surface only pauses manually (`BetaManagedAgentsManualDeploymentPausedReason`);
+/// the auto-pause error union is not reproduced (never emitted here).
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PausedReason {
+    Manual,
+}
+
+/// `BetaManagedAgentsRunError` — a run's terminal error. Runs never fail on this
+/// single-machine surface, so this is never constructed; it types
+/// [`DeploymentRun::error`] (always `null` here) rather than leaving it `Value`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunError {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub message: String,
+}
+
 /// `BetaManagedAgentsDeployment` — an agent bound to an environment with initial
 /// events and a schedule.
 #[derive(Debug, Clone, Serialize)]
@@ -79,8 +107,7 @@ pub struct Deployment {
     pub initial_events: Vec<Value>,
     pub metadata: BTreeMap<String, String>,
     pub name: String,
-    /// `BetaManagedAgentsDeploymentPausedReason` union, or `null` when active.
-    pub paused_reason: Option<Value>,
+    pub paused_reason: Option<PausedReason>,
     pub resources: Vec<Value>,
     /// `BetaManagedAgentsSchedule`, or `null`.
     pub schedule: Option<Value>,
@@ -98,9 +125,7 @@ pub struct DeploymentRun {
     pub agent: AgentReference,
     pub created_at: String,
     pub deployment_id: String,
-    /// `BetaManagedAgentsRunError` union, or `null` on success.
-    pub error: Option<Value>,
+    pub error: Option<RunError>,
     pub session_id: Option<String>,
-    /// `BetaManagedAgentsTriggerContext` (e.g. `{ "type": "manual" }`).
-    pub trigger_context: Value,
+    pub trigger_context: TriggerContext,
 }

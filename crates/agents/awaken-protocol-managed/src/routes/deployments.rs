@@ -16,12 +16,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::routes::ManagedJson;
 use crate::types::agent::AgentReference;
 use crate::types::deployment::{
-    Deployment, DeploymentCreateParams, DeploymentRun, DeploymentUpdateParams,
+    Deployment, DeploymentCreateParams, DeploymentRun, DeploymentUpdateParams, PausedReason,
+    TriggerContext,
 };
 use crate::types::{ErrorResponse, Page};
 
@@ -40,7 +41,7 @@ struct DeploymentRecord {
     vault_ids: Vec<String>,
     /// `"active"` | `"paused"`.
     status: &'static str,
-    paused_reason: Option<Value>,
+    paused_reason: Option<PausedReason>,
     archived_at: Option<String>,
 }
 
@@ -83,7 +84,7 @@ impl RunRecord {
             deployment_id: self.deployment_id.clone(),
             error: None,
             session_id: None,
-            trigger_context: json!({ "type": "manual" }),
+            trigger_context: TriggerContext::Manual,
         }
     }
 }
@@ -230,7 +231,7 @@ async fn pause_deployment(
     let mut store = state.deployments.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(|| not_found("deployment"))?;
     record.status = "paused";
-    record.paused_reason = Some(json!({ "type": "manual" }));
+    record.paused_reason = Some(PausedReason::Manual);
     Ok(Json(record.project(&id)))
 }
 

@@ -74,20 +74,28 @@ pub struct DeletedEnvironment {
     pub object_type: &'static str,
 }
 
-/// `BetaSelfHostedWork` — a work item on an environment's queue. `data` is the
-/// work payload union (`BetaSessionWorkData | BetaHealthCheckWorkData`); `secret`
-/// is always `null` on this surface (no lease secret is minted).
+/// A work item's payload — `BetaHealthCheckWorkData | BetaSessionWorkData`. This
+/// surface only seeds healthcheck work, so only that variant is modeled.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum WorkData {
+    #[serde(rename = "healthcheck")]
+    HealthCheck { id: String },
+}
+
+/// `BetaSelfHostedWork` — a work item on an environment's queue. `secret` (a lease
+/// token) is always `null` here (no lease secret is minted).
 #[derive(Debug, Clone, Serialize)]
 pub struct Work {
     pub id: String,
     #[serde(rename = "type")]
     pub object_type: &'static str,
     pub environment_id: String,
-    pub data: Value,
+    pub data: WorkData,
     pub metadata: BTreeMap<String, String>,
     /// `queued` | `starting` | `active` | `stopping` | `stopped`.
     pub state: &'static str,
-    pub secret: Option<Value>,
+    pub secret: Option<String>,
     pub acknowledged_at: Option<String>,
     pub latest_heartbeat_at: Option<String>,
     pub created_at: String,
