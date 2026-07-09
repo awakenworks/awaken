@@ -94,7 +94,11 @@ pub fn dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
     let migrations = FILES
         .iter()
         .map(|(name, contents)| {
-            Migration::new(version_of(name), description_of(name, contents), contents.trim())
+            Migration::new(
+                version_of(name),
+                description_of(name, contents),
+                contents.trim(),
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
     MigrationBundle::new(BUNDLE_ID, migrations)
@@ -133,8 +137,7 @@ mod tests {
 
         for migration in indexes {
             for dialect in [Dialect::Postgres, Dialect::Sqlite] {
-                let sql =
-                    awaken_scoped_migration::render(migration.sql_for(dialect), dialect, NS);
+                let sql = awaken_scoped_migration::render(migration.sql_for(dialect), dialect, NS);
                 assert!(sql.contains("CREATE INDEX"), "{sql}");
                 // Every index name and target table carries the runtime prefix so
                 // co-located runtimes never collide, and no token survives.
