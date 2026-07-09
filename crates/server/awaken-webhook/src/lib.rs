@@ -15,7 +15,9 @@ mod store;
 
 pub use dispatch::{DispatchReport, ReqwestSender, WebhookDispatcher, WebhookSender};
 pub use event::{WebhookEvent, WebhookEventData};
-pub use signing::{SECRET_PREFIX, SignError, sign_bytes, signature_header, verify};
+pub use signing::{
+    SECRET_PREFIX, SignError, generate_secret, sign_bytes, signature_header, verify,
+};
 pub use store::{
     InMemoryWebhookRepository, SqliteWebhookRepository, WebhookRepository, WebhookSubscription,
 };

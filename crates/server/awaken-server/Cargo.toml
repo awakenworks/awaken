@@ -69,6 +69,10 @@ awaken-iam-preset = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
+# Webhook plane (ADR-0048 / S10): the WebhookLifecycleSink bridges the managed
+# session lifecycle to the neutral dispatcher; the CRUD router manages
+# workspace-scoped subscriptions. Env-gated by AWAKEN_WEBHOOK_DIR.
+awaken-webhook = { workspace = true }
 awaken-runtime = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true

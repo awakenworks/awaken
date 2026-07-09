@@ -14,6 +14,8 @@ hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 subtle = "2"
+# Generate a `whsec_` signing secret from OS entropy at subscription-create time.
+getrandom = "0.2"
 # Delivery: HTTPS POST of the signed payload; async port + reqwest impl.
 async-trait.workspace = true
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
