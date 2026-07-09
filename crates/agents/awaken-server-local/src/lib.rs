@@ -453,22 +453,35 @@ pub fn scenario_model(
     in_process: Arc<dyn LlmExecutor>,
     default_ref: &str,
 ) -> (Arc<dyn LlmExecutor>, String) {
-    if std::env::var("AWAKEN_MODEL_SOURCE").as_deref() == Ok("http") {
-        let key = std::env::var("ANTHROPIC_API_KEY")
-            .or_else(|_| std::env::var("KIMI_API_KEY"))
-            .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_API_KEY");
-        let base = std::env::var("ANTHROPIC_BASE_URL")
-            .or_else(|_| std::env::var("KIMI_BASE_URL"))
-            .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_BASE_URL");
-        let model = std::env::var("ANTHROPIC_MODEL")
-            .or_else(|_| std::env::var("KIMI_MODEL"))
-            .unwrap_or_else(|_| "fake-haiku".to_string());
-        (
-            Arc::new(GenaiExecutor::anthropic_compatible(base, key)),
-            model,
-        )
-    } else {
-        (in_process, default_ref.to_string())
+    match std::env::var("AWAKEN_MODEL_SOURCE").as_deref() {
+        Ok("http") => {
+            let key = std::env::var("ANTHROPIC_API_KEY")
+                .or_else(|_| std::env::var("KIMI_API_KEY"))
+                .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_API_KEY");
+            let base = std::env::var("ANTHROPIC_BASE_URL")
+                .or_else(|_| std::env::var("KIMI_BASE_URL"))
+                .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_BASE_URL");
+            let model = std::env::var("ANTHROPIC_MODEL")
+                .or_else(|_| std::env::var("KIMI_MODEL"))
+                .unwrap_or_else(|_| "fake-haiku".to_string());
+            (
+                Arc::new(GenaiExecutor::anthropic_compatible(base, key)),
+                model,
+            )
+        }
+        // A live Gemini via the genai default client's AI-Studio adapter, keyed by
+        // `GEMINI_API_KEY`/`GOOGLE_API_KEY` in the environment. Same host-config seam
+        // as `http`, but the model calls cross the real Gemini wire — used where a
+        // real LLM is needed but only a Google key is available (KIMI creds dead).
+        Ok("gemini") => {
+            std::env::var("GEMINI_API_KEY")
+                .or_else(|_| std::env::var("GOOGLE_API_KEY"))
+                .expect("AWAKEN_MODEL_SOURCE=gemini requires GEMINI_API_KEY/GOOGLE_API_KEY");
+            let model =
+                std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
+            (Arc::new(GenaiExecutor::new()), model)
+        }
+        _ => (in_process, default_ref.to_string()),
     }
 }
 
