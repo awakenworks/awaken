@@ -95,7 +95,7 @@ pub fn router(state: Arc<ManagedState>) -> Router {
         .with_state(state.clone())
         // The live-inbox is a separate Awaken protocol, not part of the
         // managed-compatible surface; it merely rides the same host + state port.
-        .merge(crate::live_inbox::live_inbox_router(state))
+        .merge(crate::ext::live_inbox::live_inbox_router(state))
 }
 
 /// Map a domain error to `(status, Anthropic error envelope)`. The `error.type`
