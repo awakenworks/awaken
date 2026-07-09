@@ -7,8 +7,9 @@
   `RuntimeRunContext::tool_executor`); host seam `SharedHost::with_remote_hand`;
   served `AWAKEN_MODEL_MODE=remote-hand` mode + `managed_remote_hand_e2e.mjs`
   (a served run runs `bash` on a hand and the output round-trips); guardrail G33.
-  Deferred (ADR-0046): per-run hand placement, pooled workers, out-of-process/
-  networked hands (the served slice runs the hand as an in-process framed task).
+  Deferred (ADR-0046): the `ToolExecutorProvider` placement seam that selects
+  which hand a run uses (the served slice runs the hand as an in-process framed
+  task; networked hands themselves shipped in ADR-0045).
 - Depends on: [ADR-0007](0007-runtime-owns-tool-execution.md) (this is the "future
   ADR" that D3 deferred), [ADR-0041](0041-sandbox-execution-environment-provider.md)
   (process-level provider seam that hosts a hand)
