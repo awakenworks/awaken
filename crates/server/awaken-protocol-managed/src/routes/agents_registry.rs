@@ -21,9 +21,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::router::ManagedJson;
-use crate::types::ErrorResponse;
-use crate::types::Page;
+use crate::routes::ManagedJson;
+use crate::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
+use crate::types::{ErrorResponse, ModelConfig, Page};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
@@ -32,8 +32,7 @@ const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 struct Record {
     name: String,
     description: Option<String>,
-    /// Normalized `BetaManagedAgentsModelConfig` (`{id, speed?}`).
-    model: Value,
+    model: ModelConfig,
     system: Option<String>,
     metadata: BTreeMap<String, String>,
     mcp_servers: Vec<Value>,
@@ -43,28 +42,28 @@ struct Record {
     version: u64,
     archived_at: Option<String>,
     /// The projected agent at each past version (index 0 == v1), for `versions.list`.
-    history: Vec<Value>,
+    history: Vec<Agent>,
 }
 
 impl Record {
-    fn project(&self, id: &str) -> Value {
-        json!({
-            "id": id,
-            "type": "agent",
-            "archived_at": self.archived_at,
-            "created_at": OBJECT_AT,
-            "updated_at": OBJECT_AT,
-            "name": self.name,
-            "description": self.description,
-            "model": self.model,
-            "system": self.system,
-            "metadata": self.metadata,
-            "mcp_servers": self.mcp_servers,
-            "skills": self.skills,
-            "tools": self.tools,
-            "multiagent": self.multiagent,
-            "version": self.version,
-        })
+    fn project(&self, id: &str) -> Agent {
+        Agent {
+            id: id.to_string(),
+            object_type: "agent",
+            archived_at: self.archived_at.clone(),
+            created_at: OBJECT_AT.to_string(),
+            updated_at: OBJECT_AT.to_string(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            model: self.model.clone(),
+            system: self.system.clone(),
+            metadata: self.metadata.clone(),
+            mcp_servers: self.mcp_servers.clone(),
+            skills: self.skills.clone(),
+            tools: self.tools.clone(),
+            multiagent: self.multiagent.clone(),
+            version: self.version,
+        }
     }
 }
 
@@ -120,24 +119,24 @@ fn tools_wire(ids: &[String]) -> Vec<Value> {
 
 /// Project a config-plane view to the `BetaManagedAgent` wire shape. The agent has
 /// no registry record, so presentation fields default (name = id, version = 1).
-fn project_config_view(id: &str, view: &AgentConfigView) -> Value {
-    json!({
-        "id": id,
-        "type": "agent",
-        "archived_at": null,
-        "created_at": OBJECT_AT,
-        "updated_at": OBJECT_AT,
-        "name": id,
-        "description": null,
-        "model": { "id": view.model.clone().unwrap_or_default() },
-        "system": view.system,
-        "metadata": {},
-        "mcp_servers": [],
-        "skills": [],
-        "tools": tools_wire(&view.tool_ids),
-        "multiagent": null,
-        "version": 1,
-    })
+fn project_config_view(id: &str, view: &AgentConfigView) -> Agent {
+    Agent {
+        id: id.to_string(),
+        object_type: "agent",
+        archived_at: None,
+        created_at: OBJECT_AT.to_string(),
+        updated_at: OBJECT_AT.to_string(),
+        name: id.to_string(),
+        description: None,
+        model: ModelConfig::new(view.model.clone().unwrap_or_default()),
+        system: view.system.clone(),
+        metadata: BTreeMap::new(),
+        mcp_servers: Vec::new(),
+        skills: Vec::new(),
+        tools: tools_wire(&view.tool_ids),
+        multiagent: None,
+        version: 1,
+    }
 }
 
 /// Mount the agent-registry routes.
@@ -159,68 +158,22 @@ fn not_found() -> WireError {
     )
 }
 
-fn bad_request(message: impl Into<String>) -> WireError {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new("invalid_request_error", message)),
-    )
-}
-
-/// Normalize the `model` field: a bare string becomes `{id: <string>}`; an object
-/// (`{id, speed?}`) passes through. Anything else is a `400`.
-fn normalize_model(model: &Value) -> Result<Value, WireError> {
-    match model {
-        Value::String(s) => Ok(json!({ "id": s })),
-        Value::Object(_) => Ok(model.clone()),
-        _ => Err(bad_request(
-            "model must be a string or a model-config object",
-        )),
-    }
-}
-
-fn value_array(body: &Value, key: &str) -> Vec<Value> {
-    body.get(key)
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn value_opt_string(body: &Value, key: &str) -> Option<String> {
-    body.get(key).and_then(Value::as_str).map(str::to_string)
-}
-
-fn value_metadata(body: &Value, key: &str) -> BTreeMap<String, String> {
-    body.get(key)
-        .and_then(Value::as_object)
-        .map(|o| {
-            o.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 async fn create_agent(
     State(state): State<Arc<AgentRegistryState>>,
-    ManagedJson(body): ManagedJson<Value>,
-) -> Result<Json<Value>, WireError> {
-    let name = value_opt_string(&body, "name").ok_or_else(|| bad_request("name is required"))?;
-    let model = normalize_model(
-        body.get("model")
-            .ok_or_else(|| bad_request("model is required"))?,
-    )?;
+    ManagedJson(params): ManagedJson<AgentCreateParams>,
+) -> Result<Json<Agent>, WireError> {
     let n = state.seq.fetch_add(1, Ordering::SeqCst);
     let id = format!("agent_{n:016}");
     let mut record = Record {
-        name,
-        description: value_opt_string(&body, "description"),
-        model,
-        system: value_opt_string(&body, "system"),
-        metadata: value_metadata(&body, "metadata"),
-        mcp_servers: value_array(&body, "mcp_servers"),
-        skills: value_array(&body, "skills"),
-        tools: value_array(&body, "tools"),
-        multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
+        name: params.name,
+        description: params.description,
+        model: params.model.into_config(),
+        system: params.system,
+        metadata: params.metadata,
+        mcp_servers: params.mcp_servers,
+        skills: params.skills,
+        tools: params.tools,
+        multiagent: params.multiagent.filter(|v| !v.is_null()),
         version: 1,
         archived_at: None,
         history: Vec::new(),
@@ -234,7 +187,7 @@ async fn create_agent(
 async fn retrieve_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Agent>, WireError> {
     // A registry record (an agent created via this API) wins.
     {
         let store = state.inner.lock().unwrap();
@@ -251,7 +204,7 @@ async fn retrieve_agent(
 }
 
 /// `GET /v1/agents` — one full page, ascending id order.
-async fn list_agents(State(state): State<Arc<AgentRegistryState>>) -> Json<Page<Value>> {
+async fn list_agents(State(state): State<Arc<AgentRegistryState>>) -> Json<Page<Agent>> {
     let store = state.inner.lock().unwrap();
     let data = store.iter().map(|(id, r)| r.project(id)).collect();
     Json(Page::single(data))
@@ -264,54 +217,50 @@ async fn list_agents(State(state): State<Arc<AgentRegistryState>>) -> Json<Page<
 async fn update_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
-    ManagedJson(body): ManagedJson<Value>,
-) -> Result<Json<Value>, WireError> {
-    let expected = body
-        .get("version")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| bad_request("version is required for an update"))?;
+    ManagedJson(params): ManagedJson<AgentUpdateParams>,
+) -> Result<Json<Agent>, WireError> {
     let mut store = state.inner.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(not_found)?;
-    if expected != record.version {
+    if params.version != record.version {
         return Err((
             StatusCode::CONFLICT,
             Json(ErrorResponse::new(
                 // The SDK has no `conflict_error`; a 409 carries `invalid_request_error`.
                 "invalid_request_error",
                 format!(
-                    "version mismatch: expected {}, got {expected}",
-                    record.version
+                    "version mismatch: expected {}, got {}",
+                    record.version, params.version
                 ),
             )),
         ));
     }
     // Each field replaces only when present in the body.
-    if let Some(name) = value_opt_string(&body, "name") {
+    if let Some(name) = params.name {
         record.name = name;
     }
-    if let Some(model) = body.get("model") {
-        record.model = normalize_model(model)?;
+    if let Some(model) = params.model {
+        record.model = model.into_config();
     }
-    if body.get("description").is_some() {
-        record.description = value_opt_string(&body, "description");
+    if let Some(description) = params.description {
+        record.description = Some(description);
     }
-    if body.get("system").is_some() {
-        record.system = value_opt_string(&body, "system");
+    if let Some(system) = params.system {
+        record.system = Some(system);
     }
-    if body.get("metadata").is_some() {
-        record.metadata = value_metadata(&body, "metadata");
+    if let Some(metadata) = params.metadata {
+        record.metadata = metadata;
     }
-    if body.get("mcp_servers").is_some() {
-        record.mcp_servers = value_array(&body, "mcp_servers");
+    if let Some(mcp_servers) = params.mcp_servers {
+        record.mcp_servers = mcp_servers;
     }
-    if body.get("skills").is_some() {
-        record.skills = value_array(&body, "skills");
+    if let Some(skills) = params.skills {
+        record.skills = skills;
     }
-    if body.get("tools").is_some() {
-        record.tools = value_array(&body, "tools");
+    if let Some(tools) = params.tools {
+        record.tools = tools;
     }
-    if body.get("multiagent").is_some() {
-        record.multiagent = body.get("multiagent").filter(|v| !v.is_null()).cloned();
+    if let Some(multiagent) = params.multiagent {
+        record.multiagent = Some(multiagent).filter(|v| !v.is_null());
     }
     record.version += 1;
     let projected = record.project(&id);
@@ -323,7 +272,7 @@ async fn update_agent(
 async fn archive_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Agent>, WireError> {
     let mut store = state.inner.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(not_found)?;
     record.archived_at = Some(OBJECT_AT.to_string());
@@ -338,7 +287,7 @@ async fn archive_agent(
 async fn list_versions(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
-) -> Result<Json<Page<Value>>, WireError> {
+) -> Result<Json<Page<Agent>>, WireError> {
     let store = state.inner.lock().unwrap();
     let record = store.get(&id).ok_or_else(not_found)?;
     Ok(Json(Page::single(record.history.clone())))

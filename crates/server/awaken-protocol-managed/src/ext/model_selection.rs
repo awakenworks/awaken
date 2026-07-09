@@ -2,12 +2,12 @@
 //!
 //! Claude's Managed Agents wire binds a session to an agent, not to a model or a
 //! runtime — those are our concern. Rather than add non-SDK fields to the native
-//! [`CreateSessionRequest`] (which would break 1:1 compatibility), the selection
+//! [`SessionCreateParams`] (which would break 1:1 compatibility), the selection
 //! travels in the Claude-native `metadata` bag under reserved `awaken.*` keys. This
 //! module owns those keys and the accessor that reads them, keeping `types` a pure
 //! projection of the SDK shapes.
 
-use crate::types::CreateSessionRequest;
+use crate::types::SessionCreateParams;
 
 /// Metadata key for the awaken per-session model override (R2), carried on the
 /// Claude-native `metadata` bag rather than the SDK `agent` object.
@@ -25,7 +25,7 @@ pub trait AwakenModelSelection {
     fn awaken_runtime(&self) -> Option<&str>;
 }
 
-impl AwakenModelSelection for CreateSessionRequest {
+impl AwakenModelSelection for SessionCreateParams {
     fn awaken_model(&self) -> Option<&str> {
         self.metadata.get(AWAKEN_MODEL_META_KEY).map(String::as_str)
     }
@@ -43,14 +43,14 @@ mod tests {
 
     #[test]
     fn create_session_request_reads_awaken_overrides_from_metadata() {
-        let req: CreateSessionRequest = serde_json::from_str(
+        let req: SessionCreateParams = serde_json::from_str(
             r#"{"agent":"a","metadata":{"awaken.model":"m2","awaken.runtime":"acp:claude"}}"#,
         )
         .unwrap();
         assert_eq!(req.awaken_model(), Some("m2"));
         assert_eq!(req.awaken_runtime(), Some("acp:claude"));
         // Absent → None (host default / native).
-        let bare: CreateSessionRequest = serde_json::from_str(r#"{"agent":"a"}"#).unwrap();
+        let bare: SessionCreateParams = serde_json::from_str(r#"{"agent":"a"}"#).unwrap();
         assert_eq!(bare.awaken_model(), None);
         assert_eq!(bare.awaken_runtime(), None);
     }

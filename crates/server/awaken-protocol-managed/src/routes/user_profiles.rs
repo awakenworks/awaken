@@ -18,8 +18,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use std::sync::Arc;
 
-use crate::router::ManagedJson;
-use crate::types::user_profile::{CreateParams, Relationship, UpdateParams, UserProfile};
+use crate::routes::ManagedJson;
+use crate::types::user_profile::{
+    EnrollmentUrl, Relationship, UserProfile, UserProfileCreateParams, UserProfileUpdateParams,
+};
 use crate::types::{ErrorResponse, Page};
 
 /// Deterministic timestamps, matching the vault surface's convention.
@@ -109,7 +111,7 @@ fn check_len(field: &str, value: &Option<String>) -> Result<(), WireError> {
 
 async fn create_profile(
     State(state): State<Arc<UserProfileState>>,
-    ManagedJson(params): ManagedJson<CreateParams>,
+    ManagedJson(params): ManagedJson<UserProfileCreateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
     check_len("external_id", &params.external_id)?;
     check_len("name", &params.name)?;
@@ -147,7 +149,7 @@ async fn list_profiles(State(state): State<Arc<UserProfileState>>) -> Json<Page<
 async fn update_profile(
     State(state): State<Arc<UserProfileState>>,
     Path(id): Path<String>,
-    ManagedJson(params): ManagedJson<UpdateParams>,
+    ManagedJson(params): ManagedJson<UserProfileUpdateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
     check_len("external_id", &params.external_id)?;
     check_len("name", &params.name)?;
@@ -181,14 +183,14 @@ async fn update_profile(
 async fn enrollment_url(
     State(state): State<Arc<UserProfileState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, WireError> {
+) -> Result<Json<EnrollmentUrl>, WireError> {
     let store = state.inner.lock().unwrap();
     if !store.contains_key(&id) {
         return Err(not_found());
     }
-    Ok(Json(serde_json::json!({
-        "type": "enrollment_url",
-        "url": format!("https://enroll.awaken.local/{id}"),
-        "expires_at": ENROLL_EXPIRES_AT,
-    })))
+    Ok(Json(EnrollmentUrl {
+        object_type: "enrollment_url",
+        url: format!("https://enroll.awaken.local/{id}"),
+        expires_at: ENROLL_EXPIRES_AT,
+    }))
 }

@@ -13,52 +13,46 @@
 
 // The crate is organized by concern:
 //
-// 1. `types`   — native Managed Agents wire shapes, 1:1 with the TS SDK.
-// 2. `project` — conversion/projection: neutral domain state → wire events.
-// 3. `router`  — routing: the axum routers and handlers.
-// 4. `ext`     — our extensions: vocabulary and surfaces not on the SDK wire.
+// - `types`   — native Managed Agents wire shapes, 1:1 with the TS SDK.
+// - `project` — conversion/projection: neutral domain state → wire events.
+// - `routes`  — routing: the axum routers and handlers for every surface
+//               (sessions + the management-plane resources), each resource
+//               bundling the in-memory store it drives.
+// - `ext`     — our extensions: vocabulary and surfaces not on the SDK wire.
 //
-// `state` holds the `SessionRuntime` port and the session record store the router
-// drives and the projection writes into. The management-plane resource surfaces
-// (`agents_registry`, `deployments`, `environments`, `user_profiles`, `vaults`)
-// are self-contained modules — each bundles its own wire types, state, and router
-// for one resource — plus the shared `session_repo`/`pagination` helpers.
+// `state` holds the `SessionRuntime` port and the session record store the routes
+// drive and the projection writes into; `session_repo` is its persistence port.
 
-/// 4. Our extensions: non-SDK vocabulary and surfaces (awaken model/runtime
-/// selection, the live-inbox edit protocol) kept apart from the compatible core.
+/// Our extensions: non-SDK vocabulary and surfaces (awaken model/runtime selection,
+/// the live-inbox edit protocol) kept apart from the compatible core.
 pub mod ext;
-/// 2. The projection: committed `Message`s and engine events → public wire events.
+/// Conversion/projection: committed `Message`s and engine events → public wire events.
 pub mod project;
-/// 3. The routing: the axum router and handlers over [`state::ManagedState`].
-mod router;
-/// 1. The wire transfer objects: the Managed Agents request/response/event shapes,
-/// each mapping 1:1 onto the `@anthropic-ai/sdk` beta `managed-agents` types.
-/// Pure serde types only — the logic that *assembles* them from neutral domain
-/// state lives in [`project`] and [`state`].
+/// Routing: the axum routers and handlers for every surface, over [`state::ManagedState`]
+/// and the resource stores.
+mod routes;
+/// Native Managed Agents wire transfer objects, 1:1 with the `@anthropic-ai/sdk`
+/// beta `managed-agents` types. Pure serde shapes; the logic that *assembles* them
+/// from neutral domain state lives in [`project`] and [`state`].
 pub mod types;
 
 mod session_repo;
 mod state;
 
-// Management-plane resource surfaces (self-contained per-resource modules).
-pub mod agents_registry;
-pub mod deployments;
-pub mod environments;
-pub mod user_profiles;
-pub mod vaults;
-
-pub use agents_registry::{AgentConfigSource, AgentConfigView, AgentRegistryState, agents_router};
-pub use deployments::{DeploymentState, deployments_router};
-pub use environments::{EnvironmentState, environments_router};
-pub use router::{ProjectScope, router};
+pub use routes::agents_registry::{
+    AgentConfigSource, AgentConfigView, AgentRegistryState, agents_router,
+};
+pub use routes::deployments::{DeploymentState, deployments_router};
+pub use routes::environments::{EnvironmentState, environments_router};
+pub use routes::user_profiles::{UserProfileState, user_profiles_router};
+pub use routes::vaults::{
+    McpProbe, McpProbeStatus, McpRefreshBinding, TokenEndpointAuthBinding, VaultState, vault_router,
+};
+pub use routes::{ProjectScope, router};
 pub use session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,
     RunError, RunErrorKind, SessionInit, SessionResource, SessionRuntime, SessionUsage, StateError,
     TurnFailure, TurnOutcome,
-};
-pub use user_profiles::{UserProfileState, user_profiles_router};
-pub use vaults::{
-    McpProbe, McpProbeStatus, McpRefreshBinding, TokenEndpointAuthBinding, VaultState, vault_router,
 };

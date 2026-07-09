@@ -20,7 +20,7 @@ use axum::{Json, Router};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 
-use crate::router::{ManagedJson, error_response};
+use crate::routes::{ManagedJson, error_response};
 use crate::state::{LiveInboxSnapshot, ManagedState};
 use crate::types::ErrorResponse;
 

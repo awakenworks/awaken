@@ -42,7 +42,7 @@ pub struct UserProfile {
 
 /// `UserProfileCreateParams`.
 #[derive(Debug, Clone, Deserialize)]
-pub struct CreateParams {
+pub struct UserProfileCreateParams {
     #[serde(default)]
     pub external_id: Option<String>,
     #[serde(default)]
@@ -53,12 +53,22 @@ pub struct CreateParams {
     pub relationship: Relationship,
 }
 
+/// `BetaUserProfileEnrollmentURL` — the `POST .../enrollment_url` receipt: a
+/// stable per-profile enrollment link with a validity horizon.
+#[derive(Debug, Clone, Serialize)]
+pub struct EnrollmentUrl {
+    #[serde(rename = "type")]
+    pub object_type: &'static str,
+    pub url: String,
+    pub expires_at: &'static str,
+}
+
 /// `UserProfileUpdateParams` — a partial update. `external_id` / `name` /
 /// `relationship` replace when present; `metadata` is a merge where an **empty
 /// string** value removes the key (the SDK's documented convention) and keys not
 /// present are preserved.
 #[derive(Debug, Clone, Deserialize)]
-pub struct UpdateParams {
+pub struct UserProfileUpdateParams {
     #[serde(default)]
     pub external_id: Option<String>,
     #[serde(default)]

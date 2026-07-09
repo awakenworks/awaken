@@ -16,13 +16,13 @@ use awaken_credential_vault::CredentialSourceId;
 
 use crate::ext::AwakenModelSelection;
 use crate::project::{self, project_messages, project_turn};
+use crate::routes::vaults::{McpRefreshBinding, VaultState};
 use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
-    ConfirmResult, CreateSessionRequest, Event, EventReceipt, InboundEvent, ListEventsResponse,
-    ModelConfig, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
-    SessionError, StopReason,
+    ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
+    OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
+    SessionCreateParams, SessionError, SessionStats, StopReason, Usage,
 };
-use crate::vaults::{McpRefreshBinding, VaultState};
 
 /// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
 /// clock port; the wire only needs a valid RFC 3339 value here.
@@ -612,7 +612,7 @@ pub struct ManagedState {
     /// The environments surface, when the server mounts one: a session's
     /// `environment_id` is resolved to its networking policy (egress on/off) at
     /// creation. `None` → every session gets host network (unrestricted).
-    environments: Option<Arc<crate::environments::EnvironmentState>>,
+    environments: Option<Arc<crate::routes::environments::EnvironmentState>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
     /// Durable-config source of truth for the session aggregate: `create` writes
     /// it, rehydration reads it so a restored session reports its real
@@ -664,7 +664,7 @@ impl ManagedState {
     #[must_use]
     pub fn with_environments(
         mut self,
-        environments: Arc<crate::environments::EnvironmentState>,
+        environments: Arc<crate::routes::environments::EnvironmentState>,
     ) -> Self {
         self.environments = Some(environments);
         self
@@ -711,7 +711,7 @@ impl ManagedState {
     /// the one validation that must hold *before* an id is minted or a thread is
     /// prepared, so it lives in a single method rather than inline — a dry-run
     /// bind check calls exactly this, and gets exactly the error create would.
-    pub fn check_bind(&self, req: &CreateSessionRequest) -> Result<(), StateError> {
+    pub fn check_bind(&self, req: &SessionCreateParams) -> Result<(), StateError> {
         if let Some(vaults) = &self.vaults
             && let Some(unknown) = req.vault_ids.iter().find(|v| !vaults.has_vault(v))
         {
@@ -722,7 +722,7 @@ impl ManagedState {
 
     pub async fn create_session(
         &self,
-        req: CreateSessionRequest,
+        req: SessionCreateParams,
         project_id: Option<String>,
     ) -> Result<Session, StateError> {
         self.check_bind(&req)?;
@@ -801,6 +801,15 @@ impl ManagedState {
             )
             .await
             .map_err(StateError::Run)?;
+        // A session assigned to a self-hosted environment is dispatched through that
+        // environment's work queue — the control plane enqueues it as `session` work
+        // for an external worker to claim and run (the session still exists here; the
+        // work item is how a polling worker discovers and drives it).
+        if let Some(envs) = self.environments.as_ref() {
+            if envs.is_self_hosted(&environment_id) {
+                envs.enqueue_session_work(&environment_id, &id);
+            }
+        }
         // Enumerate the runtime's provisioned surface so the agent object reports what
         // the run can actually do (built-in toolset, custom tools, skills, delegates),
         // not an empty set. The wire shaping lives in `project`; the host supplies
@@ -843,8 +852,8 @@ impl ManagedState {
             resources: resource_dtos,
             outcome_evaluations: Vec::new(),
             status: "idle",
-            stats: serde_json::json!({}),
-            usage: serde_json::json!({}),
+            stats: SessionStats::default(),
+            usage: Usage::default(),
             vault_ids: req.vault_ids.clone(),
             deployment_id: None,
         };
@@ -928,8 +937,8 @@ impl ManagedState {
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status: "idle",
-            stats: serde_json::json!({}),
-            usage: serde_json::json!({}),
+            stats: SessionStats::default(),
+            usage: Usage::default(),
             vault_ids: Vec::new(),
             deployment_id: None,
         }
@@ -1090,16 +1099,27 @@ impl ManagedState {
     /// A subagent child thread: a `session_thread` whose parent is the primary and
     /// whose `agent` is a minimal snapshot of the delegate `agent_name`.
     fn child_thread(session: &Session, thread_id: &str, agent_name: &str) -> serde_json::Value {
+        // Reuse the one `SessionAgent` shape rather than rebuild the agent object
+        // inline; the delegate's config is unknown here, so it is a minimal snapshot.
+        let agent = SessionAgent {
+            id: agent_name.to_string(),
+            kind: "agent",
+            version: 1,
+            model: ModelConfig::new(""),
+            name: agent_name.to_string(),
+            description: None,
+            system: None,
+            tools: Vec::new(),
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+            multiagent: None,
+        };
         serde_json::json!({
             "id": thread_id,
             "type": "session_thread",
             "session_id": session.id,
             "parent_thread_id": format!("{}:primary", session.id),
-            "agent": {
-                "id": agent_name, "type": "agent", "name": agent_name, "version": 1,
-                "model": "", "description": null, "system": null,
-                "tools": [], "mcp_servers": [], "skills": [],
-            },
+            "agent": agent,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
             "archived_at": null,
@@ -1734,13 +1754,13 @@ pub struct SessionUsage {
 
 /// The session's `usage` object (`BetaManagedAgentsSessionUsage`): cumulative input +
 /// output (+ prompt-cache) token counts across all turns. Emitted whenever a turn ran.
-fn session_usage_value(usage: SessionUsage) -> serde_json::Value {
-    serde_json::json!({
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "cache_read_input_tokens": usage.cache_read_tokens,
-        "cache_creation_input_tokens": usage.cache_creation_tokens,
-    })
+fn session_usage_value(usage: SessionUsage) -> Usage {
+    Usage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_input_tokens: usage.cache_read_tokens,
+        cache_creation_input_tokens: usage.cache_creation_tokens,
+    }
 }
 
 /// Concatenate the text of a content-block list.

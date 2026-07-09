@@ -48,9 +48,9 @@ impl ErrorResponse {
 
 /// `agent` in a create-session request — the SDK's `string | { id, type:'agent',
 /// version? }` (`BetaManagedAgentsAgentParams`). Deserialize-only; the `type:'agent'`
-/// tag is tolerated (and ignored) on input, like `McpServerWire`'s `type:'url'`.
+/// tag is tolerated (and ignored) on input, like `McpServer`'s `type:'url'`.
 /// This carries no awaken-only fields — per-session model override and runtime
-/// selection travel in the session `metadata` bag (see [`CreateSessionRequest`]).
+/// selection travel in the session `metadata` bag (see [`SessionCreateParams`]).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum AgentRef {
@@ -74,7 +74,7 @@ impl AgentRef {
 /// `POST /v1/sessions` request body (only the fields the runtime slice reads;
 /// unknown fields are ignored so the full SDK payload is accepted).
 #[derive(Debug, Clone, Deserialize)]
-pub struct CreateSessionRequest {
+pub struct SessionCreateParams {
     pub agent: AgentRef,
     #[serde(default)]
     pub environment_id: Option<String>,
@@ -85,7 +85,7 @@ pub struct CreateSessionRequest {
     /// MCP servers this session connects to (ADR-0043 Phase 3). Bound to vault
     /// credentials via `vault_ids` at session creation.
     #[serde(default)]
-    pub mcp_servers: Vec<McpServerWire>,
+    pub mcp_servers: Vec<McpServer>,
     /// Vaults whose credentials the session may use (matched to `mcp_servers`
     /// by exact `mcp_server_url`).
     #[serde(default)]
@@ -102,15 +102,15 @@ pub struct CreateSessionRequest {
 /// SDK's `type: "url"` tag is tolerated (and ignored) on input — there is only
 /// one variant — and always re-serialized on output.
 #[derive(Debug, Clone, Deserialize)]
-pub struct McpServerWire {
+pub struct McpServer {
     pub name: String,
     pub url: String,
 }
 
-impl Serialize for McpServerWire {
+impl Serialize for McpServer {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("McpServerWire", 3)?;
+        let mut s = serializer.serialize_struct("McpServer", 3)?;
         s.serialize_field("name", &self.name)?;
         s.serialize_field("type", "url")?;
         s.serialize_field("url", &self.url)?;
@@ -120,8 +120,9 @@ impl Serialize for McpServerWire {
 
 /// The `BetaManagedAgentsModelConfig` object: `{ id, speed? }`. A session/agent's
 /// `model` is this object on the wire, never a bare string (the SDK reads
-/// `agent.model.id`).
-#[derive(Debug, Clone, Serialize)]
+/// `agent.model.id`). The single definition of the model-config shape — the agent
+/// registry and session/thread projections all reuse it rather than rebuild it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -150,12 +151,29 @@ pub struct SessionAgent {
     /// SDK-required (nullable) fields; emitted as `null` when the host has none.
     pub description: Option<String>,
     pub system: Option<String>,
+    // Opaque SDK unions passed through verbatim (the tool / MCP-server / skill
+    // unions) — same treatment as [`Agent`](super::agent::Agent)'s.
     pub tools: Vec<Value>,
     pub mcp_servers: Vec<Value>,
     pub skills: Vec<Value>,
     /// The multiagent coordinator roster, omitted when the agent delegates to no one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multiagent: Option<Value>,
+}
+
+/// `BetaManagedAgentsSessionStats` — coarse per-session timing/counters. Empty on
+/// this surface (serializes as `{}`).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SessionStats {}
+
+/// `BetaManagedAgentsSessionUsage` — a session's accumulated token usage. Zero
+/// until the first turn commits usage.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
 }
 
 /// `BetaManagedAgentsSession` response (minimal but SDK-parseable).
@@ -174,10 +192,8 @@ pub struct Session {
     pub resources: Vec<Value>,
     pub outcome_evaluations: Vec<Value>,
     pub status: &'static str,
-    /// `BetaManagedAgentsSessionStats` — coarse timing (empty on this surface).
-    pub stats: Value,
-    /// `BetaManagedAgentsSessionUsage` — token usage (empty on this surface).
-    pub usage: Value,
+    pub stats: SessionStats,
+    pub usage: Usage,
     /// The vaults the session is bound to (`vault_ids`).
     pub vault_ids: Vec<String>,
     /// Set when the session was launched by a deployment run.
