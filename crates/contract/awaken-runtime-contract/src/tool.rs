@@ -6,6 +6,8 @@
 //! implementation detail of whoever implements `ToolExecutor` — owned by the
 //! orchestration layer above — and stays out of the neutral runtime contract.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use serde::{Deserialize, Serialize};
@@ -89,4 +91,23 @@ pub trait Tool: Send + Sync {
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError>;
+}
+
+/// Hand placement (ADR-0046): the single call-site port that chooses **which**
+/// [`ToolExecutor`] a run uses. A host installs one provider; per run it returns
+/// the in-process default or a remote executor over a channel to a placed hand.
+///
+/// The port is placement-*mechanism*-agnostic (G16): it takes a run activation
+/// and returns a `ToolExecutor` — no worker registry, lease, pool, or scheduler
+/// type crosses it. The default the runtime ships selects from static config; any
+/// richer (e.g. dynamically scheduling) policy is a host-supplied alternative the
+/// runtime never names. Mirrors the `ExecutorProvider`/`SandboxProvider` seams.
+pub trait ToolExecutorProvider: Send + Sync {
+    /// The tool executor for this run. Returning `None` means "use the kernel's
+    /// in-process `LocalToolExecutor`" — a deployment that places no hand installs
+    /// no provider (or a provider that always returns `None`) and is unaffected.
+    fn provide(
+        &self,
+        activation: &crate::activation::RunActivation,
+    ) -> Option<Arc<dyn ToolExecutor>>;
 }

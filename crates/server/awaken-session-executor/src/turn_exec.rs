@@ -28,9 +28,10 @@ impl SharedHost {
         if let Some(acp) = &self.acp
             && acp.is_acp(thread)
         {
+            let context = ctx.context_for(&activation);
             return acp
                 .executor
-                .execute(activation, ctx.context())
+                .execute(activation, context)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()));
         }
@@ -51,7 +52,9 @@ impl SharedHost {
             // inbox in-process, so it is the only path that opens one. The
             // inbox closes when the attempt returns — success or error — and
             // unconsumed messages carry over to the thread's next attempt.
-            let context = ctx.context().with_live_inbox(ctx.open_live_inbox());
+            let context = ctx
+                .context_for(&activation)
+                .with_live_inbox(ctx.open_live_inbox());
             let result = ctx
                 .ingress
                 .submit(activation, context)

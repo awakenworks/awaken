@@ -13,6 +13,7 @@
 
 mod authz;
 mod models;
+pub mod placement;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -710,9 +711,17 @@ pub fn build_remote_hand_router() -> Router {
         Arc::new(RemoteToolExecutor::new(brain_end))
     };
 
+    // ADR-0046: place this run's hand through the `ToolExecutorProvider` seam
+    // rather than the session-wide `with_remote_hand`. The served single-agent
+    // mode is the degenerate one-entry policy — a catch-all that places every run
+    // on the hand established above — so this e2e also exercises the placement
+    // seam end to end, not just ADR-0044's executor.
+    let provider = Arc::new(placement::ConfigToolExecutorProvider::new(vec![
+        placement::PlacementEntry::any(executor),
+    ]));
     let host = SharedHost::new(model, model_ref)
         .with_gate_override(Arc::new(AllowAllGate))
-        .with_remote_hand(executor);
+        .with_tool_executor_provider(provider);
     mount(Arc::new(host))
 }
 

@@ -35,7 +35,8 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::tool::{ToolExecutor, ToolOutput};
+use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider, ToolOutput};
 use awaken_sandbox_local::{
     Environment, FileStore, InMemoryFileStore, LocalSandboxProvider, SandboxProvider,
 };
@@ -218,6 +219,10 @@ pub(crate) struct SessionCtx {
     /// The host's remote hand (ADR-0044), cloned from `SharedHost::remote_hand` at
     /// session creation. When set, every run context routes tool calls to it.
     pub(crate) remote_hand: Option<Arc<dyn ToolExecutor>>,
+    /// The host's hand-placement provider (ADR-0046), cloned from
+    /// `SharedHost::tool_executor_provider`. When set, `context_for` asks it per
+    /// run which executor to use, overriding the session-wide `remote_hand`.
+    pub(crate) tool_executor_provider: Option<Arc<dyn ToolExecutorProvider>>,
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build a goal-enabled runtime
     /// for `define_outcome` (same tools, same environment).
@@ -254,6 +259,20 @@ impl SessionCtx {
         // is wired; otherwise the kernel's in-process LocalToolExecutor runs them.
         if let Some(hand) = &self.remote_hand {
             ctx = ctx.with_tool_executor(hand.clone());
+        }
+        ctx
+    }
+
+    /// A run context whose tool executor is chosen per run by the host's
+    /// [`ToolExecutorProvider`] (ADR-0046). When a provider is installed and
+    /// places this run (returns `Some`), its executor overrides the session-wide
+    /// `remote_hand`; otherwise this is exactly [`context`](Self::context).
+    pub(crate) fn context_for(&self, activation: &RunActivation) -> RuntimeRunContext {
+        let mut ctx = self.context();
+        if let Some(provider) = &self.tool_executor_provider
+            && let Some(executor) = provider.provide(activation)
+        {
+            ctx = ctx.with_tool_executor(executor);
         }
         ctx
     }
@@ -363,6 +382,11 @@ pub struct SharedHost {
     /// a caller connects a hand and injects the executor via [`with_remote_hand`].
     /// `None` is the in-process default (`LocalToolExecutor`), untouched.
     pub(crate) remote_hand: Option<Arc<dyn ToolExecutor>>,
+    /// Hand placement (ADR-0046): the per-run provider that selects a run's
+    /// `ToolExecutor`. `None` (default) leaves `remote_hand`/in-process behavior
+    /// unchanged; when set, a run the provider places (returns `Some`) takes
+    /// precedence over the session-wide `remote_hand`.
+    pub(crate) tool_executor_provider: Option<Arc<dyn ToolExecutorProvider>>,
 }
 
 impl SharedHost {
@@ -416,6 +440,7 @@ impl SharedHost {
             gate_override: None,
             dispatch_daemon: std::env::var("AWAKEN_DISPATCH_DAEMON").is_ok_and(|v| v == "1"),
             remote_hand: None,
+            tool_executor_provider: None,
         }
     }
 
@@ -656,6 +681,16 @@ impl SharedHost {
     /// the hand's returned output. `None` (the default) keeps in-process execution.
     pub fn with_remote_hand(mut self, hand: Arc<dyn ToolExecutor>) -> Self {
         self.remote_hand = Some(hand);
+        self
+    }
+
+    /// Install a hand-placement provider (ADR-0046): per run it selects the
+    /// `ToolExecutor` (the in-process default or a placed hand). Takes precedence
+    /// over [`with_remote_hand`] for any run it places; runs it declines (`None`)
+    /// fall back to `remote_hand`/in-process. This is the seam a config-driven
+    /// self-hosted brain–hand split — or a host's own richer policy — plugs into.
+    pub fn with_tool_executor_provider(mut self, provider: Arc<dyn ToolExecutorProvider>) -> Self {
+        self.tool_executor_provider = Some(provider);
         self
     }
 
@@ -982,6 +1017,7 @@ impl SharedHost {
             commit,
             stream_checkpoint,
             remote_hand: self.remote_hand.clone(),
+            tool_executor_provider: self.tool_executor_provider.clone(),
             thread_id,
             env,
             skill_registry,
