@@ -151,6 +151,43 @@ impl EnvironmentState {
         envs.get(env_id)
             .is_some_and(|rec| rec.network_policy().is_restricted())
     }
+
+    /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
+    /// dispatched through the work queue for an external worker to run (rather than
+    /// executed by Anthropic's — here the local — managed runtime). Unknown envs and
+    /// the default `env_local` are not self-hosted.
+    #[must_use]
+    pub fn is_self_hosted(&self, env_id: &str) -> bool {
+        self.envs.lock().unwrap().get(env_id).is_some_and(|rec| {
+            rec.config.get("type").and_then(Value::as_str) == Some("self_hosted")
+        })
+    }
+
+    /// Enqueue a `session` work item for `session_id` on `env_id`'s queue — the way
+    /// the control plane enqueues a session assigned to a self-hosted environment
+    /// (`BetaSessionWorkData`), so a worker polling the environment can claim and run
+    /// it. Returns the new work id.
+    pub fn enqueue_session_work(&self, env_id: &str, session_id: &str) -> String {
+        let n = self.work_seq.fetch_add(1, Ordering::SeqCst);
+        let work_id = format!("work_{n:016}");
+        self.works.lock().unwrap().insert(
+            work_id.clone(),
+            WorkRecord {
+                environment_id: env_id.to_string(),
+                data: WorkData::Session {
+                    id: session_id.to_string(),
+                },
+                metadata: BTreeMap::new(),
+                state: "queued",
+                acknowledged_at: None,
+                latest_heartbeat_at: None,
+                started_at: None,
+                stop_requested_at: None,
+                stopped_at: None,
+            },
+        );
+        work_id
+    }
 }
 
 /// Mount the environments + work routes.

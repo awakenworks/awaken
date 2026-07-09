@@ -209,6 +209,21 @@ pub fn build_error_router() -> Router {
     mount(Arc::new(host))
 }
 
+/// A router that mounts `/v1/environments` and shares its state with the session
+/// surface, so a session created on a **self-hosted** environment is dispatched as a
+/// `session` work item — the self-hosted worker e2e polls the queue, claims that
+/// work, drives the session, heartbeats the lease, and stops it. Plain `EchoModel`
+/// (no ACP/bwrap), so the worker flow is what's exercised. `AWAKEN_MODEL_MODE=worker`.
+pub fn build_worker_router() -> Router {
+    let (model, model_ref) = scenario_model(Arc::new(EchoModel), "worker");
+    let host = Arc::new(SharedHost::new(model, model_ref));
+    let env_state = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
+    let environments = awaken_protocol_managed::environments_router(env_state.clone());
+    let managed_state =
+        Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_environments(env_state));
+    mount_with_managed(host, managed_state).merge(environments)
+}
+
 /// A fake ACP agent speaking the OFFICIAL JSON-RPC 2.0 wire (shell builtins only,
 /// so it survives `env_clear`): answer `initialize` (id 1) and `session/new`
 /// (id 2), then on `session/prompt` (id 3) stream one `session/update`

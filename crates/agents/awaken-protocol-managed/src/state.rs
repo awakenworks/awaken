@@ -801,6 +801,15 @@ impl ManagedState {
             )
             .await
             .map_err(StateError::Run)?;
+        // A session assigned to a self-hosted environment is dispatched through that
+        // environment's work queue — the control plane enqueues it as `session` work
+        // for an external worker to claim and run (the session still exists here; the
+        // work item is how a polling worker discovers and drives it).
+        if let Some(envs) = self.environments.as_ref() {
+            if envs.is_self_hosted(&environment_id) {
+                envs.enqueue_session_work(&environment_id, &id);
+            }
+        }
         // Enumerate the runtime's provisioned surface so the agent object reports what
         // the run can actually do (built-in toolset, custom tools, skills, delegates),
         // not an empty set. The wire shaping lives in `project`; the host supplies

@@ -74,13 +74,16 @@ pub struct DeletedEnvironment {
     pub object_type: &'static str,
 }
 
-/// A work item's payload — `BetaHealthCheckWorkData | BetaSessionWorkData`. This
-/// surface only seeds healthcheck work, so only that variant is modeled.
+/// A work item's payload — `BetaHealthCheckWorkData | BetaSessionWorkData`. A fresh
+/// environment is seeded with a `healthcheck`; a session assigned to a self-hosted
+/// environment is enqueued as `session` work (its `id` is the session id).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum WorkData {
     #[serde(rename = "healthcheck")]
     HealthCheck { id: String },
+    #[serde(rename = "session")]
+    Session { id: String },
 }
 
 /// `BetaSelfHostedWork` — a work item on an environment's queue. `secret` (a lease

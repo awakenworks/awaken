@@ -81,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("git-repo") => awaken_server_local::build_git_repo_router(),
         Ok("compaction") => awaken_server_local::build_compaction_router(),
         Ok("error") => awaken_server_local::build_error_router(),
+        Ok("worker") => awaken_server_local::build_worker_router(),
         Ok("full-chain") => awaken_server_local::build_full_chain_router(),
         _ => awaken_server_local::build_echo_router(),
     };
