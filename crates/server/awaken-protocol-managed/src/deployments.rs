@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::dto::ErrorResponse;
+use crate::types::ErrorResponse;
 use crate::pagination::Page;
 use crate::router::ManagedJson;
 

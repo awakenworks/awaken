@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_managed::dto::StopReason;
+use awaken_protocol_managed::types::StopReason;
 use awaken_protocol_managed::{
     LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, ManagedState, OutcomeReport, RunError,
     SessionRuntime, TurnOutcome, router,

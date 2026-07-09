@@ -1412,7 +1412,7 @@ async fn project_ingress(
     let Some(project) = projects.get_project(&project_id) else {
         return (
             axum::http::StatusCode::NOT_FOUND,
-            axum::Json(awaken_protocol_managed::dto::ErrorResponse::new(
+            axum::Json(awaken_protocol_managed::types::ErrorResponse::new(
                 "not_found_error",
                 format!("project `{project_id}` not found"),
             )),

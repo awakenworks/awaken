@@ -35,7 +35,7 @@ async function main() {
 
       // R3/R4: a session selecting an ACP runtime runs on the external CLI.
       const acp = await client.beta.sessions.create({
-        agent: { id: 'assistant', runtime: 'acp:claude' },
+        agent: 'assistant', metadata: { 'awaken.runtime': 'acp:claude' },
         environment_id: 'env_local',
         betas: BETAS,
       });
@@ -79,7 +79,7 @@ async function main() {
       // from a real CLI's output, so those stay unit-tested.)
       for (const trigger of ['acp-auth reply', 'acp-truncate reply']) {
         const s2 = await client.beta.sessions.create({
-          agent: { id: 'assistant', runtime: 'acp:claude' },
+          agent: 'assistant', metadata: { 'awaken.runtime': 'acp:claude' },
           environment_id: 'env_local',
           betas: BETAS,
         });

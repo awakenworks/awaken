@@ -94,7 +94,7 @@ use awaken_iam_core::{
 use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
 use awaken_iam_preset::{named_role_catalog, seed_named_roles};
 use awaken_iam_server::{SqlStore, SqliteBackend, sqlite_migrated_store};
-use awaken_protocol_managed::dto::ErrorResponse;
+use awaken_protocol_managed::types::ErrorResponse;
 use axum::body::Body;
 use axum::extract::{Query, Request, State};
 use axum::http::header::CONTENT_TYPE;
