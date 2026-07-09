@@ -79,6 +79,7 @@ impl SessionRuntime for EchoFake {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            failure: None,
         })
     }
     async fn resume(
@@ -397,6 +398,7 @@ impl SessionRuntime for ParkingFake {
                 client_executed: false,
             }),
             compacted: false,
+            failure: None,
         })
     }
     async fn resume(
@@ -421,6 +423,7 @@ impl SessionRuntime for ParkingFake {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            failure: None,
         })
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
@@ -693,6 +696,7 @@ impl SessionRuntime for CustomToolFake {
                 client_executed: true,
             }),
             compacted: false,
+            failure: None,
         })
     }
     async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<TurnOutcome, RunError> {
@@ -720,6 +724,7 @@ impl SessionRuntime for CustomToolFake {
             stop: StopReason::EndTurn,
             pending: None,
             compacted: false,
+            failure: None,
         })
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {

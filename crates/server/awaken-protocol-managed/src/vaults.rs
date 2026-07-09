@@ -47,8 +47,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::types::ErrorResponse;
 use crate::router::ManagedJson;
+use crate::types::ErrorResponse;
 
 /// Deterministic timestamp stamped on every vault/credential object, matching the
 /// session surface's `PROCESSED_AT` convention (no wall-clock/uuid dependency, so

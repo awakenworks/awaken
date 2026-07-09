@@ -18,9 +18,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::types::ErrorResponse;
 use crate::pagination::Page;
 use crate::router::ManagedJson;
+use crate::types::ErrorResponse;
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
