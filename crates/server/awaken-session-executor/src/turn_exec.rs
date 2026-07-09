@@ -36,17 +36,14 @@ impl SharedHost {
                 .map_err(|e| HostError::internal(e.to_string()));
         }
         if supersede {
-            ctx.durable_ingress
-                .as_ref()
-                .expect("supersede requires durable ingress")
-                .submit_superseding(activation)
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))
+            // Durable + superseding: enqueue (marking prior pending superseded) and
+            // let the process pool drive it on this session's worker (O2).
+            self.submit_durable_foreground(ctx, activation, true).await
         } else if ctx.durable {
-            ctx.ingress
-                .submit_background(activation)
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))
+            // Durable: enqueue and await the pool driving it to a settled phase. The
+            // session's own worker must not claim (it would grab foreign threads'
+            // runs on the shared queue); the pool is the sole claimer.
+            self.submit_durable_foreground(ctx, activation, false).await
         } else {
             // Native direct turn: the only path whose engine drains a live
             // inbox in-process, so it is the only path that opens one. The
