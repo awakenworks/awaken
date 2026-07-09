@@ -65,10 +65,10 @@ awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation"
 # became consumable once iam adopted foundation ADR-0005 (rusqlite as a
 # links-safe *range*, >=0.32 <0.41), so its SqlStore/migrations now back the
 # embedded authz rows instead of a hand-rolled schema.
-awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
-awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
-awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
-awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "6e466668a20011d9394467341fcbdd46eaf2b1c1" }
+awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev = "08c58acf9a55cb7bec95a84fcb5dfc7f9a3bbfa0" }
+awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam", rev = "08c58acf9a55cb7bec95a84fcb5dfc7f9a3bbfa0" }
+awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "08c58acf9a55cb7bec95a84fcb5dfc7f9a3bbfa0" }
+awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "08c58acf9a55cb7bec95a84fcb5dfc7f9a3bbfa0" }
 awaken-managed-bridge = { path = "crates/agents/awaken-managed-bridge" }
 awaken-store-conformance = { path = "crates/runtime/awaken-store-conformance" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
