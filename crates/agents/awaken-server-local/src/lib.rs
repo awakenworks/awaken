@@ -211,12 +211,15 @@ pub fn build_error_router() -> Router {
 
 /// A router that mounts `/v1/environments` and shares its state with the session
 /// surface, so a session created on a **self-hosted** environment is dispatched as a
-/// `session` work item — the self-hosted worker e2e polls the queue, claims that
-/// work, drives the session, heartbeats the lease, and stops it. Plain `EchoModel`
-/// (no ACP/bwrap), so the worker flow is what's exercised. `AWAKEN_MODEL_MODE=worker`.
+/// `session` work item. The self-hosted worker e2e polls the queue, claims that
+/// work, then drives the session — whose agent parks on a client-executed
+/// `submit_answer` tool — by **running the tool and posting the result back**, the
+/// way a self-hosted worker executes the session's tool calls. Heartbeats the lease
+/// and stops the work on completion. `AWAKEN_MODEL_MODE=worker`.
 pub fn build_worker_router() -> Router {
-    let (model, model_ref) = scenario_model(Arc::new(EchoModel), "worker");
-    let host = Arc::new(SharedHost::new(model, model_ref));
+    let client_tools = HashSet::from(["submit_answer".to_string()]);
+    let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "worker");
+    let host = Arc::new(SharedHost::new(model, model_ref).with_client_tools(client_tools));
     let env_state = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
     let environments = awaken_protocol_managed::environments_router(env_state.clone());
     let managed_state =

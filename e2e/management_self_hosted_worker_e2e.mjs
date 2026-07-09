@@ -4,17 +4,19 @@
 // environment acts as a work queue: when a session is assigned to it, Anthropic
 // enqueues the session as a work item"): a session created on a self-hosted
 // environment is dispatched as a `session` work item. This e2e IS a worker — it
-// polls the environment's queue, claims the session work, drives the session
-// (send a message, read the agent reply), heartbeats the lease, and stops the
-// work — the full poll -> ack -> heartbeat -> stop lifecycle over real HTTP.
+// polls the environment's queue, claims the session work, drives the session,
+// and — the way a self-hosted worker executes the session's tool calls — RUNS the
+// agent's parked `submit_answer` tool and posts the result back. Full lifecycle:
+// poll -> ack -> heartbeat -> run tool call -> stop, over real HTTP.
 //
 // Run: (from e2e/)  node management_self_hosted_worker_e2e.mjs
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const PORT = Number(process.env.E2E_PORT ?? 38290);
 
 async function drain(pagePromise) {
   const items = [];
@@ -29,8 +31,10 @@ async function agentReplies(client, sessionId) {
 }
 
 async function main() {
+  const { server, baseUrl } = spawnServer('worker', PORT);
   try {
-    await withScenarioServer('worker', 'echo', 38290, async (baseUrl) => {
+    await waitForPort(PORT);
+    {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // A self-hosted environment: sessions on it dispatch through its work queue.
@@ -85,13 +89,31 @@ async function main() {
         });
         assert.equal(hb.lease_extended, true, 'heartbeat extends the lease');
 
-        // Drive the session the worker just claimed: send a turn, read the reply.
+        // Drive the session the worker just claimed: a turn parks on the agent's
+        // client-executed `submit_answer` tool call.
         await client.beta.sessions.events.send(session.id, {
           betas: BETAS,
-          events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello from the worker' }] }],
+          events: [{ type: 'user.message', content: [{ type: 'text', text: 'run the task' }] }],
+        });
+        const events = await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }));
+        const toolUse = events.find((e) => e.type === 'agent.custom_tool_use');
+        assert.ok(toolUse, `session parked on a tool call, got ${events.map((e) => e.type)}`);
+        const idle = events.find((e) => e.type === 'session.status_idle');
+        assert.equal(idle.stop_reason.type, 'requires_action', 'the session awaits the worker to run the tool');
+
+        // The worker RUNS the tool call locally and posts the result back.
+        await client.beta.sessions.events.send(session.id, {
+          betas: BETAS,
+          events: [
+            { type: 'user.tool_result', tool_use_id: toolUse.id, content: [{ type: 'text', text: '42' }] },
+          ],
         });
         const replies = await agentReplies(client, session.id);
-        assert.ok(replies.length >= 1, `the worker-driven session produced a reply, got ${replies.length}`);
+        assert.ok(
+          replies.some((m) => (m.content ?? []).some((c) => (c.text ?? '').includes('42'))),
+          `the worker's tool result reached the model, replies: ${JSON.stringify(replies)}`,
+        );
+        pass('worker runs the parked tool call and posts the result back');
 
         // Finish: stop the work item (the worker releases the session).
         const stopped = await client.beta.environments.work.stop(work.id, {
@@ -102,14 +124,16 @@ async function main() {
         handledSession = true;
       }
       assert.ok(handledSession, 'the worker claimed and ran the session work');
-      pass('worker poll -> ack -> heartbeat -> drive session -> stop (full lifecycle)');
-    });
+      pass('worker poll -> ack -> heartbeat -> run tool -> stop (full lifecycle)');
+    }
 
-    console.log('E2E PASS: self-hosted worker claims a session from the work queue and runs it.');
+    console.log('E2E PASS: self-hosted worker claims a session, runs its tool calls, and stops the work.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);
     process.exitCode = 1;
+  } finally {
+    await stopServer(server);
   }
 }
 
