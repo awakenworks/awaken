@@ -4,6 +4,12 @@
 - Date: 2026-07-03
 - Amended: 2026-07-05 (D2 refinement — a project path prefix as pure ADDRESSING;
   see Amendment)
+- Follow-up: [ADR-0048](0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md)
+  (2026-07-09) — adopts `awaken-iam-host` (single PDP, fail-closed default),
+  fixes the deferred management-plane addressing (org implicit, `/v1/workspaces/{ws}`),
+  and reconciles the Managed-Agents alignment plan: org stays cloud-only (D6),
+  Project is frozen not deleted (D4a/Amendment), and A2A is carved out of the D3
+  envelope as cross-tenant federation.
 - Relates to: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (managed
   protocol is a front-door axis over the neutral core),
   [ADR-0037](0037-managed-capability-advertisement-wire-alignment.md) (align the
