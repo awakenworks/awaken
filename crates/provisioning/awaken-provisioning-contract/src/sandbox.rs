@@ -95,6 +95,23 @@ pub struct SandboxCapabilities {
     pub custom_rootfs: bool,
 }
 
+impl SandboxCapabilities {
+    /// Fail-closed backend selection (ADR-0021 §8): does this backend meet
+    /// **everything** `spec` requires? A router filters candidate providers by this
+    /// before applying any load/region/affinity policy, so a spec is never placed on
+    /// a backend that cannot honor it.
+    ///
+    /// Matches the two load-bearing axes the vocabulary makes selectable: isolation
+    /// class (the provider must *meet or exceed* the requested minimum) and network
+    /// isolation (required for anything stricter than [`NetworkPolicy::Unrestricted`]).
+    #[must_use]
+    pub fn satisfies(&self, spec: &crate::spec::SandboxSpec) -> bool {
+        use crate::vocab::NetworkPolicy;
+        self.isolation >= spec.isolation
+            && (matches!(spec.network, NetworkPolicy::Unrestricted) || self.network_isolation)
+    }
+}
+
 /// Realizes environments. The local impl lives in `awaken-sandbox-local`; a
 /// remote/container impl lives in a distributed repo and plugs in here.
 #[async_trait]
@@ -337,6 +354,41 @@ mod tests {
             lease_ttl_secs: Some(60),
             extra: None,
         }
+    }
+
+    fn caps(isolation: IsolationClass, network_isolation: bool) -> SandboxCapabilities {
+        SandboxCapabilities {
+            isolation,
+            tool_transparent: true,
+            path_fidelity: true,
+            enforced_readonly: true,
+            network_isolation,
+            secret_egress_substitution: true,
+            resource_limits: true,
+            custom_rootfs: false,
+        }
+    }
+
+    #[test]
+    fn satisfies_requires_meeting_or_exceeding_isolation() {
+        let mut s = spec();
+        s.isolation = IsolationClass::Namespace;
+        // exact and stronger classes satisfy
+        assert!(caps(IsolationClass::Namespace, false).satisfies(&s));
+        assert!(caps(IsolationClass::Container, false).satisfies(&s));
+        // weaker fails closed
+        assert!(!caps(IsolationClass::Workdir, false).satisfies(&s));
+    }
+
+    #[test]
+    fn satisfies_requires_network_isolation_for_restricted_egress() {
+        let mut s = spec();
+        s.network = NetworkPolicy::None;
+        assert!(!caps(IsolationClass::Workdir, false).satisfies(&s));
+        assert!(caps(IsolationClass::Workdir, true).satisfies(&s));
+        // unrestricted egress needs no network isolation
+        s.network = NetworkPolicy::Unrestricted;
+        assert!(caps(IsolationClass::Workdir, false).satisfies(&s));
     }
 
     #[tokio::test]
