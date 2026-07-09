@@ -1,0 +1,292 @@
+//! The process-level dispatch pool.
+//!
+//! [`DispatchService`](crate::DispatchService) binds one drain loop to one
+//! runtime — fine for a single session, but a host with many sessions would spawn
+//! one loop per session, so hundreds of thousands of sessions become hundreds of
+//! thousands of pollers hammering the queue. [`DispatchPool`] instead runs a fixed
+//! set of drain tasks for the *whole process* over one shared queue: each task
+//! claims a runnable dispatch, asks a [`WorkerResolver`] for the worker that owns
+//! that run's thread (its runtime carries the thread's model/tools/config), and
+//! drives the run there via [`DispatchWorker::drive_claimed`]. Claim is decoupled
+//! from drive precisely so a run always executes on its own session's runtime, not
+//! on whichever task happened to claim it.
+//!
+//! One renewal heartbeat and one maintenance loop (reap poison runs, GC aged
+//! dead-letters, relay the cross-thread outbox) run once per process rather than
+//! once per session. Correctness rests on the same durable-claim invariants as the
+//! per-session daemon: `claim` is owner-scoped with `FOR UPDATE SKIP LOCKED`, so N
+//! tasks take distinct runs; a dropped wake only defers work to the poll fallback;
+//! a crash leaves the lease to expire and be reclaimed.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use awaken_runtime_contract::activation::RunActivation;
+
+use crate::Error;
+use crate::clock::Clock;
+use crate::dispatch::{Dispatch, PendingInput};
+use crate::request::RunExecutionRequest;
+use crate::service::DispatchServiceConfig;
+use crate::wake::{LocalWakeSignal, WakeSignal};
+use crate::worker::DispatchWorker;
+
+/// Resolves the worker that owns a thread's runtime. The pool claims from the one
+/// shared queue, then asks the resolver for the session worker carrying the
+/// claimed run's thread config and drives the run there.
+///
+/// The resolver MUST return workers that share the pool's store and claim owner,
+/// so the pool's claim, the drive, and the heartbeat all agree on lease ownership
+/// (the host wires every session worker with the process's `dispatch_owner()` and
+/// the one shared store, which satisfies this).
+#[async_trait]
+pub trait WorkerResolver<S>: Send + Sync {
+    /// The worker whose runtime owns `thread_id`, opening the session if needed.
+    async fn worker_for(&self, thread_id: &ThreadId) -> Result<Arc<DispatchWorker<S>>, Error>;
+}
+
+/// A running pool of drain tasks over one shared dispatch queue.
+pub struct DispatchPool<S> {
+    store: Arc<S>,
+    wake: Arc<dyn WakeSignal>,
+    shutdown: CancellationToken,
+    drains: Vec<JoinHandle<()>>,
+    maintenance: JoinHandle<()>,
+    renewal: Option<JoinHandle<()>>,
+}
+
+impl<S: Dispatch + 'static> DispatchPool<S> {
+    /// Spawn the pool with the single-process wake signal. `concurrency` is the
+    /// number of runs driven in parallel (clamped to at least 1).
+    pub fn spawn(
+        store: Arc<S>,
+        clock: Arc<dyn Clock>,
+        owner: impl Into<String>,
+        lease_ms: u64,
+        config: DispatchServiceConfig,
+        resolver: Arc<dyn WorkerResolver<S>>,
+        concurrency: usize,
+    ) -> Self {
+        Self::spawn_with_wake(
+            store,
+            clock,
+            owner,
+            lease_ms,
+            config,
+            resolver,
+            concurrency,
+            Arc::new(LocalWakeSignal::new()),
+        )
+    }
+
+    /// Spawn the pool with a chosen [`WakeSignal`] — a `LocalWakeSignal` for one
+    /// process, or a cross-node signal so a fleet need not busy-poll.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_wake(
+        store: Arc<S>,
+        clock: Arc<dyn Clock>,
+        owner: impl Into<String>,
+        lease_ms: u64,
+        config: DispatchServiceConfig,
+        resolver: Arc<dyn WorkerResolver<S>>,
+        concurrency: usize,
+        wake: Arc<dyn WakeSignal>,
+    ) -> Self {
+        let owner = owner.into();
+        let shutdown = CancellationToken::new();
+        let drains = (0..concurrency.max(1))
+            .map(|_| {
+                tokio::spawn(drain_loop(
+                    store.clone(),
+                    clock.clone(),
+                    wake.clone(),
+                    shutdown.clone(),
+                    owner.clone(),
+                    lease_ms,
+                    resolver.clone(),
+                    config.poll_interval,
+                ))
+            })
+            .collect();
+        let maintenance = tokio::spawn(maintenance_loop(
+            store.clone(),
+            clock.clone(),
+            wake.clone(),
+            shutdown.clone(),
+            config,
+        ));
+        let renewal = config.lease_renewal_interval.map(|interval| {
+            tokio::spawn(renewal_loop(
+                store.clone(),
+                clock.clone(),
+                shutdown.clone(),
+                owner,
+                lease_ms,
+                interval,
+            ))
+        });
+        Self {
+            store,
+            wake,
+            shutdown,
+            drains,
+            maintenance,
+            renewal,
+        }
+    }
+
+    /// Durably enqueue a run and nudge the pool to pick it up.
+    pub async fn submit(&self, activation: RunActivation) -> Result<(), Error> {
+        self.store
+            .enqueue(
+                RunExecutionRequest::new(activation)
+                    .with_traceparent(awaken_observability::current_traceparent()),
+            )
+            .await?;
+        let _ = self.wake.publish().await;
+        Ok(())
+    }
+
+    /// Durably deliver pending input and nudge the pool to resume the run.
+    pub async fn deliver(&self, input: PendingInput) -> Result<(), Error> {
+        self.store.append(input).await?;
+        let _ = self.wake.publish().await;
+        Ok(())
+    }
+
+    /// Stage a cross-thread delivery and nudge the pool to relay it.
+    pub async fn send(&self, input: PendingInput) -> Result<(), Error> {
+        self.store.stage(input).await?;
+        let _ = self.wake.publish().await;
+        Ok(())
+    }
+
+    /// Wake the pool to drain immediately.
+    pub async fn notify(&self) {
+        let _ = self.wake.publish().await;
+    }
+
+    /// Stop every task and wait for the in-flight drains to finish.
+    pub async fn shutdown(self) {
+        self.shutdown.cancel();
+        let _ = self.wake.publish().await;
+        for drain in self.drains {
+            let _ = drain.await;
+        }
+        let _ = self.maintenance.await;
+        if let Some(renewal) = self.renewal {
+            let _ = renewal.await;
+        }
+    }
+}
+
+/// One drain task: claim a runnable dispatch, route it to its owning session's
+/// worker, drive it, repeat until idle, then park on a wake or the poll timer.
+#[allow(clippy::too_many_arguments)]
+async fn drain_loop<S: Dispatch + 'static>(
+    store: Arc<S>,
+    clock: Arc<dyn Clock>,
+    wake: Arc<dyn WakeSignal>,
+    shutdown: CancellationToken,
+    owner: String,
+    lease_ms: u64,
+    resolver: Arc<dyn WorkerResolver<S>>,
+    poll_interval: Duration,
+) {
+    loop {
+        if shutdown.is_cancelled() {
+            break;
+        }
+        // Drain everything runnable now. A store error is transient — the next
+        // tick retries — so swallow it rather than kill the task.
+        match claim_and_drive(&store, &clock, &owner, lease_ms, resolver.as_ref()).await {
+            Ok(true) => continue,
+            Ok(false) | Err(_) => {}
+        }
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = wake.wait() => {}
+            _ = tokio::time::sleep(poll_interval) => {}
+        }
+    }
+}
+
+/// Claim one runnable dispatch from the shared queue and drive it on the worker
+/// that owns its thread. Returns whether a run was claimed.
+async fn claim_and_drive<S: Dispatch + 'static>(
+    store: &Arc<S>,
+    clock: &Arc<dyn Clock>,
+    owner: &str,
+    lease_ms: u64,
+    resolver: &dyn WorkerResolver<S>,
+) -> Result<bool, Error> {
+    let now = clock.now_ms();
+    let Some(claimed) = store.claim(owner, lease_ms, now).await? else {
+        return Ok(false);
+    };
+    // Route to the runtime that owns this run's thread, then drive+settle there.
+    // The resolved worker shares this store and owner, so the settle it performs
+    // acts on the same row this task just claimed.
+    let thread_id = claimed.request.thread_id().clone();
+    let worker = resolver.worker_for(&thread_id).await?;
+    worker.drive_claimed(claimed, now).await?;
+    Ok(true)
+}
+
+/// Reap poison runs, GC aged dead-letters, and relay the cross-thread outbox — the
+/// per-process maintenance the per-session daemon used to do per session.
+async fn maintenance_loop<S: Dispatch + 'static>(
+    store: Arc<S>,
+    clock: Arc<dyn Clock>,
+    wake: Arc<dyn WakeSignal>,
+    shutdown: CancellationToken,
+    config: DispatchServiceConfig,
+) {
+    loop {
+        if shutdown.is_cancelled() {
+            break;
+        }
+        let now = clock.now_ms();
+        let _ = store.reap(config.max_attempts, now).await;
+        if let Some(ttl) = config.dead_letter_ttl {
+            let cutoff = now.saturating_sub(ttl.as_millis() as u64);
+            let _ = store.purge_dead_letters_before(cutoff).await;
+        }
+        // A relay that moved staged deliveries into a thread's pending input made a
+        // parked run wakeable — nudge the drain tasks so they pick it up now rather
+        // than at the next poll.
+        if store.relay().await.unwrap_or(0) > 0 {
+            let _ = wake.publish().await;
+        }
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = tokio::time::sleep(config.poll_interval) => {}
+        }
+    }
+}
+
+/// Renew every near-expiry lease this process owns, so a long run is not reclaimed
+/// while still executing (ADR-0024). One heartbeat for the whole pool.
+async fn renewal_loop<S: Dispatch + 'static>(
+    store: Arc<S>,
+    clock: Arc<dyn Clock>,
+    shutdown: CancellationToken,
+    owner: String,
+    lease_ms: u64,
+    interval: Duration,
+) {
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = tokio::time::sleep(interval) => {
+                let now = clock.now_ms();
+                let _ = store.renew_owned_leases(&owner, lease_ms, now).await;
+            }
+        }
+    }
+}

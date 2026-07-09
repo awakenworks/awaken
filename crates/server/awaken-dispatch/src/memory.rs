@@ -319,8 +319,15 @@ impl DispatchQueue for MemoryDispatchStore {
     ) -> Result<usize, DispatchError> {
         let mut state = lock(&self.state)?;
         let mut renewed = 0;
+        // Only rows within half a lease of expiring; a fresh claim is a full length
+        // out and is skipped until it approaches expiry (ADR-0024).
+        let near_expiry = now_ms + lease_ms / 2;
         for row in state.rows.values_mut() {
-            if row.status == Status::Running && row.lease.as_ref().is_some_and(|l| l.owner == owner)
+            if row.status == Status::Running
+                && row
+                    .lease
+                    .as_ref()
+                    .is_some_and(|l| l.owner == owner && l.expires_ms < near_expiry)
             {
                 if let Some(lease) = row.lease.as_mut() {
                     lease.expires_ms = now_ms + lease_ms;
