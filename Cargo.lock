@@ -496,6 +496,8 @@ source = "git+https://github.com/awakenworks/awaken-iam?rev=08c58acf9a55cb7bec95
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
+ "reqwest 0.12.28",
+ "serde",
  "thiserror 2.0.18",
 ]
 
@@ -524,6 +526,25 @@ dependencies = [
  "sha2 0.10.9",
  "subtle",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "awaken-iam-host"
+version = "0.1.1"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=08c58acf9a55cb7bec95a84fcb5dfc7f9a3bbfa0#08c58acf9a55cb7bec95a84fcb5dfc7f9a3bbfa0"
+dependencies = [
+ "awaken-iam-client",
+ "awaken-iam-contract",
+ "awaken-iam-core",
+ "awaken-iam-preset",
+ "awaken-iam-server",
+ "axum 0.8.9",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
 ]
 
 [[package]]
@@ -1002,6 +1023,7 @@ dependencies = [
  "awaken-ext-mcp",
  "awaken-iam-contract",
  "awaken-iam-core",
+ "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
  "awaken-memory-store",
@@ -2729,7 +2751,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "system-configuration 0.7.0",
  "tokio",
  "tower-service",
@@ -4003,7 +4025,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.41",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4041,7 +4063,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]

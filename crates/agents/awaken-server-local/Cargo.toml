@@ -89,3 +89,6 @@ awaken-ext-mcp = { workspace = true }
 base64 = "0.22"
 # Restart-persistence test: a management router rebuilt over the same tempdir.
 tempfile = "3"
+# ADR-0048 assembly validation: the iam-host embed (IamGate + auth_layer) proven
+# against our pinned rev — zero-config Local mode, ephemeral admin, fail-closed.
+awaken-iam-host = { workspace = true }

@@ -69,6 +69,10 @@ awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev =
 awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam", rev = "08c58acf9a55cb7bec95a84fcb5dfc7f9a3bbfa0" }
 awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "08c58acf9a55cb7bec95a84fcb5dfc7f9a3bbfa0" }
 awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "08c58acf9a55cb7bec95a84fcb5dfc7f9a3bbfa0" }
+# The assembly layer (ADR-0048): one IamGate (authn+authz PDP) + auth_layer PEP,
+# three modes (Open/Local/Remote). Local mode is the zero-config single-machine
+# embed (in-memory SQLite, seeded roles, ephemeral bootstrap admin token).
+awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam", rev = "08c58acf9a55cb7bec95a84fcb5dfc7f9a3bbfa0" }
 awaken-managed-bridge = { path = "crates/agents/awaken-managed-bridge" }
 awaken-store-conformance = { path = "crates/runtime/awaken-store-conformance" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
