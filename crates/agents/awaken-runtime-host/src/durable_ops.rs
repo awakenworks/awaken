@@ -67,9 +67,7 @@ impl SharedHost {
         allow: bool,
     ) -> Result<String, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
-        let service = ctx.dispatch_service.as_ref().ok_or_else(|| {
-            HostError::bad_request("dispatch daemon not enabled (set AWAKEN_DISPATCH_DAEMON=1)")
-        })?;
+        let pool = self.dispatch_pool_or_err()?;
         let thread_id = ThreadId(thread.to_string());
         let (run_id, ticket) = ctx
             .commit
@@ -83,8 +81,7 @@ impl SharedHost {
             available_at_ms: None,
             result: ResumeResult::Decision { allow, note: None },
         };
-        service
-            .send(input)
+        pool.send(input)
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         Ok(run_id.0)

@@ -367,6 +367,11 @@ fn mount(host: Arc<SharedHost>) -> Router {
 /// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -> Router {
+    // Spawn the process-level dispatch pool once when durable ingress is enabled
+    // (O2): it is the sole claimer of the shared queue and drives every session's
+    // runs. This is the single seam that owns an `Arc<SharedHost>`, which the pool's
+    // session resolver needs.
+    host.ensure_dispatch_pool();
     let managed = router(managed_state);
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn ProtocolRuntime>`), so they share the host with no per-protocol twin.

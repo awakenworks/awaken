@@ -10,7 +10,6 @@ use std::sync::Arc;
 use awaken_run_ingress::AnyDispatchStore;
 
 use crate::host::HostError;
-use crate::store::sanitize_thread;
 
 /// The dispatch claim owner for this process. Must be unique per process across a
 /// fleet sharing one Postgres queue: the lease is owner-scoped, so a shared owner
@@ -33,8 +32,17 @@ pub(crate) const LEASE_RENEWAL: std::time::Duration = std::time::Duration::from_
 /// The pool is shared by every thread's durable ingress (one queue per process,
 /// ADR-0019). It lives here — not built per-thread in the run path — because the
 /// sqlx connect future is not `Send`, so awaiting it inside the run loop would
-/// make the loop's future non-`Send`; [`open_durable_store`] only clones the handle.
+/// make the loop's future non-`Send`; [`shared_durable_store`] only clones the handle.
 static SHARED_POSTGRES_DISPATCH: std::sync::OnceLock<Arc<AnyDispatchStore>> =
+    std::sync::OnceLock::new();
+
+/// The process-wide shared SQLite dispatch store: ONE queue file for the whole
+/// process (or one in-memory queue when no store dir), not one per thread. The
+/// process-level [`DispatchPool`](awaken_run_ingress::DispatchPool) is the sole
+/// claimer of this shared queue and routes each run to its owning session, so a
+/// single shared queue is safe — and necessary, since a pool cannot claim across
+/// per-thread files.
+static SHARED_SQLITE_DISPATCH: std::sync::OnceLock<Arc<AnyDispatchStore>> =
     std::sync::OnceLock::new();
 
 /// Connect the process-wide Postgres dispatch pool at `url` and publish it for
@@ -51,17 +59,21 @@ pub async fn init_shared_postgres_dispatch(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the durable-dispatch store for `thread`, selected by
-/// `AWAKEN_DISPATCH_BACKEND` (default `sqlite`). `postgres` shares ONE queue
-/// across processes: `FOR UPDATE SKIP LOCKED` gives distinct-claim, so N hosts
-/// against one `AWAKEN_DATABASE_URL` drain the same queue (ADR-0019) — the pool is
-/// the one connected at startup. `sqlite` is a per-thread file queue under
-/// `store_dir` (survives a restart), or a private in-memory queue when no store
-/// dir is set. Either way the concrete type is `AnyDispatchStore`, so the ingress
-/// keeps its operational verbs (recover / reap / supersede) reachable.
-pub(crate) fn open_durable_store(
+/// Open the ONE process-shared durable-dispatch store, selected by
+/// `AWAKEN_DISPATCH_BACKEND` (default `sqlite`). Every session's worker and the
+/// process-level [`DispatchPool`](awaken_run_ingress::DispatchPool) share this one
+/// queue: the pool is its sole claimer and routes each claimed run to its owning
+/// session, so a single shared queue is both safe and required (a pool cannot
+/// claim across per-thread files).
+///
+/// `postgres` shares one queue across processes too: `FOR UPDATE SKIP LOCKED`
+/// gives distinct-claim, so N hosts against one `AWAKEN_DATABASE_URL` drain the
+/// same queue (ADR-0019) — the pool is the one connected at startup. `sqlite` is a
+/// single queue file `store_dir/dispatch.db` (survives a restart), or a private
+/// in-memory queue when no store dir is set. Either way the concrete type is
+/// `AnyDispatchStore`, so the ingress keeps its operational verbs reachable.
+pub(crate) fn shared_durable_store(
     store_dir: Option<&Path>,
-    thread: &str,
 ) -> Result<Arc<AnyDispatchStore>, HostError> {
     match std::env::var("AWAKEN_DISPATCH_BACKEND").as_deref() {
         Ok("postgres") => SHARED_POSTGRES_DISPATCH.get().cloned().ok_or_else(|| {
@@ -70,14 +82,25 @@ pub(crate) fn open_durable_store(
                  at process startup (with AWAKEN_DATABASE_URL)",
             )
         }),
-        _ => Ok(Arc::new(match store_dir {
-            Some(dir) => {
-                std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
-                let path = dir.join(format!("{}-dispatch.db", sanitize_thread(thread)));
-                AnyDispatchStore::open_sqlite(&path.to_string_lossy())
-                    .map_err(HostError::internal)?
+        _ => {
+            if let Some(store) = SHARED_SQLITE_DISPATCH.get() {
+                return Ok(store.clone());
             }
-            None => AnyDispatchStore::open_sqlite_in_memory().map_err(HostError::internal)?,
-        })),
+            let store = Arc::new(match store_dir {
+                Some(dir) => {
+                    std::fs::create_dir_all(dir).map_err(|e| HostError::internal(e.to_string()))?;
+                    let path = dir.join("dispatch.db");
+                    AnyDispatchStore::open_sqlite(&path.to_string_lossy())
+                        .map_err(HostError::internal)?
+                }
+                None => AnyDispatchStore::open_sqlite_in_memory().map_err(HostError::internal)?,
+            });
+            // First writer wins; a racing opener re-reads the winner and drops its own.
+            let _ = SHARED_SQLITE_DISPATCH.set(store);
+            Ok(SHARED_SQLITE_DISPATCH
+                .get()
+                .cloned()
+                .expect("shared sqlite dispatch store set"))
+        }
     }
 }

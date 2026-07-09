@@ -25,7 +25,8 @@ use awaken_ext_goal::{DelegateGrader, GoalPlugin, GoalSpec, Grader, KeywordGrade
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_protocol_a2a::Transport;
 use awaken_run_ingress::{
-    AnyDispatchStore, DispatchService, DispatchServiceConfig, DurableRunIngress, SystemClock,
+    AnyDispatchStore, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue, DispatchServiceConfig,
+    DurableRunIngress, RunExecutionRequest, SubmitOptions, SystemClock, WorkerResolver,
 };
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
@@ -207,10 +208,6 @@ pub(crate) struct SessionCtx {
     /// dead-letter GC / superseding submit — slice E) stay reachable; the boxed
     /// trait object erases them.
     pub(crate) durable_ingress: Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
-    /// The standing dispatch daemon for this session (ADR-0011), present when
-    /// durable + `AWAKEN_DISPATCH_DAEMON=1`. Held here to keep the background task
-    /// alive for the session's lifetime; it drains the shared queue autonomously.
-    pub(crate) dispatch_service: Option<DispatchService<AnyDispatchStore>>,
     config: RunnableConfig,
     pub(crate) commit: Arc<HostCommit>,
     /// This thread's interrupted-stream checkpoint store (Phase 3), wired into
@@ -372,11 +369,12 @@ pub struct SharedHost {
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch
     /// worker performs them out of band.
     pub(crate) gate_override: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
-    /// When true (durable + `AWAKEN_DISPATCH_DAEMON=1`), each durable session runs
-    /// a standing `DispatchService` daemon (ADR-0011): it drains the queue on a
-    /// nudge/timer and reaps + relays autonomously, so background-submitted runs
-    /// complete without a foreground request driving them (slice E follow-up).
-    pub(crate) dispatch_daemon: bool,
+    /// The process-level dispatch pool (O2), spawned once by `mount` when durable
+    /// ingress is enabled. It is the sole claimer of the one shared queue and drives
+    /// every session's runs by routing each claimed run back to the worker that owns
+    /// its thread. Held here so background submit / cross-thread relay nudge it and
+    /// so it lives for the process's lifetime.
+    pub(crate) dispatch_pool: std::sync::OnceLock<Arc<DispatchPool<AnyDispatchStore>>>,
     /// When set (ADR-0044), every run's tool calls are routed through this remote
     /// hand instead of the in-process registry. The host owns no placement policy:
     /// a caller connects a hand and injects the executor via [`with_remote_hand`].
@@ -438,7 +436,7 @@ impl SharedHost {
             file_store: Arc::new(InMemoryFileStore::new()),
             memory_stores,
             gate_override: None,
-            dispatch_daemon: std::env::var("AWAKEN_DISPATCH_DAEMON").is_ok_and(|v| v == "1"),
+            dispatch_pool: std::sync::OnceLock::new(),
             remote_hand: None,
             tool_executor_provider: None,
         }
@@ -780,7 +778,6 @@ impl SharedHost {
     /// flag that tells `run_turn` to submit through the durable (queued) path.
     async fn build_ingress(
         &self,
-        thread: &str,
         runtime: Arc<Runtime>,
         commit: Arc<HostCommit>,
         stream_checkpoint: Arc<dyn StreamCheckpointStore>,
@@ -795,10 +792,12 @@ impl SharedHost {
         if !durable {
             return Ok((Arc::new(DirectRunIngress::new(runtime)), None));
         }
-        // The durable dispatch backend (SQLite per-thread, or the shared Postgres
-        // pool for a multi-node fleet) plus this process's unique claim owner — both
+        // The ONE process-shared dispatch queue (shared SQLite file, or the shared
+        // Postgres pool for a fleet) plus this process's unique claim owner — both
         // live in `dispatch_backend`, which owns backend selection (ADR-0019/0024).
-        let store = crate::dispatch_backend::open_durable_store(self.store_dir.as_deref(), thread)?;
+        // Every session's worker shares this queue; the process-level `DispatchPool`
+        // is its sole claimer and routes each run back to its owning session.
+        let store = crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?;
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
@@ -809,14 +808,132 @@ impl SharedHost {
             crate::dispatch_backend::dispatch_owner(),
             Some(stream_checkpoint),
         ));
-        // Startup recovery: reclaim any dispatch a prior process crashed on
-        // mid-flight, driving it to completion against committed truth.
-        ingress
-            .recover(now_ms())
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        // No per-session recovery sweep here: this session's worker shares one queue
+        // with every other, so a claim would grab foreign threads' runs. The
+        // process-level `DispatchPool` owns recovery — it claims each crashed run and
+        // routes it to the session (this one included) that owns its thread.
         let boxed: Arc<dyn RunIngress> = ingress.clone();
         Ok((boxed, Some(ingress)))
+    }
+
+    /// Spawn the one process-level [`DispatchPool`] (O2), once, when durable ingress
+    /// is enabled. Called by `mount` — the single seam that owns an `Arc<SharedHost>`
+    /// — because the pool's resolver needs a back-reference to open sessions. The
+    /// pool is the sole claimer of the shared queue; it drives each claimed run by
+    /// routing it to the worker that owns its thread (recovering crashed runs and
+    /// draining background submissions without a foreground request). Idempotent.
+    pub fn ensure_dispatch_pool(self: &Arc<Self>) {
+        let durable = std::env::var("AWAKEN_INGRESS").is_ok_and(|v| v == "durable");
+        if !durable || self.dispatch_pool.get().is_some() {
+            return;
+        }
+        let Ok(store) = crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())
+        else {
+            // Postgres backend not yet initialised — a later `mount` after
+            // `init_shared_postgres_dispatch` will spawn the pool.
+            return;
+        };
+        let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> = Arc::new(HostWorkerResolver {
+            host: Arc::downgrade(self),
+        });
+        let config = DispatchServiceConfig {
+            lease_renewal_interval: Some(crate::dispatch_backend::LEASE_RENEWAL),
+            ..DispatchServiceConfig::default()
+        };
+        let concurrency = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let pool = DispatchPool::spawn(
+            store,
+            Arc::new(SystemClock),
+            crate::dispatch_backend::dispatch_owner(),
+            DEFAULT_LEASE_MS,
+            config,
+            resolver,
+            concurrency,
+        );
+        let _ = self.dispatch_pool.set(Arc::new(pool));
+    }
+
+    /// The process dispatch pool, or a fail-closed error when durable ingress (and
+    /// thus the pool) is not enabled.
+    pub(crate) fn dispatch_pool_or_err(
+        &self,
+    ) -> Result<&Arc<DispatchPool<AnyDispatchStore>>, HostError> {
+        self.dispatch_pool.get().ok_or_else(|| {
+            HostError::bad_request(
+                "durable dispatch not enabled (set AWAKEN_INGRESS=durable to run the pool)",
+            )
+        })
+    }
+
+    /// Submit a durable run and wait for the pool to drive it to a settled phase.
+    /// Under the shared queue a session's own worker must not claim (it would grab
+    /// foreign threads' runs), so the foreground durable path enqueues, nudges the
+    /// pool, and observes completion through committed truth — the pool drives it on
+    /// this very session's worker. `supersede` marks the thread's prior pending work
+    /// superseded first (ADR-0022).
+    pub(crate) async fn submit_durable_foreground(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        activation: RunActivation,
+        supersede: bool,
+    ) -> Result<awaken_agent_contract::agent::run::Phase, HostError> {
+        let run_id = activation.run_id.clone();
+        let pool = self.dispatch_pool_or_err()?;
+        // Enqueue only — never drive here; the pool is the sole claimer. The common
+        // path goes through `pool.submit` (which stamps the trace); a superseding
+        // submit needs the supersede option, so it enqueues on the shared store and
+        // nudges the pool directly.
+        if supersede {
+            let ingress = ctx
+                .durable_ingress
+                .as_ref()
+                .ok_or_else(|| HostError::internal("durable submit requires durable ingress"))?;
+            ingress
+                .worker()
+                .store()
+                .enqueue_with(
+                    RunExecutionRequest::new(activation),
+                    SubmitOptions {
+                        supersede: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?;
+            pool.notify().await;
+        } else {
+            pool.submit(activation)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?;
+        }
+        self.await_run_settled(ctx, &run_id).await
+    }
+
+    /// Poll committed truth until the pool has driven `run_id` to a settled phase
+    /// (`Ended` or `Waiting`), the durable analogue of an inline drive returning.
+    async fn await_run_settled(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        run_id: &RunId,
+    ) -> Result<awaken_agent_contract::agent::run::Phase, HostError> {
+        use awaken_agent_contract::agent::run::Phase;
+        use awaken_agent_contract::store::run_store::RunStore;
+        // ~60s at 10ms — generous enough for a multi-step run's inference, bounded so
+        // a stuck run surfaces as an error rather than hanging the request forever.
+        for _ in 0..6_000 {
+            if let Some(record) = RunStore::get(&*ctx.commit, run_id) {
+                match record.phase {
+                    Phase::Ended(_) | Phase::Waiting => return Ok(record.phase),
+                    Phase::Running => {}
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        Err(HostError::internal(
+            "durable run did not settle: the dispatch pool never drove it to completion",
+        ))
     }
 
     pub(crate) async fn ctx_for(
@@ -983,36 +1100,17 @@ impl SharedHost {
         // ingress runs inline on the same `runtime`; durable ingress queues the run
         // through a dispatch store first. Both share this thread's `runtime`/`commit`.
         let (ingress, durable_ingress) = self
-            .build_ingress(
-                thread,
-                runtime.clone(),
-                commit.clone(),
-                stream_checkpoint.clone(),
-            )
+            .build_ingress(runtime.clone(), commit.clone(), stream_checkpoint.clone())
             .await?;
         let durable = durable_ingress.is_some();
-        // Spawn the standing dispatch daemon for this session when enabled: it
-        // drains the shared queue on a nudge/timer and reaps + relays autonomously
-        // (ADR-0011). Runs on the same worker/store as the ingress.
-        let dispatch_service = if self.dispatch_daemon {
-            durable_ingress.as_ref().map(|ing| {
-                // Enable the lease-renewal heartbeat (ADR-0024): a long run must not
-                // be reclaimed by a peer while this daemon is still executing it.
-                let config = DispatchServiceConfig {
-                    lease_renewal_interval: Some(crate::dispatch_backend::LEASE_RENEWAL),
-                    ..DispatchServiceConfig::default()
-                };
-                ing.spawn_service(Arc::new(SystemClock), config)
-            })
-        } else {
-            None
-        };
+        // No per-session dispatch daemon: the process-level `DispatchPool` (spawned
+        // once by `mount`) is the sole claimer of the shared queue and drives this
+        // session's runs by routing claimed work back to its worker (O2).
         let ctx = Arc::new(SessionCtx {
             runtime,
             ingress,
             durable,
             durable_ingress,
-            dispatch_service,
             config,
             commit,
             stream_checkpoint,
@@ -1359,12 +1457,12 @@ impl SharedHost {
         Ok(ids.into_iter().map(|id| id.0).collect())
     }
 
-    /// Enqueue a run for the standing dispatch daemon to drive autonomously
-    /// (ADR-0011, slice E follow-up): prepare the activation and hand it to the
-    /// daemon via `DispatchService::submit` (durable enqueue + wake), returning
-    /// immediately with the run id. The daemon drains it out of band — no
-    /// foreground request drives it — so the caller observes completion by polling
-    /// committed truth. Requires `AWAKEN_DISPATCH_DAEMON=1`.
+    /// Enqueue a run for the process dispatch pool to drive autonomously (ADR-0011,
+    /// slice E follow-up): prepare the activation and hand it to the pool via
+    /// `DispatchPool::submit` (durable enqueue + wake), returning immediately with
+    /// the run id. The pool drains it out of band — no foreground request drives it
+    /// — so the caller observes completion by polling committed truth. Requires
+    /// durable ingress (`AWAKEN_INGRESS=durable`), which spawns the pool.
     pub(crate) async fn submit_background_async(
         &self,
         agent: Option<&str>,
@@ -1372,9 +1470,7 @@ impl SharedHost {
         input: Vec<Message>,
     ) -> Result<String, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
-        let service = ctx.dispatch_service.as_ref().ok_or_else(|| {
-            HostError::bad_request("dispatch daemon not enabled (set AWAKEN_DISPATCH_DAEMON=1)")
-        })?;
+        let pool = self.dispatch_pool_or_err()?;
         let mut messages: Vec<Message> = {
             let mut st = ctx.state.lock().await;
             std::mem::take(&mut st.pending_system)
@@ -1400,8 +1496,7 @@ impl SharedHost {
             BASE_SEQ.fetch_add(1, Ordering::SeqCst)
         ));
         activation.run_id = uid.clone();
-        service
-            .submit(activation)
+        pool.submit(activation)
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         Ok(uid.0)
@@ -1669,6 +1764,44 @@ fn pending_from_ticket(
         input: tool.arguments,
         client_executed,
     })
+}
+
+/// Routes a claimed run to the worker that owns its thread, opening (or reusing)
+/// the session through the host. Holds a `Weak` back-reference so the pool's tasks
+/// never keep the host alive; if the host is dropped, `worker_for` fails and the
+/// pool's drains idle out.
+struct HostWorkerResolver {
+    host: std::sync::Weak<SharedHost>,
+}
+
+#[async_trait::async_trait]
+impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
+    async fn worker_for(
+        &self,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
+    {
+        let exec_err = |message: String| {
+            awaken_run_ingress::Error::Execution(
+                awaken_runtime_contract::execution::Error::Execution(message),
+            )
+        };
+        let host = self
+            .host
+            .upgrade()
+            .ok_or_else(|| exec_err("host dropped; pool idling".to_string()))?;
+        // Reopen the session with the default agent binding: an already-resident
+        // session (the common case) is returned from the cache with its original
+        // binding; a cold thread after a restart rebuilds from committed truth.
+        let ctx = host
+            .ctx_for(&thread_id.0, None)
+            .await
+            .map_err(|e| exec_err(e.to_string()))?;
+        ctx.durable_ingress
+            .as_ref()
+            .map(|ingress| ingress.worker_handle())
+            .ok_or_else(|| exec_err(format!("thread {} has no durable ingress", thread_id.0)))
+    }
 }
 
 #[cfg(test)]
