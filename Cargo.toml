@@ -95,6 +95,7 @@ awaken-session-executor = { path = "crates/server/awaken-session-executor" }
 awaken-server = { path = "crates/server/awaken-server" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
 awaken-webhook = { path = "crates/server/awaken-webhook" }
+awaken-webhook-managed = { path = "crates/server/awaken-webhook-managed" }
 awaken-standalone = { path = "crates/bin/awaken-standalone" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
