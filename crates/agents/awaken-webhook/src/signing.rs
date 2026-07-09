@@ -33,6 +33,14 @@ impl std::fmt::Display for SignError {
 
 impl std::error::Error for SignError {}
 
+/// Mint a fresh `whsec_<base64>` signing secret from OS entropy (24 random bytes)
+/// — handed to the subscriber once at create time and stored to sign deliveries.
+pub fn generate_secret() -> String {
+    let mut key = [0u8; 24];
+    getrandom::getrandom(&mut key).expect("OS entropy for a webhook secret");
+    format!("{SECRET_PREFIX}{}", B64.encode(key))
+}
+
 fn key_bytes(secret: &str) -> Result<Vec<u8>, SignError> {
     let body = secret.strip_prefix(SECRET_PREFIX).unwrap_or(secret);
     B64.decode(body).map_err(|_| SignError::MalformedSecret)

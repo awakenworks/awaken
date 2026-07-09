@@ -45,8 +45,12 @@ pub trait WebhookRepository: Send + Sync {
     async fn matching(&self, workspace_id: &str, event_type: &str) -> Vec<WebhookSubscription>;
     /// Fetch one by id.
     async fn get(&self, id: &str) -> Option<WebhookSubscription>;
+    /// Every subscription in `workspace_id` (including disabled), for the CRUD list.
+    async fn list(&self, workspace_id: &str) -> Vec<WebhookSubscription>;
     /// Set the disabled flag (auto-disable after repeated failures, or manual).
     async fn set_disabled(&self, id: &str, disabled: bool);
+    /// Remove a subscription by id (the CRUD unsubscribe). Idempotent.
+    async fn delete(&self, id: &str);
 }
 
 /// In-memory subscriptions (default / single process / tests).
@@ -72,10 +76,22 @@ impl WebhookRepository for InMemoryWebhookRepository {
     async fn get(&self, id: &str) -> Option<WebhookSubscription> {
         self.rows.lock().unwrap().get(id).cloned()
     }
+    async fn list(&self, workspace_id: &str) -> Vec<WebhookSubscription> {
+        self.rows
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| s.workspace_id == workspace_id)
+            .cloned()
+            .collect()
+    }
     async fn set_disabled(&self, id: &str, disabled: bool) {
         if let Some(s) = self.rows.lock().unwrap().get_mut(id) {
             s.disabled = disabled;
         }
+    }
+    async fn delete(&self, id: &str) {
+        self.rows.lock().unwrap().remove(id);
     }
 }
 
@@ -227,6 +243,30 @@ impl WebhookRepository for SqliteWebhookRepository {
         .expect("read webhook subscription")
     }
 
+    async fn list(&self, workspace_id: &str) -> Vec<WebhookSubscription> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, workspace_id, url, secret, event_types, disabled
+                 FROM webhook_subscription WHERE workspace_id = ?1 ORDER BY id",
+            )
+            .expect("prepare");
+        let rows = stmt
+            .query_map(params![workspace_id], |row| {
+                let types: String = row.get(4)?;
+                Ok(row_to_sub(
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    &types,
+                    row.get::<_, i64>(5)? != 0,
+                ))
+            })
+            .expect("query");
+        rows.filter_map(Result::ok).collect()
+    }
+
     async fn set_disabled(&self, id: &str, disabled: bool) {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -234,6 +274,15 @@ impl WebhookRepository for SqliteWebhookRepository {
             params![id, disabled as i64],
         )
         .expect("update webhook subscription");
+    }
+
+    async fn delete(&self, id: &str) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM webhook_subscription WHERE id = ?1",
+            params![id],
+        )
+        .expect("delete webhook subscription");
     }
 }
 

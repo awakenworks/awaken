@@ -14,6 +14,7 @@
 mod authz;
 mod models;
 pub mod placement;
+pub mod webhooks;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -357,10 +358,22 @@ pub fn build_acp_sandboxed_router() -> Router {
 /// `/v1/ai-sdk...`, `/v1/ag-ui...`) and drive the same `host`, so all three
 /// protocols operate on the same threads.
 fn mount(host: Arc<SharedHost>) -> Router {
-    mount_with_managed(
-        host.clone(),
-        Arc::new(ManagedState::new(ManagedHost::new(host))),
-    )
+    // Wire the webhook plane when configured (ADR-0048 / S10): the lifecycle sink
+    // goes into the managed state (so a committed session fact fans out) and the
+    // subscription CRUD router is merged into the surface. Unset env = no plane.
+    let mut state = ManagedState::new(ManagedHost::new(host.clone()));
+    let webhook_router = match webhooks::webhook_plane() {
+        Some((sink, router)) => {
+            state = state.with_lifecycle_sink(sink);
+            Some(router)
+        }
+        None => None,
+    };
+    let base = mount_with_managed(host, Arc::new(state));
+    match webhook_router {
+        Some(router) => base.merge(router),
+        None => base,
+    }
 }
 
 /// [`mount`], with a caller-assembled Managed state: the management server passes
