@@ -14,6 +14,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_credential_vault::CredentialSourceId;
 
+use crate::ext::AwakenModelSelection;
 use crate::project::{self, project_messages, project_turn};
 use crate::session_repo::{InMemorySessionRepository, ManagedSessionRepository, PersistedSession};
 use crate::types::{
