@@ -185,7 +185,7 @@ async fn project_ingress(
 
 /// Boot the zero-config single-machine server over the built-in [`HelloModel`].
 /// A real deployment calls [`build`] with `awaken_provider_genai::GenAiExecutor`
-/// (pointed at a provider or the awaken-cloud gateway) instead.
+/// (pointed at a provider directly or at an egress gateway) instead.
 #[must_use]
 pub fn boot() -> Standalone {
     build(Arc::new(HelloModel))
@@ -236,8 +236,8 @@ pub fn banner(standalone: &Standalone, addr: &str) -> String {
 /// The default single-machine model: a deterministic greeter that ends the turn
 /// with one line of text — no external provider, so a standalone boots and runs
 /// with zero configuration. A real deployment injects
-/// `awaken_provider_genai::GenAiExecutor` (pointed at a provider or the
-/// awaken-cloud gateway) via [`build`] instead.
+/// `awaken_provider_genai::GenAiExecutor` (pointed at a provider directly or at
+/// an egress gateway) via [`build`] instead.
 pub struct HelloModel;
 
 #[async_trait::async_trait]
