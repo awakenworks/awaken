@@ -50,7 +50,7 @@ pub use service::{DispatchService, DispatchServiceConfig};
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
 #[cfg(feature = "nats")]
 pub use wake::NatsWakeSignal;
-pub use wake::{LocalWakeSignal, WakeSignal};
+pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker};
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or
