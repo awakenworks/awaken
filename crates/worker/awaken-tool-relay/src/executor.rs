@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use futures_util::{SinkExt, StreamExt};
-use tokio::io::{AsyncRead, AsyncWrite};
+use awaken_agent_channel::AgentChannel;
 use tokio::sync::Mutex;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
@@ -30,7 +30,7 @@ pub struct RemoteToolExecutor<S> {
 
 impl<S> RemoteToolExecutor<S>
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AgentChannel,
 {
     /// Wrap an established byte channel to a hand.
     pub fn new(channel: S) -> Self {
@@ -99,7 +99,7 @@ where
 #[async_trait]
 impl<S> ToolExecutor for RemoteToolExecutor<S>
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AgentChannel,
 {
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
         match self.call_hand(call).await {
