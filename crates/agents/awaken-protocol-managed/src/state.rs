@@ -724,6 +724,7 @@ impl ManagedState {
         &self,
         req: SessionCreateParams,
         project_id: Option<String>,
+        workspace_id: Option<String>,
     ) -> Result<Session, StateError> {
         self.check_bind(&req)?;
         // Mint an id no durable thread already owns: a fresh process restarts
@@ -868,6 +869,11 @@ impl ManagedState {
                 metadata: session.metadata.clone(),
                 environment_id: session.environment_id.clone(),
                 mcp_servers: session.agent.mcp_servers.clone(),
+                // The owning workspace resolved at ingress (ADR-0048 D6). Org stays
+                // `None` self-hosted (D4/D6 — the chain roots at the workspace);
+                // a cloud deployment sets it when a real Org wraps the workspace.
+                workspace_id,
+                org_id: None,
             })
             .await;
         self.sessions.lock().unwrap().insert(
@@ -1849,6 +1855,8 @@ mod tests {
             mcp_servers: vec![
                 serde_json::json!({"name": "calc", "type": "url", "url": "https://x"}),
             ],
+            workspace_id: Some("wrkspc_default".to_string()),
+            org_id: None,
         }
     }
 
@@ -1900,5 +1908,44 @@ mod tests {
         );
         assert_eq!(session.title.as_deref(), Some("My session"));
         assert_eq!(session.agent.mcp_servers.len(), 1);
+    }
+
+    /// ADR-0048 D6: the workspace resolved at ingress is recorded as the created
+    /// session's owner on the durable row; the bare surface persists no owner.
+    #[tokio::test]
+    async fn create_session_records_the_owning_workspace() {
+        let repo: Arc<dyn ManagedSessionRepository> =
+            Arc::new(InMemorySessionRepository::default());
+        let state = ManagedState::new(RehydrateFake).with_session_repo(repo.clone());
+
+        let params = |agent: &str| SessionCreateParams {
+            agent: crate::types::AgentRef::Id(agent.into()),
+            environment_id: None,
+            title: None,
+            metadata: Default::default(),
+            mcp_servers: Vec::new(),
+            vault_ids: Vec::new(),
+            resources: Vec::new(),
+        };
+
+        let owned = state
+            .create_session(params("assistant"), None, Some("wrkspc_acme".to_string()))
+            .await
+            .expect("create owned session");
+        assert_eq!(
+            repo.get(&owned.id).await.and_then(|s| s.workspace_id),
+            Some("wrkspc_acme".to_string()),
+            "the resolved workspace is the session's persisted owner"
+        );
+
+        let bare = state
+            .create_session(params("assistant"), None, None)
+            .await
+            .expect("create bare session");
+        assert_eq!(
+            repo.get(&bare.id).await.and_then(|s| s.workspace_id),
+            None,
+            "the bare surface records no owner"
+        );
     }
 }

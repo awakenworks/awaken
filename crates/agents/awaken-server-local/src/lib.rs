@@ -739,9 +739,11 @@ pub fn build_remote_hand_router() -> Router {
         let plan = awaken_connection_plan::ConnectionPlan::tcp_listen(&listen);
         let channel = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                let listener = awaken_connection_plan::bind_tcp(&plan).await.unwrap_or_else(|e| {
-                    panic!("brain failed to bind reverse rendezvous {listen}: {e}")
-                });
+                let listener = awaken_connection_plan::bind_tcp(&plan)
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("brain failed to bind reverse rendezvous {listen}: {e}")
+                    });
                 eprintln!("awaken brain: awaiting a reverse-dial hand on tcp://{listen}");
                 listener
                     .accept()
@@ -1472,6 +1474,14 @@ async fn project_ingress(
     forwarded
         .extensions_mut()
         .insert(awaken_protocol_managed::ProjectScope(project_id.clone()));
+    // The session's owning workspace (ADR-0048 D6): the project's OWN workspace,
+    // recorded on the created session so webhooks/usage/audit project from the
+    // durable row. Same value the guard fences against below.
+    forwarded
+        .extensions_mut()
+        .insert(awaken_protocol_managed::WorkspaceScope(
+            project.workspace_id.clone(),
+        ));
     // The tenancy the session-axis guard authorizes against: the project's OWN
     // workspace (so the scope fence is correct), plus the project id. Additive —
     // inert unless a guard layer wraps this router (the standalone does).

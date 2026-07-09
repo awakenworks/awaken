@@ -34,6 +34,16 @@ pub struct PersistedSession {
     /// The accepted MCP servers in the SDK wire shape (`{name, type, url}`) — the
     /// echo the agent object reports; never a credential.
     pub mcp_servers: Vec<Value>,
+    /// The session's owning workspace, resolved at ingress from the API key /
+    /// project (ADR-0048 D6). Recorded so webhooks, usage attribution, and audit
+    /// project from the durable record rather than ambient request state. `None`
+    /// on the bare pre-owner surface (a legacy row, or a deployment that has not
+    /// yet resolved a workspace) — byte-identical to before owners were stored.
+    pub workspace_id: Option<String>,
+    /// The owning organization — present only in a cloud multi-tenant deployment
+    /// where a real Org wraps the workspace (ADR-0048 D4/D6). `None` self-hosted,
+    /// where the scope chain roots at the workspace.
+    pub org_id: Option<String>,
 }
 
 /// The port the Managed adapter drives to persist and restore [`PersistedSession`]

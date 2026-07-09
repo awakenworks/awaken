@@ -463,6 +463,7 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
                 resources: Vec::new(),
             },
             None,
+            None,
         )
         .await
         .expect("create skips haunted ids");
