@@ -107,7 +107,15 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         wake: Arc<dyn WakeSignal>,
     ) -> Self {
         Self::spawn_inner(
-            store, clock, owner, lease_ms, config, resolver, concurrency, wake, None,
+            store,
+            clock,
+            owner,
+            lease_ms,
+            config,
+            resolver,
+            concurrency,
+            wake,
+            None,
         )
     }
 
@@ -258,8 +266,15 @@ async fn drain_loop<S: Dispatch + 'static>(
         }
         // Drain everything runnable now. A store error is transient — the next
         // tick retries — so swallow it rather than kill the task.
-        match claim_and_drive(&store, &clock, &owner, lease_ms, resolver.as_ref(), &completion)
-            .await
+        match claim_and_drive(
+            &store,
+            &clock,
+            &owner,
+            lease_ms,
+            resolver.as_ref(),
+            &completion,
+        )
+        .await
         {
             Ok(true) => continue,
             Ok(false) | Err(_) => {}

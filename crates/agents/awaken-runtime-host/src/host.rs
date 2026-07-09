@@ -941,13 +941,11 @@ impl SharedHost {
             // Sender dropped without sending (pool died) or the wait timed out: fall
             // back to one committed-truth read, else surface a hard error. The
             // waiter entry is cleaned up by the caller's `WaiterGuard` on return.
-            Ok(Err(_)) | Err(_) => {
-                self.read_settled_phase(ctx, run_id).ok_or_else(|| {
-                    HostError::internal(
-                        "durable run did not settle: the dispatch pool never drove it to completion",
-                    )
-                })
-            }
+            Ok(Err(_)) | Err(_) => self.read_settled_phase(ctx, run_id).ok_or_else(|| {
+                HostError::internal(
+                    "durable run did not settle: the dispatch pool never drove it to completion",
+                )
+            }),
         }
     }
 

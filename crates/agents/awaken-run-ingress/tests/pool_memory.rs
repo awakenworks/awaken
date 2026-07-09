@@ -16,9 +16,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::run::Phase;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::store::run_store::RunStore;
-use awaken_agent_contract::agent::run::Phase;
 use awaken_run_ingress::{
     CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DispatchWorker, Error, Inbox, ManualClock, MemoryDispatchStore,
@@ -42,10 +42,9 @@ struct MapResolver {
 impl WorkerResolver<MemoryDispatchStore> for MapResolver {
     async fn worker_for(&self, thread_id: &ThreadId) -> Result<Arc<MemWorker>, Error> {
         self.workers.get(&thread_id.0).cloned().ok_or_else(|| {
-            Error::Execution(awaken_runtime_contract::execution::Error::Execution(format!(
-                "no worker for thread {}",
-                thread_id.0
-            )))
+            Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                format!("no worker for thread {}", thread_id.0),
+            ))
         })
     }
 }
@@ -97,8 +96,12 @@ async fn routing_drives_each_run_on_its_own_threads_runtime() {
         2,
     );
 
-    pool.submit(activation_on("run-a", "thread-a")).await.unwrap();
-    pool.submit(activation_on("run-b", "thread-b")).await.unwrap();
+    pool.submit(activation_on("run-a", "thread-a"))
+        .await
+        .unwrap();
+    pool.submit(activation_on("run-b", "thread-b"))
+        .await
+        .unwrap();
 
     assert!(
         wait_for(|| commit_a.commit_count() >= 1 && commit_b.commit_count() >= 1).await,
@@ -290,7 +293,13 @@ async fn crashed_lease_is_recovered_and_redriven() {
         .enqueue(RunExecutionRequest::new(activation("run-1")))
         .await
         .unwrap();
-    assert!(store.claim("dead-worker", 1_000, 0).await.unwrap().is_some());
+    assert!(
+        store
+            .claim("dead-worker", 1_000, 0)
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(commit.commit_count(), 0);
 
     // A hand-driven clock so only the advance recovers it, not a fast poll.
@@ -364,7 +373,10 @@ async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert!(relayed, "the pool relayed the staged delivery into pending input");
+    assert!(
+        relayed,
+        "the pool relayed the staged delivery into pending input"
+    );
 
     // Idempotent: it appears exactly once, never duplicated by repeated relays.
     let records = store.list(&thread).await.unwrap();
