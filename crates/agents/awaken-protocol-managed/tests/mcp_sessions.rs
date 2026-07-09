@@ -9,8 +9,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime,
-    TurnOutcome, VaultState, router, vault_router,
+    Decision, ManagedState, OutcomeReport, RunError, RunErrorKind, SessionInit,
+    SessionLifecycleSink, SessionRuntime, TurnOutcome, VaultState, router, vault_router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -468,4 +468,67 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
         .await
         .expect("create skips haunted ids");
     assert_eq!(session.id, "sesn_2", "sesn_0/sesn_1 own committed truth");
+}
+
+/// ADR-0048 / S10: creating a session fires the lifecycle projection sink with the
+/// session's owner and the `session.status_idle` fact — the seam a webhook
+/// dispatcher hangs off, projected out-of-band.
+#[tokio::test]
+async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
+    #[derive(Default)]
+    struct CapturingSink {
+        seen: Mutex<Vec<(String, Option<String>, String)>>,
+    }
+    #[async_trait::async_trait]
+    impl SessionLifecycleSink for CapturingSink {
+        async fn emit(
+            &self,
+            session_id: &str,
+            workspace_id: Option<&str>,
+            _org: Option<&str>,
+            event_type: &str,
+        ) {
+            self.seen.lock().unwrap().push((
+                session_id.to_string(),
+                workspace_id.map(str::to_string),
+                event_type.to_string(),
+            ));
+        }
+    }
+
+    let sink = Arc::new(CapturingSink::default());
+    let state = ManagedState::new(PreparingFake {
+        captured: Arc::new(Mutex::new(Vec::new())),
+        fail_with: None,
+    })
+    .with_lifecycle_sink(sink.clone());
+
+    let session = state
+        .create_session(
+            awaken_protocol_managed::types::SessionCreateParams {
+                agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                environment_id: None,
+                title: None,
+                metadata: Default::default(),
+                mcp_servers: Vec::new(),
+                vault_ids: Vec::new(),
+                resources: Vec::new(),
+            },
+            None,
+            Some("wrkspc_acme".to_string()),
+        )
+        .await
+        .expect("create session");
+
+    let seen = sink.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "exactly one lifecycle fact emitted");
+    assert_eq!(
+        seen[0],
+        (
+            session.id.clone(),
+            Some("wrkspc_acme".to_string()),
+            "session.status_idle".to_string()
+        ),
+        "the sink sees the session, its owner, and the idle fact"
+    );
 }
