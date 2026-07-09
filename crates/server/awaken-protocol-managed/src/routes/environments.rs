@@ -23,9 +23,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::router::ManagedJson;
-use crate::types::ErrorResponse;
-use crate::types::Page;
+use crate::routes::ManagedJson;
+use crate::types::environment::{
+    DeletedEnvironment, Environment, EnvironmentCreateParams, EnvironmentUpdateParams, Work,
+    WorkData, WorkHeartbeat, WorkQueueStats, WorkUpdateParams,
+};
+use crate::types::{ErrorResponse, Page};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 const HEARTBEAT_TTL_SECONDS: u64 = 60;
@@ -46,18 +49,18 @@ impl EnvRecord {
     /// field, so the environment carries no `scope` — workspace scoping is enforced
     /// by the authz layer from the credential, and any awaken tenancy (Project) is
     /// an ingress concern (`/projects/{slug}/…`), not part of this object.
-    fn project(&self, id: &str) -> Value {
-        json!({
-            "id": id,
-            "type": "environment",
-            "archived_at": self.archived_at,
-            "created_at": OBJECT_AT,
-            "updated_at": OBJECT_AT,
-            "name": self.name,
-            "description": self.description,
-            "metadata": self.metadata,
-            "config": self.config,
-        })
+    fn project(&self, id: &str) -> Environment {
+        Environment {
+            id: id.to_string(),
+            object_type: "environment",
+            archived_at: self.archived_at.clone(),
+            created_at: OBJECT_AT.to_string(),
+            updated_at: OBJECT_AT.to_string(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            metadata: self.metadata.clone(),
+            config: self.config.clone(),
+        }
     }
 
     /// Map this environment's Anthropic `BetaEnvironment.networking` wire config
@@ -91,8 +94,7 @@ impl EnvRecord {
 #[derive(Clone)]
 struct WorkRecord {
     environment_id: String,
-    /// `BetaSessionWorkData | BetaHealthCheckWorkData`.
-    data: Value,
+    data: WorkData,
     metadata: BTreeMap<String, String>,
     /// `queued` | `starting` | `active` | `stopping` | `stopped`.
     state: &'static str,
@@ -104,22 +106,22 @@ struct WorkRecord {
 }
 
 impl WorkRecord {
-    fn project(&self, id: &str) -> Value {
-        json!({
-            "id": id,
-            "type": "work",
-            "environment_id": self.environment_id,
-            "data": self.data,
-            "metadata": self.metadata,
-            "state": self.state,
-            "secret": null,
-            "acknowledged_at": self.acknowledged_at,
-            "latest_heartbeat_at": self.latest_heartbeat_at,
-            "created_at": OBJECT_AT,
-            "started_at": self.started_at,
-            "stop_requested_at": self.stop_requested_at,
-            "stopped_at": self.stopped_at,
-        })
+    fn project(&self, id: &str) -> Work {
+        Work {
+            id: id.to_string(),
+            object_type: "work",
+            environment_id: self.environment_id.clone(),
+            data: self.data.clone(),
+            metadata: self.metadata.clone(),
+            state: self.state,
+            secret: None,
+            acknowledged_at: self.acknowledged_at.clone(),
+            latest_heartbeat_at: self.latest_heartbeat_at.clone(),
+            created_at: OBJECT_AT.to_string(),
+            started_at: self.started_at.clone(),
+            stop_requested_at: self.stop_requested_at.clone(),
+            stopped_at: self.stopped_at.clone(),
+        }
     }
 }
 
@@ -148,6 +150,43 @@ impl EnvironmentState {
         let envs = self.envs.lock().unwrap();
         envs.get(env_id)
             .is_some_and(|rec| rec.network_policy().is_restricted())
+    }
+
+    /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
+    /// dispatched through the work queue for an external worker to run (rather than
+    /// executed by Anthropic's — here the local — managed runtime). Unknown envs and
+    /// the default `env_local` are not self-hosted.
+    #[must_use]
+    pub fn is_self_hosted(&self, env_id: &str) -> bool {
+        self.envs.lock().unwrap().get(env_id).is_some_and(|rec| {
+            rec.config.get("type").and_then(Value::as_str) == Some("self_hosted")
+        })
+    }
+
+    /// Enqueue a `session` work item for `session_id` on `env_id`'s queue — the way
+    /// the control plane enqueues a session assigned to a self-hosted environment
+    /// (`BetaSessionWorkData`), so a worker polling the environment can claim and run
+    /// it. Returns the new work id.
+    pub fn enqueue_session_work(&self, env_id: &str, session_id: &str) -> String {
+        let n = self.work_seq.fetch_add(1, Ordering::SeqCst);
+        let work_id = format!("work_{n:016}");
+        self.works.lock().unwrap().insert(
+            work_id.clone(),
+            WorkRecord {
+                environment_id: env_id.to_string(),
+                data: WorkData::Session {
+                    id: session_id.to_string(),
+                },
+                metadata: BTreeMap::new(),
+                state: "queued",
+                acknowledged_at: None,
+                latest_heartbeat_at: None,
+                started_at: None,
+                stop_requested_at: None,
+                stopped_at: None,
+            },
+        );
+        work_id
     }
 }
 
@@ -188,48 +227,20 @@ fn not_found(what: &str) -> WireError {
     )
 }
 
-fn bad_request(message: impl Into<String>) -> WireError {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new("invalid_request_error", message)),
-    )
-}
-
-fn metadata_of(body: &Value) -> BTreeMap<String, String> {
-    body.get("metadata")
-        .and_then(Value::as_object)
-        .map(|o| {
-            o.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 // ---- Environment routes ----------------------------------------------------
 
 async fn create_env(
     State(state): State<Arc<EnvironmentState>>,
-    ManagedJson(body): ManagedJson<Value>,
-) -> Result<Json<Value>, WireError> {
-    let name = body
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| bad_request("name is required"))?
-        .to_string();
-    let config = body
-        .get("config")
+    ManagedJson(params): ManagedJson<EnvironmentCreateParams>,
+) -> Result<Json<Environment>, WireError> {
+    let config = params
+        .config
         .filter(|v| !v.is_null())
-        .cloned()
         .unwrap_or_else(|| json!({ "type": "self_hosted" }));
     let record = EnvRecord {
-        name,
-        description: body
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        metadata: metadata_of(&body),
+        name: params.name,
+        description: params.description.unwrap_or_default(),
+        metadata: params.metadata,
         config,
         // No `scope` on the wire: ownership is credential-implicit (authz enforces
         // the workspace from the credential) and any awaken tenancy is an ingress
@@ -245,7 +256,9 @@ async fn create_env(
         work_id.clone(),
         WorkRecord {
             environment_id: id.clone(),
-            data: json!({ "id": work_id, "type": "healthcheck" }),
+            data: WorkData::HealthCheck {
+                id: work_id.clone(),
+            },
             metadata: BTreeMap::new(),
             state: "queued",
             acknowledged_at: None,
@@ -263,13 +276,13 @@ async fn create_env(
 async fn retrieve_env(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Environment>, WireError> {
     let envs = state.envs.lock().unwrap();
     let record = envs.get(&id).ok_or_else(|| not_found("environment"))?;
     Ok(Json(record.project(&id)))
 }
 
-async fn list_envs(State(state): State<Arc<EnvironmentState>>) -> Json<Page<Value>> {
+async fn list_envs(State(state): State<Arc<EnvironmentState>>) -> Json<Page<Environment>> {
     let envs = state.envs.lock().unwrap();
     let data = envs
         .iter()
@@ -282,29 +295,29 @@ async fn list_envs(State(state): State<Arc<EnvironmentState>>) -> Json<Page<Valu
 async fn update_env(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
-    ManagedJson(body): ManagedJson<Value>,
-) -> Result<Json<Value>, WireError> {
+    ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
+) -> Result<Json<Environment>, WireError> {
     let mut envs = state.envs.lock().unwrap();
     let record = envs.get_mut(&id).ok_or_else(|| not_found("environment"))?;
-    if let Some(name) = body.get("name").and_then(Value::as_str) {
-        record.name = name.to_string();
+    if let Some(name) = params.name {
+        record.name = name;
     }
-    if let Some(desc) = body.get("description") {
-        record.description = desc.as_str().unwrap_or_default().to_string();
+    if let Some(description) = params.description {
+        record.description = description;
     }
-    if let Some(config) = body.get("config").filter(|v| !v.is_null()) {
-        record.config = config.clone();
+    if let Some(config) = params.config.filter(|v| !v.is_null()) {
+        record.config = config;
     }
-    if let Some(patch) = body.get("metadata").and_then(Value::as_object) {
+    if let Some(patch) = params.metadata {
+        // A `null` value removes the key; a string upserts it.
         for (k, v) in patch {
             match v {
-                Value::Null => {
-                    record.metadata.remove(k);
+                Some(s) => {
+                    record.metadata.insert(k, s);
                 }
-                Value::String(s) => {
-                    record.metadata.insert(k.clone(), s.clone());
+                None => {
+                    record.metadata.remove(&k);
                 }
-                _ => {}
             }
         }
     }
@@ -314,7 +327,7 @@ async fn update_env(
 async fn delete_env(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<DeletedEnvironment>, WireError> {
     if state.envs.lock().unwrap().remove(&id).is_none() {
         return Err(not_found("environment"));
     }
@@ -323,13 +336,16 @@ async fn delete_env(
         .lock()
         .unwrap()
         .retain(|_, w| w.environment_id != id);
-    Ok(Json(json!({ "id": id, "type": "environment_deleted" })))
+    Ok(Json(DeletedEnvironment {
+        id,
+        object_type: "environment_deleted",
+    }))
 }
 
 async fn archive_env(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Environment>, WireError> {
     let mut envs = state.envs.lock().unwrap();
     let record = envs.get_mut(&id).ok_or_else(|| not_found("environment"))?;
     record.archived_at = Some(OBJECT_AT.to_string());
@@ -350,7 +366,7 @@ fn require_env(state: &EnvironmentState, id: &str) -> Result<(), WireError> {
 async fn list_work(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Page<Value>>, WireError> {
+) -> Result<Json<Page<Work>>, WireError> {
     require_env(&state, &id)?;
     let works = state.works.lock().unwrap();
     let data = works
@@ -367,7 +383,7 @@ async fn list_work(
 async fn poll_work(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Option<Work>>, WireError> {
     require_env(&state, &id)?;
     let mut works = state.works.lock().unwrap();
     // Single active lease per environment (the open-tier single-worker cap).
@@ -375,7 +391,7 @@ async fn poll_work(
         .values()
         .any(|w| w.environment_id == id && w.state == "active");
     if has_active {
-        return Ok(Json(Value::Null));
+        return Ok(Json(None));
     }
     // Lease the oldest queued item (ascending id == enqueue order).
     let next = works
@@ -388,9 +404,9 @@ async fn poll_work(
             let work = works.get_mut(&wid).expect("just found");
             work.state = "active";
             work.started_at = Some(OBJECT_AT.to_string());
-            Ok(Json(work.project(&wid)))
+            Ok(Json(Some(work.project(&wid))))
         }
-        None => Ok(Json(Value::Null)),
+        None => Ok(Json(None)),
     }
 }
 
@@ -398,23 +414,25 @@ async fn poll_work(
 async fn work_stats(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<WorkQueueStats>, WireError> {
     require_env(&state, &id)?;
     let works = state.works.lock().unwrap();
     let in_env: Vec<&WorkRecord> = works.values().filter(|w| w.environment_id == id).collect();
+    // `depth` = items waiting to be claimed; `pending` = items a worker has claimed
+    // and is currently processing (per the SDK's queue-stats semantics).
     let queued = in_env.iter().filter(|w| w.state == "queued").count();
     let pending = in_env
         .iter()
-        .filter(|w| matches!(w.state, "queued" | "starting" | "active"))
+        .filter(|w| matches!(w.state, "starting" | "active" | "stopping"))
         .count();
     let workers_polling = i64::from(in_env.iter().any(|w| w.state == "active"));
-    Ok(Json(json!({
-        "type": "work_queue_stats",
-        "depth": queued,
-        "pending": pending,
-        "oldest_queued_at": if queued > 0 { Value::String(OBJECT_AT.to_string()) } else { Value::Null },
-        "workers_polling": workers_polling,
-    })))
+    Ok(Json(WorkQueueStats {
+        object_type: "work_queue_stats",
+        depth: queued,
+        pending,
+        oldest_queued_at: (queued > 0).then(|| OBJECT_AT.to_string()),
+        workers_polling,
+    }))
 }
 
 /// Find the work item under `id`/`wid` or 404 (both the env and the membership).
@@ -430,7 +448,7 @@ fn work_belongs(state: &EnvironmentState, id: &str, wid: &str) -> Result<(), Wir
 async fn retrieve_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Work>, WireError> {
     work_belongs(&state, &id, &wid)?;
     let works = state.works.lock().unwrap();
     Ok(Json(works[&wid].project(&wid)))
@@ -439,17 +457,13 @@ async fn retrieve_work(
 async fn update_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
-    ManagedJson(body): ManagedJson<Value>,
-) -> Result<Json<Value>, WireError> {
+    ManagedJson(params): ManagedJson<WorkUpdateParams>,
+) -> Result<Json<Work>, WireError> {
     work_belongs(&state, &id, &wid)?;
     let mut works = state.works.lock().unwrap();
     let work = works.get_mut(&wid).expect("belongs");
-    if let Some(patch) = body.get("metadata").and_then(Value::as_object) {
-        for (k, v) in patch {
-            if let Some(s) = v.as_str() {
-                work.metadata.insert(k.clone(), s.to_string());
-            }
-        }
+    if let Some(patch) = params.metadata {
+        work.metadata.extend(patch);
     }
     Ok(Json(work.project(&wid)))
 }
@@ -458,7 +472,7 @@ async fn update_work(
 async fn ack_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Work>, WireError> {
     work_belongs(&state, &id, &wid)?;
     let mut works = state.works.lock().unwrap();
     let work = works.get_mut(&wid).expect("belongs");
@@ -473,25 +487,25 @@ async fn ack_work(
 async fn heartbeat_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<WorkHeartbeat>, WireError> {
     work_belongs(&state, &id, &wid)?;
     let mut works = state.works.lock().unwrap();
     let work = works.get_mut(&wid).expect("belongs");
     work.latest_heartbeat_at = Some(OBJECT_AT.to_string());
-    Ok(Json(json!({
-        "type": "work_heartbeat",
-        "last_heartbeat": OBJECT_AT,
-        "lease_extended": true,
-        "state": work.state,
-        "ttl_seconds": HEARTBEAT_TTL_SECONDS,
-    })))
+    Ok(Json(WorkHeartbeat {
+        object_type: "work_heartbeat",
+        last_heartbeat: OBJECT_AT,
+        lease_extended: true,
+        state: work.state,
+        ttl_seconds: HEARTBEAT_TTL_SECONDS,
+    }))
 }
 
 /// `POST …/work/:wid/stop` — request the worker stop the item.
 async fn stop_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Work>, WireError> {
     work_belongs(&state, &id, &wid)?;
     let mut works = state.works.lock().unwrap();
     let work = works.get_mut(&wid).expect("belongs");
