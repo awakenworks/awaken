@@ -151,6 +151,8 @@ pub struct SessionAgent {
     /// SDK-required (nullable) fields; emitted as `null` when the host has none.
     pub description: Option<String>,
     pub system: Option<String>,
+    // Opaque SDK unions passed through verbatim (the tool / MCP-server / skill
+    // unions) — same treatment as [`Agent`](super::agent::Agent)'s.
     pub tools: Vec<Value>,
     pub mcp_servers: Vec<Value>,
     pub skills: Vec<Value>,

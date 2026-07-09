@@ -128,6 +128,9 @@ pub struct Agent {
     pub model: ModelConfig,
     pub system: Option<String>,
     pub metadata: BTreeMap<String, String>,
+    // Opaque SDK unions passed through verbatim (`mcp_servers` = MCP server defs,
+    // `tools` = the built-in/custom/MCP tool union, `skills`, and the `multiagent`
+    // coordinator roster) — reproducing each buys nothing this surface constructs.
     pub mcp_servers: Vec<Value>,
     pub skills: Vec<Value>,
     pub tools: Vec<Value>,
