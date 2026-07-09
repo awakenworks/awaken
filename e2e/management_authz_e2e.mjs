@@ -65,9 +65,9 @@ async function main() {
     // The bootstrap contract: the admin token is on disk, owner-only.
     const tokenPath = path.join(dir, 'admin-token');
     const token = fs.readFileSync(tokenPath, 'utf8').trim();
-    assert.ok(token.startsWith('sk-ant-'), `bootstrap token shape: ${token.slice(0, 10)}…`);
+    assert.ok(token.startsWith('sk-awaken-'), `bootstrap token shape: ${token.slice(0, 12)}…`);
     assert.equal(fs.statSync(tokenPath).mode & 0o777, 0o600, 'admin-token is mode 0600');
-    pass('bootstrap admin token written to <dir>/admin-token (0600), sk-ant-… shape');
+    pass('bootstrap admin token written to <dir>/admin-token (0600), sk-awaken-… shape');
 
     // Without a token: 401 in the Managed error envelope, on both surfaces.
     let r = await req(base, 'GET', '/v1/config/catalog');
@@ -137,7 +137,7 @@ async function main() {
       { workspace_id: WORKSPACE, role: 'workspace_admin' }, token);
     assert.equal(r.status, 201, `token mint: ${JSON.stringify(r.json)}`);
     const opToken = r.json.token;
-    assert.ok(opToken.startsWith('sk-ant-'), 'minted cleartext is sk-ant-… shaped');
+    assert.ok(opToken.startsWith('sk-awaken-'), 'minted cleartext is sk-awaken-… shaped');
     assert.equal(r.json.api_token.workspace_id, WORKSPACE);
     assert.equal(r.json.api_token.role, 'workspace_admin');
     assert.ok(!JSON.stringify(r.json.api_token).includes('$argon2'), 'view is hash-free');
