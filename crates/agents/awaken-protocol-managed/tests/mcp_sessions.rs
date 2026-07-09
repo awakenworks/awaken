@@ -112,7 +112,7 @@ fn check_bind_is_fail_closed_on_unknown_vault() {
     })
     .with_vaults(vaults);
 
-    let bad: awaken_protocol_managed::dto::CreateSessionRequest =
+    let bad: awaken_protocol_managed::types::CreateSessionRequest =
         serde_json::from_value(json!({ "agent": "a", "vault_ids": ["vlt_missing"] })).unwrap();
     assert!(matches!(
         state.check_bind(&bad),
@@ -120,7 +120,7 @@ fn check_bind_is_fail_closed_on_unknown_vault() {
     ));
 
     // No referenced vault → the bind is legal.
-    let ok: awaken_protocol_managed::dto::CreateSessionRequest =
+    let ok: awaken_protocol_managed::types::CreateSessionRequest =
         serde_json::from_value(json!({ "agent": "a" })).unwrap();
     assert!(state.check_bind(&ok).is_ok());
 }
@@ -453,8 +453,8 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
     let state = ManagedState::new(HauntedRuntime);
     let session = state
         .create_session(
-            awaken_protocol_managed::dto::CreateSessionRequest {
-                agent: awaken_protocol_managed::dto::AgentRef::Id("assistant".into()),
+            awaken_protocol_managed::types::CreateSessionRequest {
+                agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
                 environment_id: None,
                 title: None,
                 metadata: Default::default(),

@@ -47,7 +47,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::dto::ErrorResponse;
+use crate::types::ErrorResponse;
 use crate::router::ManagedJson;
 
 /// Deterministic timestamp stamped on every vault/credential object, matching the

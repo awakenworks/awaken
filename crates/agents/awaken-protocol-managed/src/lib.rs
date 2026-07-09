@@ -13,7 +13,6 @@
 
 pub mod agents_registry;
 pub mod deployments;
-pub mod dto;
 pub mod environments;
 pub mod live_inbox;
 pub mod pagination;
@@ -21,6 +20,11 @@ pub mod project;
 mod router;
 mod session_repo;
 mod state;
+/// The wire transfer objects: the Managed Agents request/response/event shapes,
+/// each mapping 1:1 onto the `@anthropic-ai/sdk` beta `managed-agents` types.
+/// Pure serde types only — the logic that *assembles* them from neutral domain
+/// state lives in [`state`] and [`project`].
+pub mod types;
 pub mod user_profiles;
 pub mod vaults;
 

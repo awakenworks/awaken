@@ -1,10 +1,15 @@
-//! The Managed Agents public wire DTOs (anti-corruption boundary).
+//! The Managed Agents wire transfer objects (anti-corruption boundary).
 //!
-//! These are the *only* place Anthropic protocol vocabulary lives (G16). Field
-//! names, `type` strings, and the `stop_reason` tagged shape are byte-compatible
-//! with the official SDK (`anthropic-beta: managed-agents-2026-04-01`), so the
+//! Pure serde types, each mapping 1:1 onto the official SDK's beta
+//! `managed-agents` types — the *only* place Anthropic protocol vocabulary lives
+//! (G16). Field names, `type` strings, and the `stop_reason` tagged shape are
+//! byte-compatible with `anthropic-beta: managed-agents-2026-04-01`, so the
 //! TypeScript SDK can drive the server. Message content reuses the neutral
 //! [`ContentBlock`], which already serializes as `{ "type": "text", "text": .. }`.
+//!
+//! This module holds *shapes only*. The logic that assembles them from neutral
+//! domain state — projecting engine events into [`OutboundKind`], building a
+//! [`Session`] record — lives in `state` and `project`, kept deliberately apart.
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};

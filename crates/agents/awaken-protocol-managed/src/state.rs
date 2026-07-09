@@ -14,7 +14,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_credential_vault::CredentialSourceId;
 
-use crate::dto::{
+use crate::types::{
     ConfirmResult, CreateSessionRequest, Event, EventReceipt, InboundEvent, ListEventsResponse,
     ModelConfig, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
     StopReason,

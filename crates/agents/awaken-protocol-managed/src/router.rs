@@ -15,7 +15,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio_stream::Stream;
 
-use crate::dto::{
+use crate::types::{
     CreateSessionRequest, ErrorResponse, ListEventsResponse, SendEventsRequest, SendEventsResponse,
     Session,
 };

@@ -19,7 +19,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::dto::ErrorResponse;
+use crate::types::ErrorResponse;
 use crate::pagination::Page;
 use crate::router::ManagedJson;
 

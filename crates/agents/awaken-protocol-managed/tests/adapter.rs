@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_managed::dto::StopReason;
+use awaken_protocol_managed::types::StopReason;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, Decision, ManagedState, OutcomeIteration,
     OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, TurnOutcome, router,
