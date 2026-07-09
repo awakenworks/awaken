@@ -63,13 +63,15 @@ const agentMessages = (events) =>
 
 /// Assert one add-turn: tool_use mcp__calc__add + tool_result <sum> + "result: <sum>".
 function assertAddTurn(events, sum) {
+  // An MCP tool call projects as the distinct agent.mcp_tool_use / mcp_tool_result
+  // events (not the builtin agent.tool_use), matching managed_mcp_e2e.
   assert.ok(
-    events.some((e) => e.type === 'agent.tool_use' && e.name === 'mcp__calc__add'),
-    `an mcp__calc__add tool_use: ${JSON.stringify(events.map((e) => e.type))}`,
+    events.some((e) => e.type === 'agent.mcp_tool_use' && e.name === 'mcp__calc__add'),
+    `an mcp__calc__add mcp_tool_use: ${JSON.stringify(events.map((e) => e.type))}`,
   );
   assert.ok(
-    events.some((e) => e.type === 'agent.tool_result' && e.content[0].text === String(sum)),
-    `a tool_result of ${sum}`,
+    events.some((e) => e.type === 'agent.mcp_tool_result' && e.content[0].text === String(sum)),
+    `an mcp_tool_result of ${sum}`,
   );
   assert.ok(
     agentMessages(events).some((m) => m.includes(`result: ${sum}`)),

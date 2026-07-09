@@ -40,10 +40,13 @@ const assistantText = (events) =>
 
 // The dispatch-queue databases (`*-dispatch.db`) — the run-ingress durable
 // artifact, distinct from the commit store's per-thread `<thread>.db`.
+// The durable dispatch queue is one process-shared file `dispatch.db` (the
+// process-level DispatchPool over one shared queue), not the old per-thread
+// `<thread>-dispatch.db` files.
 const dispatchDbs = (dir) =>
   fs
     .readdirSync(dir, { withFileTypes: true })
-    .filter((e) => e.isFile() && e.name.endsWith('-dispatch.db'))
+    .filter((e) => e.isFile() && e.name.endsWith('dispatch.db'))
     .map((e) => e.name)
     .sort();
 

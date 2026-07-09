@@ -30,7 +30,10 @@ async function send(client, sessionId, text) {
 
 async function main() {
   try {
-    await withScenarioServer('acp', 'echo', 38170, async (baseUrl) => {
+    // Port distinct from managed_durable_e2e (38170): that test restarts its
+    // server and its process-level dispatch pool lingers briefly on the port, so
+    // sharing 38170 cross-contaminates in a full-suite run. 38185 is unshared.
+    await withScenarioServer('acp', 'echo', 38185, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // R3/R4: a session selecting an ACP runtime runs on the external CLI.
