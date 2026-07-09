@@ -781,8 +781,8 @@ impl ManagedState {
                     mcp_servers: bindings,
                     resources,
                     project_id,
-                    model: req.agent.model().map(str::to_string),
-                    runtime: req.agent.runtime().map(str::to_string),
+                    model: req.awaken_model().map(str::to_string),
+                    runtime: req.awaken_runtime().map(str::to_string),
                     deny_egress,
                 },
             )
@@ -803,8 +803,7 @@ impl ManagedState {
                 // R6: echo the session's actual model — the requested override, else
                 // the host default — so the client sees which model the session runs.
                 model: ModelConfig::new(
-                    req.agent
-                        .model()
+                    req.awaken_model()
                         .map(str::to_string)
                         .unwrap_or_else(|| self.runtime.model()),
                 ),

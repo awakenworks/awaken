@@ -38,7 +38,7 @@ async function main() {
       // A session selecting an ACP runtime drives the fake agent over official
       // JSON-RPC — the `session/update` chunk lands as the agent's message.
       const acp = await client.beta.sessions.create({
-        agent: { id: 'assistant', runtime: 'acp:claude' },
+        agent: 'assistant', metadata: { 'awaken.runtime': 'acp:claude' },
         environment_id: 'env_local',
         betas: BETAS,
       });

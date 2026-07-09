@@ -41,7 +41,11 @@ impl ErrorResponse {
     }
 }
 
-/// `agent` in a create-session request: either a bare id string or an object.
+/// `agent` in a create-session request — the SDK's `string | { id, type:'agent',
+/// version? }` (`BetaManagedAgentsAgentParams`). Deserialize-only; the `type:'agent'`
+/// tag is tolerated (and ignored) on input, like `McpServerWire`'s `type:'url'`.
+/// This carries no awaken-only fields — per-session model override and runtime
+/// selection travel in the session `metadata` bag (see [`CreateSessionRequest`]).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum AgentRef {
@@ -50,14 +54,6 @@ pub enum AgentRef {
         id: String,
         #[serde(default)]
         version: Option<u32>,
-        /// Per-session model override (R2): binds this session's runs to `model`
-        /// instead of the host default. Absent → the host default model.
-        #[serde(default)]
-        model: Option<String>,
-        /// Runtime selection (R3): `"awaken"` (native) or `"acp:<cli>"` (an
-        /// external ACP agent such as Claude Code). Absent → native.
-        #[serde(default)]
-        runtime: Option<String>,
     },
 }
 
@@ -68,23 +64,13 @@ impl AgentRef {
             AgentRef::Obj { id, .. } => id,
         }
     }
-
-    /// The session's requested model, when the client bound one (R2).
-    pub fn model(&self) -> Option<&str> {
-        match self {
-            AgentRef::Obj { model, .. } => model.as_deref(),
-            AgentRef::Id(_) => None,
-        }
-    }
-
-    /// The session's requested runtime adapter, when the client chose one (R3).
-    pub fn runtime(&self) -> Option<&str> {
-        match self {
-            AgentRef::Obj { runtime, .. } => runtime.as_deref(),
-            AgentRef::Id(_) => None,
-        }
-    }
 }
+
+/// Metadata key for the awaken per-session model override (extension carried on the
+/// Claude-native `metadata` bag, not on the SDK `agent` object).
+pub const AWAKEN_MODEL_META_KEY: &str = "awaken.model";
+/// Metadata key for the awaken runtime selection (`awaken` / `acp:<cli>`).
+pub const AWAKEN_RUNTIME_META_KEY: &str = "awaken.runtime";
 
 /// `POST /v1/sessions` request body (only the fields the runtime slice reads;
 /// unknown fields are ignored so the full SDK payload is accepted).
@@ -110,6 +96,22 @@ pub struct CreateSessionRequest {
     /// differ per kind); the state layer parses each into a `SessionResource`.
     #[serde(default)]
     pub resources: Vec<Value>,
+}
+
+impl CreateSessionRequest {
+    /// The awaken per-session model override (R2), read from `metadata` rather than
+    /// the Claude `agent` object. Absent → the host default model.
+    pub fn awaken_model(&self) -> Option<&str> {
+        self.metadata.get(AWAKEN_MODEL_META_KEY).map(String::as_str)
+    }
+
+    /// The awaken runtime selection (R3): `"awaken"` (native) or `"acp:<cli>"`,
+    /// read from `metadata`. Absent → native.
+    pub fn awaken_runtime(&self) -> Option<&str> {
+        self.metadata
+            .get(AWAKEN_RUNTIME_META_KEY)
+            .map(String::as_str)
+    }
 }
 
 /// One MCP server on the wire (`BetaManagedAgentsMCPServerURLDefinition` /
@@ -496,37 +498,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_ref_parses_a_per_session_model_and_bare_id() {
-        // Bare string id → no model (R2 optional, backward compatible).
+    fn agent_ref_parses_a_bare_id_and_a_tagged_object() {
+        // Bare string id.
         let bare: AgentRef = serde_json::from_str(r#""assistant""#).unwrap();
         assert_eq!(bare.id(), "assistant");
-        assert_eq!(bare.model(), None);
-
-        // Object with a model → carried as the session's model override.
+        // The SDK's `{ id, type:"agent", version }` object — the `type` tag is
+        // tolerated (ignored) on input.
         let obj: AgentRef =
-            serde_json::from_str(r#"{"id":"assistant","model":"fast-model"}"#).unwrap();
+            serde_json::from_str(r#"{"id":"assistant","type":"agent","version":3}"#).unwrap();
         assert_eq!(obj.id(), "assistant");
-        assert_eq!(obj.model(), Some("fast-model"));
-
-        // Object without a model → None (host default).
-        let no_model: AgentRef = serde_json::from_str(r#"{"id":"assistant"}"#).unwrap();
-        assert_eq!(no_model.model(), None);
     }
 
     #[test]
-    fn create_session_request_accepts_an_agent_with_model() {
-        let req: CreateSessionRequest =
-            serde_json::from_str(r#"{"agent":{"id":"a","model":"m2"}}"#).unwrap();
-        assert_eq!(req.agent.model(), Some("m2"));
-    }
-
-    #[test]
-    fn agent_ref_parses_a_runtime_selection() {
-        let acp: AgentRef = serde_json::from_str(r#"{"id":"a","runtime":"acp:claude"}"#).unwrap();
-        assert_eq!(acp.runtime(), Some("acp:claude"));
-        // Absent → None (native, backward compatible).
-        let native: AgentRef = serde_json::from_str(r#""a""#).unwrap();
-        assert_eq!(native.runtime(), None);
+    fn create_session_request_reads_awaken_overrides_from_metadata() {
+        let req: CreateSessionRequest = serde_json::from_str(
+            r#"{"agent":"a","metadata":{"awaken.model":"m2","awaken.runtime":"acp:claude"}}"#,
+        )
+        .unwrap();
+        assert_eq!(req.awaken_model(), Some("m2"));
+        assert_eq!(req.awaken_runtime(), Some("acp:claude"));
+        // Absent → None (host default / native).
+        let bare: CreateSessionRequest = serde_json::from_str(r#"{"agent":"a"}"#).unwrap();
+        assert_eq!(bare.awaken_model(), None);
+        assert_eq!(bare.awaken_runtime(), None);
     }
 
     #[test]
