@@ -151,16 +151,29 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
 #[derive(Debug, Clone)]
 pub struct ProjectScope(pub String);
 
+/// The owning workspace a request resolved to, stamped into the request
+/// extensions by the host ingress from the API key (bare surface) or the
+/// project's workspace (`/projects/{id}`). Recorded as the session's owner
+/// (ADR-0048 D6) so webhooks/usage/audit project from the durable record.
+/// Absent only where no workspace was resolved (the pre-owner bare surface).
+#[derive(Debug, Clone)]
+pub struct WorkspaceScope(pub String);
+
 async fn create_session(
     State(state): State<Arc<ManagedState>>,
     project: Option<axum::Extension<ProjectScope>>,
+    workspace: Option<axum::Extension<WorkspaceScope>>,
     ManagedJson(req): ManagedJson<SessionCreateParams>,
 ) -> Result<Json<Session>, (StatusCode, Json<ErrorResponse>)> {
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
     // RunError to the envelope exactly like a turn's failure, so a failed create
     // is loud rather than a half-provisioned session.
     state
-        .create_session(req, project.map(|p| p.0.0.clone()))
+        .create_session(
+            req,
+            project.map(|p| p.0.0.clone()),
+            workspace.map(|w| w.0.0.clone()),
+        )
         .await
         .map(Json)
         .map_err(error_response)
