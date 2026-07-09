@@ -22,8 +22,8 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::routes::ManagedJson;
-use crate::types::ErrorResponse;
-use crate::types::Page;
+use crate::types::agent::Agent;
+use crate::types::{ErrorResponse, Page};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
@@ -43,28 +43,28 @@ struct Record {
     version: u64,
     archived_at: Option<String>,
     /// The projected agent at each past version (index 0 == v1), for `versions.list`.
-    history: Vec<Value>,
+    history: Vec<Agent>,
 }
 
 impl Record {
-    fn project(&self, id: &str) -> Value {
-        json!({
-            "id": id,
-            "type": "agent",
-            "archived_at": self.archived_at,
-            "created_at": OBJECT_AT,
-            "updated_at": OBJECT_AT,
-            "name": self.name,
-            "description": self.description,
-            "model": self.model,
-            "system": self.system,
-            "metadata": self.metadata,
-            "mcp_servers": self.mcp_servers,
-            "skills": self.skills,
-            "tools": self.tools,
-            "multiagent": self.multiagent,
-            "version": self.version,
-        })
+    fn project(&self, id: &str) -> Agent {
+        Agent {
+            id: id.to_string(),
+            object_type: "agent",
+            archived_at: self.archived_at.clone(),
+            created_at: OBJECT_AT.to_string(),
+            updated_at: OBJECT_AT.to_string(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            model: self.model.clone(),
+            system: self.system.clone(),
+            metadata: self.metadata.clone(),
+            mcp_servers: self.mcp_servers.clone(),
+            skills: self.skills.clone(),
+            tools: self.tools.clone(),
+            multiagent: self.multiagent.clone(),
+            version: self.version,
+        }
     }
 }
 
@@ -120,24 +120,24 @@ fn tools_wire(ids: &[String]) -> Vec<Value> {
 
 /// Project a config-plane view to the `BetaManagedAgent` wire shape. The agent has
 /// no registry record, so presentation fields default (name = id, version = 1).
-fn project_config_view(id: &str, view: &AgentConfigView) -> Value {
-    json!({
-        "id": id,
-        "type": "agent",
-        "archived_at": null,
-        "created_at": OBJECT_AT,
-        "updated_at": OBJECT_AT,
-        "name": id,
-        "description": null,
-        "model": { "id": view.model.clone().unwrap_or_default() },
-        "system": view.system,
-        "metadata": {},
-        "mcp_servers": [],
-        "skills": [],
-        "tools": tools_wire(&view.tool_ids),
-        "multiagent": null,
-        "version": 1,
-    })
+fn project_config_view(id: &str, view: &AgentConfigView) -> Agent {
+    Agent {
+        id: id.to_string(),
+        object_type: "agent",
+        archived_at: None,
+        created_at: OBJECT_AT.to_string(),
+        updated_at: OBJECT_AT.to_string(),
+        name: id.to_string(),
+        description: None,
+        model: json!({ "id": view.model.clone().unwrap_or_default() }),
+        system: view.system.clone(),
+        metadata: BTreeMap::new(),
+        mcp_servers: Vec::new(),
+        skills: Vec::new(),
+        tools: tools_wire(&view.tool_ids),
+        multiagent: None,
+        version: 1,
+    }
 }
 
 /// Mount the agent-registry routes.
@@ -203,7 +203,7 @@ fn value_metadata(body: &Value, key: &str) -> BTreeMap<String, String> {
 async fn create_agent(
     State(state): State<Arc<AgentRegistryState>>,
     ManagedJson(body): ManagedJson<Value>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Agent>, WireError> {
     let name = value_opt_string(&body, "name").ok_or_else(|| bad_request("name is required"))?;
     let model = normalize_model(
         body.get("model")
@@ -234,7 +234,7 @@ async fn create_agent(
 async fn retrieve_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Agent>, WireError> {
     // A registry record (an agent created via this API) wins.
     {
         let store = state.inner.lock().unwrap();
@@ -251,7 +251,7 @@ async fn retrieve_agent(
 }
 
 /// `GET /v1/agents` — one full page, ascending id order.
-async fn list_agents(State(state): State<Arc<AgentRegistryState>>) -> Json<Page<Value>> {
+async fn list_agents(State(state): State<Arc<AgentRegistryState>>) -> Json<Page<Agent>> {
     let store = state.inner.lock().unwrap();
     let data = store.iter().map(|(id, r)| r.project(id)).collect();
     Json(Page::single(data))
@@ -265,7 +265,7 @@ async fn update_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
     ManagedJson(body): ManagedJson<Value>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Agent>, WireError> {
     let expected = body
         .get("version")
         .and_then(Value::as_u64)
@@ -323,7 +323,7 @@ async fn update_agent(
 async fn archive_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, WireError> {
+) -> Result<Json<Agent>, WireError> {
     let mut store = state.inner.lock().unwrap();
     let record = store.get_mut(&id).ok_or_else(not_found)?;
     record.archived_at = Some(OBJECT_AT.to_string());
@@ -338,7 +338,7 @@ async fn archive_agent(
 async fn list_versions(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
-) -> Result<Json<Page<Value>>, WireError> {
+) -> Result<Json<Page<Agent>>, WireError> {
     let store = state.inner.lock().unwrap();
     let record = store.get(&id).ok_or_else(not_found)?;
     Ok(Json(Page::single(record.history.clone())))
